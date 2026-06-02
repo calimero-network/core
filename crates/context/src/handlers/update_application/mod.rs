@@ -29,7 +29,7 @@ use eyre::bail;
 use tracing::{debug, error, info};
 
 use crate::handlers::execute::storage::ContextStorage;
-use crate::ContextManager;
+use crate::{evict_application_if_full, ContextManager};
 
 impl Handler<UpdateApplicationRequest> for ContextManager {
     type Result = ActorResponse<Self, <UpdateApplicationRequest as Message>::Result>;
@@ -165,6 +165,11 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
         );
 
         ActorResponse::r#async(task.into_actor(self).map_ok(move |application, act, _ctx| {
+            // Honour MAX_CACHED_APPLICATIONS on this insert site too — only
+            // evict when we're actually adding a new entry.
+            if !act.applications.contains_key(&application_id) {
+                evict_application_if_full(&mut act.applications);
+            }
             let _ignored = act
                 .applications
                 .entry(application_id)

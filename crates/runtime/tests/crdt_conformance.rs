@@ -579,6 +579,91 @@ fn frozen_storage_converges() {
     assert_converged("frozen", &roots);
 }
 
+/// Faithful in-process replay of the `frozen-rga-convergence.yml` e2e workflow
+/// that intermittently fails CI with `DIVERGENCE DETECTED: Same DAG heads but
+/// different root hash` on `__frozen_storage_frozen_items`. The workflow's
+/// thesis: a frozen entry added early, then a later RGA edit storm + a title
+/// change (LWW), makes one node's view of the *earlier frozen entry* diverge.
+///
+/// This drives the EXACT op order through real WASM (`Module::run`) over the
+/// DELTA-apply path (`__calimero_sync_next`). If roots diverge here, the bug is
+/// reproducible without the HashComparison whole-tree walk — i.e. in plain
+/// delta apply. If they converge, the divergence is specific to the HC repair
+/// path (whole-tree compare emitting an Update for the frozen leaf), narrowing
+/// the search to the node sync layer.
+#[test]
+fn frozen_rga_e2e_sequence_converges() {
+    let mut c = Cluster::new(3);
+
+    // 1. node-1 adds the frozen entry; full-mesh broadcast.
+    let f = c.call(0, "add_frozen", json!({"value": "Immutable data"}));
+    c.apply(1, &f);
+    c.apply(2, &f);
+
+    // 2. node-1 seeds the RGA doc; broadcast.
+    let ins = c.call(
+        0,
+        "rga_insert_text",
+        json!({"position": 0, "text": "Hello"}),
+    );
+    c.apply(1, &ins);
+    c.apply(2, &ins);
+
+    // 3. CONCURRENT appends from node-2 and node-3 (each against the post-insert
+    //    state, before seeing the other), then cross-apply both ways.
+    let app1 = c.call(1, "rga_append_text", json!({"text": " brave new World"}));
+    let app2 = c.call(2, "rga_append_text", json!({"text": " of frozen bugs"}));
+    c.apply(0, &app1);
+    c.apply(2, &app1);
+    c.apply(0, &app2);
+    c.apply(1, &app2);
+
+    // 4. node-1 deletes "Hello" against its merged view; broadcast.
+    let del = c.call(0, "rga_delete_text", json!({"start": 0, "end": 5}));
+    c.apply(1, &del);
+    c.apply(2, &del);
+
+    // 5. The trigger: node-1 sets the document title (LWW). Capture the WRITER's
+    //    own post-write root, then apply to the receivers and capture theirs.
+    let (r0, title) = c.call_full(
+        0,
+        "rga_set_title",
+        json!({"new_title": "E2E Test Document"}),
+    );
+    let r1 = {
+        let m = c.module;
+        apply_delta(m, &mut c.nodes[1], &title).unwrap()
+    };
+    let r2 = {
+        let m = c.module;
+        apply_delta(m, &mut c.nodes[2], &title).unwrap()
+    };
+
+    // The convergence check that fails in CI: all three roots must match.
+    assert_eq!(
+        r0,
+        r1,
+        "frozen+rga: writer node-1 diverged from node-2 after title change: {} vs {}",
+        hx(&r0),
+        hx(&r1)
+    );
+    assert_eq!(
+        r1,
+        r2,
+        "frozen+rga: receivers diverged after title change: {} vs {}",
+        hx(&r1),
+        hx(&r2)
+    );
+
+    // Secondary: the frozen entry stays readable and identical everywhere
+    // (the e2e's post-convergence assertions), and the RGA text converged.
+    let t0 = c.query(0, "rga_get_text", json!({}));
+    let t1 = c.query(1, "rga_get_text", json!({}));
+    let t2 = c.query(2, "rga_get_text", json!({}));
+    assert_eq!(t0, t1, "rga text node0 vs node1");
+    assert_eq!(t1, t2, "rga text node1 vs node2");
+}
+
 // ---------------------------------------------------------------------------
 // SortedMap ordered-index path, end to end through real WASM (core#2559).
 //
@@ -767,6 +852,80 @@ fn nested_counter_single_writer_syncs() {
     let mut c = Cluster::new(3);
     let roots = sync_one(&mut c, "increment_counter", json!({"key": "k"}));
     assert_converged("nested_counter_single", &roots);
+}
+
+// ---------------------------------------------------------------------------
+// Argument validation (core#1646): the macro-generated input struct now uses
+// serde `deny_unknown_fields`, so passing an argument a method does not declare
+// must fail loudly instead of being silently dropped.
+// ---------------------------------------------------------------------------
+
+/// Assert a call carrying an undeclared field fails with an "unknown field"
+/// deserialize error naming that field. Uses the same `run()` helper as every
+/// other test here (it bails when `outcome.returns` is `Err`, surfacing the
+/// app's deserialize panic), so no manual borrowing of `Cluster` internals.
+fn assert_unknown_field_rejected(c: &mut Cluster, method: &str, params: Value, field: &str) {
+    let module = c.module;
+    let err = run(module, &mut c.nodes[0], method, params)
+        .expect_err("call with an unknown argument must fail, not silently ignore it");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("unknown field") && msg.contains(field),
+        "expected an unknown-field deserialize error mentioning `{field}`, got: {msg}"
+    );
+}
+
+/// A multi-arg (`set`) and a single-arg (`add_frozen`) method each reject an
+/// extra field, while the same calls without it still succeed — i.e. the fix is
+/// not specific to multi-field input structs.
+#[test]
+fn unknown_argument_is_rejected() {
+    let mut c = Cluster::new(1);
+    let module = c.module;
+
+    assert_unknown_field_rejected(
+        &mut c,
+        "set",
+        json!({"key": "k", "value": "v", "bogus": "x"}),
+        "bogus",
+    );
+    assert_unknown_field_rejected(
+        &mut c,
+        "add_frozen",
+        json!({"value": "v", "bogus": "x"}),
+        "bogus",
+    );
+
+    // The declared arguments alone still deserialize and execute fine.
+    run(
+        module,
+        &mut c.nodes[0],
+        "set",
+        json!({"key": "k", "value": "v"}),
+    )
+    .expect("valid multi-arg call should run");
+    run(module, &mut c.nodes[0], "add_frozen", json!({"value": "v"}))
+        .expect("valid single-arg call should run");
+}
+
+/// A method with no declared arguments (the macro's `args.is_empty()` branch)
+/// rejects a populated JSON object — i.e. extra arguments it cannot consume —
+/// but still accepts an empty `{}` or `null` body, which carry no named
+/// arguments, so callers aren't forced to send a particular empty form
+/// (core#2600).
+#[test]
+fn extra_fields_to_zero_arg_method_are_rejected() {
+    let mut c = Cluster::new(1);
+    let module = c.module;
+
+    // `entries` declares no arguments; a field it cannot consume is rejected.
+    assert_unknown_field_rejected(&mut c, "entries", json!({"bogus": "x"}), "bogus");
+
+    // Empty-object and null bodies carry no arguments and must still succeed.
+    run(module, &mut c.nodes[0], "entries", json!({}))
+        .expect("zero-arg method accepts an empty object body");
+    run(module, &mut c.nodes[0], "entries", json!(null))
+        .expect("zero-arg method accepts a null body");
 }
 
 #[test]

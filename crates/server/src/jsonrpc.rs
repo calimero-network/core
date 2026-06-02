@@ -9,7 +9,8 @@ use calimero_server_primitives::jsonrpc::{
 };
 use calimero_server_primitives::validation::Validate;
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
+use tracing::{error, field, info, info_span, Instrument};
+use uuid::Uuid;
 
 use crate::config::ServerConfig;
 
@@ -71,6 +72,30 @@ async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
     Json(request): Json<PrimitiveRequest<serde_json::Value>>,
 ) -> Json<PrimitiveResponse> {
+    // One correlation id per inbound request. Carried on a span so every log
+    // emitted while handling it -- here and in everything we await (execute.rs,
+    // the per-line WASM execution logs, ctx_client) -- inherits `request_id`
+    // without threading it through any signatures. `context_id`/`method` start
+    // empty and are recorded once the payload is parsed.
+    let request_id = Uuid::new_v4();
+    let span = info_span!(
+        "rpc_request",
+        %request_id,
+        // The client's own JSON-RPC `id` (echoed back in the response) so a
+        // caller can line their id up with the server trace. Unlike
+        // `request_id` it is client-controlled and may be Null.
+        client_id = ?request.id,
+        context_id = field::Empty,
+        method = field::Empty,
+    );
+
+    handle_request_inner(state, request).instrument(span).await
+}
+
+async fn handle_request_inner(
+    state: Arc<ServiceState>,
+    request: PrimitiveRequest<serde_json::Value>,
+) -> Json<PrimitiveResponse> {
     let body = match serde_json::from_value::<RequestPayload>(request.payload.clone()) {
         Ok(payload) => match payload {
             RequestPayload::Execute(exec_request) => {
@@ -97,33 +122,22 @@ async fn handle_request(
                     .into();
                 }
 
-                let context_id = exec_request.context_id;
-                let method = exec_request.method.clone();
+                // Promote the parsed identifiers onto the request span so they
+                // appear on every subsequent log for this request.
+                let span = tracing::Span::current();
+                span.record("context_id", field::display(&exec_request.context_id));
+                span.record("method", field::display(&exec_request.method));
 
-                info!(
-                    context_id=%context_id,
-                    method=%method,
-                    args=%exec_request.args_json,
-                    "Received execution request"
-                );
+                info!(args=%exec_request.args_json, "Received execution request");
 
                 let result = exec_request.handle(state).await.to_res_body();
 
                 match &result {
                     ResponseBody::Error(err) => {
-                        error!(
-                            context_id=%context_id,
-                            method=%method,
-                            ?err,
-                            "Request failed"
-                        );
+                        error!(?err, "Request failed");
                     }
                     ResponseBody::Result(_) => {
-                        info!(
-                            context_id=%context_id,
-                            method=%method,
-                            "Request completed successfully"
-                        );
+                        info!("Request completed successfully");
                     }
                 }
 

@@ -18,6 +18,16 @@ calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-sdk-macros.workspace = true
 calimero-sys.workspace = true
 calimero-wasm-abi.workspace = true
+tracing = { workspace = true, optional = true }
+# Uses the `fmt` + `registry` features (both on by default); inherits the
+# workspace's feature set since `workspace = true` can't override it.
+tracing-subscriber = { workspace = true, optional = true }
+
+[features]
+# Routes `tracing` macro output (`info!`/`debug!`/… from the app and any crate
+# it imports) through the host log function. Off by default to keep the wasm
+# binary small; apps opt in with `calimero-sdk = { features = ["tracing"] }`.
+tracing = ["dep:tracing", "dep:tracing-subscriber"]
 
 [dev-dependencies]
 trybuild.workspace = true

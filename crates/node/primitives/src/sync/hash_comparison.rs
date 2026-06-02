@@ -186,6 +186,16 @@ pub struct TreeNode {
 
     /// Leaf data (present only for leaf nodes).
     pub leaf_data: Option<TreeLeafData>,
+
+    /// Tombstones for children removed from this (internal) node.
+    ///
+    /// A deletion is the absence of a child from `children`, which the
+    /// add-biased comparison can't observe. Carrying the tombstones here lets a
+    /// peer that still holds a child converge to the deletion (delete-wins)
+    /// during comparison — without anyone pushing the live entity. Empty for
+    /// leaf nodes. Populated by `get_local_tree_node` from the parent index's
+    /// `deleted_children` (each entry resolved to a signed `EntityDeletion`).
+    pub deleted_children: Vec<EntityDeletion>,
 }
 
 impl TreeNode {
@@ -197,6 +207,7 @@ impl TreeNode {
             hash,
             children,
             leaf_data: None,
+            deleted_children: Vec::new(),
         }
     }
 
@@ -208,6 +219,7 @@ impl TreeNode {
             hash,
             children: vec![],
             leaf_data: Some(data),
+            deleted_children: Vec::new(),
         }
     }
 
@@ -225,13 +237,15 @@ impl TreeNode {
             return false;
         }
 
-        // Check structural invariant: must have exactly one of children or data
-        // - Internal nodes: non-empty children, no leaf_data
-        // - Leaf nodes: empty children, has leaf_data
-        let has_children = !self.children.is_empty();
-        let has_data = self.leaf_data.is_some();
-        if has_children == has_data {
-            // Invalid: either both present (ambiguous) or both absent (empty)
+        // Check structural invariant: must be exactly one of internal or leaf.
+        // - Internal node: has live children OR only-tombstoned children
+        //   (a parent cleared to childless still carries `deleted_children`),
+        //   and no leaf_data.
+        // - Leaf node: has leaf_data, no children, no deleted_children.
+        let is_internal = !self.children.is_empty() || !self.deleted_children.is_empty();
+        let is_leaf = self.leaf_data.is_some();
+        if is_internal == is_leaf {
+            // Invalid: either both (ambiguous) or neither (empty).
             return false;
         }
 
@@ -1057,6 +1071,7 @@ mod tests {
             id: [1; 32],
             hash: [2; 32],
             children: vec![[3; 32]],
+            deleted_children: vec![],
             leaf_data: Some(leaf_data),
         };
         assert!(!invalid_node.is_valid());

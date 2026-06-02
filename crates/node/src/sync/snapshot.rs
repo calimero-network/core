@@ -5,7 +5,9 @@ use std::collections::HashSet;
 use borsh::BorshDeserialize;
 use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::sync::snapshot::{snapshot_record_kind, SnapshotRecord};
+use calimero_node_primitives::sync::snapshot::{
+    snapshot_record_kind, SnapshotRecord, MAX_SNAPSHOT_PAGE_SIZE,
+};
 use calimero_node_primitives::sync::{
     MessagePayload, SnapshotCursor, SnapshotError, StreamMessage,
 };
@@ -505,16 +507,7 @@ impl SyncManager {
                             return Ok(total_applied);
                         }
 
-                        let decompressed = lz4_flex::decompress_size_prepended(&payload)
-                            .map_err(|e| eyre::eyre!("Decompress failed: {}", e))?;
-
-                        if decompressed.len() != uncompressed_len as usize {
-                            eyre::bail!(
-                                "Size mismatch: {} vs {}",
-                                uncompressed_len,
-                                decompressed.len()
-                            );
-                        }
+                        let decompressed = decompress_snapshot_page(&payload, uncompressed_len)?;
 
                         let records = decode_snapshot_records(&decompressed)?;
                         let mut handle = self.context_client.datastore_handle();
@@ -1222,6 +1215,66 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     Ok((pages, None, total_entries))
 }
 
+/// Decompress a received snapshot page, guarding against a decompression bomb.
+///
+/// The page is produced by [`lz4_flex::compress_prepend_size`], so `payload`
+/// carries a 4-byte little-endian LZ4 size prefix followed by the compressed
+/// block, and `uncompressed_len` is the sender's declared decompressed length.
+///
+/// Both the prefix and `uncompressed_len` are attacker-controlled, so we never
+/// let them drive an unbounded allocation. Instead we:
+///   1. reject any page whose declared size exceeds [`MAX_SNAPSHOT_PAGE_SIZE`]
+///      *before* allocating — this is the receiver-enforced protocol cap and is
+///      independent of the `byte_limit` we advertised in the stream request (a
+///      malicious peer is free to ignore that hint). The cap matches
+///      `SnapshotPage::is_valid` and is large enough for a single oversized
+///      record on its own page (see `generate_snapshot_pages`), which
+///      [`DEFAULT_PAGE_BYTE_LIMIT`] — the sender's *grouping* hint — is not;
+///   2. require the embedded size prefix to agree with `uncompressed_len`, so a
+///      malformed/inconsistent frame is rejected up front rather than silently
+///      tolerated; and
+///   3. decompress into a fixed buffer of exactly `uncompressed_len` bytes via
+///      [`lz4_flex::decompress_into`], which errors rather than growing the
+///      output — unlike `decompress_size_prepended`, which would honor the
+///      embedded prefix and pre-allocate accordingly.
+fn decompress_snapshot_page(payload: &[u8], uncompressed_len: u32) -> Result<Vec<u8>> {
+    if uncompressed_len > MAX_SNAPSHOT_PAGE_SIZE {
+        eyre::bail!(
+            "Snapshot page uncompressed size {} exceeds limit {}",
+            uncompressed_len,
+            MAX_SNAPSHOT_PAGE_SIZE
+        );
+    }
+
+    let prefix = payload
+        .get(..4)
+        .ok_or_else(|| eyre::eyre!("Snapshot page payload too short"))?;
+    // `try_into` cannot fail: `prefix` is exactly 4 bytes.
+    let declared = u32::from_le_bytes(prefix.try_into().expect("4-byte prefix"));
+    if declared != uncompressed_len {
+        eyre::bail!(
+            "Snapshot page size prefix {} disagrees with declared length {}",
+            declared,
+            uncompressed_len
+        );
+    }
+
+    let block = &payload[4..];
+    let mut decompressed = vec![0u8; uncompressed_len as usize];
+    let written = lz4_flex::decompress_into(block, &mut decompressed)
+        .map_err(|e| eyre::eyre!("Decompress failed: {}", e))?;
+
+    if written != uncompressed_len as usize {
+        eyre::bail!(
+            "Size mismatch: declared {} bytes, decompressed {} bytes",
+            uncompressed_len,
+            written
+        );
+    }
+
+    Ok(decompressed)
+}
+
 /// Decode snapshot records from a (decompressed) page payload.
 ///
 /// Mirrors the encoding in [`generate_snapshot_pages`]: borsh-encoded
@@ -1593,5 +1646,71 @@ mod tests {
             SnapshotRecord::Auxiliary { kind, id, .. }
                 if *kind == snapshot_record_kind::ROTATION_LOG && *id == [2u8; 32]
         ));
+    }
+
+    #[test]
+    fn test_decompress_snapshot_page_round_trips() {
+        let original = vec![7u8; 4096];
+        let payload = lz4_flex::compress_prepend_size(&original);
+        let out = decompress_snapshot_page(&payload, original.len() as u32).unwrap();
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn test_decompress_snapshot_page_accepts_oversized_single_record_page() {
+        // `generate_snapshot_pages` puts a record larger than the grouping
+        // hint (`DEFAULT_PAGE_BYTE_LIMIT`) on its own page, so legitimate
+        // pages can exceed 64 KB. They must still be accepted under the
+        // protocol cap.
+        let original = vec![9u8; (DEFAULT_PAGE_BYTE_LIMIT as usize) * 4];
+        let payload = lz4_flex::compress_prepend_size(&original);
+        let out = decompress_snapshot_page(&payload, original.len() as u32).unwrap();
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn test_decompress_snapshot_page_rejects_oversized_declared_len() {
+        // A peer declaring a size above the protocol limit must be rejected
+        // before any allocation happens.
+        let payload = lz4_flex::compress_prepend_size(&[0u8; 16]);
+        let err = decompress_snapshot_page(&payload, MAX_SNAPSHOT_PAGE_SIZE + 1).unwrap_err();
+        assert!(err.to_string().contains("exceeds limit"), "{err}");
+    }
+
+    #[test]
+    fn test_decompress_snapshot_page_rejects_inconsistent_size_prefix() {
+        // The embedded LZ4 size prefix must agree with the declared length;
+        // a forged prefix is rejected up front, before allocation.
+        let real = vec![3u8; 256];
+        let mut payload = lz4_flex::compress_prepend_size(&real);
+        // Overwrite the 4-byte little-endian size prefix with a huge value.
+        payload[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let err = decompress_snapshot_page(&payload, 256).unwrap_err();
+        assert!(err.to_string().contains("disagrees"), "{err}");
+    }
+
+    #[test]
+    fn test_decompress_snapshot_page_resists_expansion_beyond_buffer() {
+        // A consistent (prefix == declared) but understated length must not let
+        // the block expand past the bounded buffer: `decompress_into` errors
+        // rather than growing, so no oversized allocation occurs.
+        let real = vec![3u8; 4096];
+        let mut payload = lz4_flex::compress_prepend_size(&real);
+        // Understate both the prefix and the declared length to 8 bytes; the
+        // block still decompresses to 4096, overflowing the 8-byte buffer.
+        payload[0..4].copy_from_slice(&8u32.to_le_bytes());
+        let err = decompress_snapshot_page(&payload, 8).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Decompress failed") || msg.contains("Size mismatch"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn test_decompress_snapshot_page_rejects_short_payload() {
+        // Payload shorter than the 4-byte size prefix must not panic.
+        let err = decompress_snapshot_page(&[1, 2, 3], 8).unwrap_err();
+        assert!(err.to_string().contains("too short"), "{err}");
     }
 }

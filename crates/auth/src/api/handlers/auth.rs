@@ -14,6 +14,7 @@ use crate::api::handlers::AuthUiStaticFiles;
 use crate::auth::validation::{sanitize_identifier, sanitize_string, ValidatedJson};
 use crate::server::AppState;
 use crate::storage::models::Key;
+use crate::AuthError;
 
 // Common response type used by all helper functions
 type ApiResponse = (StatusCode, HeaderMap, Json<serde_json::Value>);
@@ -282,7 +283,7 @@ pub async fn refresh_token_handler(
             return error_response(StatusCode::UNAUTHORIZED, "Access token still valid", None);
         }
         Err(err) => {
-            if !err.to_string().contains("expired") {
+            if !matches!(err, AuthError::TokenExpired) {
                 return error_response(
                     StatusCode::UNAUTHORIZED,
                     format!("Invalid access token: {err}"),
@@ -446,7 +447,7 @@ pub async fn validate_handler(
         Err(err) => {
             let mut error_headers = HeaderMap::new();
             // Add error type header for better client handling
-            if err.to_string().contains("expired") {
+            if matches!(err, AuthError::TokenExpired) {
                 error_headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
             } else if err.to_string().contains("revoked") {
                 error_headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());

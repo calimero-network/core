@@ -1,0 +1,23 @@
+error: (calimero)> `AuthoredVector` cannot be used inside `#[app::private]` — it tracks per-entry authorship for multi-writer convergence; use `Vector` instead.
+
+       A node-local private namespace has a single writer, so the multi-writer / sync-layer semantics this type models have no meaning here.
+  --> tests/macros/error_private_incompatible.rs:22:14
+   |
+22 |     history: AuthoredVector<String>,
+   |              ^^^^^^^^^^^^^^
+
+error: (calimero)> `Counter` cannot be used inside `#[app::private]` — it is a CRDT counter for concurrent increments across nodes; use a plain integer field.
+
+       A node-local private namespace has a single writer, so the multi-writer / sync-layer semantics this type models have no meaning here.
+  --> tests/macros/error_private_incompatible.rs:23:11
+   |
+23 |     hits: Counter,
+   |           ^^^^^^^
+
+error: (calimero)> `SharedStorage` cannot be used inside `#[app::private]` — it models single-signature shared/causal reconciliation; pointless with one writer.
+
+       A node-local private namespace has a single writer, so the multi-writer / sync-layer semantics this type models have no meaning here.
+  --> tests/macros/error_private_incompatible.rs:25:20
+   |
+25 |     shared: Option<SharedStorage<String>>,
+   |                    ^^^^^^^^^^^^^

@@ -15,6 +15,24 @@ use crate::{NodeClients, NodeManagers, NodeState};
 
 mod startup;
 
+/// Per-(context, peer) record of a *persisting* same-DAG / different-root
+/// divergence observed by the hash-heartbeat. Lets the handler tell a
+/// transient, self-healing divergence (the common case — a concurrent sync
+/// apply mid-flight, logged at WARN) from one that is genuinely stuck across
+/// successive heartbeats (escalated to ERROR + an active recovery sync).
+///
+/// `count` increments only while the SAME (our, their) hash pair recurs — if
+/// either hash moves, sync is making progress and the streak resets to 1. The
+/// entry is cleared when the pair converges. Touched only synchronously by
+/// `handlers::network_event::heartbeat::handle_hash_heartbeat` on the manager
+/// actor, so a plain `HashMap` (no lock) suffices.
+#[derive(Debug, Clone)]
+pub(crate) struct DivergenceMark {
+    pub(crate) our_hash: calimero_primitives::hash::Hash,
+    pub(crate) their_hash: calimero_primitives::hash::Hash,
+    pub(crate) count: u32,
+}
+
 /// Main node orchestrator.
 ///
 /// **SRP Applied**: Clear separation of:
@@ -70,6 +88,15 @@ pub struct NodeManager {
     /// alert on divergence rate without grepping logs; with the #2319
     /// determinism fixes this should stay near zero.
     pub(crate) divergence_detected: Counter,
+    /// Per-(context, peer) persistence tracker for same-DAG / different-root
+    /// divergence (#2319 follow-up). The hash-heartbeat escalates to `error!`
+    /// (and an active recovery sync) only after the SAME divergence survives
+    /// `DIVERGENCE_PERSIST_THRESHOLD` consecutive heartbeats; a first/changing
+    /// observation logs at `warn!`. Keeps a transient mid-sync divergence from
+    /// tripping log-scanning CI (`--e2e-mode`) on unrelated work while still
+    /// surfacing a genuinely stuck split-brain. See [`DivergenceMark`].
+    pub(crate) divergence_streak:
+        HashMap<(calimero_primitives::context::ContextId, libp2p::PeerId), DivergenceMark>,
     /// Per-namespace timestamp of the last beacon-*triggered* governance
     /// sync (#2367). Caps beacon-divergence syncs to one per namespace
     /// per `NS_BEACON_SYNC_DEBOUNCE` window — beacons arrive every ~5s
@@ -116,6 +143,7 @@ impl NodeManager {
             state_delta_tx,
             sync_session_tx,
             divergence_detected,
+            divergence_streak: HashMap::new(),
             ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
         }
     }

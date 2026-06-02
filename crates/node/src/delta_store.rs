@@ -55,6 +55,13 @@ const MAX_TOPOLOGY_ENTRIES: usize = 10_000;
 /// produces a warning. See #2199 / #2238.
 const WASM_APPLY_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Upper bound on how many deltas `add_deltas_batch` will register under a
+/// single DAG write lock. Bounding the batch caps the worst-case lock-hold
+/// time: in-order inputs each run WASM under that one lock, so an unbounded
+/// batch could starve concurrent gossip-delta application and head lookups.
+/// Callers with more deltas than this must chunk their input.
+pub(crate) const DELTA_BATCH_MAX: usize = 100;
+
 /// Result of adding a delta with cascaded event information
 #[derive(Debug)]
 pub struct AddDeltaResult {
@@ -62,6 +69,43 @@ pub struct AddDeltaResult {
     pub applied: bool,
     /// List of (delta_id, events_data) for cascaded deltas that have event handlers to execute
     pub cascaded_events: Vec<([u8; 32], Vec<u8>)>,
+}
+
+/// One verified delta to feed into [`DeltaStore::add_deltas_batch`].
+///
+/// Mirrors the per-delta arguments of [`DeltaStore::add_delta_with_events`].
+/// Signature and governance verification are the caller's responsibility and
+/// must happen *before* the delta is placed in a batch — the batch path only
+/// registers and persists, exactly like the single-delta path.
+#[derive(Debug)]
+pub struct BatchDeltaInput {
+    pub delta: CausalDelta<Vec<Action>>,
+    pub events: Option<Vec<u8>>,
+    pub author_id: Option<PublicKey>,
+    pub governance_position_blob: Option<Vec<u8>>,
+    pub delta_signature: Option<[u8; 64]>,
+}
+
+/// Result of [`DeltaStore::add_deltas_batch`].
+#[derive(Debug, Default)]
+pub struct BatchAddResult {
+    /// Input deltas that are applied in the DAG once the batch settles —
+    /// includes deltas that went pending mid-batch but were then unblocked by
+    /// a later input in the same batch.
+    pub applied: Vec<[u8; 32]>,
+    /// Input deltas still waiting on missing parents after the batch settled.
+    pub pending: Vec<[u8; 32]>,
+    /// Input deltas whose `dag.add_delta` returned an error and were skipped.
+    /// These are neither applied nor pending (they may not be in the DAG at
+    /// all); they are re-fetched on the next sync. Kept distinct so callers
+    /// and metrics don't misreport a failed delta as pending.
+    pub failed: Vec<[u8; 32]>,
+    /// (delta_id, events_data) for *pre-existing* pending deltas that this
+    /// batch unblocked and whose handlers must run. Events carried by the
+    /// batch inputs themselves are not forwarded here — they ride in the
+    /// inputs' `applied: true` records and follow the same restart-replay
+    /// safety net as a single `add_delta`'s primary.
+    pub forwarded_events: Vec<([u8; 32], Vec<u8>)>,
 }
 
 /// Result of `load_persisted_deltas`.
@@ -151,7 +195,16 @@ struct ContextStorageApplier {
     /// false, `writers_at` returns `None`, and the verifier falls back
     /// to v2 stored-writers, potentially admitting a revoked writer.
     /// (#2266 + #2272 review)
-    topology: Arc<RwLock<IndexMap<[u8; 32], Vec<[u8; 32]>>>>,
+    ///
+    /// Wrapped in an inner `Arc` for copy-on-write reads: the
+    /// `resolve_effective_writers_for_delta` read path needs a snapshot
+    /// that outlives the lock guard (the `happens_before` closure holds
+    /// it across the per-entity loop), but deep-cloning the whole map on
+    /// every Shared-touching apply allocated up to ~1MB at the cap on the
+    /// hot sync path. With the inner `Arc`, reads bump a refcount and
+    /// writers `Arc::make_mut` to clone-on-first-write only when a reader
+    /// snapshot is still live.
+    topology: Arc<RwLock<Arc<IndexMap<[u8; 32], Vec<[u8; 32]>>>>>,
 }
 
 #[async_trait::async_trait]
@@ -337,13 +390,17 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // below so it can't grow without limit on long-lived nodes.
         {
             let mut topology = self.topology.write().await;
+            // `make_mut` clones the inner map only if a reader snapshot is
+            // still holding the previous `Arc`; otherwise it mutates in
+            // place.
+            let topology = Arc::make_mut(&mut topology);
             let _previous = topology.insert(delta.id, delta.parents.clone());
 
             // Evict oldest-first (insertion order) so recently-applied
             // deltas — whose ancestry links are still needed by buffered
             // children — survive the cap. Cf. #2272 review on
             // non-deterministic eviction.
-            cap_topology(&mut topology);
+            cap_topology(topology);
         }
 
         // Store the ACTUAL computed hash after applying this delta for future merge detection
@@ -635,8 +692,10 @@ impl ContextStorageApplier {
 
         // Snapshot topology once per delta apply. The `happens_before`
         // closure consults this snapshot for every reachability test
-        // inside `writers_at`, avoiding repeated lock acquisitions.
-        let topology_snapshot = self.topology.read().await.clone();
+        // inside `writers_at`, avoiding repeated lock acquisitions. The
+        // inner `Arc` makes this a refcount bump rather than a deep clone
+        // of the whole map; the guard is released immediately.
+        let topology_snapshot = Arc::clone(&*self.topology.read().await);
 
         for entity_id in shared_entities {
             // Read the rotation log directly from the datastore rather
@@ -677,12 +736,13 @@ impl ContextStorageApplier {
     /// restoration completes.
     async fn restore_topology(&self, deltas: impl IntoIterator<Item = ([u8; 32], Vec<[u8; 32]>)>) {
         let mut topology = self.topology.write().await;
-        seed_topology(&mut topology, deltas);
+        let topology = Arc::make_mut(&mut topology);
+        seed_topology(topology, deltas);
         // #2272 review: enforce the same `MAX_TOPOLOGY_ENTRIES` cap that
         // `apply()` uses. Without this, a context with 100K persisted
         // deltas would seed all of them at startup and consume ~10MB+
         // until enough new deltas triggered the steady-state cap.
-        cap_topology(&mut topology);
+        cap_topology(topology);
     }
 }
 
@@ -802,6 +862,20 @@ pub struct DeltaStore {
     head_root_hashes: Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>,
 }
 
+/// Outcome of [`DeltaStore::persist_cascaded_deltas_and_update_heads`].
+///
+/// `committed` is `true` only if the atomic batch actually landed (or there
+/// was nothing to write). Callers that included a freshly-applied `primary`
+/// delta MUST check it: `false` means the delta's `applied: true` record
+/// never reached the DB, so its event handlers must not run — a restart
+/// would re-apply the delta and run them again (a duplicate). Cascade-only
+/// callers may ignore it and keep their warn-and-continue behaviour (the
+/// next sync corrects the heads).
+struct CascadePersistOutcome {
+    committed: bool,
+    forwarded_events: Vec<([u8; 32], Vec<u8>)>,
+}
+
 impl DeltaStore {
     /// Creates a new delta store
     pub fn new(
@@ -827,7 +901,7 @@ impl DeltaStore {
             // `restore_topology` so cross-restart ancestry is preserved.
             // Insertion-ordered (IndexMap) so the eviction at the
             // `MAX_TOPOLOGY_ENTRIES` cap is deterministic (oldest-first).
-            topology: Arc::new(RwLock::new(IndexMap::new())),
+            topology: Arc::new(RwLock::new(Arc::new(IndexMap::new()))),
         });
 
         Self {
@@ -1151,6 +1225,261 @@ impl DeltaStore {
         Ok(result.applied)
     }
 
+    /// Register a batch of pre-verified deltas under a *single* DAG write-lock
+    /// scope and commit every newly-applied delta together with the post-batch
+    /// `dag_heads` as one atomic write.
+    ///
+    /// This is the bulk counterpart of [`Self::add_delta`] for catchup paths
+    /// that receive many deltas at once. Versus calling `add_delta` in a loop
+    /// it (a) takes the `dag` write lock once instead of once per delta, and
+    /// (b) collapses N per-delta atomic persists + N `dag_heads` writes into a
+    /// single atomic batch. Per-delta signature and governance verification is
+    /// the caller's job and must already have happened — this method only
+    /// registers and persists, exactly like `add_delta`.
+    ///
+    /// Ordering and cascades match the single-delta path: an input that
+    /// arrives before its parent goes pending and is unblocked by a later
+    /// input in the same batch (its internal `apply_pending`). The final
+    /// applied set is therefore read back from the DAG after the whole batch
+    /// settles, not inferred from per-call return values.
+    ///
+    /// Inputs must not exceed [`DELTA_BATCH_MAX`]; the caller chunks larger
+    /// runs to bound the lock-hold window.
+    pub async fn add_deltas_batch(&self, inputs: Vec<BatchDeltaInput>) -> Result<BatchAddResult> {
+        if inputs.is_empty() {
+            return Ok(BatchAddResult::default());
+        }
+        debug_assert!(
+            inputs.len() <= DELTA_BATCH_MAX,
+            "add_deltas_batch called with {} inputs (> DELTA_BATCH_MAX {}); caller must chunk",
+            inputs.len(),
+            DELTA_BATCH_MAX,
+        );
+
+        // Phase 0: pre-persist every event-carrying input as `applied: false`
+        // BEFORE touching the DAG, so a within-batch cascade can recover those
+        // events from the DB during apply (mirrors `add_delta_internal`'s
+        // events branch). No-op for the events-less catchup path that is the
+        // primary caller today.
+        for input in &inputs {
+            if input.events.is_some() {
+                let mut handle = self.applier.context_client.datastore_handle();
+                let serialized_actions = borsh::to_vec(&input.delta.payload)
+                    .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
+                handle
+                    .put(
+                        &calimero_store::key::ContextDagDelta::new(
+                            self.applier.context_id,
+                            input.delta.id,
+                        ),
+                        &calimero_store::types::ContextDagDelta {
+                            delta_id: input.delta.id,
+                            parents: input.delta.parents.clone(),
+                            actions: serialized_actions,
+                            hlc: input.delta.hlc,
+                            applied: false,
+                            expected_root_hash: input.delta.expected_root_hash,
+                            events: input.events.clone(),
+                            author_id: input.author_id,
+                            governance_position_blob: input.governance_position_blob.clone(),
+                            delta_signature: input.delta_signature,
+                        },
+                    )
+                    .map_err(|e| eyre::eyre!("Failed to pre-persist delta with events: {}", e))?;
+            }
+        }
+
+        // Phase 1: record head-root-hash mappings for every input, once.
+        {
+            let mut head_hashes = self.head_root_hashes.write().await;
+            for input in &inputs {
+                let _ = head_hashes.insert(input.delta.id, input.delta.expected_root_hash);
+            }
+        }
+
+        // `add_delta` consumes the delta, and we retain `inputs` to build the
+        // applied records after the batch settles — so the DAG needs its own
+        // copies. Clone them HERE, before taking the write lock, to keep the
+        // payload allocations off the lock-hold window the batch exists to
+        // minimize. Mirrors the payload/parents clone the single path does.
+        let dag_deltas: Vec<CausalDelta<Vec<Action>>> =
+            inputs.iter().map(|i| i.delta.clone()).collect();
+
+        // Phase 2: register every input into the DAG under one write lock.
+        // `lock_start` is captured AFTER `.write().await` so we measure hold
+        // time only, not acquire-wait (same rationale as add_delta_internal).
+        let mut dag = self.dag.write().await;
+        let lock_start = std::time::Instant::now();
+
+        let pending_before: HashSet<[u8; 32]> = dag.get_pending_delta_ids().into_iter().collect();
+
+        // A per-delta apply error must NOT abort the whole chunk. The deltas
+        // that already applied are real and are persisted below — exactly as
+        // the single-delta catchup path persisted each success independently.
+        // `?`-propagating here instead would strand those already-applied,
+        // not-yet-persisted deltas in memory, where `has_delta` would then
+        // suppress their re-fetch for the rest of the session. So we log and
+        // skip the failing delta (it is re-fetched on the next sync) and keep
+        // registering the rest, matching the old per-call skip-and-continue.
+        let mut failed_ids: HashSet<[u8; 32]> = HashSet::new();
+        for (input, dag_delta) in inputs.iter().zip(dag_deltas) {
+            if let Err(e) = dag.add_delta(dag_delta, &*self.applier).await {
+                warn!(
+                    ?e,
+                    context_id = %self.applier.context_id,
+                    delta_id = ?input.delta.id,
+                    "Skipping delta that failed to apply during batch; will re-fetch on next sync"
+                );
+                let _ = failed_ids.insert(input.delta.id);
+            }
+        }
+
+        let heads = dag.get_heads();
+        let heads_count = heads.len();
+        let pending_after: HashSet<[u8; 32]> = dag.get_pending_delta_ids().into_iter().collect();
+
+        // Partition inputs by their FINAL state: an input that went pending
+        // mid-batch but was unblocked by a later input is `is_applied` now, so
+        // querying the settled DAG is the authoritative classification (the
+        // per-call return values are stale under within-batch cascades). A
+        // delta that errored is neither applied nor pending — it may not be in
+        // the DAG at all — so it goes in its own `failed` bucket rather than
+        // being miscounted as pending.
+        let mut applied_input_ids: Vec<[u8; 32]> = Vec::new();
+        let mut pending_input_ids: Vec<[u8; 32]> = Vec::new();
+        for input in &inputs {
+            let id = input.delta.id;
+            if failed_ids.contains(&id) {
+                continue;
+            }
+            if dag.is_applied(&id) {
+                applied_input_ids.push(id);
+            } else {
+                pending_input_ids.push(id);
+            }
+        }
+
+        // Pre-existing pending deltas (not part of this batch) that the batch
+        // unblocked. These go through the `applied_bodies` path, which nulls
+        // their author/gov/sig — the same lossy-but-acceptable treatment the
+        // single path gives cascaded children (they keep whatever envelope was
+        // pre-persisted when they first arrived as pending).
+        //
+        // Batch inputs are explicitly excluded: a delta can be both
+        // pre-existing-pending AND a re-fetched input (a duplicate), in which
+        // case it must be persisted once, as an envelope-preserving primary —
+        // not also via the envelope-nulling `applied_bodies` path.
+        let input_id_set: HashSet<[u8; 32]> = inputs.iter().map(|i| i.delta.id).collect();
+        let cascaded_other_ids: Vec<[u8; 32]> = pending_before
+            .difference(&pending_after)
+            .copied()
+            .filter(|id| !input_id_set.contains(id))
+            .collect();
+        let cascaded_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = cascaded_other_ids
+            .iter()
+            .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
+            .collect();
+
+        let hold = lock_start.elapsed();
+        drop(dag);
+        self.record_dag_write_lock_hold("add_deltas_batch", hold, None, cascaded_other_ids.len());
+        crate::node_metrics::observe_dag_heads_count(heads_count);
+
+        // Prune head-root-hash tracking down to the actual current heads.
+        {
+            let heads_set: HashSet<[u8; 32]> = heads.iter().copied().collect();
+            let mut head_hashes = self.head_root_hashes.write().await;
+            head_hashes.retain(|id, _| heads_set.contains(id));
+        }
+
+        // Build one fully-formed `applied: true` record per applied input so
+        // each keeps its author/gov/sig envelope (so this node can in turn
+        // serve verifiable catchup for them). Routed as `primaries`, NOT
+        // `applied_bodies`, precisely to preserve that envelope.
+        let applied_set: HashSet<[u8; 32]> = applied_input_ids.iter().copied().collect();
+        let mut primaries: Vec<(
+            calimero_store::key::ContextDagDelta,
+            calimero_store::types::ContextDagDelta,
+        )> = Vec::with_capacity(applied_set.len());
+        for input in &inputs {
+            if !applied_set.contains(&input.delta.id) {
+                continue;
+            }
+            let serialized_actions = borsh::to_vec(&input.delta.payload)
+                .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
+            primaries.push((
+                calimero_store::key::ContextDagDelta::new(self.applier.context_id, input.delta.id),
+                calimero_store::types::ContextDagDelta {
+                    delta_id: input.delta.id,
+                    parents: input.delta.parents.clone(),
+                    actions: serialized_actions,
+                    hlc: input.delta.hlc,
+                    applied: true,
+                    expected_root_hash: input.delta.expected_root_hash,
+                    events: input.events.clone(),
+                    author_id: input.author_id,
+                    governance_position_blob: input.governance_position_blob.clone(),
+                    delta_signature: input.delta_signature,
+                },
+            ));
+        }
+
+        // Commit applied inputs + unblocked pre-existing pendings + new heads
+        // as one atomic batch. Only persist when something actually applied
+        // (pending-only batches leave heads unchanged — same gate as the
+        // single path).
+        //
+        // If the commit carried applied inputs but did not land, return `Err`:
+        // the durable outcome is that those deltas did not happen (the DAG is
+        // ahead of the DB in memory, which a restart reconciles by rebuilding
+        // from the DB). The catchup caller (`flush_delta_batch`) treats that
+        // `Err` as warn-and-continue and relies on the next sync to re-fetch
+        // and re-apply — the same recovery the pre-batch per-delta path used
+        // when its `add_delta` returned an error. Cascade-only failures stay
+        // best-effort (the next sync corrects the heads).
+        let forwarded_events: Vec<([u8; 32], Vec<u8>)> =
+            if !primaries.is_empty() || !cascaded_bodies.is_empty() {
+                let primaries_present = !primaries.is_empty();
+                let outcome = self
+                    .persist_cascaded_deltas_and_update_heads(&cascaded_bodies, primaries, heads)
+                    .await;
+                if primaries_present && !outcome.committed {
+                    eyre::bail!("failed to atomically persist applied batch deltas and dag_heads");
+                }
+                outcome.forwarded_events
+            } else {
+                Vec::new()
+            };
+
+        // Metrics — keep per-delta granularity so dashboards read the same as
+        // the single path. Within-batch-unblocked inputs count as `applied`
+        // (their final state); only pre-existing pendings count as `cascaded`;
+        // errored inputs count as `failed`, never `pending`.
+        for _ in &applied_input_ids {
+            crate::node_metrics::record_delta_outcome("applied");
+        }
+        for _ in &pending_input_ids {
+            crate::node_metrics::record_delta_outcome("pending");
+        }
+        for _ in &failed_ids {
+            crate::node_metrics::record_delta_outcome("failed");
+        }
+        let cascade_size = cascaded_other_ids.len();
+        if cascade_size > 0 {
+            crate::node_metrics::observe_delta_cascade(cascade_size);
+            for _ in 0..cascade_size {
+                crate::node_metrics::record_delta_outcome("cascaded");
+            }
+        }
+
+        Ok(BatchAddResult {
+            applied: applied_input_ids,
+            pending: pending_input_ids,
+            failed: failed_ids.into_iter().collect(),
+            forwarded_events,
+        })
+    }
+
     /// Incrementally register a locally-generated delta that the execute
     /// path has just persisted to the DB. Updates the in-memory DAG
     /// topology + hash tracking **without** re-applying the delta (the
@@ -1270,9 +1599,13 @@ impl DeltaStore {
                 .collect()
         };
 
+        // Cascade-only path: no `primary`, so ignore `committed` and keep the
+        // warn-and-continue behaviour (a failed heads write is corrected by
+        // the next sync).
         let cascaded_events = self
-            .persist_cascaded_deltas_and_update_heads(&cascaded_bodies, heads)
-            .await;
+            .persist_cascaded_deltas_and_update_heads(&cascaded_bodies, Vec::new(), heads)
+            .await
+            .forwarded_events;
 
         Ok(cascaded_events)
     }
@@ -1382,72 +1715,49 @@ impl DeltaStore {
         // caller waits on.
         crate::node_metrics::observe_dag_heads_count(heads_count);
 
-        // Update persistence if delta applied. Preserve events until
-        // the caller confirms handler execution via
-        // `mark_events_executed(&delta_id)` — same crash-safety contract
-        // as the cascade path (#2185, #2194 review). If we crash between
-        // this write and the caller's `execute_event_handlers_parsed`
-        // success, the next init's `load_persisted_deltas` surfaces the
-        // record via `pending_handler_events` and replays the handler.
-        if result && events.is_some() {
-            let mut handle = self.applier.context_client.datastore_handle();
+        // Build the primary delta's applied-record so it commits in the SAME
+        // atomic batch as any cascaded deltas and the new `dag_heads`, via
+        // `persist_cascaded_deltas_and_update_heads` below. A standalone `put`
+        // here with the heads written separately afterwards left a crash
+        // window where the delta could be on disk as `applied: true` while
+        // `dag_heads` still pointed before it (or the reverse) — the same
+        // divergence the cascade path was hardened against.
+        //
+        // Events (when present) ride along in the record and are preserved
+        // until the caller confirms handler execution via
+        // `mark_events_executed(&delta_id)`; if we crash before that, the
+        // next init's `load_persisted_deltas` resurfaces the record through
+        // `pending_handler_events` and replays the handler.
+        //
+        // A pending delta (`!result`) keeps its `applied: false` pre-persisted
+        // record (written before the DAG add, if it had events) — nothing to
+        // persist here.
+        let primary_record: Option<(
+            calimero_store::key::ContextDagDelta,
+            calimero_store::types::ContextDagDelta,
+        )> = if result {
             let serialized_actions = borsh::to_vec(&actions_for_db)
                 .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
-
-            handle
-                .put(
-                    &calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta_id),
-                    &calimero_store::types::ContextDagDelta {
-                        delta_id,
-                        parents,
-                        actions: serialized_actions,
-                        hlc,
-                        applied: true,
-                        expected_root_hash,
-                        events: events.clone(),
-                        author_id,
-                        governance_position_blob: governance_position_blob.clone(),
-                        delta_signature,
-                    },
-                )
-                .map_err(|e| eyre::eyre!("Failed to update applied delta: {}", e))?;
-
-            debug!(
-                context_id = %self.applier.context_id,
-                delta_id = ?delta_id,
-                "Updated pre-persisted delta as applied (events preserved until handler success)"
-            );
-        } else if result {
-            // Delta applied and had no events - just persist normally
-            let mut handle = self.applier.context_client.datastore_handle();
-            let serialized_actions = borsh::to_vec(&actions_for_db)
-                .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
-
-            handle
-                .put(
-                    &calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta_id),
-                    &calimero_store::types::ContextDagDelta {
-                        delta_id,
-                        parents,
-                        actions: serialized_actions,
-                        hlc,
-                        applied: true,
-                        expected_root_hash,
-                        events: None,
-                        author_id,
-                        governance_position_blob,
-                        delta_signature,
-                    },
-                )
-                .map_err(|e| eyre::eyre!("Failed to persist applied delta: {}", e))?;
-
-            debug!(
-                context_id = %self.applier.context_id,
-                delta_id = ?delta_id,
-                "Persisted applied delta to database"
-            );
-        }
-        // If !result, delta is pending and was already pre-persisted with events (if any)
+            Some((
+                calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta_id),
+                calimero_store::types::ContextDagDelta {
+                    delta_id,
+                    parents,
+                    actions: serialized_actions,
+                    hlc,
+                    applied: true,
+                    expected_root_hash,
+                    events,
+                    author_id,
+                    governance_position_blob,
+                    delta_signature,
+                },
+            ))
+        } else {
+            // Pending: already pre-persisted as `applied: false` (with events
+            // if any) before the DAG add, so there's nothing to write now.
+            None
+        };
 
         // When multiple DAG heads exist, compute the actual root hash from storage.
         // With CRDT merge semantics, the state after applying all deltas is deterministic
@@ -1506,14 +1816,39 @@ impl DeltaStore {
                     .collect()
             };
 
-        // Persist cascaded deltas + `dag_heads` together via the shared
-        // helper. Gate the call on "we actually changed the DAG" so we
-        // don't write unchanged heads for a delta that went straight to
-        // pending without cascading.
+        // Persist the primary delta (if applied) + cascaded deltas +
+        // `dag_heads` together via the shared helper, as one atomic batch.
+        // Gate the call on "we actually changed the DAG" so we don't write
+        // unchanged heads for a delta that went straight to pending without
+        // cascading (in which case `primary_record` is `None` too).
         let cascaded_with_events: Vec<([u8; 32], Vec<u8>)> =
             if result || !cascaded_deltas.is_empty() {
-                self.persist_cascaded_deltas_and_update_heads(&cascaded_bodies, heads)
-                    .await
+                // When this call carries the just-applied primary delta, a failed
+                // commit must surface as an error so the caller does NOT run its
+                // event handlers: the `applied: true` record never landed, and
+                // the atomic batch wrote nothing, so the durable outcome is that
+                // this delta did not happen.
+                //
+                // Post-bail the in-memory DAG is ahead of the DB (the delta is
+                // applied in memory, absent on disk, heads stale). That is the
+                // intended, recoverable state: a restart rebuilds the DAG from the
+                // DB via `load_persisted_deltas`, which won't find this record, so
+                // the delta is simply re-delivered by sync and re-applied then —
+                // handlers run exactly once, on the durable apply. Running them now
+                // would double-run them after that re-apply. Cascade-only commit
+                // failures stay best-effort (the next sync corrects the heads).
+                let primary_present = primary_record.is_some();
+                let outcome = self
+                    .persist_cascaded_deltas_and_update_heads(
+                        &cascaded_bodies,
+                        primary_record.into_iter().collect(),
+                        heads,
+                    )
+                    .await;
+                if primary_present && !outcome.committed {
+                    eyre::bail!("failed to atomically persist applied delta and dag_heads");
+                }
+                outcome.forwarded_events
             } else {
                 Vec::new()
             };
@@ -1851,12 +2186,16 @@ impl DeltaStore {
             let mut bodies_to_persist = added_parent_bodies;
             bodies_to_persist.extend(cascaded_bodies);
 
+            // Cascade-only path (no `primary`): ignore `committed` and keep
+            // warn-and-continue — the next sync corrects a failed heads write.
             all_cascaded_events.extend(
                 self.persist_cascaded_deltas_and_update_heads(
                     &bodies_to_persist,
+                    Vec::new(),
                     heads_after_cascade,
                 )
-                .await,
+                .await
+                .forwarded_events,
             );
         }
 
@@ -1918,9 +2257,33 @@ impl DeltaStore {
     async fn persist_cascaded_deltas_and_update_heads(
         &self,
         applied_bodies: &[([u8; 32], CausalDelta<Vec<Action>>)],
+        primaries: Vec<(
+            calimero_store::key::ContextDagDelta,
+            calimero_store::types::ContextDagDelta,
+        )>,
         heads: Vec<[u8; 32]>,
-    ) -> Vec<([u8; 32], Vec<u8>)> {
+    ) -> CascadePersistOutcome {
         let mut forwarded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+
+        // Build the records to persist first, then commit them and the
+        // updated `dag_heads` as one atomic batch below. Writing each delta
+        // with its own `put` and then updating `dag_heads` separately left a
+        // window where a crash or I/O error midway persisted some cascaded
+        // deltas as `applied: true` while `dag_heads` stayed stale — on
+        // restart the delta-load path would miss the unpersisted deltas and
+        // the in-memory DAG and the DB could diverge permanently.
+        //
+        // `primaries` are the deltas the caller just applied directly (the
+        // `add_delta` Add-path, or one per applied input on the batch path),
+        // already fully formed. They ride in the same
+        // batch so their `applied: true` record and the heads that now point at
+        // it commit together — a standalone `put` for it would reopen the
+        // exact tear this batch closes. Its events (if any) are handled by the
+        // caller, so it is *not* added to `forwarded_events`.
+        let mut records: Vec<(
+            calimero_store::key::ContextDagDelta,
+            calimero_store::types::ContextDagDelta,
+        )> = Vec::with_capacity(applied_bodies.len() + primaries.len());
 
         if !applied_bodies.is_empty() {
             info!(
@@ -1929,7 +2292,7 @@ impl DeltaStore {
                 "Persisting newly-applied deltas (cascades and/or Add-path parents)"
             );
 
-            let mut handle = self.applier.context_client.datastore_handle();
+            let handle = self.applier.context_client.datastore_handle();
             for (cid, applied_delta) in applied_bodies {
                 let db_key =
                     calimero_store::key::ContextDagDelta::new(self.applier.context_id, *cid);
@@ -1969,13 +2332,26 @@ impl DeltaStore {
                 let serialized_actions = match borsh::to_vec(&applied_delta.payload) {
                     Ok(s) => s,
                     Err(e) => {
+                        // Aborting the whole batch — not `continue` — is the
+                        // point of the atomic path. Skipping just this delta
+                        // would still commit `heads` below, advancing them
+                        // past a delta we never persisted: exactly the
+                        // divergence this code prevents. Bail with no events
+                        // forwarded and no heads write; the in-memory DAG
+                        // keeps the delta applied and the next sync re-runs
+                        // this persist cleanly.
                         warn!(
                             ?e,
                             context_id = %self.applier.context_id,
                             delta_id = ?cid,
-                            "Failed to serialize applied delta actions, skipping persistence"
+                            "Failed to serialize applied delta actions; \
+                             aborting persist so dag_heads can't advance past \
+                             an unpersisted delta"
                         );
-                        continue;
+                        return CascadePersistOutcome {
+                            committed: false,
+                            forwarded_events: Vec::new(),
+                        };
                     }
                 };
 
@@ -1984,12 +2360,11 @@ impl DeltaStore {
                 }
 
                 // Preserve `events` in the DB until handler execution is
-                // confirmed by the caller (#2185). If we crash between
-                // this write and `execute_cascaded_events` succeeding,
-                // the next `load_persisted_deltas` / cascade scan will
-                // find `applied: true, events: Some(..)` and replay the
-                // handlers. `mark_events_executed` clears the column
-                // once handlers have run.
+                // confirmed by the caller. If we crash between this write
+                // and `execute_cascaded_events` succeeding, the next
+                // `load_persisted_deltas` / cascade scan will find
+                // `applied: true, events: Some(..)` and replay the handlers.
+                // `mark_events_executed` clears the column once they run.
                 let record = calimero_store::types::ContextDagDelta {
                     delta_id: *cid,
                     parents: applied_delta.parents.clone(),
@@ -1997,57 +2372,71 @@ impl DeltaStore {
                     hlc: applied_delta.hlc,
                     applied: true,
                     expected_root_hash: applied_delta.expected_root_hash,
-                    events: stored_events.clone(),
+                    events: stored_events,
                     author_id: None,
                     governance_position_blob: None,
                     delta_signature: None,
                 };
-                if let Err(e) = handle.put(&db_key, &record) {
-                    warn!(
-                        ?e,
-                        context_id = %self.applier.context_id,
-                        delta_id = ?cid,
-                        "Failed to persist applied delta to database"
-                    );
-                } else if stored_events.is_some() {
-                    info!(
-                        context_id = %self.applier.context_id,
-                        delta_id = ?cid,
-                        "Persisted applied delta - has events for handler execution"
-                    );
-                }
+                records.push((db_key, record));
             }
         }
 
-        // Update the database's `dag_heads` so sync handshakes and
-        // `broadcast_heartbeat` see the post-cascade state. Failing to
-        // do this was the original bug behind #2178.
-        //
-        // The failure is logged rather than propagated to match
-        // `get_missing_parents`'s warn-and-continue behaviour. Stale
-        // `dag_heads` is recoverable (the next sync session overwrites
-        // them). Since #2185, events are preserved in the DB record
-        // until the caller confirms handler execution, so a failure
-        // here no longer risks losing the event payloads — they still
-        // live in both the in-memory Vec we return *and* in the DB.
-        match self
-            .applier
-            .context_client
-            .update_dag_heads(&self.applier.context_id, heads.clone())
-        {
-            Ok(()) => debug!(
-                context_id = %self.applier.context_id,
-                new_heads = ?heads,
-                "Updated database dag_heads"
-            ),
-            Err(e) => warn!(
-                ?e,
-                context_id = %self.applier.context_id,
-                "Failed to update dag_heads in database; next sync will correct it"
-            ),
-        }
+        // Fold the caller's just-applied primary delta(s) into the same batch
+        // so their records and the heads land together (see the note above).
+        // The single-delta paths pass zero or one primary; the batch path
+        // passes one fully-formed `applied: true` record per input that
+        // applied immediately, so each keeps its author / governance-position
+        // / signature envelope (the `applied_bodies` path below would null
+        // those out, which is only acceptable for already-pre-persisted
+        // cascaded children).
+        records.extend(primaries);
 
-        forwarded_events
+        // Commit the delta records and the post-cascade `dag_heads` as one
+        // atomic write so sync handshakes and `broadcast_heartbeat` never
+        // observe heads that point past deltas the DB doesn't hold (and vice
+        // versa). The failure is logged rather than propagated to match
+        // `get_missing_parents`'s warn-and-continue behaviour: on failure
+        // nothing is written, so the DB stays at its pre-cascade state and
+        // the next sync replays cleanly.
+        match self.applier.context_client.persist_deltas_and_dag_heads(
+            &self.applier.context_id,
+            &records,
+            heads.clone(),
+        ) {
+            Ok(()) => {
+                debug!(
+                    context_id = %self.applier.context_id,
+                    new_heads = ?heads,
+                    persisted_deltas = records.len(),
+                    "Atomically persisted cascaded deltas and dag_heads"
+                );
+                CascadePersistOutcome {
+                    committed: true,
+                    forwarded_events,
+                }
+            }
+            Err(e) => {
+                // The commit failed, so none of these records landed. Don't
+                // forward their events: running handlers for deltas whose
+                // `applied: true` record was never written would break the
+                // crash-safety contract (a restart's `load_persisted_deltas`
+                // wouldn't find them to replay). The next sync re-applies the
+                // deltas and re-forwards from the durable DB records instead.
+                // `committed: false` lets an Add-path caller propagate the
+                // failure instead of running the primary delta's handlers.
+                warn!(
+                    ?e,
+                    context_id = %self.applier.context_id,
+                    "Failed to persist cascaded deltas and dag_heads atomically; \
+                     DB left at pre-cascade state, events not forwarded, next \
+                     sync will correct it"
+                );
+                CascadePersistOutcome {
+                    committed: false,
+                    forwarded_events: Vec::new(),
+                }
+            }
+        }
     }
 
     /// Mark a delta's events as executed by clearing its `events` column
@@ -2232,6 +2621,16 @@ impl DeltaStore {
         let mut added_count = 0;
         let mut dag = self.dag.write().await;
 
+        // Collect every checkpoint record and persist them in one atomic
+        // batch after the loop. Writing each with its own `put` left a window
+        // where a crash mid-loop persisted some boundary checkpoints but not
+        // others — a peer requesting a delta whose parent is a missing
+        // checkpoint then gets "delta not found". One batch is all-or-nothing.
+        let mut checkpoint_records: Vec<(
+            calimero_store::key::ContextDagDelta,
+            calimero_store::types::ContextDagDelta,
+        )> = Vec::new();
+
         for head_id in boundary_dag_heads {
             // Skip genesis (zero hash)
             if head_id == [0; 32] {
@@ -2241,61 +2640,112 @@ impl DeltaStore {
             // Create a proper checkpoint delta using the architecture-defined constructor
             let checkpoint = CausalDelta::checkpoint(head_id, boundary_root_hash);
 
-            // Restore the checkpoint to the DAG (marks it as applied)
-            if dag.restore_applied_delta(checkpoint.clone()) {
-                added_count += 1;
-
-                // CRITICAL: Persist the checkpoint to the database so peers can request it
-                // Without this, delta sync fails because the parent delta (checkpoint) is "not found"
-                let mut handle = self.applier.context_client.datastore_handle();
-                let serialized_actions = match borsh::to_vec(&checkpoint.payload) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!(
-                            ?e,
-                            context_id = %self.applier.context_id,
-                            ?head_id,
-                            "Failed to serialize checkpoint payload"
-                        );
-                        continue;
-                    }
-                };
-
-                if let Err(e) = handle.put(
-                    &calimero_store::key::ContextDagDelta::new(self.applier.context_id, head_id),
-                    &calimero_store::types::ContextDagDelta {
-                        delta_id: head_id,
-                        parents: checkpoint.parents.clone(),
-                        actions: serialized_actions,
-                        hlc: checkpoint.hlc,
-                        applied: true, // Checkpoints are always "applied"
-                        expected_root_hash: checkpoint.expected_root_hash,
-                        events: None,
-                        // Snapshot checkpoints are receiver-side derived
-                        // (boundary heads from a snapshot transfer), not
-                        // peer-authored deltas; no author claim to verify.
-                        author_id: None,
-                        governance_position_blob: None,
-                        delta_signature: None,
-                    },
-                ) {
+            // Serialize BEFORE inserting into the DAG. A checkpoint must be
+            // persisted so peers can request it during delta sync (a peer
+            // asking for a delta whose parent is this checkpoint would
+            // otherwise get "delta not found"). Serializing first means a
+            // failure skips both the DAG insertion and the persist, so the
+            // in-memory DAG never holds a checkpoint the DB will lack.
+            let serialized_actions = match borsh::to_vec(&checkpoint.payload) {
+                Ok(s) => s,
+                Err(e) => {
                     tracing::warn!(
                         ?e,
                         context_id = %self.applier.context_id,
                         ?head_id,
-                        "Failed to persist checkpoint to database"
+                        "Failed to serialize checkpoint payload; skipping checkpoint"
                     );
-                } else {
-                    tracing::info!(
-                        context_id = %self.applier.context_id,
-                        ?head_id,
-                        "Persisted snapshot checkpoint to DAG and database"
-                    );
+                    continue;
                 }
+            };
+
+            // Restore the checkpoint to the in-memory DAG (marks it applied).
+            // `restore_applied_delta` is idempotent: it returns false when the
+            // checkpoint is already present, which `added_count` reflects.
+            if dag.restore_applied_delta(checkpoint.clone()) {
+                added_count += 1;
             }
+
+            // Stage the checkpoint for persistence UNCONDITIONALLY — not gated
+            // on the restore result. If a previous call already put it in the
+            // DAG but its persist failed, `restore_applied_delta` now returns
+            // false; gating the write on it would strand the DB copy (the DAG
+            // has the checkpoint, the DB doesn't, and peers requesting it get
+            // "delta not found") until a process restart. Re-staging every
+            // time makes the write self-healing across retries; rewriting an
+            // already-persisted checkpoint is an idempotent same-bytes put.
+            checkpoint_records.push((
+                calimero_store::key::ContextDagDelta::new(self.applier.context_id, head_id),
+                calimero_store::types::ContextDagDelta {
+                    delta_id: head_id,
+                    parents: checkpoint.parents.clone(),
+                    actions: serialized_actions,
+                    hlc: checkpoint.hlc,
+                    applied: true, // Checkpoints are always "applied"
+                    expected_root_hash: checkpoint.expected_root_hash,
+                    events: None,
+                    // Snapshot checkpoints are receiver-side derived
+                    // (boundary heads from a snapshot transfer), not
+                    // peer-authored deltas; no author claim to verify.
+                    author_id: None,
+                    governance_position_blob: None,
+                    delta_signature: None,
+                },
+            ));
         }
 
-        // Also track the expected root hash for merge detection
+        // Commit all staged checkpoints atomically. Logged, not propagated, to
+        // match the rest of this best-effort path: on failure none land and
+        // the next snapshot sync re-stages and retries them (records are now
+        // staged unconditionally above, so the retry heals a prior failure).
+        //
+        // This runs while the DAG write lock is still held — deliberately, and
+        // not just for parity with the old per-checkpoint `put` loop. The
+        // head-hash bookkeeping below tags *every current head* with
+        // `boundary_root_hash`, which is only correct while the heads are
+        // exactly the checkpoints just restored. Dropping the lock for the
+        // persist (as `add_delta_internal` does) would let a concurrent
+        // `add_delta` inject a non-boundary head in the gap, which the
+        // bookkeeping would then mis-tag with `boundary_root_hash`. So the
+        // restore → persist → head-hash → `try_process_pending` span is one
+        // critical section. The cost is bounded: this is a single batched
+        // `apply` (less in-lock I/O than the prior N puts), on the infrequent
+        // snapshot-sync path.
+        match self
+            .applier
+            .context_client
+            .persist_delta_records(&checkpoint_records)
+        {
+            Ok(()) => tracing::info!(
+                context_id = %self.applier.context_id,
+                count = checkpoint_records.len(),
+                "Persisted snapshot checkpoints to DAG and database"
+            ),
+            Err(e) => tracing::warn!(
+                ?e,
+                context_id = %self.applier.context_id,
+                count = checkpoint_records.len(),
+                "Failed to persist snapshot checkpoints to database; \
+                 next snapshot sync will re-add them"
+            ),
+        }
+
+        // Track the expected root hash for merge detection, and process any
+        // now-unblocked pending deltas. Both are gated on `added_count > 0`
+        // (a checkpoint NEWLY restored this call) rather than on persistence,
+        // and that is deliberate:
+        //
+        // - These reflect in-memory DAG state, so they must run whenever the
+        //   DAG actually changed — even if the DB write below failed. Skipping
+        //   `try_process_pending` on a persist failure would strand pending
+        //   children whose parent checkpoint IS present in memory.
+        // - `added_count == 0` means every checkpoint was already in the DAG.
+        //   The maps were therefore populated on the earlier call that first
+        //   restored them (when `added_count > 0`), so re-running this block is
+        //   unnecessary — including in the persist-retry/self-heal case, where
+        //   the DB write is redone but the in-memory bookkeeping already holds.
+        //   (A restart clears the in-memory DAG, so a post-restart re-add is
+        //   `added_count > 0` again and re-populates the maps.)
         if added_count > 0 {
             let mut head_hashes = self.head_root_hashes.write().await;
             for head_id in dag.get_heads().iter() {

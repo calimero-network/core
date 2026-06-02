@@ -83,6 +83,83 @@ steps:
       - 'json_equal({{node2_read}}, {"output": "initial-from-node1"})'
 
   # ============================================
+  # Guarded collection: a whole map guarded by the writer set.
+  # Every entry is stamped Shared{writers}, so a writer's entry converges and a
+  # non-writer's entry is rejected at merge.
+  # ============================================
+
+  - name: Node 1 (writer) sets a map entry
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: map_set
+    args:
+      key: "greeting"
+      value: "hello"
+
+  - name: Wait for map entry to sync to node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads the writer's map entry
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: map_get
+    args:
+      key: "greeting"
+    outputs:
+      node2_map_read: result
+
+  - name: Assert the writer's guarded map entry converged to node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_map_read}}, {"output": "hello"})'
+
+  # ============================================
+  # Adversarial rotation (pre-rotation): node 2 is NOT yet a writer of the
+  # shared register, so its attempt to rotate the writer set to itself must be
+  # refused. This proves writer-set rotation is gated to current writers — the
+  # authenticated-rotation guarantee of this change. (The merge-time rejection
+  # of a forged rotation *delta* that bypasses the local gate is covered by the
+  # storage test `forged_shared_rotation_rejected_at_merge`.)
+  # ============================================
+
+  - name: Node 2 (non-writer) attempts to rotate the writer set to itself
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: try_rotate_writers
+    args:
+      new_writers:
+        - "{{public_key_new-calimero-node-2}}"
+    outputs:
+      node2_rotate_accepted: result
+
+  - name: Assert node 2's non-writer rotation was refused
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_rotate_accepted}}, {"output": false})'
+
+  - name: Node 1 reads the writer count after the refused rotation
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: writer_count
+    outputs:
+      node1_writer_count: result
+
+  - name: Assert the writer set is unchanged on the honest node (still 1)
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_writer_count}}, {"output": 1})'
+
+  # ============================================
   # Rotation: node 1 hands the writer set to node 2
   # ============================================
 
@@ -137,3 +214,40 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{node1_read_after_rotation}}, {"output": "post-rotation-from-node2"})'
+
+  # ============================================
+  # Adversarial (last — it deliberately diverges node 2, so nothing convergent
+  # may follow). The map's writer set is still {node 1}: `rotate_writers` only
+  # rotated the scalar register, not the map. So node 2 is a non-writer for the
+  # map. Its forged map write is applied locally but rejected by node 1 at merge,
+  # so node 1 never sees it (the nodes do NOT converge — that is the point, hence
+  # a fixed `wait` rather than `wait_for_sync`).
+  # ============================================
+
+  - name: Node 2 (non-writer for the map) forges a map write
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: map_set
+    args:
+      key: "evil"
+      value: "forged"
+
+  - name: Let the forged delta attempt (and fail) to propagate
+    type: wait
+    seconds: 20
+
+  - name: Node 1 reads the entry the non-writer tried to set
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: map_get
+    args:
+      key: "evil"
+    outputs:
+      node1_evil_read: result
+
+  - name: Assert the non-writer's forged write did NOT reach node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_evil_read}}, {"output": null})'

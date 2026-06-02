@@ -314,6 +314,20 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         metadata.storage_type = wire_auth.clone();
     } else if let Some(ref existing) = existing_index {
         metadata.storage_type = existing.metadata.storage_type.clone();
+    } else if matches!(
+        leaf.metadata.crdt_type,
+        calimero_primitives::crdt::CrdtType::FrozenStorage
+    ) {
+        // New entity, no wire authorization, but the wire-carried `crdt_type`
+        // says this is Frozen storage. Frozen entities carry no authorization
+        // (content-addressed + immutable, so `wire_authorization_for` returns
+        // None), so without this they'd fall through to the `Public` default
+        // below. A peer that then receives the real `Frozen` entity via a delta
+        // would reject the `Public -> Frozen` storage-type change in
+        // `apply_action` ("Cannot change StorageType"), panicking the guest's
+        // frozen-value merge — the HC/LevelWise frozen-push split-brain. The
+        // `crdt_type` IS on the wire, so infer `Frozen` from it.
+        metadata.storage_type = StorageType::Frozen;
     }
 
     let action = if existing_index.is_some() {

@@ -929,7 +929,12 @@ pub(crate) async fn apply_authorized_state_delta(
     if !applied {
         let missing_result = delta_store_ref.get_missing_parents().await;
 
-        let cascade_outcome = execute_cascaded_events(
+        // `execute_cascaded_events` folds every failure into a `warn!` + `Ok`
+        // (see its doc comment), so this match-and-log is the policy, not the
+        // exception path. Crucially it is NOT `?`: a cascade error must never
+        // unwind `handle_state_delta` after the DAG has already been mutated —
+        // failed handlers keep their events in the DB for replay on next init.
+        let cascade_outcome = match execute_cascaded_events(
             &missing_result.cascaded_events,
             &node_clients,
             &context_id,
@@ -939,7 +944,18 @@ pub(crate) async fn apply_authorized_state_delta(
             Some(&delta_id),
             &delta_store_ref,
         )
-        .await?;
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                warn!(
+                    ?e,
+                    %context_id,
+                    "Cascade handler execution failed during missing-parent check; events stay in DB for next init"
+                );
+                CascadeOutcome::default()
+            }
+        };
         applied |= cascade_outcome.applied_current;
         handlers_already_executed |= cascade_outcome.handlers_executed_for_current;
 
@@ -998,7 +1014,10 @@ pub(crate) async fn apply_authorized_state_delta(
                     // and go through `execute_cascaded_events` exactly like
                     // the cascade path inside `get_missing_parents`.
                     if !peer_fetch_cascaded_events.is_empty() {
-                        let cascade_outcome = execute_cascaded_events(
+                        // Same log-and-continue policy as the missing-parent
+                        // cascade above: never let a cascade error propagate
+                        // and abort the request after the DAG is mutated.
+                        let cascade_outcome = match execute_cascaded_events(
                             &peer_fetch_cascaded_events,
                             &node_clients,
                             &context_id,
@@ -1008,7 +1027,18 @@ pub(crate) async fn apply_authorized_state_delta(
                             Some(&delta_id),
                             &delta_store_ref,
                         )
-                        .await?;
+                        .await
+                        {
+                            Ok(outcome) => outcome,
+                            Err(e) => {
+                                warn!(
+                                    ?e,
+                                    %context_id,
+                                    "Cascade handler execution failed during peer-fetch cascade; events stay in DB for next init"
+                                );
+                                CascadeOutcome::default()
+                            }
+                        };
                         applied |= cascade_outcome.applied_current;
                         handlers_already_executed |= cascade_outcome.handlers_executed_for_current;
                     }
@@ -1111,7 +1141,9 @@ pub(crate) async fn apply_authorized_state_delta(
         emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
     }
 
-    execute_cascaded_events(
+    // Same log-and-continue policy: a cascade failure here must not abort the
+    // handler after the main delta has already been applied and emitted.
+    if let Err(e) = execute_cascaded_events(
         &add_result.cascaded_events,
         &node_clients,
         &context_id,
@@ -1121,7 +1153,14 @@ pub(crate) async fn apply_authorized_state_delta(
         None,
         &delta_store_ref,
     )
-    .await?;
+    .await
+    {
+        warn!(
+            ?e,
+            %context_id,
+            "Cascade handler execution failed during dag cascade; events stay in DB for next init"
+        );
+    }
 
     // After successfully applying a remote delta, immediately broadcast our
     // updated root hash so lagging peers detect the divergence without waiting
@@ -1614,6 +1653,19 @@ async fn init_delta_store(
     })
 }
 
+/// Run the event handlers for a batch of cascaded deltas.
+///
+/// Error contract: every internal failure mode is deliberately downgraded to a
+/// `warn!` and folded into `Ok(..)` — an unavailable application skips and
+/// preserves the events for the next init, an undeserializable blob clears
+/// itself to avoid a permanent replay loop, and a handler that errors leaves
+/// its events in the DB (`mark_events_executed` is skipped) so the next restart
+/// replays it at-least-once. The handler-failure policy is log-and-continue;
+/// failures never unwind the caller. This function therefore returns `Ok` on
+/// every path today. The `Result` is retained so a genuinely fatal future error
+/// has somewhere to go, but callers must NOT use `?` to propagate it: doing so
+/// would abort delta handling *after* the DAG has already been mutated. Match
+/// and log instead.
 async fn execute_cascaded_events(
     cascaded_events: &[([u8; 32], Vec<u8>)],
     node_clients: &crate::NodeClients,
@@ -3242,7 +3294,10 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         node: node_client.clone(),
     };
 
-    execute_cascaded_events(
+    // Same log-and-continue policy: a cascade failure must not mask an
+    // otherwise-applied buffered delta. Failed handlers keep their events in
+    // the DB for replay on the next init.
+    if let Err(e) = execute_cascaded_events(
         &add_result.cascaded_events,
         &node_clients,
         &context_id,
@@ -3252,7 +3307,14 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         None,
         &delta_store,
     )
-    .await?;
+    .await
+    {
+        warn!(
+            ?e,
+            %context_id,
+            "Cascade handler execution failed during buffered delta replay; events stay in DB for next init"
+        );
+    }
 
     Ok(add_result.applied)
 }

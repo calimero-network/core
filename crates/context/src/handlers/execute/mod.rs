@@ -2,7 +2,6 @@ use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MetaRepository, MigrationsRepository, NamespaceRepository,
 };
 use std::borrow::Cow;
-use std::collections::btree_map;
 // Removed: NonZeroUsize (replaced with CausalDelta)
 use std::time::Instant;
 
@@ -48,7 +47,7 @@ use crate::error::ContextError;
 use crate::handlers::update_application::{
     create_storage_callbacks, update_application_id, update_application_with_migration,
 };
-use crate::ContextManager;
+use crate::{evict_application_if_full, ContextManager};
 use calimero_governance_store::metrics::ExecutionLabels;
 
 pub mod storage;
@@ -978,16 +977,21 @@ impl ContextManager {
                 return Ok(CachedOrBlob::Cached(cached.clone()));
             }
 
-            let app = match act.applications.entry(application_id) {
-                btree_map::Entry::Vacant(vacant) => {
-                    let Some(app) = act.node_client.get_application(&application_id)? else {
-                        bail!(ExecuteError::ApplicationNotInstalled { application_id });
-                    };
-
-                    vacant.insert(app)
-                }
-                btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
-            };
+            // Fetch on a cache miss *before* evicting (so a not-installed app
+            // never wastes an eviction), then cap the cache before inserting.
+            // This `get_module` path is the dominant `applications` insert site
+            // on a long-running node, so it must honour the cap too.
+            if !act.applications.contains_key(&application_id) {
+                let Some(app) = act.node_client.get_application(&application_id)? else {
+                    bail!(ExecuteError::ApplicationNotInstalled { application_id });
+                };
+                evict_application_if_full(&mut act.applications);
+                let _ = act.applications.insert(application_id, app);
+            }
+            let app = act
+                .applications
+                .get(&application_id)
+                .expect("application just inserted or already cached");
 
             let blob = app
                 .resolve_service_blob(service_name.as_deref())
@@ -1013,6 +1017,9 @@ impl ContextManager {
 
         let module_task = blob_task.and_then(move |cached_or_blob, act, _ctx| {
             let node_client = act.node_client.clone();
+            // Operator-configured limits, baked into the engine that compiles
+            // or deserializes the module here and applied at execution time.
+            let vm_limits = act.vm_limits;
 
             async move {
                 let mut blob = match cached_or_blob {
@@ -1035,8 +1042,10 @@ impl ContextManager {
                 let original_blob_id = blob.compiled;
 
                 if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled, None).await? {
-                    let module =
-                        unsafe { calimero_runtime::Engine::headless().from_precompiled(&compiled) };
+                    let module = unsafe {
+                        calimero_runtime::Engine::headless_with_limits(vm_limits)
+                            .from_precompiled(&compiled)
+                    };
 
                     match module {
                         Ok(module) => {
@@ -1074,7 +1083,9 @@ impl ContextManager {
                 // Compile WASM in a blocking task to avoid blocking the async executor.
                 // Note: panics during compilation will surface as JoinError.
                 let module = global_runtime()
-                    .spawn_blocking(move || calimero_runtime::Engine::default().compile(&bytecode))
+                    .spawn_blocking(move || {
+                        calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
+                    })
                     .await
                     .wrap_err("WASM compilation task failed")? // JoinError (task panicked/cancelled)
                     ?; // Compilation error
@@ -2033,11 +2044,27 @@ pub(crate) fn persist_signed_signatures(
     // the user a chance to retry.
     let result: eyre::Result<()> = with_runtime_env(env, || {
         for action in actions {
-            let (id, storage_type) = match action {
+            let (id, storage_type, is_delete) = match action {
                 Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
-                    (*id, metadata.storage_type.clone())
+                    (*id, metadata.storage_type.clone(), false)
                 }
-                Action::DeleteRef { .. } | Action::Compare { .. } => continue,
+                // DeleteRef carries a real signature too (signed by
+                // `sign_authorized_actions`). Persist it onto the now-tombstoned
+                // index entry — `update_signature_in_place` RMWs the index, which
+                // survives the delete — so HashComparison can later ship a
+                // *verifiable* signed DeleteRef for the cleared entity (otherwise
+                // a User/Shared clear can't converge via HC, only via the delta
+                // stream). The tombstone's owner/writer set is unchanged by the
+                // delete, so the in-place patch's identity guard still matches.
+                // Marked `is_delete` so a persist failure is BEST-EFFORT (see
+                // the `Err` arm): unlike Add/Update, a missed tombstone
+                // signature only degrades HC clear-convergence — the deletion
+                // still propagates via the delta stream — so it must NOT abort
+                // the transaction.
+                Action::DeleteRef { id, metadata, .. } => {
+                    (*id, metadata.storage_type.clone(), true)
+                }
+                Action::Compare { .. } => continue,
             };
             // Only Shared/User with a REAL signature need the
             // re-persist. Public/Frozen don't carry signatures.
@@ -2077,6 +2104,21 @@ pub(crate) fn persist_signed_signatures(
                         %id,
                         "skipped signature persist — entity missing from local index \
                          (raced a delete?)"
+                    );
+                }
+                Err(e) if is_delete => {
+                    // BEST-EFFORT for deletes: a failed tombstone
+                    // signature-persist only means this DeleteRef can't
+                    // ship verifiably via HashComparison — the deletion
+                    // still converges via the delta stream. Never abort
+                    // the transaction over it (the strict path below is
+                    // for Add/Update, where a placeholder would make a
+                    // *live* entity unverifiable on peers).
+                    warn!(
+                        %id,
+                        error = ?e,
+                        "skipped persisting signed DeleteRef signature; HC clear-convergence \
+                         degraded for this entity (delta-stream propagation unaffected)"
                     );
                 }
                 Err(e) => {
