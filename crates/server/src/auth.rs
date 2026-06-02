@@ -10,7 +10,7 @@ use eyre::Result;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use mero_auth::embedded::{build_app, default_config, EmbeddedAuthApp};
-use mero_auth::AuthService;
+use mero_auth::{AuthError, AuthService};
 use tower::{Layer, Service};
 use tracing::{debug, info, warn};
 
@@ -19,10 +19,9 @@ use crate::config::ServerConfig;
 /// Build a 401 response, adding `X-Auth-Error: token_expired` if the error
 /// indicates an expired token. Centralises the logic so the Bearer and
 /// query-param paths stay in sync.
-fn unauthorized_response(err: &dyn std::fmt::Display) -> Response {
+fn unauthorized_response(err: &AuthError) -> Response {
     let mut resp = StatusCode::UNAUTHORIZED.into_response();
-    let msg = err.to_string();
-    if msg.contains("expired") {
+    if matches!(err, AuthError::TokenExpired) {
         resp.headers_mut()
             .insert("X-Auth-Error", "token_expired".parse().unwrap());
     }

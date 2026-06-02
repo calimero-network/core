@@ -35,6 +35,8 @@ pub enum AuthError {
     AuthorizationFailed(String),
     #[error("Invalid token: {0}")]
     InvalidToken(String),
+    #[error("Token has expired")]
+    TokenExpired,
     #[error("Storage error: {0}")]
     StorageError(String),
     #[error("Provider error: {0}")]

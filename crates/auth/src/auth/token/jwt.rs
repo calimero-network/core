@@ -326,9 +326,7 @@ impl TokenManager {
         ) {
             Ok(token_data) => Ok(token_data.claims),
             Err(err) => match err.kind() {
-                jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
-                    Err(AuthError::InvalidToken("Token has expired".to_string()))
-                }
+                jsonwebtoken::errors::ErrorKind::ExpiredSignature => Err(AuthError::TokenExpired),
                 jsonwebtoken::errors::ErrorKind::InvalidToken => {
                     Err(AuthError::InvalidToken(format!("Malformed token: {err}")))
                 }

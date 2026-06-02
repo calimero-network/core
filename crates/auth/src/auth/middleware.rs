@@ -91,7 +91,7 @@ pub async fn auth_middleware(
             let mut headers = HeaderMap::new();
 
             match err {
-                AuthError::InvalidToken(msg) if msg.contains("expired") => {
+                AuthError::TokenExpired => {
                     warn!(
                         "Token expired for {} {} (took {:?})",
                         method, path, duration
@@ -671,12 +671,12 @@ mod tests {
     #[tokio::test]
     async fn test_error_response_expired_token_format() {
         // Verify that expired token errors produce correct header format
-        let err = crate::AuthError::InvalidToken("Token has expired".to_string());
+        let err = crate::AuthError::TokenExpired;
 
         // Simulate middleware error handling
         let mut headers = HeaderMap::new();
         match &err {
-            crate::AuthError::InvalidToken(msg) if msg.contains("expired") => {
+            crate::AuthError::TokenExpired => {
                 headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
             }
             _ => {}
@@ -752,11 +752,9 @@ mod tests {
         // Test that different error types map to correct HTTP status codes
 
         // Expired token -> 401 Unauthorized
-        let expired_err = crate::AuthError::InvalidToken("Token has expired".to_string());
+        let expired_err = crate::AuthError::TokenExpired;
         let status = match &expired_err {
-            crate::AuthError::InvalidToken(msg) if msg.contains("expired") => {
-                StatusCode::UNAUTHORIZED
-            }
+            crate::AuthError::TokenExpired => StatusCode::UNAUTHORIZED,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -1021,22 +1019,19 @@ mod tests {
     }
 
     #[test]
-    fn test_expired_token_message_variations() {
-        // Test various messages that indicate expiration
-        let expired_messages = vec![
-            "Token has expired",
-            "expired",
-            "token expired",
-            "JWT expired",
-        ];
-
-        for msg in expired_messages {
-            let contains_expired = msg.to_lowercase().contains("expired");
-            assert!(
-                contains_expired,
-                "Message '{msg}' should be detected as expired"
-            );
-        }
+    fn test_expired_token_detected_by_variant_not_message() {
+        // Expiry is now identified by the dedicated `TokenExpired` variant, so
+        // detection no longer depends on the wording of any error message.
+        // A generic `InvalidToken` that merely mentions "expired" must NOT be
+        // treated as an expiry.
+        assert!(matches!(
+            crate::AuthError::TokenExpired,
+            crate::AuthError::TokenExpired
+        ));
+        assert!(!matches!(
+            crate::AuthError::InvalidToken("token expired".to_string()),
+            crate::AuthError::TokenExpired
+        ));
     }
 
     #[test]
