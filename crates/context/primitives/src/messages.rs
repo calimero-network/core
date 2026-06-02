@@ -130,18 +130,11 @@ pub enum ExecuteError {
     #[error("group key not yet delivered for context '{context_id}' — retry shortly")]
     GroupKeyPending { context_id: ContextId },
     /// The context belongs to a group whose cascade upgrade is currently
-    /// `InProgress`. **Writes** are refused until the propagator finishes
-    /// migrating every context in the group; otherwise a write could commit to
-    /// a mixed-version state where some contexts have already migrated and
-    /// others have not. **Reads remain available** (PR-5 / #2539 step 1): they
-    /// are served from the committed pre-migration root, so only mutating calls
-    /// hit this error. Write-intent is determined post-execution from whether
-    /// the call mutated state (`outcome.root_hash.is_some()`), since no
-    /// read-vs-write flag exists upstream. Surfaced as a transient retry-able
-    /// variant: the client should re-issue the write once the group's
-    /// `GroupUpgradeStatus` transitions to `Completed { .. }` (typically seconds
-    /// to low minutes for a healthy propagation, longer if `failed > 0` and
-    /// operator intervention is required via `retry_group_upgrade`).
+    /// `InProgress`. **Writes** are refused until migration completes (a write
+    /// could commit to a mixed-version state); **reads remain available**,
+    /// served from the pre-migration root, so only mutating calls hit this
+    /// error. Transient and retry-able: re-issue the write once the group's
+    /// `GroupUpgradeStatus` reaches `Completed { .. }`.
     ///
     /// PR-2 (cascade engine) chose group-level granularity over
     /// per-context-HLC gating to avoid coupling this gate to the

@@ -419,18 +419,15 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
 /// status without racing the propagator (whose internals may evolve)
 /// or depending on `propagate_upgrade` failing for the right reason.
 ///
-/// We exercise the state-op (`__calimero_sync_next`) path specifically:
-/// PR-5 (#2539 step 1) relaxed the gate so that *user calls* now execute
-/// during `InProgress` (reads are served from the pre-migration root, and
-/// only a *write* is refused post-execution). State-ops are writes by
-/// construction, so they remain refused **before** execution — which is the
-/// branch this test pins, deterministically and without loading a real WASM
-/// module (the fixture installs a dummy bytecode blob). A `context_client.execute`
-/// of `__calimero_sync_next` for the context in `G1` must surface
-/// `ExecuteError::UpgradeInProgress { group_id: g1 }`. (The user-call
+/// We exercise the state-op (`__calimero_sync_next`) path specifically: user
+/// calls now execute during `InProgress` (reads served, only writes refused
+/// post-execution), but state-ops are writes by construction and stay refused
+/// *before* execution — the branch this test pins, deterministically and
+/// without a real WASM module (the fixture installs a dummy blob). The
+/// `context_client.execute` of `__calimero_sync_next` for `G1` must surface
+/// `ExecuteError::UpgradeInProgress { group_id: g1 }`. (User-call
 /// read-allowed / write-refused behavior is covered by the
-/// `upgrade_rejects_committed_write` unit tests in `calimero-context` and the
-/// `21-reads-available-during-upgrade` merobox workflow, which run a real app.)
+/// `upgrade_rejects_committed_write` unit tests in `calimero-context`.)
 #[tokio::test]
 async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
     let node = boot_test_node().await;
