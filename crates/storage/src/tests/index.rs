@@ -1462,7 +1462,7 @@ mod verify_snapshot_entity_signature_tests {
 }
 
 /// Tests for `Interface::update_signature_in_place` API-boundary
-/// validation. Uses `MockedStorage<3008..3012>` — keep disjoint from
+/// validation. Uses `MockedStorage<3008..=3013>` — keep disjoint from
 /// `verify_ancestor_integrity_tests` (3001-3004) and
 /// `verify_snapshot_entity_signature_tests` (3005-3007).
 #[cfg(test)]
