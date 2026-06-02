@@ -2033,11 +2033,27 @@ pub(crate) fn persist_signed_signatures(
     // the user a chance to retry.
     let result: eyre::Result<()> = with_runtime_env(env, || {
         for action in actions {
-            let (id, storage_type) = match action {
+            let (id, storage_type, is_delete) = match action {
                 Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
-                    (*id, metadata.storage_type.clone())
+                    (*id, metadata.storage_type.clone(), false)
                 }
-                Action::DeleteRef { .. } | Action::Compare { .. } => continue,
+                // DeleteRef carries a real signature too (signed by
+                // `sign_authorized_actions`). Persist it onto the now-tombstoned
+                // index entry — `update_signature_in_place` RMWs the index, which
+                // survives the delete — so HashComparison can later ship a
+                // *verifiable* signed DeleteRef for the cleared entity (otherwise
+                // a User/Shared clear can't converge via HC, only via the delta
+                // stream). The tombstone's owner/writer set is unchanged by the
+                // delete, so the in-place patch's identity guard still matches.
+                // Marked `is_delete` so a persist failure is BEST-EFFORT (see
+                // the `Err` arm): unlike Add/Update, a missed tombstone
+                // signature only degrades HC clear-convergence — the deletion
+                // still propagates via the delta stream — so it must NOT abort
+                // the transaction.
+                Action::DeleteRef { id, metadata, .. } => {
+                    (*id, metadata.storage_type.clone(), true)
+                }
+                Action::Compare { .. } => continue,
             };
             // Only Shared/User with a REAL signature need the
             // re-persist. Public/Frozen don't carry signatures.
@@ -2077,6 +2093,21 @@ pub(crate) fn persist_signed_signatures(
                         %id,
                         "skipped signature persist — entity missing from local index \
                          (raced a delete?)"
+                    );
+                }
+                Err(e) if is_delete => {
+                    // BEST-EFFORT for deletes: a failed tombstone
+                    // signature-persist only means this DeleteRef can't
+                    // ship verifiably via HashComparison — the deletion
+                    // still converges via the delta stream. Never abort
+                    // the transaction over it (the strict path below is
+                    // for Add/Update, where a placeholder would make a
+                    // *live* entity unverifiable on peers).
+                    warn!(
+                        %id,
+                        error = ?e,
+                        "skipped persisting signed DeleteRef signature; HC clear-convergence \
+                         degraded for this entity (delta-stream propagation unaffected)"
                     );
                 }
                 Err(e) => {

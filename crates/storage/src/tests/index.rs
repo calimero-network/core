@@ -1462,7 +1462,7 @@ mod verify_snapshot_entity_signature_tests {
 }
 
 /// Tests for `Interface::update_signature_in_place` API-boundary
-/// validation. Uses `MockedStorage<3008..3012>` — keep disjoint from
+/// validation. Uses `MockedStorage<3008..=3013>` — keep disjoint from
 /// `verify_ancestor_integrity_tests` (3001-3004) and
 /// `verify_snapshot_entity_signature_tests` (3005-3007).
 #[cfg(test)]
@@ -1472,8 +1472,9 @@ mod update_signature_in_place_tests {
     use calimero_primitives::identity::PublicKey;
 
     use crate::address::Id;
-    use crate::entities::{SignatureData, StorageType};
+    use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
     use crate::error::StorageError;
+    use crate::index::Index;
     use crate::interface::Interface;
     use crate::store::MockedStorage;
 
@@ -1595,6 +1596,64 @@ mod update_signature_in_place_tests {
         assert!(
             matches!(result, Ok(false)),
             "valid signed input on missing entity should return Ok(false); got {result:?}"
+        );
+    }
+
+    #[test]
+    fn patches_signature_on_tombstoned_entity() {
+        // Caveat-#2 mechanism: a signed `DeleteRef`'s signature must land on the
+        // (tombstoned) index entry so HashComparison can later ship a *verifiable*
+        // deletion for the cleared entity. The index survives the delete (only
+        // `Key::Entry` is removed), so `update_signature_in_place` patches it in
+        // place — which is what `persist_signed_signatures` now relies on for
+        // DeleteRef actions.
+        type S = MockedStorage<3013>;
+        let owner = PublicKey::from([0xCD; 32]);
+        let id = Id::new([0x25; 32]);
+
+        // Seed a User-owned entity in the index, then tombstone it. It starts
+        // with `signature_data: None` on purpose — that's the state a freshly
+        // `save_raw`-persisted entity is in before the signer runs. The patch
+        // below supplies `Some(real_sig)`; `update_signature_in_place`'s
+        // identity guard keys on the owner/writer set (unchanged here), NOT on
+        // whether `signature_data` was previously `Some`/`None`, so a
+        // None -> Some patch is the intended flow and is accepted.
+        let mut md = Metadata::new(1, 1);
+        md.storage_type = StorageType::User {
+            owner,
+            signature_data: None,
+        };
+        <Index<S>>::add_root(ChildInfo::new(id, [0u8; 32], md)).expect("seed entity");
+        <Index<S>>::mark_deleted(id, 100).expect("tombstone");
+        assert!(
+            <Index<S>>::is_deleted(id).unwrap(),
+            "entity must be tombstoned before the patch"
+        );
+
+        // Patch the signed signature onto the tombstone.
+        let real_sig = [0xEF; 64];
+        let result = <Interface<S>>::update_signature_in_place(id, user_signed(owner, real_sig));
+        assert!(
+            matches!(result, Ok(true)),
+            "patch on a tombstoned entity should succeed; got {result:?}"
+        );
+
+        // The tombstone now carries the real signature for HashComparison to ship,
+        // and remains tombstoned.
+        let idx = <Index<S>>::get_index(id).unwrap().unwrap();
+        match idx.metadata.storage_type {
+            StorageType::User {
+                signature_data: Some(sd),
+                ..
+            } => assert_eq!(
+                sd.signature, real_sig,
+                "tombstone must retain the signed signature"
+            ),
+            other => panic!("expected User with signature, got {other:?}"),
+        }
+        assert!(
+            <Index<S>>::is_deleted(id).unwrap(),
+            "entity stays tombstoned after the signature patch"
         );
     }
 }
