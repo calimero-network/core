@@ -314,6 +314,28 @@ impl NodeState {
             .collect()
     }
 
+    /// Distinct `source_peer`s of the deltas currently buffered for
+    /// `context_id`, in first-seen order. Non-consuming.
+    ///
+    /// Used by the #2625 governance backfill to target the peers that
+    /// actually delivered the stuck deltas. Such a peer satisfied the delta's
+    /// governance position at send time, so it holds the full
+    /// `StoredNamespaceEntry::Signed` op (with the encrypted group payload) —
+    /// unlike an arbitrary namespace-topic subscriber, which may be a
+    /// non-member holding only the `Opaque` skeleton and would serve nothing
+    /// for the missing group op.
+    pub(crate) fn governance_pending_source_peers(&self, context_id: &ContextId) -> Vec<PeerId> {
+        let Some(entry) = self.governance_pending.get(context_id) else {
+            return Vec::new();
+        };
+        let mut seen = std::collections::HashSet::new();
+        entry
+            .iter()
+            .map(|d| d.source_peer)
+            .filter(|p| seen.insert(*p))
+            .collect()
+    }
+
     /// Check if we should buffer a delta (during snapshot sync).
     pub(crate) fn should_buffer_delta(&self, context_id: &ContextId) -> bool {
         self.sync_sessions
@@ -657,5 +679,59 @@ impl crate::sync::state_access::SyncStateAccess for NodeState {
 
     fn record_reconcile_failure(&self, context_id: ContextId) -> u32 {
         crate::sync::record_reconcile_failure(&self.reconcile_attempts, context_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_node_primitives::delta_buffer::BufferedDelta;
+    use calimero_primitives::hash::Hash;
+    use calimero_storage::logical_clock::HybridTimestamp;
+
+    use super::*;
+
+    fn buffered(id: u8, source_peer: PeerId) -> BufferedDelta {
+        BufferedDelta {
+            id: [id; 32],
+            parents: vec![],
+            hlc: HybridTimestamp::zero(),
+            payload: vec![],
+            nonce: [0u8; 12],
+            author_id: PublicKey::from([0u8; 32]),
+            root_hash: Hash::from([0u8; 32]),
+            events: None,
+            source_peer,
+            key_id: [0u8; 32],
+            governance_position: None,
+            delta_signature: None,
+            governance_drain_attempts: 0,
+            producing_app_key: None,
+        }
+    }
+
+    /// #2625: the backfill targets the peers that delivered the stuck deltas.
+    /// They must be distinct (one stream per peer) and in first-seen order
+    /// (try the earliest deliverer first).
+    #[test]
+    fn governance_pending_source_peers_dedups_and_preserves_order() {
+        let state = NodeState::new(false, NodeMode::Standard);
+        let ctx = ContextId::from([7u8; 32]);
+        let p1 = PeerId::random();
+        let p2 = PeerId::random();
+
+        // Deliveries p1, p2, p1 → distinct first-seen order [p1, p2].
+        state.buffer_governance_pending(ctx, buffered(1, p1));
+        state.buffer_governance_pending(ctx, buffered(2, p2));
+        state.buffer_governance_pending(ctx, buffered(3, p1));
+
+        assert_eq!(state.governance_pending_source_peers(&ctx), vec![p1, p2]);
+    }
+
+    #[test]
+    fn governance_pending_source_peers_empty_for_unknown_context() {
+        let state = NodeState::new(false, NodeMode::Standard);
+        assert!(state
+            .governance_pending_source_peers(&ContextId::from([9u8; 32]))
+            .is_empty());
     }
 }

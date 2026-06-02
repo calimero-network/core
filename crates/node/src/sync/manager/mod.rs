@@ -497,6 +497,22 @@ impl SyncManager {
         context_id: ContextId,
         peer_id: Option<PeerId>,
     ) -> eyre::Result<(PeerId, SyncProtocol)> {
+        // #2625: release any state deltas parked in the governance-pending
+        // buffer for this context before the regular context sync runs. The
+        // cross-DAG check buffers a state delta as `Unknown` when the
+        // namespace governance op its signed position references is missing
+        // locally; the buffer normally drains when that op arrives via
+        // gossip. But in a one-directional divergence the authoring peer
+        // already applied the op and never rebroadcasts it, and our own
+        // governance DAG never registers it as a missing parent (nothing
+        // local references it except the buffered delta) — so neither the
+        // gossip-apply drain nor `resolve_namespace_pending` (which gates on
+        // `namespace_has_pending`) ever fires, and the context root stays
+        // split-brain. Pulling the namespace governance DAG here lands the
+        // op and triggers the drain. Cheap when nothing is buffered.
+        self.backfill_governance_for_pending_deltas(context_id)
+            .await;
+
         if let Some(peer_id) = peer_id {
             return self.initiate_sync(context_id, peer_id).await;
         }
@@ -3233,7 +3249,7 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
 #[async_trait::async_trait(?Send)]
 impl super::driver::SyncDriverDispatch for SyncManager {
     async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) {
-        SyncManager::sync_namespace_from_peer(self, namespace_id).await
+        SyncManager::sync_namespace_from_peer(self, namespace_id, None).await
     }
 
     async fn initiate_namespace_join(
@@ -3481,6 +3497,94 @@ impl SyncManager {
             sync_timeout: self.sync_config.timeout,
         };
         crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
+    }
+
+    /// #2625: when `context_id` has state deltas parked in the
+    /// governance-pending buffer, proactively pull its namespace governance
+    /// DAG so the missing governance op lands and the buffered deltas drain.
+    ///
+    /// This closes the gap left by #2589: that fix drains the buffer *when a
+    /// governance op is applied* via sync, but here the op is never delivered
+    /// to us at all. The only local record that the op exists is the buffered
+    /// delta's `governance_position`; our governance DAG has no missing-parent
+    /// entry for it, so `resolve_namespace_pending` (which gates on
+    /// `namespace_has_pending`) is a no-op and never requests it. Actively
+    /// pulling the namespace DAG is what fetches the op; `sync_namespace_from_peer`
+    /// then calls `drain_governance_pending_after_sync` once any ops arrive.
+    ///
+    /// Peer selection matters: the missing op is almost always an *encrypted
+    /// group op*, and only a group **member** stores it as a full
+    /// `StoredNamespaceEntry::Signed` (a non-member namespace subscriber holds
+    /// only the `Opaque` skeleton and serves nothing for it). So we target the
+    /// peers that actually delivered the stuck deltas first — they satisfied
+    /// the delta's governance position at send time, hence hold the `Signed`
+    /// op — and only fall back to an arbitrary mesh peer if that didn't drain
+    /// the buffer (e.g. the delta was relayed by a non-member).
+    ///
+    /// Gated on a non-empty buffer (a cheap `DashMap` length read), so the
+    /// steady-state cost on every interval tick is one map lookup.
+    async fn backfill_governance_for_pending_deltas(&self, context_id: ContextId) {
+        if !should_backfill_governance(self.node_state.governance_pending_len(&context_id)) {
+            return;
+        }
+        let store = self.context_client.datastore_handle().into_inner();
+        let Some(namespace_id) = resolve_namespace_id(&store, &context_id) else {
+            debug!(
+                %context_id,
+                "governance-pending backfill: could not resolve namespace id; skipping (#2625)"
+            );
+            return;
+        };
+        drop(store);
+        debug!(
+            %context_id,
+            namespace_id = %hex::encode(namespace_id),
+            pending = self.node_state.governance_pending_len(&context_id),
+            "governance-pending backfill: pulling namespace governance DAG to release buffered deltas (#2625)"
+        );
+
+        // Prefer the peers that delivered the stuck deltas (likely group
+        // members holding the full `Signed` op). Stop as soon as the buffer
+        // drains so we don't open redundant streams.
+        for peer in self.node_state.governance_pending_source_peers(&context_id) {
+            if !should_backfill_governance(self.node_state.governance_pending_len(&context_id)) {
+                return;
+            }
+            self.sync_namespace_from_peer(namespace_id, Some(peer))
+                .await;
+        }
+
+        // Fallback: a non-member relay may have delivered the delta, so its
+        // source peer couldn't serve the op. Try the namespace mesh — but
+        // anyone can subscribe to the `ns/<id>` topic without being a member,
+        // so prefer trusted ANCHORS (peers we've observed signing applied
+        // messages with an Owner/Admin/ReadOnlyTee identity) over arbitrary
+        // subscribers, exactly like the regular context-sync partner picker.
+        //
+        // This is a *liveness* defense, not a safety one: a malicious or
+        // non-member subscriber cannot corrupt our governance state — every
+        // op is signature-verified in `apply_signed_op` before any mutation,
+        // is content-hash idempotent, and is nonce/DAG-ordered. The worst a
+        // bad peer can do is serve nothing or stale ops; anchor-first ordering
+        // just avoids wasting backfill rounds on such peers.
+        if should_backfill_governance(self.node_state.governance_pending_len(&context_id)) {
+            let topic =
+                libp2p::gossipsub::TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
+            let mut peers = self.sync_network.subscribed_peers(topic).await;
+            let _anchor_count = super::peers::partition_peers_anchor_first(
+                &mut peers,
+                &*self.state_access,
+                &self.anchor_identities_for_context(&context_id),
+            );
+            for peer in peers {
+                if !should_backfill_governance(self.node_state.governance_pending_len(&context_id))
+                {
+                    break;
+                }
+                self.sync_namespace_from_peer(namespace_id, Some(peer))
+                    .await;
+            }
+        }
     }
 
     /// Handle a namespace backfill request: look up full `SignedNamespaceOp`
@@ -4223,22 +4327,39 @@ impl SyncManager {
         )
     }
 
-    /// Pull all namespace governance ops from a mesh peer.
-    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) {
+    /// Pull all namespace governance ops from a peer.
+    ///
+    /// `peer = Some(p)` targets `p` explicitly; `None` picks the first mesh
+    /// peer subscribed to the namespace topic (the legacy behaviour). Callers
+    /// that know a group **member** should target it: only members store the
+    /// full [`StoredNamespaceEntry::Signed`] op (carrying the encrypted group
+    /// payload), so a non-member namespace subscriber holds only the
+    /// [`StoredNamespaceEntry::Opaque`] skeleton and `extract_signed_op`
+    /// returns `None` for it — backfilling from such a peer yields nothing for
+    /// group ops and would never release a governance-pending delta.
+    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32], peer: Option<PeerId>) {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
-        let topic =
-            libp2p::gossipsub::TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
-        let peers = self.sync_network.subscribed_peers(topic).await;
-        let Some(peer) = peers.first() else {
-            debug!(
-                namespace_id = %hex::encode(namespace_id),
-                "no mesh peers for namespace sync"
-            );
-            return;
+        let peer = match peer {
+            Some(p) => p,
+            None => {
+                let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
+                    "ns/{}",
+                    hex::encode(namespace_id)
+                ));
+                let peers = self.sync_network.subscribed_peers(topic).await;
+                let Some(p) = peers.first().copied() else {
+                    debug!(
+                        namespace_id = %hex::encode(namespace_id),
+                        "no mesh peers for namespace sync"
+                    );
+                    return;
+                };
+                p
+            }
         };
 
-        let Ok(mut stream) = self.sync_network.open_stream(*peer).await else {
+        let Ok(mut stream) = self.sync_network.open_stream(peer).await else {
             debug!("failed to open stream for namespace sync");
             return;
         };
@@ -4396,6 +4517,43 @@ impl SyncManager {
             }
         }
     }
+}
+
+/// Pure trigger predicate for the #2625 governance-pending backfill: the
+/// interval sync should pull the namespace governance DAG iff the context
+/// has at least one delta parked in the governance-pending buffer.
+///
+/// Extracted as a free function so the trigger condition is unit-testable
+/// without standing up a `SyncManager` + network stack — the regression we
+/// guard against is silently dropping the trigger (e.g. inverting the
+/// comparison), which would let a cross-DAG-buffered delta wedge a context
+/// into permanent split-brain again.
+const fn should_backfill_governance(pending_len: usize) -> bool {
+    pending_len > 0
+}
+
+/// Resolve the namespace-root id (bytes) that owns `context_id`, walking from
+/// the context's immediate owning group up to the namespace root. Returns
+/// `None` for non-group (legacy) contexts whose `ContextGroupRef` is absent,
+/// or on a namespace-resolution error.
+///
+/// Mirrors `ContextClient::get_context_group_id` (reads `ContextGroupRef`)
+/// followed by `NamespaceRepository::resolve`, but as a free function over
+/// `&Store` so it is unit-testable. Unlike the interval-sync fallback-topic
+/// closure it does NOT best-effort fall back to the immediate group id: the
+/// #2625 backfill must pull the *correct* namespace DAG, and a wrong id would
+/// silently fail to converge rather than fetch the missing governance op.
+fn resolve_namespace_id(store: &calimero_store::Store, context_id: &ContextId) -> Option<[u8; 32]> {
+    let handle = store.handle();
+    let group_id: [u8; 32] = handle
+        .get(&calimero_store::key::ContextGroupRef::new(*context_id))
+        .ok()??;
+    NamespaceRepository::new(store)
+        .resolve(&calimero_context_config::types::ContextGroupId::from(
+            group_id,
+        ))
+        .map(|id| id.to_bytes())
+        .ok()
 }
 
 mod namespace_join;
