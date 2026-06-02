@@ -1611,7 +1611,13 @@ mod update_signature_in_place_tests {
         let owner = PublicKey::from([0xCD; 32]);
         let id = Id::new([0x25; 32]);
 
-        // Seed a User-owned entity in the index, then tombstone it.
+        // Seed a User-owned entity in the index, then tombstone it. It starts
+        // with `signature_data: None` on purpose — that's the state a freshly
+        // `save_raw`-persisted entity is in before the signer runs. The patch
+        // below supplies `Some(real_sig)`; `update_signature_in_place`'s
+        // identity guard keys on the owner/writer set (unchanged here), NOT on
+        // whether `signature_data` was previously `Some`/`None`, so a
+        // None -> Some patch is the intended flow and is accepted.
         let mut md = Metadata::new(1, 1);
         md.storage_type = StorageType::User {
             owner,
