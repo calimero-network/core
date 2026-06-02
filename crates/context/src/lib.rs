@@ -198,11 +198,30 @@ fn evict_idle_context_if_full(contexts: &mut BTreeMap<ContextId, ContextMeta>) {
             let _ = contexts.remove(&id);
             tracing::debug!(context = %id, "evicted idle context from cache (at capacity)");
         }
-        None => tracing::debug!(
-            cap = MAX_CACHED_CONTEXTS,
-            len = contexts.len(),
-            "context cache at capacity but all entries live; deferring eviction"
-        ),
+        None => {
+            // Over-cap with every entry live is a *legitimate* designed state
+            // here (unlike the applications cap, which has no live-gating and
+            // can always drain to cap — hence its debug_assert). So we don't
+            // assert; instead we make a *significant* overage observable in
+            // production, since it signals sustained high concurrency on this
+            // node. The map drains back toward the cap as live ops finish and
+            // subsequent inserts each evict one freed entry.
+            let len = contexts.len();
+            if len > MAX_CACHED_CONTEXTS + MAX_CACHED_CONTEXTS / 10 {
+                tracing::warn!(
+                    cap = MAX_CACHED_CONTEXTS,
+                    len,
+                    "context cache significantly over capacity and all entries \
+                     live; deferring eviction (sustained high concurrency?)"
+                );
+            } else {
+                tracing::debug!(
+                    cap = MAX_CACHED_CONTEXTS,
+                    len,
+                    "context cache at capacity but all entries live; deferring eviction"
+                );
+            }
+        }
     }
 }
 
@@ -211,7 +230,14 @@ fn evict_idle_context_if_full(contexts: &mut BTreeMap<ContextId, ContextMeta>) {
 ///
 /// Application metadata carries no per-entry lock, so this is a plain
 /// first-entry-by-key-order eviction — identical to the compiled-`modules`
-/// cap. A no-op while below the cap.
+/// cap. Like that cap it is NOT usage-aware: `ApplicationId`s are hashes, so
+/// the lowest key is effectively random rather than "least useful", and an
+/// evicted entry is simply re-fetched from the node on next use. A no-op while
+/// below the cap.
+///
+/// Callers guard on `!contains_key(id)` before calling, and `pop_first` only
+/// removes a key already present, so the entry about to be inserted is never
+/// itself the victim.
 fn evict_application_if_full(applications: &mut BTreeMap<ApplicationId, Application>) {
     if applications.len() < MAX_CACHED_APPLICATIONS {
         return;
