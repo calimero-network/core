@@ -18,7 +18,7 @@ fi
 
 RUSTFLAGS="--remap-path-prefix $HOME=~" cargo build --target wasm32-unknown-unknown --profile "$PROFILE"
 
-cp $TARGET/wasm32-unknown-unknown/$PROFILE/scenario_identity_downgrade_v2.wasm ./res/
+cp "$TARGET/wasm32-unknown-unknown/$PROFILE/scenario_identity_downgrade_v2.wasm" ./res/
 
 if [ "$PROFILE" = "app-release" ] && command -v wasm-opt > /dev/null; then
   wasm-opt -Oz --enable-bulk-memory ./res/scenario_identity_downgrade_v2.wasm -o ./res/scenario_identity_downgrade_v2.wasm
