@@ -95,6 +95,11 @@ pub struct BatchAddResult {
     pub applied: Vec<[u8; 32]>,
     /// Input deltas still waiting on missing parents after the batch settled.
     pub pending: Vec<[u8; 32]>,
+    /// Input deltas whose `dag.add_delta` returned an error and were skipped.
+    /// These are neither applied nor pending (they may not be in the DAG at
+    /// all); they are re-fetched on the next sync. Kept distinct so callers
+    /// and metrics don't misreport a failed delta as pending.
+    pub failed: Vec<[u8; 32]>,
     /// (delta_id, events_data) for *pre-existing* pending deltas that this
     /// batch unblocked and whose handlers must run. Events carried by the
     /// batch inputs themselves are not forwarded here — they ride in the
@@ -1316,6 +1321,7 @@ impl DeltaStore {
         // suppress their re-fetch for the rest of the session. So we log and
         // skip the failing delta (it is re-fetched on the next sync) and keep
         // registering the rest, matching the old per-call skip-and-continue.
+        let mut failed_ids: HashSet<[u8; 32]> = HashSet::new();
         for (input, dag_delta) in inputs.iter().zip(dag_deltas) {
             if let Err(e) = dag.add_delta(dag_delta, &*self.applier).await {
                 warn!(
@@ -1324,6 +1330,7 @@ impl DeltaStore {
                     delta_id = ?input.delta.id,
                     "Skipping delta that failed to apply during batch; will re-fetch on next sync"
                 );
+                let _ = failed_ids.insert(input.delta.id);
             }
         }
 
@@ -1334,14 +1341,21 @@ impl DeltaStore {
         // Partition inputs by their FINAL state: an input that went pending
         // mid-batch but was unblocked by a later input is `is_applied` now, so
         // querying the settled DAG is the authoritative classification (the
-        // per-call return values are stale under within-batch cascades).
+        // per-call return values are stale under within-batch cascades). A
+        // delta that errored is neither applied nor pending — it may not be in
+        // the DAG at all — so it goes in its own `failed` bucket rather than
+        // being miscounted as pending.
         let mut applied_input_ids: Vec<[u8; 32]> = Vec::new();
         let mut pending_input_ids: Vec<[u8; 32]> = Vec::new();
         for input in &inputs {
-            if dag.is_applied(&input.delta.id) {
-                applied_input_ids.push(input.delta.id);
+            let id = input.delta.id;
+            if failed_ids.contains(&id) {
+                continue;
+            }
+            if dag.is_applied(&id) {
+                applied_input_ids.push(id);
             } else {
-                pending_input_ids.push(input.delta.id);
+                pending_input_ids.push(id);
             }
         }
 
@@ -1439,12 +1453,16 @@ impl DeltaStore {
 
         // Metrics — keep per-delta granularity so dashboards read the same as
         // the single path. Within-batch-unblocked inputs count as `applied`
-        // (their final state); only pre-existing pendings count as `cascaded`.
+        // (their final state); only pre-existing pendings count as `cascaded`;
+        // errored inputs count as `failed`, never `pending`.
         for _ in &applied_input_ids {
             crate::node_metrics::record_delta_outcome("applied");
         }
         for _ in &pending_input_ids {
             crate::node_metrics::record_delta_outcome("pending");
+        }
+        for _ in &failed_ids {
+            crate::node_metrics::record_delta_outcome("failed");
         }
         let cascade_size = cascaded_other_ids.len();
         if cascade_size > 0 {
@@ -1457,6 +1475,7 @@ impl DeltaStore {
         Ok(BatchAddResult {
             applied: applied_input_ids,
             pending: pending_input_ids,
+            failed: failed_ids.into_iter().collect(),
             forwarded_events,
         })
     }
