@@ -30,6 +30,7 @@ tower.workspace = true
 tower-http = { workspace = true, features = ["cors", "fs", "trace"] }
 tower-sessions = { workspace = true }
 tracing.workspace = true
+uuid = { version = "1.6", features = ["v4"] }
 
 borsh.workspace = true
 sha2.workspace = true
@@ -50,6 +51,11 @@ color-eyre.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["util"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# WebSocket integration tests (crates/server/src/ws.rs `mod tests`)
+tokio-tungstenite.workspace = true
+tempfile.workspace = true
+calimero-blobstore.workspace = true
+calimero-utils-actix.workspace = true
 
 [build-dependencies]
 bytes.workspace = true
