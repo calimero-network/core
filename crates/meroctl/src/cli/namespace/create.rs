@@ -20,16 +20,13 @@ pub struct CreateCommand {
     )]
     pub upgrade_policy: UpgradePolicyArg,
 
-    #[clap(long, help = "Deadline in seconds for coordinated upgrade policy")]
-    pub deadline_secs: Option<u64>,
-
     #[clap(long, help = "Optional human-readable name for the namespace")]
     pub name: Option<String>,
 }
 
 impl CreateCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let upgrade_policy = to_upgrade_policy(self.upgrade_policy, self.deadline_secs);
+        let upgrade_policy = to_upgrade_policy(self.upgrade_policy);
 
         let request = CreateNamespaceApiRequest {
             application_id: self.application_id,
