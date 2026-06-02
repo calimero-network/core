@@ -2004,4 +2004,36 @@ mod atomic_persist_tests {
             "delta A must not persist"
         );
     }
+
+    #[test]
+    fn store_batch_stages_until_commit_and_discards_on_drop() {
+        use calimero_store::StoreBatch;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let cid = ctx();
+
+        // Staged puts are invisible until commit.
+        let (key_a, rec_a) = delta_record(&cid, DELTA_A);
+        let mut batch = StoreBatch::new(&store);
+        batch.put(&key_a, &rec_a).expect("stage put");
+        assert!(
+            !has_delta(&store, &cid, DELTA_A),
+            "staged put must not be visible before commit"
+        );
+        batch.commit().expect("commit batch");
+        assert!(
+            has_delta(&store, &cid, DELTA_A),
+            "commit must persist staged puts"
+        );
+
+        // A batch dropped without commit writes nothing.
+        let (key_b, rec_b) = delta_record(&cid, DELTA_B);
+        let mut dropped = StoreBatch::new(&store);
+        dropped.put(&key_b, &rec_b).expect("stage put");
+        drop(dropped);
+        assert!(
+            !has_delta(&store, &cid, DELTA_B),
+            "dropped (uncommitted) batch must not persist"
+        );
+    }
 }
