@@ -297,7 +297,11 @@ impl ContextRegistry {
     /// failure leaves the pre-cascade state untouched, so the next sync
     /// replays cleanly.
     ///
-    /// `deltas` pairs each delta's storage key with the record to write.
+    /// `deltas` pairs each delta's storage key with the record to write. An
+    /// empty `deltas` slice is valid: the batch then carries only the
+    /// `dag_heads` update (still atomic), which is how a cascade with no
+    /// newly-applied deltas advances heads — the behaviour the standalone
+    /// [`update_dag_heads`] used to provide.
     ///
     /// [`update_dag_heads`]: Self::update_dag_heads
     pub fn persist_deltas_and_dag_heads(
@@ -312,24 +316,21 @@ impl ContextRegistry {
             eyre::bail!("Context not found: {}", context_id);
         };
         meta.dag_heads = dag_heads;
+        let dag_heads_count = meta.dag_heads.len();
 
-        // Encode every value up front. A serialization failure here aborts
-        // the batch before anything is written, preserving all-or-nothing.
-        let meta_bytes: Slice<'_> = borsh::to_vec(&meta)?.into();
-        let mut delta_values: Vec<Slice<'_>> = Vec::with_capacity(deltas.len());
-        for (_, record) in deltas {
-            delta_values.push(borsh::to_vec(record)?.into());
-        }
-
-        // Build the transaction over borrowed keys + owned value bytes, then
-        // commit it as one atomic write. `ContextDagDelta` lives in the
-        // `Delta` column and `ContextMeta` in `Meta`; a RocksDB `WriteBatch`
-        // is atomic across column families, so the heads update can't land
-        // without the deltas (or vice versa).
+        // Stage every put into one transaction, then commit it as a single
+        // atomic write. Values are encoded into owned byte slices as we go;
+        // a serialization failure aborts here, before `apply`, so nothing is
+        // written. `ContextDagDelta` lives in the `Delta` column and
+        // `ContextMeta` in `Meta`; a RocksDB `WriteBatch` is atomic across
+        // column families, so the heads update can't land without the deltas
+        // (or vice versa).
         let mut tx = Transaction::default();
-        for ((delta_key, _), value) in deltas.iter().zip(delta_values) {
+        for (delta_key, record) in deltas {
+            let value: Slice<'_> = borsh::to_vec(record)?.into();
             tx.put(delta_key, value);
         }
+        let meta_bytes: Slice<'_> = borsh::to_vec(&meta)?.into();
         tx.put(&meta_key, meta_bytes);
 
         self.datastore.apply(&tx)?;
@@ -337,7 +338,7 @@ impl ContextRegistry {
         tracing::debug!(
             %context_id,
             delta_count = deltas.len(),
-            dag_heads_count = meta.dag_heads.len(),
+            dag_heads_count,
             "Atomically persisted cascaded deltas and dag_heads"
         );
 
@@ -1734,6 +1735,7 @@ impl ContextClient {
 
 #[cfg(test)]
 mod atomic_persist_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     use calimero_primitives::application::ApplicationId;
@@ -1765,11 +1767,8 @@ mod atomic_persist_tests {
             heads,
             None,
         );
-        store
-            .clone()
-            .handle()
-            .put(&key, &meta)
-            .expect("seed context meta");
+        let mut handle = store.handle();
+        handle.put(&key, &meta).expect("seed context meta");
     }
 
     fn delta_record(
@@ -1831,9 +1830,17 @@ mod atomic_persist_tests {
     /// error (disk full, RocksDB I/O fault) at commit time. Every other
     /// operation delegates to a real in-memory backend, so seeding and
     /// assertions observe genuine state.
+    ///
+    /// Once `armed` is set, `put` also fails. The atomic persist path must
+    /// route all writes through `apply` (one transaction) — never a direct
+    /// `put` — so arming the backend before the call under test turns any
+    /// future regression that sneaks a stray `put` in ahead of the commit
+    /// into a hard test failure rather than a silently-passing one. Seeding
+    /// runs while disarmed.
     #[derive(Debug)]
     struct FailOnApply<D> {
         inner: D,
+        armed: Arc<AtomicBool>,
     }
 
     impl<'a, D: Database<'a>> Database<'a> for FailOnApply<D> {
@@ -1853,6 +1860,10 @@ mod atomic_persist_tests {
         }
 
         fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> EyreResult<()> {
+            assert!(
+                !self.armed.load(Ordering::SeqCst),
+                "atomic persist must not write via direct `put`; all writes go through `apply`"
+            );
             self.inner.put(col, key, value)
         }
 
@@ -1871,11 +1882,16 @@ mod atomic_persist_tests {
 
     #[test]
     fn failed_commit_leaves_pre_cascade_state() {
+        let armed = Arc::new(AtomicBool::new(false));
         let store = Store::new(Arc::new(FailOnApply {
             inner: InMemoryDB::owned(),
+            armed: Arc::clone(&armed),
         }));
         let cid = ctx();
         seed_meta(&store, &cid, vec![INITIAL_HEAD]);
+
+        // From here, any direct `put` is a bug — only `apply` may write.
+        armed.store(true, Ordering::SeqCst);
 
         let registry = ContextRegistry::new(store.clone());
         let deltas = [delta_record(&cid, DELTA_A), delta_record(&cid, DELTA_B)];
@@ -1887,6 +1903,8 @@ mod atomic_persist_tests {
             err.to_string().contains("injected apply failure"),
             "unexpected error: {err}"
         );
+
+        // Reads below are fine while armed (only `put` is gated).
 
         // All-or-nothing: neither delta nor the advanced heads landed.
         assert!(
