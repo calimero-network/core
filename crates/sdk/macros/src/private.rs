@@ -132,6 +132,7 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
 /// *ident* (not just the name) so the eventual `compile_error!` can be
 /// spanned right at the culprit type, and carry the `&'static` name so
 /// the diagnostic reuses the const string rather than re-allocating.
+///
 /// Read-only twin of `inject_private_storage`: a nested
 /// `Option<AuthoredVector<T>>` is caught just as a top-level field
 /// would be.
@@ -142,8 +143,9 @@ fn collect_private_incompatible<'t>(
     match ty {
         Type::Path(type_path) => {
             if let Some(last) = type_path.path.segments.last() {
-                let name = last.ident.to_string();
-                if let Some(entry) = PRIVATE_INCOMPATIBLE.iter().find(|(n, _)| *n == name) {
+                // `Ident: PartialEq<str>`, so match the name without
+                // allocating a `String` per path segment visited.
+                if let Some(entry) = PRIVATE_INCOMPATIBLE.iter().find(|(n, _)| last.ident == *n) {
                     // The whole field is already invalid — don't recurse
                     // into its type args, or `AuthoredVector<Counter>`
                     // would noisily report `Counter` too when the only
@@ -752,6 +754,14 @@ mod tests {
             .iter()
             .map(|(n, _)| *n)
             .collect();
+
+        // A duplicate name would double-report a single offender and
+        // would also be invisible to the set comparisons below.
+        assert_eq!(
+            incompatible.len(),
+            super::PRIVATE_INCOMPATIBLE.len(),
+            "PRIVATE_INCOMPATIBLE has duplicate entries"
+        );
         let excluded: std::collections::HashSet<&str> = EXCLUDED_CRDT_TYPES
             .iter()
             .chain(EXCLUDED_ACCESS_CONTROL_TYPES)
