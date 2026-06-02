@@ -1232,6 +1232,7 @@ dependencies = [
  "calimero-storage",
  "calimero-store",
  "calimero-utils-actix",
+ "calimero-wasm-abi",
  "either",
  "eyre",
  "futures-util",

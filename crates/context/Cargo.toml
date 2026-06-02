@@ -42,6 +42,7 @@ calimero-runtime.workspace = true
 calimero-storage.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-utils-actix.workspace = true
+calimero-wasm-abi.workspace = true
 
 [features]
 profiling = ["calimero-runtime/profiling"]
