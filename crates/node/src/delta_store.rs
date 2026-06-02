@@ -1303,8 +1303,24 @@ impl DeltaStore {
         // `add_delta` consumes the delta; clone it so we retain the body +
         // envelope to build each applied record after the batch settles. This
         // mirrors the payload/parents clone the single path already does.
+        //
+        // A per-delta apply error must NOT abort the whole chunk. The deltas
+        // that already applied are real and are persisted below — exactly as
+        // the single-delta catchup path persisted each success independently.
+        // `?`-propagating here instead would strand those already-applied,
+        // not-yet-persisted deltas in memory, where `has_delta` would then
+        // suppress their re-fetch for the rest of the session. So we log and
+        // skip the failing delta (it is re-fetched on the next sync) and keep
+        // registering the rest, matching the old per-call skip-and-continue.
         for input in &inputs {
-            let _ = dag.add_delta(input.delta.clone(), &*self.applier).await?;
+            if let Err(e) = dag.add_delta(input.delta.clone(), &*self.applier).await {
+                warn!(
+                    ?e,
+                    context_id = %self.applier.context_id,
+                    delta_id = ?input.delta.id,
+                    "Skipping delta that failed to apply during batch; will re-fetch on next sync"
+                );
+            }
         }
 
         let heads = dag.get_heads();
@@ -1330,8 +1346,17 @@ impl DeltaStore {
         // their author/gov/sig — the same lossy-but-acceptable treatment the
         // single path gives cascaded children (they keep whatever envelope was
         // pre-persisted when they first arrived as pending).
-        let cascaded_other_ids: Vec<[u8; 32]> =
-            pending_before.difference(&pending_after).copied().collect();
+        //
+        // Batch inputs are explicitly excluded: a delta can be both
+        // pre-existing-pending AND a re-fetched input (a duplicate), in which
+        // case it must be persisted once, as an envelope-preserving primary —
+        // not also via the envelope-nulling `applied_bodies` path.
+        let input_id_set: HashSet<[u8; 32]> = inputs.iter().map(|i| i.delta.id).collect();
+        let cascaded_other_ids: Vec<[u8; 32]> = pending_before
+            .difference(&pending_after)
+            .copied()
+            .filter(|id| !input_id_set.contains(id))
+            .collect();
         let cascaded_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = cascaded_other_ids
             .iter()
             .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
@@ -1384,9 +1409,16 @@ impl DeltaStore {
         // Commit applied inputs + unblocked pre-existing pendings + new heads
         // as one atomic batch. Only persist when something actually applied
         // (pending-only batches leave heads unchanged — same gate as the
-        // single path). A failed commit that carried applied inputs is fatal
-        // so the caller does not treat them as durable; cascade-only failures
-        // stay best-effort (the next sync corrects the heads).
+        // single path).
+        //
+        // If the commit carried applied inputs but did not land, return `Err`:
+        // the durable outcome is that those deltas did not happen (the DAG is
+        // ahead of the DB in memory, which a restart reconciles by rebuilding
+        // from the DB). The catchup caller (`flush_delta_batch`) treats that
+        // `Err` as warn-and-continue and relies on the next sync to re-fetch
+        // and re-apply — the same recovery the pre-batch per-delta path used
+        // when its `add_delta` returned an error. Cascade-only failures stay
+        // best-effort (the next sync corrects the heads).
         let forwarded_events: Vec<([u8; 32], Vec<u8>)> =
             if !primaries.is_empty() || !cascaded_bodies.is_empty() {
                 let primaries_present = !primaries.is_empty();
