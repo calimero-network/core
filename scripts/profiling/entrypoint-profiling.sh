@@ -17,18 +17,40 @@ EXIT_CODE=0
 mkdir -p "$PROFILING_OUTPUT_DIR"
 mkdir -p "${PROFILING_REPORTS_DIR:-/profiling/reports}"
 
+# Probe whether `perf` can actually record on this container. Hoisted to top
+# level so the build-time check (install_kernel_tools) and the runtime guard
+# (start_profiling) share one robust implementation instead of two divergent
+# copies.
+#
+# Profile a short `sleep 0.3`, NOT an instant `true`: at the sampling
+# frequency this captures enough samples for a usable perf to exit cleanly.
+# We decide on stderr CONTENT, not the raw exit code — profiling a
+# microsecond-lived workload makes the exit status depend on host load and
+# process ordering, which passed on the first-started, least-loaded node and
+# spuriously failed on the later, busier nodes even though perf was equally
+# usable on all of them. A kptr_restrict / perf_event_paranoid *warning*
+# about kernel-symbol resolution is benign; only a real perf_event_open or
+# kernel-tools failure is fatal.
+perf_sanity_check() {
+    local err rc
+    err=$(perf record -o /dev/null -- sleep 0.3 2>&1)
+    rc=$?
+    if printf '%s\n' "$err" | grep -qiE \
+        'operation not permitted|permission denied|perf_event_open|not found for kernel|no such file or directory|cannot (find|open|read)'; then
+        echo "[Profiling] perf sanity check failed (rc=$rc). Full stderr:"
+        printf '%s\n' "$err" | sed 's/^/[Profiling]   /'
+        return 1
+    fi
+    if [ "$rc" -ne 0 ]; then
+        echo "[Profiling] perf exited $rc with no fatal error; treating as usable. stderr:"
+        printf '%s\n' "$err" | sed 's/^/[Profiling]   /'
+    fi
+    return 0
+}
+
 install_kernel_tools() {
     local kernel_version=$(uname -r)
     echo "[Profiling] Detected kernel: $kernel_version"
-
-    perf_sanity_check() {
-        local err
-        err=$(perf record -o /dev/null -- true 2>&1)
-        if [ $? -eq 0 ]; then return 0; fi
-        echo "[Profiling] perf sanity check failed. First 5 lines of stderr:"
-        echo "$err" | head -5 | sed 's/^/[Profiling]   /'
-        return 1
-    }
 
     # Happy path: the Dockerfile pre-symlinks the generic perf at
     # /usr/local/bin/perf, which takes PATH precedence over Ubuntu's
@@ -75,8 +97,8 @@ start_profiling() {
         return
     fi
     
-    if ! perf record -o /dev/null -- true 2>/dev/null; then
-        echo "[Profiling] perf not compatible, skipping CPU profiling"
+    if ! perf_sanity_check; then
+        echo "[Profiling] perf not usable, skipping CPU profiling"
         return
     fi
     
