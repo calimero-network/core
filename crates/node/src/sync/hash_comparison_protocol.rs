@@ -1481,6 +1481,85 @@ mod tests {
         });
     }
 
+    /// A *new* Frozen entity pushed as a bare HC leaf must land as
+    /// `StorageType::Frozen`, not `Public`.
+    ///
+    /// Frozen entities carry no wire authorization (`wire_authorization_for`
+    /// returns None for Frozen), so before the fix a freshly-received frozen
+    /// leaf defaulted to `Public` (its `crdt_type` was set to `FrozenStorage`
+    /// but `storage_type` stayed `Public`). A later real `Frozen` delta then hit
+    /// `apply_action`'s guard with `existing=Public new=Frozen` →
+    /// `ActionNotAllowed("Cannot change StorageType")`, panicking the guest's
+    /// frozen-value merge (the HC/LevelWise frozen-push split-brain, #2591).
+    /// `apply_leaf_with_crdt_merge` now infers `Frozen` from the wire-carried
+    /// `crdt_type`.
+    #[test]
+    fn apply_leaf_new_frozen_entry_lands_as_frozen_not_public() {
+        use std::sync::Arc;
+
+        use calimero_node_primitives::sync::hash_comparison::{LeafMetadata, TreeLeafData};
+        use calimero_primitives::crdt::CrdtType;
+        use calimero_storage::action::Action;
+        use calimero_storage::entities::{Metadata, StorageType};
+        use calimero_storage::interface::ApplyContext;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+        use sha2::{Digest, Sha256};
+
+        use crate::sync::helpers::apply_leaf_with_crdt_merge;
+
+        let context_id = ContextId::from([0xCC; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(&store, context_id, identity);
+
+        let root_id = Id::new(*context_id.as_ref());
+        let frozen_id = Id::new([0x77u8; 32]);
+
+        // Frozen content-addressed blob: [key_hash(32)][value][element_id(32)].
+        let value = b"freshly-pushed-frozen".to_vec();
+        let key_hash: [u8; 32] = Sha256::digest(&value).into();
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&key_hash);
+        blob.extend_from_slice(&value);
+        blob.extend_from_slice(frozen_id.as_bytes());
+
+        with_runtime_env(runtime_env.clone(), || {
+            // Context root only — the frozen entity does NOT exist locally yet.
+            Interface::<MainStorage>::apply_action(
+                Action::Update {
+                    id: root_id,
+                    data: vec![],
+                    ancestors: vec![],
+                    metadata: Metadata::default(),
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("create root");
+
+            // A bare frozen leaf as HC ships it: crdt_type=FrozenStorage, the
+            // root as parent, and NO wire authorization (Frozen carries none).
+            let leaf = TreeLeafData::new(
+                *frozen_id.as_bytes(),
+                blob.clone(),
+                LeafMetadata::new(CrdtType::FrozenStorage, 100, *root_id.as_bytes())
+                    .with_parent(*root_id.as_bytes()),
+            );
+            apply_leaf_with_crdt_merge(context_id, &leaf).expect("apply new frozen leaf");
+
+            let md = Index::<MainStorage>::get_index(frozen_id)
+                .unwrap()
+                .expect("frozen entity should have been created")
+                .metadata;
+            assert!(
+                matches!(md.storage_type, StorageType::Frozen),
+                "new frozen leaf must land as Frozen, not {:?} — else a later Frozen \
+                 delta is rejected with Cannot change StorageType",
+                md.storage_type
+            );
+        });
+    }
+
     /// Characterization guard that isolates the `clear()` HashComparison
     /// split-brain to delete *propagation*, NOT resurrection.
     ///
