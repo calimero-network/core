@@ -455,6 +455,27 @@ impl E2eKvStore {
         Ok(())
     }
 
+    /// Test-only probe for the host-backed `tracing` subscriber.
+    ///
+    /// Emits one `tracing` event at each level and performs a KV insert so the
+    /// storage crate's *own* `tracing` output (e.g. `Interface::apply_action`,
+    /// `commit_root`) is exercised through the same path. When `debug` is set,
+    /// raises the level to DEBUG first so those lower-level lines pass the
+    /// filter. Driven by the runtime `tracing_logs` integration test; the
+    /// convergence tests never call it, keeping DEBUG spam out of them.
+    pub fn tracing_probe(&mut self, debug: bool) -> app::Result<()> {
+        if debug {
+            env::set_log_level(env::LevelFilter::DEBUG);
+        }
+        tracing::info!(probe = true, "tracing_probe: info line");
+        tracing::debug!(probe = true, "tracing_probe: debug line");
+        tracing::warn!("tracing_probe: warn line");
+        // Mutating storage drives the storage crate's internal `tracing`.
+        self.kv_items
+            .insert("probe_key".to_owned(), "probe_value".to_owned().into())?;
+        Ok(())
+    }
+
     /// KV set with handler triggers (for testing event-driven handlers)
     pub fn set_with_handler(&mut self, key: String, value: String) -> app::Result<()> {
         app::log!("Setting key with handler: {:?} to value: {:?}", key, value);
