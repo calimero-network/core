@@ -17,7 +17,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 tdx-quote.workspace = true
 url = { workspace = true, features = ["serde"] }
-uuid = { version = "1.6", features = ["v4"] }
 
 calimero-context-config.workspace = true
 calimero-context-client.workspace = true

@@ -16,8 +16,8 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::NodeEvent;
 use calimero_server_primitives::ws::{
-    Command, ConnectionId, Request as WsRequest, RequestPayload, Response, ResponseBody,
-    ResponseBodyError, ServerResponseError,
+    Command, Request as WsRequest, RequestPayload, Response, ResponseBody, ResponseBodyError,
+    ServerResponseError,
 };
 use eyre::Error as EyreError;
 use futures_util::stream::SplitSink;
@@ -36,6 +36,11 @@ use uuid::Uuid;
 mod execute;
 mod subscribe;
 mod unsubscribe;
+
+/// Globally unique identifier of a WebSocket client connection. Internal to the
+/// server (log correlation + connection-map key); never serialized to clients,
+/// so it lives here rather than in `calimero-server-primitives`.
+pub(crate) type ConnectionId = Uuid;
 
 /// WebSocket close codes (RFC 6455)
 /// https://datatracker.ietf.org/doc/html/rfc6455#section-7.4.1
@@ -479,11 +484,16 @@ async fn handle_text_message(
     // message back to its connection. The span propagates through every await
     // below, so downstream logs inherit all three without threading params.
     let request_id = Uuid::new_v4();
+    // `context_id`/`method` start empty and are recorded by the `execute`
+    // handler once the payload is parsed, so the shared `execute_request`'s
+    // downstream logs inherit them — matching the JSON-RPC `rpc_request` span.
     let span = info_span!(
         "ws_request",
         %connection_id,
         %request_id,
         client_id = field::Empty,
+        context_id = field::Empty,
+        method = field::Empty,
     );
 
     async move {
@@ -678,6 +688,10 @@ mod tests {
         state: Arc<ServiceState>,
         event_sender: broadcast::Sender<NodeEvent>,
         _blob_dir: TempDir,
+        // Kept so the serve task is aborted when the test ends rather than
+        // leaking, and so a panic in it isn't silently swallowed by an
+        // immediate `drop`.
+        _server: tokio::task::JoinHandle<()>,
     }
 
     async fn spawn_test_ws() -> TestServer {
@@ -729,14 +743,15 @@ mod tests {
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(tokio::spawn(async move {
+        let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
-        }));
+        });
 
         TestServer {
             url: format!("ws://{addr}/ws"),
             state,
             event_sender,
+            _server: server,
             _blob_dir: blob_dir,
         }
     }

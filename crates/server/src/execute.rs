@@ -34,7 +34,15 @@ pub(crate) async fn execute_request(
         let mut members = pin!(members);
         match members.next().await {
             Some(Ok((public_key, _))) => public_key,
-            _ => {
+            // Keep the "no owned identity" and "lookup failed" cases distinct so
+            // a store/network error during resolution isn't masked as a missing
+            // identity.
+            Some(Err(err)) => {
+                return Err(ExecutionError::FunctionCallError(format!(
+                    "Failed to resolve owned identity for this context: {err}"
+                )));
+            }
+            None => {
                 return Err(ExecutionError::FunctionCallError(
                     "No owned identity found for this context".to_string(),
                 ));
@@ -54,9 +62,9 @@ pub(crate) async fn execute_request(
         .await
         .map_err(ExecutionError::ExecuteError)?;
 
-    let x = outcome.logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
+    let log_index_width = outcome.logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
     for (i, log) in outcome.logs.iter().enumerate() {
-        info!("execution log {i:>x$}| {}", log);
+        info!("execution log {i:>log_index_width$}| {}", log);
     }
 
     let Some(returns) = outcome

@@ -1674,7 +1674,6 @@ dependencies = [
  "tdx-quote",
  "thiserror 1.0.69",
  "url",
- "uuid 1.21.0",
 ]
 
 [[package]]

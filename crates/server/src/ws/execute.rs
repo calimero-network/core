@@ -14,7 +14,7 @@
 use calimero_server_primitives::jsonrpc::ExecutionRequest;
 use calimero_server_primitives::validation::Validate;
 use calimero_server_primitives::ws::{ResponseBody, ResponseBodyError, ServerResponseError};
-use tracing::{error, info};
+use tracing::{error, field, info, Span};
 
 use crate::execute::execute_request;
 use crate::ws::ServiceState;
@@ -26,12 +26,15 @@ use crate::ws::ServiceState;
 pub(crate) async fn handle(state: &ServiceState, request: ExecutionRequest) -> ResponseBody {
     let validation_errors = request.validate();
     if !validation_errors.is_empty() {
-        let error_messages: Vec<String> =
-            validation_errors.iter().map(ToString::to_string).collect();
-        let message = if error_messages.len() == 1 {
-            error_messages.into_iter().next().unwrap_or_default()
-        } else {
-            format!("Validation errors: {}", error_messages.join("; "))
+        let message = match validation_errors.as_slice() {
+            [single] => single.to_string(),
+            many => format!(
+                "Validation errors: {}",
+                many.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
         };
 
         error!(errors = ?validation_errors, "Request validation failed");
@@ -41,21 +44,24 @@ pub(crate) async fn handle(state: &ServiceState, request: ExecutionRequest) -> R
         ));
     }
 
-    let context_id = request.context_id;
-    let method = request.method.clone();
+    // Promote the parsed identifiers onto the request span so the shared
+    // `execute_request`'s downstream logs carry them too (mirrors JSON-RPC).
+    let span = Span::current();
+    span.record("context_id", field::display(&request.context_id));
+    span.record("method", field::display(&request.method));
 
-    info!(%context_id, %method, "Received execution request");
+    info!("Received execution request");
 
     match execute_request(&state.ctx_client, request).await {
         Ok(response) => match serde_json::to_value(response) {
             Ok(value) => {
-                info!(%context_id, %method, "Request completed successfully");
+                info!("Request completed successfully");
                 ResponseBody::Result(value)
             }
             Err(err) => internal_error(err),
         },
         Err(err) => {
-            error!(%context_id, %method, ?err, "Request failed");
+            error!(?err, "Request failed");
             match serde_json::to_value(err) {
                 Ok(value) => ResponseBody::Error(ResponseBodyError::HandlerError(value)),
                 Err(err) => internal_error(err),

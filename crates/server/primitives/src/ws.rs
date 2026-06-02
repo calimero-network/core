@@ -5,10 +5,6 @@ use serde_json::Value;
 
 use crate::jsonrpc::ExecutionRequest;
 
-/// Client ID is a globally unique identifier of a WebSocket client connection.
-/// Internal-only (log correlation + connection-map key); never sent to clients,
-/// so widening it from a per-process counter to a UUID is non-breaking.
-pub type ConnectionId = uuid::Uuid;
 /// Request Id is a locally unique identifier of a WebSocket request.
 pub type RequestId = u64;
 
