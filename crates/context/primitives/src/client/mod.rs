@@ -354,6 +354,40 @@ impl ContextRegistry {
         Ok(())
     }
 
+    /// Atomically persist a batch of DAG-delta records in a single backend
+    /// write, *without* touching `dag_heads`.
+    ///
+    /// This is the sibling of [`persist_deltas_and_dag_heads`] for callers
+    /// that manage heads themselves (e.g. snapshot-boundary checkpoints,
+    /// whose heads are derived from the snapshot transfer). The batch is
+    /// all-or-nothing — a crash or I/O error can't leave a subset of the
+    /// records on disk while the rest are missing. An empty slice is a no-op.
+    ///
+    /// [`persist_deltas_and_dag_heads`]: Self::persist_deltas_and_dag_heads
+    pub fn persist_delta_records(
+        &self,
+        deltas: &[(key::ContextDagDelta, types::ContextDagDelta)],
+    ) -> eyre::Result<()> {
+        if deltas.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = Transaction::default();
+        for (delta_key, record) in deltas {
+            let value: Slice<'_> = borsh::to_vec(record)?.into();
+            tx.put(delta_key, value);
+        }
+
+        self.datastore.apply(&tx)?;
+
+        tracing::debug!(
+            delta_count = deltas.len(),
+            "Atomically persisted delta records"
+        );
+
+        Ok(())
+    }
+
     /// Updates the ApplicationId for a context.
     ///
     /// # Arguments
@@ -1093,6 +1127,14 @@ impl ContextClient {
     ) -> eyre::Result<()> {
         self.registry
             .persist_deltas_and_dag_heads(context_id, deltas, dag_heads)
+    }
+
+    /// See [`ContextRegistry::persist_delta_records`].
+    pub fn persist_delta_records(
+        &self,
+        deltas: &[(key::ContextDagDelta, types::ContextDagDelta)],
+    ) -> eyre::Result<()> {
+        self.registry.persist_delta_records(deltas)
     }
 
     /// Updates the ApplicationId for a context.
@@ -1925,6 +1967,41 @@ mod atomic_persist_tests {
             read_heads(&store, &cid),
             vec![INITIAL_HEAD],
             "heads must remain at pre-cascade value"
+        );
+    }
+
+    #[test]
+    fn persist_delta_records_is_all_or_nothing() {
+        let cid = ctx();
+
+        // Happy path: every record lands; no meta read/heads write involved.
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let registry = ContextRegistry::new(store.clone());
+        registry
+            .persist_delta_records(&[delta_record(&cid, DELTA_A), delta_record(&cid, DELTA_B)])
+            .expect("records persist");
+        assert!(has_delta(&store, &cid, DELTA_A), "delta A persisted");
+        assert!(has_delta(&store, &cid, DELTA_B), "delta B persisted");
+
+        // Failure path: a backend whose `apply` fails leaves nothing behind.
+        // Armed from the start — this method never reads or seeds, so no
+        // `put` should occur (all writes go through `apply`).
+        let armed = Arc::new(AtomicBool::new(true));
+        let failing = Store::new(Arc::new(FailOnApply {
+            inner: InMemoryDB::owned(),
+            armed: Arc::clone(&armed),
+        }));
+        let failing_registry = ContextRegistry::new(failing.clone());
+        let err = failing_registry
+            .persist_delta_records(&[delta_record(&cid, DELTA_A)])
+            .expect_err("commit must surface the backend failure");
+        assert!(
+            err.to_string().contains("injected apply failure"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !has_delta(&failing, &cid, DELTA_A),
+            "delta A must not persist"
         );
     }
 }
