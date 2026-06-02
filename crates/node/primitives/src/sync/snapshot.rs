@@ -76,100 +76,20 @@ pub const MAX_DAG_HEADS: usize = 100;
 pub const MAX_COMPRESSED_PAYLOAD_SIZE: usize = 8 * 1024 * 1024;
 
 // =============================================================================
-// Snapshot Boundary Types
+// Snapshot Record Types
 // =============================================================================
 
-/// Request to negotiate a snapshot boundary for sync.
-#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct SnapshotBoundaryRequest {
-    /// Context being synchronized.
-    pub context_id: ContextId,
+// Note: the snapshot boundary/stream/page request and response shapes live on
+// the wire protocol enums [`super::wire::InitPayload`] and
+// [`super::wire::MessagePayload`] (variants `SnapshotBoundaryRequest`,
+// `SnapshotBoundaryResponse`, `SnapshotStreamRequest`, `SnapshotPage`). The
+// message-side variants use `Cow<[u8]>` so pages can be borrowed zero-copy on
+// send, which standalone owned structs could not express — hence there are no
+// separate struct definitions here.
 
-    /// Optional hint for boundary timestamp (nanoseconds since epoch).
-    pub requested_cutoff_timestamp: Option<u64>,
-}
-
-/// Response to snapshot boundary negotiation.
-///
-/// Contains the authoritative boundary state that the responder will serve
-/// for the duration of this sync session.
-#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct SnapshotBoundaryResponse {
-    /// Authoritative boundary timestamp (nanoseconds since epoch).
-    pub boundary_timestamp: u64,
-
-    /// Root hash for the boundary state; must be verified after apply.
-    pub boundary_root_hash: Hash,
-
-    /// Peer's DAG heads at the boundary; used for fine-sync after snapshot.
-    pub dag_heads: Vec<[u8; 32]>,
-}
-
-impl SnapshotBoundaryResponse {
-    /// Check if response is within valid bounds.
-    ///
-    /// Call this after deserializing from untrusted sources.
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        self.dag_heads.len() <= MAX_DAG_HEADS
-    }
-}
-
-/// Request to stream snapshot pages.
-#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct SnapshotStreamRequest {
-    /// Context being synchronized.
-    pub context_id: ContextId,
-
-    /// Boundary root hash from the negotiated boundary.
-    pub boundary_root_hash: Hash,
-
-    /// Maximum number of pages to send in a burst.
-    pub page_limit: u16,
-
-    /// Maximum uncompressed bytes per page.
-    pub byte_limit: u32,
-
-    /// Optional cursor to resume paging.
-    pub resume_cursor: Option<Vec<u8>>,
-}
-
-impl SnapshotStreamRequest {
-    /// Get the validated byte limit.
-    ///
-    /// Clamps to MAX_SNAPSHOT_PAGE_SIZE to prevent memory exhaustion.
-    #[must_use]
-    pub fn validated_byte_limit(&self) -> u32 {
-        if self.byte_limit == 0 {
-            DEFAULT_SNAPSHOT_PAGE_SIZE
-        } else {
-            self.byte_limit.min(MAX_SNAPSHOT_PAGE_SIZE)
-        }
-    }
-}
-
-/// A page of snapshot data (raw bytes format).
-///
-/// The `payload` is an lz4-compressed sequence of borsh-encoded
-/// [`SnapshotRecord`]s (post #2387 wire-format redesign). The
-/// receiver decodes the page, verifies per-entity signatures via
-/// `Interface::verify_snapshot_entity_signature`, and writes
-/// authenticated records to its local store.
-#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct SnapshotPage {
-    /// Compressed payload (lz4).
-    pub payload: Vec<u8>,
-    /// Expected size after decompression.
-    pub uncompressed_len: u32,
-    /// Next cursor; `None` indicates completion.
-    pub cursor: Option<Vec<u8>>,
-    /// Total pages in this stream (estimate).
-    pub page_count: u64,
-    /// Pages sent so far.
-    pub sent_count: u64,
-}
-
-/// A single record inside a [`SnapshotPage`] payload.
+/// A single record inside a snapshot page payload (the lz4-compressed
+/// sequence of borsh-encoded records carried by
+/// [`super::wire::MessagePayload::SnapshotPage`]).
 ///
 /// Pre-#2387 the page payload was an opaque `(state_key, value)`
 /// stream where `state_key = sha256(discriminator || id)`. That
@@ -247,23 +167,6 @@ pub mod snapshot_record_kind {
     pub const SYNC_STATE: u8 = 2;
     /// `Key::RotationLog(id)` — per-entity writer rotation history.
     pub const ROTATION_LOG: u8 = 3;
-}
-
-impl SnapshotPage {
-    /// Check if this is the last page.
-    #[must_use]
-    pub fn is_last(&self) -> bool {
-        self.cursor.is_none()
-    }
-
-    /// Check if page is within valid bounds.
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        self.uncompressed_len <= MAX_SNAPSHOT_PAGE_SIZE
-            && self.page_count <= MAX_SNAPSHOT_PAGES as u64
-            && self.sent_count <= self.page_count
-            && self.payload.len() <= MAX_COMPRESSED_PAYLOAD_SIZE
-    }
 }
 
 /// Cursor for resuming snapshot pagination.
@@ -1166,145 +1069,6 @@ mod tests {
     }
 
     // =========================================================================
-    // SnapshotBoundaryResponse Tests
-    // =========================================================================
-
-    #[test]
-    fn test_snapshot_boundary_response_validation() {
-        // Valid response
-        let valid = SnapshotBoundaryResponse {
-            boundary_timestamp: 12345,
-            boundary_root_hash: Hash::default(),
-            dag_heads: vec![[1; 32], [2; 32]],
-        };
-        assert!(valid.is_valid());
-
-        // Invalid: too many DAG heads
-        let heads: Vec<[u8; 32]> = (0..=MAX_DAG_HEADS).map(|i| [i as u8; 32]).collect();
-        let invalid = SnapshotBoundaryResponse {
-            boundary_timestamp: 12345,
-            boundary_root_hash: Hash::default(),
-            dag_heads: heads,
-        };
-        assert!(!invalid.is_valid());
-    }
-
-    // =========================================================================
-    // SnapshotStreamRequest Tests
-    // =========================================================================
-
-    #[test]
-    fn test_snapshot_stream_request_byte_limit() {
-        // Zero returns default
-        let request = SnapshotStreamRequest {
-            context_id: ContextId::zero(),
-            boundary_root_hash: Hash::default(),
-            page_limit: 10,
-            byte_limit: 0,
-            resume_cursor: None,
-        };
-        assert_eq!(request.validated_byte_limit(), DEFAULT_SNAPSHOT_PAGE_SIZE);
-
-        // Normal value passes through
-        let request2 = SnapshotStreamRequest {
-            context_id: ContextId::zero(),
-            boundary_root_hash: Hash::default(),
-            page_limit: 10,
-            byte_limit: 100_000,
-            resume_cursor: None,
-        };
-        assert_eq!(request2.validated_byte_limit(), 100_000);
-
-        // Excessive value is clamped
-        let request3 = SnapshotStreamRequest {
-            context_id: ContextId::zero(),
-            boundary_root_hash: Hash::default(),
-            page_limit: 10,
-            byte_limit: u32::MAX,
-            resume_cursor: None,
-        };
-        assert_eq!(request3.validated_byte_limit(), MAX_SNAPSHOT_PAGE_SIZE);
-    }
-
-    // =========================================================================
-    // SnapshotPage Tests
-    // =========================================================================
-
-    #[test]
-    fn test_snapshot_page_is_last() {
-        let page_not_last = SnapshotPage {
-            payload: vec![1, 2, 3],
-            uncompressed_len: 100,
-            cursor: Some(vec![4, 5]),
-            page_count: 10,
-            sent_count: 5,
-        };
-        assert!(!page_not_last.is_last());
-
-        let page_is_last = SnapshotPage {
-            payload: vec![1, 2, 3],
-            uncompressed_len: 100,
-            cursor: None,
-            page_count: 10,
-            sent_count: 10,
-        };
-        assert!(page_is_last.is_last());
-    }
-
-    #[test]
-    fn test_snapshot_page_validation() {
-        // Valid page
-        let valid = SnapshotPage {
-            payload: vec![1, 2, 3],
-            uncompressed_len: 100,
-            cursor: None,
-            page_count: 10,
-            sent_count: 10,
-        };
-        assert!(valid.is_valid());
-
-        // Invalid: oversized uncompressed_len
-        let oversized = SnapshotPage {
-            payload: vec![1, 2, 3],
-            uncompressed_len: MAX_SNAPSHOT_PAGE_SIZE + 1,
-            cursor: None,
-            page_count: 10,
-            sent_count: 10,
-        };
-        assert!(!oversized.is_valid());
-
-        // Invalid: too many pages
-        let too_many = SnapshotPage {
-            payload: vec![1, 2, 3],
-            uncompressed_len: 100,
-            cursor: None,
-            page_count: MAX_SNAPSHOT_PAGES as u64 + 1,
-            sent_count: 10,
-        };
-        assert!(!too_many.is_valid());
-
-        // Invalid: sent_count > page_count
-        let invalid_sent = SnapshotPage {
-            payload: vec![1, 2, 3],
-            uncompressed_len: 100,
-            cursor: None,
-            page_count: 5,
-            sent_count: 10,
-        };
-        assert!(!invalid_sent.is_valid());
-
-        // Invalid: oversized compressed payload
-        let oversized_payload = SnapshotPage {
-            payload: vec![0u8; MAX_COMPRESSED_PAYLOAD_SIZE + 1],
-            uncompressed_len: 100,
-            cursor: None,
-            page_count: 10,
-            sent_count: 10,
-        };
-        assert!(!oversized_payload.is_valid());
-    }
-
-    // =========================================================================
     // Boundary Condition Tests
     // =========================================================================
 
@@ -1361,29 +1125,6 @@ mod tests {
         assert!(!over_limit.is_valid());
     }
 
-    #[test]
-    fn test_snapshot_page_at_size_limit() {
-        // Exactly at MAX_SNAPSHOT_PAGE_SIZE - should be valid
-        let at_limit = SnapshotPage {
-            payload: vec![1, 2, 3],
-            uncompressed_len: MAX_SNAPSHOT_PAGE_SIZE,
-            cursor: None,
-            page_count: 10,
-            sent_count: 10,
-        };
-        assert!(at_limit.is_valid());
-
-        // One byte over - should be invalid
-        let over_limit = SnapshotPage {
-            payload: vec![1, 2, 3],
-            uncompressed_len: MAX_SNAPSHOT_PAGE_SIZE + 1,
-            cursor: None,
-            page_count: 10,
-            sent_count: 10,
-        };
-        assert!(!over_limit.is_valid());
-    }
-
     // =========================================================================
     // Security / Exploit Prevention Tests
     // =========================================================================
@@ -1393,19 +1134,6 @@ mod tests {
         // Attempt to request extremely large page size - should be clamped
         let request = SnapshotRequest::compressed().with_max_page_size(u32::MAX);
         assert_eq!(request.validated_page_size(), MAX_SNAPSHOT_PAGE_SIZE);
-    }
-
-    #[test]
-    fn test_snapshot_stream_request_memory_exhaustion_prevention() {
-        // Attempt extremely large byte limit - should be clamped
-        let request = SnapshotStreamRequest {
-            context_id: ContextId::zero(),
-            boundary_root_hash: Hash::default(),
-            page_limit: u16::MAX,
-            byte_limit: u32::MAX,
-            resume_cursor: None,
-        };
-        assert_eq!(request.validated_byte_limit(), MAX_SNAPSHOT_PAGE_SIZE);
     }
 
     #[test]
@@ -1525,24 +1253,6 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_page_with_large_cursor_roundtrip() {
-        let page = SnapshotPage {
-            payload: vec![1; 1000],
-            uncompressed_len: 5000,
-            cursor: Some(vec![0xAB; 256]), // Large cursor
-            page_count: 1000,
-            sent_count: 500,
-        };
-        assert!(page.is_valid());
-
-        let encoded = borsh::to_vec(&page).expect("serialize");
-        let decoded: SnapshotPage = borsh::from_slice(&encoded).expect("deserialize");
-
-        assert_eq!(page, decoded);
-        assert!(!decoded.is_last());
-    }
-
-    #[test]
     fn test_snapshot_verify_result_all_variants_behavior() {
         // Test is_valid returns correctly for all variants
         assert!(SnapshotVerifyResult::Valid.is_valid());
@@ -1593,16 +1303,6 @@ mod tests {
         let complete = SnapshotComplete::new([1; 32], 100, 1, 1000);
         assert!(complete.dag_heads.is_empty());
         assert!(complete.is_valid());
-    }
-
-    #[test]
-    fn test_snapshot_boundary_response_empty_dag_heads() {
-        let response = SnapshotBoundaryResponse {
-            boundary_timestamp: 12345,
-            boundary_root_hash: Hash::default(),
-            dag_heads: vec![],
-        };
-        assert!(response.is_valid());
     }
 
     #[test]
@@ -1673,29 +1373,5 @@ mod tests {
 
         assert_eq!(cursor, decoded);
         assert_eq!(decoded.last_key, [0xAB; 32]);
-    }
-
-    #[test]
-    fn test_snapshot_boundary_request_roundtrip() {
-        let request = SnapshotBoundaryRequest {
-            context_id: ContextId::zero(),
-            requested_cutoff_timestamp: Some(1234567890),
-        };
-
-        let encoded = borsh::to_vec(&request).expect("serialize");
-        let decoded: SnapshotBoundaryRequest = borsh::from_slice(&encoded).expect("deserialize");
-
-        assert_eq!(request, decoded);
-        assert_eq!(decoded.requested_cutoff_timestamp, Some(1234567890));
-
-        // Also test with None
-        let request_none = SnapshotBoundaryRequest {
-            context_id: ContextId::zero(),
-            requested_cutoff_timestamp: None,
-        };
-        let encoded = borsh::to_vec(&request_none).expect("serialize");
-        let decoded: SnapshotBoundaryRequest = borsh::from_slice(&encoded).expect("deserialize");
-        assert_eq!(request_none, decoded);
-        assert!(decoded.requested_cutoff_timestamp.is_none());
     }
 }
