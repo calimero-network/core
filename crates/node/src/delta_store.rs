@@ -2309,27 +2309,29 @@ impl DeltaStore {
             // Create a proper checkpoint delta using the architecture-defined constructor
             let checkpoint = CausalDelta::checkpoint(head_id, boundary_root_hash);
 
-            // Restore the checkpoint to the DAG (marks it as applied)
+            // Serialize BEFORE inserting into the DAG. A checkpoint must be
+            // persisted so peers can request it during delta sync (a peer
+            // asking for a delta whose parent is this checkpoint would
+            // otherwise get "delta not found"). Serializing first means a
+            // failure skips both the DAG insertion and the persist, so the
+            // in-memory DAG never holds a checkpoint the DB will lack.
+            let serialized_actions = match borsh::to_vec(&checkpoint.payload) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(
+                        ?e,
+                        context_id = %self.applier.context_id,
+                        ?head_id,
+                        "Failed to serialize checkpoint payload; skipping checkpoint"
+                    );
+                    continue;
+                }
+            };
+
+            // Restore the checkpoint to the DAG (marks it as applied) and
+            // stage it for the atomic DB write below.
             if dag.restore_applied_delta(checkpoint.clone()) {
                 added_count += 1;
-
-                // Stage the checkpoint for the atomic DB write below, so peers
-                // can request it during delta sync. Without persistence, a peer
-                // requesting a delta whose parent is this checkpoint would get
-                // "delta not found". A serialization failure skips just this
-                // checkpoint (they're independent; no `dag_heads` rides on it).
-                let serialized_actions = match borsh::to_vec(&checkpoint.payload) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!(
-                            ?e,
-                            context_id = %self.applier.context_id,
-                            ?head_id,
-                            "Failed to serialize checkpoint payload"
-                        );
-                        continue;
-                    }
-                };
 
                 checkpoint_records.push((
                     calimero_store::key::ContextDagDelta::new(self.applier.context_id, head_id),
