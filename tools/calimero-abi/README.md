@@ -63,11 +63,18 @@ Example output for an unsafe downgrade:
 - The identity classification reuses the authoritative `collection_category`
   classifier from `calimero-wasm-abi`.
 
-### Intended CI use (follow-up)
+### CI use
 
-Wiring `diff` to run automatically against a real app's two builds — failing CI
-on a `BREAKING`-without-migration or an `UNSAFE_IDENTITY_DOWNGRADE`-without-override
-— is a follow-up. It needs a per-app *baseline* (the previous version's schema)
-and the `unsafe_strip_identity` override to exist (tracked with the
-`#[derive(Migrate)]` work). Today the tool is a standalone command; the unit and
-end-to-end tests in `src/diff.rs` and `tests/diff_cli.rs` validate its behaviour.
+A dedicated guard already runs in CI: the **`schema-downgrade-guard`** job in
+`.github/workflows/app-migration-e2e.yml` builds the `scenario-identity-downgrade-v1`
+(`AuthoredMap`) and `-v2` (`UnorderedMap`) crates, emits their real
+`state-schema.json`, runs `calimero-abi diff v2 v1`, and **fails the build** unless
+the tool exits `1` with an `UNSAFE_IDENTITY_DOWNGRADE` finding — proving the lint
+catches a real, emitter-produced downgrade.
+
+Generalising this to **every** app — diffing each build against its previous
+release's schema and failing on any `BREAKING`-without-migration or
+`UNSAFE_IDENTITY_DOWNGRADE`-without-override — is the remaining follow-up. It needs
+a per-app *baseline* (the previous version's schema) and the `unsafe_strip_identity`
+override to exist (tracked with the `#[derive(Migrate)]` work). The tool's behaviour
+is validated by the unit and end-to-end tests in `src/diff.rs` and `tests/diff_cli.rs`.
