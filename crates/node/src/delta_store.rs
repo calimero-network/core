@@ -1292,6 +1292,14 @@ impl DeltaStore {
             }
         }
 
+        // `add_delta` consumes the delta, and we retain `inputs` to build the
+        // applied records after the batch settles — so the DAG needs its own
+        // copies. Clone them HERE, before taking the write lock, to keep the
+        // payload allocations off the lock-hold window the batch exists to
+        // minimize. Mirrors the payload/parents clone the single path does.
+        let dag_deltas: Vec<CausalDelta<Vec<Action>>> =
+            inputs.iter().map(|i| i.delta.clone()).collect();
+
         // Phase 2: register every input into the DAG under one write lock.
         // `lock_start` is captured AFTER `.write().await` so we measure hold
         // time only, not acquire-wait (same rationale as add_delta_internal).
@@ -1300,10 +1308,6 @@ impl DeltaStore {
 
         let pending_before: HashSet<[u8; 32]> = dag.get_pending_delta_ids().into_iter().collect();
 
-        // `add_delta` consumes the delta; clone it so we retain the body +
-        // envelope to build each applied record after the batch settles. This
-        // mirrors the payload/parents clone the single path already does.
-        //
         // A per-delta apply error must NOT abort the whole chunk. The deltas
         // that already applied are real and are persisted below — exactly as
         // the single-delta catchup path persisted each success independently.
@@ -1312,8 +1316,8 @@ impl DeltaStore {
         // suppress their re-fetch for the rest of the session. So we log and
         // skip the failing delta (it is re-fetched on the next sync) and keep
         // registering the rest, matching the old per-call skip-and-continue.
-        for input in &inputs {
-            if let Err(e) = dag.add_delta(input.delta.clone(), &*self.applier).await {
+        for (input, dag_delta) in inputs.iter().zip(dag_deltas) {
+            if let Err(e) = dag.add_delta(dag_delta, &*self.applier).await {
                 warn!(
                     ?e,
                     context_id = %self.applier.context_id,
