@@ -13,7 +13,9 @@ use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
-use calimero_store::{key, Store};
+use calimero_store::slice::Slice;
+use calimero_store::tx::Transaction;
+use calimero_store::{key, types, Store};
 use calimero_utils_actix::LazyRecipient;
 use eyre::{ContextCompat, WrapErr};
 use futures_util::Stream;
@@ -276,6 +278,67 @@ impl ContextRegistry {
             %context_id,
             dag_heads_count = dag_heads.len(),
             "Updated dag_heads in database"
+        );
+
+        Ok(())
+    }
+
+    /// Atomically persist a batch of applied DAG-delta records together with
+    /// the context's updated `dag_heads`, in a single backend write batch.
+    ///
+    /// Either every delta record *and* the new `dag_heads` land, or none do.
+    /// A per-record `put` loop followed by a separate [`update_dag_heads`]
+    /// could be interrupted partway — a serialization slip, an I/O error, a
+    /// crash — leaving some cascaded deltas persisted as `applied: true`
+    /// while `dag_heads` stayed stale. On restart, the delta-load path would
+    /// miss the unpersisted deltas and the in-memory DAG and the DB could
+    /// diverge permanently for that context. Folding the whole set into one
+    /// [`Store::apply`] (a RocksDB `WriteBatch`) closes that window: a
+    /// failure leaves the pre-cascade state untouched, so the next sync
+    /// replays cleanly.
+    ///
+    /// `deltas` pairs each delta's storage key with the record to write.
+    ///
+    /// [`update_dag_heads`]: Self::update_dag_heads
+    pub fn persist_deltas_and_dag_heads(
+        &self,
+        context_id: &ContextId,
+        deltas: &[(key::ContextDagDelta, types::ContextDagDelta)],
+        dag_heads: Vec<[u8; 32]>,
+    ) -> eyre::Result<()> {
+        let meta_key = key::ContextMeta::new(*context_id);
+
+        let Some(mut meta) = self.datastore.handle().get(&meta_key)? else {
+            eyre::bail!("Context not found: {}", context_id);
+        };
+        meta.dag_heads = dag_heads;
+
+        // Encode every value up front. A serialization failure here aborts
+        // the batch before anything is written, preserving all-or-nothing.
+        let meta_bytes: Slice<'_> = borsh::to_vec(&meta)?.into();
+        let mut delta_values: Vec<Slice<'_>> = Vec::with_capacity(deltas.len());
+        for (_, record) in deltas {
+            delta_values.push(borsh::to_vec(record)?.into());
+        }
+
+        // Build the transaction over borrowed keys + owned value bytes, then
+        // commit it as one atomic write. `ContextDagDelta` lives in the
+        // `Delta` column and `ContextMeta` in `Meta`; a RocksDB `WriteBatch`
+        // is atomic across column families, so the heads update can't land
+        // without the deltas (or vice versa).
+        let mut tx = Transaction::default();
+        for ((delta_key, _), value) in deltas.iter().zip(delta_values) {
+            tx.put(delta_key, value);
+        }
+        tx.put(&meta_key, meta_bytes);
+
+        self.datastore.apply(&tx)?;
+
+        tracing::debug!(
+            %context_id,
+            delta_count = deltas.len(),
+            dag_heads_count = meta.dag_heads.len(),
+            "Atomically persisted cascaded deltas and dag_heads"
         );
 
         Ok(())
@@ -1011,6 +1074,20 @@ impl ContextClient {
         self.registry.update_dag_heads(context_id, dag_heads)
     }
 
+    /// Atomically persist a batch of applied DAG-delta records together with
+    /// the context's updated `dag_heads`, in a single backend write batch:
+    /// either all of it lands or none does, so a mid-write failure can't
+    /// leave persisted deltas pointing past stale heads.
+    pub fn persist_deltas_and_dag_heads(
+        &self,
+        context_id: &ContextId,
+        deltas: &[(key::ContextDagDelta, types::ContextDagDelta)],
+        dag_heads: Vec<[u8; 32]>,
+    ) -> eyre::Result<()> {
+        self.registry
+            .persist_deltas_and_dag_heads(context_id, deltas, dag_heads)
+    }
+
     /// Updates the ApplicationId for a context.
     pub fn update_context_application_id(
         &self,
@@ -1652,5 +1729,178 @@ impl ContextClient {
             .expect("Mailbox not to be dropped");
 
         receiver.await.expect("Mailbox not to be dropped")
+    }
+}
+
+#[cfg(test)]
+mod atomic_persist_tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::ContextId;
+    use calimero_storage::logical_clock::HybridTimestamp;
+    use calimero_store::config::StoreConfig;
+    use calimero_store::db::{Column, Database, InMemoryDB};
+    use calimero_store::iter::Iter;
+    use calimero_store::slice::Slice;
+    use calimero_store::tx::Transaction;
+    use calimero_store::{key, types, Store};
+    use eyre::Result as EyreResult;
+
+    use super::ContextRegistry;
+
+    const INITIAL_HEAD: [u8; 32] = [0x00; 32];
+    const DELTA_A: [u8; 32] = [0x11; 32];
+    const DELTA_B: [u8; 32] = [0x22; 32];
+
+    fn ctx() -> ContextId {
+        ContextId::from([0x07; 32])
+    }
+
+    fn seed_meta(store: &Store, context_id: &ContextId, heads: Vec<[u8; 32]>) {
+        let key = key::ContextMeta::new(*context_id);
+        let meta = types::ContextMeta::new(
+            key::ApplicationMeta::new(ApplicationId::from([0xAA; 32])),
+            [0u8; 32],
+            heads,
+            None,
+        );
+        store
+            .clone()
+            .handle()
+            .put(&key, &meta)
+            .expect("seed context meta");
+    }
+
+    fn delta_record(
+        context_id: &ContextId,
+        id: [u8; 32],
+    ) -> (key::ContextDagDelta, types::ContextDagDelta) {
+        let key = key::ContextDagDelta::new(*context_id, id);
+        let record = types::ContextDagDelta {
+            delta_id: id,
+            parents: Vec::new(),
+            actions: vec![1, 2, 3],
+            hlc: HybridTimestamp::zero(),
+            applied: true,
+            expected_root_hash: [0u8; 32],
+            events: None,
+            author_id: None,
+            governance_position_blob: None,
+            delta_signature: None,
+        };
+        (key, record)
+    }
+
+    fn read_heads(store: &Store, context_id: &ContextId) -> Vec<[u8; 32]> {
+        store
+            .handle()
+            .get(&key::ContextMeta::new(*context_id))
+            .expect("read meta")
+            .expect("meta present")
+            .dag_heads
+    }
+
+    fn has_delta(store: &Store, context_id: &ContextId, id: [u8; 32]) -> bool {
+        store
+            .handle()
+            .get(&key::ContextDagDelta::new(*context_id, id))
+            .expect("read delta")
+            .is_some()
+    }
+
+    #[test]
+    fn persists_all_deltas_and_heads_together() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let cid = ctx();
+        seed_meta(&store, &cid, vec![INITIAL_HEAD]);
+
+        let registry = ContextRegistry::new(store.clone());
+        let deltas = [delta_record(&cid, DELTA_A), delta_record(&cid, DELTA_B)];
+
+        registry
+            .persist_deltas_and_dag_heads(&cid, &deltas, vec![DELTA_B])
+            .expect("atomic persist succeeds");
+
+        assert!(has_delta(&store, &cid, DELTA_A), "delta A persisted");
+        assert!(has_delta(&store, &cid, DELTA_B), "delta B persisted");
+        assert_eq!(read_heads(&store, &cid), vec![DELTA_B], "heads advanced");
+    }
+
+    /// A [`Database`] whose `apply` always fails, simulating a backend write
+    /// error (disk full, RocksDB I/O fault) at commit time. Every other
+    /// operation delegates to a real in-memory backend, so seeding and
+    /// assertions observe genuine state.
+    #[derive(Debug)]
+    struct FailOnApply<D> {
+        inner: D,
+    }
+
+    impl<'a, D: Database<'a>> Database<'a> for FailOnApply<D> {
+        fn open(_config: &StoreConfig) -> EyreResult<Self>
+        where
+            Self: Sized,
+        {
+            unimplemented!("test-only backend is constructed directly")
+        }
+
+        fn has(&self, col: Column, key: Slice<'_>) -> EyreResult<bool> {
+            self.inner.has(col, key)
+        }
+
+        fn get(&self, col: Column, key: Slice<'_>) -> EyreResult<Option<Slice<'_>>> {
+            self.inner.get(col, key)
+        }
+
+        fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> EyreResult<()> {
+            self.inner.put(col, key, value)
+        }
+
+        fn delete(&self, col: Column, key: Slice<'_>) -> EyreResult<()> {
+            self.inner.delete(col, key)
+        }
+
+        fn iter(&self, col: Column) -> EyreResult<Iter<'_>> {
+            self.inner.iter(col)
+        }
+
+        fn apply(&self, _tx: &Transaction<'a>) -> EyreResult<()> {
+            eyre::bail!("injected apply failure")
+        }
+    }
+
+    #[test]
+    fn failed_commit_leaves_pre_cascade_state() {
+        let store = Store::new(Arc::new(FailOnApply {
+            inner: InMemoryDB::owned(),
+        }));
+        let cid = ctx();
+        seed_meta(&store, &cid, vec![INITIAL_HEAD]);
+
+        let registry = ContextRegistry::new(store.clone());
+        let deltas = [delta_record(&cid, DELTA_A), delta_record(&cid, DELTA_B)];
+
+        let err = registry
+            .persist_deltas_and_dag_heads(&cid, &deltas, vec![DELTA_B])
+            .expect_err("commit must surface the backend failure");
+        assert!(
+            err.to_string().contains("injected apply failure"),
+            "unexpected error: {err}"
+        );
+
+        // All-or-nothing: neither delta nor the advanced heads landed.
+        assert!(
+            !has_delta(&store, &cid, DELTA_A),
+            "delta A must not persist"
+        );
+        assert!(
+            !has_delta(&store, &cid, DELTA_B),
+            "delta B must not persist"
+        );
+        assert_eq!(
+            read_heads(&store, &cid),
+            vec![INITIAL_HEAD],
+            "heads must remain at pre-cascade value"
+        );
     }
 }

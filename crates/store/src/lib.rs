@@ -123,4 +123,14 @@ impl Store {
     ) -> EyreResult<Option<(Vec<u8>, Vec<u8>)>> {
         self.db.last_in_range(col, Slice::from(lo), Slice::from(hi))
     }
+
+    /// Atomically commit a multi-key [`Transaction`](tx::Transaction) as a
+    /// single backend write. On RocksDB this is one `WriteBatch`, so either
+    /// every put/delete in `tx` lands or none do — there is no state where
+    /// part of the batch is persisted. This is the primitive callers reach
+    /// for when several keys (possibly across columns) must move together,
+    /// e.g. cascade-delta records plus their context's `dag_heads`.
+    pub fn apply(&self, tx: &tx::Transaction<'_>) -> EyreResult<()> {
+        self.db.apply(tx)
+    }
 }
