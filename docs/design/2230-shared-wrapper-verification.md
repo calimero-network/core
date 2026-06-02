@@ -108,6 +108,48 @@ The wrapper's own rotation log already exists conceptually (it's the anchor #259
 will also point children at); this makes it the *authenticated* source of truth
 for the writer set.
 
+## 5a. Implementation recipe (the template exists: `Root<T>`)
+
+`Root<T>` (`collections/root.rs`) is *exactly* the handle shape to copy:
+
+```rust
+pub struct Root<T, S> {
+    inner: Collection<T, S>,           // value stored as ONE entry at a fixed id
+    #[borsh(skip)] value: RefCell<Option<T>>,  // lazy cache, loaded via inner.get(id)
+    #[borsh(skip)] dirty: bool,
+}
+// borsh(Root) == borsh(inner Collection) == just its Element (id + metadata).
+// The value T is NOT in the struct's borsh — it's a separate entity (the entry).
+```
+
+So `SharedStorage<T>` becomes:
+
+```rust
+pub struct SharedStorage<T, S> {
+    inner: Collection<T, S>,           // holds the single value entry, Shared-stamped
+    #[borsh(skip)] value: RefCell<Option<T>>,
+    #[borsh(skip)] frozen: bool,
+    // NO writers / writers_nonce fields — see below.
+}
+```
+
+- `get`/`get_mut` lazy-load the value entry (Root's `get()` pattern); `insert`
+  writes it back; the entry is `Shared{writers}` so writes are verified (#2588).
+- `borsh(SharedStorage) == borsh(inner) == its Element` ⇒ root state carries only
+  the id, no body. **No double-write.**
+
+### Where the writer set lives (the load-bearing detail)
+
+Do **not** keep `writers` inline, and do **not** rely on it riding in the inner
+`Collection`'s Element metadata — that metadata still travels in root state and is
+unverified, so a forged root-state delta could still swap it. Instead the writer
+set is **resolved from the wrapper entity's rotation log** via
+`rotation_log_reader::writers_at` (the verified, per-entity source of truth that
+#2588's child-entry verification already consults). `writers()` reads the log;
+`rotate_writers` appends a signed entry to the log (a verified per-entity action).
+This is what lets `writers_nonce` + the LWW merge be **deleted** — convergence is
+the log + ADR 0001, not nonce-LWW.
+
 ## 6. Risks
 
 - **Borsh/wire change** for how `SharedStorage` serializes into root state
