@@ -769,6 +769,75 @@ fn nested_counter_single_writer_syncs() {
     assert_converged("nested_counter_single", &roots);
 }
 
+// ---------------------------------------------------------------------------
+// Argument validation (core#1646): the macro-generated input struct now uses
+// serde `deny_unknown_fields`, so passing an argument a method does not declare
+// must fail loudly instead of being silently dropped.
+// ---------------------------------------------------------------------------
+
+/// Assert a call carrying an undeclared field fails with an "unknown field"
+/// deserialize error naming that field. Uses the same `run()` helper as every
+/// other test here (it bails when `outcome.returns` is `Err`, surfacing the
+/// app's deserialize panic), so no manual borrowing of `Cluster` internals.
+fn assert_unknown_field_rejected(c: &mut Cluster, method: &str, params: Value, field: &str) {
+    let module = c.module;
+    let err = run(module, &mut c.nodes[0], method, params)
+        .expect_err("call with an unknown argument must fail, not silently ignore it");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("unknown field") && msg.contains(field),
+        "expected an unknown-field deserialize error mentioning `{field}`, got: {msg}"
+    );
+}
+
+/// A multi-arg (`set`) and a single-arg (`add_frozen`) method each reject an
+/// extra field, while the same calls without it still succeed — i.e. the fix is
+/// not specific to multi-field input structs.
+#[test]
+fn unknown_argument_is_rejected() {
+    let mut c = Cluster::new(1);
+    let module = c.module;
+
+    assert_unknown_field_rejected(
+        &mut c,
+        "set",
+        json!({"key": "k", "value": "v", "bogus": "x"}),
+        "bogus",
+    );
+    assert_unknown_field_rejected(
+        &mut c,
+        "add_frozen",
+        json!({"value": "v", "bogus": "x"}),
+        "bogus",
+    );
+
+    // The declared arguments alone still deserialize and execute fine.
+    run(
+        module,
+        &mut c.nodes[0],
+        "set",
+        json!({"key": "k", "value": "v"}),
+    )
+    .expect("valid multi-arg call should run");
+    run(module, &mut c.nodes[0], "add_frozen", json!({"value": "v"}))
+        .expect("valid single-arg call should run");
+}
+
+/// KNOWN LIMITATION: a method with no declared arguments takes the
+/// `args.is_empty()` branch in the macro (`crates/sdk/macros/src/logic/method.rs`),
+/// which emits no input struct and never reads the payload — so extra JSON
+/// fields sent to it are still silently ignored, `deny_unknown_fields`
+/// notwithstanding. This test pins that behavior so a future change to the
+/// no-arg branch is a deliberate, reviewed decision rather than an accident.
+#[test]
+fn extra_fields_to_zero_arg_method_are_ignored() {
+    let mut c = Cluster::new(1);
+    let module = c.module;
+    // `entries` declares no arguments; the surplus field is not rejected.
+    run(module, &mut c.nodes[0], "entries", json!({"bogus": "x"}))
+        .expect("zero-arg method ignores its payload (documented limitation)");
+}
+
 #[test]
 fn unordered_set_single_writer_syncs() {
     let mut c = Cluster::new(3);
