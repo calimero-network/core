@@ -1296,3 +1296,30 @@ async fn test_prune_to_recent_below_threshold_is_noop() {
     assert!(pruned.is_empty());
     assert_eq!(dag.delta_count(), 3);
 }
+
+#[tokio::test]
+async fn test_prune_to_recent_never_prunes_pending() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // Applied chain 1 <- 2 <- 3 <- 4 <- 5 (head 5), plus an orphan [9] whose
+    // parent [8] never arrives so it stays pending.
+    for i in 1..=5u8 {
+        let parent = if i == 1 { [0; 32] } else { [i - 1; 32] };
+        let delta = CausalDelta::new_test([i; 32], vec![parent], TestPayload { value: i as u32 });
+        dag.add_delta(delta, &applier).await.unwrap();
+    }
+    let orphan = CausalDelta::new_test([9; 32], vec![[8; 32]], TestPayload { value: 9 });
+    dag.add_delta(orphan, &applier).await.unwrap();
+    assert_eq!(dag.pending_stats().count, 1);
+
+    // Retain only the 2 most-recent applied deltas; deep applied history is
+    // pruned but the pending orphan must be left alone.
+    let mut pruned = dag.prune_to_recent(2);
+    pruned.sort();
+    assert_eq!(pruned, vec![[1; 32], [2; 32], [3; 32]]);
+
+    // The pending delta survives so it can still resolve when [8;32] arrives.
+    assert_eq!(dag.pending_stats().count, 1);
+    assert!(dag.has_delta(&[9; 32]));
+}

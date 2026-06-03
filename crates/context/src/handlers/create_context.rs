@@ -26,7 +26,7 @@ use tracing::{debug, error, warn};
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
 use crate::handlers::execute::{persist_signed_signatures, sign_authorized_actions};
-use crate::{evict_application_if_full, evict_idle_context_if_full, ContextManager, ContextMeta};
+use crate::{BoundedCache, ContextManager, ContextMeta};
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -160,8 +160,8 @@ impl Prepared<'_> {
     fn new(
         node_client: &NodeClient,
         context_client: &ContextClient,
-        contexts: &mut BTreeMap<ContextId, ContextMeta>,
-        applications: &mut BTreeMap<ApplicationId, Application>,
+        contexts: &mut BoundedCache<ContextId, ContextMeta>,
+        applications: &mut BoundedCache<ApplicationId, Application>,
         seed: Option<[u8; 32]>,
         application_id: &ApplicationId,
         identity_secret: Option<PrivateKey>,
@@ -225,19 +225,16 @@ impl Prepared<'_> {
                 let fetched = node_client
                     .get_application(&effective_app_id)?
                     .ok_or_eyre("application not found")?;
-                evict_application_if_full(applications);
-                applications
-                    .entry(effective_app_id)
-                    .or_insert(fetched)
-                    .clone()
+                // Confirmed absent in the match arm above, so `insert_new`
+                // (which caps the cache) is safe.
+                applications.insert_new(effective_app_id, fetched).clone()
             }
         };
 
-        // Make room for the freshly created context. Placed after the
-        // membership/capability validation above (so failed auth never drains
-        // the cache) and immediately before the derivation loop that inserts.
-        evict_idle_context_if_full(contexts);
-
+        // The derivation loop below inserts via the raw `entry()` escape hatch
+        // (the VacantEntry transmute); `entry()` caps the cache itself, evicting
+        // one idle entry before admitting a new key, so no separate
+        // `evict_if_full()` is needed here.
         let mut context = None;
         for _ in 0..5 {
             let context_secret = if let Some(seed) = seed {
