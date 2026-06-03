@@ -408,3 +408,103 @@ mod metadata__schema_version {
         );
     }
 }
+
+/// Task 6c.2: per-entry dispatch predicate `needs_owner_convert`. Decides
+/// whether a stored entity is an IDENTITY-GATED entry whose stamped
+/// `schema_version` is older than the v2 binary's target — i.e. one that the
+/// owner's next signed write must convert. Pure classification only (NOT the
+/// convert itself, NOT the SDK schema_version constant).
+mod metadata__needs_owner_convert {
+    use super::*;
+    use crate::entities::needs_owner_convert;
+
+    /// A `PublicKey` for an entry owner / shared writer in the predicate tests.
+    fn key(byte: u8) -> PublicKey {
+        PublicKey::from([byte; 32])
+    }
+
+    /// `Metadata` stamped `User { owner }` with the given `schema_version`
+    /// (`None` ⇒ legacy/unmarked, treated as v0).
+    fn user_meta(schema: Option<u32>) -> Metadata {
+        let mut m = Metadata::new(1, 1);
+        m.storage_type = StorageType::User {
+            owner: key(0xAA),
+            signature_data: None,
+        };
+        m.schema_version = schema;
+        m
+    }
+
+    /// `Metadata` stamped `Shared { writers }` with the given `schema_version`.
+    fn shared_meta(schema: Option<u32>) -> Metadata {
+        let mut m = Metadata::new(1, 1);
+        m.storage_type = StorageType::Shared {
+            writers: [key(0xBB)].into_iter().collect(),
+            signature_data: None,
+        };
+        m.schema_version = schema;
+        m
+    }
+
+    /// `Metadata` stamped `SharedMember { anchor }` with the given
+    /// `schema_version`.
+    fn shared_member_meta(schema: Option<u32>) -> Metadata {
+        let mut m = Metadata::new(1, 1);
+        m.storage_type = StorageType::SharedMember {
+            anchor: Id::new([0xCC; 32]),
+            signature_data: None,
+        };
+        m.schema_version = schema;
+        m
+    }
+
+    #[test]
+    fn stale_identity_gated_entries_need_convert() {
+        // None (legacy v0) and an explicit older tag both trail target 2.
+        for build in [user_meta, shared_meta, shared_member_meta] {
+            assert!(
+                needs_owner_convert(&build(None), 2),
+                "legacy (None == v0) identity-gated entry trails target -> convert"
+            );
+            assert!(
+                needs_owner_convert(&build(Some(1)), 2),
+                "explicitly older identity-gated entry trails target -> convert"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_gated_at_or_above_target_does_not_convert() {
+        for build in [user_meta, shared_meta, shared_member_meta] {
+            assert!(
+                !needs_owner_convert(&build(Some(2)), 2),
+                "identity-gated entry already at target must not re-convert"
+            );
+            assert!(
+                !needs_owner_convert(&build(Some(3)), 2),
+                "identity-gated entry ahead of target must not convert"
+            );
+        }
+    }
+
+    #[test]
+    fn public_and_frozen_entries_never_convert() {
+        // Convergent / whole-root path owns these; the owner-driven predicate
+        // must ignore them regardless of (missing) schema tag.
+        let mut public = Metadata::new(1, 1);
+        public.storage_type = StorageType::Public;
+        assert!(!needs_owner_convert(&public, 2));
+
+        let mut frozen = Metadata::new(1, 1);
+        frozen.storage_type = StorageType::Frozen;
+        assert!(!needs_owner_convert(&frozen, 2));
+    }
+
+    #[test]
+    fn none_schema_version_is_treated_as_version_zero() {
+        // Even with target 1, an unmarked legacy identity-gated entry is stale.
+        assert!(needs_owner_convert(&user_meta(None), 1));
+        // ...but target 0 is not greater than the v0 floor, so no convert.
+        assert!(!needs_owner_convert(&user_meta(None), 0));
+    }
+}

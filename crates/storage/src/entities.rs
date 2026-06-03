@@ -621,6 +621,39 @@ impl Metadata {
     }
 }
 
+/// Per-entry dispatch predicate for identity-gated migration (PR-6c).
+///
+/// Returns `true` iff `metadata` describes an **identity-gated** entry
+/// (`StorageType::User` / `Shared` / `SharedMember` — the verifiable,
+/// owner/writer-signed storage types) whose stamped [`schema_version`] trails
+/// the v2 binary's `target_version`. Such an entry is eligible for an
+/// owner-driven convert: the owner's (or a current writer's) next ordinary
+/// signed write re-stamps it at `target_version` (Task 6c.3).
+///
+/// `None` schema versions are legacy/unmarked entries written before tagging
+/// existed; they are treated as version `0`, so any positive `target_version`
+/// counts them as stale.
+///
+/// `Public` / `Frozen` entries always return `false`: they are not
+/// identity-gated and are migrated by the Convergent whole-root path
+/// (PR-6a/6b), never by an owner re-write.
+///
+/// This is the *classification* predicate only — it decides *whether* an entry
+/// needs converting, not *how* (the per-type transform) nor *when* (the
+/// owner's write path).
+///
+/// [`schema_version`]: Metadata::schema_version
+#[must_use]
+pub fn needs_owner_convert(metadata: &Metadata, target_version: u32) -> bool {
+    let identity_gated = matches!(
+        metadata.storage_type,
+        StorageType::User { .. } | StorageType::Shared { .. } | StorageType::SharedMember { .. }
+    );
+
+    // `None` (legacy/unmarked) counts as version 0.
+    identity_gated && metadata.schema_version.unwrap_or(0) < target_version
+}
+
 // Metadata uses standard Borsh serialization via derive.
 // Breaking change: Old data without crdt_type/field_name fields will fail to deserialize.
 // This is intentional - we require fresh nodes with the new data format.
