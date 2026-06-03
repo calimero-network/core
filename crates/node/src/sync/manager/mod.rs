@@ -491,6 +491,25 @@ impl SyncManager {
             self.sync_config.interval,
         );
 
+        // PR-6b Task 6b.6: the AbsorbBuffer is durable (its own RocksDB column
+        // family), so a node that went down mid-migration-window may have
+        // persisted straggler deltas it could not yet read. Before the sync
+        // driver starts, re-consider those for drain — records the now-loaded
+        // reader can read are replayed verbatim and deleted; still-behind
+        // records are left in place for the live binary-advance drain hooks.
+        // Mirrors the `enumerate_in_progress` in-progress-upgrade crash
+        // recovery; a no-op when nothing is buffered.
+        let recovery_input = crate::handlers::state_delta::StateDeltaContext {
+            node_clients: crate::state::NodeClients {
+                context: self.context_client.clone(),
+                node: self.node_client.clone(),
+            },
+            node_state: self.node_state.clone(),
+            network_client: self.network_client.clone(),
+            sync_timeout: self.sync_config.timeout,
+        };
+        crate::handlers::state_delta::recover_absorbed_on_startup(&recovery_input).await;
+
         driver.run(&self).await;
     }
 

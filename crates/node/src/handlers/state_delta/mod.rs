@@ -708,6 +708,96 @@ pub(crate) async fn drain_all_absorbed(input: &StateDeltaContext) {
     }
 }
 
+/// Core startup-recovery mechanics, factored out so the enumerate-then-drain
+/// scan is unit-testable without a live WASM executor: `replay` is the same
+/// injection seam as [`drain_absorbed_records`] (the production startup hook
+/// passes [`apply_authorized_state_delta`]; tests pass a recording mock).
+///
+/// The AbsorbBuffer is durable (its own RocksDB column family), so any
+/// straggler delta persisted before a restart survives across the restart. A
+/// node that went down *mid-migration-window* — having absorbed deltas it
+/// could not yet read — must re-consider them on boot rather than leave them
+/// stranded. This enumerates **every** context with at least one pending
+/// absorb and, per context, runs [`drain_absorbed_records`]: records whose
+/// `producing_app_key` now matches the loaded reader are replayed verbatim and
+/// deleted, while still-behind records are left in place for the regular
+/// binary-advance drain hooks once the binary catches up to *their* schema.
+///
+/// Returns the total number of records successfully drained across all
+/// contexts. Mirrors the `enumerate_in_progress` crash-recovery shape.
+pub(crate) async fn recover_absorbed_records<F, Fut>(
+    store: &calimero_store::Store,
+    replay: F,
+) -> Result<usize>
+where
+    F: Fn(ContextId, calimero_node_primitives::delta_buffer::BufferedDelta) -> Fut + Clone,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    use calimero_context::group_store::AbsorbRepository;
+
+    let context_ids = AbsorbRepository::new(store).enumerate_all_contexts()?;
+    if context_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut total = 0usize;
+    for context_id in context_ids {
+        let replay = replay.clone();
+        total += drain_absorbed_records(store, &context_id, move |buffered| {
+            replay(context_id, buffered)
+        })
+        .await?;
+    }
+    Ok(total)
+}
+
+/// Startup recovery scan for the durable AbsorbBuffer (PR-6b Task 6b.6).
+///
+/// Called once during node boot — the absorb counterpart to the
+/// `enumerate_in_progress` in-progress-upgrade crash recovery
+/// ([`calimero_context::ContextManager::recover_in_progress_upgrades`]). A node
+/// that restarts mid-migration-window may have persisted straggler deltas into
+/// the AbsorbBuffer before going down; this re-considers each for drain so none
+/// is silently stranded across the restart. Records the loaded reader can now
+/// read are replayed verbatim (and deleted); still-behind records are left in
+/// place for the live binary-advance drain hooks
+/// ([`drain_all_absorbed`]). A no-op when nothing is buffered.
+///
+/// The per-record replay reuses the same verbatim-replay path the live
+/// binary-advance hooks use ([`apply_authorized_state_delta`]) — so a record
+/// persisted before the restart is reconstructed byte-identically and re-fed
+/// through `__calimero_sync_next` (no translation). The `context_id` each
+/// record belongs to comes from the enumeration key (a `BufferedDelta` does not
+/// carry it), so [`recover_absorbed_records`] enumerates contexts first and
+/// threads each `context_id` into the replay.
+pub(crate) async fn recover_absorbed_on_startup(input: &StateDeltaContext) {
+    let store = input.node_clients.context.datastore();
+    let recovered = recover_absorbed_records(store, |context_id, buffered| {
+        let input = input.clone();
+        async move {
+            let reconstructed = state_delta_message_from_buffered(buffered, context_id);
+            apply_authorized_state_delta(input, reconstructed).await?;
+            // `apply_authorized_state_delta` returns `Ok(())` for both an
+            // applied delta and a soft-declined one — either way the delta is
+            // consumed, so report success and let the record be deleted.
+            Ok::<bool, eyre::Report>(true)
+        }
+    })
+    .await;
+
+    match recovered {
+        Ok(0) => {}
+        Ok(n) => info!(
+            recovered = n,
+            "absorb recovery: replayed buffered straggler deltas verbatim on startup"
+        ),
+        Err(err) => warn!(
+            %err,
+            "absorb recovery: failed to scan absorb buffer on startup"
+        ),
+    }
+}
+
 /// Reconstruct a [`StateDeltaMessage`] from a [`BufferedDelta`] for re-apply
 /// from the governance-pending drain path. Mirrors the borsh decode in
 /// [`super::network_event::handle`] — every field that the network handler
@@ -2562,6 +2652,99 @@ mod tests {
             let pending = repo.enumerate_pending(&ctx).unwrap();
             assert_eq!(pending.len(), 1, "a failed-replay record must survive");
             assert_eq!((pending[0].1).id, [0xA1; 32]);
+        }
+
+        // ---- PR-6b Task 6b.6: startup recovery scan ----
+
+        use super::super::recover_absorbed_records;
+
+        /// On node startup the AbsorbBuffer is durable (RocksDB CF), so any
+        /// straggler delta persisted before a restart must be re-considered for
+        /// drain. The recovery scan enumerates *every* context with pending
+        /// absorbs and, for each, replays the records the now-loaded reader can
+        /// read (deleting them) while leaving still-behind records in place — a
+        /// restart mid-window must not lose buffered deltas.
+        #[tokio::test]
+        async fn startup_recovery_drains_readable_records_and_keeps_behind_ones() {
+            // The store's loaded reader falls back to GroupMeta.app_key = APP_V2.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+
+            // Persisted-before-restart, now readable: must drain on startup.
+            repo.save(&ctx, APP_V2, &sample_record([0xA1; 32], APP_V2))
+                .unwrap();
+            // Persisted-before-restart, still behind the loaded reader: must
+            // survive the startup scan untouched.
+            repo.save(&ctx, APP_V1, &sample_record([0xB2; 32], APP_V1))
+                .unwrap();
+
+            let replayed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<[u8; 32]>::new()));
+            let replayed_capture = replayed.clone();
+
+            let drained = recover_absorbed_records(&store, move |context_id, buffered| {
+                let replayed = replayed_capture.clone();
+                async move {
+                    // The recovery threads the right context to the replay.
+                    assert_eq!(context_id, ctx);
+                    // Verbatim: the recovery replay sees the original bytes.
+                    assert_eq!(buffered.payload, vec![1, 2, 3]);
+                    replayed.lock().unwrap().push(buffered.id);
+                    Ok::<bool, eyre::Report>(true)
+                }
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(drained, 1, "exactly the now-readable record drains on startup");
+            assert_eq!(
+                *replayed.lock().unwrap(),
+                vec![[0xA1; 32]],
+                "only the loaded-reader-matching record is replayed (verbatim)"
+            );
+
+            let pending = repo.enumerate_pending(&ctx).unwrap();
+            assert_eq!(
+                pending.len(),
+                1,
+                "the still-behind record must survive the startup scan"
+            );
+            assert_eq!((pending[0].1).id, [0xB2; 32]);
+        }
+
+        /// The startup scan is idempotent across two recovery calls (e.g. a
+        /// double-init or a quick restart): the already-drained record does not
+        /// re-replay and the surviving record stays put.
+        #[tokio::test]
+        async fn startup_recovery_is_idempotent_across_two_calls() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+            repo.save(&ctx, APP_V2, &sample_record([0xA1; 32], APP_V2))
+                .unwrap();
+            repo.save(&ctx, APP_V1, &sample_record([0xB2; 32], APP_V1))
+                .unwrap();
+
+            let noop =
+                |_ctx: ContextId, _buffered: BufferedDelta| async move { Ok::<bool, eyre::Report>(true) };
+
+            let first = recover_absorbed_records(&store, noop).await.unwrap();
+            assert_eq!(first, 1);
+            let second = recover_absorbed_records(&store, noop).await.unwrap();
+            assert_eq!(second, 0, "a second startup scan re-drains nothing");
+
+            let pending = repo.enumerate_pending(&ctx).unwrap();
+            assert_eq!(pending.len(), 1, "the still-behind record persists");
+            assert_eq!((pending[0].1).id, [0xB2; 32]);
+        }
+
+        /// With nothing buffered (the common case) the startup scan is a cheap
+        /// no-op and never panics.
+        #[tokio::test]
+        async fn startup_recovery_is_noop_when_nothing_buffered() {
+            let (store, _ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let noop =
+                |_ctx: ContextId, _buffered: BufferedDelta| async move { Ok::<bool, eyre::Report>(true) };
+            let drained = recover_absorbed_records(&store, noop).await.unwrap();
+            assert_eq!(drained, 0, "no contexts with pending absorbs ⇒ nothing drains");
         }
     }
 }
