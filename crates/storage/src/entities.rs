@@ -218,6 +218,7 @@ impl Element {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
             merkle_hash: [0; 32],
         }
@@ -237,6 +238,7 @@ impl Element {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name,
+                schema_version: None,
             },
             merkle_hash: [0; 32],
         }
@@ -260,6 +262,7 @@ impl Element {
                 storage_type: StorageType::Public,
                 crdt_type: Some(crdt_type),
                 field_name,
+                schema_version: None,
             },
             merkle_hash: [0; 32],
         }
@@ -278,6 +281,7 @@ impl Element {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
             merkle_hash: [0; 32],
         }
@@ -512,6 +516,16 @@ pub struct Metadata {
     /// - Enables schema inference from database without external schema file
     /// - None for legacy data or entities created without field name
     pub field_name: Option<String>,
+
+    /// Per-entry schema version tag for identity-gated migration (PR-6c).
+    ///
+    /// - Stamped on an identity-gated entry by its owner's next signed write
+    ///   under the v2 binary, so peers can detect a stale (un-migrated) entry.
+    /// - `None` indicates a legacy/unmarked entry (treated as version 0).
+    /// - **Merkle-invisible:** never folded into `own_hash`/`full_hash`
+    ///   (`own_hash = Sha256(value bytes)` only, `interface.rs`), so tagging an
+    ///   entry never diverges its leaf hash between peers.
+    pub schema_version: Option<u32>,
 }
 
 impl Metadata {
@@ -524,6 +538,7 @@ impl Metadata {
             storage_type: StorageType::default(),
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         }
     }
 
@@ -536,6 +551,7 @@ impl Metadata {
             storage_type: StorageType::default(),
             crdt_type: Some(crdt_type),
             field_name: None,
+            schema_version: None,
         }
     }
 
@@ -548,6 +564,7 @@ impl Metadata {
             storage_type: StorageType::default(),
             crdt_type: None,
             field_name: Some(field_name),
+            schema_version: None,
         }
     }
 
@@ -565,6 +582,7 @@ impl Metadata {
             storage_type: StorageType::default(),
             crdt_type: Some(crdt_type),
             field_name: Some(field_name),
+            schema_version: None,
         }
     }
 
@@ -583,6 +601,23 @@ impl Metadata {
     #[must_use]
     pub fn updated_at(&self) -> u64 {
         *self.updated_at
+    }
+
+    /// Stamps the per-entry schema version tag (identity-gated migration).
+    ///
+    /// Merkle-invisible: see [`Metadata::schema_version`].
+    #[must_use]
+    pub fn with_schema_version(mut self, version: u32) -> Self {
+        self.schema_version = Some(version);
+        self
+    }
+
+    /// Returns the per-entry schema version tag, if any.
+    ///
+    /// `None` indicates a legacy/unmarked entry (treated as version 0).
+    #[must_use]
+    pub const fn schema_version(&self) -> Option<u32> {
+        self.schema_version
     }
 }
 

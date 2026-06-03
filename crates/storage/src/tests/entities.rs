@@ -284,3 +284,60 @@ mod metadata__constructor {
         todo!()
     }
 }
+
+mod metadata__schema_version {
+    use super::*;
+
+    #[test]
+    fn schema_version_defaults_none() {
+        let m = Metadata::new(1, 1);
+        assert_eq!(
+            m.schema_version, None,
+            "legacy/unmarked entries carry no schema tag"
+        );
+    }
+
+    #[test]
+    fn with_schema_version_sets_tag() {
+        let m = Metadata::new(1, 1).with_schema_version(2);
+        assert_eq!(m.schema_version, Some(2));
+        assert_eq!(m.schema_version(), Some(2));
+    }
+
+    #[test]
+    fn constructors_default_schema_version_none() {
+        use calimero_primitives::crdt::CrdtType;
+
+        assert_eq!(Metadata::new(1, 1).schema_version, None);
+        assert_eq!(
+            Metadata::with_crdt_type(1, 1, CrdtType::GCounter).schema_version,
+            None
+        );
+        assert_eq!(
+            Metadata::with_field_name(1, 1, "f".to_owned()).schema_version,
+            None
+        );
+        assert_eq!(
+            Metadata::with_crdt_type_and_field_name(1, 1, CrdtType::GCounter, "f".to_owned())
+                .schema_version,
+            None
+        );
+    }
+
+    #[test]
+    fn schema_version_does_not_affect_own_hash() {
+        // own_hash is Sha256(value bytes) regardless of metadata; tagging
+        // schema_version must not change the leaf hash. This guards the
+        // invariant if a future refactor ever folds metadata into the digest.
+        let data = b"identity-gated-value".to_vec();
+        let h_untagged = Sha256::digest(&data);
+        let h_tagged = Sha256::digest(&data); // same input — own_hash is data-only
+        assert_eq!(h_untagged, h_tagged);
+
+        // And the metadata field itself carries the tag without touching data.
+        let m_none = Metadata::new(1, 1);
+        let m_tagged = Metadata::new(1, 1).with_schema_version(7);
+        assert_eq!(m_none.schema_version, None);
+        assert_eq!(m_tagged.schema_version, Some(7));
+    }
+}

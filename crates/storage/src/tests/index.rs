@@ -22,6 +22,7 @@ mod index__public_methods {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -37,6 +38,7 @@ mod index__public_methods {
                     storage_type: StorageType::Public,
                     crdt_type: None,
                     field_name: None,
+                    schema_version: None,
                 },
             )],
             metadata: Metadata {
@@ -45,6 +47,7 @@ mod index__public_methods {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -1005,7 +1008,8 @@ mod hashing {
 /// Validates that every field the mirror actually consumes round-trips
 /// correctly: `full_hash`, `own_hash`, and the children list including
 /// each child's `id`, `merkle_hash`, and metadata sub-fields
-/// (`created_at`, `updated_at`, `crdt_type`, `field_name`). If any
+/// (`created_at`, `updated_at`, `crdt_type`, `field_name`,
+/// `schema_version`). If any
 /// field is added/removed/reordered in the real types, this test fails
 /// and reminds the developer to update the mirror too.
 ///
@@ -1046,6 +1050,7 @@ mod minimal_struct_layout_compat {
         _storage_type: StorageTypeMinimal,
         crdt_type: Option<CrdtType>,
         field_name: Option<String>,
+        schema_version: Option<u32>,
     }
 
     #[derive(BorshDeserialize)]
@@ -1088,6 +1093,7 @@ mod minimal_struct_layout_compat {
                 storage_type,
                 crdt_type,
                 field_name,
+                schema_version: None,
             },
             deleted_at: Some(9999),
             deleted_children: Vec::new(),
@@ -1112,7 +1118,8 @@ mod minimal_struct_layout_compat {
 
         // Validate children round-trip if present: id, merkle_hash, and
         // the metadata sub-fields the mirror in `borsh_layout` actually
-        // reads (created_at, updated_at, crdt_type, field_name).
+        // reads (created_at, updated_at, crdt_type, field_name,
+        // schema_version).
         match (&minimal.children, &index.children) {
             (Some(decoded), Some(real)) => {
                 assert_eq!(
@@ -1139,6 +1146,10 @@ mod minimal_struct_layout_compat {
                         d.metadata.field_name, r.metadata.field_name,
                         "child metadata.field_name mismatch"
                     );
+                    assert_eq!(
+                        d.metadata.schema_version, r.metadata.schema_version,
+                        "child metadata.schema_version mismatch"
+                    );
                 }
             }
             (None, None) => {}
@@ -1163,6 +1174,7 @@ mod minimal_struct_layout_compat {
                 storage_type: StorageType::Public,
                 crdt_type: Some(CrdtType::GCounter),
                 field_name: Some("scores".to_owned()),
+                schema_version: None,
             },
         );
         let index = make_index(
@@ -1231,6 +1243,7 @@ mod verify_ancestor_integrity_tests {
             storage_type: StorageType::Public,
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         }
     }
 
@@ -1371,6 +1384,7 @@ mod verify_snapshot_entity_signature_tests {
             storage_type: StorageType::Public,
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         }
     }
 
@@ -1384,6 +1398,7 @@ mod verify_snapshot_entity_signature_tests {
             },
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         }
     }
 
@@ -1402,6 +1417,7 @@ mod verify_snapshot_entity_signature_tests {
             },
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         }
     }
 

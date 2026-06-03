@@ -871,6 +871,7 @@ mod user_storage_signature_verification {
                 },
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -1042,6 +1043,7 @@ mod user_storage_replay_protection {
             },
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         };
         let mut action = Action::Add {
             id: page.id(),
@@ -1896,6 +1898,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -1926,6 +1929,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -1964,6 +1968,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
         assert!(MainInterface::apply_action(add_action, &ApplyContext::empty()).is_ok());
@@ -1985,6 +1990,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2023,6 +2029,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
         assert!(MainInterface::apply_action(add_action, &ApplyContext::empty()).is_ok());
@@ -2071,6 +2078,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2113,6 +2121,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2151,6 +2160,7 @@ mod timestamp_drift_protection {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2185,6 +2195,7 @@ mod timestamp_drift_protection {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2213,6 +2224,7 @@ mod timestamp_drift_protection {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2286,6 +2298,7 @@ mod storage_type_edge_cases {
             },
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         };
 
         let mut action = Action::DeleteRef {
@@ -2456,6 +2469,7 @@ mod storage_type_edge_cases {
                 },
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2546,6 +2560,7 @@ mod storage_type_edge_cases {
                 storage_type: StorageType::Public, // Changed to Public!
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 

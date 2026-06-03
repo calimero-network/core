@@ -149,6 +149,7 @@ mod borsh_layout {
         pub(super) storage_type: StorageType,
         pub(super) crdt_type: Option<CrdtType>,
         pub(super) field_name: Option<String>,
+        pub(super) schema_version: Option<u32>,
     }
 
     #[derive(BorshDeserialize)]
