@@ -179,6 +179,32 @@ steps:
 
   # ---------- Baseline: writer set {A, B} + member entries ----------
 
+  # Settle all three at the genesis context state (sole writer {A}) BEFORE the
+  # first rotation. This is load-bearing. A cold joiner seeds its rotation log
+  # with the writer set as-of its join boundary ({A} here). If node-1 rotates
+  # while a joiner is still catching up, the joiner can converge the
+  # post-rotation tree via Snapshot/HashComparison WITHOUT ever applying the
+  # rotation as a delta — so the rotation is never appended to the joiner's
+  # rotation log, and `SharedStorage::writers()` (which reads the log ahead of
+  # the index) keeps returning the stale genesis set. The joiner then can't act
+  # as a writer even though the tree shows it as one. Settling first pins each
+  # joiner at the {A} genesis head, so the add-writer below arrives as a single
+  # forward-applied delta that DOES append to every node's rotation log.
+  - name: Settle all three at the genesis writer set {A}
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 90
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Brief settle at genesis
+    type: wait
+    seconds: 3
+
   - name: Node-1 seeds shared value
     type: call
     node: e2e-node-1
@@ -187,6 +213,9 @@ steps:
     args:
       value: "v0"
 
+  # Isolate the add-writer rotation with its own sync so every node
+  # forward-applies it as a single delta (and logs it) rather than folding it
+  # into a catch-up snapshot.
   - name: Node-1 adds B to the writer set ({A} -> {A, B})
     type: call
     node: e2e-node-1
@@ -195,8 +224,23 @@ steps:
     args:
       writer_bs58: '{{id_b}}'
 
-  # Member entries written before the rotations — must survive and
-  # converge across the partition + concurrent-rotation window.
+  - name: Converge the {A, B} rotation onto every node's rotation log
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 90
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after the rotation
+    type: wait
+    seconds: 3
+
+  # Member entries written before the concurrent rotations — must survive and
+  # converge across the rotation window.
   - name: Node-1 writes member entry m1
     type: call
     node: e2e-node-1
@@ -215,7 +259,7 @@ steps:
       key: "m2"
       value: "pre-rotation-n2"
 
-  - name: Converge baseline ({A, B} + member entries)
+  - name: Converge member entries
     type: wait_for_sync
     context_id: '{{ctx}}'
     nodes:
@@ -226,11 +270,41 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Settle after baseline convergence
+  - name: Settle after member entries
     type: wait
     seconds: 3
 
-  # Sanity: every node sees {A, B} as the writer set (C not yet in).
+  # Precondition for the concurrent rotations: EVERY node — including the
+  # joiners that must rotate below — resolves the writer set as {A, B}. node-2
+  # (B) in particular MUST see itself as a writer here, or it cannot rotate.
+  - name: Baseline — node-2 sees A as writer
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_a}}'
+    outputs:
+      base_a_n2: result
+  - name: Baseline — node-2 sees itself (B) as writer
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_b}}'
+    outputs:
+      base_b_n2: result
+  - name: Baseline — node-2 does NOT yet see C as writer
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_c}}'
+    outputs:
+      base_c_n2: result
+
   - name: Baseline — node-3 sees A as writer
     type: call
     node: e2e-node-3
@@ -240,7 +314,6 @@ steps:
       key_bs58: '{{id_a}}'
     outputs:
       base_a_n3: result
-
   - name: Baseline — node-3 sees B as writer
     type: call
     node: e2e-node-3
@@ -250,7 +323,6 @@ steps:
       key_bs58: '{{id_b}}'
     outputs:
       base_b_n3: result
-
   - name: Baseline — node-3 does NOT yet see C as writer
     type: call
     node: e2e-node-3
@@ -261,9 +333,12 @@ steps:
     outputs:
       base_c_n3: result
 
-  - name: Assert baseline writer set {A, B}
+  - name: Assert baseline writer set {A, B} on both joiners
     type: json_assert
     statements:
+      - 'json_equal({{base_a_n2}}, {"output": true})'
+      - 'json_equal({{base_b_n2}}, {"output": true})'
+      - 'json_equal({{base_c_n2}}, {"output": false})'
       - 'json_equal({{base_a_n3}}, {"output": true})'
       - 'json_equal({{base_b_n3}}, {"output": true})'
       - 'json_equal({{base_c_n3}}, {"output": false})'
