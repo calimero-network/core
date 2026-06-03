@@ -11,7 +11,11 @@ use calimero_node_primitives::sync::snapshot::{
 use calimero_node_primitives::sync::{
     MessagePayload, SnapshotCursor, SnapshotError, StreamMessage,
 };
+use calimero_node_primitives::{SyncState, SyncStatusSnapshot};
 use calimero_primitives::context::ContextId;
+use calimero_primitives::events::{
+    ContextEvent, ContextEventPayload, NodeEvent, SyncStatusPayload,
+};
 use calimero_primitives::hash::Hash;
 use calimero_storage::address::Id;
 use calimero_storage::env::time_now;
@@ -691,6 +695,11 @@ impl SyncManager {
                             "Applied snapshot page"
                         );
 
+                        // Surface snapshot progress (per page-burst, a natural
+                        // throttle) so a subscriber watching this uninitialized
+                        // context sees forward motion rather than a silent wait.
+                        self.emit_snapshot_progress(context_id, total_applied as u64);
+
                         // Check if this is the last page in this burst
                         let is_last_in_burst = sent_count == page_count;
 
@@ -762,6 +771,33 @@ impl SyncManager {
         handle.put(&key, &value)?;
         debug!(%context_id, "Set sync-in-progress marker");
         Ok(())
+    }
+
+    /// Record snapshot progress on the advisory `sync_status` mirror and push a
+    /// `SyncStatus` event to subscribers. Best-effort: a broadcast with no
+    /// receivers is fine, and `records_received` is a monotonic liveness signal
+    /// (not a percentage — the receiver isn't told a grand total up front).
+    fn emit_snapshot_progress(&self, context_id: ContextId, records_received: u64) {
+        let state = SyncState::ReceivingSnapshot { records_received };
+        let _prev = self.node_state.sync_status_handle().insert(
+            context_id,
+            SyncStatusSnapshot {
+                state,
+                failure_count: 0,
+                last_error: None,
+            },
+        );
+        let event = NodeEvent::Context(ContextEvent {
+            context_id,
+            payload: ContextEventPayload::SyncStatus(SyncStatusPayload {
+                sync_state: state,
+                failure_count: 0,
+                last_error: None,
+            }),
+        });
+        if let Err(err) = self.node_client.send_event(event) {
+            debug!(%context_id, %err, "failed to emit snapshot-progress event");
+        }
     }
 
     /// Clear the sync-in-progress marker after successful sync completion.
