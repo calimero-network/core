@@ -14,7 +14,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
-calimero-storage-macros.workspace = true
 
 [dev-dependencies]
 # Enables `register_crdt_merge` + the native mock host so `TestHost` can drive

@@ -29,6 +29,11 @@ pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod crdt_meta;
 pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageStrategy};
+// The `Mergeable` derive macro (canonical impl lives in `calimero-sdk-macros`)
+// is re-exported here under the same name as the trait, serde-style, so a single
+// `use calimero_storage::collections::Mergeable;` brings in both. They occupy
+// different namespaces (trait vs. derive macro), so the shared name does not clash.
+pub use calimero_sdk::app::Mergeable;
 pub mod composite_key;
 mod crdt_impls;
 mod decompose_impls;

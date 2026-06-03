@@ -294,105 +294,11 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Derives the `Mergeable` trait for a struct.
-///
-/// This macro automatically implements the `Mergeable` trait by calling
-/// `merge()` on each field that implements `Mergeable`.
-///
-/// # Requirements
-///
-/// - All fields must implement `Mergeable`
-/// - Struct must have named fields
-///
-/// # Generated implementation
-///
-/// For each field, calls `self.field.merge(&other.field)?`
-///
-/// # Example
-///
-/// ```ignore
-/// use calimero_storage::collections::{Counter, Mergeable, ReplicatedGrowableArray, UnorderedMap};
-///
-/// #[derive(Mergeable, BorshSerialize, BorshDeserialize)]
-/// pub struct Document {
-///     content: ReplicatedGrowableArray,
-///     edit_count: Counter,
-///     metadata: UnorderedMap<String, String>,
-/// }
-///
-/// // Auto-generates:
-/// impl Mergeable for Document {
-///     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-///         self.content.merge(&other.content)?;
-///         self.edit_count.merge(&other.edit_count)?;
-///         self.metadata.merge(&other.metadata)?;
-///         Ok(())
-///     }
-/// }
-/// ```
-#[proc_macro_derive(Mergeable)]
-pub fn mergeable_derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    let fields = match &input.data {
-        Data::Struct(data) => &data.fields,
-        Data::Enum(_) | Data::Union(_) => {
-            panic!("Mergeable can only be derived for structs")
-        }
-    };
-
-    let named_fields = match fields {
-        Fields::Named(fields) => &fields.named,
-        Fields::Unnamed(_) | Fields::Unit => {
-            panic!("Mergeable can only be derived for structs with named fields")
-        }
-    };
-
-    // Generate merge calls for each field
-    let merge_calls = named_fields.iter().map(|field| {
-        let field_name = field.ident.as_ref().unwrap();
-        quote! {
-            self.#field_name.merge(&other.#field_name)?;
-        }
-    });
-
-    // Per-field deterministic re-key (#2577). When this struct is stored as a
-    // collection VALUE under a deterministic entry id, each field's nested
-    // collection ids are re-keyed under a field-namespaced child of that id — so
-    // every replica derives identical ids and the nested CRDTs converge as child
-    // entities, instead of the whole struct blob being LWW'd (silent data loss).
-    // `rekey_field_if_supported!` autoref-dispatches to a real re-key for
-    // `RekeyTarget` fields (collections, nested CRDT structs) and a no-op for
-    // leaves (e.g. `LwwRegister`).
-    let rekey_calls = named_fields.iter().map(|field| {
-        let field_name = field.ident.as_ref().unwrap();
-        let field_name_str = field_name.to_string();
-        quote! {
-            ::calimero_storage::rekey_field_if_supported!(
-                &mut self.#field_name,
-                ::calimero_storage::collections::rekey::field_child_id(parent_id, #field_name_str)
-            );
-        }
-    });
-
-    let expanded = quote! {
-        impl #impl_generics calimero_storage::collections::Mergeable for #name #ty_generics #where_clause {
-            fn merge(&mut self, other: &Self) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-                #(#merge_calls)*
-                Ok(())
-            }
-        }
-
-        impl #impl_generics ::calimero_storage::collections::rekey::RekeyTarget
-            for #name #ty_generics #where_clause
-        {
-            fn rekey_relative_to(&mut self, parent_id: ::calimero_storage::address::Id) {
-                #(#rekey_calls)*
-            }
-        }
-    };
-
-    TokenStream::from(expanded)
-}
+// NOTE: there is intentionally no `#[derive(Mergeable)]` here. A second, simpler
+// implementation used to live in this crate and had to be kept in sync with the
+// one in `calimero-sdk-macros` by hand (they drifted). The single canonical
+// derive now lives in `calimero-sdk-macros` (`crates/sdk/macros/src/mergeable.rs`),
+// which additionally applies forbidden-type field validation and emits friendly
+// enum/union compile errors. It is re-exported alongside the `Mergeable` trait
+// from `calimero_storage::collections`, so `use calimero_storage::collections::Mergeable;`
+// brings in both the trait and the derive.
