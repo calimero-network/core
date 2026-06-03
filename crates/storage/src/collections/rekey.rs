@@ -64,6 +64,37 @@ pub trait RekeyTarget: Any {
     /// Re-key this value's nested collection ids relative to `parent_id` (the
     /// deterministic entity id under which this value is stored). Idempotent.
     fn rekey_relative_to(&mut self, parent_id: Id);
+
+    /// Cascade-register the re-key thunks of the value types nested in THIS
+    /// type, so they can be dispatched to when stored as collection values.
+    ///
+    /// Registration (unlike `rekey_relative_to`) does not recurse on its own:
+    /// `rekey_nested_value` dispatches by `TypeId`, so a value type that is
+    /// never registered is silently skipped (last-writer-wins'd). The root
+    /// `#[app::state]` scan only sees the type tokens written in the root
+    /// struct's own fields; a custom struct reachable only *through another
+    /// custom struct's collection* (e.g. `Map<_, Outer>` where `Outer` holds
+    /// `Map<_, Inner>`) is never named there, so without this hook `Inner`
+    /// would keep per-replica-random nested ids and lose concurrent writes.
+    ///
+    /// `#[derive(Mergeable)]` overrides this to register each of its own
+    /// collection-field value types (via `register_rekey_if_supported!`, which
+    /// cascades in turn), walking the full value graph one struct at a time.
+    /// The default is empty: leaf collections (`Counter`) and types with no
+    /// registerable nested value carry nothing further to register.
+    ///
+    /// This is a type-level operation, so the `Self: Sized` bound is deliberate:
+    /// it is invoked ONLY on a concrete type, as `register_rekey_cascade::<T>()`,
+    /// never through a `dyn RekeyTarget` trait object (registration has no value
+    /// to dispatch on). That bound makes the method object-unsafe, so an attempt
+    /// to cascade through a trait object won't compile rather than silently
+    /// taking the no-op default. The instance-level `rekey_relative_to` stays
+    /// object-safe — it is the one called through the type-erased thunk.
+    fn register_nested_value_types()
+    where
+        Self: Sized,
+    {
+    }
 }
 
 /// Derive a deterministic per-field child id from a parent entity id and a field
@@ -74,11 +105,22 @@ pub fn field_child_id(parent_id: Id, field_name: &str) -> Id {
     super::compute_collection_id(Some(parent_id), field_name)
 }
 
-/// Public re-export so the autoref macros (which expand in application crates)
-/// can name the registration entry point without exposing the registry itself.
+/// Register `T`'s thunk and, only on its FIRST registration, cascade into the
+/// value types `T` nests (via `T::register_nested_value_types`). This is what
+/// `register_rekey_if_supported!` dispatches to, so a single scan of the root
+/// state's fields transitively registers the whole reachable custom-struct
+/// value graph — not just one level.
+///
+/// The "first registration only" guard is load-bearing: it makes the walk
+/// terminate on self- and mutually-recursive value types (e.g.
+/// `Tree { children: UnorderedMap<_, Tree> }`). `register_rekey` reports
+/// whether THIS call inserted the thunk; we recurse only then, so an
+/// already-registered type is never re-walked.
 #[doc(hidden)]
-pub fn register_rekey_pub<T: RekeyTarget + 'static>() {
-    register_rekey::<T>();
+pub fn register_rekey_cascade<T: RekeyTarget + 'static>() {
+    if register_rekey::<T>() {
+        T::register_nested_value_types();
+    }
 }
 
 type RekeyThunk = fn(&mut dyn Any, Id);
@@ -93,8 +135,10 @@ static REGISTRY: LazyLock<RwLock<HashMap<TypeId, RekeyThunk>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Register `T`'s re-key thunk. Called from `T`'s constructor; idempotent and
-/// cheap (a read-lock hit on the common already-registered path).
-pub(crate) fn register_rekey<T: RekeyTarget + 'static>() {
+/// cheap (a read-lock hit on the common already-registered path). Returns
+/// `true` iff THIS call inserted the thunk (it was not already present), so
+/// `register_rekey_cascade` can recurse exactly once per type.
+pub(crate) fn register_rekey<T: RekeyTarget + 'static>() -> bool {
     let tid = TypeId::of::<T>();
     // Recover from a poisoned lock rather than propagating the panic: the
     // registry is an append-only map of independent fn pointers, so a thread
@@ -104,17 +148,28 @@ pub(crate) fn register_rekey<T: RekeyTarget + 'static>() {
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(&tid)
     {
-        return;
+        return false;
     }
-    REGISTRY
+    // Use the entry API under the write lock (not a second `contains_key`) so
+    // the insert-or-not decision is atomic: if two threads both miss the read
+    // fast-path for the SAME type, exactly one observes `Vacant` and returns
+    // true; the other sees `Occupied` and returns false. So the cascade fires
+    // exactly once per type — never twice for one type on a startup race.
+    match REGISTRY
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .entry(tid)
-        .or_insert(|any: &mut dyn Any, parent: Id| {
-            if let Some(t) = any.downcast_mut::<T>() {
-                t.rekey_relative_to(parent);
-            }
-        });
+    {
+        std::collections::hash_map::Entry::Occupied(_) => false,
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            let _ = slot.insert(|any: &mut dyn Any, parent: Id| {
+                if let Some(t) = any.downcast_mut::<T>() {
+                    t.rekey_relative_to(parent);
+                }
+            });
+            true
+        }
+    }
 }
 
 /// Re-key any nested collections carried by `value` deterministically relative
@@ -186,6 +241,12 @@ macro_rules! rekey_field_if_supported {
 /// no-op. Generated registration code calls this for each collection-field value
 /// type so app structs auto-register before any insert. Macro (not fn) for the
 /// same autoref-on-concrete-type reason as [`rekey_field_if_supported`].
+///
+/// The real arm goes through `register_rekey_cascade`, which on a type's first
+/// registration also registers the value types IT nests
+/// ([`RekeyTarget::register_nested_value_types`]). So one call on a root field
+/// type transitively covers the whole reachable custom-struct value graph, not
+/// just one level.
 #[macro_export]
 macro_rules! register_rekey_if_supported {
     ($t:ty) => {{
@@ -195,7 +256,7 @@ macro_rules! register_rekey_if_supported {
         }
         impl<T: $crate::collections::rekey::RekeyTarget + 'static> __RgViaReg for __RgProbe<T> {
             fn __rg_go(self) {
-                $crate::collections::rekey::register_rekey_pub::<T>();
+                $crate::collections::rekey::register_rekey_cascade::<T>();
             }
         }
         trait __RgViaNoop {

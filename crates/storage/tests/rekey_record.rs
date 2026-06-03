@@ -218,3 +218,177 @@ fn unregistered_value_loses_data_pre_fix() {
          rekey is still what makes #2577 converge"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Deep custom-struct nesting (#2581): a custom struct reachable only THROUGH
+// another custom struct's collection — `App → Map<_, Outer> → Map<_, Inner>`,
+// where both `Outer` and `Inner` are app structs.
+//
+// The root scan only names the type tokens in the ROOT struct's own fields, so
+// it registers `Outer` but never `Inner`. Pre-#2581, `Inner` therefore kept
+// per-replica-random nested ids and its `score` counter was last-writer-wins'd
+// (the exact #2577 loss, one level deeper). The fix makes `#[derive(Mergeable)]`
+// register each struct's own value types (`register_nested_value_types`) and has
+// `register_rekey_if_supported!` cascade, so registering `Outer` transitively
+// registers `Inner`.
+//
+// These tests register ONLY the root-level tokens (`Outer`, `String`) — exactly
+// what the root `#[app::state]` macro emits, NOT `Inner` — and rely on the
+// cascade to reach `Inner`. The positive path uses the derive (cascade fires);
+// the negative path uses hand-written impls WITHOUT a `register_nested_value_types`
+// override (the pre-fix derive shape), so `Inner` stays unregistered and loses
+// data. Distinct types throughout, since the rekey registry has no reset.
+
+/// Derive path: cascade should reach `Inner` via `Outer`'s generated
+/// `register_nested_value_types`.
+#[derive(BorshSerialize, BorshDeserialize, Default, Mergeable)]
+#[borsh(crate = "calimero_sdk::borsh")]
+struct Inner {
+    score: Counter,
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Default, Mergeable)]
+#[borsh(crate = "calimero_sdk::borsh")]
+struct Outer {
+    inner: UnorderedMap<String, Inner>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Default, Mergeable)]
+#[borsh(crate = "calimero_sdk::borsh")]
+struct DeepApp {
+    groups: UnorderedMap<String, Outer>,
+}
+
+/// Hand-written impls mirroring the PRE-#2581 derive: a correct
+/// `rekey_relative_to` but NO `register_nested_value_types` override (so it
+/// takes the trait default no-op). `InnerManual` is consequently never
+/// registered when only the root tokens are.
+#[derive(BorshSerialize, BorshDeserialize, Default)]
+#[borsh(crate = "calimero_sdk::borsh")]
+struct InnerManual {
+    score: Counter,
+}
+
+impl Mergeable for InnerManual {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.score.merge(&other.score)
+    }
+}
+
+impl RekeyTarget for InnerManual {
+    fn rekey_relative_to(&mut self, parent_id: Id) {
+        rekey_field_if_supported!(&mut self.score, field_child_id(parent_id, "score"));
+    }
+    // Deliberately NO `register_nested_value_types` override — the pre-fix gap.
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Default)]
+#[borsh(crate = "calimero_sdk::borsh")]
+struct OuterManual {
+    inner: UnorderedMap<String, InnerManual>,
+}
+
+impl Mergeable for OuterManual {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.inner.merge(&other.inner)
+    }
+}
+
+impl RekeyTarget for OuterManual {
+    fn rekey_relative_to(&mut self, parent_id: Id) {
+        rekey_field_if_supported!(&mut self.inner, field_child_id(parent_id, "inner"));
+    }
+    // Deliberately NO `register_nested_value_types` override.
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Default)]
+#[borsh(crate = "calimero_sdk::borsh")]
+struct DeepAppManual {
+    groups: UnorderedMap<String, OuterManual>,
+}
+
+impl Mergeable for DeepAppManual {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.groups.merge(&other.groups)
+    }
+}
+
+// Reuse the `drive::<T>()` two-replica harness: `record_win`/`wins` navigate two
+// collection levels (`groups[team].inner[team].score`) instead of one.
+macro_rules! deep_team_app {
+    ($app:ty) => {
+        impl TeamApp for $app {
+            fn record_win(&mut self, team: &str) -> app::Result<()> {
+                let mut outer = self.groups.entry(team.to_owned())?.or_default()?;
+                let mut inner = outer.inner.entry(team.to_owned())?.or_default()?;
+                inner.score.increment()?;
+                Ok(())
+            }
+            fn wins(&self, team: &str) -> app::Result<u64> {
+                match self.groups.get(team)? {
+                    Some(outer) => match outer.inner.get(team)? {
+                        Some(inner) => Ok(inner.score.value()?),
+                        None => Ok(0),
+                    },
+                    None => Ok(0),
+                }
+            }
+        }
+    };
+}
+
+deep_team_app!(DeepApp);
+deep_team_app!(DeepAppManual);
+
+#[test]
+#[serial]
+fn cascade_registers_deeply_nested_custom_value() {
+    env::reset_environment();
+    register_crdt_merge_for_test::<DeepApp>();
+    // Register ONLY what the root `#[app::state]` scan would for
+    // `DeepApp { groups: UnorderedMap<String, Outer> }`: the value type `Outer`
+    // and the key type `String`. `Inner` is NOT named here — the cascade through
+    // `Outer::register_nested_value_types` must register it.
+    register_rekey_if_supported!(Outer);
+    register_rekey_if_supported!(String);
+
+    let (wa, wb, converged) = drive::<DeepApp>();
+    println!("DEEP-CASCADE wins a={wa} b={wb} converged={converged}");
+    assert_eq!(
+        wa, 2,
+        "replica A: both increments must survive two levels deep"
+    );
+    assert_eq!(
+        wb, 2,
+        "replica B: both increments must survive two levels deep"
+    );
+    assert!(converged, "replicas must converge to the same root hash");
+}
+
+#[test]
+#[serial]
+fn no_cascade_loses_deeply_nested_data_pre_fix() {
+    // Pre-fix shape: `OuterManual` has no `register_nested_value_types`, so
+    // registering the root tokens leaves `InnerManual` unregistered and its
+    // nested counter is LWW'd — the #2577 loss, one level deeper. Same tight
+    // `== 1` assertion (and rationale) as `unregistered_value_loses_data_pre_fix`.
+    env::reset_environment();
+    register_crdt_merge_for_test::<DeepAppManual>();
+    register_rekey_if_supported!(OuterManual);
+    register_rekey_if_supported!(String);
+    // Deliberately NO `register_rekey_if_supported!(InnerManual)`, and
+    // `OuterManual` does not cascade into it.
+
+    let (wa, wb, converged) = drive::<DeepAppManual>();
+    println!("DEEP-NOCASCADE wins a={wa} b={wb} converged={converged}");
+    assert!(
+        converged,
+        "LWW replicas still converge — to the wrong value"
+    );
+    assert_eq!(wa, wb, "converged replicas must agree on the (wrong) value");
+    assert_eq!(
+        wa, 1,
+        "without cascading registration, the deeply-nested counter is LWW'd: \
+         exactly one replica's increment survives"
+    );
+}
