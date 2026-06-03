@@ -64,7 +64,7 @@ pub struct NodeConfig {
     pub context: ContextConfig,
     pub server: ServerConfig,
     pub gc_interval_secs: Option<u64>, // Optional GC interval in seconds (default: 12 hours)
-    /// DAG compaction settings (issue #2026). Disabled by default.
+    /// DAG compaction settings (issue #2026). Enabled by default.
     pub dag_compaction: calimero_node_primitives::DagCompactionConfig,
     pub mode: NodeMode,
     pub specialized_node: SpecializedNodeConfig,
@@ -392,9 +392,9 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| gc);
 
-    // Start DAG compaction actor (issue #2026). Disabled by default; only
-    // bounds on-disk delta growth when explicitly enabled in `[dag_compaction]`
-    // and the thresholds are internally consistent.
+    // Start DAG compaction actor (issue #2026). Enabled by default; bounds
+    // on-disk delta growth unless `[dag_compaction] enabled = false` or the
+    // thresholds are internally inconsistent.
     if config.dag_compaction.enabled && config.dag_compaction.is_valid() {
         let compactor = DagCompactor::new(node_state.delta_stores_handle(), config.dag_compaction);
         let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| compactor);
