@@ -19,7 +19,9 @@ const V2_SRC: &str = include_str!(concat!(
 
 fn state_schema(src: &str) -> Manifest {
     let manifest = emit_manifest(src).expect("emit_manifest on scenario source");
-    manifest.extract_state_schema().expect("extract_state_schema")
+    manifest
+        .extract_state_schema()
+        .expect("extract_state_schema")
 }
 
 /// Embed a schema into a minimal valid module, then read it back — exercising the
@@ -40,7 +42,10 @@ fn real_scenarios_round_trip_through_the_wasm_section() {
         Some(calimero_wasm_abi::schema::TypeDef::Record { fields }) => fields,
         other => panic!("v1 state root is not a record: {other:?}"),
     };
-    assert!(fields.iter().any(|f| f.name == "wiki"), "v1 has a `wiki` field");
+    assert!(
+        fields.iter().any(|f| f.name == "wiki"),
+        "v1 has a `wiki` field"
+    );
 }
 
 #[test]

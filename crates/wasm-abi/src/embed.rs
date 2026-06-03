@@ -25,28 +25,48 @@ impl std::fmt::Display for EmbedError {
     }
 }
 
-impl std::error::Error for EmbedError {}
+impl std::error::Error for EmbedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            EmbedError::Serialize(e) => Some(e),
+            EmbedError::MalformedWasm(_) => None,
+        }
+    }
+}
 
 /// Read the embedded state-schema `Manifest`, or `None` if the section is absent
 /// or malformed (drives fail-open at the upgrade gate).
+///
+/// Returns the *last* parseable `calimero_abi_v1` section. The writer emits
+/// exactly one (appended last), so this is normally unambiguous; on the off
+/// chance a stale earlier section co-exists, last-wins matches the writer's
+/// append semantics.
 pub fn read_embedded_state_schema(wasm: &[u8]) -> Option<Manifest> {
+    let mut found = None;
     for payload in Parser::new(0).parse_all(wasm).flatten() {
         if let Payload::CustomSection(reader) = payload {
             if reader.name() == SECTION_NAME {
-                return serde_json::from_slice::<Manifest>(reader.data()).ok();
+                if let Ok(manifest) = serde_json::from_slice::<Manifest>(reader.data()) {
+                    found = Some(manifest);
+                }
             }
         }
     }
-    None
+    found
 }
 
 /// Return a copy of `wasm` carrying exactly one `calimero_abi_v1` section with
 /// `manifest` (replacing any pre-existing one — idempotent). Fails closed on a
 /// malformed/truncated module rather than silently emitting a corrupt one.
-pub fn write_embedded_state_schema(wasm: &[u8], manifest: &Manifest) -> Result<Vec<u8>, EmbedError> {
+pub fn write_embedded_state_schema(
+    wasm: &[u8],
+    manifest: &Manifest,
+) -> Result<Vec<u8>, EmbedError> {
     let json = serde_json::to_vec(manifest).map_err(EmbedError::Serialize)?;
     if wasm.len() < 8 {
-        return Err(EmbedError::MalformedWasm("input shorter than the 8-byte wasm header"));
+        return Err(EmbedError::MalformedWasm(
+            "input shorter than the 8-byte wasm header",
+        ));
     }
     let mut out = Vec::with_capacity(wasm.len() + json.len() + 64);
     out.extend_from_slice(&wasm[..8]); // magic + version
@@ -58,13 +78,16 @@ pub fn write_embedded_state_schema(wasm: &[u8], manifest: &Manifest) -> Result<V
             return Err(EmbedError::MalformedWasm("unparseable section-size LEB"));
         };
         let header_len = 1 + size_len;
-        let Some(section_end) =
-            i.checked_add(header_len).and_then(|x| x.checked_add(size as usize))
+        let Some(section_end) = i
+            .checked_add(header_len)
+            .and_then(|x| x.checked_add(size as usize))
         else {
             return Err(EmbedError::MalformedWasm("section length overflow"));
         };
         if section_end > wasm.len() {
-            return Err(EmbedError::MalformedWasm("section extends past end of input (truncated)"));
+            return Err(EmbedError::MalformedWasm(
+                "section extends past end of input (truncated)",
+            ));
         }
         let mut skip = false;
         if id == 0x00 {
@@ -136,17 +159,22 @@ fn read_leb_u32(bytes: &[u8]) -> Option<(u32, usize)> {
         let Some(&byte) = bytes.get(i) else {
             return None; // truncated: no terminating byte
         };
-        if shift < 32 {
-            result |= ((byte & 0x7f) as u32) << shift;
-        }
         i += 1;
+        if shift >= 32 {
+            return None; // a 6th continuation byte — overlong for a u32
+        }
+        let payload = (byte & 0x7f) as u32;
+        // Reject a byte whose set bits would be truncated by the shift (e.g. a
+        // 5th byte > 0x0f, which would overflow u32 bit 31). `(x << s) >> s == x`
+        // holds iff no set bit was shifted out.
+        if (payload << shift) >> shift != payload {
+            return None;
+        }
+        result |= payload << shift;
         if byte & 0x80 == 0 {
             return Some((result, i));
         }
         shift += 7;
-        if shift >= 35 {
-            return None; // overlong for a u32 — bail safely
-        }
     }
 }
 
@@ -180,7 +208,8 @@ mod tests {
 
     #[test]
     fn re_embed_is_idempotent_replace() {
-        let wasm1 = write_embedded_state_schema(&empty_module(), &sample_manifest()).expect("embed");
+        let wasm1 =
+            write_embedded_state_schema(&empty_module(), &sample_manifest()).expect("embed");
         let wasm2 = write_embedded_state_schema(&wasm1, &sample_manifest()).expect("embed");
         let count = wasmparser::Parser::new(0)
             .parse_all(&wasm2)
@@ -214,6 +243,25 @@ mod tests {
         wasm.extend_from_slice(&[0x80, 0x80]);
         assert!(write_embedded_state_schema(&wasm, &sample_manifest()).is_err());
     }
+    #[test]
+    fn embed_preserves_other_sections() {
+        // A module with a (empty) type section before our embed: the type section
+        // must survive and the calimero_abi_v1 section must be added, valid module.
+        let mut wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        wasm.extend_from_slice(&[0x01, 0x01, 0x00]); // type section id=1, size=1, count=0
+        let out = write_embedded_state_schema(&wasm, &sample_manifest()).expect("embed");
+        let (mut has_type, mut has_abi) = (false, false);
+        for p in wasmparser::Parser::new(0).parse_all(&out) {
+            match p.expect("valid module out") {
+                wasmparser::Payload::TypeSection(_) => has_type = true,
+                wasmparser::Payload::CustomSection(c) if c.name() == SECTION => has_abi = true,
+                _ => {}
+            }
+        }
+        assert!(has_type, "pre-existing type section preserved");
+        assert!(has_abi, "calimero_abi_v1 section added");
+    }
+
     #[test]
     fn writer_errors_on_too_short_input() {
         assert!(write_embedded_state_schema(&[0x00, 0x61], &sample_manifest()).is_err());

@@ -22,7 +22,9 @@ fn embed_then_read_back_finds_section() {
     let found = wasmparser::Parser::new(0)
         .parse_all(&bytes)
         .filter_map(Result::ok)
-        .any(|p| matches!(p, wasmparser::Payload::CustomSection(c) if c.name() == "calimero_abi_v1"));
+        .any(
+            |p| matches!(p, wasmparser::Payload::CustomSection(c) if c.name() == "calimero_abi_v1"),
+        );
     assert!(found, "calimero_abi_v1 section present after embed");
     let _ = std::fs::remove_dir_all(&dir);
 }

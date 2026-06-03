@@ -536,7 +536,10 @@ async fn resolve_embedded_schema(
     node_client: &calimero_node_primitives::client::NodeClient,
     application_id: &ApplicationId,
 ) -> Option<Manifest> {
-    match node_client.get_application_bytes(application_id, None).await {
+    match node_client
+        .get_application_bytes(application_id, None)
+        .await
+    {
         Ok(Some(bytes)) => calimero_wasm_abi::embed::read_embedded_state_schema(&bytes),
         Ok(None) => None,
         Err(err) => {

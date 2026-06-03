@@ -97,7 +97,10 @@ mod tests {
 
     #[test]
     fn authored_map_to_unordered_is_downgrade() {
-        let d = identity_downgrades(&manifest(&format!("[{AUTHORED_MAP}]")), &manifest(&format!("[{UNORDERED_MAP}]")));
+        let d = identity_downgrades(
+            &manifest(&format!("[{AUTHORED_MAP}]")),
+            &manifest(&format!("[{UNORDERED_MAP}]")),
+        );
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].field, "wiki");
         assert_eq!(d[0].from, "AuthoredMap");
@@ -116,17 +119,26 @@ mod tests {
     }
     #[test]
     fn both_identity_gated_different_type_is_not_downgrade() {
-        let d = identity_downgrades(&manifest(&format!("[{AUTHORED_MAP}]")), &manifest(&format!("[{AUTHORED_VEC}]")));
+        let d = identity_downgrades(
+            &manifest(&format!("[{AUTHORED_MAP}]")),
+            &manifest(&format!("[{AUTHORED_VEC}]")),
+        );
         assert!(d.is_empty(), "{d:?}");
     }
     #[test]
     fn plain_to_plain_is_not_downgrade() {
-        let d = identity_downgrades(&manifest(&format!("[{UNORDERED_MAP}]")), &manifest(&format!("[{UNORDERED_MAP}]")));
+        let d = identity_downgrades(
+            &manifest(&format!("[{UNORDERED_MAP}]")),
+            &manifest(&format!("[{UNORDERED_MAP}]")),
+        );
         assert!(d.is_empty());
     }
     #[test]
     fn plain_to_identity_gated_is_not_downgrade() {
-        let d = identity_downgrades(&manifest(&format!("[{UNORDERED_MAP}]")), &manifest(&format!("[{AUTHORED_MAP}]")));
+        let d = identity_downgrades(
+            &manifest(&format!("[{UNORDERED_MAP}]")),
+            &manifest(&format!("[{AUTHORED_MAP}]")),
+        );
         assert!(d.is_empty());
     }
 }
