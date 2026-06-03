@@ -67,12 +67,33 @@ struct DocV1Data {
 
 The derive generates `migrate_v1_to_v2()` for you. The rules:
 
-| Field annotation | Result |
-|---|---|
-| *(none)* | carried from the old state by name (`old.field`) |
-| `#[migrate(new = EXPR)]` | additive — you provide the seed value |
-| `#[migrate(from = old_name)]` | renamed — carry `old.old_name` |
-| *field omitted from the new struct* | dropped (the remove case) |
+| Annotation | Where | Result |
+|---|---|---|
+| *(none)* | field | carried from the old state by name (`old.field`) |
+| `#[migrate(new = EXPR)]` | field | additive — you provide the seed value |
+| `#[migrate(from = old_name)]` | field | renamed — carry `old.old_name` |
+| `#[migrate(with = EXPR)]` | field | **transform** — `EXPR(old.field)` (combine with `from` to convert a renamed field). Handles type changes, struct→enum, etc. |
+| *field omitted from the new struct* | — | dropped (the remove case) |
+| `#[migrate(emit = EXPR)]` | struct | emit an app event from the migration (e.g. `Migrated { from, to }`) |
+
+`with` and `emit` cover the two most common reasons to drop to a hand-written
+body — a **type change** and an **event** — so much of what used to need
+`#[app::migrate]` is now a one-line annotation. Example:
+
+```rust
+#[app::state(emits = for<'a> MigrateEvent<'a>)]
+#[derive(app::Migrate)]
+#[migrate(from = V1, method = migrate_v1_to_v2,
+          emit = MigrateEvent::Migrated { from: "1.0.0", to: "2.0.0" })]
+pub struct V2 {
+    items: UnorderedMap<String, LwwRegister<String>>,   // carried
+    #[migrate(from = count, with = u64_reg_to_string)]
+    count: LwwRegister<String>,                          // u64 -> String via `with`
+}
+fn u64_reg_to_string(c: LwwRegister<u64>) -> LwwRegister<String> {
+    LwwRegister::new(c.get().to_string())
+}
+```
 
 A new field you forget to annotate is a **compile error** ("no field `notes` on
 the old type") — it can't silently misbuild. A *dropped* field, by contrast, is
@@ -118,6 +139,57 @@ Notes:
   migration is non-destructive.
 - Carrying a collection (`entries: old.entries`) reuses its existing storage
   handle; no re-population needed.
+
+### When you must hand-write it
+
+The derive (with `with` / `emit`) handles a single-field transform, a type
+change, a struct→enum, and emitting an event. You still need a hand-written
+`#[app::migrate]` when **one source feeds many fields** or a **new field is
+derived from a field you're also keeping** — i.e. the transform crosses fields:
+
+| You need to… | Why the derive can't | Example scenario |
+|---|---|---|
+| **Split one field into several** | a `with` yields one field, not three | `scenario-field-split` |
+| **Re-derive a value from a field you also carry** | that source would be moved twice | `scenario-invariant-reshuffle` |
+| **Seed an ordered collection from another you carry** | same double-use, plus ordering logic | `scenario-crdt-native` |
+| Anything genuinely multi-step / imperative | — | — |
+
+(A *single-field* type change, struct→enum, content transform, or archiving a
+*dropped* field is now a `#[migrate(with = …)]` one-liner — see §2.)
+
+These are all in `apps/migrations/` as `scenario-*` crate pairs with a matching
+merobox workflow — use them as a cookbook.
+
+### Common hand-written patterns
+
+**Split a field** — parse one field into several, with an explicit fallback:
+```rust
+let parts: Vec<&str> = old.address.get().split(", ").collect();
+let (street, city, zip) = match parts.as_slice() {
+    [s, c, z] => (s.to_string(), c.to_string(), z.to_string()),
+    _ => (old.address.get().clone(), String::new(), String::new()), // handle malformed input
+};
+```
+
+**Seed an ordered structure (determinism!)** — building a `Vector` from a map you
+also carry; **sort first**, because two nodes may iterate an unordered source in
+different orders:
+```rust
+let mut keys: Vec<String> = old.items.entries()?.map(|(k, _)| k).collect();
+keys.sort();                                   // ← required, or the roots diverge
+let mut tags = Vector::new();
+for k in keys { tags.push(k.into())?; }
+DocV2 { items: old.items, tags, .. }           // `items` carried + re-read above
+```
+
+> For a *single-field* type change, struct→enum, or content transform, prefer
+> `#[migrate(with = …)]` (§2) — these hand-written patterns are for the cross-field
+> cases the derive can't express. (A single-field type change still works
+> hand-written too: `counter: LwwRegister::new(old.counter.get().to_string())`.)
+
+> All of these run under the convergence rules in [§4](#4-the-convergence-rule-the-important-part)
+> and the category rules in [§5](#5-the-three-data-categories) — the same as a
+> derived migration. The merge-mode guards (Counter/RGA) still apply.
 
 ---
 

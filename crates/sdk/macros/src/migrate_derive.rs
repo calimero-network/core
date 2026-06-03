@@ -47,6 +47,9 @@ enum FieldStrategy {
     New(Expr),
     /// `#[migrate(from = OLD_IDENT)]` — carry a renamed field: `old.<OLD_IDENT>`.
     Rename(Ident),
+    /// `#[migrate(with = EXPR)]` (optionally with `from = SOURCE`) — apply a
+    /// conversion `EXPR(old.<source>)`, e.g. a type change.
+    With { source: Ident, expr: Expr },
 }
 
 pub fn derive(input: DeriveInput) -> TokenStream {
@@ -84,7 +87,11 @@ fn derive_inner(input: DeriveInput) -> syn::Result<TokenStream> {
         }
     };
 
-    let StructArgs { from_type, method } = parse_struct_args(&input)?;
+    let StructArgs {
+        from_type,
+        method,
+        emit,
+    } = parse_struct_args(&input)?;
 
     // One `field: <expr>` initializer per v2 field. The generated locals are
     // namespaced (`__calimero_migrate_*`) so a user field of the same name can't
@@ -96,9 +103,19 @@ fn derive_inner(input: DeriveInput) -> syn::Result<TokenStream> {
             FieldStrategy::Carry => quote! { #fname: __calimero_migrate_old.#fname },
             FieldStrategy::New(expr) => quote! { #fname: #expr },
             FieldStrategy::Rename(old) => quote! { #fname: __calimero_migrate_old.#old },
+            FieldStrategy::With { source, expr } => {
+                quote! { #fname: (#expr)(__calimero_migrate_old.#source) }
+            }
         };
         inits.push(init);
     }
+
+    // Optional `#[migrate(emit = EXPR)]` — emit an app event from the migration
+    // (e.g. a `Migrated { from, to }` event), after the old state is read.
+    let emit_stmt = match emit {
+        Some(expr) => quote! { ::calimero_sdk::app::emit!(#expr); },
+        None => quote! {},
+    };
 
     Ok(quote! {
         #[::calimero_sdk::app::migrate]
@@ -119,6 +136,7 @@ fn derive_inner(input: DeriveInput) -> syn::Result<TokenStream> {
                         __calimero_migrate_err
                     )
                 });
+            #emit_stmt
             #ident {
                 #(#inits),*
             }
@@ -129,12 +147,14 @@ fn derive_inner(input: DeriveInput) -> syn::Result<TokenStream> {
 struct StructArgs {
     from_type: Type,
     method: Ident,
+    emit: Option<Expr>,
 }
 
-/// Parses the struct-level `#[migrate(from = TYPE, method = IDENT)]`.
+/// Parses the struct-level `#[migrate(from = TYPE, method = IDENT, emit = EXPR)]`.
 fn parse_struct_args(input: &DeriveInput) -> syn::Result<StructArgs> {
     let mut from_type: Option<Type> = None;
     let mut method: Option<Ident> = None;
+    let mut emit: Option<Expr> = None;
 
     for attr in &input.attrs {
         if !attr.path().is_ident("migrate") {
@@ -145,9 +165,12 @@ fn parse_struct_args(input: &DeriveInput) -> syn::Result<StructArgs> {
                 from_type = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("method") {
                 method = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("emit") {
+                emit = Some(meta.value()?.parse()?);
             } else {
                 return Err(meta.error(
-                    "unknown `#[migrate(...)]` option on the struct (expected `from` or `method`)",
+                    "unknown `#[migrate(...)]` option on the struct (expected `from`, `method`, \
+                     or `emit`)",
                 ));
             }
             Ok(())
@@ -163,13 +186,18 @@ fn parse_struct_args(input: &DeriveInput) -> syn::Result<StructArgs> {
     })?;
     let method = method.unwrap_or_else(|| Ident::new("migrate", input.ident.span()));
 
-    Ok(StructArgs { from_type, method })
+    Ok(StructArgs {
+        from_type,
+        method,
+        emit,
+    })
 }
 
 /// Parses a field's `#[migrate(...)]` (if any) into a [`FieldStrategy`].
 fn parse_field_strategy(field: &syn::Field) -> syn::Result<FieldStrategy> {
     let mut new_expr: Option<Expr> = None;
     let mut rename: Option<Ident> = None;
+    let mut with_expr: Option<Expr> = None;
 
     for attr in &field.attrs {
         if !attr.path().is_ident("migrate") {
@@ -188,24 +216,38 @@ fn parse_field_strategy(field: &syn::Field) -> syn::Result<FieldStrategy> {
                          name, not a path or expression",
                     )
                 })?);
+            } else if meta.path.is_ident("with") {
+                with_expr = Some(meta.value()?.parse()?);
             } else {
                 return Err(meta.error(
-                    "unknown `#[migrate(...)]` option on a field (expected `new` or `from`)",
+                    "unknown `#[migrate(...)]` option on a field (expected `new`, `from`, or \
+                     `with`)",
                 ));
             }
             Ok(())
         })?;
     }
 
-    match (new_expr, rename) {
-        (Some(_), Some(_)) => Err(syn::Error::new(
+    if new_expr.is_some() && (rename.is_some() || with_expr.is_some()) {
+        return Err(syn::Error::new(
             field.span(),
-            "(calimero)> a field cannot be both `#[migrate(new = ...)]` (additive) and \
-             `#[migrate(from = ...)]` (renamed)",
-        )),
-        (Some(expr), None) => Ok(FieldStrategy::New(expr)),
-        (None, Some(old)) => Ok(FieldStrategy::Rename(old)),
-        (None, None) => Ok(FieldStrategy::Carry),
+            "(calimero)> `#[migrate(new = ...)]` (additive, no old source) can't combine with \
+             `from`/`with` (which transform an existing field)",
+        ));
+    }
+
+    let fname = field.ident.clone().expect("named fields checked by caller");
+    match (new_expr, with_expr, rename) {
+        // `with` (optionally with `from`): apply EXPR to the old source field.
+        (None, Some(expr), source) => Ok(FieldStrategy::With {
+            source: source.unwrap_or(fname),
+            expr,
+        }),
+        (Some(expr), None, None) => Ok(FieldStrategy::New(expr)),
+        (None, None, Some(old)) => Ok(FieldStrategy::Rename(old)),
+        (None, None, None) => Ok(FieldStrategy::Carry),
+        // (Some, Some, _) handled above.
+        _ => unreachable!("new+with/from rejected above"),
     }
 }
 
@@ -216,6 +258,62 @@ mod tests {
 
     fn expand(ts: TokenStream) -> String {
         derive(syn::parse2(ts).expect("parse DeriveInput")).to_string()
+    }
+
+    #[test]
+    fn with_applies_a_conversion_to_the_old_field() {
+        let out = expand(quote! {
+            #[migrate(from = AppV1)]
+            struct AppV2 {
+                #[migrate(with = to_string)]
+                counter: String,
+            }
+        });
+        assert!(
+            out.contains("counter : (to_string) (__calimero_migrate_old . counter)"),
+            "with should apply EXPR to old.counter: {out}"
+        );
+    }
+
+    #[test]
+    fn with_plus_from_converts_a_renamed_field() {
+        let out = expand(quote! {
+            #[migrate(from = AppV1)]
+            struct AppV2 {
+                #[migrate(from = legacy, with = convert)]
+                value: String,
+            }
+        });
+        assert!(
+            out.contains("value : (convert) (__calimero_migrate_old . legacy)"),
+            "with+from should apply EXPR to old.legacy: {out}"
+        );
+    }
+
+    #[test]
+    fn emit_generates_an_app_emit() {
+        let out = expand(quote! {
+            #[migrate(from = AppV1, emit = Event::Migrated { from: "1", to: "2" })]
+            struct AppV2 { items: u64 }
+        });
+        assert!(out.contains("app :: emit"), "should emit the event: {out}");
+        assert!(
+            out.contains("Migrated"),
+            "should emit the given event: {out}"
+        );
+    }
+
+    #[test]
+    fn new_and_with_on_one_field_is_error() {
+        let out = expand(quote! {
+            #[migrate(from = AppV1)]
+            struct AppV2 {
+                #[migrate(new = 0u64, with = f)]
+                x: u64,
+            }
+        });
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.contains("can't combine"), "{out}");
     }
 
     #[test]
@@ -284,7 +382,7 @@ mod tests {
             }
         });
         assert!(out.contains("compile_error"), "{out}");
-        assert!(out.contains("cannot be both"), "{out}");
+        assert!(out.contains("can't combine"), "{out}");
     }
 
     #[test]

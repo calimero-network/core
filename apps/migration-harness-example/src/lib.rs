@@ -168,6 +168,46 @@ impl DocV2Renamed {
     }
 }
 
+/// Exercises the `with` (transform a field) and `emit` (emit an event) hooks of
+/// `#[derive(Migrate)]`: `title` is transformed to upper-case via `with`, and a
+/// `Migrated` event is emitted via `emit`.
+#[app::event]
+pub enum MigrateEvent<'a> {
+    Migrated { from: &'a str, to: &'a str },
+}
+
+fn uppercase(reg: LwwRegister<String>) -> LwwRegister<String> {
+    LwwRegister::new(reg.get().to_uppercase())
+}
+
+#[app::state(emits = for<'a> MigrateEvent<'a>)]
+#[derive(app::Migrate)]
+#[migrate(
+    from = DocV1Data,
+    method = upper_migrate,
+    emit = MigrateEvent::Migrated { from: "1.0.0", to: "2.0.0" }
+)]
+pub struct DocV2Upper {
+    entries: UnorderedMap<String, LwwRegister<String>>,
+    #[migrate(from = title, with = uppercase)]
+    heading: LwwRegister<String>,
+}
+
+#[app::logic]
+impl DocV2Upper {
+    #[app::init]
+    pub fn init() -> DocV2Upper {
+        DocV2Upper {
+            entries: UnorderedMap::new(),
+            heading: LwwRegister::new(String::new()),
+        }
+    }
+
+    pub fn heading(&self) -> app::Result<String> {
+        Ok(self.heading.get().clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +381,23 @@ mod tests {
         // is dropped (absent from DocV2Renamed).
         let v2 = app.migrate(renamed_migrate);
         assert_eq!(v2.view(|s| s.heading().unwrap()), "renamed-doc");
+    }
+
+    #[test]
+    fn derived_with_transforms_and_emit_fires() {
+        let mut app = TestHost::new(DocV1::init);
+        app.call(|s| s.set_title("hello".to_owned())).unwrap();
+        app.take_events(); // discard pre-migration events
+
+        let v2 = app.migrate(upper_migrate);
+
+        // `with = uppercase` transformed title -> heading.
+        assert_eq!(v2.view(|s| s.heading().unwrap()), "HELLO");
+        // `emit = MigrateEvent::Migrated { .. }` fired during the migration.
+        let events = v2.events();
+        assert!(
+            events.iter().any(|e| e.kind.contains("Migrated")),
+            "migrate should have emitted a Migrated event, got {events:?}"
+        );
     }
 }
