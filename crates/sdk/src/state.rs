@@ -5,6 +5,22 @@ use crate::event::AppEvent;
 
 pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
     type Event<'a>: AppEvent + 'a;
+
+    /// The schema version this binary's identity-gated writes target.
+    ///
+    /// Owner-driven migration (PR-6c) stamps this value into a stale
+    /// identity-gated entry's `Metadata.schema_version` when the owner's
+    /// binary next rewrites it, so peers can tell a converted entry from a
+    /// not-yet-converted one (Task 6c.2's `entry_needs_convert` predicate
+    /// compares the stored version against this target).
+    ///
+    /// It defaults to `0` — the unversioned value legacy apps carry — so
+    /// existing `#[app::state]` types compile unchanged and stamp nothing new.
+    /// A v2 binary declares its target by overriding this const in its
+    /// `AppState` impl. The runtime reads it type-erased via
+    /// [`app::schema_version`](crate::app::schema_version), registered at
+    /// install/migrate alongside the event emitter.
+    const SCHEMA_VERSION: u32 = 0;
 }
 
 pub trait Identity<This = Self> {}
