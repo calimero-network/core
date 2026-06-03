@@ -213,6 +213,7 @@ impl ProtocolSelector {
                 let store = self.context_client.datastore_handle().into_inner();
                 let config = HashComparisonConfig {
                     remote_root_hash: root_hash,
+                    context_client: Some(self.context_client.clone()),
                 };
 
                 match HashComparisonProtocol::run_initiator(
@@ -351,6 +352,7 @@ impl ProtocolSelector {
                 let config = LevelWiseConfig {
                     remote_root_hash: **peer_root_hash,
                     max_depth,
+                    context_client: Some(self.context_client.clone()),
                 };
 
                 match LevelWiseProtocol::run_initiator(

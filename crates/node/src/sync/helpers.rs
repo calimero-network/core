@@ -1,7 +1,8 @@
 //! Common helper functions for sync protocols.
 //!
 //! **DRY Principle**: Extract repeated logic from protocol implementations.
-use calimero_node_primitives::sync::TreeLeafData;
+use calimero_context_client::client::ContextClient;
+use calimero_node_primitives::sync::{EntityDeletion, TreeLeafData};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -621,6 +622,111 @@ pub fn handle_entity_push(
             deferred_root_merges,
         }
     })
+}
+
+/// Run a host-side storage mutation while holding the per-context execution
+/// lock, so it cannot interleave with a concurrent `__calimero_sync_next`
+/// delta merge running in the executor.
+///
+/// The sync session and the executor live in different actors. The executor
+/// holds the context's `Arc<Mutex<_>>` for the whole of a WASM run, but the
+/// sync apply paths historically wrote storage directly, guarded only by the
+/// byte-level `index_mutation_guard`. That guard makes each individual mutator
+/// atomic but does NOT make a whole logical apply (a multi-write read-modify-
+/// write that recomputes ancestor hashes up to the root) atomic against another
+/// logical apply. Two such operations then interleave their recomputes and
+/// record a torn root hash that delta-sync can't repair — a permanent
+/// split-brain. Taking the same lock here serializes them.
+///
+/// `context_client` is `None` only on paths with no executor running
+/// concurrently (the single-threaded sync-sim harness); there the apply runs
+/// unguarded, exactly as before.
+pub async fn apply_under_context_lock<R>(
+    context_client: Option<&ContextClient>,
+    context_id: ContextId,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    f: impl FnOnce() -> R,
+) -> R {
+    // Held across the synchronous `with_runtime_env` body below; dropped on
+    // return. The guard owns a clone of the context's lock `Arc`, so the
+    // context-cache eviction invariant (evict only when strong_count == 1)
+    // continues to treat this context as busy while we apply.
+    let _guard = match context_client {
+        Some(client) => client.acquire_lock(&context_id).await,
+        None => None,
+    };
+    calimero_storage::env::with_runtime_env(runtime_env.clone(), f)
+}
+
+/// [`handle_entity_push`] under the per-context execution lock.
+///
+/// Use this from every production responder/initiator path. The lock is
+/// released before the caller dispatches `deferred_root_merges` (those re-enter
+/// the executor via `ContextClient::merge_root_state`, which would deadlock
+/// against a held guard).
+pub async fn handle_entity_push_locked(
+    context_client: Option<&ContextClient>,
+    store: &Store,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    context_id: ContextId,
+    entities: &[TreeLeafData],
+) -> EntityPushOutcome {
+    let _guard = match context_client {
+        Some(client) => client.acquire_lock(&context_id).await,
+        None => None,
+    };
+    handle_entity_push(store, runtime_env, context_id, entities)
+}
+
+/// Apply a batch of tombstones (delete-wins by HLC) through the authenticated
+/// `DeleteRef` path. Synchronous; the caller must already be holding the
+/// per-context execution lock (see [`handle_entity_delete_push_locked`]).
+///
+/// A deletion that loses the LWW race or fails authorization is a safe no-op
+/// and is not counted. Returns the number applied.
+fn apply_entity_deletions(
+    context_id: ContextId,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    deletions: &[EntityDeletion],
+) -> u32 {
+    calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
+        let mut applied: u32 = 0;
+        for deletion in deletions {
+            let action = Action::DeleteRef {
+                id: Id::new(deletion.id),
+                deleted_at: deletion.deleted_at,
+                metadata: deletion.metadata.clone(),
+            };
+            match Interface::<MainStorage>::apply_action(action, &ApplyContext::empty()) {
+                Ok(_) => applied += 1,
+                Err(e) => tracing::debug!(
+                    %context_id,
+                    id = %hex::encode(deletion.id),
+                    error = %e,
+                    "EntityDeletePush: skipped a tombstone (lost LWW or unauthorized)"
+                ),
+            }
+        }
+        applied
+    })
+}
+
+/// Apply a batch of tombstones under the per-context execution lock.
+///
+/// Same split-brain guard as [`handle_entity_push_locked`]: a tombstone apply
+/// is a read-modify-write up to the root and must not interleave with a
+/// concurrent delta merge.
+pub async fn handle_entity_delete_push_locked(
+    context_client: Option<&ContextClient>,
+    context_id: ContextId,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    deletions: &[EntityDeletion],
+) -> u32 {
+    let _guard = match context_client {
+        Some(client) => client.acquire_lock(&context_id).await,
+        None => None,
+    };
+    apply_entity_deletions(context_id, runtime_env, deletions)
 }
 
 /// Extract a [`SignedNamespaceOp`](calimero_context_client::local_governance::SignedNamespaceOp)

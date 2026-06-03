@@ -677,17 +677,39 @@ fn generate_rekey_register_method(
         StructOrEnumItem::Enum(_) => return quote! {},
     };
 
+    let calls = rekey_register_calls(fields);
+
+    quote! {
+        impl #impl_generics #ident #ty_generics #where_clause {
+            /// Registers nested CRDT-value re-key thunks. Called at WASM module
+            /// load and by the native test bridge; idempotent. Not for direct use.
+            #[doc(hidden)]
+            pub fn __calimero_register_rekey() {
+                #calls
+            }
+        }
+    }
+}
+
+/// Emit one `register_rekey_if_supported!(T)` per distinct type token reachable
+/// from `fields` (each field type plus its generic args, recursively). Shared by
+/// the root `#[app::state]` scan and `#[derive(Mergeable)]`'s
+/// `register_nested_value_types` override, so a nested custom struct registers
+/// its own collection-value types the same way the root does — turning the
+/// root's one-level scan into a full walk of the reachable value graph.
+///
+/// Dedup is by token string (syntactic, not semantic): the same value type can
+/// appear in several fields (e.g. two `UnorderedMap<String, TeamStats>`), so
+/// collapse identically-written types to one call. Types written differently but
+/// equal (`TeamStats` vs `crate::TeamStats`) still emit two calls — harmless:
+/// they share a `TypeId`, and registration is idempotent (`or_insert`), so the
+/// registry holds one entry either way.
+pub(crate) fn rekey_register_calls(fields: &syn::Fields) -> TokenStream {
     let mut types: Vec<Type> = Vec::new();
     for field in fields.iter() {
         collect_type_paths(&field.ty, &mut types);
     }
 
-    // Dedup by token string (syntactic, not semantic): the same value type can
-    // appear in several fields (e.g. two `UnorderedMap<String, TeamStats>`), so
-    // collapse identically-written types to one registration call. Types written
-    // differently but equal (`TeamStats` vs `crate::TeamStats`) still emit two
-    // calls — harmless: they share a `TypeId`, and `register_rekey_pub` is
-    // idempotent (`or_insert`), so the registry holds one entry either way.
     let mut seen = std::collections::HashSet::new();
     let calls = types
         .iter()
@@ -696,22 +718,17 @@ fn generate_rekey_register_method(
             quote! { ::calimero_storage::register_rekey_if_supported!(#ty); }
         });
 
-    quote! {
-        impl #impl_generics #ident #ty_generics #where_clause {
-            /// Registers nested CRDT-value re-key thunks. Called at WASM module
-            /// load and by the native test bridge; idempotent. Not for direct use.
-            #[doc(hidden)]
-            pub fn __calimero_register_rekey() {
-                #(#calls)*
-            }
-        }
-    }
+    quote! { #(#calls)* }
 }
 
 /// Recursively collect every `Type::Path` node reachable from `ty` (the type
 /// itself plus its generic arguments, tuple/reference/array elements), so the
 /// registration above can offer each to `register_rekey_if_supported!`.
-fn collect_type_paths(ty: &Type, out: &mut Vec<Type>) {
+///
+/// Shared with `#[derive(Mergeable)]` (via [`rekey_register_calls`]), which runs
+/// the identical per-field scan so a nested custom struct registers its own
+/// value types — extending the root's one-level scan to the full graph.
+pub(crate) fn collect_type_paths(ty: &Type, out: &mut Vec<Type>) {
     match ty {
         Type::Path(tp) => {
             out.push(ty.clone());

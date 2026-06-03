@@ -11,6 +11,20 @@ use prometheus_client::registry::Registry;
 pub struct Metrics {
     pub execution_count: Family<ExecutionLabels, Gauge>,
     pub execution_duration: Family<ExecutionLabels, Histogram>,
+
+    /// Cumulative count of in-memory context-cache hits (the requested
+    /// context was already resident in `ContextManager::contexts`).
+    pub context_cache_hits: Counter,
+    /// Cumulative count of context-cache misses (the context had to be
+    /// fetched from the authoritative datastore and inserted).
+    pub context_cache_misses: Counter,
+    /// Current number of contexts resident in the in-memory hot cache.
+    /// Set from the periodic cache-stats task, so it tracks the cap
+    /// (`MAX_CACHED_CONTEXTS`) at ~5-minute resolution.
+    pub context_cache_size: Gauge,
+    /// Current number of application-metadata entries resident in the
+    /// in-memory cache. Reported alongside `context_cache_size`.
+    pub application_cache_size: Gauge,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
@@ -87,6 +101,42 @@ impl Metrics {
             "execution_duration_seconds",
             "Context runtime execution in seconds",
             execution_duration.clone(),
+        );
+
+        // Context in-memory cache effectiveness. Hits/misses are
+        // monotonic counters incremented at the cache-aside entry point
+        // (`get_or_fetch_context`); the hit *rate* is derived in PromQL as
+        // `rate(hits) / (rate(hits) + rate(misses))`. The size gauges are
+        // refreshed by the periodic cache-stats task.
+        let cache_registry = context_registry.sub_registry_with_prefix("cache");
+
+        let context_cache_hits = Counter::default();
+        cache_registry.register(
+            "hits",
+            "Cumulative in-memory context cache hits",
+            context_cache_hits.clone(),
+        );
+        let context_cache_misses = Counter::default();
+        cache_registry.register(
+            "misses",
+            "Cumulative in-memory context cache misses (datastore fallback)",
+            context_cache_misses.clone(),
+        );
+        let context_cache_size = Gauge::default();
+        cache_registry.register(
+            "size",
+            "Number of contexts resident in the in-memory hot cache. \
+             Refreshed by the periodic cache-stats task (~5-minute resolution), \
+             so it may lag faster scrape intervals — use hits/misses rates for \
+             fine-grained signal",
+            context_cache_size.clone(),
+        );
+        let application_cache_size = Gauge::default();
+        cache_registry.register(
+            "application_size",
+            "Number of application-metadata entries resident in the cache. \
+             Refreshed by the periodic cache-stats task (~5-minute resolution)",
+            application_cache_size.clone(),
         );
 
         let group_store_registry = context_registry.sub_registry_with_prefix("group_store");
@@ -166,6 +216,10 @@ impl Metrics {
         Self {
             execution_count,
             execution_duration,
+            context_cache_hits,
+            context_cache_misses,
+            context_cache_size,
+            application_cache_size,
         }
     }
 }
@@ -261,4 +315,47 @@ pub fn record_governance_handler_delivery(
         .governance_handler_delivery_seconds
         .get_or_create(&labels)
         .observe(elapsed_ms as f64 / 1000.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use prometheus_client::encoding::text::encode;
+
+    use super::*;
+
+    /// The `context.cache.*` series register under the expected names and the
+    /// counters/gauges round-trip through the Prometheus text encoder. Exercises
+    /// the same `inc()`/`set()` calls that `ContextManager` makes on the cache
+    /// hit/miss and periodic-log paths.
+    #[test]
+    fn context_cache_metrics_register_and_encode() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+
+        metrics.context_cache_hits.inc();
+        metrics.context_cache_hits.inc();
+        metrics.context_cache_misses.inc();
+        metrics.context_cache_size.set(7);
+        metrics.application_cache_size.set(3);
+
+        let mut out = String::new();
+        encode(&mut out, &registry).expect("encode registry");
+
+        assert!(
+            out.contains("context_cache_hits_total 2"),
+            "missing hit counter:\n{out}"
+        );
+        assert!(
+            out.contains("context_cache_misses_total 1"),
+            "missing miss counter:\n{out}"
+        );
+        assert!(
+            out.contains("context_cache_size 7"),
+            "missing context size gauge:\n{out}"
+        );
+        assert!(
+            out.contains("context_cache_application_size 3"),
+            "missing application size gauge:\n{out}"
+        );
+    }
 }

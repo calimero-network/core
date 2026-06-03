@@ -41,11 +41,11 @@
 //!     &store,
 //!     context_id,
 //!     identity,
-//!     LevelWiseConfig { remote_root_hash, max_depth: 2 },
+//!     LevelWiseConfig { remote_root_hash, max_depth: 2, context_client: Some(client) },
 //! ).await?;
 //!
 //! // Responder side (manager extracts first request data)
-//! let first_request = LevelWiseFirstRequest { level: 0, parent_ids: None };
+//! let first_request = LevelWiseFirstRequest { level: 0, parent_ids: None, context_client: Some(client) };
 //! LevelWiseProtocol::run_responder(
 //!     &mut transport,
 //!     &store,
@@ -58,6 +58,7 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
+use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::sync::{
     compare_level_nodes, create_runtime_env, EntityDeletion, InitPayload, LevelNode,
     MessagePayload, StreamMessage, SyncProtocolExecutor, SyncTransport, TreeLeafData,
@@ -75,7 +76,8 @@ use eyre::{bail, Result};
 use tracing::{debug, info, trace, warn};
 
 use crate::sync::helpers::{
-    apply_leaf_with_crdt_merge, generate_nonce, get_local_root_hash_for_context,
+    apply_leaf_with_crdt_merge, apply_under_context_lock, generate_nonce,
+    get_local_root_hash_for_context, handle_entity_delete_push_locked,
     is_leaf_currently_authorized, MAX_ENTITIES_PER_PUSH,
 };
 
@@ -90,6 +92,10 @@ pub struct LevelWiseConfig {
     pub remote_root_hash: [u8; 32],
     /// Maximum depth to traverse (from protocol negotiation).
     pub max_depth: u32,
+    /// Client used to acquire the per-context execution lock around the
+    /// initiator's host-side leaf/tombstone applies (split-brain guard). `None`
+    /// in the single-threaded sync-sim harness.
+    pub context_client: Option<ContextClient>,
 }
 
 /// Data from the first `LevelWiseRequest` for responder dispatch.
@@ -103,6 +109,10 @@ pub struct LevelWiseFirstRequest {
     pub level: u32,
     /// Parent node IDs to query children for (None = query from root).
     pub parent_ids: Option<Vec<[u8; 32]>>,
+    /// Client used to acquire the per-context execution lock around the
+    /// responder's host-side tombstone applies (split-brain guard). `None` in
+    /// the single-threaded sync-sim harness.
+    pub context_client: Option<ContextClient>,
 }
 
 // =============================================================================
@@ -174,6 +184,7 @@ impl SyncProtocolExecutor for LevelWiseProtocol {
             identity,
             config.remote_root_hash,
             config.max_depth,
+            config.context_client.as_ref(),
         )
         .await
     }
@@ -192,6 +203,7 @@ impl SyncProtocolExecutor for LevelWiseProtocol {
             identity,
             first_request.level,
             first_request.parent_ids,
+            first_request.context_client,
         )
         .await
     }
@@ -208,6 +220,7 @@ async fn run_initiator_impl<T: SyncTransport>(
     identity: PublicKey,
     remote_root_hash: [u8; 32],
     max_depth: u32,
+    context_client: Option<&ContextClient>,
 ) -> Result<LevelWiseStats> {
     info!(
         %context_id,
@@ -331,9 +344,11 @@ async fn run_initiator_impl<T: SyncTransport>(
         // (authenticated DeleteRef, delete-wins) is what converges a clear when
         // the holder initiates. Safe no-op when we already deleted or lose LWW.
         if !remote_deleted.is_empty() {
-            let applied = with_runtime_env(runtime_env.clone(), || {
-                crate::sync::hash_comparison_protocol::apply_remote_tombstones(&remote_deleted)
-            });
+            let applied =
+                apply_under_context_lock(context_client, context_id, &runtime_env, || {
+                    crate::sync::hash_comparison_protocol::apply_remote_tombstones(&remote_deleted)
+                })
+                .await;
             stats.entities_merged += applied;
             debug!(
                 %context_id,
@@ -459,9 +474,10 @@ async fn run_initiator_impl<T: SyncTransport>(
                         continue;
                     }
 
-                    with_runtime_env(runtime_env.clone(), || {
+                    apply_under_context_lock(context_client, context_id, &runtime_env, || {
                         apply_leaf_with_crdt_merge(context_id, leaf_data)
-                    })?;
+                    })
+                    .await?;
                     stats.entities_merged += 1;
                 }
             } else {
@@ -598,6 +614,7 @@ async fn run_responder_impl<T: SyncTransport>(
     identity: PublicKey,
     first_level: u32,
     first_parent_ids: Option<Vec<[u8; 32]>>,
+    context_client: Option<ContextClient>,
 ) -> Result<()> {
     info!(%context_id, "Starting LevelWise sync (responder)");
 
@@ -652,7 +669,15 @@ async fn run_responder_impl<T: SyncTransport>(
     sequence_id += 1;
 
     // Handle subsequent requests in a loop
-    run_responder_loop(transport, context_id, &runtime_env, sequence_id, 1).await
+    run_responder_loop(
+        transport,
+        context_id,
+        &runtime_env,
+        sequence_id,
+        1,
+        context_client.as_ref(),
+    )
+    .await
 }
 
 /// Handle a single LevelWise request and return the response data.
@@ -708,6 +733,7 @@ async fn run_responder_loop<T: SyncTransport>(
     runtime_env: &calimero_storage::env::RuntimeEnv,
     mut sequence_id: u64,
     initial_requests_handled: u64,
+    context_client: Option<&ContextClient>,
 ) -> Result<()> {
     let mut requests_handled = initial_requests_handled;
 
@@ -775,29 +801,15 @@ async fn run_responder_loop<T: SyncTransport>(
                 let total = deletions.len();
                 trace!(%context_id, total, "Handling EntityDeletePush from initiator");
 
-                let mut applied: u32 = 0;
-                for deletion in &deletions {
-                    let action = calimero_storage::action::Action::DeleteRef {
-                        id: Id::new(deletion.id),
-                        deleted_at: deletion.deleted_at,
-                        metadata: deletion.metadata.clone(),
-                    };
-                    let result = with_runtime_env(runtime_env.clone(), || {
-                        Interface::<MainStorage>::apply_action(
-                            action,
-                            &calimero_storage::interface::ApplyContext::empty(),
-                        )
-                    });
-                    match result {
-                        Ok(_) => applied += 1,
-                        Err(e) => debug!(
-                            %context_id,
-                            id = %hex::encode(deletion.id),
-                            error = %e,
-                            "EntityDeletePush: skipped a tombstone (lost LWW or unauthorized)"
-                        ),
-                    }
-                }
+                // Apply under the per-context execution lock so the tombstone
+                // writes can't interleave with a concurrent delta merge.
+                let applied = handle_entity_delete_push_locked(
+                    context_client,
+                    context_id,
+                    runtime_env,
+                    &deletions,
+                )
+                .await;
 
                 let response = StreamMessage::Message {
                     sequence_id,
@@ -1064,6 +1076,7 @@ mod tests {
         let config = LevelWiseConfig {
             remote_root_hash: [1u8; 32],
             max_depth: 2,
+            context_client: None,
         };
         assert_eq!(config.remote_root_hash, [1u8; 32]);
         assert_eq!(config.max_depth, 2);

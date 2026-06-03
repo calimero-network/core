@@ -2,6 +2,18 @@
 
 This document catalogs all host functions available to WASM guest code in the Calimero runtime. Host functions are the bridge between sandboxed WebAssembly modules and the host system.
 
+The authoritative source of truth for the import surface is
+[`src/logic/imports.rs`](src/logic/imports.rs); every function below is wired
+there and implemented under [`src/logic/host_functions/`](src/logic/host_functions/).
+
+### Status Legend
+
+| Marker | Meaning |
+|--------|---------|
+| _(none)_ | Implemented and callable from guest code today. |
+| **BLOCKED** | Wired into the runtime but disabled — the call returns a failure status without performing the operation. |
+| **PLANNED** | Documented design intent only. **Not** present in `imports.rs` and **not** importable; calling it will fail to link. See [Planned / Not Yet Implemented](#planned--not-yet-implemented). |
+
 ## Table of Contents
 
 - [Memory Exchange Pattern](#memory-exchange-pattern)
@@ -12,14 +24,16 @@ This document catalogs all host functions available to WASM guest code in the Ca
   - [Input/Output](#inputoutput)
   - [Logging & Events](#logging--events)
   - [Storage (Synchronized)](#storage-synchronized)
+  - [Storage (Ordered Index)](#storage-ordered-index)
   - [Storage (Private/Local)](#storage-privatelocal)
   - [State Management](#state-management)
   - [CRDT Collections (JS)](#crdt-collections-js)
   - [User & Frozen Storage (JS)](#user--frozen-storage-js)
-  - [Context Mutations](#context-mutations)
   - [Blob Operations](#blob-operations)
-  - [Governance](#governance)
   - [Utility](#utility)
+- [Planned / Not Yet Implemented](#planned--not-yet-implemented)
+  - [Context Mutations (Planned)](#context-mutations-planned)
+  - [Governance (Planned)](#governance-planned)
 - [Return Conventions](#return-conventions)
 - [Error Handling](#error-handling)
 
@@ -73,7 +87,7 @@ All data exchange between guest WASM code and host functions uses a **pointer-ba
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `panic` | `(location_ptr: u64) -> !` | Handles simple panic without message. Captures file/line/column from `sys::Location`. |
-| `panic_utf8` | `(msg_ptr: u64, file_ptr: u64) -> !` | Handles panic with UTF-8 message and file location. |
+| `panic_utf8` | `(msg_ptr: u64, location_ptr: u64) -> !` | Handles panic with UTF-8 message. `msg_ptr` is a `sys::Buffer`; `location_ptr` is a full `sys::Location` struct (file/line/column), **not** just a file pointer. |
 
 ### Register Operations
 
@@ -117,6 +131,32 @@ These operations persist to synchronized storage that replicates across nodes.
 | `storage_read` | `(key_ptr: u64, register_id: u64) -> u32` | Reads value into register. Returns `1` if found, `0` if not. |
 | `storage_write` | `(key_ptr: u64, value_ptr: u64, register_id: u64) -> u32` | Writes key-value. Returns `1` if key existed (old value in register), `0` if new. |
 | `storage_remove` | `(key_ptr: u64, register_id: u64) -> u32` | Removes key. Returns `1` if existed (old value in register), `0` if not. |
+
+### Storage (Ordered Index)
+
+A **node-local, ordered secondary index** that backs `SortedMap`/`SortedSet`
+range and ordered lookups. Unlike synchronized storage, this index is **NOT
+replicated** — each node rebuilds it locally. Keys are unhashed
+`collection ‖ order_key` byte strings (so lexicographic byte order is the
+iteration order); values are 32-byte entry IDs. Backed by the RocksDB
+`SortedIndex` column on a node and an in-memory `BTreeMap` for tests.
+
+Write operations return `1` if the change was persisted and `0` otherwise (so
+the guest can fall back to rebuilding its index rather than trusting a partial
+write). Key/prefix/bound arguments are bounded by `max_storage_key_size` and
+values by `max_storage_value_size`, like `storage_write`.
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `storage_index_set` | `(key_ptr: u64, value_ptr: u64) -> u32` | Insert/overwrite `key -> value`. Returns `1` if persisted, `0` otherwise. |
+| `storage_index_remove` | `(key_ptr: u64) -> u32` | Removes a single index key. Returns `1` if persisted, `0` otherwise. |
+| `storage_index_remove_prefix` | `(prefix_ptr: u64) -> u32` | Removes every index key beginning with `prefix`. Returns `1` if persisted, `0` otherwise. |
+| `storage_index_scan` | `(lo_ptr: u64, hi_ptr: u64, offset: u64, limit: u64, register_id: u64) -> u32` | Scans `[lo, hi)`, skipping `offset` entries, capped at `limit`. `limit` is `n + 1`-encoded: `0` = unbounded, otherwise `limit - 1` results. Encodes results into the register (see below). Returns `1`. |
+| `storage_index_last` | `(lo_ptr: u64, hi_ptr: u64, register_id: u64) -> u32` | Reverse seek: encodes the single largest `(key, value)` in `[lo, hi)` into the register (count `0` or `1`). Backs `SortedMap::last` as an `O(log n)` lookup. Returns `1`. |
+
+**Scan register encoding.** `storage_index_scan` and `storage_index_last` write
+their results into `register_id` using a length-prefixed, little-endian format:
+a `count: u32`, then for each pair `key_len: u32, key, value_len: u32, value`.
 
 ### Storage (Private/Local)
 
@@ -220,20 +260,6 @@ Content-addressable storage for immutable blobs.
 | `js_frozen_storage_get` | `(storage_id_ptr: u64, hash_ptr: u64, register_id: u64) -> i32` | Gets blob by hash. |
 | `js_frozen_storage_contains` | `(storage_id_ptr: u64, hash_ptr: u64) -> i32` | Checks if hash exists. |
 
-### Context Mutations
-
-These queue mutations to be applied after execution completes.
-
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `context_create` | `(protocol_ptr: u64, app_id_ptr: u64, args_ptr: u64, alias_ptr: u64)` | Queues context creation. `alias_ptr` can be `0` for no alias. |
-| `context_delete` | `(context_id_ptr: u64)` | Queues context deletion. |
-| `context_add_member` | `(public_key_ptr: u64)` | Queues adding member to current context. |
-| `context_remove_member` | `(public_key_ptr: u64)` | Queues removing member from current context. |
-| `context_is_member` | `(public_key_ptr: u64) -> u32` | Checks membership. Returns `1` if member, `0` if not. |
-| `context_members` | `(register_id: u64)` | Writes Borsh-encoded `Vec<[u8;32]>` of members to register. |
-| `context_resolve_alias` | `(alias_ptr: u64, register_id: u64) -> u32` | Resolves alias to context ID. Returns `1` if found, `0` if not. |
-
 ### Blob Operations
 
 Large binary object streaming.
@@ -247,21 +273,49 @@ Large binary object streaming.
 | `blob_read` | `(fd: u64, data_ptr: u64) -> u64` | Reads data from blob into buffer. |
 | `blob_announce_to_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u32` | Announces blob availability to context. |
 
-### Governance
-
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `send_proposal` | `(actions_ptr: u64, id_ptr: u64)` | Submits governance proposal. |
-| `approve_proposal` | `(approval_ptr: u64)` | Approves existing proposal. |
-
 ### Utility
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `fetch` | `(url_ptr, method_ptr, headers_ptr, body_ptr, register_id) -> u32` | HTTP fetch. **Currently BLOCKED** - always returns `1` (failure). |
+| `fetch` | `(url_ptr: u64, method_ptr: u64, headers_ptr: u64, body_ptr: u64, register_id: u64) -> u32` | HTTP fetch. **BLOCKED** — wired into the runtime but disabled; always returns `1` (failure) without performing a request. |
 | `random_bytes` | `(dest_ptr: u64)` | Fills buffer with cryptographically random bytes. |
 | `time_now` | `(dest_ptr: u64)` | Writes current Unix timestamp (nanoseconds) as `u64` to 8-byte buffer. |
 | `ed25519_verify` | `(sig_ptr: u64, pk_ptr: u64, msg_ptr: u64) -> u32` | Verifies Ed25519 signature. Returns `1` if valid, `0` if invalid. |
+
+---
+
+## Planned / Not Yet Implemented
+
+> ⚠️ **None of the functions in this section currently exist.** They are
+> **PLANNED** APIs documented as design intent. They are **not** declared in
+> [`src/logic/imports.rs`](src/logic/imports.rs) and have **no** implementation
+> under [`src/logic/host_functions/`](src/logic/host_functions/). A guest module
+> importing any of them will **fail to instantiate** (missing import). The
+> signatures below are provisional and may change before these land.
+
+### Context Mutations (Planned)
+
+Intended to queue context membership and lifecycle mutations to be applied after
+execution completes.
+
+| Function | Proposed Signature | Intended Behavior |
+|----------|--------------------|-------------------|
+| `context_create` | `(protocol_ptr: u64, app_id_ptr: u64, args_ptr: u64, alias_ptr: u64)` | Queue context creation. `alias_ptr` may be `0` for no alias. |
+| `context_delete` | `(context_id_ptr: u64)` | Queue context deletion. |
+| `context_add_member` | `(public_key_ptr: u64)` | Queue adding a member to the current context. |
+| `context_remove_member` | `(public_key_ptr: u64)` | Queue removing a member from the current context. |
+| `context_is_member` | `(public_key_ptr: u64) -> u32` | Check membership. Would return `1` if member, `0` if not. |
+| `context_members` | `(register_id: u64)` | Write a Borsh-encoded `Vec<[u8;32]>` of members to a register. |
+| `context_resolve_alias` | `(alias_ptr: u64, register_id: u64) -> u32` | Resolve an alias to a context ID. Would return `1` if found, `0` if not. |
+
+### Governance (Planned)
+
+Intended to let guest code submit and approve governance proposals.
+
+| Function | Proposed Signature | Intended Behavior |
+|----------|--------------------|-------------------|
+| `send_proposal` | `(actions_ptr: u64, id_ptr: u64)` | Submit a governance proposal. |
+| `approve_proposal` | `(approval_ptr: u64)` | Approve an existing proposal. |
 
 ---
 
