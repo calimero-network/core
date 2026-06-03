@@ -2290,13 +2290,6 @@ async fn request_missing_deltas(
     );
     let mut fetched_deltas: Vec<ParentFetch> = Vec::new();
     let mut fetch_count = 0;
-
-    // Set when the peer reports it no longer has a delta we still need —
-    // the expected outcome once that peer has compacted the delta away
-    // (#2026). Mirrors the same handling in `SyncManager::request_missing_deltas`:
-    // the ancestor chain is broken on the peer's side, so we abort the
-    // catch-up and let the next sync round reconcile via HashComparison.
-    let mut pruned_ancestor_encountered = false;
     // Accumulated (delta_id, events_data) pairs from any cascades that
     // happen while adding peer-fetched parents below. Passed back to the
     // caller so handlers can run.
@@ -2635,31 +2628,18 @@ async fn request_missing_deltas(
                     payload: MessagePayload::DeltaNotFound,
                     ..
                 }) => {
-                    // The peer can't produce a delta we need — almost always
-                    // because it has compacted that history away (#2026).
-                    // Continuing to fetch its ancestors is futile; abort and
-                    // let the next sync round fall back to HashComparison.
-                    warn!(
-                        %context_id,
-                        delta_id = ?missing_id,
-                        "Peer doesn't have requested delta (likely pruned); \
-                         aborting parent fetch, will reconcile via state sync"
-                    );
-                    crate::node_metrics::observe_pruned_ancestor_fallback();
-                    pruned_ancestor_encountered = true;
-                    break;
+                    // `DeltaNotFound` is overloaded (compacted away #2026, a
+                    // not-yet-persisted post-broadcast race, or an unverifiable
+                    // row), so we just skip this id and keep fetching the rest.
+                    // A genuinely pruned ancestor leaves descendants pending and
+                    // the next sync round converges via HashComparison without
+                    // the delta log; no explicit abort/fallback is needed.
+                    warn!(%context_id, delta_id = ?missing_id, "Peer doesn't have requested delta");
                 }
                 other => {
                     warn!(%context_id, delta_id = ?missing_id, ?other, "Unexpected response to delta request");
                 }
             }
-        }
-
-        // A pruned ancestor breaks the chain from this peer; stop draining
-        // `to_fetch` entirely. Deltas already fetched stay as valid partial
-        // progress (applied to the DAG in Phase 2 below).
-        if pruned_ancestor_encountered {
-            break;
         }
     }
 

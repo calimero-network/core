@@ -106,7 +106,6 @@ pub(crate) struct NodeMetrics {
 
     // DAG compaction (#2026).
     pub(crate) dag_compaction_deltas_pruned_total: Counter,
-    pub(crate) dag_compaction_pruned_ancestor_fallbacks_total: Counter,
 
     // HC / LevelWise / EntityPush per-leaf authorization drops.
     pub(crate) hc_leaf_drops_total: Family<LeafDropLabels, Counter>,
@@ -240,24 +239,16 @@ impl NodeMetrics {
             dag_heads_count.clone(),
         );
 
-        // DAG compaction (#2026): how much history has been reclaimed, and
-        // how often peers hit a pruned frontier and fell back to state-based
-        // sync. A persistently rising fallback counter means
-        // `retain_recent_count` is too small for this node's reconnect gaps —
-        // peers are being pushed onto the more expensive HashComparison path.
+        // DAG compaction (#2026): how much history has been reclaimed. Counted
+        // on the compactor side, where the figure is unambiguous (a delta
+        // catch-up hitting a peer's `DeltaNotFound` can't be attributed to
+        // pruning vs. a persist race vs. an unverifiable row, so there is no
+        // honest receiver-side fallback counter).
         let dag_compaction_deltas_pruned_total = Counter::default();
         registry.register(
             "dag_compaction_deltas_pruned_total",
             "Total DAG delta rows pruned by compaction across all contexts",
             dag_compaction_deltas_pruned_total.clone(),
-        );
-
-        let dag_compaction_pruned_ancestor_fallbacks_total = Counter::default();
-        registry.register(
-            "dag_compaction_pruned_ancestor_fallbacks_total",
-            "Times a delta catch-up aborted because a peer had pruned a needed \
-             ancestor, deferring to state-based (HashComparison) sync",
-            dag_compaction_pruned_ancestor_fallbacks_total.clone(),
         );
 
         let hc_leaf_drops_total: Family<LeafDropLabels, Counter> = Family::default();
@@ -318,7 +309,6 @@ impl NodeMetrics {
             delta_missing_parents_total,
             dag_heads_count,
             dag_compaction_deltas_pruned_total,
-            dag_compaction_pruned_ancestor_fallbacks_total,
             hc_leaf_drops_total,
             governance_drain_outcomes_total,
             process_resident_memory_bytes,
@@ -579,14 +569,6 @@ pub(crate) fn observe_dag_heads_count(heads: usize) {
 pub(crate) fn observe_compaction_pruned(count: usize) {
     if let Some(m) = global() {
         m.dag_compaction_deltas_pruned_total.inc_by(count as u64);
-    }
-}
-
-/// Bump the counter for a delta catch-up that aborted on a pruned ancestor
-/// and deferred to state-based sync (#2026).
-pub(crate) fn observe_pruned_ancestor_fallback() {
-    if let Some(m) = global() {
-        m.dag_compaction_pruned_ancestor_fallbacks_total.inc();
     }
 }
 
