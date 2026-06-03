@@ -11,12 +11,14 @@
 //! lock-free map and read out-of-band, so a reader may observe a value that is
 //! a few hundred milliseconds stale. It is meant for UX ("syncing, please
 //! wait" vs "stuck"), not for control flow.
-
-use serde::{Deserialize, Serialize};
+//!
+//! These types are passed in-process only (run-loop publisher → `NodeManager`
+//! → `NodeClient`); the wire-facing shape lives in `calimero-server-primitives`
+//! (`jsonrpc::SyncState`), which the server handler maps onto. So there are
+//! deliberately no `serde` derives here.
 
 /// A snapshot of where a context is in the sync lifecycle.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct SyncStatusSnapshot {
     /// Coarse phase the sync manager last recorded for this context.
     pub phase: SyncPhase,
@@ -30,27 +32,19 @@ pub struct SyncStatusSnapshot {
     pub last_error: Option<String>,
 }
 
-impl SyncStatusSnapshot {
-    /// A context with no recorded activity — neither syncing nor backing off.
-    #[must_use]
-    pub const fn idle() -> Self {
-        Self {
-            phase: SyncPhase::Idle,
-            failure_count: 0,
-            last_error: None,
-        }
-    }
-}
-
 /// Coarse sync phase. Deliberately small: finer-grained snapshot progress
 /// (page percent, bytes) can be layered on later without changing the
-/// distinction this enum exists to make — running vs idle vs wedged.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "camelCase")]
+/// distinction this enum exists to make — running vs settled vs wedged.
+///
+/// Note this phase is derived purely from the run-loop's `SyncState` and is
+/// blind to whether the context is initialized. In particular the benign
+/// "no peers / peer not materialised" outcome clears the in-flight marker
+/// without recording a failure, so it lands here as [`SyncPhase::Idle`]; it is
+/// the *reader* (which also knows `is_initialized`) that resolves an
+/// uninitialized-yet-idle context to "waiting for peers".
+#[derive(Clone, Copy, Debug)]
 pub enum SyncPhase {
-    /// No attempt is in flight and none is gated behind backoff. Either the
-    /// context is already initialized, or it has just joined and the run-loop
-    /// has not dispatched its first attempt yet.
+    /// No attempt is in flight and none is gated behind backoff.
     Idle,
     /// A sync attempt is currently in flight (snapshot or delta exchange).
     Syncing,
