@@ -231,12 +231,10 @@ impl Prepared<'_> {
             }
         };
 
-        // Make room for the freshly created context. Placed after the
-        // membership/capability validation above (so failed auth never drains
-        // the cache) and immediately before the derivation loop that inserts
-        // via the raw `entry()` escape hatch (the VacantEntry transmute below).
-        contexts.evict_if_full();
-
+        // The derivation loop below inserts via the raw `entry()` escape hatch
+        // (the VacantEntry transmute); `entry()` caps the cache itself, evicting
+        // one idle entry before admitting a new key, so no separate
+        // `evict_if_full()` is needed here.
         let mut context = None;
         for _ in 0..5 {
             let context_secret = if let Some(seed) = seed {

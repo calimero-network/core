@@ -35,18 +35,28 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                 // Done under the held DAG lock (the apply path is the only
                 // writer), and only after `Applied` advanced the frontier.
                 //
+                // Gate on the *applied* count, not the total `delta_count()`
+                // (which also counts pending deltas). `prune_to_recent` only
+                // prunes applied, non-head history, so triggering off a large
+                // *pending* backlog (e.g. a partition with missing parents)
+                // would re-walk the whole DAG on every apply while pruning
+                // nothing. Applied history advancing past the threshold is the
+                // only thing this prune can actually act on; once it fires it
+                // drops applied back to the retain window, so the next prune is
+                // ~RETAIN..THRESHOLD applies away (a built-in hysteresis band).
+                //
                 // Lossless for peers: applied ops are durably persisted and the
                 // backfill responder serves from RocksDB, not this DAG — so the
                 // pruned ids are discarded, NOT deleted from disk.
                 if matches!(outcome, Ok(AddDeltaOutcome::Applied))
-                    && dag.delta_count() > NAMESPACE_DAG_PRUNE_THRESHOLD
+                    && dag.stats().applied_deltas > NAMESPACE_DAG_PRUNE_THRESHOLD
                 {
                     let pruned = dag.prune_to_recent(NAMESPACE_DAG_PRUNE_RETAIN);
                     if !pruned.is_empty() {
                         tracing::debug!(
                             namespace = ?namespace_id,
                             pruned = pruned.len(),
-                            retained = dag.delta_count(),
+                            retained = dag.stats().applied_deltas,
                             "pruned applied governance-DAG history (durable op-log retained)"
                         );
                     }

@@ -90,11 +90,16 @@ impl<K: Ord + Clone + Debug, V: Evictable> BoundedCache<K, V> {
     }
 
     /// Raw entry access, for the one caller (`create_context`) that needs a
-    /// `VacantEntry` to satisfy a borrow-checker workaround. Callers inserting
-    /// a new key through this path must call [`Self::evict_if_full`] first;
-    /// every other insert site should use [`Self::insert_new`] /
-    /// [`Self::get_or_insert_with`], which cap automatically.
+    /// `VacantEntry` to satisfy a borrow-checker workaround.
+    ///
+    /// Caps automatically: a *new* key evicts one idle entry first (so this
+    /// path can't grow the cache past cap), while re-accessing an existing key
+    /// never evicts — matching [`Self::insert_new`] / [`Self::get_or_insert_with`].
+    /// The cap is therefore enforced here, not by a caller convention.
     pub(crate) fn entry(&mut self, key: K) -> btree_map::Entry<'_, K, V> {
+        if !self.map.contains_key(&key) {
+            self.evict_if_full();
+        }
         self.map.entry(key)
     }
 
@@ -177,13 +182,15 @@ impl<K: Ord + Clone + Debug, V: Evictable> BoundedCache<K, V> {
     /// Return the value for `key`, computing and inserting it (capped) on a
     /// miss. `make` runs only on a miss, after any eviction.
     pub(crate) fn get_or_insert_with(&mut self, key: K, make: impl FnOnce() -> V) -> &mut V {
-        if !self.map.contains_key(&key) {
-            self.evict_if_full();
-            let _ = self.map.insert(key.clone(), make());
+        // Hit: return the existing value. Miss: evict-if-full, then insert via
+        // the entry API so the value is materialised in a single lookup with
+        // the key moved (not cloned). `evict_if_full` runs before `entry()`, so
+        // the entry it returns is always vacant for `key`.
+        if self.map.contains_key(&key) {
+            return self.map.get_mut(&key).expect("checked present");
         }
-        self.map
-            .get_mut(&key)
-            .expect("entry just inserted or already present")
+        self.evict_if_full();
+        self.map.entry(key).or_insert_with(make)
     }
 }
 
@@ -302,5 +309,26 @@ mod tests {
         for i in 0..4 {
             assert!(cache.contains_key(&i));
         }
+    }
+
+    #[test]
+    fn entry_caps_on_new_key_but_not_on_existing() {
+        let mut cache: BoundedCache<u32, Plain> = BoundedCache::new(4, "plain");
+        for i in 0..4 {
+            let _ = cache.insert_new(i, Plain(i));
+        }
+        // entry() for a NEW key at cap must evict first (key 0, the lowest),
+        // holding at cap — the cap is enforced by entry() itself.
+        if let btree_map::Entry::Vacant(e) = cache.entry(99) {
+            let _ = e.insert(Plain(99));
+        }
+        assert_eq!(cache.len(), 4);
+        assert!(cache.contains_key(&99));
+        assert!(!cache.contains_key(&0), "lowest idle key should be evicted");
+
+        // entry() for an EXISTING key must NOT evict (re-access, not growth).
+        let _ = cache.entry(99);
+        assert_eq!(cache.len(), 4);
+        assert!(cache.contains_key(&99));
     }
 }
