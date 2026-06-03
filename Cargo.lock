@@ -10315,7 +10315,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-storage-macros",
  "serial_test",
 ]
 
