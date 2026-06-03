@@ -84,8 +84,11 @@ description: >
   concurrent, they reconcile causally and the convergence assertions
   still hold — so the worst case is weaker coverage, never a false
   pass. The fully-deterministic guarantee lives in the node-level
-  sim test that accompanies this workflow; this is the real-network
-  belt-and-suspenders on top.
+  sim test that accompanies this workflow
+  (crates/node/src/sync/rotation_log_reader.rs); this is the
+  real-network belt-and-suspenders on top. A direct primitive that
+  would simplify this (cut libp2p between a peer pair while keeping
+  RPC) is tracked in calimero-network/merobox#278.
 
   Relates: #2665, #2655, #2588, #2233.
 
