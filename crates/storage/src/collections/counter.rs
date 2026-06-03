@@ -339,9 +339,28 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
 
     /// Increment the counter for the current executor
     ///
+    /// # Panics
+    /// Panics if called inside a state migration (`#[app::migrate]`, i.e. storage
+    /// merge mode): `increment` stamps the running node's executor id, which differs
+    /// per node and would diverge the network. Carry the counter across unchanged or
+    /// use [`increment_for`](Self::increment_for) with a deterministic executor id.
+    ///
     /// # Errors
     /// Returns error if storage operation fails
+    #[expect(
+        clippy::panic,
+        reason = "non-deterministic during migrate (per-node executor id); a loud panic \
+                  is the intended, unmissable guard against a silent network divergence"
+    )]
     pub fn increment(&mut self) -> Result<(), StoreError> {
+        if crate::env::in_merge_mode() {
+            panic!(
+                "Counter::increment() is non-deterministic during a state migration: it \
+                 stamps this node's identity, which differs per node and diverges the \
+                 network. Carry the counter across unchanged (`field: old.field`) or \
+                 replay with `increment_for(executor_id, …)`."
+            );
+        }
         let executor_id = crate::env::executor_id();
         self.increment_for(&executor_id)
     }
@@ -404,9 +423,29 @@ impl<S: StorageAdaptor> Counter<false, S> {
 impl<S: StorageAdaptor> Counter<true, S> {
     /// Decrement the counter for the current executor (PN-Counter only)
     ///
+    /// # Panics
+    /// Panics if called inside a state migration (`#[app::migrate]`, i.e. storage
+    /// merge mode): like [`increment`](Counter::increment), `decrement` stamps the
+    /// running node's executor id, which differs per node and would diverge the
+    /// network. Carry the counter across unchanged or use
+    /// [`decrement_for`](Counter::decrement_for) with a deterministic executor id.
+    ///
     /// # Errors
     /// Returns error if storage operation fails
+    #[expect(
+        clippy::panic,
+        reason = "non-deterministic during migrate (per-node executor id); a loud panic \
+                  is the intended, unmissable guard against a silent network divergence"
+    )]
     pub fn decrement(&mut self) -> Result<(), StoreError> {
+        if crate::env::in_merge_mode() {
+            panic!(
+                "Counter::decrement() is non-deterministic during a state migration: it \
+                 stamps this node's identity, which differs per node and diverges the \
+                 network. Carry the counter across unchanged (`field: old.field`) or \
+                 replay with `decrement_for(executor_id, …)`."
+            );
+        }
         let executor_id = crate::env::executor_id();
         self.decrement_for(&executor_id)
     }
@@ -507,6 +546,55 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Default for Counter<ALLOW_D
 mod tests {
     use super::*;
     use crate::collections::Root;
+
+    // ========== Migration merge-mode guard ==========
+
+    #[test]
+    #[should_panic(expected = "migration")]
+    fn increment_panics_during_migration() {
+        crate::env::reset_for_testing();
+        let mut counter = Root::new(|| GCounter::new());
+        // `increment()` stamps the current node's identity; running it inside a
+        // migrate body (merge mode is active) would key the delta differently on
+        // every node and diverge the network. It must refuse, loudly.
+        crate::env::with_merge_mode(|| {
+            let _ = counter.increment();
+        });
+    }
+
+    #[test]
+    fn increment_for_is_allowed_during_migration() {
+        crate::env::reset_for_testing();
+        let mut counter = Root::new(|| GCounter::new());
+        // The deterministic replay API (explicit executor id) stays usable in a
+        // migrate body — that is the sanctioned way to rebuild a counter.
+        crate::env::with_merge_mode(|| {
+            counter.increment_for(&[1u8; 32]).unwrap();
+        });
+        assert_eq!(counter.value().unwrap(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "migration")]
+    fn decrement_panics_during_migration() {
+        crate::env::reset_for_testing();
+        let mut counter = Root::new(|| PNCounter::new());
+        // `decrement` mirrors `increment` — it stamps the running node's id, so it
+        // must refuse inside a migrate (merge mode) for the same reason.
+        crate::env::with_merge_mode(|| {
+            let _ = counter.decrement();
+        });
+    }
+
+    #[test]
+    fn decrement_for_is_allowed_during_migration() {
+        crate::env::reset_for_testing();
+        let mut counter = Root::new(|| PNCounter::new());
+        crate::env::with_merge_mode(|| {
+            counter.decrement_for(&[1u8; 32]).unwrap();
+        });
+        assert_eq!(counter.value_signed().unwrap(), -1);
+    }
 
     // ========== G-Counter Tests ==========
 
