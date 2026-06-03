@@ -15,64 +15,28 @@
 //! regression stays in `calimero_storage::tests::write_hook` (it asserts
 //! a storage-internal invariant; no DAG needed).
 
-use core::num::NonZeroU128;
-use std::collections::{BTreeSet, HashMap, HashSet};
-
-use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
-use calimero_storage::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+use calimero_storage::entities::{ChildInfo, Metadata};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{ApplyContext, Interface, StorageError};
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::rotation_log::{self, RotationLogEntry};
 use calimero_storage::store::{MockedStorage, StorageAdaptor};
-use ed25519_dalek::{Signer, SigningKey};
+use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
+use core::num::NonZeroU128;
+use ed25519_dalek::SigningKey;
 
 use crate::sync::rotation_log_reader;
+use crate::sync::test_helpers::Dag;
 
 // =============================================================================
 // Harness
 // =============================================================================
 
-/// Minimal DAG mirror used by tests to provide a `happens_before` predicate
-/// over delta ids — same shape as P5's `Dag`, scoped here so each test
-/// builds the DAG it needs.
-struct Dag {
-    parents: HashMap<[u8; 32], Vec<[u8; 32]>>,
-}
-
-impl Dag {
-    fn new() -> Self {
-        Self {
-            parents: HashMap::new(),
-        }
-    }
-
-    fn record(&mut self, delta_id: [u8; 32], parents: Vec<[u8; 32]>) {
-        self.parents.insert(delta_id, parents);
-    }
-
-    fn happens_before(&self, ancestor: &[u8; 32], descendant: &[u8; 32]) -> bool {
-        if ancestor == descendant {
-            return false;
-        }
-        let mut frontier: Vec<[u8; 32]> = self.parents.get(descendant).cloned().unwrap_or_default();
-        let mut seen: HashSet<[u8; 32]> = HashSet::new();
-        while let Some(node) = frontier.pop() {
-            if !seen.insert(node) {
-                continue;
-            }
-            if node == *ancestor {
-                return true;
-            }
-            if let Some(ps) = self.parents.get(&node) {
-                frontier.extend(ps.iter().copied());
-            }
-        }
-        false
-    }
-}
+// The `Dag` topology mirror is shared with P5 via `crate::sync::test_helpers`.
+// Signing/action builders (`build_signed_shared_action`, `pubkey_of`) come from
+// `calimero_storage::tests::common`.
 
 // Each test uses a unique mocked-storage scope so they don't bleed into each
 // other (the mock store is a thread-local BTreeMap keyed on (scope, key)).
@@ -80,10 +44,6 @@ type S<const SCOPE: usize> = MockedStorage<SCOPE>;
 
 fn make_signing_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
-}
-
-fn pubkey_of(sk: &SigningKey) -> PublicKey {
-    PublicKey::from(*sk.verifying_key().as_bytes())
 }
 
 fn hlc(ns: u64) -> HybridTimestamp {
@@ -117,57 +77,6 @@ fn setup_root<S: StorageAdaptor>() -> ChildInfo {
 
 fn entity_id(seed: u8) -> Id {
     Id::new([seed; 32])
-}
-
-/// Build a signed `Shared` action — see notes on the storage-side helper
-/// (`tests::common::build_signed_shared_action`) for invariants.
-fn build_signed_shared_action(
-    add: bool,
-    id: Id,
-    data: Vec<u8>,
-    writers: BTreeSet<PublicKey>,
-    hlc_ns: u64,
-    signer_sk: &SigningKey,
-    ancestors: Vec<ChildInfo>,
-) -> Action {
-    let mut metadata = Metadata::new(hlc_ns, hlc_ns);
-    metadata.storage_type = StorageType::Shared {
-        writers,
-        signature_data: Some(SignatureData {
-            signature: [0; 64],
-            nonce: hlc_ns,
-            signer: Some(pubkey_of(signer_sk)),
-        }),
-    };
-    let mut action = if add {
-        Action::Add {
-            id,
-            data,
-            ancestors,
-            metadata,
-        }
-    } else {
-        Action::Update {
-            id,
-            data,
-            ancestors,
-            metadata,
-        }
-    };
-    let payload = action.payload_for_signing();
-    let signature = signer_sk.sign(&payload).to_bytes();
-    let metadata_mut = match &mut action {
-        Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata,
-        _ => unreachable!(),
-    };
-    if let StorageType::Shared {
-        signature_data: Some(sd),
-        ..
-    } = &mut metadata_mut.storage_type
-    {
-        sd.signature = signature;
-    }
-    action
 }
 
 /// Build an `ApplyContext` for `apply_action` by resolving `effective_writers`
