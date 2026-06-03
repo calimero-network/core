@@ -3500,6 +3500,12 @@ impl SyncManager {
             sync_timeout: self.sync_config.timeout,
         };
         crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
+        // PR-6b Task 6b.5: a node offline across a migration window reconnects,
+        // syncs, and lazily advances its binary on first execute. Sync settle
+        // is the node-side observation point for that advance — drain any
+        // absorbed straggler deltas whose schema the now-loaded reader can read,
+        // replaying their original signed bytes verbatim.
+        crate::handlers::state_delta::drain_all_absorbed(&drain_input).await;
     }
 
     /// #2625: when `context_id` has state deltas parked in the

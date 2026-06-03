@@ -852,6 +852,19 @@ fn generate_test_state_impl(
                 // not just in the top-level root struct.
                 ::calimero_storage::env::root_hash()
             }
+
+            fn __test_with_mut_merged(f: &mut dyn ::core::ops::FnMut(&mut Self)) {
+                // Like `__test_with_mut`, but under storage *merge mode* — the
+                // way `__calimero_sync_next` applies an inbound delta. Stamps are
+                // zeroed so the mutation is byte-identical across nodes, modelling
+                // an absorbed delta's verbatim replay.
+                ::calimero_storage::env::with_merge_mode(|| {
+                    let mut app = ::calimero_storage::collections::Root::<#ident #ty_generics>::fetch()
+                        .expect("TestHost: app state has not been initialized");
+                    f(&mut *app);
+                    app.commit();
+                });
+            }
         }
     }
 }

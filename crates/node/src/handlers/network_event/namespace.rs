@@ -157,6 +157,12 @@ pub(super) fn handle_namespace_governance_delta(
                     sync_timeout,
                 };
                 crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
+                // PR-6b Task 6b.5: a cascade-upgrade governance op that just
+                // applied bumps the group's target schema and is the catalyst
+                // for this node's lazy binary advance. Drain any absorbed
+                // straggler deltas the now-loaded reader can read (verbatim
+                // replay); no-op for contexts that haven't advanced.
+                crate::handlers::state_delta::drain_all_absorbed(&drain_input).await;
 
                 // Reconcile-via-anchor: if `MemberRemoved` / `MemberLeft`
                 // apply reported state-hash divergence from the signed
@@ -552,6 +558,12 @@ async fn fetch_and_apply_namespace_backfill(
                     sync_timeout,
                 };
                 crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
+                // PR-6b Task 6b.5: backfilled cascade-upgrade ops may have
+                // advanced this node's target schema and triggered a lazy
+                // binary advance — drain absorbed straggler deltas the loaded
+                // reader can now read (verbatim replay). Same hook as the
+                // gossip-apply path.
+                crate::handlers::state_delta::drain_all_absorbed(&drain_input).await;
             }
         }
         _ => {

@@ -529,6 +529,185 @@ pub(crate) async fn drain_all_governance_pending(input: &StateDeltaContext) {
     }
 }
 
+/// Drain the absorb buffer for `context_id` by replaying each now-readable
+/// straggler delta's **original signed bytes verbatim** (PR-6b Task 6b.5).
+///
+/// Called when a context's loaded binary advances — i.e. the node finished its
+/// own lazy upgrade to the new schema (hooked at the `maybe_lazy_upgrade`
+/// success site). For every pending [`AbsorbRecord`] whose `producing_app_key`
+/// now matches the node's *loaded reader*
+/// ([`loaded_reader_app_key`](calimero_context::hlc_fence::loaded_reader_app_key)),
+/// the record is reconstructed into the byte-identical [`BufferedDelta`] it was
+/// absorbed from and re-fed through the normal apply path
+/// ([`apply_authorized_state_delta`]) — the same path a freshly gossiped delta
+/// takes. The now-loaded v2 wasm reinterprets the original v1-signed actions;
+/// PR-6a's deterministic whole-root rebuild guarantees convergence (O2). A
+/// record is **deleted only after** a successful replay (idempotent via the
+/// `delta_id` key, so a crash mid-drain just re-replays survivors).
+///
+/// **No translation.** The `payload` bytes are replayed exactly as signed —
+/// translating them would break each `Action`'s `payload_for_signing`
+/// signature. A record whose schema is still behind the loaded reader is left
+/// in place for a future drain pass.
+///
+/// **Re-entrancy.** After the binary advances,
+/// `producing_app_key == loaded_reader_app_key`, so the replayed delta's fence
+/// (`fence_and_maybe_absorb` inside [`apply_authorized_state_delta`]) returns
+/// [`FenceDecision::Apply`](calimero_context::hlc_fence::FenceDecision::Apply) —
+/// it is applied, **not** re-buffered. The drain therefore cannot loop.
+pub(crate) async fn drain_absorbed(input: &StateDeltaContext, context_id: &ContextId) {
+    let store = input.node_clients.context.datastore();
+    let drained = drain_absorbed_records(store, context_id, |buffered| {
+        let input = input.clone();
+        let context_id = *context_id;
+        async move {
+            let reconstructed = state_delta_message_from_buffered(buffered, context_id);
+            apply_authorized_state_delta(input, reconstructed).await?;
+            // `apply_authorized_state_delta` returns `Ok(())` for both an
+            // applied delta and a soft-declined one (e.g. ReadOnly author).
+            // Either way the delta is *consumed* — there is nothing left to
+            // re-absorb — so we report success and let the record be deleted.
+            Ok::<bool, eyre::Report>(true)
+        }
+    })
+    .await;
+
+    match drained {
+        Ok(0) => {}
+        Ok(n) => info!(
+            %context_id,
+            drained = n,
+            "absorb drain: replayed buffered straggler deltas verbatim after binary advance"
+        ),
+        Err(err) => warn!(
+            %context_id,
+            %err,
+            "absorb drain: failed to enumerate absorb buffer"
+        ),
+    }
+}
+
+/// Core drain mechanics, factored out so the decision/delete logic is unit-
+/// testable without a live WASM executor: `replay` is the injection seam (the
+/// production hook passes [`apply_authorized_state_delta`]; tests pass a
+/// recording mock).
+///
+/// For each pending [`AbsorbRecord`] in `context_id`'s absorb buffer:
+/// - skip it if its `producing_app_key` is `None` or differs from the node's
+///   loaded reader (the binary hasn't caught up to *this* record's schema yet —
+///   leave it for a later pass);
+/// - otherwise reconstruct the verbatim [`BufferedDelta`], hand it to `replay`,
+///   and — only on `Ok(true)` — `delete` the record.
+///
+/// Returns the number of records successfully drained (replayed + deleted).
+/// A replay that errors or returns `Ok(false)` leaves the record in place
+/// (delete-after-success), so the next drain pass retries it.
+pub(crate) async fn drain_absorbed_records<F, Fut>(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+    replay: F,
+) -> Result<usize>
+where
+    F: Fn(calimero_node_primitives::delta_buffer::BufferedDelta) -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    use calimero_context::group_store::AbsorbRepository;
+    use calimero_context::hlc_fence::loaded_reader_app_key;
+
+    // The schema this node can read *right now*. `None` (non-group context /
+    // unresolvable meta) means we cannot tell whether any record is readable,
+    // so we drain nothing and leave everything pending.
+    let Some(loaded) = loaded_reader_app_key(store, context_id)? else {
+        return Ok(0);
+    };
+
+    let repo = AbsorbRepository::new(store);
+    let pending = repo.enumerate_pending(context_id)?;
+
+    let mut drained = 0usize;
+    for ((producing_app_key, delta_id), record) in pending {
+        // Skip records the loaded binary still can't read — they stay pending
+        // until the node advances to *their* schema.
+        if record.producing_app_key != Some(loaded) {
+            continue;
+        }
+
+        let buffered = match record.into_buffered() {
+            Ok(b) => b,
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    %err,
+                    "absorb drain: corrupt AbsorbRecord — cannot reconstruct buffered delta; skipping"
+                );
+                continue;
+            }
+        };
+
+        match replay(buffered).await {
+            Ok(true) => {
+                // Delete only after a successful verbatim replay. Idempotent:
+                // the `delta_id` is part of the key, so a crash before this
+                // delete just re-replays the survivor (replay is convergent).
+                repo.delete(context_id, producing_app_key, delta_id)?;
+                drained += 1;
+            }
+            Ok(false) => {
+                debug!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    "absorb drain: replay declined to consume delta — leaving record pending"
+                );
+            }
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    %err,
+                    "absorb drain: verbatim replay failed — leaving record pending for retry"
+                );
+            }
+        }
+    }
+
+    Ok(drained)
+}
+
+/// Drain the absorb buffer for **every** context that currently holds at least
+/// one absorbed straggler delta (PR-6b Task 6b.5).
+///
+/// The active convergence path, mirroring [`drain_all_governance_pending`]: a
+/// node finishes its own lazy upgrade (binary advance) on the execute actor,
+/// which the node observes after sync settles / on governance-apply. We can't
+/// cheaply tell *which* context just advanced from here, so we re-evaluate
+/// every context with pending absorbs — `drain_absorbed` skips any record whose
+/// schema is still behind the loaded reader, so the pass is a no-op for
+/// contexts that haven't caught up. Returns immediately when nothing is
+/// buffered.
+pub(crate) async fn drain_all_absorbed(input: &StateDeltaContext) {
+    use calimero_context::group_store::AbsorbRepository;
+
+    let store = input.node_clients.context.datastore();
+    let context_ids = match AbsorbRepository::new(store).enumerate_all_contexts() {
+        Ok(ids) => ids,
+        Err(err) => {
+            warn!(%err, "absorb drain: failed to enumerate contexts with pending absorbs");
+            return;
+        }
+    };
+    if context_ids.is_empty() {
+        return;
+    }
+    debug!(
+        count = context_ids.len(),
+        "absorb drain: binary-advance hook draining absorb buffers across contexts"
+    );
+    for context_id in context_ids {
+        drain_absorbed(input, &context_id).await;
+    }
+}
+
 /// Reconstruct a [`StateDeltaMessage`] from a [`BufferedDelta`] for re-apply
 /// from the governance-pending drain path. Mirrors the borsh decode in
 /// [`super::network_event::handle`] — every field that the network handler
@@ -2208,7 +2387,7 @@ mod tests {
 
         // ---- PR-6b Task 6b.4: absorb-don't-drop at the gossip fence ----
 
-        use calimero_context::group_store::AbsorbRepository;
+        use calimero_context::group_store::{AbsorbRecord, AbsorbRepository};
         use calimero_node_primitives::delta_buffer::BufferedDelta;
         use calimero_primitives::hash::Hash;
 
@@ -2281,6 +2460,108 @@ mod tests {
                 pending.is_empty(),
                 "a readable delta must apply normally, not be absorbed"
             );
+        }
+
+        // ---- PR-6b Task 6b.5: drain-on-advance (verbatim replay) ----
+
+        use super::super::drain_absorbed_records;
+
+        /// Build a durable `AbsorbRecord` mirroring a buffered straggler delta.
+        fn sample_record(delta_id: [u8; 32], producing_app_key: [u8; 32]) -> AbsorbRecord {
+            AbsorbRecord::from_buffered(&sample_buffered(delta_id, producing_app_key))
+        }
+
+        /// After the binary advances (loaded reader == the record's
+        /// `producing_app_key`), the drain replays the original signed bytes
+        /// verbatim through the replay path and deletes the record. A record
+        /// whose schema is still ≠ the loaded reader is left in place (it will
+        /// be re-drained once the binary catches up to *its* schema).
+        #[tokio::test]
+        async fn drain_replays_matching_record_verbatim_and_deletes_it() {
+            // Loaded reader falls back to GroupMeta.app_key = APP_V2 here, so
+            // the APP_V2 record is now readable (drain it) while the APP_V1
+            // record is not yet readable (leave it pending).
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+
+            // Drainable: schema matches the loaded reader.
+            repo.save(&ctx, APP_V2, &sample_record([0xA1; 32], APP_V2))
+                .unwrap();
+            // Not yet drainable: schema still behind the loaded reader. (A v1
+            // straggler buffered for a node that has since advanced *past* v1
+            // to v2 — modeled here only to assert the drain leaves
+            // non-matching records in place; the real never-readable case is
+            // out of scope.)
+            repo.save(&ctx, APP_V1, &sample_record([0xB2; 32], APP_V1))
+                .unwrap();
+
+            // Record which deltas the (mocked) replay path saw, so we can
+            // assert the bytes were replayed verbatim — never translated.
+            let replayed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<[u8; 32]>::new()));
+            let replayed_capture = replayed.clone();
+
+            let drained = drain_absorbed_records(&store, &ctx, move |buffered| {
+                let replayed = replayed_capture.clone();
+                async move {
+                    // Verbatim: the replay sees the original payload bytes.
+                    assert_eq!(buffered.payload, vec![1, 2, 3]);
+                    replayed.lock().unwrap().push(buffered.id);
+                    Ok::<bool, eyre::Report>(true)
+                }
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(drained, 1, "exactly the now-readable record drains");
+            assert_eq!(
+                *replayed.lock().unwrap(),
+                vec![[0xA1; 32]],
+                "only the loaded-reader-matching record is replayed (verbatim)"
+            );
+
+            // The replayed record is deleted; the not-yet-readable one stays.
+            let pending = repo.enumerate_pending(&ctx).unwrap();
+            assert_eq!(pending.len(), 1, "the non-matching record is left in place");
+            assert_eq!((pending[0].1).id, [0xB2; 32]);
+        }
+
+        /// Re-running the drain after a successful pass is a no-op (idempotent
+        /// via delta_id key): the deleted record does not re-replay.
+        #[tokio::test]
+        async fn drain_is_idempotent_after_success() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+            repo.save(&ctx, APP_V2, &sample_record([0xA1; 32], APP_V2))
+                .unwrap();
+
+            let noop = |_buffered: BufferedDelta| async move { Ok::<bool, eyre::Report>(true) };
+
+            let first = drain_absorbed_records(&store, &ctx, noop).await.unwrap();
+            assert_eq!(first, 1);
+            let second = drain_absorbed_records(&store, &ctx, noop).await.unwrap();
+            assert_eq!(second, 0, "no records survive a successful drain");
+            assert!(repo.enumerate_pending(&ctx).unwrap().is_empty());
+        }
+
+        /// A record whose replay fails is NOT deleted — it survives for the
+        /// next drain pass (delete-after-success only).
+        #[tokio::test]
+        async fn failed_replay_leaves_record_pending() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+            repo.save(&ctx, APP_V2, &sample_record([0xA1; 32], APP_V2))
+                .unwrap();
+
+            let drained = drain_absorbed_records(&store, &ctx, |_buffered| async move {
+                Err::<bool, eyre::Report>(eyre::eyre!("replay failed"))
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(drained, 0, "a failed replay drains nothing");
+            let pending = repo.enumerate_pending(&ctx).unwrap();
+            assert_eq!(pending.len(), 1, "a failed-replay record must survive");
+            assert_eq!((pending[0].1).id, [0xA1; 32]);
         }
     }
 }
