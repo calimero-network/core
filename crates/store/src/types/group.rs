@@ -138,3 +138,13 @@ impl PredefinedEntry for key::GroupKeyEntry {
     type Codec = Borsh;
     type DataType<'a> = key::GroupKeyValue;
 }
+
+// The buffered absorb record (`AbsorbRecord`, PR-6b) is defined in
+// `calimero-governance-store`, which depends on this crate — so the value type
+// cannot be named here without a dependency cycle. It is stored as an opaque
+// borsh byte blob; the repository in `calimero-governance-store` owns the
+// `AbsorbRecord` <-> bytes encode/decode.
+impl PredefinedEntry for key::AbsorbBufferKey {
+    type Codec = Borsh;
+    type DataType<'a> = Vec<u8>;
+}
