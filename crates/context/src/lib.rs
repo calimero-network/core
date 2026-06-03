@@ -167,7 +167,7 @@ impl ContextCacheStats {
     /// `false` when it had to be fetched from the datastore.
     fn record(&self, hit: bool) {
         let counter = if hit { &self.hits } else { &self.misses };
-        let _ = counter.fetch_add(1, Ordering::Relaxed);
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     /// `(hits, misses)` snapshot. Relaxed loads are fine: the counters are only
@@ -609,7 +609,10 @@ impl Actor for ContextManager {
         self.start_namespace_heartbeat(ctx);
         // Periodically report in-memory context-cache effectiveness.
         // Runs on the actor thread, so it reads cache state without locking.
-        let _ = ctx.run_interval(CACHE_STATS_LOG_INTERVAL, |act, _ctx| {
+        // The returned SpawnHandle is intentionally dropped: this interval
+        // runs for the actor's entire lifetime and is never cancelled (same as
+        // `start_namespace_heartbeat`).
+        ctx.run_interval(CACHE_STATS_LOG_INTERVAL, |act, _ctx| {
             act.log_cache_stats();
         });
         // Auto-follow handler (see the auto-follow architecture doc) — reacts to governance
@@ -658,7 +661,7 @@ impl ContextManager {
             } else {
                 &metrics.context_cache_misses
             };
-            let _ = counter.inc();
+            counter.inc();
         }
     }
 

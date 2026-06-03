@@ -112,26 +112,30 @@ impl Metrics {
 
         let context_cache_hits = Counter::default();
         cache_registry.register(
-            "context_hits",
+            "hits",
             "Cumulative in-memory context cache hits",
             context_cache_hits.clone(),
         );
         let context_cache_misses = Counter::default();
         cache_registry.register(
-            "context_misses",
+            "misses",
             "Cumulative in-memory context cache misses (datastore fallback)",
             context_cache_misses.clone(),
         );
         let context_cache_size = Gauge::default();
         cache_registry.register(
-            "context_size",
-            "Number of contexts currently resident in the in-memory hot cache",
+            "size",
+            "Number of contexts resident in the in-memory hot cache. \
+             Refreshed by the periodic cache-stats task (~5-minute resolution), \
+             so it may lag faster scrape intervals — use hits/misses rates for \
+             fine-grained signal",
             context_cache_size.clone(),
         );
         let application_cache_size = Gauge::default();
         cache_registry.register(
             "application_size",
-            "Number of application-metadata entries currently resident in the cache",
+            "Number of application-metadata entries resident in the cache. \
+             Refreshed by the periodic cache-stats task (~5-minute resolution)",
             application_cache_size.clone(),
         );
 
@@ -311,4 +315,47 @@ pub fn record_governance_handler_delivery(
         .governance_handler_delivery_seconds
         .get_or_create(&labels)
         .observe(elapsed_ms as f64 / 1000.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use prometheus_client::encoding::text::encode;
+
+    use super::*;
+
+    /// The `context.cache.*` series register under the expected names and the
+    /// counters/gauges round-trip through the Prometheus text encoder. Exercises
+    /// the same `inc()`/`set()` calls that `ContextManager` makes on the cache
+    /// hit/miss and periodic-log paths.
+    #[test]
+    fn context_cache_metrics_register_and_encode() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+
+        metrics.context_cache_hits.inc();
+        metrics.context_cache_hits.inc();
+        metrics.context_cache_misses.inc();
+        metrics.context_cache_size.set(7);
+        metrics.application_cache_size.set(3);
+
+        let mut out = String::new();
+        encode(&mut out, &registry).expect("encode registry");
+
+        assert!(
+            out.contains("context_cache_hits_total 2"),
+            "missing hit counter:\n{out}"
+        );
+        assert!(
+            out.contains("context_cache_misses_total 1"),
+            "missing miss counter:\n{out}"
+        );
+        assert!(
+            out.contains("context_cache_size 7"),
+            "missing context size gauge:\n{out}"
+        );
+        assert!(
+            out.contains("context_cache_application_size 3"),
+            "missing application size gauge:\n{out}"
+        );
+    }
 }
