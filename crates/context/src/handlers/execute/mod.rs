@@ -191,7 +191,12 @@ impl Handler<ExecuteRequest> for ContextManager {
         // before we access self.datastore.
         // Skip for sync operations — the state payload was produced by the old app
         // version and must be applied as-is, not against a newly upgraded WASM.
-        let lazy_upgrade_params = if is_state_op {
+        // Also skip while a write-gating upgrade is in progress: `InProgress` is
+        // set only on the cascade emitter, whose eager propagator owns the
+        // migration, so a user call here must not trigger its own redundant
+        // per-call migration (a read is served from the current committed root;
+        // a write is refused post-execution).
+        let lazy_upgrade_params = if is_state_op || block_writes_for_group.is_some() {
             None
         } else {
             maybe_lazy_upgrade(&self.datastore, &context_id, &current_application_id)
@@ -1488,21 +1493,22 @@ async fn internal_execute(
     // risk), committing and dispatching nothing. "Side-effecting" = a committed
     // state mutation (`root_hash`) OR queued cross-context calls (`xcalls`),
     // which the external-actions stage would otherwise fire after this returns.
-    if upgrade_rejects_committed_write(
-        block_writes_for_group.is_some(),
-        outcome.root_hash.is_some() || !outcome.xcalls.is_empty(),
-    ) {
-        let group_id = block_writes_for_group.expect(
-            "upgrade_rejects_committed_write is only true when block_writes_for_group is Some",
-        );
-        info!(
-            context_id = %context.id,
-            %executor,
-            method = %method,
-            ?group_id,
-            "refusing write: group upgrade in progress (a read would have been served)"
-        );
-        return Err(ExecuteError::UpgradeInProgress { group_id }.into());
+    if let Some(group_id) = block_writes_for_group {
+        // `block_writes` is necessarily true here; refuse the call only if it had
+        // a side effect (committed state or queued xcalls).
+        if upgrade_rejects_committed_write(
+            true,
+            outcome.root_hash.is_some() || !outcome.xcalls.is_empty(),
+        ) {
+            info!(
+                context_id = %context.id,
+                %executor,
+                method = %method,
+                ?group_id,
+                "refusing write: group upgrade in progress (a read would have been served)"
+            );
+            return Err(ExecuteError::UpgradeInProgress { group_id }.into());
+        }
     }
 
     // Always update root_hash if present (even if storage is empty)
