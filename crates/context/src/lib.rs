@@ -430,6 +430,16 @@ impl ContextManager {
         self
     }
 
+    /// Override the [`ContextManagerConfig::migration_v2`] master switch.
+    /// Builder-style so node startup can thread the operator's
+    /// `[context] migration_v2` config through while tests (and any caller that
+    /// doesn't set it) keep the default-off behavior. See [`Self::with_vm_limits`].
+    #[must_use]
+    pub fn with_migration_v2(mut self, migration_v2: bool) -> Self {
+        self.config.migration_v2 = migration_v2;
+        self
+    }
+
     /// Get this node's identity for the namespace (root group) that contains `group_id`.
     /// Returns `None` if no identity has been stored for that namespace yet.
     pub fn node_namespace_identity(
