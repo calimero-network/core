@@ -126,7 +126,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     .load(&group_id)
                 {
                     Ok(Some(upgrade)) => {
-                        if upgrade_blocks_write(&upgrade.status) {
+                        if should_block(self.config.migration_v2, &upgrade.status) {
                             if is_state_op {
                                 // Known write — refuse before execution.
                                 warn!(
@@ -2174,6 +2174,16 @@ fn upgrade_blocks_write(status: &calimero_store::key::GroupUpgradeStatus) -> boo
     )
 }
 
+/// Whether the cascade write-gate should fire, given the `migration_v2` flag.
+///
+/// Equal to `!migration_v2 && upgrade_blocks_write(status)`: with the flag OFF
+/// (the default) the group-wide `InProgress` freeze is byte-for-byte the same
+/// as today; with the flag ON the freeze is lifted entirely (PR-6b's
+/// absorb-don't-drop is what keeps stragglers safe once the freeze is gone).
+fn should_block(migration_v2: bool, status: &calimero_store::key::GroupUpgradeStatus) -> bool {
+    !migration_v2 && upgrade_blocks_write(status)
+}
+
 /// Post-execution write-gate decision: during an in-progress upgrade a pure read
 /// (`produced_write == false`) is served from the pre-migration root; a
 /// side-effecting call is refused. Write-intent is derived post-execution (a
@@ -2302,7 +2312,10 @@ mod tests {
     use calimero_store::key::GroupMetaValue;
     use calimero_store::Store;
 
-    use super::{resolve_producing_app_key, upgrade_blocks_write, upgrade_rejects_committed_write};
+    use super::{
+        resolve_producing_app_key, should_block, upgrade_blocks_write,
+        upgrade_rejects_committed_write,
+    };
     use calimero_store::key::GroupUpgradeStatus;
 
     fn fresh_store() -> Store {
@@ -2468,6 +2481,49 @@ mod tests {
                 failed: 0,
             }),
             "today's group-wide freeze: InProgress must block state-op writes"
+        );
+    }
+
+    // PR-6a Task 6a.3: the cascade write-freeze is gated behind `migration_v2`.
+    // `should_block` is `!migration_v2 && upgrade_blocks_write(status)`: with the
+    // flag OFF the freeze is unchanged (master behavior); with the flag ON the
+    // group-wide `InProgress` freeze stops blocking writes (PR-6b's
+    // absorb-don't-drop later keeps stragglers safe once the freeze is gone).
+    #[test]
+    fn should_block_flag_off_in_progress_blocks() {
+        assert!(
+            should_block(
+                false,
+                &GroupUpgradeStatus::InProgress {
+                    total: 1,
+                    completed: 0,
+                    failed: 0,
+                },
+            ),
+            "flag OFF: InProgress must still block writes (unchanged)"
+        );
+    }
+
+    #[test]
+    fn should_block_flag_on_in_progress_does_not_block() {
+        assert!(
+            !should_block(
+                true,
+                &GroupUpgradeStatus::InProgress {
+                    total: 1,
+                    completed: 0,
+                    failed: 0,
+                },
+            ),
+            "flag ON: InProgress must not freeze writes group-wide"
+        );
+    }
+
+    #[test]
+    fn should_block_flag_off_completed_does_not_block() {
+        assert!(
+            !should_block(false, &GroupUpgradeStatus::Completed { completed_at: None }),
+            "Completed never blocks, regardless of the flag"
         );
     }
 }
