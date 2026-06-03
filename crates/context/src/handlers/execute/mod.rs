@@ -1567,6 +1567,25 @@ async fn internal_execute(
                 outcome.artifact = new_artifact;
             }
 
+            // Refresh the DAG heads from the authoritative store before
+            // choosing this write's parents. `context` (hence `dag_heads`) was
+            // snapshotted in `get_or_fetch_context` BEFORE this handler took
+            // the per-context lock, so an inbound delta that committed new
+            // heads while we waited for the lock would be missed here.
+            // Authoring on the stale head forks the DAG: the new delta's
+            // parents exclude an already-applied ancestor — e.g. a writer-set
+            // rotation the executor has locally applied — and every peer then
+            // rejects it (`writers_at(parents)` resolves the pre-rotation set),
+            // a permanent split-brain. The inbound apply now holds this same
+            // lock across its `dag_heads` commit (see
+            // `DeltaStore::add_delta_internal`), so once we hold the guard the
+            // persisted heads are current.
+            if let Ok(Some(meta)) = store.handle().get(&key::ContextMeta::new(context.id)) {
+                if context.dag_heads != meta.dag_heads {
+                    context.dag_heads = meta.dag_heads;
+                }
+            }
+
             // Use current DAG heads as parents, verifying they exist in RocksDB
             let parents = if context.dag_heads.is_empty() {
                 // Genesis case: parent is the zero hash
