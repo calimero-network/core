@@ -14,7 +14,7 @@ use calimero_context_client::messages::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, MigrationParams,
 };
 use calimero_context_client::{ContextAtomic, ContextAtomicKey};
-use calimero_context_config::types::GovernancePosition;
+use calimero_context_config::types::{ContextGroupId, GovernancePosition};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
@@ -124,56 +124,14 @@ impl Handler<ExecuteRequest> for ContextManager {
             Some(ContextAtomic::Held(ContextAtomicKey(guard))) => (Either::Left(guard), true),
         };
 
-        // Cascade-upgrade gate (PR-2 + PR-3): if this context belongs to a group
-        // whose upgrade is currently `InProgress`, refuse ALL writes — both
-        // user-initiated calls AND state-op writes (`__calimero_sync_next`).
-        // The propagator must finish (or be explicitly retried via
-        // `retry_group_upgrade`) before any traffic resumes, otherwise writes
-        // could land on a context whose group-mates have already migrated,
-        // producing cross-version state drift inside the same group — exactly
-        // what cascade is meant to prevent.
-        //
-        // Placed *after* `context.lock()` (which consumes the `context`
-        // borrow on `self`) so that `&self.datastore` is reachable — same
-        // borrow-ordering constraint as the existing `maybe_lazy_upgrade`
-        // call below.
-        //
-        // Bypasses:
-        //   * The propagator itself doesn't go through this handler — it
-        //     routes via `UpdateApplicationRequest` →
-        //     `handlers::update_application`, so no internal bypass field
-        //     is needed for `propagate_upgrade` / `recover_in_progress_upgrades`.
-        //   * `LazyOnAccess` upgrades write `Completed` directly (never
-        //     `InProgress`), so `upgrade_blocks_write` returns `false` for
-        //     them and lazy migrations are never blocked.
-        //
-        // State-op (`__calimero_sync_next`) writes: PR-3 removes the PR-2
-        // bypass for state-ops. During `InProgress`, no new user writes are
-        // possible (user calls also blocked), so no new deltas are produced
-        // that would need to be replayed via `__calimero_sync_next`. Any
-        // in-flight state-ops that were already queued when `InProgress` was
-        // set are retried by the periodic sync cycle once the upgrade reaches
-        // `Completed` — no deadlock is possible.  The propagator's own
-        // migration writes go through `update_application_with_migration`
-        // (not via execute), so they are also unaffected.
-        //
-        // Granularity: gate is per-group, not per-context. PR-2 explicitly
-        // chose this over per-context-HLC gating. The `cascade_hlc` field
-        // on the upgrade record now exists (added in PR-3) and provides the
-        // finer, post-`Completed` HLC fence for long-tail straggler rejection;
-        // the coarse per-group gate here covers the active-upgrade window.
-        // The trade-off is documented on `ExecuteError::UpgradeInProgress`.
-        //
-        // Read vs write: the gate blocks *all* invocations (reads and writes)
-        // during `InProgress`. The call path doesn't carry an intent flag and
-        // we cannot cheaply derive write-intent from the method name alone —
-        // better to block too much than to let a read observe a mid-migration
-        // partial-snapshot of the group.
-        //
-        // Absent status row = "no upgrade running" → allow. Only an explicit
-        // `Some(InProgress { .. })` blocks (via `upgrade_blocks_write`). This
-        // keeps the baseline (no group, or group with no upgrade history) on
-        // the fast path.
+        // In-progress-upgrade write-gate: while the owning group is `InProgress`,
+        // refuse writes (a committed write risks cross-version drift with
+        // already-migrated group-mates) but keep serving reads from the
+        // pre-migration root. Read-vs-write intent isn't known upstream, so
+        // user-call writes are caught post-execution in `internal_execute` (we
+        // only record the group here); state-ops are known writes, refused now.
+        // `LazyOnAccess` upgrades write `Completed`, never `InProgress`.
+        let mut block_writes_for_group = None;
         match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
             Ok(Some(group_id)) => {
                 match calimero_governance_store::UpgradesRepository::new(&self.datastore)
@@ -181,16 +139,23 @@ impl Handler<ExecuteRequest> for ContextManager {
                 {
                     Ok(Some(upgrade)) => {
                         if upgrade_blocks_write(&upgrade.status) {
-                            warn!(
-                                %context_id,
-                                ?group_id,
-                                method,
-                                is_state_op,
-                                "refusing execute: group upgrade in progress"
-                            );
-                            return ActorResponse::reply(Err(ExecuteError::UpgradeInProgress {
-                                group_id,
-                            }));
+                            if is_state_op {
+                                // Known write — refuse before execution.
+                                warn!(
+                                    %context_id,
+                                    ?group_id,
+                                    method,
+                                    is_state_op,
+                                    "refusing state-op execute: group upgrade in progress"
+                                );
+                                return ActorResponse::reply(Err(
+                                    ExecuteError::UpgradeInProgress { group_id },
+                                ));
+                            }
+                            // User call: allow it to execute against the
+                            // pre-migration root; reject post-execution only if
+                            // it actually mutates state (a write). Reads pass.
+                            block_writes_for_group = Some(group_id);
                         }
                     }
                     Ok(None) => {
@@ -226,7 +191,12 @@ impl Handler<ExecuteRequest> for ContextManager {
         // before we access self.datastore.
         // Skip for sync operations — the state payload was produced by the old app
         // version and must be applied as-is, not against a newly upgraded WASM.
-        let lazy_upgrade_params = if is_state_op {
+        // Also skip while a write-gating upgrade is in progress: `InProgress` is
+        // set only on the cascade emitter, whose eager propagator owns the
+        // migration, so a user call here must not trigger its own redundant
+        // per-call migration (a read is served from the current committed root;
+        // a write is refused post-execution).
+        let lazy_upgrade_params = if is_state_op || block_writes_for_group.is_some() {
             None
         } else {
             maybe_lazy_upgrade(&self.datastore, &context_id, &current_application_id)
@@ -624,6 +594,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         method.clone().into(),
                         payload.into(),
                         is_state_op,
+                        block_writes_for_group,
                         &private_key,
                     )
                     .await?;
@@ -1366,6 +1337,9 @@ async fn internal_execute(
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     is_state_op: bool,
+    // `Some(group_id)` while the owning group's upgrade is `InProgress`; the
+    // post-exec gate then serves reads but refuses writes (see `handle()`).
+    block_writes_for_group: Option<ContextGroupId>,
     identity_private_key: &PrivateKey,
 ) -> eyre::Result<(
     Outcome,
@@ -1512,6 +1486,29 @@ async fn internal_execute(
         outcome.artifact.clear();
         outcome.xcalls.clear();
         return Ok((outcome, None, None, None));
+    }
+
+    // In-progress upgrade: a pure read falls through and is served from the
+    // pre-migration root; a side-effecting call is refused (cross-version drift
+    // risk), committing and dispatching nothing. "Side-effecting" = a committed
+    // state mutation (`root_hash`) OR queued cross-context calls (`xcalls`),
+    // which the external-actions stage would otherwise fire after this returns.
+    if let Some(group_id) = block_writes_for_group {
+        // `block_writes` is necessarily true here; refuse the call only if it had
+        // a side effect (committed state or queued xcalls).
+        if upgrade_rejects_committed_write(
+            true,
+            outcome.root_hash.is_some() || !outcome.xcalls.is_empty(),
+        ) {
+            info!(
+                context_id = %context.id,
+                %executor,
+                method = %method,
+                ?group_id,
+                "refusing write: group upgrade in progress (a read would have been served)"
+            );
+            return Err(ExecuteError::UpgradeInProgress { group_id }.into());
+        }
     }
 
     // Always update root_hash if present (even if storage is empty)
@@ -1985,6 +1982,31 @@ pub(crate) fn sign_authorized_actions(
             }
         }
 
+        // SharedMember signs exactly like Shared: the placeholder presence is
+        // the signal, and the authorization decision (executor ∈ the anchor's
+        // writers) was already made in `save_raw` against the anchor's resolved
+        // set. A member carries no writer set, so there is nothing to log here
+        // beyond the anchor.
+        if let StorageType::SharedMember {
+            anchor,
+            signature_data: Some(sig_data),
+            ..
+        } = &mut metadata.storage_type
+        {
+            if sig_data.signature == [0; 64] {
+                sig_data.nonce = nonce;
+                let signature = identity_private_key.sign(&payload_for_signing)?;
+                sig_data.signature = signature.to_bytes();
+
+                debug!(
+                    action_id = ?action_id,
+                    anchor = %anchor,
+                    nonce = %nonce,
+                    "Signed shared-member action"
+                );
+            }
+        }
+
         if let StorageType::User {
             owner: _,
             signature_data: Some(_),
@@ -2089,6 +2111,10 @@ pub(crate) fn persist_signed_signatures(
                 | StorageType::User {
                     signature_data: Some(sig),
                     ..
+                }
+                | StorageType::SharedMember {
+                    signature_data: Some(sig),
+                    ..
                 } if sig.signature != [0u8; 64] => true,
                 _ => false,
             };
@@ -2167,6 +2193,15 @@ fn upgrade_blocks_write(status: &calimero_store::key::GroupUpgradeStatus) -> boo
         status,
         calimero_store::key::GroupUpgradeStatus::InProgress { .. }
     )
+}
+
+/// Post-execution write-gate decision: during an in-progress upgrade a pure read
+/// (`produced_write == false`) is served from the pre-migration root; a
+/// side-effecting call is refused. Write-intent is derived post-execution (a
+/// committed `root_hash` or queued `xcalls`) because no read-vs-write flag exists
+/// upstream (`ExecuteRequest`, RPC, SDK, ABI).
+fn upgrade_rejects_committed_write(block_writes: bool, produced_write: bool) -> bool {
+    block_writes && produced_write
 }
 
 /// Checks if a context belongs to a group with LazyOnAccess policy and
@@ -2288,7 +2323,7 @@ mod tests {
     use calimero_store::key::GroupMetaValue;
     use calimero_store::Store;
 
-    use super::{resolve_producing_app_key, upgrade_blocks_write};
+    use super::{resolve_producing_app_key, upgrade_blocks_write, upgrade_rejects_committed_write};
     use calimero_store::key::GroupUpgradeStatus;
 
     fn fresh_store() -> Store {
@@ -2388,6 +2423,41 @@ mod tests {
         assert!(
             !upgrade_blocks_write(&status),
             "Completed (with timestamp) should not block writes"
+        );
+    }
+
+    // During an in-progress upgrade, reads stay available while writes are
+    // refused; intent comes from whether the call mutated state. Locks that.
+
+    #[test]
+    fn write_during_in_progress_upgrade_is_rejected() {
+        assert!(
+            upgrade_rejects_committed_write(/* block_writes */ true, /* produced_write */ true),
+            "a state-mutating call during InProgress must be refused"
+        );
+    }
+
+    #[test]
+    fn read_during_in_progress_upgrade_is_allowed() {
+        assert!(
+            !upgrade_rejects_committed_write(/* block_writes */ true, /* produced_write */ false),
+            "a read (no state mutation) during InProgress must be served"
+        );
+    }
+
+    #[test]
+    fn write_when_not_upgrading_is_allowed() {
+        assert!(
+            !upgrade_rejects_committed_write(/* block_writes */ false, /* produced_write */ true),
+            "a write outside any in-progress upgrade must not be gated"
+        );
+    }
+
+    #[test]
+    fn read_when_not_upgrading_is_allowed() {
+        assert!(
+            !upgrade_rejects_committed_write(/* block_writes */ false, /* produced_write */ false),
+            "a read outside any in-progress upgrade must not be gated"
         );
     }
 }

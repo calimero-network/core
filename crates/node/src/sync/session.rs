@@ -18,9 +18,20 @@
 //! helpers with a single typed `SessionTracker`.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
+use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::SyncStatusSnapshot;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::events::{
+    ContextEvent, ContextEventPayload, NodeEvent, SyncStatusPayload,
+};
+// The wire-facing phase enum. Aliased to `SyncPhase` to avoid colliding with
+// the run-loop's internal `tracking::SyncState` (imported below), which is a
+// different type tracking last-sync/failure bookkeeping.
+use calimero_primitives::sync_status::SyncState as SyncPhase;
+use dashmap::DashMap;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -79,6 +90,18 @@ pub(super) struct SessionTracker {
     /// outcome, AND the minimum between successful syncs before the
     /// next attempt is considered (subject to a `force` override).
     dispatch_backoff: Duration,
+    /// Lock-free mirror of the per-context sync phase, published after
+    /// every `SyncState` transition so an out-of-band reader (the
+    /// JSON-RPC `sync_status` endpoint) can distinguish "syncing" from
+    /// "stuck" without reaching into this run-loop-owned tracker. The
+    /// tracker is the sole writer; readers only ever see committed
+    /// snapshots. Shares the `Arc` held by `NodeState::sync_status`.
+    status_sink: Arc<DashMap<ContextId, SyncStatusSnapshot>>,
+    /// Used to push a `SyncStatus` WebSocket event whenever a context's
+    /// phase changes, so subscribers get live updates instead of polling.
+    /// `None` in unit tests (no node wired up); event emission is then a
+    /// no-op while the `status_sink` mirror still updates.
+    event_emitter: Option<NodeClient>,
 }
 
 /// Outcome of [`SessionTracker::dispatch_decision`].
@@ -136,7 +159,12 @@ impl SessionTracker {
     /// per-session timeout the `SyncSessionActor` enforces.
     /// `dispatch_backoff` is `sync_config.interval` — the minimum
     /// between dispatch attempts and successful syncs.
-    pub(super) fn new(session_deadline: Duration, dispatch_backoff: Duration) -> Self {
+    pub(super) fn new(
+        session_deadline: Duration,
+        dispatch_backoff: Duration,
+        status_sink: Arc<DashMap<ContextId, SyncStatusSnapshot>>,
+        event_emitter: Option<NodeClient>,
+    ) -> Self {
         const SESSION_WEDGE_GRACE_MULTIPLIER: u32 = 2;
         Self {
             state: HashMap::new(),
@@ -148,6 +176,80 @@ impl SessionTracker {
             full_window_started: Instant::now(),
             session_wedge_grace: session_deadline * SESSION_WEDGE_GRACE_MULTIPLIER,
             dispatch_backoff,
+            status_sink,
+            event_emitter,
+        }
+    }
+
+    /// Recompute and publish the observable sync-status snapshot for `ctx`
+    /// from its current `SyncState`, deriving the wire phase the same way the
+    /// dispatch loop reasons about the context. The benign no-peers /
+    /// not-materialised outcome is *not* derivable from `SyncState` (it clears
+    /// the in-flight marker without recording a failure, so it looks idle), so
+    /// the call sites that know about it pass [`SyncPhase::WaitingForPeers`]
+    /// explicitly via [`Self::publish_state`].
+    fn publish_status(&self, ctx: &ContextId) {
+        let Some(state) = self.state.get(ctx) else {
+            return;
+        };
+        let phase = match state.last_sync() {
+            // `last_sync == None` is the in-progress marker the tracker uses.
+            None => SyncPhase::Syncing,
+            Some(last) if state.failure_count() > 0 => {
+                // Mirror `dispatch_decision`'s eligibility floor so the
+                // reported wait matches when the next attempt actually fires.
+                let minimum = self.dispatch_backoff.max(state.backoff_delay());
+                let retry_in_secs = minimum.saturating_sub(last.elapsed()).as_secs();
+                SyncPhase::BackingOff { retry_in_secs }
+            }
+            Some(_) => SyncPhase::Idle,
+        };
+        let failure_count = state.failure_count();
+        let last_error = state.last_error().map(ToOwned::to_owned);
+        // Drop the borrow of `self.state` before touching the sink/emitter.
+        drop(state);
+        self.publish_state(ctx, phase, failure_count, last_error);
+    }
+
+    /// Write the snapshot for `ctx` and, when the phase actually changed,
+    /// push a `SyncStatus` WebSocket event. Change detection keeps the event
+    /// stream quiet between real transitions; the lock-free mirror is always
+    /// refreshed so a polling reader sees the latest. Cheap: a `DashMap`
+    /// lookup + insert, plus a broadcast send only on change.
+    fn publish_state(
+        &self,
+        ctx: &ContextId,
+        phase: SyncPhase,
+        failure_count: u32,
+        last_error: Option<String>,
+    ) {
+        let changed = self.status_sink.get(ctx).is_none_or(|prev| {
+            prev.state != phase
+                || prev.failure_count != failure_count
+                || prev.last_error.as_deref() != last_error.as_deref()
+        });
+        let _prev = self.status_sink.insert(
+            *ctx,
+            SyncStatusSnapshot {
+                state: phase,
+                failure_count,
+                last_error: last_error.clone(),
+            },
+        );
+        if changed {
+            if let Some(node_client) = &self.event_emitter {
+                let event = NodeEvent::Context(ContextEvent {
+                    context_id: *ctx,
+                    payload: ContextEventPayload::SyncStatus(SyncStatusPayload {
+                        sync_state: phase,
+                        failure_count,
+                        last_error,
+                    }),
+                });
+                if let Err(err) = node_client.send_event(event) {
+                    debug!(context_id = %ctx, %err, "failed to emit sync-status event");
+                }
+            }
         }
     }
 
@@ -264,6 +366,7 @@ impl SessionTracker {
         } else if let Some(existing) = self.state.get_mut(&ctx) {
             let _ignored = existing.take_last_sync();
         }
+        self.publish_status(&ctx);
     }
 
     /// Apply a `SyncSessionResult` from the result channel. Clears
@@ -297,6 +400,13 @@ impl SessionTracker {
             took,
             result,
         } = result;
+
+        // Set by the benign no-peers / not-materialised arms. That outcome
+        // clears the in-flight marker without recording a failure, so the
+        // generic `publish_status` derivation would read it as plain idle —
+        // indistinguishable from a settled context. Flag it so the trailing
+        // publish reports `WaitingForPeers` instead.
+        let mut waiting_for_peers = false;
 
         match self.state.get_mut(&context_id) {
             None => {
@@ -365,9 +475,8 @@ impl SessionTracker {
                         // the next tick pick a different peer is the
                         // graceful recovery.
                         s.on_not_materialized();
-                        return;
-                    }
-                    if err.downcast_ref::<NoPeersAvailable>().is_some() {
+                        waiting_for_peers = true;
+                    } else if err.downcast_ref::<NoPeersAvailable>().is_some() {
                         // Transient: no co-member is connected for this
                         // context right now (empty mesh + no namespace
                         // fallback). This is a connectivity condition,
@@ -385,17 +494,18 @@ impl SessionTracker {
                              waiting for a co-member, not a failure"
                         );
                         s.on_not_materialized();
-                        return;
+                        waiting_for_peers = true;
+                    } else {
+                        s.on_failure(err.to_string());
+                        warn!(
+                            %context_id,
+                            ?took,
+                            error = %err,
+                            failure_count = s.failure_count(),
+                            backoff_secs = s.backoff_delay().as_secs(),
+                            "Sync failed, applying exponential backoff"
+                        );
                     }
-                    s.on_failure(err.to_string());
-                    warn!(
-                        %context_id,
-                        ?took,
-                        error = %err,
-                        failure_count = s.failure_count(),
-                        backoff_secs = s.backoff_delay().as_secs(),
-                        "Sync failed, applying exponential backoff"
-                    );
                 }
                 Err(ref timeout_err) => {
                     s.on_failure(timeout_err.to_string());
@@ -408,6 +518,21 @@ impl SessionTracker {
                     );
                 }
             },
+        }
+        // The mutable `s` borrow above is released; publish the settled phase
+        // so readers (and subscribers) observe the outcome immediately.
+        if waiting_for_peers {
+            let (failure_count, last_error) = self.state.get(&context_id).map_or((0, None), |s| {
+                (s.failure_count(), s.last_error().map(ToOwned::to_owned))
+            });
+            self.publish_state(
+                &context_id,
+                SyncPhase::WaitingForPeers,
+                failure_count,
+                last_error,
+            );
+        } else {
+            self.publish_status(&context_id);
         }
     }
 
@@ -446,6 +571,7 @@ impl SessionTracker {
                         .to_owned(),
                 );
             }
+            self.publish_status(ctx);
         }
         self.initiator_dispatched_at
             .retain(|_, dispatched_at| dispatched_at.elapsed() < grace);
@@ -539,8 +665,13 @@ mod tests {
 
     fn tracker() -> SessionTracker {
         // Use small but realistic durations so the `force` override
-        // tests have a meaningful "minimum".
-        SessionTracker::new(Duration::from_secs(30), Duration::from_secs(5))
+        // tests have a meaningful "minimum". No event emitter in unit tests.
+        SessionTracker::new(
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+            Arc::new(DashMap::new()),
+            None,
+        )
     }
 
     // -----------------------------------------------------------------
@@ -1318,5 +1449,95 @@ mod tests {
             s.last_sync().is_none(),
             "second record_dispatch_succeeded must clear last_sync"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // publish_status — the observable sync-status snapshot
+    // -----------------------------------------------------------------
+
+    fn tracker_with_sink() -> (SessionTracker, Arc<DashMap<ContextId, SyncStatusSnapshot>>) {
+        let sink = Arc::new(DashMap::new());
+        // No event emitter — exercises the sink mirror without a live node.
+        let t = SessionTracker::new(
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+            Arc::clone(&sink),
+            None,
+        );
+        (t, sink)
+    }
+
+    #[test]
+    fn publish_status_reports_syncing_while_in_flight() {
+        let (mut t, sink) = tracker_with_sink();
+        // A dispatched first sync leaves the in-progress marker set.
+        t.record_dispatch_succeeded(ctx(1), true);
+        let snap = sink.get(&ctx(1)).expect("status published on dispatch");
+        assert!(matches!(snap.state, SyncPhase::Syncing));
+        assert_eq!(snap.failure_count, 0);
+        assert!(snap.last_error.is_none());
+    }
+
+    #[test]
+    fn publish_status_reports_idle_after_success() {
+        let (mut t, sink) = tracker_with_sink();
+        let mut s = SyncState::new();
+        s.on_success(
+            libp2p::PeerId::random(),
+            super::super::tracking::SyncProtocol::DagCatchup,
+        );
+        let _ = t.state.insert(ctx(1), s);
+        t.publish_status(&ctx(1));
+        let snap = sink.get(&ctx(1)).expect("status published");
+        assert!(matches!(snap.state, SyncPhase::Idle));
+        assert_eq!(snap.failure_count, 0);
+        assert!(snap.last_error.is_none());
+    }
+
+    #[test]
+    fn publish_status_reports_backing_off_after_failure() {
+        let (mut t, sink) = tracker_with_sink();
+        let mut s = SyncState::new();
+        s.on_failure("a real protocol error".to_owned());
+        let _ = t.state.insert(ctx(1), s);
+        t.publish_status(&ctx(1));
+        let snap = sink.get(&ctx(1)).expect("status published");
+        match snap.state {
+            // backoff_delay(2^1=2s) is below the 5s dispatch floor, so the
+            // reported wait is the floor minus the (near-zero) elapsed time.
+            SyncPhase::BackingOff { retry_in_secs } => assert!(retry_in_secs <= 5),
+            other => panic!("expected BackingOff, got {other:?}"),
+        }
+        assert_eq!(snap.failure_count, 1);
+        assert_eq!(snap.last_error.as_deref(), Some("a real protocol error"));
+    }
+
+    #[test]
+    fn apply_result_no_peers_reports_waiting_for_peers() {
+        let (mut t, sink) = tracker_with_sink();
+        // Put the context in-flight first (dispatched), so apply_result finds
+        // a tracked SyncState to settle.
+        t.record_dispatch_succeeded(ctx(1), true);
+        // A NoPeersAvailable outcome is benign: it must surface as
+        // WaitingForPeers, not idle — the regression this guards.
+        t.apply_result(no_peers_available_result(ctx(1)));
+        let snap = sink.get(&ctx(1)).expect("status published");
+        assert!(
+            matches!(snap.state, SyncPhase::WaitingForPeers),
+            "no-peers outcome must report WaitingForPeers, got {:?}",
+            snap.state
+        );
+        assert_eq!(
+            snap.failure_count, 0,
+            "no-peers must not count as a failure"
+        );
+    }
+
+    #[test]
+    fn publish_status_absent_for_untracked_context() {
+        let (t, sink) = tracker_with_sink();
+        // No state recorded for this context → nothing to publish.
+        t.publish_status(&ctx(9));
+        assert!(sink.get(&ctx(9)).is_none());
     }
 }

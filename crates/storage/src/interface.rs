@@ -206,6 +206,53 @@ const fn nonce_check_disabled_for_testing() -> bool {
 pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
 
 impl<S: StorageAdaptor> Interface<S> {
+    /// Resolve a [`SharedMember`](StorageType::SharedMember)'s writer set from
+    /// its `anchor`'s **locally verified** state, mirroring
+    /// `SharedStorage::current_writers`:
+    ///
+    /// 1. the anchor's rotation log (latest entry, then its compacted
+    ///    snapshot) — only ever written by a signature-verified rotation apply
+    ///    or the originating node's own committed rotation; and
+    /// 2. the anchor's index metadata (`Shared { writers }`).
+    ///
+    /// Returns the empty set when the anchor has neither — i.e. the anchor has
+    /// not synced to this node yet. The caller treats the empty set as "cannot
+    /// verify this member yet" (fail closed / buffer), never as "no writers".
+    /// This is the local-execution / settled-state resolver; the
+    /// causal-cut-accurate resolution at merge is the node layer's
+    /// `writers_at(anchor_log, delta.parents)`, passed in via
+    /// `effective_writers`.
+    ///
+    /// **Best-effort under concurrent rotations** — same caveat the `Shared`
+    /// path carries (see `SharedStorage::current_writers` and the `Shared` arm
+    /// of `apply_action`, which falls back to the entity's *stored* writers the
+    /// same way). The rotation log's *latest* entry is this node's insertion
+    /// order, which can differ from causal order if two rotations arrive
+    /// interleaved; resolving against it (rather than the set causally valid at
+    /// the op's cut) can therefore accept/reject differently across nodes. The
+    /// causal `writers_at` set passed as `effective_writers` is the security
+    /// boundary on the merge path; this fallback only fires when no causal
+    /// context exists (local exec / snapshot) or `writers_at` can't resolve (an
+    /// op causally before any logged rotation). Full causal resolution here is
+    /// deferred to the concurrent-rotation work (P4 / the DAG-causal rotation
+    /// epic), which fixes `Shared` and `SharedMember` uniformly.
+    fn resolve_anchor_writers(anchor: Id) -> BTreeSet<PublicKey> {
+        if let Ok(Some(log)) = crate::rotation_log::load::<S>(anchor) {
+            if let Some(entry) = log.entries.last() {
+                return entry.new_writers.clone();
+            }
+            if let Some(snapshot) = log.snapshot {
+                return snapshot.writers;
+            }
+        }
+        if let Ok(Some(metadata)) = <Index<S>>::get_metadata(anchor) {
+            if let StorageType::Shared { writers, .. } = metadata.storage_type {
+                return writers;
+            }
+        }
+        BTreeSet::new()
+    }
+
     /// Verify the writer's signature on a snapshot-supplied entity
     /// against the access-control rules in its metadata.
     ///
@@ -252,7 +299,9 @@ impl<S: StorageAdaptor> Interface<S> {
         // Public / Frozen don't require signature verification.
         match &metadata.storage_type {
             StorageType::Public | StorageType::Frozen => return Ok(()),
-            StorageType::User { .. } | StorageType::Shared { .. } => {}
+            StorageType::User { .. }
+            | StorageType::Shared { .. }
+            | StorageType::SharedMember { .. } => {}
         }
 
         // Reconstruct the authorization payload the writer signed.
@@ -325,8 +374,99 @@ impl<S: StorageAdaptor> Interface<S> {
                 signature_data: None,
                 ..
             } => Err(StorageError::InvalidSignature),
+            StorageType::SharedMember {
+                anchor,
+                signature_data: Some(sig_data),
+            } => {
+                if sig_data.signature == [0u8; 64] {
+                    return Err(StorageError::InvalidSignature);
+                }
+                // A member carries no writer set: resolve it from the anchor's
+                // locally-verified state. An unsynced anchor yields the empty
+                // set, which fails verification (the scan finds no writer) —
+                // fail closed rather than accept an unverifiable member.
+                let writers = Self::resolve_anchor_writers(*anchor);
+                let verified = match sig_data.signer {
+                    Some(hint) if writers.contains(&hint) => {
+                        crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
+                    }
+                    _ => writers.iter().any(|w| {
+                        crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
+                    }),
+                };
+                if verified {
+                    Ok(())
+                } else {
+                    Err(StorageError::InvalidSignature)
+                }
+            }
+            StorageType::SharedMember {
+                signature_data: None,
+                ..
+            } => Err(StorageError::InvalidSignature),
             // Unreachable: handled at the top of the function.
             StorageType::Public | StorageType::Frozen => Ok(()),
+        }
+    }
+
+    /// Verify a snapshot-supplied [`SharedMember`](StorageType::SharedMember)
+    /// leaf against an **explicitly provided** writer set.
+    ///
+    /// [`verify_snapshot_entity_signature`](Self::verify_snapshot_entity_signature)
+    /// resolves a member's writers via `resolve_anchor_writers`, which reads
+    /// through `MainStorage` — only valid inside the WASM `RUNTIME_ENV`. The
+    /// snapshot apply path runs **outside** that env, and a member's anchor may
+    /// arrive in a later page anyway, so the node instead resolves the writers
+    /// from the anchor's own snapshot record (itself signature-verified) and
+    /// passes them here. Otherwise identical to the member arm above:
+    /// placeholder reject, signer-hint fast path, else a scan over `writers`.
+    ///
+    /// `metadata.storage_type` must be `SharedMember`; any other variant is a
+    /// caller error and is rejected as `InvalidData`.
+    ///
+    /// # Errors
+    /// `InvalidSignature` if `signature_data` is `None`, carries the `[0; 64]`
+    /// placeholder, or fails ed25519 verification against `writers`;
+    /// `InvalidData` if `metadata.storage_type` is not `SharedMember`.
+    pub fn verify_snapshot_member_signature(
+        id: crate::address::Id,
+        data: &[u8],
+        metadata: &crate::entities::Metadata,
+        writers: &BTreeSet<PublicKey>,
+    ) -> Result<(), StorageError> {
+        use crate::action::Action;
+        use crate::entities::StorageType;
+
+        let StorageType::SharedMember { signature_data, .. } = &metadata.storage_type else {
+            return Err(StorageError::InvalidData(
+                "verify_snapshot_member_signature: storage_type is not SharedMember".to_owned(),
+            ));
+        };
+        let Some(sig_data) = signature_data.as_ref() else {
+            return Err(StorageError::InvalidSignature);
+        };
+        if sig_data.signature == [0u8; 64] {
+            return Err(StorageError::InvalidSignature);
+        }
+        let action = Action::Add {
+            id,
+            data: data.to_vec(),
+            ancestors: vec![],
+            metadata: metadata.clone(),
+        };
+        let payload = action.payload_for_signing();
+        let verified = match sig_data.signer {
+            Some(hint) if writers.contains(&hint) => {
+                crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
+            }
+            _ => writers
+                .iter()
+                .any(|w| crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)),
+        };
+        if verified {
+            Ok(())
+        } else {
+            Err(StorageError::InvalidSignature)
         }
     }
 
@@ -390,12 +530,20 @@ impl<S: StorageAdaptor> Interface<S> {
             | StorageType::User {
                 signature_data: Some(sd),
                 ..
+            }
+            | StorageType::SharedMember {
+                signature_data: Some(sd),
+                ..
             } => sd,
             StorageType::Shared {
                 signature_data: None,
                 ..
             }
             | StorageType::User {
+                signature_data: None,
+                ..
+            }
+            | StorageType::SharedMember {
                 signature_data: None,
                 ..
             } => {
@@ -460,6 +608,24 @@ impl<S: StorageAdaptor> Interface<S> {
                 if stored_owner != new_owner {
                     return Err(StorageError::InvalidData(
                         "update_signature_in_place: owner mismatch".to_owned(),
+                    ));
+                }
+            }
+            (
+                StorageType::SharedMember {
+                    anchor: stored_anchor,
+                    ..
+                },
+                StorageType::SharedMember {
+                    anchor: new_anchor, ..
+                },
+            ) => {
+                // A member's access control is its anchor pointer; patching the
+                // signature must not re-anchor it (that would silently move it
+                // to a different writer domain).
+                if stored_anchor != new_anchor {
+                    return Err(StorageError::InvalidData(
+                        "update_signature_in_place: anchor mismatch".to_owned(),
                     ));
                 }
             }
@@ -1013,6 +1179,87 @@ impl<S: StorageAdaptor> Interface<S> {
                             stored_writers.clone(),
                         )?;
                     }
+                    StorageType::SharedMember {
+                        anchor,
+                        signature_data,
+                    } => {
+                        debug!(
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            %anchor,
+                            data_len = data.len(),
+                            "Interface::apply_action received upsert shared-member action"
+                        );
+                        let sig_data = signature_data.as_ref().ok_or(StorageError::InvalidData(
+                            "Remote SharedMember action must be signed".to_owned(),
+                        ))?;
+
+                        // A member carries NO writer set. The authoritative set
+                        // is the anchor's, resolved by the node at the delta's
+                        // causal cut (`writers_at(anchor_log, delta.parents)`)
+                        // and passed in `effective_writers`. With no causal
+                        // context (snapshot leaf push / local apply) fall back
+                        // to the anchor's settled local state. There is NO
+                        // inline-writers fallback — that is the whole point of
+                        // the member design.
+                        //
+                        // An empty set here means the anchor has not synced to
+                        // this node yet: verification fails closed and the node
+                        // buffers the member delta until the anchor arrives,
+                        // rather than trusting an unverifiable member. (Buffering
+                        // lives in the node sync layer; storage just rejects.)
+                        let authoritative_writers = match ctx.effective_writers.as_ref() {
+                            Some(effective) => effective.clone(),
+                            None => Self::resolve_anchor_writers(*anchor),
+                        };
+
+                        // Replay protection — identical baseline to the Shared
+                        // arm (stored monotonic nonce; type-agnostic).
+                        let stored_metadata = <Index<S>>::get_metadata(*id)?;
+                        let new_nonce = sig_data.nonce;
+                        let last_nonce =
+                            stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
+                        let skip_nonce =
+                            nonce_check_disabled_for_testing() || crate::env::in_merge_mode();
+
+                        // Verify signature first (same hint-fast-path / scan as
+                        // Shared), against the anchor-resolved set.
+                        let payload = action.payload_for_signing();
+                        let verified = match sig_data.signer {
+                            Some(hint) if authoritative_writers.contains(&hint) => {
+                                crate::env::ed25519_verify(
+                                    &sig_data.signature,
+                                    hint.digest(),
+                                    &payload,
+                                )
+                            }
+                            _ => authoritative_writers.iter().any(|w| {
+                                crate::env::ed25519_verify(
+                                    &sig_data.signature,
+                                    w.digest(),
+                                    &payload,
+                                )
+                            }),
+                        };
+                        if !verified {
+                            return Err(StorageError::InvalidSignature);
+                        }
+
+                        if !skip_nonce && new_nonce < last_nonce {
+                            tracing::warn!(
+                                %id,
+                                new_nonce,
+                                last_nonce,
+                                "SharedMember upsert: stale nonce, signature verified \
+                                 — skipping save_internal (authentic but no-op)"
+                            );
+                            return Ok(());
+                        }
+
+                        // NB: no rotation-log hook. A member owns no rotation
+                        // log; rotations live only at its anchor.
+                    }
                     StorageType::Public => {
                         // No signature verification for Public.
                         //
@@ -1222,6 +1469,88 @@ impl<S: StorageAdaptor> Interface<S> {
                             }
                             _ => {
                                 // Action metadata is not Shared, but existing is.
+                                return Err(StorageError::InvalidSignature);
+                            }
+                        }
+                    }
+                    StorageType::SharedMember {
+                        anchor: existing_anchor,
+                        ..
+                    } => {
+                        // Verify the action's metadata, which contains the signature
+                        match &metadata.storage_type {
+                            StorageType::SharedMember {
+                                anchor: action_anchor,
+                                signature_data,
+                                ..
+                            } => {
+                                // The action's claimed anchor must match stored —
+                                // delete is not a re-anchor channel.
+                                if *action_anchor != existing_anchor {
+                                    return Err(StorageError::InvalidSignature);
+                                }
+
+                                let sig_data =
+                                    signature_data.as_ref().ok_or(StorageError::InvalidData(
+                                        "Remote SharedMember delete must be signed".to_owned(),
+                                    ))?;
+
+                                // Writers: prefer the node-resolved causal set
+                                // (`writers_at(anchor_log, delta.parents)`, keyed
+                                // by this member id) exactly like the upsert arm,
+                                // so a delete is authorized against the same set
+                                // a concurrent rotation would resolve. Only fall
+                                // back to the anchor's settled local state when
+                                // no causal set was supplied (snapshot/local
+                                // apply). An unsynced anchor → empty set → signer
+                                // scan fails → InvalidSignature (fail closed).
+                                let existing_writers =
+                                    ctx.effective_writers.clone().unwrap_or_else(|| {
+                                        Self::resolve_anchor_writers(existing_anchor)
+                                    });
+
+                                let payload = action.payload_for_signing();
+                                let signer = match sig_data.signer {
+                                    Some(hint) if existing_writers.contains(&hint) => {
+                                        if crate::env::ed25519_verify(
+                                            &sig_data.signature,
+                                            hint.digest(),
+                                            &payload,
+                                        ) {
+                                            Some(hint)
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => existing_writers.iter().copied().find(|w| {
+                                        crate::env::ed25519_verify(
+                                            &sig_data.signature,
+                                            w.digest(),
+                                            &payload,
+                                        )
+                                    }),
+                                };
+                                if signer.is_none() {
+                                    return Err(StorageError::InvalidSignature);
+                                }
+
+                                // Replay protection (strict `<=` Err, as Shared).
+                                let new_nonce = sig_data.nonce;
+                                let last_nonce = *existing_metadata.updated_at;
+                                if new_nonce <= last_nonce {
+                                    let placeholder = existing_writers
+                                        .iter()
+                                        .copied()
+                                        .next()
+                                        .unwrap_or_else(|| [0u8; 32].into());
+                                    return Err(StorageError::NonceReplay(Box::new((
+                                        placeholder,
+                                        new_nonce,
+                                    ))));
+                                }
+                            }
+                            _ => {
+                                // Action metadata is not SharedMember, but existing is.
                                 return Err(StorageError::InvalidSignature);
                             }
                         }
@@ -1969,6 +2298,33 @@ impl<S: StorageAdaptor> Interface<S> {
             };
         }
 
+        // Same for a member delete: authorize against the ANCHOR's writers
+        // (the member carries none), re-stamp the anchor pointer with a fresh
+        // signature placeholder for the signer to fill in.
+        let member_to_stamp =
+            if let StorageType::SharedMember { anchor, .. } = &metadata.storage_type {
+                let executor: calimero_primitives::identity::PublicKey =
+                    crate::env::executor_id().into();
+                let writers = Self::resolve_anchor_writers(*anchor);
+                if writers.contains(&executor) {
+                    Some((*anchor, executor))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+        if let Some((anchor, signer)) = member_to_stamp {
+            metadata.storage_type = StorageType::SharedMember {
+                anchor,
+                signature_data: Some(SignatureData {
+                    signature: [0; 64], // Placeholder, added by signer
+                    nonce: deleted_at,
+                    signer: Some(signer), // O(1) verifier lookup
+                }),
+            };
+        }
+
         <Index<S>>::remove_child_from(parent_id, child_id)?;
 
         // Use DeleteRef for efficient tombstone-based deletion.
@@ -2703,6 +3059,33 @@ impl<S: StorageAdaptor> Interface<S> {
             };
         }
 
+        // Member upsert: a member carries no writer set, so there is no
+        // claimed-set union — authority is purely the ANCHOR's resolved writers
+        // (settled local state). Stamp the anchor pointer + signer placeholder.
+        let member_to_stamp =
+            if let StorageType::SharedMember { anchor, .. } = &metadata.storage_type {
+                let executor: calimero_primitives::identity::PublicKey =
+                    crate::env::executor_id().into();
+                if Self::resolve_anchor_writers(*anchor).contains(&executor) {
+                    Some((*anchor, executor))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+        if let Some((anchor, signer)) = member_to_stamp {
+            let nonce = *metadata.updated_at;
+            metadata.storage_type = StorageType::SharedMember {
+                anchor,
+                signature_data: Some(SignatureData {
+                    signature: [0; 64], // Placeholder, added by signer
+                    nonce,
+                    signer: Some(signer), // O(1) verifier lookup
+                }),
+            };
+        }
+
         let Some((is_new, full_hash)) = Self::save_internal(id, &data, metadata.clone())? else {
             return Ok(None);
         };
@@ -2822,6 +3205,27 @@ impl<S: StorageAdaptor> Interface<S> {
                     (StorageType::Shared { .. }, StorageType::Shared { .. }) => {
                         // Writer-set changes (rotation) are gated by signature
                         // verification in apply_action against the stored writer set.
+                        Ok(())
+                    }
+                    (
+                        StorageType::SharedMember {
+                            anchor: existing_anchor,
+                            ..
+                        },
+                        StorageType::SharedMember {
+                            anchor: new_anchor, ..
+                        },
+                    ) => {
+                        // A member's anchor is immutable (like User's owner):
+                        // re-anchoring would silently move it to a different
+                        // writer domain. The write itself is gated by signature
+                        // verification against the anchor's writers in
+                        // apply_action.
+                        if *new_anchor != *existing_anchor {
+                            return Err(StorageError::ActionNotAllowed(
+                                "Cannot change SharedMember anchor".to_owned(),
+                            ));
+                        }
                         Ok(())
                     }
                     (existing, new) => {

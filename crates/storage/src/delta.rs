@@ -568,5 +568,22 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
             };
             hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
         }
+        StorageType::SharedMember {
+            anchor,
+            signature_data,
+        } => {
+            // Hash the SharedMember variant *without* the signature. Only the
+            // anchor id is committed — the writer set lives at the anchor, so a
+            // rotation leaves every member's hash unchanged.
+            let partial_type = StorageType::SharedMember {
+                anchor: *anchor,
+                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
+                    nonce: sig_data.nonce,
+                    signature: [0; 64], // Use placeholder for hash
+                    signer: sig_data.signer,
+                }),
+            };
+            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
+        }
     }
 }

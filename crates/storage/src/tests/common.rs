@@ -374,6 +374,107 @@ pub fn build_signed_shared_action(
     action
 }
 
+/// Build a signed `SharedMember` action (Add when `add`, else Update). The
+/// member carries no writer set — only its `anchor` pointer — so verification
+/// resolves writers from the anchor (via `effective_writers` or the anchor's
+/// settled local state). Signed by `signer_sk`.
+pub fn build_signed_member_action(
+    add: bool,
+    id: Id,
+    anchor: Id,
+    data: Vec<u8>,
+    hlc_ns: u64,
+    signer_sk: &SigningKey,
+    ancestors: Vec<ChildInfo>,
+) -> Action {
+    let metadata = Metadata {
+        created_at: hlc_ns,
+        updated_at: hlc_ns.into(),
+        storage_type: StorageType::SharedMember {
+            anchor,
+            signature_data: Some(SignatureData {
+                signature: [0; 64],
+                nonce: hlc_ns,
+                signer: Some(pubkey_of(signer_sk)),
+            }),
+        },
+        crdt_type: None,
+        field_name: None,
+    };
+    let mut action = if add {
+        Action::Add {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+    } else {
+        Action::Update {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+    };
+    let payload = action.payload_for_signing();
+    let signature = signer_sk.sign(&payload).to_bytes();
+    let metadata_mut = match &mut action {
+        Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata,
+        _ => unreachable!(),
+    };
+    if let StorageType::SharedMember {
+        signature_data: Some(sd),
+        ..
+    } = &mut metadata_mut.storage_type
+    {
+        sd.signature = signature;
+    }
+    action
+}
+
+/// Build a signed `SharedMember` `DeleteRef`, signed by `signer_sk`. The
+/// member's writers are resolved from `anchor` at apply time (no inline set).
+pub fn build_signed_member_delete(
+    id: Id,
+    anchor: Id,
+    signer_sk: &SigningKey,
+    deleted_at: u64,
+) -> Action {
+    let metadata = Metadata {
+        created_at: env::time_now(),
+        updated_at: deleted_at.into(),
+        storage_type: StorageType::SharedMember {
+            anchor,
+            signature_data: Some(SignatureData {
+                signature: [0; 64],
+                nonce: deleted_at,
+                signer: Some(pubkey_of(signer_sk)),
+            }),
+        },
+        crdt_type: None,
+        field_name: None,
+    };
+    let mut action = Action::DeleteRef {
+        id,
+        deleted_at,
+        metadata,
+    };
+    let signature = sign_action(&action, signer_sk);
+    if let Action::DeleteRef {
+        ref mut metadata, ..
+    } = action
+    {
+        if let StorageType::SharedMember {
+            signature_data: Some(sd),
+            ..
+        } = &mut metadata.storage_type
+        {
+            sd.signature = signature;
+        }
+    }
+    action
+}
+
 /// Helper to create a User storage Update action with proper signature.
 pub fn create_signed_user_update_action(
     signing_key: &SigningKey,

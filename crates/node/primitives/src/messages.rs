@@ -53,4 +53,14 @@ pub enum NodeMessage {
     /// claim "FSM observes every monotonic advance regardless of
     /// origin" only held for the receive path until #2237 follow-up.
     ForwardNamespaceOpApplied { namespace_id: [u8; 32] },
+    /// Read the best-effort sync-status snapshot the sync run-loop has
+    /// recorded for a context. Routed through `NodeClient -> NodeManager`
+    /// because the snapshot lives on the node-crate-private `NodeState`,
+    /// which the server layer cannot name directly. `outcome` carries
+    /// `None` when the run-loop has no record for the context (never
+    /// synced — e.g. created locally or just joined).
+    GetSyncStatus {
+        context_id: ContextId,
+        outcome: oneshot::Sender<Option<crate::SyncStatusSnapshot>>,
+    },
 }

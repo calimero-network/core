@@ -474,6 +474,8 @@ impl SyncManager {
         let tracker = super::session::SessionTracker::new(
             self.sync_config.session_deadline,
             self.sync_config.interval,
+            self.node_state.sync_status_handle(),
+            Some(self.node_client.clone()),
         );
 
         let driver = super::driver::SyncDriver::new(

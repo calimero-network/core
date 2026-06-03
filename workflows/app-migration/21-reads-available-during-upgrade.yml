@@ -1,0 +1,183 @@
+name: 21 — Reads available during an in-progress upgrade (#2539 step 1)
+description: >
+  Single-node cascade upgrade with reads issued during the InProgress window.
+
+  After `upgrade_group(cascade=true)` returns, the cascade op is published and
+  the per-descendant status is `InProgress`; the migration propagator runs
+  asynchronously. A burst of `get_description` reads fired immediately after
+  must all SUCCEED — proving reads are served from the committed pre-migration
+  root while the upgrade is in progress. Under the old block-everything gate
+  those reads returned `UpgradeInProgress` and the burst would fail, so this is
+  a regression guard for the relaxed gate.
+
+  Determinism note: a read only catches the old-gate regression if it lands in
+  the (short) InProgress window. The burst fires right after the upgrade RPC
+  returns — when `InProgress` is already set and the async propagator has not
+  yet finished the local migration — so overlap is very likely, but not
+  guaranteed; under the fixed code every read is served regardless, so this
+  never false-fails. The deterministic guarantee lives in the Rust tests
+  (`upgrade_rejects_committed_write` unit + `cascade_dispatch_e2e_write_gate_blocks_state_ops`).
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-reads
+  base_port: 9250
+  base_rpc_port: 9350
+
+steps:
+  # Install v1 + v2 on the single node.
+  - name: Install migration-suite-v1
+    type: install_application
+    node: app-migration-reads-1
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install migration-suite-v2-add-field
+    type: install_application
+    node: app-migration-reads-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Namespace (anchors v1) + descendant subgroup + context, all local.
+  - name: Create namespace (anchors app_v1)
+    type: create_namespace
+    node: app-migration-reads-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-reads-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create descendant subgroup
+    type: create_group_in_namespace
+    node: app-migration-reads-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "reads-target-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-reads-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Seed v1 state and sanity-check it reads back.
+  - name: Write v1 description
+    type: call
+    node: app-migration-reads-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "set-before-upgrade"
+
+  - name: Sanity — read v1 description before upgrade
+    type: call
+    node: app-migration-reads-1
+    context_id: "{{ctx_id}}"
+    method: get_description
+    outputs:
+      desc_before: result
+
+  - name: Assert v1 description readable pre-upgrade
+    type: json_assert
+    statements:
+      - 'json_equal({{desc_before}}, {"output": "set-before-upgrade"})'
+
+  # LazyOnAccess: each context self-migrates on next access.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-reads-1
+    group_id: "{{namespace_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Fire the cascade. This RPC returns after publishing the op (status is
+  # InProgress, propagator runs async) — it does NOT wait for completion.
+  - name: Cascade namespace v1 → v2
+    type: upgrade_group
+    node: app-migration-reads-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+    cascade: true
+
+  # Immediately read in a tight burst — these land while the group is
+  # InProgress. Each must succeed (expected_failure: false); a single refused
+  # read fails the workflow. This is the read-availability assertion.
+  - name: Reads during the in-progress upgrade must all succeed
+    type: repeat
+    count: 12
+    steps:
+      - name: get_description during InProgress
+        type: call
+        node: app-migration-reads-1
+        context_id: "{{ctx_id}}"
+        method: get_description
+        expected_failure: false
+
+  # Let the cascade + migration settle, then prove the upgrade was REAL (the
+  # node reached v2 with v1 data preserved) so the reads overlapped an actual
+  # in-progress upgrade rather than a no-op.
+  - name: Wait for cascade + migration to apply
+    type: wait
+    seconds: 15
+
+  - name: Read post-upgrade schema_info
+    type: call
+    node: app-migration-reads-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert node reached v2 with v1 data preserved
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "description": "set-before-upgrade"}})'
+
+  # Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-reads-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-reads-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-reads-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-reads-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-reads-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

@@ -9,6 +9,8 @@ pub mod join_bundle;
 pub use join_bundle::JoinBundle;
 pub mod messages;
 pub mod sync;
+pub mod sync_status;
+pub use sync_status::{SyncState, SyncStatusSnapshot};
 pub mod topic_manager;
 pub use topic_manager::TopicManager;
 
