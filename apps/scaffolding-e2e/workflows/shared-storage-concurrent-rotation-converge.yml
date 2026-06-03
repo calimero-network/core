@@ -1,0 +1,589 @@
+name: Shared Storage — Cross-Node Concurrent Writer Rotation Converges
+description: >
+  Belt-and-suspenders integration coverage for the convergence
+  guarantee #2665 establishes by composition. #2665 makes each node
+  self-log its OWN rotations (alongside received ones), so the
+  causal `writers_at` resolution is total and symmetric across
+  nodes. That is covered by unit/node tests; the one angle not
+  exercised there is a genuinely-concurrent, multi-node rotation
+  that has to converge end-to-end over real sync. This workflow is
+  that test.
+
+  Identities (each held by exactly one node, so each can actually
+  execute writes and have them accepted/rejected):
+    * A = node-1
+    * B = node-2
+    * C = node-3
+
+  Scenario
+  --------
+    1. node-1 creates the context (sole initial writer {A}) and adds
+       B, giving the SharedStorage writer set {A, B}. A few KV
+       "member entries" are written before the rotations.
+    2. node-2 is partitioned off the Docker bridge. While split:
+         * node-1 (with node-3) rotates the writer set to {A, C}
+           — drops B, adds C.
+         * node-2 (isolated) rotates to {B, C} — drops A, adds C.
+       Neither node sees the other's rotation: they are causally
+       concurrent. Each side also writes a KV entry during the
+       split so data convergence around the rotations is checked.
+    3. Heal the partition. Both rotations merge on every node. The
+       storage tree (wrapper + value entity, re-stamped by each
+       rotation) reconciles by HLC-LWW, so `wait_for_sync` —
+       which converges `contextStateHash` across all three nodes —
+       is itself the root-hash convergence assertion.
+    4. node-3 (C) issues a settling rotation to the definitive set
+       {A, C}. C is the linchpin: it is a member of BOTH concurrent
+       sets, so whichever rotation wins the causal HLC tiebreak,
+       `writers_at` resolves to a set containing C on every node —
+       node-3's settling rotation is therefore authorized
+       everywhere. Being causally after both concurrent rotations,
+       it is the most-recently-applied entry in every node's
+       rotation log, which makes the app-visible writer set
+       deterministic across nodes (see note below).
+    5. Assert every node resolves the same writer set: A and C are
+       writers, B is NOT — i.e. retroactive revocation of B holds
+       under concurrency, on every node.
+    6. Assert the rotated-out writer's write is rejected: node-2
+       (B) calling `shared_set` fails on every node (it is no longer
+       in the writer set), while node-1 (A) writing succeeds and the
+       legitimate value converges.
+
+  Why the settling rotation (step 4) is needed for a deterministic
+  cross-node writer-set assertion: the app-facing `SharedStorage::
+  writers()` reads the rotation log's most-recently-*appended*
+  entry, which is per-node insertion order, NOT causal order (see
+  `SharedStorage::current_writers` — full local causal resolution is
+  the deferred P4 item; the causal `writers_at` is the merge-path
+  security boundary, not the local read). Under two concurrent
+  rotations the two nodes can legitimately append them in different
+  orders, so reading `writers()` immediately after the heal could
+  return {A,C} on one node and {B,C} on another even though the logs
+  hold the same entries and the merge-path authorization agrees. A
+  single causally-latest rotation collapses that ambiguity: it is
+  last on every node, so `writers()` converges deterministically.
+  The pre-settle convergence that #2665 actually guarantees — that
+  both rotations propagate, authenticate, and reconcile the storage
+  root — is asserted by the post-heal `wait_for_sync` in step 3.
+
+  Why partition-based and deterministic: the disconnect only has to
+  make node-1's and node-2's rotations invisible to each other while
+  split (so they are causally concurrent). After the heal, sync
+  delivers both rotations to every node and the assertions depend
+  only on final convergence, not on any race against buffer drain.
+
+  Relates: #2665, #2655, #2588, #2233.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: e2e-node
+
+steps:
+  # ---------- Setup: context with writer set {A} ----------
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Create context on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{ns}}'
+    outputs:
+      ctx: contextId
+
+  # --- node-2 (B) joins ---
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{ns}}'
+    invitation: '{{invite_node2}}'
+
+  - name: Node-2 joins context
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+
+  # --- node-3 (C) joins ---
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{ns}}'
+    invitation: '{{invite_node3}}'
+
+  - name: Node-3 joins context
+    type: join_context
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+
+  # --- Capture each node's identity (A/B/C). Captured up front so the
+  #     pubkeys are available as template values even while a node is
+  #     later partitioned. ---
+  - name: Identity A (node-1)
+    type: get_namespace_identity
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      id_a: publicKey
+
+  - name: Identity B (node-2)
+    type: get_namespace_identity
+    node: e2e-node-2
+    namespace_id: '{{ns}}'
+    outputs:
+      id_b: publicKey
+
+  - name: Identity C (node-3)
+    type: get_namespace_identity
+    node: e2e-node-3
+    namespace_id: '{{ns}}'
+    outputs:
+      id_c: publicKey
+
+  # ---------- Baseline: writer set {A, B} + member entries ----------
+
+  - name: Node-1 seeds shared value
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: shared_set
+    args:
+      value: "v0"
+
+  - name: Node-1 adds B to the writer set ({A} -> {A, B})
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: shared_add_writer
+    args:
+      writer_bs58: '{{id_b}}'
+
+  # Member entries written before the rotations — must survive and
+  # converge across the partition + concurrent-rotation window.
+  - name: Node-1 writes member entry m1
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: "m1"
+      value: "pre-rotation"
+
+  - name: Node-2 writes member entry m2
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: "m2"
+      value: "pre-rotation-n2"
+
+  - name: Converge baseline ({A, B} + member entries)
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 90
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after baseline convergence
+    type: wait
+    seconds: 3
+
+  # Sanity: every node sees {A, B} as the writer set (C not yet in).
+  - name: Baseline — node-3 sees A as writer
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_a}}'
+    outputs:
+      base_a_n3: result
+
+  - name: Baseline — node-3 sees B as writer
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_b}}'
+    outputs:
+      base_b_n3: result
+
+  - name: Baseline — node-3 does NOT yet see C as writer
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_c}}'
+    outputs:
+      base_c_n3: result
+
+  - name: Assert baseline writer set {A, B}
+    type: json_assert
+    statements:
+      - 'json_equal({{base_a_n3}}, {"output": true})'
+      - 'json_equal({{base_b_n3}}, {"output": true})'
+      - 'json_equal({{base_c_n3}}, {"output": false})'
+
+  # ---------- Fault: partition node-2 (B) off the bridge ----------
+
+  - name: Partition node-2 from the bridge
+    type: script
+    script: scripts/disconnect-node-from-bridge.sh
+    target: local
+    args:
+      - e2e-node-2
+
+  - name: Brief settle so libp2p notices the partition
+    type: wait
+    seconds: 3
+
+  # ---------- Concurrent rotations (neither side sees the other) ----------
+
+  # node-1 (connected to node-3) rotates {A, B} -> {A, C}: drops B,
+  # adds C.
+  - name: Node-1 rotates writer set to {A, C}
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: shared_rotate_writers
+    args:
+      writers:
+        - '{{id_a}}'
+        - '{{id_c}}'
+
+  # node-2 (isolated) rotates {A, B} -> {B, C}: drops A, adds C.
+  # Causally concurrent with node-1's rotation above.
+  - name: Node-2 rotates writer set to {B, C}
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_rotate_writers
+    args:
+      writers:
+        - '{{id_b}}'
+        - '{{id_c}}'
+
+  # Data writes around the rotations, one per side of the partition.
+  - name: Node-1 writes member entry during split
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: "during"
+      value: "from-n1"
+
+  - name: Node-2 writes member entry during split
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: "during2"
+      value: "from-n2"
+
+  # ---------- Heal: both concurrent rotations now merge everywhere ----------
+
+  - name: Heal node-2's partition
+    type: script
+    script: scripts/connect-node-to-bridge.sh
+    target: local
+    args:
+      - e2e-node-2
+
+  - name: Wait for libp2p mesh reformation
+    type: wait
+    seconds: 8
+
+  # This is the root-hash convergence assertion: it only passes once
+  # all three nodes share the same contextStateHash, i.e. both
+  # concurrent rotations (and the surrounding data writes) have
+  # reconciled into an identical storage tree on every node.
+  - name: Converge after concurrent rotations
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 120
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after concurrent-rotation convergence
+    type: wait
+    seconds: 5
+
+  # ---------- Settle to a deterministic resolved set {A, C} ----------
+
+  # node-3 (C) is in BOTH concurrent sets, so it is authorized to
+  # rotate on every node regardless of which concurrent rotation won
+  # the causal tiebreak. This rotation is causally after both, so it
+  # is the last log entry on every node — collapsing the
+  # insertion-order ambiguity in the app-visible writer set.
+  - name: Node-3 issues settling rotation to {A, C}
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+    method: shared_rotate_writers
+    args:
+      writers:
+        - '{{id_a}}'
+        - '{{id_c}}'
+
+  - name: Converge after settling rotation
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 120
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after settling rotation
+    type: wait
+    seconds: 3
+
+  # ---------- Assert: identical resolved writer set on every node ----------
+  # A and C are writers, B is revoked — on node-1, node-2, AND node-3.
+
+  - name: node-1 — is A a writer?
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_a}}'
+    outputs:
+      a_n1: result
+  - name: node-1 — is B a writer?
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_b}}'
+    outputs:
+      b_n1: result
+  - name: node-1 — is C a writer?
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_c}}'
+    outputs:
+      c_n1: result
+
+  - name: node-2 — is A a writer?
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_a}}'
+    outputs:
+      a_n2: result
+  - name: node-2 — is B a writer?
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_b}}'
+    outputs:
+      b_n2: result
+  - name: node-2 — is C a writer?
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_c}}'
+    outputs:
+      c_n2: result
+
+  - name: node-3 — is A a writer?
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_a}}'
+    outputs:
+      a_n3: result
+  - name: node-3 — is B a writer?
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_b}}'
+    outputs:
+      b_n3: result
+  - name: node-3 — is C a writer?
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+    method: shared_is_writer
+    args:
+      key_bs58: '{{id_c}}'
+    outputs:
+      c_n3: result
+
+  - name: Assert all nodes resolved the same writer set {A, C} (B revoked)
+    type: json_assert
+    statements:
+      - 'json_equal({{a_n1}}, {"output": true})'
+      - 'json_equal({{c_n1}}, {"output": true})'
+      - 'json_equal({{b_n1}}, {"output": false})'
+      - 'json_equal({{a_n2}}, {"output": true})'
+      - 'json_equal({{c_n2}}, {"output": true})'
+      - 'json_equal({{b_n2}}, {"output": false})'
+      - 'json_equal({{a_n3}}, {"output": true})'
+      - 'json_equal({{c_n3}}, {"output": true})'
+      - 'json_equal({{b_n3}}, {"output": false})'
+
+  # ---------- Assert: member entries converged on every node ----------
+
+  - name: node-2 reads m1
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: "m1"
+    outputs:
+      m1_n2: result
+  - name: node-3 reads m2
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: "m2"
+    outputs:
+      m2_n3: result
+  - name: node-2 reads the during-split write from node-1
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: "during"
+    outputs:
+      during_n2: result
+  - name: node-1 reads the during-split write from node-2
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: "during2"
+    outputs:
+      during2_n1: result
+
+  - name: Assert member entries converged across the rotation window
+    type: json_assert
+    statements:
+      - 'json_equal({{m1_n2}}, {"output": "pre-rotation"})'
+      - 'json_equal({{m2_n3}}, {"output": "pre-rotation-n2"})'
+      - 'json_equal({{during_n2}}, {"output": "from-n1"})'
+      - 'json_equal({{during2_n1}}, {"output": "from-n2"})'
+
+  # ---------- Bonus: rotated-out writer (B) is rejected everywhere ----------
+
+  # node-2 (B) is no longer a writer. Its `shared_set` must be
+  # rejected locally (B not in the resolved set {A, C}).
+  - name: Node-2 (revoked B) attempts a shared write — must be rejected
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_set
+    args:
+      value: "by-revoked-b"
+    expected_failure: true
+
+  # Positive control: a current writer (A / node-1) can still write.
+  - name: Node-1 (A) writes shared value
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: shared_set
+    args:
+      value: "after-settle"
+
+  - name: Converge final shared value
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 90
+    check_interval: 2
+    trigger_sync: true
+
+  - name: node-2 reads final shared value
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_get
+    outputs:
+      shared_n2: result
+  - name: node-3 reads final shared value
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+    method: shared_get
+    outputs:
+      shared_n3: result
+
+  # The legitimate writer's value converges on every node; the
+  # revoked writer's attempted value never appears anywhere.
+  - name: Assert revoked write never took effect; legit write converged
+    type: json_assert
+    statements:
+      - 'json_equal({{shared_n2}}, {"output": "after-settle"})'
+      - 'json_equal({{shared_n3}}, {"output": "after-settle"})'
+
+stop_all_nodes: false

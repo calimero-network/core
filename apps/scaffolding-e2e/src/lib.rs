@@ -19,7 +19,7 @@
 
 #![allow(clippy::len_without_is_empty)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
@@ -1275,6 +1275,23 @@ impl E2eKvStore {
         app::emit!(Event::SharedWriterAdded {
             writer: writer_bs58.clone(),
         });
+        Ok(())
+    }
+
+    /// Replace the entire writer set in one rotation (unlike `shared_add_writer`,
+    /// which only unions in a single key). Lets a test drop a writer — required
+    /// to exercise concurrent rotations that diverge on membership and to assert
+    /// retroactive revocation. The caller must be a current writer.
+    pub fn shared_rotate_writers(&mut self, writers: Vec<String>) -> app::Result<()> {
+        let mut new_writers = BTreeSet::new();
+        for w in &writers {
+            let pk: PublicKey = w.parse()?;
+            let _inserted = new_writers.insert(pk);
+        }
+        self.shared_data.rotate_writers(new_writers)?;
+        for w in writers {
+            app::emit!(Event::SharedWriterAdded { writer: w });
+        }
         Ok(())
     }
 
