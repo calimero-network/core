@@ -253,12 +253,22 @@ steps:
   # (a) The straggler delta reached a v2 reader and was ABSORBED (buffered for
   #     verbatim replay), not applied blind. Asserted on node 1 (the node whose
   #     reader advanced to v2 ahead of receiving node 2's v1 delta).
-  - name: Assert the straggler delta was absorbed (not dropped) on node 1
+  # Split into two single-pattern steps so BOTH the human-readable log line
+  # AND the metric marker are independently required (a single multi-pattern
+  # step with min_matches:1 could pass on just one of them).
+  - name: Assert the straggler delta was absorbed (log line) on node 1
     type: assert_log_present
     nodes:
       - app-migration-straggler-1
     patterns:
       - "Absorbing state delta"
+    min_matches: 1
+
+  - name: Assert the absorbed_for_migration marker fired on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-straggler-1
+    patterns:
       - "absorbed_for_migration"
     min_matches: 1
 
@@ -275,9 +285,11 @@ steps:
   # (c) The silent-drop path must NEVER fire for this migration-fenced delta.
   #     This is the core regression guard: pre-PR-6b the straggler write was
   #     dropped here.
-  - name: Assert no straggler delta was silently dropped (any node)
+  - name: Assert no straggler delta was silently dropped (both nodes)
     type: assert_log_absent
-    nodes: []
+    nodes:
+      - app-migration-straggler-1
+      - app-migration-straggler-2
     patterns:
       - "Dropping state delta — HLC fence: stale schema after cascade migration"
 

@@ -233,12 +233,22 @@ steps:
   # Phase 7: NODE-LOG VALIDATION — the explicit requirement for scenario 25.
   #
   # (a) The v1 reader BUFFERED the v2 leaves instead of storing unreadable bytes.
-  - name: Assert node 2 buffered the v2 leaves (did not store unreadable bytes)
+  # Split so BOTH the human-readable buffered log AND the metric marker are
+  # independently required (a single multi-pattern min_matches:1 step could
+  # pass on just one of them).
+  - name: Assert node 2 buffered the v2 leaves (log line)
     type: assert_log_present
     nodes:
       - app-migration-v1pin-2
     patterns:
       - "buffered into the absorb buffer instead of storing"
+    min_matches: 1
+
+  - name: Assert node 2 emitted the absorbed_leaf_future_schema marker
+    type: assert_log_present
+    nodes:
+      - app-migration-v1pin-2
+    patterns:
       - "absorbed_leaf_future_schema"
     min_matches: 1
 
