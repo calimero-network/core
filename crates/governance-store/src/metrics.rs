@@ -11,6 +11,20 @@ use prometheus_client::registry::Registry;
 pub struct Metrics {
     pub execution_count: Family<ExecutionLabels, Gauge>,
     pub execution_duration: Family<ExecutionLabels, Histogram>,
+
+    /// Cumulative count of in-memory context-cache hits (the requested
+    /// context was already resident in `ContextManager::contexts`).
+    pub context_cache_hits: Counter,
+    /// Cumulative count of context-cache misses (the context had to be
+    /// fetched from the authoritative datastore and inserted).
+    pub context_cache_misses: Counter,
+    /// Current number of contexts resident in the in-memory hot cache.
+    /// Set from the periodic cache-stats task, so it tracks the cap
+    /// (`MAX_CACHED_CONTEXTS`) at ~5-minute resolution.
+    pub context_cache_size: Gauge,
+    /// Current number of application-metadata entries resident in the
+    /// in-memory cache. Reported alongside `context_cache_size`.
+    pub application_cache_size: Gauge,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
@@ -87,6 +101,38 @@ impl Metrics {
             "execution_duration_seconds",
             "Context runtime execution in seconds",
             execution_duration.clone(),
+        );
+
+        // Context in-memory cache effectiveness. Hits/misses are
+        // monotonic counters incremented at the cache-aside entry point
+        // (`get_or_fetch_context`); the hit *rate* is derived in PromQL as
+        // `rate(hits) / (rate(hits) + rate(misses))`. The size gauges are
+        // refreshed by the periodic cache-stats task.
+        let cache_registry = context_registry.sub_registry_with_prefix("cache");
+
+        let context_cache_hits = Counter::default();
+        cache_registry.register(
+            "context_hits",
+            "Cumulative in-memory context cache hits",
+            context_cache_hits.clone(),
+        );
+        let context_cache_misses = Counter::default();
+        cache_registry.register(
+            "context_misses",
+            "Cumulative in-memory context cache misses (datastore fallback)",
+            context_cache_misses.clone(),
+        );
+        let context_cache_size = Gauge::default();
+        cache_registry.register(
+            "context_size",
+            "Number of contexts currently resident in the in-memory hot cache",
+            context_cache_size.clone(),
+        );
+        let application_cache_size = Gauge::default();
+        cache_registry.register(
+            "application_size",
+            "Number of application-metadata entries currently resident in the cache",
+            application_cache_size.clone(),
         );
 
         let group_store_registry = context_registry.sub_registry_with_prefix("group_store");
@@ -166,6 +212,10 @@ impl Metrics {
         Self {
             execution_count,
             execution_duration,
+            context_cache_hits,
+            context_cache_misses,
+            context_cache_size,
+            application_cache_size,
         }
     }
 }

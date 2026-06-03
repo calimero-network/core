@@ -6,11 +6,12 @@ use calimero_governance_store::{
 };
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use actix::prelude::{ActorResponse, WrapFuture};
-use actix::Actor;
+use actix::{Actor, AsyncContext};
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -139,6 +140,45 @@ const MAX_CACHED_CONTEXTS: usize = 1024;
 /// Mirrors the compiled-`modules` cap (`MAX_CACHED_MODULES`); application
 /// metadata is a pure cache over the datastore, so eviction is harmless.
 const MAX_CACHED_APPLICATIONS: usize = 256;
+
+/// How often the periodic task logs context-cache effectiveness.
+const CACHE_STATS_LOG_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Cumulative hit/miss counters for the in-memory context cache.
+///
+/// Source of truth for the periodic [`ContextManager::log_cache_stats`] line,
+/// which is emitted even when Prometheus is disabled (headless/test nodes have
+/// `metrics: None`). When a registry *is* present the same events are also
+/// mirrored into the `context.cache.*` Prometheus series; the two are kept in
+/// lockstep at the single increment site in `get_or_fetch_context`.
+///
+/// Counters are cumulative over the process lifetime — the reported hit rate is
+/// therefore a lifetime average. Windowed rates are available from Prometheus
+/// (`rate(...)`); a per-interval delta in the log line is a possible follow-up.
+#[derive(Debug, Default)]
+struct ContextCacheStats {
+    hits: AtomicU64,
+    misses: AtomicU64,
+}
+
+impl ContextCacheStats {
+    /// Record a single cache access. `hit` is the `was_cached` outcome at the
+    /// cache-aside entry point: `true` when the context was already resident,
+    /// `false` when it had to be fetched from the datastore.
+    fn record(&self, hit: bool) {
+        let counter = if hit { &self.hits } else { &self.misses };
+        let _ = counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `(hits, misses)` snapshot. Relaxed loads are fine: the counters are only
+    /// ever read for human-facing logging, never to gate control flow.
+    fn snapshot(&self) -> (u64, u64) {
+        (
+            self.hits.load(Ordering::Relaxed),
+            self.misses.load(Ordering::Relaxed),
+        )
+    }
+}
 
 /// A metadata container for a single, in-memory context.
 ///
@@ -317,6 +357,12 @@ pub struct ContextManager {
     /// alongside the `contexts` LRU TODO above.
     modules: BTreeMap<(ApplicationId, Option<String>), calimero_runtime::Module>,
 
+    /// Cumulative hit/miss counters for the `contexts` hot cache, driving the
+    /// periodic effectiveness log (see [`ContextCacheStats`] and
+    /// [`Self::log_cache_stats`]). Independent of `metrics` so the log line
+    /// works on nodes without a Prometheus registry.
+    cache_stats: ContextCacheStats,
+
     /// Prometheus metrics for monitoring the health and performance of the manager,
     /// such as number of active contexts, message processing latency, etc.
     metrics: Option<Metrics>,
@@ -372,6 +418,7 @@ impl ContextManager {
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
             modules: BTreeMap::new(),
+            cache_stats: ContextCacheStats::default(),
 
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),
@@ -560,6 +607,11 @@ impl Actor for ContextManager {
     fn started(&mut self, ctx: &mut Self::Context) {
         self.recover_in_progress_upgrades(ctx);
         self.start_namespace_heartbeat(ctx);
+        // Periodically report in-memory context-cache effectiveness.
+        // Runs on the actor thread, so it reads cache state without locking.
+        let _ = ctx.run_interval(CACHE_STATS_LOG_INTERVAL, |act, _ctx| {
+            act.log_cache_stats();
+        });
         // Auto-follow handler (see the auto-follow architecture doc) — reacts to governance
         // op-apply events and emits JoinContext on behalf of members
         // with `auto_follow.contexts = true`.
@@ -594,6 +646,69 @@ impl ContextMeta {
 }
 
 impl ContextManager {
+    /// Record one context-cache access against both the always-on in-memory
+    /// counters and (when a registry is configured) the Prometheus series.
+    /// `hit` is the `was_cached` outcome at the cache-aside entry point.
+    fn record_cache_access(&self, hit: bool) {
+        self.cache_stats.record(hit);
+
+        if let Some(metrics) = &self.metrics {
+            let counter = if hit {
+                &metrics.context_cache_hits
+            } else {
+                &metrics.context_cache_misses
+            };
+            let _ = counter.inc();
+        }
+    }
+
+    /// Emit a single context-cache effectiveness line and refresh the cache-size
+    /// gauges. Driven every [`CACHE_STATS_LOG_INTERVAL`] from [`Actor::started`].
+    ///
+    /// Hits/misses are cumulative over the process lifetime, so `hit_rate` is a
+    /// lifetime average. When no accesses have happened yet the line is dropped
+    /// to `debug` to keep idle nodes quiet; an active cache logs at `info`.
+    fn log_cache_stats(&self) {
+        let (hits, misses) = self.cache_stats.snapshot();
+        let total = hits + misses;
+        let context_cache_size = self.contexts.len();
+        let application_cache_size = self.applications.len();
+
+        if let Some(metrics) = &self.metrics {
+            // i64 gauges; cache sizes are bounded by MAX_CACHED_* (≤ 1024) so the
+            // cast is always lossless.
+            metrics.context_cache_size.set(context_cache_size as i64);
+            metrics
+                .application_cache_size
+                .set(application_cache_size as i64);
+        }
+
+        // Avoid division by zero and don't spam idle nodes with "0.0%" lines.
+        if total == 0 {
+            tracing::debug!(
+                context_cache_size,
+                application_cache_size,
+                "Context cache statistics (no accesses yet)"
+            );
+            return;
+        }
+
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "hit rate is a display-only percentage; f64 has ample precision for cache counters"
+        )]
+        let hit_rate = hits as f64 / total as f64;
+
+        tracing::info!(
+            hits,
+            misses,
+            hit_rate = %format!("{:.1}%", hit_rate * 100.0),
+            context_cache_size,
+            application_cache_size,
+            "Context cache statistics"
+        );
+    }
+
     /// Retrieves context metadata, fetching from the datastore if not present in the cache.
     ///
     /// This function implements the "cache-aside" pattern. It first checks the in-memory
@@ -622,10 +737,16 @@ impl ContextManager {
         // borrow checker can't return a reference through a split hit/miss
         // match otherwise).
         let was_cached = self.contexts.contains_key(context_id);
-        if !was_cached {
+        if was_cached {
+            self.record_cache_access(true);
+        } else {
             let Some(context) = self.context_client.get_context(context_id)? else {
+                // The context exists in neither the cache nor the datastore, so
+                // this is a probe for a non-existent context rather than a cache
+                // miss — leave the effectiveness counters untouched.
                 return Ok(None);
             };
+            self.record_cache_access(false);
 
             evict_idle_context_if_full(&mut self.contexts);
 
@@ -831,5 +952,33 @@ mod cache_eviction_tests {
         let _ = apps.insert(a.id, a);
         evict_application_if_full(&mut apps);
         assert_eq!(apps.len(), MAX_CACHED_APPLICATIONS - 1);
+    }
+
+    #[test]
+    fn cache_stats_record_and_snapshot() {
+        let stats = ContextCacheStats::default();
+        assert_eq!(stats.snapshot(), (0, 0));
+
+        stats.record(true);
+        stats.record(true);
+        stats.record(false);
+        assert_eq!(stats.snapshot(), (2, 1));
+    }
+
+    /// Mirrors the percentage math in `log_cache_stats` so the formatting
+    /// contract (one decimal, `%` suffix) is pinned without constructing a full
+    /// `ContextManager`.
+    #[test]
+    fn cache_stats_hit_rate_formatting() {
+        let stats = ContextCacheStats::default();
+        for _ in 0..3 {
+            stats.record(true);
+        }
+        stats.record(false); // 3 hits / 4 total = 75.0%
+
+        let (hits, misses) = stats.snapshot();
+        let total = hits + misses;
+        let hit_rate = hits as f64 / total as f64;
+        assert_eq!(format!("{:.1}%", hit_rate * 100.0), "75.0%");
     }
 }
