@@ -223,10 +223,29 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
 
     /// Insert a character at the given visible position
     ///
+    /// # Panics
+    /// Panics if called inside a state migration (`#[app::migrate]`, i.e. storage
+    /// merge mode): `insert` stamps a node-local HLC timestamp, minting a different
+    /// `CharId` on every node and diverging the network. Carry the RGA across
+    /// unchanged or seed with [`insert_str_at_timestamp`](Self::insert_str_at_timestamp).
+    ///
     /// # Errors
     ///
     /// Returns error if position is out of bounds or storage operation fails
+    #[expect(
+        clippy::panic,
+        reason = "non-deterministic during migrate (node-local HLC); a loud panic is the \
+                  intended, unmissable guard against a silent network divergence"
+    )]
     pub fn insert(&mut self, pos: usize, content: char) -> Result<(), StoreError> {
+        if env::in_merge_mode() {
+            panic!(
+                "ReplicatedGrowableArray::insert() is non-deterministic during a state \
+                 migration: it stamps a node-local timestamp, minting a different CharId \
+                 per node and diverging the network. Carry the RGA across unchanged or \
+                 seed with `insert_str_at_timestamp(pos, fixed_timestamp, s)`."
+            );
+        }
         // Register this RGA type's nested-id re-key thunk so an RGA stored as a
         // collection value is re-keyed when the outer collection is stored.
         super::rekey::register_rekey::<Self>();
@@ -309,10 +328,27 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     /// need byte-for-byte reproducibility across replicas, see
     /// [`insert_str_at_timestamp`](Self::insert_str_at_timestamp).
     ///
+    /// # Panics
+    /// Panics if called inside a state migration (`#[app::migrate]`, i.e. storage
+    /// merge mode) — it allocates a node-local HLC timestamp. Seed with
+    /// [`insert_str_at_timestamp`](Self::insert_str_at_timestamp) instead.
+    ///
     /// # Errors
     ///
     /// Returns error if position is out of bounds or storage operation fails
+    #[expect(
+        clippy::panic,
+        reason = "non-deterministic during migrate (node-local HLC); a loud panic is the \
+                  intended, unmissable guard against a silent network divergence"
+    )]
     pub fn insert_str(&mut self, pos: usize, s: &str) -> Result<(), StoreError> {
+        if env::in_merge_mode() {
+            panic!(
+                "ReplicatedGrowableArray::insert_str() is non-deterministic during a state \
+                 migration: it allocates a node-local HLC timestamp, diverging CharIds \
+                 across nodes. Seed with `insert_str_at_timestamp(pos, fixed_timestamp, s)`."
+            );
+        }
         let timestamp = env::hlc_timestamp();
         self.insert_str_at_timestamp(pos, timestamp, s)
     }
@@ -509,5 +545,48 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         }
 
         Ok(ordered)
+    }
+}
+
+#[cfg(test)]
+mod merge_mode_tests {
+    use super::ReplicatedGrowableArray;
+    use crate::collections::Root;
+    use crate::env;
+    use crate::logical_clock::HybridTimestamp;
+
+    #[test]
+    #[should_panic(expected = "migration")]
+    fn insert_panics_during_migration() {
+        env::reset_for_testing();
+        let mut rga = Root::new(ReplicatedGrowableArray::new);
+        // `insert()` stamps a node-local HLC; inside a migrate body that mints
+        // a different CharId on every node and diverges. It must refuse.
+        env::with_merge_mode(|| {
+            let _ = rga.insert(0, 'H');
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "migration")]
+    fn insert_str_panics_during_migration() {
+        env::reset_for_testing();
+        let mut rga = Root::new(ReplicatedGrowableArray::new);
+        env::with_merge_mode(|| {
+            let _ = rga.insert_str(0, "Hi");
+        });
+    }
+
+    #[test]
+    fn insert_str_at_timestamp_is_allowed_during_migration() {
+        env::reset_for_testing();
+        let mut rga = Root::new(ReplicatedGrowableArray::new);
+        // The deterministic replay API (explicit, input-derived timestamp) is
+        // the sanctioned way to seed an RGA in a migrate — it stays usable.
+        env::with_merge_mode(|| {
+            rga.insert_str_at_timestamp(0, HybridTimestamp::zero(), "H")
+                .unwrap();
+        });
+        assert_eq!(rga.len().unwrap(), 1);
     }
 }

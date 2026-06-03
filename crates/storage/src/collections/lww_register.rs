@@ -94,10 +94,21 @@ impl<T> LwwRegister<T> {
     }
 
     /// Set a new value (updates timestamp and node_id)
+    ///
+    /// During merge mode (inside a `#[app::migrate]` body) the stamp is zeroed
+    /// for cross-node determinism, exactly like [`LwwRegister::new`] — a
+    /// migrate-written value becomes the new baseline (a genuine post-migration
+    /// write with a real timestamp then supersedes it). Outside merge mode it
+    /// stamps the current HLC + executor id as normal.
     pub fn set(&mut self, value: T) {
         self.value = value;
-        self.timestamp = env::hlc_timestamp();
-        self.node_id = env::executor_id();
+        if env::in_merge_mode() {
+            self.timestamp = HybridTimestamp::zero();
+            self.node_id = [0; 32];
+        } else {
+            self.timestamp = env::hlc_timestamp();
+            self.node_id = env::executor_id();
+        }
     }
 
     /// Get the timestamp of the last write
@@ -302,5 +313,35 @@ mod merge_mode_tests {
 
         assert_eq!(total.timestamp(), HybridTimestamp::zero());
         assert_eq!(total.node_id(), [0; 32]);
+    }
+
+    /// `set()` on a carried-over register inside a migrate body must zero its
+    /// stamp exactly like `new()` does. Otherwise the value bakes this node's
+    /// wall-clock HLC + executor id into the migrated root and diverges across
+    /// nodes — the latent `.set()` footgun the SDK docs wrongly claimed was
+    /// already covered by merge mode.
+    #[test]
+    fn lww_set_zeroes_timestamp_and_node_id_in_merge_mode() {
+        env::reset_for_testing();
+        env::set_executor_id([7; 32]);
+
+        // Outside merge mode: a real, node-local stamp.
+        let mut reg = LwwRegister::new(1_u64);
+        assert_ne!(reg.timestamp(), HybridTimestamp::zero());
+
+        // Inside merge mode: `.set()` must zero the stamp.
+        env::with_merge_mode(|| reg.set(5_u64));
+
+        assert_eq!(reg.get(), &5_u64);
+        assert_eq!(
+            reg.timestamp(),
+            HybridTimestamp::zero(),
+            "LwwRegister::set inside merge mode must zero the timestamp"
+        );
+        assert_eq!(
+            reg.node_id(),
+            [0; 32],
+            "LwwRegister::set inside merge mode must zero the node_id"
+        );
     }
 }

@@ -1,0 +1,24 @@
+[package]
+name = "migration-harness-example"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+# rlib-only: this crate exists purely as a `#[app::migrate]` worked example and
+# its in-process `TestHost` tests — it is not built to wasm, so it needs no
+# `build.rs`/ABI extraction.
+
+[dependencies]
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+
+[dev-dependencies]
+# Enables `register_crdt_merge` + the native mock host so `TestHost` can drive
+# CRDT state (and run migrations) under `cargo test`.
+calimero-storage = { workspace = true, features = ["testing"] }
+
+[package.metadata.workspaces]
+independent = true
