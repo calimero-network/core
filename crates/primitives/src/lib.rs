@@ -9,5 +9,6 @@ pub mod hash;
 pub mod identity;
 pub mod metadata;
 pub mod reflect;
+pub mod sync_status;
 pub mod utils;
 pub mod version;

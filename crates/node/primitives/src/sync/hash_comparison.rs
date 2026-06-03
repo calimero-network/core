@@ -453,7 +453,9 @@ impl LeafMetadata {
         use calimero_storage::entities::StorageType;
         let is_auth_type = matches!(
             authorization,
-            StorageType::Shared { .. } | StorageType::User { .. }
+            StorageType::Shared { .. }
+                | StorageType::User { .. }
+                | StorageType::SharedMember { .. }
         );
         if is_auth_type {
             self.authorization = Some(authorization);

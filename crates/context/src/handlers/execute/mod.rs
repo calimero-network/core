@@ -1982,6 +1982,31 @@ pub(crate) fn sign_authorized_actions(
             }
         }
 
+        // SharedMember signs exactly like Shared: the placeholder presence is
+        // the signal, and the authorization decision (executor ∈ the anchor's
+        // writers) was already made in `save_raw` against the anchor's resolved
+        // set. A member carries no writer set, so there is nothing to log here
+        // beyond the anchor.
+        if let StorageType::SharedMember {
+            anchor,
+            signature_data: Some(sig_data),
+            ..
+        } = &mut metadata.storage_type
+        {
+            if sig_data.signature == [0; 64] {
+                sig_data.nonce = nonce;
+                let signature = identity_private_key.sign(&payload_for_signing)?;
+                sig_data.signature = signature.to_bytes();
+
+                debug!(
+                    action_id = ?action_id,
+                    anchor = %anchor,
+                    nonce = %nonce,
+                    "Signed shared-member action"
+                );
+            }
+        }
+
         if let StorageType::User {
             owner: _,
             signature_data: Some(_),
@@ -2084,6 +2109,10 @@ pub(crate) fn persist_signed_signatures(
                     ..
                 }
                 | StorageType::User {
+                    signature_data: Some(sig),
+                    ..
+                }
+                | StorageType::SharedMember {
                     signature_data: Some(sig),
                     ..
                 } if sig.signature != [0u8; 64] => true,

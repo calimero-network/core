@@ -1,6 +1,6 @@
 //! Snapshot sync protocol for full state bootstrap.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use borsh::BorshDeserialize;
 use calimero_crypto::Nonce;
@@ -11,7 +11,11 @@ use calimero_node_primitives::sync::snapshot::{
 use calimero_node_primitives::sync::{
     MessagePayload, SnapshotCursor, SnapshotError, StreamMessage,
 };
+use calimero_node_primitives::{SyncState, SyncStatusSnapshot};
 use calimero_primitives::context::ContextId;
+use calimero_primitives::events::{
+    ContextEvent, ContextEventPayload, NodeEvent, SyncStatusPayload,
+};
 use calimero_primitives::hash::Hash;
 use calimero_storage::address::Id;
 use calimero_storage::env::time_now;
@@ -468,6 +472,21 @@ impl SyncManager {
         let mut total_applied = 0;
         let mut resume_cursor: Option<Vec<u8>> = None;
 
+        // `SharedMember` entities are verified in a SECOND pass, after every
+        // page has been applied. A member carries no inline writer set — its
+        // writers live at its anchor (a `Shared` wrapper) — and the snapshot
+        // apply path runs OUTSIDE the WASM `RUNTIME_ENV`, so the storage-layer
+        // `resolve_anchor_writers` (which reads via `MainStorage`) can't see the
+        // anchor here even once persisted; the anchor may also arrive in a later
+        // page. So we collect each verified anchor's writer set as it applies
+        // (`anchor_writers`), defer members (`deferred_members`), and verify the
+        // members against that authenticated map once the stream completes. A
+        // member still only persists after its writers are authenticated (the
+        // anchor's own record is signature-verified in pass 1).
+        let mut anchor_writers: HashMap<Id, BTreeSet<calimero_primitives::identity::PublicKey>> =
+            HashMap::new();
+        let mut deferred_members: Vec<(Id, Vec<u8>, Vec<u8>)> = Vec::new();
+
         loop {
             let msg = StreamMessage::Init {
                 context_id,
@@ -565,6 +584,24 @@ impl SyncManager {
                                             }
                                         };
                                     let id_obj = Id::new(*id);
+
+                                    // SharedMember: defer to pass 2. Its writers
+                                    // resolve from its anchor, which may not be
+                                    // applied yet (later page) and isn't readable
+                                    // via MainStorage here anyway. Hold the raw
+                                    // blobs; pass 2 verifies + persists.
+                                    if matches!(
+                                        index_entity.metadata.storage_type,
+                                        calimero_storage::entities::StorageType::SharedMember { .. }
+                                    ) {
+                                        deferred_members.push((
+                                            id_obj,
+                                            entry.clone(),
+                                            index.clone(),
+                                        ));
+                                        continue;
+                                    }
+
                                     if let Err(e) =
                                         Interface::<MainStorage>::verify_snapshot_entity_signature(
                                             id_obj,
@@ -611,6 +648,18 @@ impl SyncManager {
                                     let _ = received_keys
                                         .insert(StorageKey::RotationLog(id_obj).to_bytes());
                                     applied += 1;
+
+                                    // Record this verified anchor's writer set so
+                                    // pass 2 can authenticate members against it
+                                    // (the snapshot path can't use
+                                    // `resolve_anchor_writers` — no RUNTIME_ENV).
+                                    if let calimero_storage::entities::StorageType::Shared {
+                                        writers,
+                                        ..
+                                    } = &index_entity.metadata.storage_type
+                                    {
+                                        let _ = anchor_writers.insert(id_obj, writers.clone());
+                                    }
                                 }
                                 SnapshotRecord::Auxiliary { kind, id, .. } => {
                                     // `Auxiliary` is the channel for
@@ -691,6 +740,11 @@ impl SyncManager {
                             "Applied snapshot page"
                         );
 
+                        // Surface snapshot progress (per page-burst, a natural
+                        // throttle) so a subscriber watching this uninitialized
+                        // context sees forward motion rather than a silent wait.
+                        self.emit_snapshot_progress(context_id, total_applied as u64);
+
                         // Check if this is the last page in this burst
                         let is_last_in_burst = sent_count == page_count;
 
@@ -698,6 +752,93 @@ impl SyncManager {
                             // Check if there are more pages to fetch
                             match cursor {
                                 None => {
+                                    // Pass 2: every anchor is now applied, so
+                                    // verify + persist the deferred SharedMember
+                                    // entities against their anchor's collected
+                                    // (and signature-verified) writer set. A
+                                    // member whose anchor never appeared, or
+                                    // whose signature doesn't verify, is dropped
+                                    // — same fail-closed semantics as pass 1.
+                                    if !deferred_members.is_empty() {
+                                        let mut handle = self.context_client.datastore_handle();
+                                        for (id_obj, entry, index) in deferred_members.drain(..) {
+                                            let metadata = match borsh::from_slice::<
+                                                calimero_storage::index::EntityIndex,
+                                            >(
+                                                &index
+                                            ) {
+                                                Ok(idx) => idx.metadata,
+                                                Err(e) => {
+                                                    warn!(
+                                                        %context_id,
+                                                        id = ?id_obj.as_bytes(),
+                                                        error = ?e,
+                                                        "snapshot deferred SharedMember: index \
+                                                         blob failed to deserialize — dropping"
+                                                    );
+                                                    continue;
+                                                }
+                                            };
+                                            let anchor = match &metadata.storage_type {
+                                                calimero_storage::entities::StorageType::SharedMember {
+                                                    anchor,
+                                                    ..
+                                                } => *anchor,
+                                                // A deferred record is always a
+                                                // member; defensive only.
+                                                _ => continue,
+                                            };
+                                            let Some(writers) = anchor_writers.get(&anchor) else {
+                                                warn!(
+                                                    %context_id,
+                                                    id = ?id_obj.as_bytes(),
+                                                    anchor = ?anchor.as_bytes(),
+                                                    "snapshot deferred SharedMember: anchor not \
+                                                     present in snapshot — dropping (member's \
+                                                     writers unresolvable)"
+                                                );
+                                                continue;
+                                            };
+                                            if let Err(e) =
+                                                Interface::<MainStorage>::verify_snapshot_member_signature(
+                                                    id_obj, &entry, &metadata, writers,
+                                                )
+                                            {
+                                                warn!(
+                                                    %context_id,
+                                                    id = ?id_obj.as_bytes(),
+                                                    error = ?e,
+                                                    "snapshot deferred SharedMember: signature \
+                                                     verification failed — dropping"
+                                                );
+                                                continue;
+                                            }
+                                            let entry_state_key =
+                                                StorageKey::Entry(id_obj).to_bytes();
+                                            let index_state_key =
+                                                StorageKey::Index(id_obj).to_bytes();
+                                            let entry_key =
+                                                ContextStateKey::new(context_id, entry_state_key);
+                                            let index_key =
+                                                ContextStateKey::new(context_id, index_state_key);
+                                            let entry_slice: Slice<'_> = entry.into();
+                                            let index_slice: Slice<'_> = index.into();
+                                            handle.put(
+                                                &entry_key,
+                                                &ContextStateValue::from(entry_slice),
+                                            )?;
+                                            handle.put(
+                                                &index_key,
+                                                &ContextStateValue::from(index_slice),
+                                            )?;
+                                            let _ = received_keys.insert(entry_state_key);
+                                            let _ = received_keys.insert(index_state_key);
+                                            let _ = received_keys
+                                                .insert(StorageKey::RotationLog(id_obj).to_bytes());
+                                            total_applied += 1;
+                                        }
+                                    }
+
                                     // All pages received - cleanup stale keys
                                     self.cleanup_stale_keys(
                                         context_id,
@@ -762,6 +903,44 @@ impl SyncManager {
         handle.put(&key, &value)?;
         debug!(%context_id, "Set sync-in-progress marker");
         Ok(())
+    }
+
+    /// Record snapshot progress on the advisory `sync_status` mirror and push a
+    /// `SyncStatus` event to subscribers. Best-effort: a broadcast with no
+    /// receivers is fine, and `records_received` is a monotonic liveness signal
+    /// (not a percentage — the receiver isn't told a grand total up front).
+    fn emit_snapshot_progress(&self, context_id: ContextId, records_received: u64) {
+        let state = SyncState::ReceivingSnapshot { records_received };
+        let handle = self.node_state.sync_status_handle();
+        // Preserve any failure history the run-loop has already published for
+        // this context; this path only advances the snapshot phase. Writing
+        // 0/None here would flip `failure_count`/`last_error` to "healthy"
+        // mid-snapshot until the next run-loop publish. (Copy into owned values
+        // and drop the read guard before `insert` — a same-key get+insert on a
+        // `DashMap` shard would otherwise deadlock.)
+        let (failure_count, last_error) = match handle.get(&context_id) {
+            Some(prev) => (prev.failure_count, prev.last_error.clone()),
+            None => (0, None),
+        };
+        let _prev = handle.insert(
+            context_id,
+            SyncStatusSnapshot {
+                state,
+                failure_count,
+                last_error: last_error.clone(),
+            },
+        );
+        let event = NodeEvent::Context(ContextEvent {
+            context_id,
+            payload: ContextEventPayload::SyncStatus(SyncStatusPayload {
+                sync_state: state,
+                failure_count,
+                last_error,
+            }),
+        });
+        if let Err(err) = self.node_client.send_event(event) {
+            debug!(%context_id, %err, "failed to emit snapshot-progress event");
+        }
     }
 
     /// Clear the sync-in-progress marker after successful sync completion.
