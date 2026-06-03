@@ -395,6 +395,67 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
+    /// Verify a snapshot-supplied [`SharedMember`](StorageType::SharedMember)
+    /// leaf against an **explicitly provided** writer set.
+    ///
+    /// [`verify_snapshot_entity_signature`](Self::verify_snapshot_entity_signature)
+    /// resolves a member's writers via `resolve_anchor_writers`, which reads
+    /// through `MainStorage` — only valid inside the WASM `RUNTIME_ENV`. The
+    /// snapshot apply path runs **outside** that env, and a member's anchor may
+    /// arrive in a later page anyway, so the node instead resolves the writers
+    /// from the anchor's own snapshot record (itself signature-verified) and
+    /// passes them here. Otherwise identical to the member arm above:
+    /// placeholder reject, signer-hint fast path, else a scan over `writers`.
+    ///
+    /// `metadata.storage_type` must be `SharedMember`; any other variant is a
+    /// caller error and is rejected as `InvalidData`.
+    ///
+    /// # Errors
+    /// `InvalidSignature` if `signature_data` is `None`, carries the `[0; 64]`
+    /// placeholder, or fails ed25519 verification against `writers`;
+    /// `InvalidData` if `metadata.storage_type` is not `SharedMember`.
+    pub fn verify_snapshot_member_signature(
+        id: crate::address::Id,
+        data: &[u8],
+        metadata: &crate::entities::Metadata,
+        writers: &BTreeSet<PublicKey>,
+    ) -> Result<(), StorageError> {
+        use crate::action::Action;
+        use crate::entities::StorageType;
+
+        let StorageType::SharedMember { signature_data, .. } = &metadata.storage_type else {
+            return Err(StorageError::InvalidData(
+                "verify_snapshot_member_signature: storage_type is not SharedMember".to_owned(),
+            ));
+        };
+        let Some(sig_data) = signature_data.as_ref() else {
+            return Err(StorageError::InvalidSignature);
+        };
+        if sig_data.signature == [0u8; 64] {
+            return Err(StorageError::InvalidSignature);
+        }
+        let action = Action::Add {
+            id,
+            data: data.to_vec(),
+            ancestors: vec![],
+            metadata: metadata.clone(),
+        };
+        let payload = action.payload_for_signing();
+        let verified = match sig_data.signer {
+            Some(hint) if writers.contains(&hint) => {
+                crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
+            }
+            _ => writers
+                .iter()
+                .any(|w| crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)),
+        };
+        if verified {
+            Ok(())
+        } else {
+            Err(StorageError::InvalidSignature)
+        }
+    }
+
     /// Persist the signed `signature_data` produced by the runtime's
     /// `sign_authorized_actions` step back to the local index entry.
     ///
@@ -1420,12 +1481,19 @@ impl<S: StorageAdaptor> Interface<S> {
                                         "Remote SharedMember delete must be signed".to_owned(),
                                     ))?;
 
-                                // Writers come from the anchor's settled local
-                                // state (no inline set). An unsynced anchor →
-                                // empty set → signer scan fails → InvalidSignature
-                                // (fail closed), same as the upsert arm.
+                                // Writers: prefer the node-resolved causal set
+                                // (`writers_at(anchor_log, delta.parents)`, keyed
+                                // by this member id) exactly like the upsert arm,
+                                // so a delete is authorized against the same set
+                                // a concurrent rotation would resolve. Only fall
+                                // back to the anchor's settled local state when
+                                // no causal set was supplied (snapshot/local
+                                // apply). An unsynced anchor → empty set → signer
+                                // scan fails → InvalidSignature (fail closed).
                                 let existing_writers =
-                                    Self::resolve_anchor_writers(existing_anchor);
+                                    ctx.effective_writers.clone().unwrap_or_else(|| {
+                                        Self::resolve_anchor_writers(existing_anchor)
+                                    });
 
                                 let payload = action.payload_for_signing();
                                 let signer = match sig_data.signer {

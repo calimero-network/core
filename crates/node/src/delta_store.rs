@@ -114,6 +114,13 @@ pub struct BatchAddResult {
 /// arrives (e.g. a forged anchor id).
 const MAX_ANCHOR_PENDING: usize = 256;
 
+/// Per-anchor cap on buffered orphan members. Bounds the blast radius of a
+/// single forged anchor id: without it, one bogus anchor with 256 distinct
+/// delta ids could exhaust the global buffer and starve buffering for every
+/// legitimate anchor. 32 comfortably covers a real cold-join burst for one
+/// domain while leaving global headroom for many anchors.
+const MAX_PENDING_PER_ANCHOR: usize = 32;
+
 /// In-memory buffer for **orphaned member deltas**: a delta carrying a
 /// `StorageType::SharedMember { anchor }` action that arrived before its
 /// `anchor` (the `Shared` wrapper entity / rotation log) had synced. Without
@@ -145,6 +152,15 @@ impl AnchorPendingBuffer {
             return Err(input);
         }
         if self.seen.len() >= MAX_ANCHOR_PENDING {
+            return Err(input);
+        }
+        // Per-anchor cap: a single (possibly forged) anchor id can't fill the
+        // global buffer and starve other anchors.
+        if self
+            .by_anchor
+            .get(&anchor)
+            .is_some_and(|q| q.len() >= MAX_PENDING_PER_ANCHOR)
+        {
             return Err(input);
         }
         let _inserted = self.seen.insert(input.delta.id);
@@ -3134,35 +3150,56 @@ mod anchor_pending_tests {
         assert_eq!(buf.len(), 1);
     }
 
+    // Distinct delta ids via the first two bytes (a single byte only gives 256
+    // values — exactly the global cap — leaving no room for an "extra").
+    fn id_for(n: usize) -> [u8; 32] {
+        let mut b = [0u8; 32];
+        b[0] = u8::try_from(n & 0xff).unwrap();
+        b[1] = u8::try_from((n >> 8) & 0xff).unwrap();
+        b
+    }
+
     #[test]
-    fn rejects_when_full_then_accepts_after_drain() {
-        // Distinct delta ids via the first two bytes (a single byte only gives
-        // 256 values — exactly the cap — leaving no room for the "extra").
-        let id_for = |n: usize| -> [u8; 32] {
-            let mut b = [0u8; 32];
-            b[0] = u8::try_from(n & 0xff).unwrap();
-            b[1] = u8::try_from((n >> 8) & 0xff).unwrap();
-            b
-        };
+    fn rejects_when_global_cap_reached_then_accepts_after_drain() {
+        // Spread across many anchors (each under the per-anchor cap) to reach
+        // the GLOBAL cap without tripping the per-anchor limit.
         let mut buf = AnchorPendingBuffer::default();
-        let a = anchor(0xA0);
         for n in 0..MAX_ANCHOR_PENDING {
             let mut inp = input(0);
             inp.delta.id = id_for(n);
+            let a = anchor(u8::try_from(n / MAX_PENDING_PER_ANCHOR).unwrap());
             assert!(buf.buffer(a, inp).is_ok());
         }
         assert_eq!(buf.len(), MAX_ANCHOR_PENDING);
-        // Full: a further distinct delta is handed back so the caller falls
-        // through to the normal fail-closed + re-fetch path.
+        // Global cap reached: a further distinct delta (fresh anchor) is handed
+        // back so the caller falls through to fail-closed + re-fetch.
         let mut extra = input(0);
         extra.delta.id = id_for(MAX_ANCHOR_PENDING);
-        assert!(buf.buffer(a, extra).is_err());
-        // Draining frees the whole anchor's capacity.
-        let _ = buf.take_for(&a);
-        assert_eq!(buf.len(), 0);
+        assert!(buf.buffer(anchor(0xFE), extra).is_err());
+        // Draining one anchor frees its slots; a new delta is accepted again.
+        let _ = buf.take_for(&anchor(0));
         let mut extra2 = input(0);
         extra2.delta.id = id_for(MAX_ANCHOR_PENDING);
-        assert!(buf.buffer(a, extra2).is_ok());
+        assert!(buf.buffer(anchor(0xFE), extra2).is_ok());
+    }
+
+    #[test]
+    fn per_anchor_cap_limits_one_anchor_without_starving_others() {
+        let mut buf = AnchorPendingBuffer::default();
+        let hot = anchor(0xA0);
+        for n in 0..MAX_PENDING_PER_ANCHOR {
+            let mut inp = input(0);
+            inp.delta.id = id_for(n);
+            assert!(buf.buffer(hot, inp).is_ok());
+        }
+        // One more under the SAME anchor is rejected (per-anchor cap)...
+        let mut over = input(0);
+        over.delta.id = id_for(MAX_PENDING_PER_ANCHOR);
+        assert!(buf.buffer(hot, over).is_err());
+        // ...but a different anchor is unaffected (no global starvation).
+        let mut other = input(0);
+        other.delta.id = id_for(MAX_PENDING_PER_ANCHOR + 1);
+        assert!(buf.buffer(anchor(0xB0), other).is_ok());
     }
 
     #[test]
