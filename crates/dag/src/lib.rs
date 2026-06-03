@@ -244,7 +244,6 @@ pub struct DagStore<T> {
     heads: HashSet<[u8; 32]>,
 
     /// Root delta (genesis)
-    #[allow(dead_code)]
     root: [u8; 32],
 
     /// Maximum number of items returned by query methods to prevent resource exhaustion.
