@@ -24,3 +24,15 @@ runs:
         timeout 180 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
           -o Acquire::https::Timeout=20 install -y merobox
         merobox --version
+        # The e2e workflows rely on merobox persisting per-container logs
+        # natively to data/container-logs/ (calimero-network/merobox#207),
+        # which let us drop the old background docker-logs watcher. That
+        # landed in merobox 0.6.34. The APT repo serves "latest", so pin a
+        # floor here: fail loudly if an older build is installed rather than
+        # silently collecting empty log artifacts.
+        MIN_MEROBOX="0.6.34"
+        HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+        if [ "$(printf '%s\n%s\n' "$MIN_MEROBOX" "$HAVE_MEROBOX" | sort -V | head -1)" != "$MIN_MEROBOX" ]; then
+          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (native container-log persistence, merobox#207)"
+          exit 1
+        fi

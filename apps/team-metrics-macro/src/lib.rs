@@ -10,8 +10,7 @@
 
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use calimero_storage::collections::{Counter, UnorderedMap};
-use calimero_storage_macros::Mergeable;
+use calimero_storage::collections::{Counter, Mergeable, UnorderedMap};
 
 /// Team statistics with multiple counters
 ///

@@ -891,6 +891,109 @@ mod wasm_integration_tests {
         }
     }
 
+    /// A `Storage` whose `get` panics. Used to drive a panic from *inside* a
+    /// host function so we can exercise the runtime's per-host-call
+    /// `catch_unwind` recovery (the path that replaced the process-global
+    /// `set_hook` machinery in `logic/imports.rs`).
+    struct PanicStorage;
+
+    impl Storage for PanicStorage {
+        fn get(&self, _key: &store::Key) -> Option<store::Value> {
+            panic!("storage.get panicked deliberately");
+        }
+        fn set(&mut self, _key: store::Key, _value: store::Value) -> Option<store::Value> {
+            None
+        }
+        fn remove(&mut self, _key: &store::Key) -> Option<store::Value> {
+            None
+        }
+        fn has(&self, _key: &store::Key) -> bool {
+            false
+        }
+    }
+
+    /// A panic that originates *inside a host function* must be caught by the
+    /// runtime's per-host-call `catch_unwind` and surfaced as
+    /// `HostError::Panic { context: Host, .. }` with its message intact —
+    /// WITHOUT installing a process-global panic hook.
+    ///
+    /// The message is recovered directly from the unwind payload. Asserting
+    /// `location == Unknown` doubles as a regression guard: the deleted
+    /// `set_hook` hook captured a *precise* `Location::At { .. }`; the payload
+    /// can't carry a location, so it must now degrade to `Unknown`. A revival
+    /// of the global-hook approach would make this assertion fail.
+    #[test]
+    fn test_wasm_host_panic_recovered_without_global_hook() {
+        // The guest builds a 16-byte `{ ptr: u64, len: u64 }` buffer descriptor
+        // (the host-guest ABI; see `prepare_guest_buf_descriptor`) pointing at a
+        // 3-byte key "abc", then calls `storage_read`. The host reads the key and
+        // calls `storage.get`, which panics.
+        let wat = r#"
+            (module
+                (import "env" "storage_read" (func $storage_read (param i64 i64) (result i32)))
+                (memory (export "memory") 1)
+                (func (export "read_probe")
+                    ;; descriptor at offset 16: ptr = 100
+                    (i64.store (i32.const 16) (i64.const 100))
+                    ;; descriptor at offset 24: len = 3
+                    (i64.store (i32.const 24) (i64.const 3))
+                    ;; key bytes "abc" at offset 100
+                    (i32.store8 (i32.const 100) (i32.const 97))
+                    (i32.store8 (i32.const 101) (i32.const 98))
+                    (i32.store8 (i32.const 102) (i32.const 99))
+                    ;; storage_read(descriptor_ptr = 16, register_id = 0)
+                    (drop (call $storage_read (i64.const 16) (i64.const 0)))
+                )
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = PanicStorage;
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "read_probe",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("run must return an Outcome, not propagate the unwind");
+
+        match &outcome.returns {
+            Err(FunctionCallError::HostError(HostError::Panic {
+                context,
+                message,
+                location,
+            })) => {
+                assert!(
+                    matches!(context, PanicContext::Host),
+                    "expected Host panic context, got: {context:?}"
+                );
+                assert!(
+                    message.contains("storage.get panicked deliberately"),
+                    "panic message must be recovered from the unwind payload, got: {message:?}"
+                );
+                // `Unknown` because the unwind payload carries no location. This
+                // guards against silently re-introducing the process-global hook
+                // (which captured a precise location). If a *non-global* location
+                // recovery mechanism is ever added on purpose, update this assertion
+                // to expect the recovered location — that is an intended improvement,
+                // not a regression.
+                assert!(
+                    matches!(location, Location::Unknown),
+                    "without the global hook the panic location can't be recovered; \
+                     expected Unknown, got: {location:?}"
+                );
+            }
+            other => panic!("Expected HostError::Panic, got: {other:?}"),
+        }
+    }
+
     /// Test that memory out of bounds causes a WasmTrap error (not a crash)
     #[test]
     fn test_wasm_memory_out_of_bounds() {

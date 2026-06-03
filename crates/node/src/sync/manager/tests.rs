@@ -176,3 +176,105 @@ fn test_max_depth_calculation() {
         );
     }
 }
+
+// =========================================================================
+// Tests for the #2625 governance-pending backfill trigger
+//
+// Regression guard for the cross-DAG governance gate buffering a root-context
+// delta that never drains → permanent split-brain (group-subgroup e2e flake).
+// `perform_interval_sync` now calls `backfill_governance_for_pending_deltas`,
+// which (a) fires only when the governance-pending buffer is non-empty
+// (`should_backfill_governance`) and (b) pulls the *correct* namespace
+// governance DAG (`resolve_namespace_id`). Both pieces are unit-tested here so
+// a future refactor that inverts the gate or mis-resolves the namespace gets
+// caught without needing the full e2e.
+// =========================================================================
+
+mod governance_backfill_trigger {
+    use std::sync::Arc;
+
+    use calimero_context::group_store::{register_context_in_group, NamespaceRepository};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::super::{resolve_namespace_id, should_backfill_governance};
+
+    fn fresh_store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    fn ctx(byte: u8) -> ContextId {
+        ContextId::from([byte; 32])
+    }
+
+    fn gid(byte: u8) -> ContextGroupId {
+        ContextGroupId::from([byte; 32])
+    }
+
+    #[test]
+    fn empty_buffer_does_not_trigger_backfill() {
+        // Steady state: no deltas parked → no namespace pull. Inverting this
+        // gate would pull the governance DAG on every interval tick for every
+        // context.
+        assert!(!should_backfill_governance(0));
+    }
+
+    #[test]
+    fn non_empty_buffer_triggers_backfill() {
+        // The bug: a delta sat buffered forever because nothing pulled the
+        // governance op it waited on. Any pending delta must arm the pull.
+        assert!(should_backfill_governance(1));
+        assert!(should_backfill_governance(42));
+    }
+
+    #[test]
+    fn resolve_namespace_id_root_group_resolves_to_itself() {
+        // The flake hit the ROOT context: its owning group IS the namespace
+        // root (no parent), so resolution returns that group's bytes.
+        let store = fresh_store();
+        let context_id = ctx(0x11);
+        let root_group = gid(0x22);
+
+        register_context_in_group(&store, &root_group, &context_id)
+            .expect("register_context_in_group");
+
+        let resolved = resolve_namespace_id(&store, &context_id);
+        assert_eq!(resolved, Some(root_group.to_bytes()));
+    }
+
+    #[test]
+    fn resolve_namespace_id_subgroup_context_resolves_to_root() {
+        // A subgroup-owned context must resolve to the namespace ROOT, not the
+        // immediate subgroup — pulling the subgroup's DAG would miss the
+        // root-level governance op and never converge.
+        let store = fresh_store();
+        let context_id = ctx(0x31);
+        let root_group = gid(0x32);
+        let subgroup = gid(0x33);
+
+        NamespaceRepository::new(&store)
+            .nest(&root_group, &subgroup)
+            .expect("nest subgroup under root");
+        register_context_in_group(&store, &subgroup, &context_id)
+            .expect("register_context_in_group");
+
+        let resolved = resolve_namespace_id(&store, &context_id);
+        assert_eq!(
+            resolved,
+            Some(root_group.to_bytes()),
+            "subgroup-owned context should resolve to the namespace root"
+        );
+    }
+
+    #[test]
+    fn resolve_namespace_id_unregistered_context_returns_none() {
+        // Legacy non-group context (no `ContextGroupRef`): nothing to pull, so
+        // resolution returns None and the backfill is skipped rather than
+        // pulling a bogus namespace.
+        let store = fresh_store();
+        let resolved = resolve_namespace_id(&store, &ctx(0x99));
+        assert_eq!(resolved, None);
+    }
+}

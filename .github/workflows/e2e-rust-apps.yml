@@ -390,45 +390,22 @@ jobs:
           mkdir -p docker-logs
           cd apps/${{ matrix.app }}
 
-          # Start a background watcher that streams `docker logs -f` from
-          # each node container to an artifact file as soon as it appears.
-          # A post-run `docker logs` loop does not work reliably on current
-          # merobox because the runtime containers are torn down as part of
-          # `merobox bootstrap run`'s exit path (regardless of
-          # `stop_all_nodes: false`), leaving only the init-container names
-          # behind by the time the shell regains control. The watcher
-          # captures logs *while* containers are live, so post-run cleanup
-          # can't remove what we've already written to disk.
-          #
-          # Workaround tracked in calimero-network/merobox#207; once merobox
-          # persists logs natively we'll remove this block (calimero/core#2179).
+          # merobox 0.6.34+ persists per-container logs to
+          # `data/container-logs/<name>.log` natively on every `bootstrap
+          # run`, regardless of `stop_all_nodes` (calimero-network/merobox#207).
+          # This replaces the old background `docker logs -f` watcher, which
+          # existed only because earlier merobox tore the runtime containers
+          # down on exit before a post-run `docker logs` could read them.
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"
           # Point merobox's `restart_container` pre-restart snapshot
           # (merobox 0.6.22+) at the same absolute LOGDIR. Without this
           # env override, merobox writes the snapshot to a CWD-relative
           # `docker-logs/` which resolves to `$GITHUB_WORKSPACE/apps/
-          # <app>/docker-logs/` (because the next line `cd`s into the
+          # <app>/docker-logs/` (because the line above `cd`s into the
           # app dir) — separate from the artifact-uploaded LOGDIR. The
           # snapshot would then be invisible to the artifact uploader
           # and post-restart debugging would stay blocked.
           export MEROBOX_PRE_RESTART_LOG_DIR="$LOGDIR"
-          WATCHER_STATE_DIR="$(mktemp -d)"
-          (
-              while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
-                  # Follow containers labeled by merobox, excluding the
-                  # short-lived init containers (`*-init`).
-                  for c in $(docker ps --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null | grep -v -- '-init$' || true); do
-                      mark="$WATCHER_STATE_DIR/${c}"
-                      if [ ! -f "$mark" ]; then
-                          touch "$mark"
-                          echo "[log-watcher] following $c"
-                          docker logs -f "$c" > "$LOGDIR/${{ matrix.workflow }}-${c}.log" 2>&1 &
-                      fi
-                  done
-                  sleep 1
-              done
-          ) &
-          WATCHER_PID=$!
 
           if merobox bootstrap run \
               "${{ matrix.file }}" \
@@ -439,13 +416,16 @@ jobs:
               success=false
           fi
 
-          # Signal the watcher to stop and give `docker logs -f` followers
-          # a moment to flush their final output.
-          touch "$WATCHER_STATE_DIR/stop"
-          sleep 2
-          kill "$WATCHER_PID" 2>/dev/null || true
-          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
-          wait 2>/dev/null || true
+          # Collect merobox's native per-container logs into the artifact
+          # dir before `nuke` clears node state. `nuke` only removes
+          # `calimero-node-*` data dirs, not `data/container-logs/`, but
+          # copying first keeps this robust to that behaviour changing.
+          # Prefix with the workflow name to keep filenames self-describing
+          # when several artifacts are downloaded together.
+          for f in data/container-logs/*.log; do
+              [ -e "$f" ] || continue
+              cp -f "$f" "$LOGDIR/${{ matrix.workflow }}-$(basename "$f")"
+          done
 
           merobox stop --all || true
           merobox nuke --force || true
@@ -465,9 +445,10 @@ jobs:
         with:
           name: logs-${{ matrix.workflow }}-${{ github.sha }}
           # `docker-logs/` (with a trailing slash) uploads the
-          # ENTIRE directory: the watcher-captured `docker logs -f`
-          # streams (`${matrix.workflow}-${container}.log`) AND
-          # merobox 0.6.22+'s pre-restart snapshots
+          # ENTIRE directory: merobox's native per-container logs,
+          # copied in as `${matrix.workflow}-${container}.log`
+          # (calimero-network/merobox#207), AND merobox 0.6.22+'s
+          # pre-restart snapshots
           # (`${container}.pre-restart-${utc-ts}.log` — see
           # merobox#258). Each matrix entry runs on its own runner
           # with its own `docker-logs/` dir, so this doesn't

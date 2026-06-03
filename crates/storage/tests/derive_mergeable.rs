@@ -69,6 +69,36 @@ fn derive_supports_unit_structs() {
 // merge lives in `crates/sdk/macros/src/state.rs::tests` (the generator is a
 // private function and easier to inspect directly via TokenStream).
 
+// Locks in the serde-style single-import: `calimero_storage::collections::Mergeable`
+// resolves to BOTH the trait and the re-exported derive macro. If the canonical
+// derive's path under `calimero-sdk` ever moves, the re-export — and this module —
+// stop compiling, so the breakage is loud rather than silent.
+mod via_storage_reexport {
+    use calimero_storage::collections::{Counter, Mergeable};
+
+    #[derive(Mergeable)]
+    struct Reexported {
+        hits: Counter,
+    }
+
+    #[test]
+    fn derive_and_trait_both_resolve_through_storage_path() {
+        let mut a = Reexported {
+            hits: Counter::new(),
+        };
+        let mut b = Reexported {
+            hits: Counter::new(),
+        };
+        b.hits.increment().unwrap();
+
+        // `Mergeable::merge` here is the trait method, reached through the same
+        // single import that brought in the derive above.
+        a.merge(&b).unwrap();
+
+        assert!(a.hits.value().unwrap() >= 1);
+    }
+}
+
 #[derive(Mergeable)]
 struct BoxedField {
     boxed_counter: Box<Counter>,

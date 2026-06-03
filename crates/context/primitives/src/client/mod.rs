@@ -49,12 +49,12 @@ use crate::group::{
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
-    ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest, ContextMessage, CreateContextRequest,
-    CreateContextResponse, DeleteContextRequest, DeleteContextResponse, ExecuteError,
-    ExecuteRequest, ExecuteResponse, MigrationParams, NamespaceApplyOutcome,
-    UpdateApplicationRequest,
+    AcquireContextLockRequest, ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest,
+    ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
+    DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, MigrationParams,
+    NamespaceApplyOutcome, UpdateApplicationRequest,
 };
-use crate::ContextAtomic;
+use crate::{ContextAtomic, ContextAtomicKey};
 
 mod context_api;
 pub mod crypto;
@@ -1240,6 +1240,36 @@ impl ContextClient {
                     payload,
                     aliases,
                     atomic,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Acquire the per-context execution lock and return its owned guard.
+    ///
+    /// This is the same `Arc<Mutex<ContextId>>` the executor holds for a WASM
+    /// run. Host-side storage mutations that bypass the executor — the sync
+    /// session's `EntityPush` / `EntityDeletePush` apply paths — must hold this
+    /// guard for the duration of their apply so they cannot interleave with a
+    /// concurrent `__calimero_sync_next` delta merge (which would record a torn
+    /// root hash that delta-sync can't repair). Drop the guard before invoking
+    /// anything that re-enters the executor (e.g. `merge_root_state`), or it
+    /// will deadlock against itself.
+    ///
+    /// Returns `None` for an unknown context; the caller then applies
+    /// best-effort without serialization (the apply no-ops on a missing
+    /// context anyway).
+    pub async fn acquire_lock(&self, context_id: &ContextId) -> Option<ContextAtomicKey> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::AcquireContextLock {
+                request: AcquireContextLockRequest {
+                    context: *context_id,
                 },
                 outcome: sender,
             })

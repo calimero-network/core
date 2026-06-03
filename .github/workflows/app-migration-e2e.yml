@@ -235,24 +235,10 @@ jobs:
         run: |
           mkdir -p docker-logs
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"
-          WATCHER_STATE_DIR="$(mktemp -d)"
-          (
-            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
-              for c in $(docker ps --filter "label=calimero.node=true" \
-                                   --format "{{.Names}}" 2>/dev/null \
-                         | grep -v -- '-init$' || true); do
-                mark="$WATCHER_STATE_DIR/${c}"
-                if [ ! -f "$mark" ]; then
-                  touch "$mark"
-                  echo "[log-watcher] following $c"
-                  docker logs -f --timestamps "$c" \
-                    > "$LOGDIR/${c}.log" 2>&1 &
-                fi
-              done
-              sleep 1
-            done
-          ) &
-          WATCHER_PID=$!
+          # merobox 0.6.34+ persists per-container logs natively to
+          # data/container-logs/<name>.log on every `bootstrap run`,
+          # regardless of `stop_all_nodes` (calimero-network/merobox#207).
+          # This replaces the old background `docker logs -f` watcher.
 
           set +e
           set -o pipefail
@@ -263,11 +249,11 @@ jobs:
           wf_exit=${PIPESTATUS[0]}
           set +o pipefail
 
-          touch "$WATCHER_STATE_DIR/stop"
-          sleep 2
-          kill "$WATCHER_PID" 2>/dev/null || true
-          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
-          wait 2>/dev/null || true
+          # Collect merobox's native per-container logs into the artifact dir.
+          for f in data/container-logs/*.log; do
+              [ -e "$f" ] || continue
+              cp -f "$f" "$LOGDIR/$(basename "$f")"
+          done
 
           exit "$wf_exit"
 

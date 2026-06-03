@@ -128,6 +128,7 @@ pub async fn execute_hash_comparison_sync(
     // Config for initiator
     let config = HashComparisonConfig {
         remote_root_hash: resp_root,
+        context_client: None,
     };
 
     // Run both sides concurrently using the PRODUCTION protocol
@@ -203,6 +204,7 @@ pub async fn execute_level_wise_sync(initiator: &mut SimNode, responder: &SimNod
     let config = LevelWiseConfig {
         remote_root_hash: resp_root,
         max_depth: 8,
+        context_client: None,
     };
 
     let initiator_fut = async {
@@ -229,7 +231,11 @@ pub async fn execute_level_wise_sync(initiator: &mut SimNode, responder: &SimNod
                         level, parent_ids, ..
                     },
                 ..
-            } => LevelWiseFirstRequest { level, parent_ids },
+            } => LevelWiseFirstRequest {
+                level,
+                parent_ids,
+                context_client: None,
+            },
             _ => bail!("Expected LevelWiseRequest Init message"),
         };
 
@@ -1698,6 +1704,7 @@ mod tests {
                 identity,
                 HashComparisonConfig {
                     remote_root_hash: stale_root,
+                    context_client: None,
                 },
             )
             .await
