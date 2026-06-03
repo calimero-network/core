@@ -149,7 +149,7 @@ impl SyncManager {
         stream: &mut Stream,
     ) -> Result<()> {
         let handle = self.context_client.datastore_handle();
-        let (pages, next_cursor, total_entries, grand_total_entities) = generate_snapshot_pages(
+        let (pages, next_cursor, total_entries) = generate_snapshot_pages(
             &handle,
             context_id,
             start_cursor.as_ref(),
@@ -225,7 +225,7 @@ impl SyncManager {
                     cursor,
                     page_count,
                     sent_count: (i + 1) as u64,
-                    total_records: grand_total_entities,
+                    total_records: total_entries,
                 },
                 next_nonce: super::helpers::generate_nonce(),
             };
@@ -1011,8 +1011,12 @@ struct SnapshotBoundary {
     dag_heads: Vec<[u8; 32]>,
 }
 
-/// Generate snapshot pages. Returns
-/// `(pages, next_cursor, total_entries_this_burst, grand_total_entities)`.
+/// Generate snapshot pages. Returns `(pages, next_cursor, total_entries)`,
+/// where `total_entries` is the grand total of shippable `Entity` records at
+/// this boundary — every entity with both an `Index` and an `Entry`, counted
+/// across the whole snapshot regardless of the cursor window, and excluding
+/// orphans that are never shipped. It is therefore the exact denominator the
+/// receiver's cumulative applied count converges to.
 ///
 /// Uses a snapshot iterator to ensure consistent reads even if writes occur
 /// during iteration. The snapshot provides a frozen point-in-time view.
@@ -1059,7 +1063,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     start_cursor: Option<&SnapshotCursor>,
     page_limit: u16,
     byte_limit: u32,
-) -> Result<(Vec<Vec<u8>>, Option<SnapshotCursor>, u64, u64)> {
+) -> Result<(Vec<Vec<u8>>, Option<SnapshotCursor>, u64)> {
     // Pass 1 — single snapshot scan, memory bounded to keys + ids.
     //
     // Retain only the 32-byte hashed state keys (`present_keys`,
@@ -1177,10 +1181,6 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // Decrementing on skip would instead make the figure depend on
     // which page window this call serves, breaking the
     // stable-across-pages property operators rely on.
-    // Grand total of entities at this boundary (the full id-sorted set, before
-    // the cursor window is applied below). Stable across bursts, so the
-    // receiver can divide its cumulative applied count by it for a percent.
-    let grand_total_entities = entity_ids.len() as u64;
     let mut total_entries: u64 = 0;
     for id in &entity_ids {
         let id_bytes = *id.as_bytes();
@@ -1409,7 +1409,6 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
                     pages,
                     last_id.map(|k| SnapshotCursor { last_key: k }),
                     total_entries,
-                    grand_total_entities,
                 ));
             }
         }
@@ -1422,7 +1421,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         pages.push(current_page);
     }
 
-    Ok((pages, None, total_entries, grand_total_entities))
+    Ok((pages, None, total_entries))
 }
 
 /// Derive `(percent, eta_secs)` for a snapshot in progress.
@@ -1445,7 +1444,15 @@ fn snapshot_progress_estimate(
     let eta = if records_received > 0 && secs > 0.0 {
         let rate = records_received as f64 / secs; // records/sec
         let remaining = total_records.saturating_sub(records_received) as f64;
-        Some((remaining / rate).ceil() as u64)
+        let est = (remaining / rate).ceil();
+        // `as u64` already saturates in current Rust (NaN → 0, +∞ → u64::MAX),
+        // but guard explicitly so a degenerate rate can't surface a misleading
+        // near-zero ETA, and an absurdly large estimate clamps cleanly.
+        if est.is_finite() {
+            Some(est.min(u64::MAX as f64) as u64)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -1672,7 +1679,7 @@ mod tests {
         // clear message instead of masquerading as a dropped entity.
         let mut completed = false;
         for _ in 0..10_000 {
-            let (pages, next, total, _grand_total) =
+            let (pages, next, total) =
                 generate_snapshot_pages(&handle, ctx, cursor.as_ref(), page_limit, byte_limit)
                     .unwrap();
             totals.push(total);
@@ -1705,7 +1712,7 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let handle = store.handle();
         let ctx = ContextId::from([1u8; 32]);
-        let (pages, cursor, total, _grand_total) = generate_snapshot_pages(
+        let (pages, cursor, total) = generate_snapshot_pages(
             &handle,
             ctx,
             None,
@@ -1732,7 +1739,7 @@ mod tests {
             .collect();
 
         // One generous page — everything fits, cursor signals done.
-        let (pages, cursor, total, _grand_total) =
+        let (pages, cursor, total) =
             generate_snapshot_pages(&store.handle(), ctx, None, DEFAULT_PAGE_LIMIT, 1 << 20)
                 .unwrap();
         assert!(cursor.is_none(), "single page should not request a resume");
