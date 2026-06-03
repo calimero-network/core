@@ -353,6 +353,21 @@ steps:
         - '{{id_b}}'
         - '{{id_c}}'
 
+  # node-2 (B) is still a writer in its own {B, C} view, so this shared write
+  # is authorized locally — it is a write to the Shared *value* entity that is
+  # concurrent with node-1's branch. After the heal + settling rotation, the
+  # causally-latest legitimate write (node-1's "after-settle", further down)
+  # must win LWW, so this value must NOT survive on any node. The final
+  # assertion proves exactly that — exercising concurrent Shared-value
+  # convergence on top of the writer-set convergence.
+  - name: Node-2 writes the shared value while A and C are frozen
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_set
+    args:
+      value: "shared-by-b-split"
+
   - name: Node-2 writes member entry while A and C are frozen
     type: call
     node: e2e-node-2
@@ -606,6 +621,13 @@ steps:
     check_interval: 2
     trigger_sync: true
 
+  - name: node-1 reads final shared value
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: shared_get
+    outputs:
+      shared_n1: result
   - name: node-2 reads final shared value
     type: call
     node: e2e-node-2
@@ -621,11 +643,14 @@ steps:
     outputs:
       shared_n3: result
 
-  # The legitimate writer's value converges on every node; the
-  # revoked writer's attempted value never appears anywhere.
-  - name: Assert revoked write never took effect; legit write converged
+  # The legitimate writer's value converges on every node — including the
+  # writer's own node-1. This also proves the revoked writer's rejected write
+  # ("by-revoked-b") and B's concurrent during-split shared write
+  # ("shared-by-b-split") both lost: neither appears anywhere.
+  - name: Assert revoked/concurrent writes never took effect; legit write converged
     type: json_assert
     statements:
+      - 'json_equal({{shared_n1}}, {"output": "after-settle"})'
       - 'json_equal({{shared_n2}}, {"output": "after-settle"})'
       - 'json_equal({{shared_n3}}, {"output": "after-settle"})'
 
