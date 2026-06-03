@@ -997,6 +997,82 @@ pub(crate) fn seed_rotation_log_genesis_direct(
     save_rotation_log_direct(context_client, context_id, entity_id, &log)
 }
 
+/// Self-log the `Shared` rotations carried by a locally-originated delta's
+/// `actions` into their entities' rotation logs, via direct datastore writes.
+///
+/// The receive path records rotations in `Interface::maybe_append_rotation_log`
+/// (inside the WASM sync-apply); a locally-created delta never goes through that
+/// path, so without this a node is missing its OWN rotations and `writers_at`
+/// stays asymmetric across nodes under concurrent rotation. Mirrors the
+/// receive-path logic: append only on a real rotation — bootstrap (no prior
+/// writers) or a changed writer set — never on a plain value-write. Idempotent
+/// (dedup on `delta_id`), so it is safe to run on both the live notify
+/// (`add_local_applied_delta`) and crash/restart recovery
+/// (`load_persisted_deltas`); the latter backstops the case where the live
+/// notify was skipped (DeltaStore not yet up) and the delta is later restored
+/// as already-applied.
+///
+/// Best-effort: a per-entity read/write failure is logged and skipped, leaving
+/// that entry for the next restart's restore to re-attempt — it never aborts
+/// the (already-committed) delta.
+fn self_log_rotations_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    delta_id: [u8; 32],
+    delta_hlc: calimero_storage::logical_clock::HybridTimestamp,
+    actions: &[Action],
+) {
+    for action in actions {
+        let (entity_id, metadata) = match action {
+            Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
+                (*id, metadata)
+            }
+            Action::DeleteRef { .. } | Action::Compare { .. } => continue,
+        };
+        // Only `Shared` anchors own a rotation log; members/others don't.
+        let StorageType::Shared {
+            writers,
+            signature_data,
+        } = &metadata.storage_type
+        else {
+            continue;
+        };
+        let mut log = match load_rotation_log_direct(context_client, context_id, entity_id) {
+            Ok(existing) => existing.unwrap_or_else(RotationLog::empty),
+            Err(e) => {
+                warn!(?e, %context_id, %entity_id,
+                    "self-log: failed to read rotation log — skipping (restore will retry)");
+                continue;
+            }
+        };
+        // Append only on an actual rotation — bootstrap (no prior writers) OR
+        // the writer set changed. Mirrors `maybe_append_rotation_log`.
+        let prior = log
+            .entries
+            .last()
+            .map(|e| &e.new_writers)
+            .or_else(|| log.snapshot.as_ref().map(|s| &s.writers));
+        if !prior.map_or(true, |p| p != writers) {
+            continue;
+        }
+        // Idempotent on delta_id (one rotation per entity per delta).
+        if log.entries.iter().any(|e| e.delta_id == delta_id) {
+            continue;
+        }
+        log.entries.push(RotationLogEntry {
+            delta_id,
+            delta_hlc,
+            signer: signature_data.as_ref().and_then(|s| s.signer),
+            new_writers: writers.clone(),
+            writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
+        });
+        if let Err(e) = save_rotation_log_direct(context_client, context_id, entity_id, &log) {
+            warn!(?e, %context_id, %entity_id,
+                "self-log: failed to write rotation log — leaving for restore retry");
+        }
+    }
+}
+
 /// Whether the anchor entity `anchor` has synced to this node, by a direct
 /// datastore read (no WASM env). True if either its rotation log
 /// (`StorageKey::RotationLog`) or its index entry (`StorageKey::Index`, written
@@ -1221,6 +1297,25 @@ impl DeltaStore {
                     continue;
                 }
             };
+
+            // P4 backstop: re-self-log this delta's `Shared` rotations on
+            // restore. If the live notify (`add_local_applied_delta`) was
+            // skipped — e.g. the DeltaStore wasn't up when the delta was created
+            // and persisted — the originator's own rotation would otherwise be
+            // missing from its log forever (this delta is restored as
+            // already-applied, so `add_local_applied_delta` won't re-run for
+            // it). Idempotent (dedup on delta_id): a no-op for deltas already
+            // logged at creation or by the receive path. Only applied deltas
+            // represent rotations that actually took effect.
+            if stored_delta.applied {
+                self_log_rotations_direct(
+                    &self.applier.context_client,
+                    self.applier.context_id,
+                    stored_delta.delta_id,
+                    stored_delta.hlc,
+                    &actions,
+                );
+            }
 
             // Reconstruct the delta
             // Infer checkpoint status: checkpoints have genesis as parent and empty payload
@@ -1717,78 +1812,19 @@ impl DeltaStore {
             }
         }
 
-        // P4: self-log this delta's own `Shared` rotations.
-        //
-        // The receive path records rotations in `maybe_append_rotation_log`
-        // (inside the WASM sync-apply, via `MainStorage`/`RUNTIME_ENV`). A
-        // locally-created delta never goes through that path, so without this a
-        // node would be missing its OWN rotations from its log — leaving
-        // concurrent rotations asymmetric across nodes and `writers_at`
-        // divergent (each node would resolve only the rotations it received).
-        // Mirror the receive-path logic here, with a DIRECT datastore write
-        // (this runs after execute returned, outside `RUNTIME_ENV`). Done
-        // before DAG registration but after the `is_applied` dedup above, so a
-        // delta is self-logged exactly once. `delta_id`/`delta_hlc` are final.
-        for action in &delta.payload {
-            let (entity_id, metadata) = match action {
-                Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
-                    (*id, metadata)
-                }
-                Action::DeleteRef { .. } | Action::Compare { .. } => continue,
-            };
-            // Only `Shared` anchors own a rotation log; members/others don't.
-            let StorageType::Shared {
-                writers,
-                signature_data,
-            } = &metadata.storage_type
-            else {
-                continue;
-            };
-            let mut log = match load_rotation_log_direct(
-                &self.applier.context_client,
-                self.applier.context_id,
-                entity_id,
-            ) {
-                Ok(existing) => existing.unwrap_or_else(RotationLog::empty),
-                Err(e) => {
-                    warn!(?e, context_id = %self.applier.context_id, %entity_id,
-                        "self-log: failed to read rotation log for local delta — skipping");
-                    continue;
-                }
-            };
-            // Append only on an actual rotation — bootstrap (no prior writers)
-            // OR the writer set changed. Plain value-writes leave it untouched.
-            // Mirrors `maybe_append_rotation_log`'s `is_rotation`.
-            let prior = log
-                .entries
-                .last()
-                .map(|e| &e.new_writers)
-                .or_else(|| log.snapshot.as_ref().map(|s| &s.writers));
-            let is_rotation = prior.map_or(true, |p| p != writers);
-            if !is_rotation {
-                continue;
-            }
-            // Idempotent on delta_id (one rotation per entity per delta).
-            if log.entries.iter().any(|e| e.delta_id == delta_id) {
-                continue;
-            }
-            log.entries.push(RotationLogEntry {
-                delta_id,
-                delta_hlc: delta.hlc,
-                signer: signature_data.as_ref().and_then(|s| s.signer),
-                new_writers: writers.clone(),
-                writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
-            });
-            if let Err(e) = save_rotation_log_direct(
-                &self.applier.context_client,
-                self.applier.context_id,
-                entity_id,
-                &log,
-            ) {
-                warn!(?e, context_id = %self.applier.context_id, %entity_id,
-                    "self-log: failed to write rotation log for local delta");
-            }
-        }
+        // P4: self-log this delta's own `Shared` rotations (the receive path
+        // logs received rotations; locally-created deltas need this so the node
+        // records its OWN, keeping `writers_at` symmetric across nodes). Runs
+        // after the `is_applied` dedup, so a live local delta is logged once;
+        // `load_persisted_deltas` re-runs the same idempotent helper on restore,
+        // backstopping the case where this live notify was skipped.
+        self_log_rotations_direct(
+            &self.applier.context_client,
+            self.applier.context_id,
+            delta_id,
+            delta.hlc,
+            &delta.payload,
+        );
 
         // Mirror the hash-tracking writes load_persisted_deltas does.
         {
