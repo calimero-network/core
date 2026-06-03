@@ -779,20 +779,31 @@ impl SyncManager {
     /// (not a percentage — the receiver isn't told a grand total up front).
     fn emit_snapshot_progress(&self, context_id: ContextId, records_received: u64) {
         let state = SyncState::ReceivingSnapshot { records_received };
-        let _prev = self.node_state.sync_status_handle().insert(
+        let handle = self.node_state.sync_status_handle();
+        // Preserve any failure history the run-loop has already published for
+        // this context; this path only advances the snapshot phase. Writing
+        // 0/None here would flip `failure_count`/`last_error` to "healthy"
+        // mid-snapshot until the next run-loop publish. (Copy into owned values
+        // and drop the read guard before `insert` — a same-key get+insert on a
+        // `DashMap` shard would otherwise deadlock.)
+        let (failure_count, last_error) = match handle.get(&context_id) {
+            Some(prev) => (prev.failure_count, prev.last_error.clone()),
+            None => (0, None),
+        };
+        let _prev = handle.insert(
             context_id,
             SyncStatusSnapshot {
                 state,
-                failure_count: 0,
-                last_error: None,
+                failure_count,
+                last_error: last_error.clone(),
             },
         );
         let event = NodeEvent::Context(ContextEvent {
             context_id,
             payload: ContextEventPayload::SyncStatus(SyncStatusPayload {
                 sync_state: state,
-                failure_count: 0,
-                last_error: None,
+                failure_count,
+                last_error,
             }),
         });
         if let Err(err) = self.node_client.send_event(event) {

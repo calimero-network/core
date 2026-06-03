@@ -223,10 +223,11 @@ impl SessionTracker {
         failure_count: u32,
         last_error: Option<String>,
     ) {
-        let changed = self
-            .status_sink
-            .get(ctx)
-            .is_none_or(|prev| prev.state != phase || prev.failure_count != failure_count);
+        let changed = self.status_sink.get(ctx).is_none_or(|prev| {
+            prev.state != phase
+                || prev.failure_count != failure_count
+                || prev.last_error.as_deref() != last_error.as_deref()
+        });
         let _prev = self.status_sink.insert(
             *ctx,
             SyncStatusSnapshot {
