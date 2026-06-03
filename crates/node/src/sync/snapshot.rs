@@ -666,6 +666,26 @@ impl SyncManager {
                                     } = &index_entity.metadata.storage_type
                                     {
                                         let _ = anchor_writers.insert(id_obj, writers.clone());
+                                        // P4: seed this anchor's rotation-log floor
+                                        // with the settled writers at the snapshot
+                                        // boundary, so post-join `writers_at` is
+                                        // total (the joiner never applies deltas
+                                        // predating its boundary). Idempotent.
+                                        if let Err(e) =
+                                            crate::delta_store::seed_rotation_log_genesis_direct(
+                                                &self.context_client,
+                                                context_id,
+                                                id_obj,
+                                                writers.clone(),
+                                            )
+                                        {
+                                            warn!(
+                                                %context_id,
+                                                id = ?id_obj.as_bytes(),
+                                                error = ?e,
+                                                "snapshot: failed to seed anchor rotation-log floor"
+                                            );
+                                        }
                                     }
                                 }
                                 SnapshotRecord::Auxiliary { kind, id, .. } => {
