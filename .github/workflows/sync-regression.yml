@@ -94,31 +94,11 @@ jobs:
         run: |
           mkdir -p docker-logs
 
-          # Stream docker logs to per-container files while the run is
-          # live. The init containers exit quickly and `merobox bootstrap
-          # run` tears the runtime containers down on its way out, so a
-          # post-run `docker logs` pass catches nothing — capture during
-          # the run instead. Same shape as e2e-rust-apps.yml and
-          # fuzzy-load-test.yml's watcher (calimero-network/merobox#207).
+          # merobox 0.6.34+ persists per-container logs natively to
+          # data/container-logs/<name>.log on every `bootstrap run`,
+          # regardless of `stop_all_nodes` (calimero-network/merobox#207).
+          # This replaces the old background `docker logs -f` watcher.
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"
-          WATCHER_STATE_DIR="$(mktemp -d)"
-          (
-            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
-              for c in $(docker ps --filter "label=calimero.node=true" \
-                                   --format "{{.Names}}" 2>/dev/null \
-                         | grep -v -- '-init$' || true); do
-                mark="$WATCHER_STATE_DIR/${c}"
-                if [ ! -f "$mark" ]; then
-                  touch "$mark"
-                  echo "[log-watcher] following $c"
-                  docker logs -f --timestamps "$c" \
-                    > "$LOGDIR/${c}.log" 2>&1 &
-                fi
-              done
-              sleep 1
-            done
-          ) &
-          WATCHER_PID=$!
 
           set +e
           set -o pipefail
@@ -130,11 +110,11 @@ jobs:
           exit_code=$?
           set +o pipefail
 
-          touch "$WATCHER_STATE_DIR/stop"
-          sleep 2
-          kill "$WATCHER_PID" 2>/dev/null || true
-          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
-          wait 2>/dev/null || true
+          # Collect merobox's native per-container logs into the artifact dir.
+          for f in data/container-logs/*.log; do
+              [ -e "$f" ] || continue
+              cp -f "$f" "$LOGDIR/$(basename "$f")"
+          done
 
           exit "$exit_code"
 
