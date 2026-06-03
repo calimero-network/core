@@ -108,8 +108,10 @@ use calimero_context_client::local_governance::AckRouter;
 /// Distinct from the on-disk [`config::ContextConfig`] (which holds the
 /// chain/client config). This struct centralises timing constants that
 /// were previously hard-coded in handler modules so future operator
-/// tooling can override them without source patches. Defaults match the
-/// values that shipped with #2237 Phase 12.
+/// tooling can override them without source patches, plus behavioral
+/// feature flags (e.g. [`Self::migration_v2`]) that gate in-progress
+/// framework work. Timing defaults match the values that shipped with
+/// #2237 Phase 12; feature flags default off.
 #[derive(Clone, Copy, Debug)]
 pub struct ContextManagerConfig {
     /// How long `join_group` will wait for a `KeyDelivery` op to arrive

@@ -144,6 +144,19 @@ impl Handler<ExecuteRequest> for ContextManager {
                             // pre-migration root; reject post-execution only if
                             // it actually mutates state (a write). Reads pass.
                             block_writes_for_group = Some(group_id);
+                        } else if self.config.migration_v2 && upgrade_blocks_write(&upgrade.status)
+                        {
+                            // The freeze that would otherwise apply was
+                            // intentionally bypassed by `migration_v2`. Emit a
+                            // signal so a canary operator can tell the freeze was
+                            // skipped by the flag (not a missing upgrade row);
+                            // stragglers are absorbed rather than dropped once
+                            // PR-6b lands.
+                            debug!(
+                                %context_id,
+                                ?group_id,
+                                "migration_v2: bypassing InProgress write-freeze (flag on)"
+                            );
                         }
                     }
                     Ok(None) => {
