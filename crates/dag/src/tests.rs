@@ -1225,3 +1225,74 @@ async fn test_extreme_late_parent_arrival() {
     assert_eq!(dag.pending_stats().count, 0);
     assert_eq!(dag.stats().applied_deltas, 102); // root + parent + 100
 }
+
+#[tokio::test]
+async fn test_prune_to_recent_linear_chain() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // Linear chain of 10 deltas: 1 <- 2 <- ... <- 10 (10 is the head).
+    for i in 1..=10u8 {
+        let parent = if i == 1 { [0; 32] } else { [i - 1; 32] };
+        let delta = CausalDelta::new_test([i; 32], vec![parent], TestPayload { value: i as u32 });
+        dag.add_delta(delta, &applier).await.unwrap();
+    }
+    assert_eq!(dag.delta_count(), 10);
+
+    // Retain the 3 most-recent deltas (10, 9, 8). The other 7 are pruned.
+    let mut pruned = dag.prune_to_recent(3);
+    pruned.sort();
+    assert_eq!(
+        pruned,
+        vec![[1; 32], [2; 32], [3; 32], [4; 32], [5; 32], [6; 32], [7; 32]]
+    );
+    assert_eq!(dag.delta_count(), 3);
+
+    // Head is untouched; recent window is intact.
+    assert_eq!(dag.get_heads(), vec![[10; 32]]);
+    assert!(dag.has_delta(&[10; 32]));
+    assert!(dag.has_delta(&[8; 32]));
+    assert!(!dag.has_delta(&[7; 32]));
+
+    // Traversal from the head stops cleanly at the pruned frontier: only the
+    // retained window comes back, and requesting a pruned id is a miss.
+    let (deltas, _) = dag.get_deltas_since([0; 32], None, MAX_DELTA_QUERY_LIMIT);
+    assert_eq!(deltas.len(), 3);
+    assert!(dag.get_delta(&[7; 32]).is_none());
+}
+
+#[tokio::test]
+async fn test_prune_to_recent_never_strands_heads() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // Two independent branches off genesis → two heads.
+    let a = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let b = CausalDelta::new_test([2; 32], vec![[0; 32]], TestPayload { value: 2 });
+    dag.add_delta(a, &applier).await.unwrap();
+    dag.add_delta(b, &applier).await.unwrap();
+
+    // retain_count below the head count must still keep every head.
+    let pruned = dag.prune_to_recent(1);
+    assert!(pruned.is_empty());
+    let mut heads = dag.get_heads();
+    heads.sort();
+    assert_eq!(heads, vec![[1; 32], [2; 32]]);
+}
+
+#[tokio::test]
+async fn test_prune_to_recent_below_threshold_is_noop() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    for i in 1..=3u8 {
+        let parent = if i == 1 { [0; 32] } else { [i - 1; 32] };
+        let delta = CausalDelta::new_test([i; 32], vec![parent], TestPayload { value: i as u32 });
+        dag.add_delta(delta, &applier).await.unwrap();
+    }
+
+    // Retaining more than we hold prunes nothing.
+    let pruned = dag.prune_to_recent(100);
+    assert!(pruned.is_empty());
+    assert_eq!(dag.delta_count(), 3);
+}

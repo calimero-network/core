@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 pub mod bundle;
 pub mod client;
 pub use client::{BlobManager, SyncClient};
+pub mod dag_compaction;
+pub use dag_compaction::DagCompactionConfig;
 pub mod delta_buffer;
 pub mod join_bundle;
 pub use join_bundle::JoinBundle;

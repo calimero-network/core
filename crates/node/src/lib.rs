@@ -15,6 +15,7 @@
 
 mod arbiter_pool;
 mod constants;
+pub mod dag_compactor;
 mod delta_store;
 pub mod gc;
 pub mod handlers;
