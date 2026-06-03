@@ -534,6 +534,85 @@ pub(crate) async fn drain_all_governance_pending(input: &StateDeltaContext) {
 /// [`super::network_event::handle`] — every field that the network handler
 /// destructures must be reconstructable here, otherwise drained deltas
 /// would replay with missing data.
+/// Outcome of the gossip-fence evaluation at the state-delta apply chokepoint.
+///
+/// `Fall` means the delta is readable now (`FenceDecision::Apply`) and the
+/// caller must continue normal processing. `Handled` means the fence consumed
+/// the delta — it was either absorbed (the migration case) or dropped (the
+/// non-migration case) — and the caller must `return Ok(())` without applying.
+enum FenceOutcome {
+    /// Fall through to normal apply.
+    Fall,
+    /// Fence consumed the delta (absorbed or dropped) — return early.
+    Handled,
+}
+
+/// Gossip-fence evaluation + absorb-don't-drop (PR-6b Task 6b.4).
+///
+/// Resolves the store-aware [`FenceDecision`] for `producing_app_key` and acts
+/// on it:
+///
+/// - [`FenceDecision::Apply`] → [`FenceOutcome::Fall`] (caller applies normally).
+/// - [`FenceDecision::Buffer`] (the migration case from 6b.3: the delta's schema
+///   differs from the receiver's loaded reader after a cascade boundary) →
+///   persist the original signed [`BufferedDelta`] into the [`AbsorbBuffer`] via
+///   [`AbsorbRepository::save`] so it can be replayed verbatim once the binary
+///   advances (Task 6b.5), record the `absorbed_for_migration` metric, and
+///   return [`FenceOutcome::Handled`]. Idempotent: the `delta_id` is part of the
+///   key, so a re-delivered straggler overwrites rather than duplicates.
+/// - [`FenceDecision::Drop`] (non-migration fences) → keep the legacy behavior:
+///   record `fenced_stale_schema` and return [`FenceOutcome::Handled`] without
+///   persisting (the delta is genuinely unrecoverable).
+///
+/// `build_buffered` is only invoked on the `Buffer` arm, so the (cheap) clone of
+/// the delta's replay fields is paid only when an absorb actually happens.
+///
+/// [`AbsorbBuffer`]: calimero_store::key::AbsorbBufferKey
+fn fence_and_maybe_absorb(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+    producing_app_key: [u8; 32],
+    delta_id: [u8; 32],
+    author_id: PublicKey,
+    delta_hlc: calimero_storage::logical_clock::HybridTimestamp,
+    build_buffered: impl FnOnce() -> calimero_node_primitives::delta_buffer::BufferedDelta,
+) -> Result<FenceOutcome> {
+    use calimero_context::group_store::{AbsorbRecord, AbsorbRepository};
+    use calimero_context::hlc_fence::{delta_fence_decision, FenceDecision};
+
+    match delta_fence_decision(store, context_id, producing_app_key, delta_hlc)? {
+        FenceDecision::Apply => Ok(FenceOutcome::Fall),
+        FenceDecision::Buffer => {
+            // Migration case: the receiver's loaded binary can't read this
+            // schema yet. Absorb the original signed bytes durably for verbatim
+            // replay once the binary advances — never drop, never translate.
+            let buffered = build_buffered();
+            let record = AbsorbRecord::from_buffered(&buffered);
+            AbsorbRepository::new(store).save(context_id, producing_app_key, &record)?;
+            info!(
+                %context_id,
+                %author_id,
+                delta_id = ?delta_id,
+                producing_app_key = %hex::encode(producing_app_key),
+                "Absorbing state delta — loaded reader behind incoming schema; buffered for verbatim replay"
+            );
+            crate::node_metrics::record_delta_outcome("absorbed_for_migration");
+            Ok(FenceOutcome::Handled)
+        }
+        FenceDecision::Drop => {
+            warn!(
+                %context_id,
+                %author_id,
+                delta_id = ?delta_id,
+                producing_app_key = %hex::encode(producing_app_key),
+                "Dropping state delta — HLC fence: stale schema after cascade migration"
+            );
+            crate::node_metrics::record_delta_outcome("fenced_stale_schema");
+            Ok(FenceOutcome::Handled)
+        }
+    }
+}
+
 fn state_delta_message_from_buffered(
     buffered: calimero_node_primitives::delta_buffer::BufferedDelta,
     context_id: ContextId,
@@ -651,28 +730,45 @@ pub(crate) async fn apply_authorized_state_delta(
         }
     }
 
-    // HLC fence (PR-3): drop a delta produced under a different app schema
-    // than the context now targets AND newer than the recorded cascade
-    // boundary. This is the common chokepoint for both direct delivery and
-    // the governance-pending drain re-apply (which reconstructs the message
-    // via `state_delta_message_from_buffered`, now carrying the buffered
-    // `producing_app_key`). A `None` producing_app_key is unfenceable and
-    // falls through (legacy deltas / non-group contexts / sender soft-fault).
+    // HLC fence (PR-3) + absorb-don't-drop (PR-6b Task 6b.4): a delta produced
+    // under a different app schema than the receiver's *loaded reader* can read,
+    // AND newer than the recorded cascade boundary. This is the common
+    // chokepoint for both direct delivery and the governance-pending drain
+    // re-apply (which reconstructs the message via
+    // `state_delta_message_from_buffered`, now carrying the buffered
+    // `producing_app_key`). A `None` producing_app_key is unfenceable and falls
+    // through (legacy deltas / non-group contexts / sender soft-fault).
+    //
+    // The migration case (`FenceDecision::Buffer`) no longer silently drops:
+    // the original signed bytes are persisted into the AbsorbBuffer for verbatim
+    // replay once the binary advances (Task 6b.5). Non-migration fences
+    // (`FenceDecision::Drop`) still drop, preserving the old behavior.
     if let Some(producing_app_key) = producing_app_key {
-        if calimero_context::hlc_fence::delta_is_fenced(
+        let outcome = fence_and_maybe_absorb(
             node_clients.context.datastore(),
             &context_id,
             producing_app_key,
+            delta_id,
+            author_id,
             hlc,
-        )? {
-            warn!(
-                %context_id,
-                %author_id,
-                delta_id = ?delta_id,
-                producing_app_key = %hex::encode(producing_app_key),
-                "Dropping state delta — HLC fence: stale schema after cascade migration"
-            );
-            crate::node_metrics::record_delta_outcome("fenced_stale_schema");
+            || calimero_node_primitives::delta_buffer::BufferedDelta {
+                id: delta_id,
+                parents: parent_ids.clone(),
+                hlc,
+                payload: artifact.clone(),
+                nonce,
+                author_id,
+                root_hash,
+                events: events.clone(),
+                source_peer: source,
+                key_id,
+                governance_position: governance_position.clone(),
+                delta_signature,
+                governance_drain_attempts: 0,
+                producing_app_key: Some(producing_app_key),
+            },
+        )?;
+        if matches!(outcome, FenceOutcome::Handled) {
             return Ok(());
         }
     }
@@ -2108,6 +2204,83 @@ mod tests {
             // No cascade boundary ⇒ never fence, even a stale-schema delta.
             let (store, ctx) = cascaded_store(None);
             assert!(!delta_is_fenced(&store, &ctx, APP_V1, hlc_after_zero()).unwrap());
+        }
+
+        // ---- PR-6b Task 6b.4: absorb-don't-drop at the gossip fence ----
+
+        use calimero_context::group_store::AbsorbRepository;
+        use calimero_node_primitives::delta_buffer::BufferedDelta;
+        use calimero_primitives::hash::Hash;
+
+        use super::super::{fence_and_maybe_absorb, FenceOutcome};
+
+        /// A minimal `BufferedDelta` carrying the replay fields the absorb path
+        /// persists. `producing_app_key` is the schema discriminator the fence
+        /// keys on.
+        fn sample_buffered(delta_id: [u8; 32], producing_app_key: [u8; 32]) -> BufferedDelta {
+            BufferedDelta {
+                id: delta_id,
+                parents: vec![],
+                hlc: hlc_after_zero(),
+                payload: vec![1, 2, 3],
+                nonce: [0; 12],
+                author_id: PublicKey::from([0xAB; 32]),
+                root_hash: Hash::default(),
+                events: None,
+                source_peer: libp2p::PeerId::random(),
+                key_id: [0; 32],
+                governance_position: None,
+                delta_signature: Some([7; 64]),
+                governance_drain_attempts: 0,
+                producing_app_key: Some(producing_app_key),
+            }
+        }
+
+        /// A `Buffer`-decision delta (schema ≠ the loaded reader, after the
+        /// cascade boundary) must be persisted into the AbsorbBuffer, not
+        /// dropped — and the call reports `Handled` so the caller returns early.
+        #[test]
+        fn buffer_decision_persists_absorb_record_not_drop() {
+            // Loaded reader falls back to GroupMeta.app_key = APP_V2 here, so an
+            // APP_V1 delta after the boundary is unreadable now ⇒ Buffer.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let bd = sample_buffered([3; 32], APP_V1);
+
+            let outcome =
+                fence_and_maybe_absorb(&store, &ctx, APP_V1, bd.id, bd.author_id, bd.hlc, || {
+                    bd.clone()
+                })
+                .unwrap();
+
+            assert!(matches!(outcome, FenceOutcome::Handled));
+            let pending = AbsorbRepository::new(&store).enumerate_pending(&ctx).unwrap();
+            assert_eq!(
+                pending.len(),
+                1,
+                "a stale-schema delta to a behind-reader node must be absorbed, not dropped"
+            );
+            assert_eq!((pending[0].1).id, [3; 32]);
+        }
+
+        /// An `Apply`-decision delta (schema matches the loaded reader) must
+        /// fall through and must NOT land in the AbsorbBuffer.
+        #[test]
+        fn apply_decision_does_not_persist_absorb_record() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let bd = sample_buffered([4; 32], APP_V2);
+
+            let outcome =
+                fence_and_maybe_absorb(&store, &ctx, APP_V2, bd.id, bd.author_id, bd.hlc, || {
+                    bd.clone()
+                })
+                .unwrap();
+
+            assert!(matches!(outcome, FenceOutcome::Fall));
+            let pending = AbsorbRepository::new(&store).enumerate_pending(&ctx).unwrap();
+            assert!(
+                pending.is_empty(),
+                "a readable delta must apply normally, not be absorbed"
+            );
         }
     }
 }

@@ -51,6 +51,9 @@ pub mod group_store {
     pub use calimero_governance_store::{
         apply_local_signed_group_op,
         apply_signed_namespace_op,
+        // Absorb buffer (PR-6b straggler safety).
+        AbsorbRecord,
+        AbsorbRepository,
         enumerate_group_contexts,
         get_group_for_context,
         get_local_gov_nonce,
