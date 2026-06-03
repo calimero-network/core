@@ -388,6 +388,31 @@ impl ContextRegistry {
         Ok(())
     }
 
+    /// Atomically deletes a batch of DAG delta rows by key (issue #2026
+    /// compaction). Like [`persist_delta_records`](Self::persist_delta_records),
+    /// the whole batch lands in one [`Transaction`] so a crash mid-prune can
+    /// never leave the delta column half-deleted. Pruning is idempotent:
+    /// deleting an already-absent key is a no-op.
+    pub fn prune_delta_records(&self, delta_keys: &[key::ContextDagDelta]) -> eyre::Result<()> {
+        if delta_keys.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = Transaction::default();
+        for delta_key in delta_keys {
+            tx.delete(delta_key);
+        }
+
+        self.datastore.apply(&tx)?;
+
+        tracing::debug!(
+            delta_count = delta_keys.len(),
+            "Atomically pruned delta records"
+        );
+
+        Ok(())
+    }
+
     /// Updates the ApplicationId for a context.
     ///
     /// # Arguments
@@ -1135,6 +1160,12 @@ impl ContextClient {
         deltas: &[(key::ContextDagDelta, types::ContextDagDelta)],
     ) -> eyre::Result<()> {
         self.registry.persist_delta_records(deltas)
+    }
+
+    /// Atomically deletes a batch of DAG delta rows (issue #2026 compaction).
+    /// Delegates to [`ContextRegistry::prune_delta_records`].
+    pub fn prune_delta_records(&self, delta_keys: &[key::ContextDagDelta]) -> eyre::Result<()> {
+        self.registry.prune_delta_records(delta_keys)
     }
 
     /// Updates the ApplicationId for a context.

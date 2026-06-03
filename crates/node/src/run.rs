@@ -32,6 +32,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 
 use crate::arbiter_pool::ArbiterPool;
+use crate::dag_compactor::DagCompactor;
 use crate::gc::GarbageCollector;
 use crate::network_event_channel::{self, NetworkEventChannelConfig};
 use crate::network_event_processor::NetworkEventBridge;
@@ -63,6 +64,8 @@ pub struct NodeConfig {
     pub context: ContextConfig,
     pub server: ServerConfig,
     pub gc_interval_secs: Option<u64>, // Optional GC interval in seconds (default: 12 hours)
+    /// DAG compaction settings (issue #2026). Disabled by default.
+    pub dag_compaction: calimero_node_primitives::DagCompactionConfig,
     pub mode: NodeMode,
     pub specialized_node: SpecializedNodeConfig,
     /// Resolved per-execution VM resource limits from the `[runtime.limits]`
@@ -388,6 +391,21 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let gc = GarbageCollector::new(datastore.clone(), gc_interval);
 
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| gc);
+
+    // Start DAG compaction actor (issue #2026). Disabled by default; only
+    // bounds on-disk delta growth when explicitly enabled in `[dag_compaction]`
+    // and the thresholds are internally consistent.
+    if config.dag_compaction.enabled && config.dag_compaction.is_valid() {
+        let compactor = DagCompactor::new(node_state.delta_stores_handle(), config.dag_compaction);
+        let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| compactor);
+    } else if config.dag_compaction.enabled {
+        tracing::warn!(
+            min_deltas_before_compact = config.dag_compaction.min_deltas_before_compact,
+            retain_recent_count = config.dag_compaction.retain_recent_count,
+            "DAG compaction enabled but config is invalid (retain_recent_count must be \
+             < min_deltas_before_compact); compaction will NOT run"
+        );
+    }
 
     let mut sync = pin!(sync_manager.start());
     let mut server = tokio::spawn(server);

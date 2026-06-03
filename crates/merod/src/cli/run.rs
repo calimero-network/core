@@ -162,6 +162,7 @@ impl RunCommand {
             context: config.context,
             server: server_config,
             gc_interval_secs: None, // Use default (12 hours)
+            dag_compaction: config.dag_compaction,
             mode: node_mode,
             specialized_node: SpecializedNodeConfig {
                 invite_topic: network.specialized_node.invite_topic,

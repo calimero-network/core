@@ -334,6 +334,14 @@ impl SyncManager {
         let mut to_fetch = missing_ids.clone();
         let mut fetch_count = 0;
 
+        // Set when the peer reports it no longer has a delta we still need —
+        // the expected outcome once that peer has compacted the delta away
+        // (#2026). Walking the gap further is futile: the ancestor chain is
+        // broken on the peer's side. We abort the delta catch-up so the next
+        // sync round reconciles via HashComparison, which converges current
+        // state without the delta log.
+        let mut pruned_ancestor_encountered = false;
+
         // Track visited IDs to prevent cycles/loops from malicious peers
         let mut visited_ids = std::collections::HashSet::new();
         // Initialize visited IDs with the starting set to ensure we don't re-queue them if they appear as parents.
@@ -463,7 +471,21 @@ impl SyncManager {
                         }
                     }
                     Ok(None) => {
-                        warn!(%context_id, delta_id = ?missing_id, "Peer doesn't have requested delta");
+                        // The peer can't produce a delta we need — almost
+                        // always because it has compacted that history away
+                        // (#2026). The chain to genesis is broken from this
+                        // peer, so continuing to fetch its ancestors is
+                        // pointless. Flag it, stop, and let the next sync
+                        // round fall back to HashComparison.
+                        warn!(
+                            %context_id,
+                            delta_id = ?missing_id,
+                            "Peer doesn't have requested delta (likely pruned); \
+                             aborting delta catch-up, will reconcile via state sync"
+                        );
+                        crate::node_metrics::observe_pruned_ancestor_fallback();
+                        pruned_ancestor_encountered = true;
+                        break;
                     }
                     Err(e) => {
                         error!(?e, %context_id, delta_id = ?missing_id, "Failed to request delta");
@@ -476,9 +498,17 @@ impl SyncManager {
                     }
                 }
             }
+
+            // A pruned ancestor breaks the chain from this peer; stop draining
+            // `to_fetch` entirely rather than just the current inner batch.
+            if pruned_ancestor_encountered {
+                break;
+            }
         }
 
         // Register any deltas left in the buffer below the chunk threshold.
+        // Deltas fetched before hitting the pruned frontier are still valid
+        // partial progress and worth persisting.
         flush_delta_batch(&delta_store, &context_id, std::mem::take(&mut delta_batch)).await;
 
         if fetch_count > 0 {

@@ -2790,6 +2790,99 @@ impl DeltaStore {
 
         added_count
     }
+
+    /// Compact this context's DAG history, bounding on-disk delta growth
+    /// (issue #2026).
+    ///
+    /// When the in-memory DAG holds more than `min_deltas_before_compact`
+    /// deltas, history older than the most-recent `retain_recent_count` is
+    /// dropped from both the in-memory DAG and the durable delta column. The
+    /// retained window keeps cheap incremental delta catch-up working for
+    /// peers with small gaps; a peer that needs older history will request a
+    /// pruned delta, get "not found", and fall back to HashComparison — which
+    /// reconciles current state without the delta log, so the pruned history
+    /// is never required for convergence.
+    ///
+    /// The whole operation runs under the DAG write lock so it serialises
+    /// against `get_delta`/`has_delta` (the responder send path) and the apply
+    /// path: a peer either sees a delta or sees it gone, never a torn view.
+    /// Pruning is skipped while pending deltas exist — a mid-sync DAG whose
+    /// heads are about to advance is not a good moment to draw the retain
+    /// window.
+    ///
+    /// The in-memory prune happens first, then the DB delete. Order is not
+    /// correctness-critical: a crash between them leaves extra delta rows that
+    /// the next sweep re-prunes (and that `load_persisted_deltas` would simply
+    /// reload), never lost state — context state lives in the storage tree,
+    /// not the delta log.
+    ///
+    /// Returns the number of deltas pruned (0 when not eligible or skipped).
+    pub async fn compact(
+        &self,
+        min_deltas_before_compact: usize,
+        retain_recent_count: usize,
+    ) -> usize {
+        let mut dag = self.dag.write().await;
+
+        let total = dag.delta_count();
+        if total <= min_deltas_before_compact {
+            return 0;
+        }
+
+        // Don't compact mid-catch-up: pending deltas mean heads are still
+        // advancing, so the retain window would be drawn against a moving
+        // target. `prune_to_recent` already refuses to drop pending deltas,
+        // but skipping wholesale here also avoids needless churn.
+        let pending = dag.pending_stats().count;
+        if pending > 0 {
+            debug!(
+                context_id = %self.applier.context_id,
+                total,
+                pending,
+                "Skipping DAG compaction: pending deltas present (mid-sync)"
+            );
+            return 0;
+        }
+
+        let pruned_ids = dag.prune_to_recent(retain_recent_count);
+        if pruned_ids.is_empty() {
+            return 0;
+        }
+
+        // Mirror the prune to durable storage. Done while the write lock is
+        // still held so the in-memory and on-disk views can't diverge under a
+        // concurrent responder read.
+        let delta_keys: Vec<calimero_store::key::ContextDagDelta> = pruned_ids
+            .iter()
+            .map(|id| calimero_store::key::ContextDagDelta::new(self.applier.context_id, *id))
+            .collect();
+
+        match self.applier.context_client.prune_delta_records(&delta_keys) {
+            Ok(()) => {
+                let remaining = dag.delta_count();
+                tracing::info!(
+                    context_id = %self.applier.context_id,
+                    pruned = pruned_ids.len(),
+                    remaining,
+                    "Compacted DAG history"
+                );
+            }
+            Err(e) => {
+                // In-memory is already pruned; the DB still carries the rows.
+                // That's the safe direction — the next sweep re-deletes them,
+                // and a restart reloads them into the DAG (no lost state). Log
+                // and report the in-memory prune count regardless.
+                tracing::warn!(
+                    ?e,
+                    context_id = %self.applier.context_id,
+                    pruned = pruned_ids.len(),
+                    "DAG compaction pruned in-memory but failed to delete rows; next sweep retries"
+                );
+            }
+        }
+
+        pruned_ids.len()
+    }
 }
 
 #[cfg(test)]

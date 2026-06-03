@@ -17,7 +17,7 @@ use url::Url;
 
 use mero_auth::config::AuthConfig;
 
-pub use calimero_node_primitives::NodeMode;
+pub use calimero_node_primitives::{DagCompactionConfig, NodeMode};
 
 pub const CONFIG_FILE: &str = "config.toml";
 
@@ -68,6 +68,12 @@ pub struct ConfigFile {
     /// TEE-related configuration (KMS, attestation, etc.).
     #[serde(default)]
     pub tee: Option<TeeConfig>,
+
+    /// DAG compaction (`[dag_compaction]`) — bounds on-disk delta-log growth
+    /// by pruning history older than a checkpoint. Disabled by default;
+    /// absent section falls back to [`DagCompactionConfig::default`].
+    #[serde(default)]
+    pub dag_compaction: DagCompactionConfig,
 }
 
 /// Configuration for TEE (Trusted Execution Environment) features.
@@ -494,6 +500,7 @@ impl ConfigFile {
             context,
             runtime: RuntimeConfig::default(),
             tee: None,
+            dag_compaction: DagCompactionConfig::default(),
         }
     }
 
