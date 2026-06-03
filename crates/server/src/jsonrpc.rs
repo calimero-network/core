@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::routing::{post, Router};
 use axum::{Extension, Json};
 use calimero_context_client::client::ContextClient;
+use calimero_node_primitives::client::NodeClient;
 use calimero_server_primitives::jsonrpc::{
     Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
     ResponseBodyError, ResponseBodyResult, ServerResponseError,
@@ -15,6 +16,7 @@ use uuid::Uuid;
 use crate::config::ServerConfig;
 
 mod execute;
+mod sync_status;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -32,11 +34,13 @@ impl JsonRpcConfig {
 
 pub(crate) struct ServiceState {
     ctx_client: ContextClient,
+    node_client: NodeClient,
 }
 
 pub(crate) fn service(
     config: &ServerConfig,
     ctx_client: ContextClient,
+    node_client: NodeClient,
 ) -> Option<(String, Router)> {
     // Check if JSON-RPC is configured and enabled
     let _jsonrpc_config = match &config.jsonrpc {
@@ -60,7 +64,10 @@ pub(crate) fn service(
         info!("JSON RPC server listening on {}/http{{{}}}", listen, path);
     }
 
-    let state = Arc::new(ServiceState { ctx_client });
+    let state = Arc::new(ServiceState {
+        ctx_client,
+        node_client,
+    });
     let handler = post(handle_request).layer(Extension(Arc::clone(&state)));
 
     let router = Router::new().route("/", handler);
@@ -142,6 +149,13 @@ async fn handle_request_inner(
                 }
 
                 result
+            }
+            RequestPayload::SyncStatus(status_request) => {
+                let span = tracing::Span::current();
+                span.record("context_id", field::display(&status_request.context_id));
+                span.record("method", "sync_status");
+
+                status_request.handle(state).await.to_res_body()
             }
         },
         Err(err) => {

@@ -56,6 +56,16 @@ impl Handler<NodeMessage> for NodeManager {
                     "Removed pending specialized node invite"
                 );
             }
+            NodeMessage::GetSyncStatus {
+                context_id,
+                outcome,
+            } => {
+                // Synchronous read off the lock-free `sync_status` map; reply
+                // directly on the oneshot. A dropped receiver (caller gave up)
+                // is fine to ignore — this is a pure observability query.
+                let snapshot = self.state.sync_status_snapshot(&context_id);
+                let _ = outcome.send(snapshot);
+            }
             NodeMessage::ForwardNamespaceOpApplied { namespace_id } => {
                 // Forward the publisher-side signal to the readiness FSM.
                 // Mirrors `addr.do_send(NamespaceOpApplied { namespace_id })`

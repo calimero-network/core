@@ -134,6 +134,12 @@ impl SyncState {
         self.failure_count
     }
 
+    /// Get the most recent failure's error message, if the last attempt
+    /// failed (cleared on the next success).
+    pub(crate) fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
     /// Take last_sync value (for marking sync start while keeping old time)
     pub(crate) fn take_last_sync(&mut self) -> Option<Instant> {
         self.last_sync.take()
