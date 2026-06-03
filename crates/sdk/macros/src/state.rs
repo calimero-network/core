@@ -813,6 +813,45 @@ fn generate_test_state_impl(
             fn __test_with_executor(id: [u8; 32], f: &mut dyn ::core::ops::FnMut()) {
                 ::calimero_storage::env::with_executor_id(id, || f());
             }
+
+            fn __test_mirror_root() {
+                // Application state lives in `calimero_storage`'s native mock,
+                // but `calimero_sdk::read_raw()` reads a *separate* SDK host
+                // map. Mirror the committed root `Entry` across so `read_raw()`
+                // (and therefore a `#[app::migrate]` body) observes the
+                // committed state. No-op until something is committed.
+                if let ::core::option::Option::Some(__root) =
+                    ::calimero_storage::env::read_committed_root_entry()
+                {
+                    ::calimero_sdk::env::__test_seed_root(__root);
+                }
+            }
+
+            fn __test_install_migrated(build: &mut dyn ::core::ops::FnMut() -> Self) {
+                ::calimero_storage::register_crdt_merge_for_test::<#ident #ty_generics>();
+                #rekey_call
+                // Faithfully mirror the WASM `#[app::migrate]` export: run the
+                // migrate body and deterministic-id assignment under storage
+                // *merge mode* so any `LwwRegister`/`Element` stamped inside the
+                // body is zeroed and the migrated root is byte-identical across
+                // nodes — the property a determinism test must exercise.
+                ::calimero_storage::env::with_merge_mode(|| {
+                    let root = ::calimero_storage::collections::Root::new(|| {
+                        let mut state = build();
+                        state.__assign_deterministic_ids();
+                        state
+                    });
+                    root.commit();
+                });
+            }
+
+            fn __test_root_hash() -> ::core::option::Option<[u8; 32]> {
+                // The merkle root recorded by the most recent commit. It folds in
+                // every child-collection entry's hash, so comparing it across two
+                // runs detects divergence *inside* carried/seeded collections —
+                // not just in the top-level root struct.
+                ::calimero_storage::env::root_hash()
+            }
         }
     }
 }

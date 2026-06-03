@@ -156,6 +156,21 @@ pub fn take_last_artifact() -> Option<Vec<u8>> {
     mocked::take_last_artifact()
 }
 
+/// Returns the raw bytes of the committed root `Entry` (the `Root<T>` slot)
+/// from the native mock, or `None` if nothing has been committed yet.
+///
+/// Native/test use only. Application state commits to this mock, while
+/// `calimero_sdk::read_raw()` reads a *separate* SDK-level host map. The
+/// in-process test harness uses this to mirror the committed root across so a
+/// `#[app::migrate]` body run under `TestHost` can observe the pre-migration
+/// state. The bytes are the full `Entry<T>` (`borsh(T)` followed by the 32-byte
+/// `Element.id`), matching what `read_raw` strips.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn read_committed_root_entry() -> Option<Vec<u8>> {
+    storage_read(Key::Entry(crate::collections::ROOT_ENTRY_ID))
+}
+
 /// Commits the root hash to the runtime.
 ///
 #[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
