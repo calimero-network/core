@@ -140,6 +140,10 @@ pub enum Event<'a> {
 
 ### `#[app::migrate]` — state-migration export
 
+> **App developers:** the user-facing guide is `docs/migrations.md` (when to
+> migrate, `#[derive(Migrate)]`, the convergence rule, testing). This section is
+> the contributor-facing internals.
+
 Marks a stand-alone function as the WASM export the node runtime
 calls during `upgrade_group(target=v2, migrate_method=...)`. The
 function reads the old state via `calimero_sdk::state::read_raw()`,
