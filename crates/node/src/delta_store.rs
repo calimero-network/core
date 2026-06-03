@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::{ContextAtomic, ContextAtomicKey};
 use calimero_dag::{
     ApplyError, CausalDelta, DagStore as CoreDagStore, DeltaApplier, PendingStats,
     MAX_DELTA_QUERY_LIMIT,
@@ -282,6 +283,27 @@ struct ContextStorageApplier {
     /// writers `Arc::make_mut` to clone-on-first-write only when a reader
     /// snapshot is still live.
     topology: Arc<RwLock<Arc<IndexMap<[u8; 32], Vec<[u8; 32]>>>>>,
+    /// Armed by [`DeltaStore::add_delta_internal`] around its `dag.add_delta`
+    /// call so the inbound `apply()` *retains* the per-context execution lock
+    /// (stashing the guard in [`Self::apply_lock_slot`]) instead of releasing
+    /// it when the WASM apply returns. The caller then holds that lock across
+    /// the subsequent `dag_heads` commit.
+    ///
+    /// Without this, the lock is released between the WASM apply — which makes
+    /// a just-rotated-in writer authoritative in *storage* — and the
+    /// `dag_heads` commit. A local write that runs in that window reads the
+    /// pre-apply heads and forks the DAG: its parents exclude the rotation,
+    /// so every peer's `writers_at(parents)` resolves the *old* writer set and
+    /// rejects it as `InvalidSignature`, an unconvergeable split-brain.
+    ///
+    /// Read/written only under the `dag` write lock (held across
+    /// `add_delta_internal`'s `dag.add_delta`), which serializes all access.
+    retain_apply_lock: std::sync::atomic::AtomicBool,
+    /// Relays the retained execution-lock guard from `apply()` up to
+    /// `add_delta_internal` when [`Self::retain_apply_lock`] is set. Holds at
+    /// most one guard at a time (the per-context lock is not re-entrant); a
+    /// cascaded buffered-child apply reuses it via `ContextAtomic::Held`.
+    apply_lock_slot: std::sync::Mutex<Option<ContextAtomicKey>>,
 }
 
 #[async_trait::async_trait]
@@ -370,16 +392,43 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // divergent root hash). So we keep waiting; the apply is gas-bounded
         // (it terminates) and post-#2238 is fast. Only warn if it runs long.
         // See #2199 / #2238.
+        // When `add_delta_internal` has armed `retain_apply_lock`, run this
+        // inbound apply with `ContextAtomic::Lock` so the executor hands the
+        // per-context execution-lock guard back in `outcome.atomic`; we stash
+        // it in `apply_lock_slot` for the caller to hold across its `dag_heads`
+        // commit. A cascaded buffered-child apply in the same `dag.add_delta`
+        // reuses the already-held guard via `ContextAtomic::Held` (the lock is
+        // not re-entrant). When not armed (e.g. the local path's
+        // `try_process_pending`), behavior is unchanged (`None`).
+        let retain_lock = self
+            .retain_apply_lock
+            .load(std::sync::atomic::Ordering::Acquire);
+        let atomic = if retain_lock {
+            Some(
+                match self
+                    .apply_lock_slot
+                    .lock()
+                    .expect("apply_lock_slot poisoned")
+                    .take()
+                {
+                    Some(key) => ContextAtomic::Held(key),
+                    None => ContextAtomic::Lock,
+                },
+            )
+        } else {
+            None
+        };
+
         let execute = self.context_client.execute(
             &self.context_id,
             &self.our_identity,
             "__calimero_sync_next".to_owned(),
             artifact,
             vec![],
-            None,
+            atomic,
         );
         tokio::pin!(execute);
-        let outcome = match tokio::time::timeout(WASM_APPLY_TIMEOUT, &mut execute).await {
+        let mut outcome = match tokio::time::timeout(WASM_APPLY_TIMEOUT, &mut execute).await {
             Ok(res) => res,
             Err(_elapsed) => {
                 warn!(
@@ -393,6 +442,18 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             }
         }
         .map_err(|e| ApplyError::Application(format!("WASM execution failed: {e}")))?;
+
+        // Stash the retained guard for `add_delta_internal` to hold across its
+        // `dag_heads` commit. On the error path above we already returned via
+        // `?`; the executor dropped the guard when the failed message
+        // completed, so the slot stays empty and the caller commits heads
+        // unlocked — safe, because a failed apply advances no heads.
+        if retain_lock {
+            *self
+                .apply_lock_slot
+                .lock()
+                .expect("apply_lock_slot poisoned") = outcome.atomic.take();
+        }
 
         let wasm_elapsed_ms = wasm_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -1188,6 +1249,8 @@ impl DeltaStore {
             // Insertion-ordered (IndexMap) so the eviction at the
             // `MAX_TOPOLOGY_ENTRIES` cap is deterministic (oldest-first).
             topology: Arc::new(RwLock::new(Arc::new(IndexMap::new()))),
+            retain_apply_lock: std::sync::atomic::AtomicBool::new(false),
+            apply_lock_slot: std::sync::Mutex::new(None),
         });
 
         Self {
@@ -2096,7 +2159,38 @@ impl DeltaStore {
 
         // If parents are missing, `result` will be FALSE, and `dag` internally stores it as
         // pending.
-        let result = dag.add_delta(delta, &*self.applier).await?;
+        //
+        // Arm lock-retention so the inbound WASM apply inside `dag.add_delta`
+        // keeps the per-context execution lock held (its guard lands in
+        // `apply_lock_slot`); we capture it into `_apply_lock_guard` below and
+        // hold it across the `dag_heads` commit. This closes the window where a
+        // concurrent local write observes this delta's storage effect (e.g. a
+        // writer-set rotation) but still reads the pre-apply DAG heads —
+        // forking the DAG into an unconvergeable delta. The lock order stays
+        // `dag` write lock → context lock (the apply acquires the context lock
+        // from under this `dag` guard), so no inversion is introduced. Setting
+        // the flag here, under the `dag` write lock, serializes it against
+        // every other `add_delta_internal`/`try_process_pending` caller.
+        self.applier
+            .retain_apply_lock
+            .store(true, std::sync::atomic::Ordering::Release);
+        let add_outcome = dag.add_delta(delta, &*self.applier).await;
+        self.applier
+            .retain_apply_lock
+            .store(false, std::sync::atomic::Ordering::Release);
+        // Take the retained guard (if the apply acquired one). Binding it to a
+        // local keeps the context lock held across the `dag_heads` commit below
+        // and releases it (RAII) on every exit path — including the `?` on
+        // `add_outcome`. `add_delta_internal` does no executor re-entry while
+        // it is held (the `dag_heads` persist is direct datastore I/O), so this
+        // cannot deadlock.
+        let _apply_lock_guard = self
+            .applier
+            .apply_lock_slot
+            .lock()
+            .expect("apply_lock_slot poisoned")
+            .take();
+        let result = add_outcome?;
 
         // Update context's dag_heads after the DAG has been updated
         let heads = dag.get_heads();
