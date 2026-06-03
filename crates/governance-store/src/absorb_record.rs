@@ -275,10 +275,21 @@ mod tests {
             nonce: [0; 12],
             author_id: PublicKey::from([0; 32]),
             root_hash: Hash::from([0; 32]),
-            events: None,
+            events: Some(vec![10, 20, 30]),
             source_peer: libp2p::PeerId::random(),
             key_id: [0; 32],
-            governance_position: None,
+            // Populate the Some(GovernancePosition) path so the mirror exercises
+            // GovernancePosition's hand-written bounds-enforcing BorshDeserialize
+            // end-to-end (a straggler's signed governance position must survive
+            // persist → restore unchanged, or its replay authorization breaks).
+            governance_position: Some(
+                GovernancePosition::new(
+                    calimero_context_config::types::ContextGroupId::from([3; 32]),
+                    [4; 32],
+                    vec![[5; 32], [6; 32]],
+                )
+                .expect("valid governance position fixture"),
+            ),
             delta_signature: Some([9; 64]),
             governance_drain_attempts: 0,
             producing_app_key: Some([2; 32]),
@@ -294,9 +305,21 @@ mod tests {
             .unwrap()
             .into_buffered()
             .unwrap();
+        // Assert EVERY field survives the round trip, so a future field added to
+        // BufferedDelta (or a reorder/typo in the hand-written mirror) is caught.
         assert_eq!(back.id, bd.id);
+        assert_eq!(back.parents, bd.parents);
+        assert_eq!(back.hlc, bd.hlc);
+        assert_eq!(back.payload, bd.payload);
+        assert_eq!(back.nonce, bd.nonce);
+        assert_eq!(back.author_id, bd.author_id);
+        assert_eq!(back.root_hash, bd.root_hash);
+        assert_eq!(back.events, bd.events);
         assert_eq!(back.source_peer, bd.source_peer); // PeerId survived to_bytes/from_bytes
-        assert_eq!(back.producing_app_key, bd.producing_app_key);
+        assert_eq!(back.key_id, bd.key_id);
+        assert_eq!(back.governance_position, bd.governance_position);
         assert_eq!(back.delta_signature, bd.delta_signature);
+        assert_eq!(back.governance_drain_attempts, bd.governance_drain_attempts);
+        assert_eq!(back.producing_app_key, bd.producing_app_key);
     }
 }
