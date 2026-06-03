@@ -100,6 +100,28 @@ impl Message for ExecuteRequest {
     type Result = Result<ExecuteResponse, ExecuteError>;
 }
 
+/// Acquire the per-context execution lock without running a method.
+///
+/// Returns the same `Arc<Mutex<ContextId>>` guard that [`ExecuteRequest`]
+/// holds for the duration of a WASM run. Host-side storage mutations that
+/// happen outside the executor (notably the sync session's `EntityPush` /
+/// `EntityDeletePush` apply paths) must hold this guard so they are mutually
+/// exclusive with concurrent `__calimero_sync_next` delta merges. Without it
+/// the two interleave their ancestor-hash recomputes and record a torn root
+/// hash that delta-sync can't repair (split-brain).
+///
+/// `None` is returned only when the context is unknown — the caller then
+/// applies best-effort without a guard, matching the pre-lock behaviour (the
+/// apply itself no-ops on a missing context).
+#[derive(Copy, Clone, Debug)]
+pub struct AcquireContextLockRequest {
+    pub context: ContextId,
+}
+
+impl Message for AcquireContextLockRequest {
+    type Result = Option<ContextAtomicKey>;
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
@@ -282,6 +304,10 @@ pub enum ContextMessage {
     Execute {
         request: ExecuteRequest,
         outcome: oneshot::Sender<<ExecuteRequest as Message>::Result>,
+    },
+    AcquireContextLock {
+        request: AcquireContextLockRequest,
+        outcome: oneshot::Sender<<AcquireContextLockRequest as Message>::Result>,
     },
     CreateContext {
         request: CreateContextRequest,

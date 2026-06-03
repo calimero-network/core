@@ -24,7 +24,7 @@
 //!     &store,
 //!     context_id,
 //!     identity,
-//!     HashComparisonConfig { remote_root_hash },
+//!     HashComparisonConfig { remote_root_hash, context_client: Some(client) },
 //! ).await?;
 //!
 //! // Responder side (manager extracts first request data)
@@ -39,10 +39,12 @@
 //! ```
 
 use crate::sync::helpers::{
-    apply_leaf_with_crdt_merge, generate_nonce, get_local_root_hash_for_context,
-    handle_entity_push, is_leaf_currently_authorized, MAX_ENTITIES_PER_PUSH,
+    apply_leaf_with_crdt_merge, apply_under_context_lock, generate_nonce,
+    get_local_root_hash_for_context, handle_entity_push, is_leaf_currently_authorized,
+    MAX_ENTITIES_PER_PUSH,
 };
 use async_trait::async_trait;
+use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::sync::{
     compare_tree_nodes, create_runtime_env, EntityDeletion, InitPayload, LeafMetadata,
     MessagePayload, StreamMessage, SyncProtocolExecutor, SyncTransport, TreeCompareResult,
@@ -96,6 +98,11 @@ pub const MAX_HASH_COMPARISON_REQUESTS: u64 = 10_000;
 pub struct HashComparisonConfig {
     /// Remote peer's root hash (from handshake).
     pub remote_root_hash: [u8; 32],
+    /// Client used to acquire the per-context execution lock so the initiator's
+    /// host-side leaf/tombstone applies are mutually exclusive with a concurrent
+    /// delta merge in the executor. `None` in the single-threaded sync-sim
+    /// harness, where no executor runs alongside the protocol.
+    pub context_client: Option<ContextClient>,
 }
 
 /// Data from the first `TreeNodeRequest` for responder dispatch.
@@ -170,6 +177,7 @@ impl SyncProtocolExecutor for HashComparisonProtocol {
             context_id,
             identity,
             config.remote_root_hash,
+            config.context_client.as_ref(),
         )
         .await
     }
@@ -203,6 +211,7 @@ async fn run_initiator_impl<T: SyncTransport>(
     context_id: ContextId,
     identity: PublicKey,
     remote_root_hash: [u8; 32],
+    context_client: Option<&ContextClient>,
 ) -> Result<HashComparisonStats> {
     info!(%context_id, "Starting HashComparison sync (initiator)");
 
@@ -379,9 +388,13 @@ async fn run_initiator_impl<T: SyncTransport>(
                         continue;
                     }
 
-                    with_runtime_env(runtime_env.clone(), || {
+                    // Under the per-context execution lock: this leaf merge is a
+                    // read-modify-write up to the root and must not interleave
+                    // with a concurrent delta merge (torn-root split-brain).
+                    apply_under_context_lock(context_client, context_id, &runtime_env, || {
                         apply_leaf_with_crdt_merge(context_id, leaf_data)
-                    })?;
+                    })
+                    .await?;
                     stats.entities_merged += 1;
 
                     // #2407 bidirectional leaf reconciliation: a parent's
@@ -446,9 +459,11 @@ async fn run_initiator_impl<T: SyncTransport>(
                 // pushing the live entity. (Our own deletions flow the other way
                 // via the remote_only → EntityDeletePush path below.)
                 if !remote_node.deleted_children.is_empty() {
-                    let applied = with_runtime_env(runtime_env.clone(), || {
-                        apply_remote_tombstones(&remote_node.deleted_children)
-                    });
+                    let applied =
+                        apply_under_context_lock(context_client, context_id, &runtime_env, || {
+                            apply_remote_tombstones(&remote_node.deleted_children)
+                        })
+                        .await;
                     if applied > 0 {
                         debug!(
                             %context_id,
@@ -1348,6 +1363,7 @@ mod tests {
     fn test_config_creation() {
         let config = HashComparisonConfig {
             remote_root_hash: [1u8; 32],
+            context_client: None,
         };
         assert_eq!(config.remote_root_hash, [1u8; 32]);
     }

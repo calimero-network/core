@@ -3134,6 +3134,7 @@ impl SyncManager {
                 let first_request = super::level_sync::LevelWiseFirstRequest {
                     level: first_level,
                     parent_ids: first_parent_ids,
+                    context_client: Some(self.context_client.clone()),
                 };
 
                 // Run the LevelWise responder via the trait method
