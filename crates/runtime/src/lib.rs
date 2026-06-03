@@ -978,6 +978,12 @@ mod wasm_integration_tests {
                     message.contains("storage.get panicked deliberately"),
                     "panic message must be recovered from the unwind payload, got: {message:?}"
                 );
+                // `Unknown` because the unwind payload carries no location. This
+                // guards against silently re-introducing the process-global hook
+                // (which captured a precise location). If a *non-global* location
+                // recovery mechanism is ever added on purpose, update this assertion
+                // to expect the recovered location — that is an intended improvement,
+                // not a regression.
                 assert!(
                     matches!(location, Location::Unknown),
                     "without the global hook the panic location can't be recovered; \
