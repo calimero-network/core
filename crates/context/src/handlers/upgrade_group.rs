@@ -14,6 +14,8 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
+use calimero_wasm_abi::downgrade::identity_downgrades;
+use calimero_wasm_abi::schema::Manifest;
 use eyre::bail;
 use tracing::{debug, error, info, warn};
 
@@ -96,6 +98,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             upgrade_policy,
             from_version,
             to_version,
+            current_application_id,
         } = preamble;
 
         let now = SystemTime::now()
@@ -145,8 +148,20 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         if matches!(upgrade_policy, UpgradePolicy::LazyOnAccess) {
             let datastore = self.datastore.clone();
             let ack_router_for_lazy = Arc::clone(&ack_router);
+            let has_migration = migration.is_some();
             return ActorResponse::r#async(
                 async move {
+                    // L1 identity-downgrade gate: a migration upgrade may not strip
+                    // identity from a top-level state field. Runs BEFORE any group op
+                    // is emitted so a forbidden downgrade never reaches the network.
+                    // Fail-open when either app lacks an embedded ABI section.
+                    if has_migration {
+                        let old =
+                            resolve_embedded_schema(&node_client, &current_application_id).await;
+                        let new =
+                            resolve_embedded_schema(&node_client, &target_application_id).await;
+                        verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;
+                    }
                     {
                         let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
                             eyre::eyre!(
@@ -291,7 +306,17 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             .as_ref()
             .map(|m| (m.bytecode.blob_id(), m.size));
         let ack_router_for_canary = Arc::clone(&ack_router);
+        let has_migration = migration_bytes.is_some();
         let canary_task = async move {
+            // L1 identity-downgrade gate: a migration upgrade may not strip
+            // identity from a top-level state field. Runs BEFORE any group op
+            // is emitted so a forbidden downgrade never reaches the network.
+            // Fail-open when either app lacks an embedded ABI section.
+            if has_migration {
+                let old = resolve_embedded_schema(&node_client, &current_application_id).await;
+                let new = resolve_embedded_schema(&node_client, &target_application_id).await;
+                verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;
+            }
             {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
                     eyre::eyre!("local group upgrade requires a signing key for the requester")
@@ -470,12 +495,72 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
     }
 }
 
+/// L1 identity-downgrade gate. Refuse a migration upgrade that strips identity
+/// from a top-level state field (e.g. AuthoredMap -> UnorderedMap). Fail-OPEN
+/// (allow, with a warning) when either schema is unavailable — apps built before
+/// ABI embedding have no `calimero_abi_v1` section and cannot be checked.
+///
+/// Scope: callers run this gate only for migration upgrades (`has_migration`).
+/// A code-only upgrade does not transform existing state — the new bytecode
+/// reads the old data in place, so an incompatible top-level type change fails
+/// to deserialize rather than silently re-interpreting identity-gated entries as
+/// plain. Extending the gate to code-only app swaps is a possible defence-in-depth
+/// follow-up (tracked under #2587).
+fn verify_no_identity_downgrade(
+    old: Option<&Manifest>,
+    new: Option<&Manifest>,
+) -> eyre::Result<()> {
+    let (Some(old), Some(new)) = (old, new) else {
+        tracing::warn!(
+            "L1 identity-downgrade gate: skipped (one side has no embedded ABI / legacy app); allowing upgrade"
+        );
+        return Ok(());
+    };
+    if let Some(d) = identity_downgrades(old, new).into_iter().next() {
+        tracing::warn!(
+            field = %d.field, from = %d.from, to = %d.to,
+            "identity downgrade forbidden: refusing migration upgrade that strips authorship/writer-ACL"
+        );
+        eyre::bail!(
+            "identity downgrade forbidden: field '{}' {} -> {} strips authorship/writer-ACL network-wide \
+             (use owner-driven rewrite; see #2534)",
+            d.field, d.from, d.to
+        );
+    }
+    Ok(())
+}
+
+/// Read a context application's embedded state schema, or None if unavailable
+/// (no blob, no embedded section, or a read error — all fail-open).
+async fn resolve_embedded_schema(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    application_id: &ApplicationId,
+) -> Option<Manifest> {
+    match node_client
+        .get_application_bytes(application_id, None)
+        .await
+    {
+        Ok(Some(bytes)) => calimero_wasm_abi::embed::read_embedded_state_schema(&bytes),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(
+                %application_id, error = %err,
+                "L1 gate: failed to fetch application bytes; treating as no embedded ABI (fail-open)"
+            );
+            None
+        }
+    }
+}
+
 struct UpgradePreamble {
     canary_context_id: ContextId,
     total_contexts: usize,
     upgrade_policy: UpgradePolicy,
     from_version: String,
     to_version: String,
+    /// The group's CURRENT target application id (before this upgrade), used by
+    /// the L1 identity-downgrade gate as the "old" schema source.
+    current_application_id: ApplicationId,
 }
 
 fn validate_upgrade(
@@ -548,6 +633,7 @@ fn validate_upgrade(
         upgrade_policy: meta.upgrade_policy.clone(),
         from_version,
         to_version,
+        current_application_id: meta.target_application_id,
     })
 }
 
@@ -1039,12 +1125,29 @@ fn dispatch_cascade(
     let ack_router_for_publish = Arc::clone(&ack_router);
     let migration_bytes_for_publish = migration_bytes.clone();
 
+    // The signed group's CURRENT target application id (before this cascade) is
+    // the "old" schema source for the L1 identity-downgrade gate. The cascade
+    // op rewrites every matched descendant from `from_app_key` to the new app,
+    // so a single gate check on the signed group's app pair covers the family.
+    let current_application_id = meta.target_application_id;
+
     // Stamp the cascade_hlc ONCE at the initiator so every receiver
     // applies the same fence boundary (Task 3 apply handler stores this
     // value verbatim; Task 4 carries it on the wire via CascadeUpgrade).
     let cascade_hlc = calimero_storage::env::hlc_timestamp();
 
     let publish_task = async move {
+        // L1 identity-downgrade gate: refuse a migration cascade that strips
+        // identity from a top-level state field. Runs BEFORE the CascadeUpgrade
+        // op is emitted. Fail-open when either app lacks an embedded ABI section.
+        if has_migration {
+            let old =
+                resolve_embedded_schema(&node_client_for_publish, &current_application_id).await;
+            let new =
+                resolve_embedded_schema(&node_client_for_publish, &target_application_id).await;
+            verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;
+        }
+
         let sk = PrivateKey::from(effective_signing_key);
 
         let report = calimero_governance_store::sign_apply_and_publish(
@@ -1282,6 +1385,39 @@ mod tests {
 
     fn gid(b: u8) -> ContextGroupId {
         ContextGroupId::from([b; 32])
+    }
+
+    fn dg_manifest(fields: &str) -> calimero_wasm_abi::schema::Manifest {
+        serde_json::from_str(&format!(
+            r#"{{"schema_version":"wasm-abi/1","types":{{"Root":{{"kind":"record","fields":[{fields}]}}}},"methods":[],"events":[],"state_root":"Root"}}"#
+        )).unwrap()
+    }
+    const DG_AUTH: &str = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}"#;
+    const DG_PLAIN: &str = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"unordered_map"}}"#;
+
+    #[test]
+    fn gate_refuses_identity_downgrade() {
+        let err = super::verify_no_identity_downgrade(
+            Some(&dg_manifest(DG_AUTH)),
+            Some(&dg_manifest(DG_PLAIN)),
+        )
+        .unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("identity downgrade forbidden"), "{s}");
+        assert!(s.contains("wiki"), "{s}");
+    }
+    #[test]
+    fn gate_allows_carry_through() {
+        assert!(super::verify_no_identity_downgrade(
+            Some(&dg_manifest(DG_AUTH)),
+            Some(&dg_manifest(DG_AUTH))
+        )
+        .is_ok());
+    }
+    #[test]
+    fn gate_fails_open_when_schema_absent() {
+        assert!(super::verify_no_identity_downgrade(None, Some(&dg_manifest(DG_PLAIN))).is_ok());
+        assert!(super::verify_no_identity_downgrade(Some(&dg_manifest(DG_AUTH)), None).is_ok());
     }
 
     #[test]

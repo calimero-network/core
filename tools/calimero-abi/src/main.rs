@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 mod diff;
+mod embed;
 mod extract;
 mod inspect;
 
@@ -56,6 +57,13 @@ enum Commands {
         #[arg(value_name = "WASM_FILE")]
         wasm_file: PathBuf,
     },
+    /// Embed a state-schema.json into a wasm as the calimero_abi_v1 section (in place).
+    Embed {
+        /// The wasm file to modify in place.
+        wasm: std::path::PathBuf,
+        /// The state-schema.json to embed.
+        schema: std::path::PathBuf,
+    },
     /// Diff two state-schema.json versions; flags breaking + unsafe identity
     /// downgrades (an AuthoredMap/AuthoredVector/SharedStorage field replaced by
     /// a plain type, which silently strips authorship / writer-ACL).
@@ -94,6 +102,7 @@ fn main() -> eyre::Result<()> {
         Commands::Inspect { wasm_file } => {
             inspect::inspect_wasm(&wasm_file)?;
         }
+        Commands::Embed { wasm, schema } => embed::run_embed(&wasm, &schema)?,
         Commands::Diff {
             current,
             baseline,

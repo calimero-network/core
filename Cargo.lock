@@ -1232,6 +1232,7 @@ dependencies = [
  "calimero-storage",
  "calimero-store",
  "calimero-utils-actix",
+ "calimero-wasm-abi",
  "either",
  "eyre",
  "futures-util",
@@ -1801,6 +1802,7 @@ dependencies = [
  "serde_json",
  "syn 2.0.117",
  "thiserror 1.0.69",
+ "wasmparser 0.118.2",
 ]
 
 [[package]]
