@@ -121,12 +121,24 @@ pub struct ContextManagerConfig {
     /// admin + their `publish_and_await_ack` budget", not the full
     /// gossipsub heartbeat reconciliation window.
     pub key_delivery_fallback_wait: Duration,
+
+    /// Master switch for the PR-6 hybrid zero-downtime migration framework.
+    ///
+    /// Defaults to `false` so master behavior is completely unchanged: with the
+    /// flag off, a namespace-cascade migration keeps the group-wide
+    /// `InProgress` write-freeze (see [`handlers::execute`]'s
+    /// `upgrade_blocks_write`). When flipped on — only legal in a deployment
+    /// once PR-6a *and* PR-6b have landed — the cascade no longer freezes
+    /// writes group-wide; each context migrates lazily/briefly and stragglers
+    /// are absorbed rather than dropped.
+    pub migration_v2: bool,
 }
 
 impl Default for ContextManagerConfig {
     fn default() -> Self {
         Self {
             key_delivery_fallback_wait: Duration::from_secs(5),
+            migration_v2: false,
         }
     }
 }

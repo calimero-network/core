@@ -2439,4 +2439,17 @@ mod tests {
             "a read outside any in-progress upgrade must not be gated"
         );
     }
+
+    // PR-6a Task 6a.1: the `migration_v2` feature flag must default OFF so
+    // master behavior is completely unchanged until the flag is flipped (after
+    // 6b lands). The flag lives on `ContextManagerConfig` — the same
+    // runtime-tunable knobs struct threaded into this handler via `self.config`.
+    #[test]
+    fn migration_v2_flag_defaults_off() {
+        let cfg = crate::ContextManagerConfig::default();
+        assert!(
+            !cfg.migration_v2,
+            "migration_v2 must default off so master behavior is unchanged"
+        );
+    }
 }
