@@ -43,6 +43,9 @@ default = []
 # integration tests can exercise the dispatch shape without a real
 # WASM runtime. Required by the registry integration tests; dependent
 # crates that want to mock registered merge functions enable this too.
+# Also exposes `tests::common` (action signing / builder helpers) across
+# crate boundaries so dependent crates' DAG-causal tests can share one
+# canonical copy instead of mirroring it.
 testing = []
 
 # Registry tests live in `tests/` as separate integration binaries

@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::PublicKey;
 use ed25519_dalek::{Signer, SigningKey};
-use velcro::btree_map;
 
 use crate::action::Action;
 use crate::address::Id;
@@ -81,9 +80,12 @@ impl Mergeable for Page {
 
 impl Data for Page {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
-        btree_map! {
-            "Paragraphs".to_owned(): MainInterface::child_info_for(self.id()).unwrap_or_default(),
-        }
+        let mut collections = BTreeMap::new();
+        collections.insert(
+            "Paragraphs".to_owned(),
+            MainInterface::child_info_for(self.id()).unwrap_or_default(),
+        );
+        collections
     }
 
     fn element(&self) -> &Element {
