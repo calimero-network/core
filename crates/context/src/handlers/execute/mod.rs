@@ -47,24 +47,12 @@ use crate::error::ContextError;
 use crate::handlers::update_application::{
     create_storage_callbacks, update_application_id, update_application_with_migration,
 };
-use crate::{evict_application_if_full, ContextManager};
+use crate::ContextManager;
 use calimero_governance_store::metrics::ExecutionLabels;
 
 pub mod storage;
 
 use storage::{ContextPrivateStorage, ContextStorage};
-
-/// Upper bound on entries in `ContextManager::modules` to prevent
-/// unbounded growth on nodes that cycle through many distinct
-/// applications (multi-tenant / churn-heavy workloads). Each entry
-/// holds native machine code that's 2–10× the WASM source size, so
-/// a cap here matters even if the peer `applications` map is larger.
-///
-/// TODO: this is a simple size cap with first-entry eviction — not
-/// true LRU. When the hot-path behaviour is understood better,
-/// upgrade to LRU or TTL-based eviction (tracked alongside the
-/// existing TODOs on `contexts` / `applications` in `lib.rs`).
-const MAX_CACHED_MODULES: usize = 32;
 
 impl Handler<ExecuteRequest> for ContextManager {
     type Result = ActorResponse<Self, <ExecuteRequest as Message>::Result>;
@@ -948,16 +936,15 @@ impl ContextManager {
                 return Ok(CachedOrBlob::Cached(cached.clone()));
             }
 
-            // Fetch on a cache miss *before* evicting (so a not-installed app
-            // never wastes an eviction), then cap the cache before inserting.
-            // This `get_module` path is the dominant `applications` insert site
-            // on a long-running node, so it must honour the cap too.
+            // Fetch on a cache miss *before* inserting (so a not-installed app
+            // never wastes an eviction); `insert_new` caps the cache. This
+            // `get_module` path is the dominant `applications` insert site on a
+            // long-running node, so it must honour the cap too.
             if !act.applications.contains_key(&application_id) {
                 let Some(app) = act.node_client.get_application(&application_id)? else {
                     bail!(ExecuteError::ApplicationNotInstalled { application_id });
                 };
-                evict_application_if_full(&mut act.applications);
-                let _ = act.applications.insert(application_id, app);
+                let _ = act.applications.insert_new(application_id, app);
             }
             let app = act
                 .applications
@@ -1151,18 +1138,10 @@ impl ContextManager {
                                 }
                             }
 
-                            // Bounded insert: drop the oldest entry
-                            // before adding a new one when at capacity.
-                            // BTreeMap iteration order isn't LRU; this
-                            // is a simple size cap to prevent unbounded
-                            // growth on multi-tenant nodes. Upgrading
-                            // to proper LRU is a follow-up (see the
-                            // `modules` field doc in `lib.rs`).
-                            if !act.modules.contains_key(&(application_id, svc_name.clone()))
-                                && act.modules.len() >= MAX_CACHED_MODULES
-                            {
-                                let _ = act.modules.pop_first();
-                            }
+                            // `BoundedCache::insert` caps the map: replacing an
+                            // already-cached (recompiled) key overwrites in
+                            // place, while a new key evicts a by-key-order
+                            // victim first when at capacity.
                             let _ = act
                                 .modules
                                 .insert((application_id, svc_name), module.clone());
