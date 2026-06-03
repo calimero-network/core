@@ -2824,6 +2824,13 @@ impl DeltaStore {
     ) -> usize {
         let mut dag = self.dag.write().await;
 
+        // `delta_count()` is the in-memory DAG size (applied + pending). It is
+        // NOT the number of DB rows: after a restart `load_persisted_deltas`
+        // is bounded by the in-memory caps (`MAX_TOPOLOGY_ENTRIES`), so a
+        // context with far more rows on disk can report a smaller count here
+        // and under-prune the DB. Bounding cold/large contexts' on-disk rows
+        // is the separate "cold-context compaction" follow-up; this sweep only
+        // bounds the live working set.
         let total = dag.delta_count();
         if total <= min_deltas_before_compact {
             return 0;
@@ -2832,7 +2839,10 @@ impl DeltaStore {
         // Don't compact mid-catch-up: pending deltas mean heads are still
         // advancing, so the retain window would be drawn against a moving
         // target. `prune_to_recent` already refuses to drop pending deltas,
-        // but skipping wholesale here also avoids needless churn.
+        // but skipping wholesale here also avoids needless churn. A delta
+        // stuck pending blocks its context's compaction until it resolves or
+        // the existing stale-pending eviction (PENDING_DELTA_MAX_AGE) clears
+        // it — so this never wedges a context permanently.
         let pending = dag.pending_stats().count;
         if pending > 0 {
             debug!(

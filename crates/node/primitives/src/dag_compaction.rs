@@ -3,9 +3,10 @@
 //! Every regular delta a context applies is persisted forever in the delta
 //! column, so the on-disk DAG log grows linearly with lifetime transaction
 //! count. Compaction bounds that growth: once a context accumulates enough
-//! delta rows, the oldest history is collapsed into a checkpoint and the
-//! superseded rows are pruned, retaining only a recent window for cheap
-//! incremental delta catch-up. Anything older converges via HashComparison,
+//! delta rows, the oldest history is pruned outright, retaining only a recent
+//! window for cheap incremental delta catch-up. (No checkpoint object is
+//! written — pruned deltas simply become absent.) Anything older converges via
+//! HashComparison,
 //! which reconciles current state without consulting the delta log — so the
 //! pruned history is never needed for correctness, only as an optimization.
 
@@ -73,12 +74,17 @@ impl Default for DagCompactionConfig {
 
 impl DagCompactionConfig {
     /// Returns `true` when the configuration is internally consistent enough
-    /// to run. `retain_recent_count` must be strictly below
-    /// `min_deltas_before_compact`, otherwise a sweep would either do no work
-    /// or re-trigger immediately (no hysteresis).
+    /// to run:
+    ///
+    /// * `retain_recent_count` must be strictly below
+    ///   `min_deltas_before_compact`, otherwise a sweep would either do no
+    ///   work or re-trigger immediately (no hysteresis); and
+    /// * `check_interval` must be non-zero — a zero interval would turn
+    ///   `run_interval` into a busy-loop spawning sweeps as fast as the
+    ///   mailbox allows.
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.retain_recent_count < self.min_deltas_before_compact
+        self.retain_recent_count < self.min_deltas_before_compact && !self.check_interval.is_zero()
     }
 }
 
@@ -134,6 +140,15 @@ mod tests {
         cfg.retain_recent_count = cfg.min_deltas_before_compact;
         assert!(!cfg.is_valid());
         cfg.retain_recent_count = cfg.min_deltas_before_compact + 1;
+        assert!(!cfg.is_valid());
+    }
+
+    #[test]
+    fn zero_check_interval_is_invalid() {
+        let cfg = DagCompactionConfig {
+            check_interval: Duration::ZERO,
+            ..DagCompactionConfig::default()
+        };
         assert!(!cfg.is_valid());
     }
 

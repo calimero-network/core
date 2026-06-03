@@ -772,11 +772,11 @@ impl<T: Clone> DagStore<T> {
     /// matching rows from durable storage).
     ///
     /// "Recent" is defined by a breadth-first walk back from the current
-    /// heads: the retained set is the heads plus the first `retain_count`
-    /// deltas reachable from them. Heads are always retained regardless of
-    /// the budget — stranding a head would corrupt parenting of future
-    /// deltas. Everything applied and outside that window is dropped from
-    /// `deltas` and `applied`.
+    /// heads: the retained set is the heads plus the first `~retain_count`
+    /// deltas reachable from them (`retain_count` is a soft floor — see the
+    /// loop body). Heads are always retained regardless of the budget —
+    /// stranding a head would corrupt parenting of future deltas. Everything
+    /// applied and outside that window is dropped from `deltas` and `applied`.
     ///
     /// Retained deltas whose parents fall outside the window keep their
     /// original parent pointers; the pruned parents simply become absent.
@@ -790,10 +790,24 @@ impl<T: Clone> DagStore<T> {
     /// resolve once their missing parents arrive.
     pub fn prune_to_recent(&mut self, retain_count: usize) -> Vec<[u8; 32]> {
         // Seed the retained set with every head so a small `retain_count`
-        // can never evict a head.
-        let mut retained: HashSet<[u8; 32]> = self.heads.iter().copied().collect();
-        let mut queue: VecDeque<[u8; 32]> = self.heads.iter().copied().collect();
+        // can never evict a head. The genesis root is never a real delta
+        // (it lives only in `applied`/`heads`, never in `deltas`), so keep it
+        // out of the retained budget entirely.
+        let mut retained: HashSet<[u8; 32]> = self
+            .heads
+            .iter()
+            .copied()
+            .filter(|id| *id != self.root)
+            .collect();
+        let mut queue: VecDeque<[u8; 32]> = retained.iter().copied().collect();
 
+        // `retain_count` is a soft floor: the outer condition is the sole
+        // budget gate, so once a node is processed all of its parents are
+        // enqueued before the budget is re-checked. The final set can slightly
+        // exceed `retain_count` (by at most one node's fan-out), which only
+        // ever retains *more* recent history — the safe direction. A parent
+        // already in `retained` is never re-queued (`retained.insert` returns
+        // false), so diamond DAGs never re-walk a node.
         while retained.len() < retain_count {
             let Some(id) = queue.pop_front() else { break };
             let Some(delta) = self.deltas.get(&id) else {
@@ -804,9 +818,6 @@ impl<T: Clone> DagStore<T> {
                     continue;
                 }
                 queue.push_back(parent);
-                if retained.len() >= retain_count {
-                    break;
-                }
             }
         }
 
