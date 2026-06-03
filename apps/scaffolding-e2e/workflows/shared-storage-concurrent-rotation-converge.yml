@@ -1,5 +1,21 @@
 name: Shared Storage — Cross-Node Concurrent Writer Rotation Converges
 description: >
+  NOT REGISTERED IN CI (see the comment beside this file's entry in
+  .github/workflows/e2e-rust-apps.yml). A genuinely-concurrent
+  writer rotation needs node-1 and node-2 to be RPC-reachable yet
+  unable to exchange libp2p traffic, and no current merobox
+  primitive provides that: disconnect_node also kills the node's
+  RPC (published-port DNAT detaches with the bridge), pause_container
+  lets the kernel buffer the competing rotation and the node drains
+  it on unpause (a DELTA_APPLY fires immediately on resume, turning
+  the two rotations causal), and stop/start re-syncs it on boot. It
+  needs a surgical peer-pair partition (iptables/tc drop on the
+  libp2p swarm port, keeping the RPC port). Until that exists this
+  workflow is kept as the e2e spec + local repro; the pause
+  choreography below is the closest current approximation and
+  documents the intended scenario. The convergence guarantee itself
+  is covered by the unit/node tests #2665 added.
+
   Belt-and-suspenders integration coverage for the convergence
   guarantee #2665 establishes by composition. #2665 makes each node
   self-log its OWN rotations (alongside received ones), so the
