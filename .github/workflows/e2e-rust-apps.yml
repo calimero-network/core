@@ -209,27 +209,9 @@ jobs:
           - workflow: hashcomparison-shared-user-reconcile
             file: workflows/hashcomparison-shared-user-reconcile.yml
             app: scaffolding-e2e
-          # The shared-storage-concurrent-rotation-converge workflow exists at
-          # `apps/scaffolding-e2e/workflows/shared-storage-concurrent-rotation-converge.yml`
-          # but is intentionally NOT registered in the matrix yet — same class
-          # of limitation as member-removed-partition-window-reconcile below.
-          # A genuinely-concurrent writer-set rotation needs node-1 and node-2
-          # to be RPC-reachable (so each can be told to rotate) yet unable to
-          # exchange libp2p traffic (so neither sees the other's rotation), and
-          # no current merobox primitive provides that:
-          #   * disconnect_node (bridge detach) also severs the published-port
-          #     DNAT, so a partitioned node can't be `call`ed at all;
-          #   * pause_container freezes the process but the kernel keeps
-          #     buffering inbound gossip, so on unpause the node drains the
-          #     competing rotation before it can rotate (verified: a DELTA_APPLY
-          #     fires immediately on unpause), turning the two rotations causal;
-          #   * stop/start re-syncs the competing rotation on boot.
-          # This needs a surgical peer-pair partition (iptables/tc drop on the
-          # libp2p swarm port to a specific peer IP, keeping the RPC port) —
-          # the same primitive member-removed-partition-window-reconcile wants.
-          # The concurrent-rotation convergence is covered by the unit/node
-          # tests #2665 added; the workflow is kept as the e2e spec + local
-          # repro for when that primitive lands.
+          - workflow: shared-storage-concurrent-rotation-converge
+            file: workflows/shared-storage-concurrent-rotation-converge.yml
+            app: scaffolding-e2e
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
             app: scaffolding-e2e
