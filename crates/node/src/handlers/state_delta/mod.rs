@@ -2628,6 +2628,12 @@ async fn request_missing_deltas(
                     payload: MessagePayload::DeltaNotFound,
                     ..
                 }) => {
+                    // `DeltaNotFound` is overloaded (compacted away #2026, a
+                    // not-yet-persisted post-broadcast race, or an unverifiable
+                    // row), so we just skip this id and keep fetching the rest.
+                    // A genuinely pruned ancestor leaves descendants pending and
+                    // the next sync round converges via HashComparison without
+                    // the delta log; no explicit abort/fallback is needed.
                     warn!(%context_id, delta_id = ?missing_id, "Peer doesn't have requested delta");
                 }
                 other => {

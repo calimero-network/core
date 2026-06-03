@@ -49,7 +49,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -202,6 +202,7 @@ jobs:
           - 18-scenario-shared-storage
           - 19-scenario-authored-vector
           - 20-scenario-unordered-set
+          - 21-reads-available-during-upgrade
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:

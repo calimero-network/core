@@ -210,27 +210,9 @@ impl SyncStatusRequest {
     }
 }
 
-/// Coarse, wire-facing sync phase. Serialized internally-tagged as
-/// `{ "state": "syncing" }`, with `backingOff` additionally carrying
-/// `retryInSecs`. A typed enum (rather than a bare string) keeps `retry_in_secs`
-/// structurally bound to the one state it applies to and lets callers match
-/// exhaustively. Not `#[non_exhaustive]` so the server handler can construct it.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(tag = "state", rename_all = "camelCase")]
-pub enum SyncState {
-    /// Context is settled — no sync in flight, nothing pending.
-    Idle,
-    /// Not yet initialized and nothing is actively syncing: typically waiting
-    /// for a co-member peer to appear to sync the initial state from.
-    WaitingForPeers,
-    /// A sync attempt is currently in flight.
-    Syncing,
-    /// The last attempt failed and the next retry is gated behind backoff.
-    BackingOff {
-        /// Estimated seconds until the next retry is eligible.
-        retry_in_secs: u64,
-    },
-}
+/// The coarse phase carried in the response — the shared wire type, so the
+/// JSON-RPC response and the WebSocket `SyncStatus` event speak the same enum.
+pub use calimero_primitives::sync_status::SyncState;
 
 /// Sync-status response. `sync_state` carries the coarse phase; a non-zero
 /// `failure_count` with `last_error` set is the "stuck" signal. Note

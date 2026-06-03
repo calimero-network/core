@@ -1,8 +1,9 @@
 //! Hybrid Logical Clock infrastructure for CRDT ordering.
 //!
-//! This module wraps the [`uhlc`](https://github.com/atolab/uhlc-rs) crate,
-//! which provides production-tested Hybrid Logical Clocks (HLC) used in
-//! Eclipse Zenoh.
+//! This module provides a self-contained Hybrid Logical Clock (HLC), modeled on
+//! the [`uhlc`](https://github.com/atolab/uhlc-rs) crate used in Eclipse Zenoh,
+//! but with pluggable time and randomness sources so it also runs inside the
+//! deterministic WASM guest environment (no access to the system clock or RNG).
 //!
 //! # What is an HLC?
 //!
@@ -22,7 +23,7 @@
 //! ┌──────────────────────┬──────────────────────┐
 //! │   Seconds (32 bits)  │  Fraction (32 bits)  │
 //! └──────────────────────┴──────────────────────┘
-//!                              └─ Last 4 bits = logical counter
+//!                                   └─ Low 16 bits = logical counter
 //! ```
 //!
 //! # Uniqueness
@@ -215,6 +216,15 @@ impl fmt::Display for HybridTimestamp {
     }
 }
 
+/// Number of low bits in an NTP64 timestamp reserved for the HLC logical
+/// counter. Defining the layout once keeps every embed/extract site in sync
+/// (a stray mask here previously truncated the counter to 4 bits).
+const COUNTER_BITS: u64 = 16;
+/// Mask selecting the logical-counter bits of an NTP64 timestamp.
+const COUNTER_MASK: u64 = (1 << COUNTER_BITS) - 1;
+/// Mask selecting the physical-time bits of an NTP64 timestamp.
+const PHYSICAL_MASK: u64 = !COUNTER_MASK;
+
 /// Get the physical time in seconds from a timestamp.
 #[must_use]
 pub fn physical_time_secs(ts: &HybridTimestamp) -> u32 {
@@ -224,7 +234,7 @@ pub fn physical_time_secs(ts: &HybridTimestamp) -> u32 {
 /// Get the logical counter from a timestamp.
 #[must_use]
 pub fn logical_counter(ts: &HybridTimestamp) -> u32 {
-    (ts.0.get_time().as_u64() & 0xF) as u32
+    (ts.0.get_time().as_u64() & COUNTER_MASK) as u32
 }
 
 /// Hybrid Logical Clock implementation.
@@ -234,9 +244,11 @@ pub fn logical_counter(ts: &HybridTimestamp) -> u32 {
 pub(crate) struct LogicalClock {
     /// Unique ID for this HLC instance (randomly generated)
     id: u128,
-    /// Last observed physical time in NTP64 format
+    /// Last observed physical time in NTP64 format, quantized to
+    /// [`PHYSICAL_MASK`] (the counter bits are always zero here so that
+    /// `last_time` and emitted timestamps share one representation).
     last_time: u64,
-    /// Logical counter (embedded in low 16 bits of timestamp)
+    /// Logical counter (embedded in the low [`COUNTER_BITS`] of a timestamp)
     counter: u16,
 }
 
@@ -253,6 +265,24 @@ impl LogicalClock {
             id: if id == 0 { 1 } else { id },
             last_time: 0,
             counter: 0,
+        }
+    }
+
+    /// Set the clock to the logical tick immediately after `base_counter` at
+    /// physical time `phys` (which must already be quantized to
+    /// [`PHYSICAL_MASK`]). If the counter would overflow its reserved bits,
+    /// carry into physical time so the clock keeps moving strictly forward
+    /// instead of wrapping back to zero.
+    fn set_after(&mut self, phys: u64, base_counter: u16) {
+        self.last_time = phys;
+        if let Some(next) = base_counter.checked_add(1) {
+            self.counter = next;
+        } else {
+            // Carry one tick into physical time. Re-mask defensively so the
+            // counter bits stay zero even if a future caller passes an
+            // unquantized `phys` (the OR in `new_timestamp` relies on this).
+            self.last_time = phys.wrapping_add(1 << COUNTER_BITS) & PHYSICAL_MASK;
+            self.counter = 0;
         }
     }
 
@@ -273,19 +303,24 @@ impl LogicalClock {
         let secs = now_nanos / 1_000_000_000;
         let nanos = now_nanos % 1_000_000_000;
         let frac = (nanos * (1_u64 << 32)) / 1_000_000_000;
-        let physical_time = (secs << 32) | frac;
+        // Quantize physical time to the bits not reserved for the counter so
+        // that `last_time` and emitted timestamps use one representation.
+        let physical_time = ((secs << 32) | frac) & PHYSICAL_MASK;
 
         // HLC algorithm: time = max(physical, last_observed)
         if physical_time > self.last_time {
             self.last_time = physical_time;
             self.counter = 0;
         } else {
-            // Clock didn't advance - increment logical counter
-            self.counter = self.counter.wrapping_add(1);
+            // Clock didn't advance - advance the logical counter past the last
+            // event (carrying into physical time if the counter overflows).
+            self.set_after(self.last_time, self.counter);
         }
 
-        // Embed counter in low 16 bits of timestamp
-        let time_with_counter = NTP64((self.last_time & !0xFFFF) | (self.counter as u64 & 0xFFFF));
+        // Embed the counter in the reserved low bits of the timestamp.
+        // `set_after` always leaves `last_time` quantized (counter bits zero)
+        // and `counter` in range, so this OR never collides.
+        let time_with_counter = NTP64(self.last_time | u64::from(self.counter));
 
         // Safety: self.id is initialized to non-zero in `new()` and never changes
         let id = ID::from(unsafe { NonZeroU128::new_unchecked(self.id) });
@@ -307,6 +342,8 @@ impl LogicalClock {
         F: FnOnce() -> u64,
     {
         let remote_time = remote_ts.get_time().as_u64();
+        let remote_phys = remote_time & PHYSICAL_MASK;
+        let remote_counter = (remote_time & COUNTER_MASK) as u16;
 
         // Get current physical time for drift check
         let now_nanos = time_now_fn();
@@ -317,17 +354,43 @@ impl LogicalClock {
         let frac = (nanos * (1_u64 << 32)) / 1_000_000_000;
         let local_ntp = (secs << 32) | frac;
 
-        // Drift protection: reject if >5s in future
+        // Drift protection: reject if >5s in future. Compare physical time
+        // only — the remote counter bits are logical ordering, not clock
+        // drift, and would otherwise inflate the comparison at the boundary.
         const DRIFT_TOLERANCE_SECS: u64 = 5;
         let drift_ntp = local_ntp + (DRIFT_TOLERANCE_SECS << 32);
 
-        if remote_time > drift_ntp {
+        if remote_phys > drift_ntp {
             return Err(());
         }
 
-        // Update to max observed time (causality)
-        if remote_time > self.last_time {
-            self.last_time = remote_time;
+        // Full Hybrid Logical Clock update rule. Advance to the greatest
+        // physical time among the local clock, the observed remote timestamp,
+        // and the local wall clock. Whenever physical time does not strictly
+        // increase, advance the counter past every event seen at that time so
+        // the next locally issued timestamp sorts strictly after both the
+        // previous local event and the remote event we just observed.
+        //
+        // The previous implementation only took `max(local, remote)` of the
+        // raw value and reset the counter to zero on the greater case (never
+        // reading the remote counter, never moving it on the equal case). That
+        // let a later local event tie or precede an event it causally follows,
+        // inverting the ordering an HLC exists to guarantee.
+        let now_phys = local_ntp & PHYSICAL_MASK;
+        let new_phys = self.last_time.max(remote_phys).max(now_phys);
+
+        if new_phys == self.last_time && new_phys == remote_phys {
+            // Same tick on both sides: outrank both the local and remote event.
+            self.set_after(new_phys, self.counter.max(remote_counter));
+        } else if new_phys == self.last_time {
+            // Local clock already at the max tick: outrank the local event.
+            self.set_after(new_phys, self.counter);
+        } else if new_phys == remote_phys {
+            // Remote tick is the max: outrank the remote event we observed.
+            self.set_after(new_phys, remote_counter);
+        } else {
+            // Local wall clock is strictly ahead: a fresh physical tick.
+            self.last_time = new_phys;
             self.counter = 0;
         }
 
@@ -380,5 +443,166 @@ mod tests {
 
         // Even if generated at the same instant, timestamps should be unique (different IDs)
         assert_ne!(ts1.get_id(), ts2.get_id());
+    }
+
+    /// Build a remote timestamp at a given physical tick and counter.
+    fn remote_ts(phys: u64, counter: u16) -> HybridTimestamp {
+        let raw = (phys & PHYSICAL_MASK) | u64::from(counter);
+        HybridTimestamp::from(Timestamp::new(NTP64(raw), ID::from(DEFAULT_ID)))
+    }
+
+    #[test]
+    fn test_logical_counter_reads_full_counter_width() {
+        // Counters above 15 must round-trip; a prior `& 0xF` mask truncated
+        // the 16-bit counter to 4 bits.
+        let ts = remote_ts(1_u64 << 32, 0x00AB);
+        assert_eq!(logical_counter(&ts), 0x00AB);
+    }
+
+    #[test]
+    fn test_update_equal_physical_time_bumps_counter() {
+        // A local and a remote event share the same physical tick, and the
+        // remote counter is ahead of ours.
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+
+        let _ = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        let local = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+
+        let remote = remote_ts(local.get_time().as_u64(), 9);
+        hlc.update(&remote, || time.load(Ordering::Relaxed))
+            .unwrap();
+
+        // The next local timestamp must sort strictly after the remote event.
+        let next = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        assert!(
+            next.get_time().as_u64() > remote.get_time().as_u64(),
+            "next {next} must outrank observed remote {remote}",
+        );
+    }
+
+    #[test]
+    fn test_update_greater_physical_time_uses_remote_counter() {
+        // Remote is one physical tick ahead with a non-zero counter; the local
+        // wall clock stays behind, so ordering must fall to the counter.
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let local = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+
+        let remote_phys = (local.get_time().as_u64() & PHYSICAL_MASK) + (1 << COUNTER_BITS);
+        let remote = remote_ts(remote_phys, 9);
+        hlc.update(&remote, || time.load(Ordering::Relaxed))
+            .unwrap();
+
+        let next = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        assert!(next.get_time().as_u64() > remote.get_time().as_u64());
+        // Still on the remote's physical tick: no spurious time jump.
+        assert_eq!(next.get_time().as_u64() & PHYSICAL_MASK, remote_phys);
+    }
+
+    #[test]
+    fn test_update_local_clock_ahead_of_remote_still_advances() {
+        // Branch 2: local clock is already at the max tick and the remote is
+        // behind. Observing it must still move the counter past the local
+        // event so the next local timestamp is strictly greater.
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let _ = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        let local = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+
+        // Remote a full tick in the past.
+        let remote_phys = (local.get_time().as_u64() & PHYSICAL_MASK) - (1 << COUNTER_BITS);
+        let remote = remote_ts(remote_phys, 7);
+        hlc.update(&remote, || time.load(Ordering::Relaxed))
+            .unwrap();
+
+        let next = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        assert!(next.get_time().as_u64() > local.get_time().as_u64());
+        assert!(next.get_time().as_u64() > remote.get_time().as_u64());
+    }
+
+    #[test]
+    fn test_update_wall_clock_ahead_resets_counter() {
+        // Branch 4: the local wall clock has advanced strictly past both the
+        // local HLC state and the remote timestamp, so the resulting tick is
+        // the wall clock's and the counter resets to zero.
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+
+        // Build up a non-zero counter on the starting tick.
+        let _ = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        let start = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+
+        // A remote event one tick behind the start.
+        let remote = remote_ts(
+            (start.get_time().as_u64() & PHYSICAL_MASK) - (1 << COUNTER_BITS),
+            4,
+        );
+
+        // Advance the wall clock by two seconds (strictly ahead of both).
+        let ahead = time.load(Ordering::Relaxed) + 2 * 1_000_000_000;
+        time.store(ahead, Ordering::Relaxed);
+        hlc.update(&remote, || time.load(Ordering::Relaxed))
+            .unwrap();
+
+        // `update` reset the counter to 0 on the fresh wall-clock tick, so the
+        // next local timestamp is the first event of that tick (counter 1).
+        let next = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        assert!(physical_time_secs(&next) > physical_time_secs(&start));
+        assert_eq!(logical_counter(&next), 1);
+    }
+
+    #[test]
+    fn test_update_preserves_cross_node_causality() {
+        // B issues many events on a stalled tick; A observes B's latest and
+        // must issue a strictly-later timestamp despite its own low counter.
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let mut a = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut b = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+
+        let mut b_ts = b.new_timestamp(|| time.load(Ordering::Relaxed));
+        for _ in 0..20 {
+            b_ts = b.new_timestamp(|| time.load(Ordering::Relaxed));
+        }
+
+        let _ = a.new_timestamp(|| time.load(Ordering::Relaxed));
+        a.update(&b_ts, || time.load(Ordering::Relaxed)).unwrap();
+        let a_next = a.new_timestamp(|| time.load(Ordering::Relaxed));
+
+        assert!(
+            a_next.get_time().as_u64() > b_ts.get_time().as_u64(),
+            "A's post-observe event {a_next} must follow B's observed event {b_ts}",
+        );
+    }
+
+    #[test]
+    fn test_counter_carry_preserves_monotonicity() {
+        // A stalled physical clock issuing more events than the counter can
+        // hold must still produce strictly increasing timestamps (carry into
+        // physical time rather than wrapping the counter back to zero).
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let mut prev = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        for _ in 0..70_000 {
+            let next = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+            assert!(
+                next.get_time().as_u64() > prev.get_time().as_u64(),
+                "timestamps must be strictly monotonic across counter overflow",
+            );
+            prev = next;
+        }
+    }
+
+    #[test]
+    fn test_update_rejects_far_future() {
+        // Remote timestamps more than the drift tolerance ahead are rejected.
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let now = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+
+        let future = remote_ts(now.get_time().as_u64() + (10_u64 << 32), 0);
+        assert!(hlc
+            .update(&future, || time.load(Ordering::Relaxed))
+            .is_err());
     }
 }

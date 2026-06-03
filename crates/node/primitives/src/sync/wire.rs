@@ -352,6 +352,14 @@ pub enum MessagePayload<'a> {
         page_count: u64,
         /// Pages sent so far.
         sent_count: u64,
+        /// Grand total of shippable `Entity` records across the whole snapshot
+        /// — every entity with both an `Index` and an `Entry`, counted from the
+        /// sender's full boundary scan and stable across bursts. Excludes
+        /// orphans that are never shipped, so it's the exact denominator the
+        /// receiver's cumulative applied count reaches (percent → 100, ETA →
+        /// 0). `0` means "unknown" — an empty snapshot, or a peer too old to
+        /// advertise it; the receiver then reports raw progress only.
+        total_records: u64,
     },
 
     /// Snapshot sync error.

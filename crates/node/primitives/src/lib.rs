@@ -4,13 +4,15 @@ use serde::{Deserialize, Serialize};
 pub mod bundle;
 pub mod client;
 pub use client::{BlobManager, SyncClient};
+pub mod dag_compaction;
+pub use dag_compaction::DagCompactionConfig;
 pub mod delta_buffer;
 pub mod join_bundle;
 pub use join_bundle::JoinBundle;
 pub mod messages;
 pub mod sync;
 pub mod sync_status;
-pub use sync_status::{SyncPhase, SyncStatusSnapshot};
+pub use sync_status::{SyncState, SyncStatusSnapshot};
 pub mod topic_manager;
 pub use topic_manager::TopicManager;
 
