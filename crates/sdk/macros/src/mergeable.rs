@@ -57,6 +57,17 @@ pub fn derive(input: DeriveInput) -> TokenStream {
         _ => quote! {},
     };
 
+    // Registration of THIS struct's nested value types, scanned exactly like the
+    // root `#[app::state]` does its own fields. The root only ever names the type
+    // tokens in its OWN fields, so a custom struct reachable only through another
+    // custom struct's collection is never registered there; emitting the same
+    // scan per Mergeable struct cascades registration through the whole value
+    // graph (see `RekeyTarget::register_nested_value_types`).
+    let rekey_register_body: TokenStream = match &input.data {
+        Data::Struct(s) => crate::state::rekey_register_calls(&s.fields),
+        _ => quote! {},
+    };
+
     quote! {
         impl #impl_generics ::calimero_storage::collections::Mergeable
             for #ident #ty_generics #where_clause
@@ -90,6 +101,16 @@ pub fn derive(input: DeriveInput) -> TokenStream {
                 parent_id: ::calimero_storage::address::Id,
             ) {
                 #rekey_body
+            }
+
+            // Cascade registration into the value types this struct nests, so a
+            // custom struct reachable only through this one's collections is
+            // registered too (not left to be last-writer-wins'd). Same per-field
+            // scan the root state runs; `register_rekey_if_supported!` recurses
+            // and the first-registration guard makes self-referential value
+            // graphs terminate.
+            fn register_nested_value_types() {
+                #rekey_register_body
             }
         }
     }
