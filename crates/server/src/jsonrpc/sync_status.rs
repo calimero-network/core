@@ -91,15 +91,16 @@ mod tests {
                 normalize(SyncState::Syncing, is_init),
                 SyncState::Syncing
             ));
+            let snapshot = SyncState::ReceivingSnapshot {
+                records_received: 7,
+                percent: Some(50),
+                eta_secs: Some(3),
+            };
             assert!(matches!(
-                normalize(
-                    SyncState::ReceivingSnapshot {
-                        records_received: 7
-                    },
-                    is_init
-                ),
+                normalize(snapshot, is_init),
                 SyncState::ReceivingSnapshot {
-                    records_received: 7
+                    records_received: 7,
+                    ..
                 }
             ));
             assert!(matches!(
