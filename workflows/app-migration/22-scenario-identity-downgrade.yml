@@ -1,4 +1,4 @@
-name: 21 — Scenario "identity downgrade" negative-path gate (L1, 1-node)
+name: 22 — Scenario "identity downgrade" negative-path gate (L1, 1-node)
 description: >
   Single-node negative-path test for the L1 identity-downgrade gate.
   Node 1 installs scenario-identity-downgrade-v1 (state: wiki AuthoredMap),
