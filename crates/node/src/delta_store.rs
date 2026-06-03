@@ -392,14 +392,25 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // divergent root hash). So we keep waiting; the apply is gas-bounded
         // (it terminates) and post-#2238 is fast. Only warn if it runs long.
         // See #2199 / #2238.
-        // When `add_delta_internal` has armed `retain_apply_lock`, run this
-        // inbound apply with `ContextAtomic::Lock` so the executor hands the
-        // per-context execution-lock guard back in `outcome.atomic`; we stash
-        // it in `apply_lock_slot` for the caller to hold across its `dag_heads`
-        // commit. A cascaded buffered-child apply in the same `dag.add_delta`
-        // reuses the already-held guard via `ContextAtomic::Held` (the lock is
-        // not re-entrant). When not armed (e.g. the local path's
-        // `try_process_pending`), behavior is unchanged (`None`).
+        // When the caller (`add_delta_internal` / `add_deltas_batch`) has armed
+        // `retain_apply_lock`, run this inbound apply with `ContextAtomic::Lock`
+        // so the executor hands the per-context execution-lock guard back in
+        // `outcome.atomic`; we stash it in `apply_lock_slot` for the caller to
+        // hold across its `dag_heads` commit. A cascaded buffered-child apply in
+        // the same `dag.add_delta` reuses the already-held guard via
+        // `ContextAtomic::Held` (the lock is not re-entrant). When not armed
+        // (e.g. the local path's `try_process_pending`), behavior is unchanged
+        // (`None`).
+        //
+        // The slot is empty only between the `take()` here and the stash-back
+        // after the await. That window cannot be observed by another `apply()`:
+        // a `dag.add_delta` processes the primary and any cascaded children
+        // strictly sequentially on this task (its `apply_pending` runs only
+        // after the current apply returns), so there is never a concurrent
+        // `apply()` to find the empty slot and issue a second `Lock`. The
+        // armed/disarmed flag is set and read on this same task under the `dag`
+        // write lock; `Acquire`/`Release` is used for defensive clarity (the
+        // WASM body runs on a `spawn_blocking` thread inside `execute`).
         let retain_lock = self
             .retain_apply_lock
             .load(std::sync::atomic::Ordering::Acquire);
@@ -1690,6 +1701,19 @@ impl DeltaStore {
         // suppress their re-fetch for the rest of the session. So we log and
         // skip the failing delta (it is re-fetched on the next sync) and keep
         // registering the rest, matching the old per-call skip-and-continue.
+        // Hold the per-context execution lock across the whole batch apply AND
+        // the `dag_heads` commit below — same race the single-delta path closes
+        // (`add_delta_internal`): a hash-neutral writer-set rotation applied
+        // here must not leave a window where its storage effect is visible but
+        // `dag_heads` still predates it, or a concurrent local write forks the
+        // DAG into an unconvergeable delta. The first apply takes
+        // `ContextAtomic::Lock`; the rest reuse the guard via
+        // `ContextAtomic::Held`. Unlike `add_delta_internal`, the batch path has
+        // no orphan-member re-injection, so holding the guard to the commit
+        // cannot self-deadlock.
+        self.applier
+            .retain_apply_lock
+            .store(true, std::sync::atomic::Ordering::Release);
         let mut failed_ids: HashSet<[u8; 32]> = HashSet::new();
         for (input, dag_delta) in inputs.iter().zip(dag_deltas) {
             if let Err(e) = dag.add_delta(dag_delta, &*self.applier).await {
@@ -1702,6 +1726,17 @@ impl DeltaStore {
                 let _ = failed_ids.insert(input.delta.id);
             }
         }
+        self.applier
+            .retain_apply_lock
+            .store(false, std::sync::atomic::Ordering::Release);
+        // Take the retained guard (if any apply acquired one) to hold across the
+        // `dag_heads` commit below; dropped right after the persist.
+        let batch_apply_lock_guard = self
+            .applier
+            .apply_lock_slot
+            .lock()
+            .expect("apply_lock_slot poisoned")
+            .take();
 
         let heads = dag.get_heads();
         let heads_count = heads.len();
@@ -1819,6 +1854,10 @@ impl DeltaStore {
             } else {
                 Vec::new()
             };
+
+        // Heads are persisted — release the retained context lock so blocked
+        // local writes can proceed and observe the committed heads.
+        drop(batch_apply_lock_guard);
 
         // Metrics — keep per-delta granularity so dashboards read the same as
         // the single path. Within-batch-unblocked inputs count as `applied`
@@ -2180,11 +2219,17 @@ impl DeltaStore {
             .store(false, std::sync::atomic::Ordering::Release);
         // Take the retained guard (if the apply acquired one). Binding it to a
         // local keeps the context lock held across the `dag_heads` commit below
-        // and releases it (RAII) on every exit path — including the `?` on
-        // `add_outcome`. `add_delta_internal` does no executor re-entry while
-        // it is held (the `dag_heads` persist is direct datastore I/O), so this
-        // cannot deadlock.
-        let _apply_lock_guard = self
+        // and releases it on every exit path — explicitly via `drop` once the
+        // heads are persisted, or (on the `?`/`bail!` paths before that) when
+        // the local goes out of scope. It MUST be released before the
+        // orphan-member re-injection loop further down: that path recurses into
+        // `add_delta_internal`, whose own inbound apply takes `ContextAtomic::
+        // Lock` and would block forever on the lock we still hold (self-
+        // deadlock). Releasing after the persist is correct — the heads are
+        // committed by then, which is all a concurrent local write needs to
+        // observe. While held, the only work is the direct-datastore head
+        // persist (no executor re-entry), so holding it cannot deadlock.
+        let apply_lock_guard = self
             .applier
             .apply_lock_slot
             .lock()
@@ -2356,6 +2401,13 @@ impl DeltaStore {
             } else {
                 Vec::new()
             };
+
+        // Heads are now persisted, so a concurrent local write that was
+        // blocked on the context lock will observe them. Release the retained
+        // guard HERE — before the orphan-member re-injection below, which
+        // recurses into `add_delta_internal` and would self-deadlock on a lock
+        // we still held (its inbound apply takes `ContextAtomic::Lock`).
+        drop(apply_lock_guard);
 
         // Metrics — one increment per add_delta call so dashboards can
         // chart raw apply rate, plus a separate `cascaded` increment per
