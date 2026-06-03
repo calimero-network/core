@@ -1,17 +1,6 @@
-use core::cell::RefCell;
-use core::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Once;
-
 use wasmer::{Imports, Store};
 
 use super::{HostError, Location, PanicContext, VMLogic};
-
-thread_local! {
-    // https://open.spotify.com/track/7DPUuTaTZCtQ6o4Xx00qzT
-    static HOOKER: Once = const { Once::new() };
-    static PAYLOAD: RefCell<Option<(String, Location)>> = const { RefCell::new(None) };
-    static HOST_CTX: AtomicBool = const { AtomicBool::new(false) };
-}
 
 impl VMLogic<'_> {
     pub fn imports(&mut self, store: &mut Store) -> Imports {
@@ -192,24 +181,31 @@ macro_rules! _imports {
                         println!("{}", decorator);
                     };
 
-                    HOST_CTX.with(|ctx| ctx.store(true, Ordering::Relaxed));
                     let res = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
                         let (data, store) = env.data_and_store_mut();
                         let data = unsafe { &mut *(*data.get_mut()).cast::<VMLogic<'_>>() };
 
                         data.host_functions(store).$func($($arg),*)
-                    })).unwrap_or_else(|_| {
-                        let (message, location) = PAYLOAD.with(|payload| {
-                            payload.borrow_mut().take().unwrap_or_else(|| ("<no message>".to_owned(), Location::Unknown))
-                        });
+                    })).unwrap_or_else(|panic_payload| {
+                        // Recover the panic message straight from the unwind payload
+                        // rather than from a process-global panic hook. A global
+                        // `set_hook` clobbers whatever hook the host installs (crash
+                        // reporters, loggers, the test harness) in a load-order
+                        // dependent way, so we avoid it entirely. The payload carries
+                        // the message but not the source location, so the location
+                        // degrades to `Unknown` — same as the guest-panic path in
+                        // `Module::run`.
+                        let message = crate::panic_payload::panic_payload_to_string(
+                            panic_payload.as_ref(),
+                            "<no message>",
+                        );
 
                         Err(HostError::Panic {
                             context: PanicContext::Host,
                             message,
-                            location,
+                            location: Location::Unknown,
                         }.into())
                     });
-                    HOST_CTX.with(|ctx| ctx.store(false, Ordering::Relaxed));
 
                     #[cfg(feature = "host-traces")]
                     {
@@ -229,33 +225,6 @@ macro_rules! _imports {
 
             let mut store = $store;
             let logic = $logic;
-
-            HOOKER.with(|hooker| {
-                hooker.call_once(|| {
-                    let prev_hook = std::panic::take_hook();
-                    std::panic::set_hook(Box::new(move |info| {
-                        if !HOST_CTX.with(|ctx| ctx.load(Ordering::Relaxed)) {
-                            return prev_hook(info);
-                        }
-                        PAYLOAD.with(|payload| {
-                            let message = match info.payload().downcast_ref::<&'static str>() {
-                                Some(message) => *message,
-                                None => match info.payload().downcast_ref::<String>() {
-                                    Some(message) => &**message,
-                                    None => "<no message>",
-                                },
-                            };
-
-                            *payload.borrow_mut() = Some(match info.location() {
-                                Some(location) => (message.to_owned(), Location::from(location)),
-                                None => (message.to_owned(), Location::Unknown),
-                            });
-                        });
-
-                        prev_hook(info);
-                    }));
-                });
-            });
 
             let env = wasmer::FunctionEnv::new(&mut store, fragile::Fragile::new(core::ptr::from_mut(logic).cast::<()>()));
 
