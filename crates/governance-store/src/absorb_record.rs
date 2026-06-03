@@ -237,9 +237,19 @@ impl AbsorbRecord {
     /// Reconstruct a [`BufferedDelta`] from this mirror. The `PeerId` parse can
     /// fail (corrupt on-disk bytes), so this returns a `Result`.
     ///
-    /// Only valid for delta-shaped records (`leaf.is_none()`); leaf-shaped
-    /// records have no replayable delta and must be drained via the leaf path.
+    /// Only valid for delta-shaped records (`leaf.is_none() && entity.is_none()`);
+    /// leaf-/entity-shaped records have no replayable delta and must be drained
+    /// via the leaf/entity path. Calling this on one returns `Err` rather than
+    /// fabricating a garbage `BufferedDelta` from the empty/defaulted delta
+    /// fields.
     pub fn into_buffered(self) -> EyreResult<BufferedDelta> {
+        if self.leaf.is_some() || self.entity.is_some() {
+            eyre::bail!(
+                "AbsorbRecord is not a delta-shaped record (leaf/entity tag set) — \
+                 drain it via the leaf/entity path, not into_buffered"
+            );
+        }
+
         let source_peer = libp2p::PeerId::from_bytes(&self.source_peer)
             .wrap_err("AbsorbRecord.source_peer is not a valid PeerId")?;
 
@@ -294,6 +304,34 @@ mod tests {
             governance_drain_attempts: 0,
             producing_app_key: Some([2; 32]),
         }
+    }
+
+    #[test]
+    fn into_buffered_rejects_leaf_shaped_record() {
+        // A leaf-shaped record has no replayable delta; `into_buffered` must
+        // refuse rather than fabricate a garbage `BufferedDelta` from the
+        // empty/defaulted delta fields.
+        let rec = AbsorbRecord::from_leaf([1; 32], vec![1, 2, 3], [2; 32]);
+        let err = rec
+            .into_buffered()
+            .expect_err("leaf-shaped record must not convert to a BufferedDelta");
+        assert!(
+            err.to_string().contains("not a delta-shaped"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn into_buffered_rejects_entity_shaped_record() {
+        // Same for snapshot-entity-shaped records.
+        let rec = AbsorbRecord::from_snapshot_entity([1; 32], vec![1], vec![2], [3; 32]);
+        let err = rec
+            .into_buffered()
+            .expect_err("entity-shaped record must not convert to a BufferedDelta");
+        assert!(
+            err.to_string().contains("not a delta-shaped"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
