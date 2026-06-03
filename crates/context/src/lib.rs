@@ -51,9 +51,6 @@ pub mod group_store {
     pub use calimero_governance_store::{
         apply_local_signed_group_op,
         apply_signed_namespace_op,
-        // Absorb buffer (PR-6b straggler safety).
-        AbsorbRecord,
-        AbsorbRepository,
         enumerate_group_contexts,
         get_group_for_context,
         get_local_gov_nonce,
@@ -67,6 +64,9 @@ pub mod group_store {
         sign_and_publish_namespace_op,
         sign_apply_and_publish,
         sign_apply_and_publish_namespace_op,
+        // Absorb buffer (PR-6b straggler safety).
+        AbsorbRecord,
+        AbsorbRepository,
         // Typed errors (#2305). Bundled because external callers that
         // downcast on `eyre::Report` need access to the error types; only
         // adding the ones currently imported would surface the same

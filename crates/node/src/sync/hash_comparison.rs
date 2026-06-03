@@ -351,7 +351,12 @@ impl SyncManager {
 
         // Get the local node
         let local_node = with_runtime_env(runtime_env.clone(), || {
-            self.get_local_tree_node_from_index(context_id, node_id, is_root_request, schema_app_key)
+            self.get_local_tree_node_from_index(
+                context_id,
+                node_id,
+                is_root_request,
+                schema_app_key,
+            )
         })?;
 
         let Some(node) = local_node else {

@@ -607,8 +607,8 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
     use borsh::BorshDeserialize;
     use calimero_context::group_store::AbsorbRepository;
     use calimero_context::hlc_fence::loaded_reader_app_key;
-    use calimero_node_primitives::sync::TreeLeafData;
     use calimero_node_primitives::sync::storage_bridge::create_runtime_env;
+    use calimero_node_primitives::sync::TreeLeafData;
 
     let store = input.node_clients.context.datastore();
 
@@ -2669,7 +2669,9 @@ mod tests {
                 .unwrap();
 
             assert!(matches!(outcome, FenceOutcome::Handled));
-            let pending = AbsorbRepository::new(&store).enumerate_pending(&ctx).unwrap();
+            let pending = AbsorbRepository::new(&store)
+                .enumerate_pending(&ctx)
+                .unwrap();
             assert_eq!(
                 pending.len(),
                 1,
@@ -2692,7 +2694,9 @@ mod tests {
                 .unwrap();
 
             assert!(matches!(outcome, FenceOutcome::Fall));
-            let pending = AbsorbRepository::new(&store).enumerate_pending(&ctx).unwrap();
+            let pending = AbsorbRepository::new(&store)
+                .enumerate_pending(&ctx)
+                .unwrap();
             assert!(
                 pending.is_empty(),
                 "a readable delta must apply normally, not be absorbed"
@@ -2842,7 +2846,10 @@ mod tests {
             .await
             .unwrap();
 
-            assert_eq!(drained, 1, "exactly the now-readable record drains on startup");
+            assert_eq!(
+                drained, 1,
+                "exactly the now-readable record drains on startup"
+            );
             assert_eq!(
                 *replayed.lock().unwrap(),
                 vec![[0xA1; 32]],
@@ -2870,8 +2877,9 @@ mod tests {
             repo.save(&ctx, APP_V1, &sample_record([0xB2; 32], APP_V1))
                 .unwrap();
 
-            let noop =
-                |_ctx: ContextId, _buffered: BufferedDelta| async move { Ok::<bool, eyre::Report>(true) };
+            let noop = |_ctx: ContextId, _buffered: BufferedDelta| async move {
+                Ok::<bool, eyre::Report>(true)
+            };
 
             let first = recover_absorbed_records(&store, noop).await.unwrap();
             assert_eq!(first, 1);
@@ -2888,10 +2896,14 @@ mod tests {
         #[tokio::test]
         async fn startup_recovery_is_noop_when_nothing_buffered() {
             let (store, _ctx) = cascaded_store(Some(HybridTimestamp::zero()));
-            let noop =
-                |_ctx: ContextId, _buffered: BufferedDelta| async move { Ok::<bool, eyre::Report>(true) };
+            let noop = |_ctx: ContextId, _buffered: BufferedDelta| async move {
+                Ok::<bool, eyre::Report>(true)
+            };
             let drained = recover_absorbed_records(&store, noop).await.unwrap();
-            assert_eq!(drained, 0, "no contexts with pending absorbs ⇒ nothing drains");
+            assert_eq!(
+                drained, 0,
+                "no contexts with pending absorbs ⇒ nothing drains"
+            );
         }
     }
 }

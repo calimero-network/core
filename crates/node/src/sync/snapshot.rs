@@ -1824,8 +1824,8 @@ fn decode_framed_snapshot_records(mut remaining: &[u8]) -> Result<Vec<SnapshotRe
         if remaining.len() < 4 {
             eyre::bail!("snapshot page truncated: dangling record length frame");
         }
-        let len = u32::from_le_bytes([remaining[0], remaining[1], remaining[2], remaining[3]])
-            as usize;
+        let len =
+            u32::from_le_bytes([remaining[0], remaining[1], remaining[2], remaining[3]]) as usize;
         let body_start = 4usize;
         let body_end = body_start
             .checked_add(len)
@@ -2029,9 +2029,15 @@ mod tests {
         // clear message instead of masquerading as a dropped entity.
         let mut completed = false;
         for _ in 0..10_000 {
-            let (pages, next, total) =
-                generate_snapshot_pages(&handle, ctx, cursor.as_ref(), page_limit, byte_limit, None)
-                    .unwrap();
+            let (pages, next, total) = generate_snapshot_pages(
+                &handle,
+                ctx,
+                cursor.as_ref(),
+                page_limit,
+                byte_limit,
+                None,
+            )
+            .unwrap();
             totals.push(total);
             for page in &pages {
                 for record in decode_snapshot_records(page).unwrap() {
@@ -2090,9 +2096,15 @@ mod tests {
             .collect();
 
         // One generous page — everything fits, cursor signals done.
-        let (pages, cursor, total) =
-            generate_snapshot_pages(&store.handle(), ctx, None, DEFAULT_PAGE_LIMIT, 1 << 20, None)
-                .unwrap();
+        let (pages, cursor, total) = generate_snapshot_pages(
+            &store.handle(),
+            ctx,
+            None,
+            DEFAULT_PAGE_LIMIT,
+            1 << 20,
+            None,
+        )
+        .unwrap();
         assert!(cursor.is_none(), "single page should not request a resume");
         assert_eq!(pages.len(), 1, "20 small entities should fit on one page");
         assert_eq!(total, 20);
@@ -2261,11 +2273,10 @@ mod tests {
 
         // Build a SharedMember index blob.
         let mut index = EntityIndex::minimal_for_test(Id::new(id));
-        index.metadata.storage_type =
-            calimero_storage::entities::StorageType::SharedMember {
-                anchor: Id::new([7u8; 32]),
-                signature_data: None,
-            };
+        index.metadata.storage_type = calimero_storage::entities::StorageType::SharedMember {
+            anchor: Id::new([7u8; 32]),
+            signature_data: None,
+        };
         let index_bytes = borsh::to_vec(&index).unwrap();
 
         let outcome =
@@ -2278,8 +2289,8 @@ mod tests {
         );
 
         // A malformed index blob is still a transient Pending (kept for retry).
-        let pending = persist_buffered_snapshot_entity(&mut handle, ctx, id, &[1], &[0xFF, 0xFF])
-            .unwrap();
+        let pending =
+            persist_buffered_snapshot_entity(&mut handle, ctx, id, &[1], &[0xFF, 0xFF]).unwrap();
         assert_eq!(pending, SnapshotEntityDrainOutcome::Pending);
     }
 
@@ -2302,7 +2313,9 @@ mod tests {
         let records = decode_snapshot_records(&encoded).unwrap();
         assert_eq!(records.len(), 1);
         match &records[0] {
-            SnapshotRecord::Entity { id, entry, index, .. } => {
+            SnapshotRecord::Entity {
+                id, entry, index, ..
+            } => {
                 assert_eq!(*id, [1u8; 32]);
                 assert_eq!(entry, &vec![10, 20, 30]);
                 assert_eq!(index, &vec![40, 50, 60]);

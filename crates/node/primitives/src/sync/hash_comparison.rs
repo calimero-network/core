@@ -446,8 +446,7 @@ impl BorshDeserialize for LeafMetadata {
         let version = u64::deserialize_reader(reader)?;
         let collection_id = <[u8; 32]>::deserialize_reader(reader)?;
         let parent_id = Option::<[u8; 32]>::deserialize_reader(reader)?;
-        let ancestors =
-            Vec::<calimero_storage::entities::ChildInfo>::deserialize_reader(reader)?;
+        let ancestors = Vec::<calimero_storage::entities::ChildInfo>::deserialize_reader(reader)?;
         let authorization =
             Option::<calimero_storage::entities::StorageType>::deserialize_reader(reader)?;
         // Backward-compatible trailing field (#2539): legacy peers stop after
@@ -917,10 +916,13 @@ mod tests {
         // Defaults to `None` (legacy peers don't ship it) and survives a borsh
         // round-trip when set.
         let bare = LeafMetadata::new(CrdtType::PnCounter, 500, [1; 32]);
-        assert_eq!(bare.schema_app_key, None, "must default None for legacy peers");
+        assert_eq!(
+            bare.schema_app_key, None,
+            "must default None for legacy peers"
+        );
 
-        let stamped = LeafMetadata::new(CrdtType::PnCounter, 500, [1; 32])
-            .with_schema_app_key([7; 32]);
+        let stamped =
+            LeafMetadata::new(CrdtType::PnCounter, 500, [1; 32]).with_schema_app_key([7; 32]);
         assert_eq!(stamped.schema_app_key, Some([7; 32]));
 
         let leaf = TreeLeafData::new([3; 32], vec![1, 2, 3], stamped);

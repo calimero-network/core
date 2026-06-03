@@ -277,8 +277,11 @@ pub fn apply_leaf_with_crdt_merge_gated(
             let record = calimero_context::group_store::AbsorbRecord::from_leaf(
                 leaf.key, leaf_bytes, schema,
             );
-            calimero_context::group_store::AbsorbRepository::new(store)
-                .save(&context_id, schema, &record)?;
+            calimero_context::group_store::AbsorbRepository::new(store).save(
+                &context_id,
+                schema,
+                &record,
+            )?;
             crate::node_metrics::record_delta_outcome("absorbed_leaf_future_schema");
             tracing::warn!(
                 %context_id,
@@ -680,14 +683,11 @@ pub fn handle_entity_push(
                 continue;
             }
             let apply_result = match loaded_app_key {
-                Some(loaded) => {
-                    apply_leaf_with_crdt_merge_gated(store, context_id, leaf, loaded).map(
-                        |outcome| match outcome {
-                            LeafOutcome::Applied => true,
-                            LeafOutcome::Buffered => false,
-                        },
-                    )
-                }
+                Some(loaded) => apply_leaf_with_crdt_merge_gated(store, context_id, leaf, loaded)
+                    .map(|outcome| match outcome {
+                        LeafOutcome::Applied => true,
+                        LeafOutcome::Buffered => false,
+                    }),
                 // No loaded reader resolvable — apply as before (no gate).
                 None => apply_leaf_with_crdt_merge(context_id, leaf).map(|()| true),
             };

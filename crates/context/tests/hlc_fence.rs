@@ -269,8 +269,8 @@ fn loaded_reader_resolves_loaded_application_not_group_target() {
     install_application(&store, app_id, APP_KEY_1);
     install_context_meta(&store, ctx_id, app_id);
 
-    let loaded = loaded_reader_app_key(&store, &ctx_id)
-        .expect("loaded_reader_app_key must not error");
+    let loaded =
+        loaded_reader_app_key(&store, &ctx_id).expect("loaded_reader_app_key must not error");
     assert_eq!(
         loaded,
         Some(APP_KEY_1),
@@ -327,8 +327,8 @@ fn loaded_reader_falls_back_to_group_target_when_application_meta_missing() {
         "fixture precondition: ApplicationMeta value must be missing",
     );
 
-    let loaded = loaded_reader_app_key(&store, &ctx_id)
-        .expect("loaded_reader_app_key must not error");
+    let loaded =
+        loaded_reader_app_key(&store, &ctx_id).expect("loaded_reader_app_key must not error");
     assert_eq!(
         loaded,
         Some(APP_KEY_2),

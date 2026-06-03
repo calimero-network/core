@@ -507,7 +507,12 @@ async fn run_initiator_impl<T: SyncTransport>(
                 }
 
                 let local_version = with_runtime_env(runtime_env.clone(), || {
-                    get_local_tree_node(context_id, &remote_node.id, is_this_node_root, schema_app_key)
+                    get_local_tree_node(
+                        context_id,
+                        &remote_node.id,
+                        is_this_node_root,
+                        schema_app_key,
+                    )
                 })?;
 
                 match compare_tree_nodes(local_version.as_ref(), Some(&remote_node)) {
@@ -807,14 +812,13 @@ async fn run_responder_impl<T: SyncTransport>(
             get_local_tree_node(context_id, &first_node_id, is_root_request, schema_app_key)
         })?;
 
-        let response =
-            build_tree_node_response_internal(
-                context_id,
-                local_node,
-                clamped_depth,
-                &runtime_env,
-                schema_app_key,
-            )?;
+        let response = build_tree_node_response_internal(
+            context_id,
+            local_node,
+            clamped_depth,
+            &runtime_env,
+            schema_app_key,
+        )?;
 
         let msg = StreamMessage::Message {
             sequence_id,
