@@ -223,19 +223,24 @@ impl<S: StorageAdaptor> Interface<S> {
     /// `writers_at(anchor_log, delta.parents)`, passed in via
     /// `effective_writers`.
     ///
-    /// **Best-effort under concurrent rotations** — same caveat the `Shared`
-    /// path carries (see `SharedStorage::current_writers` and the `Shared` arm
-    /// of `apply_action`, which falls back to the entity's *stored* writers the
-    /// same way). The rotation log's *latest* entry is this node's insertion
-    /// order, which can differ from causal order if two rotations arrive
-    /// interleaved; resolving against it (rather than the set causally valid at
-    /// the op's cut) can therefore accept/reject differently across nodes. The
-    /// causal `writers_at` set passed as `effective_writers` is the security
-    /// boundary on the merge path; this fallback only fires when no causal
-    /// context exists (local exec / snapshot) or `writers_at` can't resolve (an
-    /// op causally before any logged rotation). Full causal resolution here is
-    /// deferred to the concurrent-rotation work (P4 / the DAG-causal rotation
-    /// epic), which fixes `Shared` and `SharedMember` uniformly.
+    /// The rotation log's *latest* entry is this node's insertion order, which
+    /// can differ from causal order under concurrent rotations — so this
+    /// fallback is **not** causally exact. It is therefore reserved for the
+    /// **local-execution / settled-state** gate, where "current writers" is the
+    /// right answer (a local writer acts under the current set). The
+    /// **merge-path** security boundary is the causal `writers_at(anchor_log,
+    /// delta.parents)` set passed as `effective_writers`.
+    ///
+    /// As of the DAG-causal rotation completion (P4), every node records the
+    /// genesis writer set **and its own rotations** in the log (the originator
+    /// via `add_local_applied_delta`'s self-log, receivers via
+    /// `maybe_append_rotation_log`, cold-joiners via a seeded floor). With a
+    /// complete log on every node, `writers_at` is **total** — it never returns
+    /// `None` for a causal cut, so the node always supplies `effective_writers`
+    /// and this non-causal fallback is no longer reached on the merge path for
+    /// anchors created post-P4. It remains for local execution (correct there)
+    /// and for legacy anchors whose log predates P4 (a vanishing set after a
+    /// state reset).
     fn resolve_anchor_writers(anchor: Id) -> BTreeSet<PublicKey> {
         if let Ok(Some(log)) = crate::rotation_log::load::<S>(anchor) {
             if let Some(entry) = log.entries.last() {

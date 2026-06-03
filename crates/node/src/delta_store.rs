@@ -25,7 +25,7 @@ use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::delta::StorageDelta;
 use calimero_storage::entities::StorageType;
-use calimero_storage::rotation_log::RotationLog;
+use calimero_storage::rotation_log::{RotationLog, RotationLogEntry, RotationSnapshot};
 use calimero_storage::store::Key as StorageKey;
 use eyre::Result;
 use indexmap::IndexMap;
@@ -920,7 +920,7 @@ fn cap_topology(topology: &mut IndexMap<[u8; 32], Vec<[u8; 32]>>) {
 /// Returns `Ok(None)` for entities with no rotation log yet (every
 /// pre-rotation Shared entity), which is fine — the receiver verifier
 /// then falls back to v2 stored-writers, matching pre-#2266 behavior.
-fn load_rotation_log_direct(
+pub(crate) fn load_rotation_log_direct(
     context_client: &ContextClient,
     context_id: ContextId,
     entity_id: Id,
@@ -942,6 +942,59 @@ fn load_rotation_log_direct(
     let log = borsh::from_slice::<RotationLog>(&bytes)
         .map_err(|e| eyre::eyre!("rotation_log decode failed: {e}"))?;
     Ok(Some(log))
+}
+
+/// Write `log` for `entity_id` via a DIRECT datastore write (no WASM
+/// `RUNTIME_ENV`). The byte format is identical to
+/// [`rotation_log::save`](calimero_storage::rotation_log) (borsh `RotationLog`
+/// under `StorageKey::RotationLog`), so a log written here and one written by
+/// the receive-path `MainStorage` hook are interchangeable. Used to self-log a
+/// locally-created delta's own rotations, which happens after execute returns —
+/// outside the env where `MainStorage` is valid.
+fn save_rotation_log_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    entity_id: Id,
+    log: &RotationLog,
+) -> Result<()> {
+    let bytes = borsh::to_vec(log).map_err(|e| eyre::eyre!("rotation_log encode failed: {e}"))?;
+    let storage_key = StorageKey::RotationLog(entity_id).to_bytes();
+    let state_key = calimero_store::key::ContextState::new(context_id, storage_key);
+    let mut handle = context_client.datastore_handle();
+    handle
+        .put(
+            &state_key,
+            &calimero_store::types::ContextState::from(calimero_store::slice::Slice::from(bytes)),
+        )
+        .map_err(|e| eyre::eyre!("rotation_log datastore write failed: {e:?}"))?;
+    Ok(())
+}
+
+/// Seed `entity_id`'s rotation log with `writers` as its genesis/floor snapshot
+/// via a direct datastore write, **if no log exists yet** (idempotent — never
+/// clobbers real history). Datastore-direct counterpart of
+/// [`rotation_log::seed_genesis`](calimero_storage::rotation_log::seed_genesis)
+/// for the cold-join snapshot path (no `RUNTIME_ENV`): a joiner that receives
+/// settled state needs the boundary writer set as its causal floor, so
+/// `writers_at` is total for any post-join cut (it never applies deltas
+/// predating its snapshot boundary).
+pub(crate) fn seed_rotation_log_genesis_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    entity_id: Id,
+    writers: BTreeSet<PublicKey>,
+) -> Result<()> {
+    if load_rotation_log_direct(context_client, context_id, entity_id)?.is_some() {
+        return Ok(());
+    }
+    let log = RotationLog {
+        snapshot: Some(RotationSnapshot {
+            writers,
+            cutoff_index: 0,
+        }),
+        entries: Vec::new(),
+    };
+    save_rotation_log_direct(context_client, context_id, entity_id, &log)
 }
 
 /// Whether the anchor entity `anchor` has synced to this node, by a direct
@@ -1661,6 +1714,79 @@ impl DeltaStore {
             let dag = self.dag.read().await;
             if dag.is_applied(&delta_id) {
                 return Ok(Vec::new());
+            }
+        }
+
+        // P4: self-log this delta's own `Shared` rotations.
+        //
+        // The receive path records rotations in `maybe_append_rotation_log`
+        // (inside the WASM sync-apply, via `MainStorage`/`RUNTIME_ENV`). A
+        // locally-created delta never goes through that path, so without this a
+        // node would be missing its OWN rotations from its log — leaving
+        // concurrent rotations asymmetric across nodes and `writers_at`
+        // divergent (each node would resolve only the rotations it received).
+        // Mirror the receive-path logic here, with a DIRECT datastore write
+        // (this runs after execute returned, outside `RUNTIME_ENV`). Done
+        // before DAG registration but after the `is_applied` dedup above, so a
+        // delta is self-logged exactly once. `delta_id`/`delta_hlc` are final.
+        for action in &delta.payload {
+            let (entity_id, metadata) = match action {
+                Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
+                    (*id, metadata)
+                }
+                Action::DeleteRef { .. } | Action::Compare { .. } => continue,
+            };
+            // Only `Shared` anchors own a rotation log; members/others don't.
+            let StorageType::Shared {
+                writers,
+                signature_data,
+            } = &metadata.storage_type
+            else {
+                continue;
+            };
+            let mut log = match load_rotation_log_direct(
+                &self.applier.context_client,
+                self.applier.context_id,
+                entity_id,
+            ) {
+                Ok(existing) => existing.unwrap_or_else(RotationLog::empty),
+                Err(e) => {
+                    warn!(?e, context_id = %self.applier.context_id, %entity_id,
+                        "self-log: failed to read rotation log for local delta — skipping");
+                    continue;
+                }
+            };
+            // Append only on an actual rotation — bootstrap (no prior writers)
+            // OR the writer set changed. Plain value-writes leave it untouched.
+            // Mirrors `maybe_append_rotation_log`'s `is_rotation`.
+            let prior = log
+                .entries
+                .last()
+                .map(|e| &e.new_writers)
+                .or_else(|| log.snapshot.as_ref().map(|s| &s.writers));
+            let is_rotation = prior.map_or(true, |p| p != writers);
+            if !is_rotation {
+                continue;
+            }
+            // Idempotent on delta_id (one rotation per entity per delta).
+            if log.entries.iter().any(|e| e.delta_id == delta_id) {
+                continue;
+            }
+            log.entries.push(RotationLogEntry {
+                delta_id,
+                delta_hlc: delta.hlc,
+                signer: signature_data.as_ref().and_then(|s| s.signer),
+                new_writers: writers.clone(),
+                writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
+            });
+            if let Err(e) = save_rotation_log_direct(
+                &self.applier.context_client,
+                self.applier.context_id,
+                entity_id,
+                &log,
+            ) {
+                warn!(?e, context_id = %self.applier.context_id, %entity_id,
+                    "self-log: failed to write rotation log for local delta");
             }
         }
 
