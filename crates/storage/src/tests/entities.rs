@@ -287,6 +287,8 @@ mod metadata__constructor {
 
 mod metadata__schema_version {
     use super::*;
+    use crate::index::Index;
+    use crate::store::{MockedStorage, StorageAdaptor};
 
     #[test]
     fn schema_version_defaults_none() {
@@ -324,20 +326,85 @@ mod metadata__schema_version {
         );
     }
 
+    /// Drives `data` through the REAL persistence path (`save_raw` →
+    /// `save_internal`, where `own_hash = Sha256(final_data)` and the parent
+    /// `full_hash` is recomputed) under `metadata`, returning the leaf's
+    /// `(full_hash, own_hash)` AND the parent's `(full_hash, _)` as actually
+    /// recorded in the Merkle index. Each call runs in an isolated store
+    /// (distinct `MockedStorage` const generic), so the two invocations cannot
+    /// cross-contaminate. This is the same computation the sync layer compares
+    /// peer-to-peer — not a hand-rolled `Sha256(data)` re-statement.
+    fn persisted_hashes<S: StorageAdaptor>(
+        parent: Id,
+        leaf: Id,
+        data: &[u8],
+        metadata: Metadata,
+    ) -> (([u8; 32], [u8; 32]), [u8; 32]) {
+        use crate::action::Action;
+        use crate::interface::{ApplyContext, Interface};
+
+        // Register the parent (root) and the leaf under it in the index so
+        // `save_raw` doesn't reject the leaf as an orphan.
+        Interface::<S>::apply_action(
+            Action::Add {
+                id: leaf,
+                data: data.to_vec(),
+                ancestors: vec![ChildInfo::new(parent, [0_u8; 32], Metadata::new(1, 1))],
+                metadata: Metadata::new(1, 1),
+            },
+            &ApplyContext::empty(),
+        )
+        .expect("seed leaf under parent");
+
+        // Now persist the value under the metadata-under-test through the real
+        // digest path. `save_raw` stamps `own_hash = Sha256(final_data)` and
+        // propagates the new `full_hash` up to the parent.
+        Interface::<S>::save_raw(leaf, data.to_vec(), metadata).expect("save_raw leaf");
+
+        let leaf_hashes = Index::<S>::get_hashes_for(leaf)
+            .expect("leaf hashes")
+            .expect("leaf index present");
+        let (parent_full, _) = Index::<S>::get_hashes_for(parent)
+            .expect("parent hashes")
+            .expect("parent index present");
+        (leaf_hashes, parent_full)
+    }
+
+    /// Real-behavior guard for the CORE 6c.1 invariant: `Metadata.schema_version`
+    /// is Merkle-invisible. We persist BYTE-IDENTICAL data under two metadata
+    /// that differ ONLY in `schema_version` (`None` vs `Some(7)`) and assert the
+    /// resulting `own_hash`, leaf `full_hash`, AND parent `full_hash` — every
+    /// hash the sync layer compares — are equal. If a future refactor ever
+    /// folded metadata into the digest, the tagged store would diverge and this
+    /// test would fail. (The previous version hashed `Sha256(data)` twice over
+    /// the same input — a tautology that never fed `schema_version` through the
+    /// real hasher and would pass even after such a regression.)
     #[test]
     fn schema_version_does_not_affect_own_hash() {
-        // own_hash is Sha256(value bytes) regardless of metadata; tagging
-        // schema_version must not change the leaf hash. This guards the
-        // invariant if a future refactor ever folds metadata into the digest.
+        let parent = Id::new([0x40; 32]);
+        let leaf = Id::new([0x41; 32]);
         let data = b"identity-gated-value".to_vec();
-        let h_untagged = Sha256::digest(&data);
-        let h_tagged = Sha256::digest(&data); // same input — own_hash is data-only
-        assert_eq!(h_untagged, h_tagged);
 
-        // And the metadata field itself carries the tag without touching data.
-        let m_none = Metadata::new(1, 1);
-        let m_tagged = Metadata::new(1, 1).with_schema_version(7);
-        assert_eq!(m_none.schema_version, None);
-        assert_eq!(m_tagged.schema_version, Some(7));
+        // Identical except `schema_version`: one unmarked, one tagged v7.
+        let untagged = Metadata::new(1, 1);
+        let tagged = Metadata::new(1, 1).with_schema_version(7);
+
+        let ((leaf_full_untagged, own_untagged), parent_full_untagged) =
+            persisted_hashes::<MockedStorage<8101>>(parent, leaf, &data, untagged);
+        let ((leaf_full_tagged, own_tagged), parent_full_tagged) =
+            persisted_hashes::<MockedStorage<8102>>(parent, leaf, &data, tagged);
+
+        assert_eq!(
+            own_untagged, own_tagged,
+            "schema_version must not change the leaf own_hash (Sha256 over value bytes only)"
+        );
+        assert_eq!(
+            leaf_full_untagged, leaf_full_tagged,
+            "schema_version must not change the leaf full_hash"
+        );
+        assert_eq!(
+            parent_full_untagged, parent_full_tagged,
+            "schema_version must not change the parent full_hash that propagates to the root"
+        );
     }
 }
