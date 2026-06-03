@@ -79,9 +79,9 @@ pub fn wire_authorization_for(
 ) -> Option<calimero_storage::entities::StorageType> {
     match &metadata.storage_type {
         StorageType::Public | StorageType::Frozen => None,
-        StorageType::Shared { .. } | StorageType::User { .. } => {
-            Some(metadata.storage_type.clone())
-        }
+        StorageType::Shared { .. }
+        | StorageType::User { .. }
+        | StorageType::SharedMember { .. } => Some(metadata.storage_type.clone()),
     }
 }
 
@@ -102,7 +102,8 @@ fn extract_author_from_leaf_authorization(
 ) -> Option<PublicKey> {
     match authorization? {
         StorageType::User { owner, .. } => Some(*owner),
-        StorageType::Shared { signature_data, .. } => {
+        StorageType::Shared { signature_data, .. }
+        | StorageType::SharedMember { signature_data, .. } => {
             signature_data.as_ref().and_then(|sd| sd.signer)
         }
         StorageType::Public | StorageType::Frozen => None,

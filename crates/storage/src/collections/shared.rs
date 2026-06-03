@@ -74,14 +74,18 @@ const VALUE_KEY: &[u8] = b"__calimero_shared_value__";
 
 /// Group-writable storage with an authenticated, mutable writer set.
 ///
-/// A handle over a [`Collection`] holding the value as one `Shared`-stamped
-/// child entry. Borsh = the inner collection's `Element` (a reference) plus the
-/// monotonic `frozen` flag; the value body never rides root state.
+/// A handle over a [`Collection`]: the wrapper entity is the `Shared` **anchor**
+/// that owns the writer set + rotation log, and the value is held as one
+/// `SharedMember`-stamped child entry pointing back at that anchor. Borsh = the
+/// inner collection's `Element` (a reference) plus the monotonic `frozen` flag;
+/// the value body never rides root state.
 ///
 /// When `T` is a **collection** (`UnorderedMap`, `UnorderedSet`, …), in-place
 /// edits MUST go through [`get_mut`](SharedStorage::get_mut): it re-establishes
-/// the `Shared{writers}` domain on the collection element so every entry
-/// inserted through it is guarded at merge.
+/// the `SharedMember{anchor}` domain on the collection element so every entry
+/// inserted through it is guarded at merge. Members carry no writer set — they
+/// resolve the anchor's writers — so rotating the anchor retroactively revokes
+/// the whole subtree without re-stamping any entry.
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct SharedStorage<
     T: BorshSerialize + BorshDeserialize + Mergeable,
@@ -171,16 +175,22 @@ where
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn from_inner(
         mut inner: Collection<T, MainStorage>,
-        writers: BTreeSet<PublicKey>,
+        _writers: BTreeSet<PublicKey>,
         frozen: bool,
     ) -> Self {
-        let value_id = compute_id(inner.id(), VALUE_KEY);
+        // The wrapper entity is the `Shared` anchor (stamped by `new_shared`
+        // with `writers`); the value entry — and, when `T` is a collection,
+        // everything beneath it — is a `SharedMember` pointing back at the
+        // wrapper. The member carries no writer set; it resolves the anchor's
+        // writers at verify time.
+        let anchor = inner.id();
+        let value_id = compute_id(anchor, VALUE_KEY);
         let value = inner
             .insert_with_storage_type(
                 Some(value_id),
                 T::default(),
-                StorageType::Shared {
-                    writers,
+                StorageType::SharedMember {
+                    anchor,
                     signature_data: None,
                 },
             )
@@ -248,15 +258,17 @@ where
         let _saved = <Interface<MainStorage>>::save(&mut self.inner)
             .expect("failed to persist relocated SharedStorage wrapper");
 
-        // Re-write the value entry under the new wrapper id (always).
-        let new_value_id = compute_id(self.inner.id(), VALUE_KEY);
+        // Re-write the value entry under the new wrapper id (always), stamped as
+        // a member anchored to the new wrapper id.
+        let new_anchor = self.inner.id();
+        let new_value_id = compute_id(new_anchor, VALUE_KEY);
         let value = self
             .inner
             .insert_with_storage_type(
                 Some(new_value_id),
                 carried_value,
-                StorageType::Shared {
-                    writers,
+                StorageType::SharedMember {
+                    anchor: new_anchor,
                     signature_data: None,
                 },
             )
@@ -312,23 +324,29 @@ where
     /// Mutable access to a collection value (`UnorderedMap`, `UnorderedSet`, …)
     /// for in-place editing.
     ///
-    /// Re-establishes the writer domain on the collection's element before
+    /// Re-establishes the member domain on the collection's element before
     /// handing out the reference, so every entry inserted through it inherits
-    /// `Shared{writers}` and is guarded at merge — including after a reload.
+    /// `SharedMember{anchor=wrapper}` and is guarded at merge — including after a
+    /// reload. The entries carry no writer set; they resolve the anchor's
+    /// writers at verify time, so a rotation revokes the whole subtree at once.
     /// Only collections (which implement [`Data`]) get this; a scalar value is
     /// edited via [`insert`](SharedStorage::insert) instead.
     ///
     /// # Errors
     /// Currently infallible; the `Result` is preserved for forward compatibility.
     pub fn get_mut(&mut self) -> Result<&mut T, StoreError> {
-        let writers = self.current_writers();
+        let anchor = self.inner.id();
         let value = self.load_value();
+        // Stamp the value-collection element as a member anchored to the
+        // wrapper. `Collection::insert` clones this element's `storage_type`
+        // onto every entry, so all entries (at any depth) inherit the SAME
+        // anchor — a flat domain whose writers live once, at the wrapper.
         let already_current = matches!(
             &value.element().metadata.storage_type,
-            StorageType::Shared { writers: w, .. } if w == &writers
+            StorageType::SharedMember { anchor: a, .. } if *a == anchor
         );
         if !already_current {
-            value.element_mut().set_shared_domain(writers);
+            value.element_mut().set_shared_member_domain(anchor);
         }
         Ok(value)
     }
@@ -455,21 +473,19 @@ where
         let old = self.inner.get(self.value_id())?.unwrap_or_default();
 
         let value_id = self.value_id();
-        let shared = StorageType::Shared {
-            writers,
+        // The value entry is a member anchored to the wrapper; it carries no
+        // writer set, so there is nothing to keep consistent with a rotation —
+        // the anchor's rotation log is the single source. (This is why the
+        // old value-entry `set_storage_type` writer-patch is gone: a member's
+        // `update_signature_in_place` matches on the anchor, which never
+        // changes on rotation.)
+        let member = StorageType::SharedMember {
+            anchor: self.inner.id(),
             signature_data: None,
         };
         let new = self
             .inner
-            .insert_with_storage_type(Some(value_id), value, shared.clone())?;
-        // Track the current writer set on the value entry's own index. After a
-        // rotation this node received, the value entry's index still carries the
-        // pre-rotation set (apply does not patch a child's own `storage_type`);
-        // without this, the runtime's post-execution `update_signature_in_place`
-        // would see a writer-set mismatch (the just-signed write claims the new
-        // set) and abort the whole transaction. Hash-neutral; no-ops when
-        // unchanged.
-        let _ignored = <Index<S>>::set_storage_type(value_id, shared);
+            .insert_with_storage_type(Some(value_id), value, member)?;
         *self.value.borrow_mut() = Some(new);
         Ok(Some(old))
     }
@@ -521,52 +537,21 @@ where
             .set_shared_domain(new_writers.clone());
         let _saved = <Interface<S>>::save(&mut self.inner)?;
 
-        // Re-stamp the single value entry too. The value lives in its own
-        // entity, verified at merge against *its* writer set; without
-        // re-stamping, a writer added by this rotation could never write the
-        // value (the entry would stay guarded by the pre-rotation set).
-        // Re-stamping emits a signed `Update` (data unchanged → hash unchanged,
-        // no divergence) so the receiver appends the new set to the value
-        // entry's own rotation log, and the new writer's later writes verify.
-        // This is the single-child analogue of the per-collection
-        // anchor-inheritance that retroactive collection revocation will
-        // generalise.
-        //
-        // The value entry is created eagerly at construction, so it is present
-        // on the originating node. If it is somehow absent (corruption, or a
-        // writer rotating before the value entry has synced), do NOT fabricate a
-        // default: re-stamping a default value would ship a signed `Update` that
-        // overwrites the real value once it arrives. Skip the value re-stamp and
-        // warn — the value entry's rotation log picks up the new set when its own
-        // `Add` is (re)applied.
-        let value_id = self.value_id();
-        match self.inner.get(value_id)? {
-            Some(value) => {
-                let _restamped = self.inner.insert_with_storage_type(
-                    Some(value_id),
-                    value,
-                    new_shared.clone(),
-                )?;
-                // Originating-node fallback: persist the new set on the value
-                // entry's index too (the rotation log is only appended on
-                // receivers, so this node's own log stays empty).
-                let _ignored = <Index<S>>::set_storage_type(value_id, new_shared.clone());
-            }
-            None => {
-                tracing::warn!(
-                    target: "storage::shared",
-                    value_id = %value_id,
-                    "SharedStorage value entry missing during rotation — skipping \
-                     value re-stamp (possible storage corruption or pre-sync race)"
-                );
-            }
-        }
-        // Originating-node fallback: persist the new set on the wrapper's index.
+        // Members are NOT re-stamped. The value entry and every collection
+        // child are `SharedMember`s pointing at this wrapper; their writer set
+        // is resolved from the wrapper's rotation log at verify time, so the
+        // single append above retroactively revokes (and grants) access for the
+        // entire subtree at once. No per-entity `Update` storm — every member's
+        // bytes are unchanged — so the rotation cannot diverge the root hash.
+        // This is exactly why the variant was split: rotation is O(1) and
+        // split-brain-safe by construction.
+
+        // Originating-node fallback: persist the new set on the wrapper's index
+        // (the rotation log is only appended on receivers, so this node's own
+        // log stays empty and `current_writers` reads the index).
         let _ignored = <Index<S>>::set_storage_type(wrapper_id, new_shared);
 
-        // Invalidate the lazy cache so the next access reloads the value with
-        // the new writer stamp rather than serving a copy whose in-memory
-        // element still carries the pre-rotation set.
+        // Invalidate the lazy cache so the next access reloads the value fresh.
         *self.value.borrow_mut() = None;
         Ok(())
     }
@@ -698,12 +683,14 @@ mod tests {
 
     #[test]
     #[serial]
-    fn value_entry_index_tracks_writers_through_rotation() {
-        // Regression for the post-rotation write abort: the value entry's index
-        // `storage_type` must follow the writer set so the runtime's
-        // post-execution `update_signature_in_place` does not see a writer-set
-        // mismatch (which aborts the transaction). `insert` and `rotate_writers`
-        // both keep it current.
+    fn value_entry_is_member_anchored_and_untouched_by_rotation() {
+        // The value entry is a `SharedMember` pointing at the wrapper (anchor).
+        // It carries NO writer set and is NOT re-stamped on rotation — the
+        // wrapper's rotation log is the single source. This is the invariant
+        // that makes rotation O(1) and split-brain-safe: a member's bytes never
+        // change, so a rotation can't diverge the root hash. (The newly-added
+        // writer can still write afterward because authorization resolves from
+        // the anchor, not from a stale inline copy.)
         use crate::collections::compute_id;
         use crate::entities::{Data, StorageType};
         use crate::index::Index;
@@ -715,26 +702,43 @@ mod tests {
         let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE]), false));
         s.insert(TestVal(1)).unwrap();
 
-        let value_id = compute_id(s.element().id(), super::VALUE_KEY);
-        let writers_of = |id| match <Index<MainStorage>>::get_metadata(id)
-            .unwrap()
-            .unwrap()
-            .storage_type
-        {
-            StorageType::Shared { writers, .. } => writers,
-            other => panic!("expected Shared, got {other:?}"),
+        let wrapper_id = s.element().id();
+        let value_id = compute_id(wrapper_id, super::VALUE_KEY);
+        let storage_type_of = |id| {
+            <Index<MainStorage>>::get_metadata(id)
+                .unwrap()
+                .unwrap()
+                .storage_type
         };
-        assert_eq!(writers_of(value_id), writers(&[ALICE]));
+        let assert_member_of = |st: StorageType| match st {
+            StorageType::SharedMember { anchor, .. } => assert_eq!(anchor, wrapper_id),
+            other => panic!("value entry must be SharedMember, got {other:?}"),
+        };
+        let anchor_writers = |st: StorageType| match st {
+            StorageType::Shared { writers, .. } => writers,
+            other => panic!("wrapper must be a Shared anchor, got {other:?}"),
+        };
 
-        // Rotation must carry the value entry's index to the new set.
+        // Value entry anchors to the wrapper; the wrapper (anchor) holds writers.
+        assert_member_of(storage_type_of(value_id));
+        assert_eq!(
+            anchor_writers(storage_type_of(wrapper_id)),
+            writers(&[ALICE])
+        );
+
+        // Rotation updates the anchor only; the value entry is byte-untouched.
         s.rotate_writers(writers(&[ALICE, BOB])).unwrap();
-        assert_eq!(writers_of(value_id), writers(&[ALICE, BOB]));
+        assert_member_of(storage_type_of(value_id));
+        assert_eq!(
+            anchor_writers(storage_type_of(wrapper_id)),
+            writers(&[ALICE, BOB])
+        );
 
-        // A write by the newly-added writer keeps it current (would mismatch if
-        // the index had stayed at the pre-rotation set).
+        // The newly-added writer can write — authorization resolves from the
+        // anchor's (rotated) writer set, and the entry stays an anchored member.
         env::set_executor_id(BOB);
         s.insert(TestVal(2)).unwrap();
-        assert_eq!(writers_of(value_id), writers(&[ALICE, BOB]));
+        assert_member_of(storage_type_of(value_id));
     }
 
     #[test]
@@ -761,8 +765,11 @@ mod tests {
             .insert("k".to_owned(), LwwRegister::new("v".to_owned()))
             .expect("insert");
 
-        // The entry must carry the Shared writer domain — the whole subtree is
-        // guarded at merge, not just the SharedStorage wrapper entity.
+        // The entry must be anchored to the wrapper — the whole subtree is
+        // guarded at merge, not just the SharedStorage wrapper entity. It
+        // carries no inline writer set: the anchor pointer is the domain, and
+        // writers resolve from the anchor's rotation log.
+        let wrapper_id = guarded.element().id();
         let map_id = <Map as Data>::id(guarded.get().expect("get"));
         let child = compute_id(map_id, "k".as_bytes());
         let entry = <Interface<MainStorage>>::find_by_id::<
@@ -771,8 +778,11 @@ mod tests {
         .expect("load child")
         .expect("child exists");
         match entry.storage.metadata.storage_type {
-            StorageType::Shared { writers: w, .. } => assert_eq!(w, ws),
-            other => panic!("SharedStorage<Map> entry must inherit Shared, got {other:?}"),
+            StorageType::SharedMember { anchor, .. } => assert_eq!(anchor, wrapper_id),
+            other => panic!(
+                "SharedStorage<Map> entry must be a SharedMember anchored to the wrapper, \
+                 got {other:?}"
+            ),
         }
     }
 

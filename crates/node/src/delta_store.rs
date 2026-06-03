@@ -9,7 +9,7 @@
 //! This ensures that all nodes converge to the same state regardless of the
 //! order in which they receive concurrent deltas.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -106,6 +106,83 @@ pub struct BatchAddResult {
     /// inputs' `applied: true` records and follow the same restart-replay
     /// safety net as a single `add_delta`'s primary.
     pub forwarded_events: Vec<([u8; 32], Vec<u8>)>,
+}
+
+/// Max orphaned member deltas held across all anchors before the buffer stops
+/// accepting new ones (and they fall back to the DAG / HashComparison re-fetch
+/// path). Bounds the memory a peer can pin by sending members whose anchor never
+/// arrives (e.g. a forged anchor id).
+const MAX_ANCHOR_PENDING: usize = 256;
+
+/// Per-anchor cap on buffered orphan members. Bounds the blast radius of a
+/// single forged anchor id: without it, one bogus anchor with 256 distinct
+/// delta ids could exhaust the global buffer and starve buffering for every
+/// legitimate anchor. 32 comfortably covers a real cold-join burst for one
+/// domain while leaving global headroom for many anchors.
+const MAX_PENDING_PER_ANCHOR: usize = 32;
+
+/// In-memory buffer for **orphaned member deltas**: a delta carrying a
+/// `StorageType::SharedMember { anchor }` action that arrived before its
+/// `anchor` (the `Shared` wrapper entity / rotation log) had synced. Without
+/// the anchor the member's writers can't be resolved, so applying it now would
+/// fail closed. Rather than drop it and wait for a HashComparison re-fetch, we
+/// hold it here keyed by the missing anchor id and re-inject it the moment that
+/// anchor applies.
+///
+/// This is a pure **liveness** optimization layered on the already-correct
+/// fail-closed path: anything not buffered (or evicted on overflow, or lost on
+/// restart since this is in-memory) still converges via the re-fetch fallback.
+///
+/// Self-contained and lock-free so it can be unit-tested directly; the
+/// `DeltaStore` wraps it in an `RwLock`.
+#[derive(Debug, Default)]
+struct AnchorPendingBuffer {
+    /// anchor id → FIFO queue of deltas waiting on it.
+    by_anchor: HashMap<Id, VecDeque<BatchDeltaInput>>,
+    /// delta ids currently buffered, for O(1) dedup across anchors.
+    seen: HashSet<[u8; 32]>,
+}
+
+impl AnchorPendingBuffer {
+    /// Buffer `input` under `anchor`. Returns `Ok(())` if buffered; returns
+    /// `Err(input)` (handing ownership back) if it was already buffered or the
+    /// global cap is reached, so the caller can fall back to the normal path.
+    fn buffer(&mut self, anchor: Id, input: BatchDeltaInput) -> Result<(), BatchDeltaInput> {
+        if self.seen.contains(&input.delta.id) {
+            return Err(input);
+        }
+        if self.seen.len() >= MAX_ANCHOR_PENDING {
+            return Err(input);
+        }
+        // Per-anchor cap: a single (possibly forged) anchor id can't fill the
+        // global buffer and starve other anchors.
+        if self
+            .by_anchor
+            .get(&anchor)
+            .is_some_and(|q| q.len() >= MAX_PENDING_PER_ANCHOR)
+        {
+            return Err(input);
+        }
+        let _inserted = self.seen.insert(input.delta.id);
+        self.by_anchor.entry(anchor).or_default().push_back(input);
+        Ok(())
+    }
+
+    /// Remove and return every delta waiting on `anchor` (FIFO order).
+    fn take_for(&mut self, anchor: &Id) -> Vec<BatchDeltaInput> {
+        let Some(queue) = self.by_anchor.remove(anchor) else {
+            return Vec::new();
+        };
+        for input in &queue {
+            let _removed = self.seen.remove(&input.delta.id);
+        }
+        queue.into_iter().collect()
+    }
+
+    /// Total buffered deltas across all anchors.
+    fn len(&self) -> usize {
+        self.seen.len()
+    }
 }
 
 /// Result of `load_persisted_deltas`.
@@ -673,6 +750,11 @@ impl ContextStorageApplier {
         delta: &CausalDelta<Vec<Action>>,
     ) -> Result<BTreeMap<Id, BTreeSet<PublicKey>>> {
         let mut shared_entities: BTreeSet<Id> = BTreeSet::new();
+        // (member entity id, its anchor id). A `SharedMember` carries no writer
+        // set of its own; it resolves the ANCHOR's writers and the result is
+        // keyed by the MEMBER id so `apply_action` finds it under the member's
+        // own `effective_writers` lookup.
+        let mut members: Vec<(Id, Id)> = Vec::new();
         for action in &delta.payload {
             let metadata = match action {
                 Action::Add { metadata, .. }
@@ -680,13 +762,19 @@ impl ContextStorageApplier {
                 | Action::DeleteRef { metadata, .. } => metadata,
                 Action::Compare { .. } => continue,
             };
-            if matches!(metadata.storage_type, StorageType::Shared { .. }) {
-                let _inserted = shared_entities.insert(action.id());
+            match metadata.storage_type {
+                StorageType::Shared { .. } => {
+                    let _inserted = shared_entities.insert(action.id());
+                }
+                StorageType::SharedMember { anchor, .. } => {
+                    members.push((action.id(), anchor));
+                }
+                StorageType::Public | StorageType::User { .. } | StorageType::Frozen => {}
             }
         }
 
         let mut out: BTreeMap<Id, BTreeSet<PublicKey>> = BTreeMap::new();
-        if shared_entities.is_empty() {
+        if shared_entities.is_empty() && members.is_empty() {
             return Ok(out);
         }
 
@@ -720,6 +808,45 @@ impl ContextStorageApplier {
 
             if let Some(set) = resolved {
                 let _replaced = out.insert(entity_id, set);
+            }
+        }
+
+        // Members resolve from their anchor's rotation log at the same causal
+        // cut. Cache per anchor — one anchor commonly gates many members. When
+        // the anchor has no rotation log (never rotated), leave the member
+        // unset: `apply_action` then falls back to the anchor's settled local
+        // state (genesis writers), which is correct precisely because nothing
+        // has rotated. When the anchor is absent entirely, the fallback yields
+        // the empty set and verification fails closed (the member is retried
+        // once the anchor syncs).
+        let mut anchor_cache: BTreeMap<Id, Option<BTreeSet<PublicKey>>> = BTreeMap::new();
+        for (member_id, anchor) in members {
+            let resolved = match anchor_cache.get(&anchor) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let set = match load_rotation_log_direct(
+                        &self.context_client,
+                        self.context_id,
+                        anchor,
+                    ) {
+                        Ok(Some(log)) => {
+                            rotation_log_reader::writers_at(&log, &delta.parents, |a, b| {
+                                happens_before_in_topology(&topology_snapshot, a, b)
+                            })
+                        }
+                        Ok(None) => None,
+                        Err(e) => {
+                            return Err(eyre::eyre!(
+                                "rotation_log direct read for anchor {anchor:?} failed: {e}"
+                            ))
+                        }
+                    };
+                    let _cached = anchor_cache.insert(anchor, set.clone());
+                    set
+                }
+            };
+            if let Some(set) = resolved {
+                let _replaced = out.insert(member_id, set);
             }
         }
 
@@ -817,6 +944,31 @@ fn load_rotation_log_direct(
     Ok(Some(log))
 }
 
+/// Whether the anchor entity `anchor` has synced to this node, by a direct
+/// datastore read (no WASM env). True if either its rotation log
+/// (`StorageKey::RotationLog`) or its index entry (`StorageKey::Index`, written
+/// the moment its `Shared` action applies) exists. Mirrors the two sources
+/// `Interface::resolve_anchor_writers` consults — so "present" here means the
+/// member's writers WILL resolve at apply time. A presence check only (no
+/// decode): we just need to know the anchor arrived.
+fn anchor_present_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    anchor: Id,
+) -> bool {
+    let handle = context_client.datastore_handle();
+    for key_bytes in [
+        StorageKey::RotationLog(anchor).to_bytes(),
+        StorageKey::Index(anchor).to_bytes(),
+    ] {
+        let state_key = calimero_store::key::ContextState::new(context_id, key_bytes);
+        if matches!(handle.get(&state_key), Ok(Some(_))) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Reverse-BFS reachability over a `delta_id → parents` mirror of the
 /// DAG: returns true iff `a` is in the transitive ancestry of `b`. Pure
 /// over the snapshot — `happens_before(x, x) == false` (strict ancestry).
@@ -860,6 +1012,11 @@ pub struct DeltaStore {
     /// Maps delta_id -> expected_root_hash for deterministic selection
     /// when multiple DAG heads exist (concurrent branches)
     head_root_hashes: Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>,
+
+    /// Orphaned member deltas (a `SharedMember` whose `anchor` hasn't synced
+    /// yet), keyed by the missing anchor id. Re-injected when that anchor
+    /// applies. Liveness only — see [`AnchorPendingBuffer`].
+    anchor_pending: Arc<RwLock<AnchorPendingBuffer>>,
 }
 
 /// Outcome of [`DeltaStore::persist_cascaded_deltas_and_update_heads`].
@@ -908,6 +1065,7 @@ impl DeltaStore {
             dag: Arc::new(RwLock::new(CoreDagStore::new(root))),
             applier,
             head_root_hashes: Arc::new(RwLock::new(HashMap::new())),
+            anchor_pending: Arc::new(RwLock::new(AnchorPendingBuffer::default())),
         }
     }
 
@@ -1611,6 +1769,47 @@ impl DeltaStore {
     }
 
     /// Internal add_delta implementation
+    /// If this delta writes a `SharedMember` whose anchor has not synced to
+    /// this node, return that anchor id (the delta is an "orphan" — its
+    /// member's writers can't be resolved yet). Returns `None` when every
+    /// member's anchor is present, or is being created by a `Shared` action in
+    /// THIS same delta (then anchor + members apply together, so it isn't an
+    /// orphan). First missing anchor only: a delta orphaned on several anchors
+    /// re-checks the rest after the first one drains.
+    fn first_missing_anchor(&self, delta: &CausalDelta<Vec<Action>>) -> Option<Id> {
+        // Anchors created/updated in THIS delta.
+        let mut shared_here: HashSet<Id> = HashSet::new();
+        for action in &delta.payload {
+            if let Action::Add { metadata, .. } | Action::Update { metadata, .. } = action {
+                if matches!(metadata.storage_type, StorageType::Shared { .. }) {
+                    let _inserted = shared_here.insert(action.id());
+                }
+            }
+        }
+        for action in &delta.payload {
+            let anchor = match action {
+                Action::Add { metadata, .. }
+                | Action::Update { metadata, .. }
+                | Action::DeleteRef { metadata, .. } => match metadata.storage_type {
+                    StorageType::SharedMember { anchor, .. } => anchor,
+                    _ => continue,
+                },
+                Action::Compare { .. } => continue,
+            };
+            if shared_here.contains(&anchor) {
+                continue;
+            }
+            if !anchor_present_direct(
+                &self.applier.context_client,
+                self.applier.context_id,
+                anchor,
+            ) {
+                return Some(anchor);
+            }
+        }
+        None
+    }
+
     async fn add_delta_internal(
         &self,
         delta: CausalDelta<Vec<Action>>,
@@ -1619,6 +1818,55 @@ impl DeltaStore {
         governance_position_blob: Option<Vec<u8>>,
         delta_signature: Option<[u8; 64]>,
     ) -> Result<AddDeltaResult> {
+        // Orphan-member buffering (liveness): if this delta writes a
+        // `SharedMember` whose anchor hasn't synced, the member's writers can't
+        // be resolved and applying now would fail closed (then drop, awaiting a
+        // HashComparison re-fetch). Instead hold it keyed by the missing anchor
+        // and re-inject the moment that anchor applies (drain at the end of this
+        // fn). Done BEFORE any persist/DAG work so a buffered delta leaves no
+        // half-state. Best-effort: if it's already buffered or the buffer is
+        // full, `buffer` hands ownership back and we fall through to the normal
+        // (fail-closed + re-fetch) path, which still converges.
+        let (delta, events, author_id, governance_position_blob, delta_signature) =
+            match self.first_missing_anchor(&delta) {
+                Some(anchor) => {
+                    let input = BatchDeltaInput {
+                        delta,
+                        events,
+                        author_id,
+                        governance_position_blob,
+                        delta_signature,
+                    };
+                    match self.anchor_pending.write().await.buffer(anchor, input) {
+                        Ok(()) => {
+                            debug!(
+                                context_id = %self.applier.context_id,
+                                %anchor,
+                                "Buffered orphan member delta awaiting its anchor"
+                            );
+                            return Ok(AddDeltaResult {
+                                applied: false,
+                                cascaded_events: Vec::new(),
+                            });
+                        }
+                        Err(returned) => (
+                            returned.delta,
+                            returned.events,
+                            returned.author_id,
+                            returned.governance_position_blob,
+                            returned.delta_signature,
+                        ),
+                    }
+                }
+                None => (
+                    delta,
+                    events,
+                    author_id,
+                    governance_position_blob,
+                    delta_signature,
+                ),
+            };
+
         let delta_id = delta.id;
         let expected_root_hash = delta.expected_root_hash;
         let parents = delta.parents.clone();
@@ -1867,6 +2115,61 @@ impl DeltaStore {
             crate::node_metrics::observe_delta_cascade(cascade_size);
             for _ in 0..cascade_size {
                 crate::node_metrics::record_delta_outcome("cascaded");
+            }
+        }
+
+        // Drain orphan members whose anchor just applied (liveness). If this
+        // delta applied any `Shared` anchor, its writers/rotation-log are now on
+        // disk (the WASM apply committed before `dag.add_delta` returned), so
+        // members that were buffered awaiting it will now verify — re-inject
+        // them. Recursive (a re-injected member could itself unblock a nested
+        // anchor); bounded by the buffer size + per-delta dedup. Best-effort:
+        // a re-injected delta that still can't apply re-buffers or falls back
+        // to the HashComparison re-fetch path. The DAG lock was already
+        // released above, so the recursive call re-acquires it cleanly.
+        if result {
+            let anchors_applied: Vec<Id> = actions_for_db
+                .iter()
+                .filter_map(|a| match a {
+                    Action::Add { metadata, .. } | Action::Update { metadata, .. }
+                        if matches!(metadata.storage_type, StorageType::Shared { .. }) =>
+                    {
+                        Some(a.id())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !anchors_applied.is_empty() {
+                let to_reinject: Vec<BatchDeltaInput> = {
+                    let mut buf = self.anchor_pending.write().await;
+                    let mut out = Vec::new();
+                    for anchor in anchors_applied {
+                        out.append(&mut buf.take_for(&anchor));
+                    }
+                    out
+                };
+                for input in to_reinject {
+                    debug!(
+                        context_id = %self.applier.context_id,
+                        delta_id = ?input.delta.id,
+                        "Re-injecting buffered orphan member delta (anchor applied)"
+                    );
+                    if let Err(e) = Box::pin(self.add_delta_internal(
+                        input.delta,
+                        input.events,
+                        input.author_id,
+                        input.governance_position_blob,
+                        input.delta_signature,
+                    ))
+                    .await
+                    {
+                        debug!(
+                            context_id = %self.applier.context_id,
+                            ?e,
+                            "Re-injected orphan member delta failed; relying on re-fetch"
+                        );
+                    }
+                }
             }
         }
 
@@ -2789,6 +3092,126 @@ impl DeltaStore {
         );
 
         added_count
+    }
+}
+
+#[cfg(test)]
+mod anchor_pending_tests {
+    //! Unit tests for the orphan-member buffer in isolation (no DAG / WASM):
+    //! dedup, FIFO drain, the global cap, and re-buffer-after-drain.
+
+    use super::*;
+
+    fn anchor(b: u8) -> Id {
+        Id::new([b; 32])
+    }
+
+    fn input(id_byte: u8) -> BatchDeltaInput {
+        BatchDeltaInput {
+            delta: CausalDelta {
+                id: [id_byte; 32],
+                parents: vec![],
+                payload: vec![],
+                hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
+                expected_root_hash: [0u8; 32],
+                kind: calimero_dag::DeltaKind::Regular,
+            },
+            events: None,
+            author_id: None,
+            governance_position_blob: None,
+            delta_signature: None,
+        }
+    }
+
+    #[test]
+    fn buffer_and_drain_fifo() {
+        let mut buf = AnchorPendingBuffer::default();
+        let a = anchor(0xA0);
+        assert!(buf.buffer(a, input(1)).is_ok());
+        assert!(buf.buffer(a, input(2)).is_ok());
+        assert_eq!(buf.len(), 2);
+
+        let drained = buf.take_for(&a);
+        let ids: Vec<u8> = drained.iter().map(|d| d.delta.id[0]).collect();
+        assert_eq!(ids, vec![1, 2], "drain must preserve FIFO order");
+        assert_eq!(buf.len(), 0, "drain empties the buffer");
+        assert!(buf.take_for(&a).is_empty(), "second drain is empty");
+    }
+
+    #[test]
+    fn dedup_same_delta_id() {
+        let mut buf = AnchorPendingBuffer::default();
+        let a = anchor(0xA0);
+        assert!(buf.buffer(a, input(1)).is_ok());
+        // Same delta id under the same anchor — rejected (handed back).
+        assert!(buf.buffer(a, input(1)).is_err());
+        // Same delta id under a DIFFERENT anchor — still rejected (global dedup).
+        assert!(buf.buffer(anchor(0xB0), input(1)).is_err());
+        assert_eq!(buf.len(), 1);
+    }
+
+    // Distinct delta ids via the first two bytes (a single byte only gives 256
+    // values — exactly the global cap — leaving no room for an "extra").
+    fn id_for(n: usize) -> [u8; 32] {
+        let mut b = [0u8; 32];
+        b[0] = u8::try_from(n & 0xff).unwrap();
+        b[1] = u8::try_from((n >> 8) & 0xff).unwrap();
+        b
+    }
+
+    #[test]
+    fn rejects_when_global_cap_reached_then_accepts_after_drain() {
+        // Spread across many anchors (each under the per-anchor cap) to reach
+        // the GLOBAL cap without tripping the per-anchor limit.
+        let mut buf = AnchorPendingBuffer::default();
+        for n in 0..MAX_ANCHOR_PENDING {
+            let mut inp = input(0);
+            inp.delta.id = id_for(n);
+            let a = anchor(u8::try_from(n / MAX_PENDING_PER_ANCHOR).unwrap());
+            assert!(buf.buffer(a, inp).is_ok());
+        }
+        assert_eq!(buf.len(), MAX_ANCHOR_PENDING);
+        // Global cap reached: a further distinct delta (fresh anchor) is handed
+        // back so the caller falls through to fail-closed + re-fetch.
+        let mut extra = input(0);
+        extra.delta.id = id_for(MAX_ANCHOR_PENDING);
+        assert!(buf.buffer(anchor(0xFE), extra).is_err());
+        // Draining one anchor frees its slots; a new delta is accepted again.
+        let _ = buf.take_for(&anchor(0));
+        let mut extra2 = input(0);
+        extra2.delta.id = id_for(MAX_ANCHOR_PENDING);
+        assert!(buf.buffer(anchor(0xFE), extra2).is_ok());
+    }
+
+    #[test]
+    fn per_anchor_cap_limits_one_anchor_without_starving_others() {
+        let mut buf = AnchorPendingBuffer::default();
+        let hot = anchor(0xA0);
+        for n in 0..MAX_PENDING_PER_ANCHOR {
+            let mut inp = input(0);
+            inp.delta.id = id_for(n);
+            assert!(buf.buffer(hot, inp).is_ok());
+        }
+        // One more under the SAME anchor is rejected (per-anchor cap)...
+        let mut over = input(0);
+        over.delta.id = id_for(MAX_PENDING_PER_ANCHOR);
+        assert!(buf.buffer(hot, over).is_err());
+        // ...but a different anchor is unaffected (no global starvation).
+        let mut other = input(0);
+        other.delta.id = id_for(MAX_PENDING_PER_ANCHOR + 1);
+        assert!(buf.buffer(anchor(0xB0), other).is_ok());
+    }
+
+    #[test]
+    fn drain_removes_from_dedup_set() {
+        let mut buf = AnchorPendingBuffer::default();
+        let a = anchor(0xA0);
+        assert!(buf.buffer(a, input(1)).is_ok());
+        let _ = buf.take_for(&a);
+        // After draining, the same delta id can be buffered again (e.g. a
+        // re-injected delta that orphaned on a different anchor).
+        assert!(buf.buffer(anchor(0xB0), input(1)).is_ok());
+        assert_eq!(buf.len(), 1);
     }
 }
 

@@ -1377,7 +1377,10 @@ mod shared_storage_rotation_authentication {
     use crate::index::Index;
     use crate::interface::{ApplyContext, MainInterface, StorageError};
     use crate::store::MainStorage;
-    use crate::tests::common::{build_signed_shared_action, pubkey_of, setup_root_for_main};
+    use crate::tests::common::{
+        build_signed_member_action, build_signed_member_delete, build_signed_shared_action,
+        pubkey_of, setup_root_for_main,
+    };
 
     fn make_signing_key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
@@ -1566,6 +1569,240 @@ mod shared_storage_rotation_authentication {
             log.entries.last().expect("a rotation entry").new_writers,
             new_writers,
             "accepted rotation must record the new writer set in the rotation log"
+        );
+    }
+
+    /// The headline property of the anchor design: rotating the anchor's writer
+    /// set retroactively revokes write access to its members — *without*
+    /// changing any member's bytes. A member written by Bob while he was a
+    /// writer becomes un-writable by Bob the instant the anchor rotates him out,
+    /// even though the member entity itself is byte-identical throughout.
+    ///
+    /// We model the rotation by the writer set the node's `writers_at` would
+    /// resolve from the anchor's rotation log at the delta's causal cut, passed
+    /// as `effective_writers`. The member carries only its anchor pointer, so
+    /// the SAME stored member is verified against {alice, bob} before the
+    /// rotation and {alice} after — no per-member re-stamp involved.
+    #[test]
+    fn rotating_anchor_retroactively_revokes_member_writes() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = pubkey_of(&alice_sk);
+        let bob_sk = make_signing_key(0xB0);
+        let bob = pubkey_of(&bob_sk);
+
+        let anchor = Id::new([0xA0; 32]);
+        let member = Id::new([0x3E; 32]);
+        let pre: BTreeSet<_> = [alice, bob].into_iter().collect();
+        let post: BTreeSet<_> = [alice].into_iter().collect();
+
+        // Bootstrap the anchor (a `Shared` entity) with writers {alice, bob}.
+        let n0 = env::time_now();
+        let bootstrap = build_signed_shared_action(
+            true,
+            anchor,
+            b"anchor".to_vec(),
+            pre.clone(),
+            n0,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+
+        let pre_ctx = || ApplyContext {
+            effective_writers: Some(pre.clone()),
+            delta_id: None,
+            delta_hlc: None,
+        };
+        let post_ctx = || ApplyContext {
+            effective_writers: Some(post.clone()),
+            delta_id: None,
+            delta_hlc: None,
+        };
+
+        // BEFORE rotation: Bob (a writer) writes the member — accepted.
+        let bob_add = build_signed_member_action(
+            true,
+            member,
+            anchor,
+            b"by-bob".to_vec(),
+            n0 + 1_000_000,
+            &bob_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(bob_add, &pre_ctx())
+            .expect("a writer's member write must be accepted before rotation");
+
+        // The stored member is anchored — no inline writer set.
+        let stored = <Index<MainStorage>>::get_metadata(member).unwrap().unwrap();
+        assert!(
+            matches!(stored.storage_type, StorageType::SharedMember { anchor: a, .. } if a == anchor),
+            "member must be anchored to the wrapper, got {:?}",
+            stored.storage_type
+        );
+
+        // AFTER rotation (anchor writers now {alice}): Bob writes the SAME member
+        // again — must be rejected. The member entity never changed; only the
+        // anchor-resolved writer set did. This is retroactive revocation.
+        let bob_revoked = build_signed_member_action(
+            false,
+            member,
+            anchor,
+            b"by-bob-after-revoke".to_vec(),
+            n0 + 2_000_000,
+            &bob_sk,
+            vec![],
+        );
+        let result = MainInterface::apply_action(bob_revoked, &post_ctx());
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "a rotated-out writer's member write must be rejected, got {result:?}"
+        );
+
+        // Alice (still a writer) can write the member under the same post-rotation
+        // set — proving the rejection is authorization, not a broken member path.
+        let alice_write = build_signed_member_action(
+            false,
+            member,
+            anchor,
+            b"by-alice".to_vec(),
+            n0 + 3_000_000,
+            &alice_sk,
+            vec![],
+        );
+        MainInterface::apply_action(alice_write, &post_ctx())
+            .expect("a current writer's member write must still be accepted");
+    }
+
+    /// The delete path mirrors the upsert path: deleting a member is authorized
+    /// against the anchor's writers (resolved from the anchor's settled local
+    /// state), not an inline set. A non-writer's member delete is rejected; a
+    /// writer's is accepted.
+    #[test]
+    fn member_delete_authorized_against_anchor_writers() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = pubkey_of(&alice_sk);
+        let mallory_sk = make_signing_key(0x4D); // a context member, NOT a writer
+        let _mallory = pubkey_of(&mallory_sk);
+
+        let anchor = Id::new([0xA0; 32]);
+        let member = Id::new([0x3E; 32]);
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+
+        let n0 = env::time_now();
+        // Anchor (Shared {alice}) + a member written by alice.
+        let bootstrap = build_signed_shared_action(
+            true,
+            anchor,
+            b"anchor".to_vec(),
+            writers.clone(),
+            n0,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+        let member_add = build_signed_member_action(
+            true,
+            member,
+            anchor,
+            b"v".to_vec(),
+            n0 + 1_000_000,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(member_add, &ApplyContext::empty())
+            .expect("writer's member add must be accepted");
+
+        // Mallory (non-writer) tries to delete the member → rejected.
+        let forged_delete = build_signed_member_delete(member, anchor, &mallory_sk, n0 + 2_000_000);
+        let result = MainInterface::apply_action(forged_delete, &ApplyContext::empty());
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "a non-writer's member delete must be rejected, got {result:?}"
+        );
+
+        // Alice (a writer) deletes the member → accepted.
+        let ok_delete = build_signed_member_delete(member, anchor, &alice_sk, n0 + 3_000_000);
+        MainInterface::apply_action(ok_delete, &ApplyContext::empty())
+            .expect("a writer's member delete must be accepted");
+    }
+
+    /// Snapshot verification of a member resolves the anchor's writers (the
+    /// snapshot path bypasses the delta pipeline, so it must independently reach
+    /// the anchor). A writer-signed member verifies; a non-writer-signed one is
+    /// rejected.
+    #[test]
+    fn snapshot_verify_member_resolves_anchor_writers() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = pubkey_of(&alice_sk);
+        let mallory_sk = make_signing_key(0x4D);
+
+        let anchor = Id::new([0xA0; 32]);
+        let member = Id::new([0x3E; 32]);
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+
+        let n0 = env::time_now();
+        // Bootstrap the anchor so `resolve_anchor_writers` finds {alice} locally.
+        let bootstrap = build_signed_shared_action(
+            true,
+            anchor,
+            b"anchor".to_vec(),
+            writers,
+            n0,
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+
+        // A member action signed by a writer (alice) — extract its metadata and
+        // verify as a snapshot leaf.
+        let data = b"snapshot-leaf".to_vec();
+        let by_writer = build_signed_member_action(
+            true,
+            member,
+            anchor,
+            data.clone(),
+            n0 + 1_000_000,
+            &alice_sk,
+            vec![],
+        );
+        let writer_meta = match &by_writer {
+            crate::action::Action::Add { metadata, .. } => metadata.clone(),
+            _ => unreachable!(),
+        };
+        assert!(
+            MainInterface::verify_snapshot_entity_signature(member, &data, &writer_meta).is_ok(),
+            "a writer-signed member snapshot leaf must verify against the anchor's writers"
+        );
+
+        // The same leaf signed by a non-writer (mallory) must be rejected.
+        let by_nonwriter = build_signed_member_action(
+            true,
+            member,
+            anchor,
+            data.clone(),
+            n0 + 1_000_000,
+            &mallory_sk,
+            vec![],
+        );
+        let nonwriter_meta = match &by_nonwriter {
+            crate::action::Action::Add { metadata, .. } => metadata.clone(),
+            _ => unreachable!(),
+        };
+        assert!(
+            matches!(
+                MainInterface::verify_snapshot_entity_signature(member, &data, &nonwriter_meta),
+                Err(StorageError::InvalidSignature)
+            ),
+            "a non-writer-signed member snapshot leaf must be rejected"
         );
     }
 }
