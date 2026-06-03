@@ -20,14 +20,18 @@ description: >
     1. node-1 creates the context (sole initial writer {A}) and adds
        B, giving the SharedStorage writer set {A, B}. A few KV
        "member entries" are written before the rotations.
-    2. node-2 is partitioned off the Docker bridge. While split:
-         * node-1 (with node-3) rotates the writer set to {A, C}
+    2. The two rotations are forced DAG-concurrent with a careful
+       `docker pause` choreography (see the long comment at the
+       step below for why a real bridge-disconnect can't be used —
+       it would also sever the node's RPC). Net effect:
+         * node-1 (with node-3 live) rotates to {A, C}
            — drops B, adds C.
-         * node-2 (isolated) rotates to {B, C} — drops A, adds C.
-       Neither node sees the other's rotation: they are causally
-       concurrent. Each side also writes a KV entry during the
-       split so data convergence around the rotations is checked.
-    3. Heal the partition. Both rotations merge on every node. The
+         * node-2 then rotates to {B, C} — drops A, adds C — from
+           the same pristine head, having never seen {A, C}.
+       Neither rotation is a causal ancestor of the other. Each
+       side also writes a KV entry in its window so data
+       convergence around the rotations is checked.
+    3. Unfreeze everyone. Both rotations merge on every node. The
        storage tree (wrapper + value entity, re-stamped by each
        rotation) reconciles by HLC-LWW, so `wait_for_sync` —
        which converges `contextStateHash` across all three nodes —
@@ -66,11 +70,14 @@ description: >
   both rotations propagate, authenticate, and reconcile the storage
   root — is asserted by the post-heal `wait_for_sync` in step 3.
 
-  Why partition-based and deterministic: the disconnect only has to
-  make node-1's and node-2's rotations invisible to each other while
-  split (so they are causally concurrent). After the heal, sync
-  delivers both rotations to every node and the assertions depend
-  only on final convergence, not on any race against buffer drain.
+  Why this is deterministic: at the moment each node rotates, every
+  node that holds the competing rotation is frozen (`docker pause`),
+  so the competing rotation provably cannot reach the rotating node
+  — there is no race window. A `call` is only ever issued against an
+  un-paused node, so RPC reachability is never in question. After
+  the heal, `wait_for_sync` with `trigger_sync` actively drives the
+  exchange of both rotations, so convergence does not depend on
+  gossip redelivery after unpause either.
 
   Relates: #2665, #2655, #2588, #2233.
 
@@ -261,23 +268,30 @@ steps:
       - 'json_equal({{base_b_n3}}, {"output": true})'
       - 'json_equal({{base_c_n3}}, {"output": false})'
 
-  # ---------- Fault: partition node-2 (B) off the bridge ----------
+  # ---------- Drive the two rotations DAG-concurrent via docker pause ----------
+  #
+  # A real bridge-disconnect can't be used here: merobox reaches a node's RPC
+  # over the same Docker network as its gossip, so a partitioned node can't be
+  # *called* (its published-port DNAT target vanishes with the bridge). We need
+  # both rotating nodes reachable, yet neither must have seen the other's
+  # rotation. `docker pause` (SIGSTOP) freezes a container's whole process — it
+  # neither sends/processes gossip nor answers RPC while paused. We use only the
+  # gossip freeze and are careful to issue a `call` ONLY against an un-paused
+  # node, so RPC always reaches its target. The pause order below guarantees
+  # neither rotating node ever observes the other's rotation, with no race.
 
-  - name: Partition node-2 from the bridge
-    type: script
-    script: scripts/disconnect-node-from-bridge.sh
-    target: local
-    args:
-      - e2e-node-2
+  # Freeze B at the converged head H. From here, anything node-1 does is
+  # invisible to node-2.
+  - name: Pause node-2 (freeze B at head H)
+    type: pause_container
+    container: e2e-node-2
 
-  - name: Brief settle so libp2p notices the partition
+  - name: Let the pause take effect
     type: wait
-    seconds: 3
+    seconds: 2
 
-  # ---------- Concurrent rotations (neither side sees the other) ----------
-
-  # node-1 (connected to node-3) rotates {A, B} -> {A, C}: drops B,
-  # adds C.
+  # node-1 (live, with live node-3) rotates {A, B} -> {A, C}: drops B, adds C.
+  # node-2 is frozen and never sees this.
   - name: Node-1 rotates writer set to {A, C}
     type: call
     node: e2e-node-1
@@ -288,8 +302,47 @@ steps:
         - '{{id_a}}'
         - '{{id_c}}'
 
-  # node-2 (isolated) rotates {A, B} -> {B, C}: drops A, adds C.
-  # Causally concurrent with node-1's rotation above.
+  - name: Node-1 writes member entry while B is frozen
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: "during"
+      value: "from-n1"
+
+  # Let node-3 apply node-1's rotation over gossip (node-2 still frozen).
+  - name: Settle so node-3 applies node-1's rotation
+    type: wait
+    seconds: 4
+
+  # Freeze A and C. Now NO live node holds node-1's rotation, so when node-2
+  # wakes there is nobody to deliver it — node-2 will rotate from the pristine
+  # head H.
+  - name: Pause node-1 (freeze A at {A, C})
+    type: pause_container
+    container: e2e-node-1
+  - name: Pause node-3 (freeze C at {A, C})
+    type: pause_container
+    container: e2e-node-3
+
+  - name: Let both pauses take effect
+    type: wait
+    seconds: 2
+
+  # node-2 is now the ONLY live node and is still at head H (it was frozen
+  # before node-1's rotation existed and its only peers are frozen now, so it
+  # cannot fetch it).
+  - name: Unpause node-2 (B resumes at head H)
+    type: unpause_container
+    container: e2e-node-2
+
+  - name: Let node-2 resume (peers still frozen — it cannot learn node-1's rotation)
+    type: wait
+    seconds: 4
+
+  # node-2 rotates {A, B} -> {B, C}: drops A, adds C. Its parent is still H, so
+  # this is causally CONCURRENT with node-1's {A, C}.
   - name: Node-2 rotates writer set to {B, C}
     type: call
     node: e2e-node-2
@@ -300,17 +353,7 @@ steps:
         - '{{id_b}}'
         - '{{id_c}}'
 
-  # Data writes around the rotations, one per side of the partition.
-  - name: Node-1 writes member entry during split
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: set
-    args:
-      key: "during"
-      value: "from-n1"
-
-  - name: Node-2 writes member entry during split
+  - name: Node-2 writes member entry while A and C are frozen
     type: call
     node: e2e-node-2
     context_id: '{{ctx}}'
@@ -319,14 +362,14 @@ steps:
       key: "during2"
       value: "from-n2"
 
-  # ---------- Heal: both concurrent rotations now merge everywhere ----------
+  # ---------- Heal: unfreeze everyone; both rotations now merge ----------
 
-  - name: Heal node-2's partition
-    type: script
-    script: scripts/connect-node-to-bridge.sh
-    target: local
-    args:
-      - e2e-node-2
+  - name: Unpause node-1
+    type: unpause_container
+    container: e2e-node-1
+  - name: Unpause node-3
+    type: unpause_container
+    container: e2e-node-3
 
   - name: Wait for libp2p mesh reformation
     type: wait
