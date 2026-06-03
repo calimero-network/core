@@ -29,10 +29,18 @@ pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod crdt_meta;
 pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageStrategy};
-// The `Mergeable` derive macro (canonical impl lives in `calimero-sdk-macros`)
-// is re-exported here under the same name as the trait, serde-style, so a single
-// `use calimero_storage::collections::Mergeable;` brings in both. They occupy
-// different namespaces (trait vs. derive macro), so the shared name does not clash.
+// Re-export of the `Mergeable` *derive macro*, whose single canonical
+// implementation lives in `calimero-sdk-macros` (it shares the forbidden-type
+// field lint with `#[app::state]`, which is why it can't live in this crate's
+// macros). Exposing it here under the same name as the trait — serde-style — lets
+// a single `use calimero_storage::collections::Mergeable;` bring in both; the two
+// occupy different namespaces (trait vs. derive macro), so the shared name does
+// not clash. This relies on `calimero-storage`'s existing dependency on
+// `calimero-sdk` (the edge already points storage -> sdk; sdk does not depend on
+// storage, so there is no cycle). The path `calimero_sdk::app::Mergeable` is
+// compile-checked here: if it ever moves, this line fails to build rather than
+// silently breaking, and `tests/derive_mergeable.rs` exercises the re-exported
+// derive through this exact path.
 pub use calimero_sdk::app::Mergeable;
 pub mod composite_key;
 mod crdt_impls;
