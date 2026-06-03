@@ -19,7 +19,7 @@
 //! └────────────────────────────────────────────┘
 //! ```
 
-use crate::sync::helpers::handle_entity_push;
+use crate::sync::helpers::{handle_entity_delete_push_locked, handle_entity_push_locked};
 use calimero_crypto::Nonce;
 use calimero_node_primitives::sync::{
     create_runtime_env, InitPayload, LeafMetadata, MessagePayload, StreamMessage, SyncTransport,
@@ -180,8 +180,17 @@ impl SyncManager {
                     let entity_count = entities.len();
                     trace!(%context_id, entity_count, "Handling EntityPush from initiator");
 
-                    let outcome =
-                        handle_entity_push(&datastore, &runtime_env, context_id, &entities);
+                    // Apply under the per-context execution lock so this
+                    // host-side merge can't interleave with a concurrent
+                    // delta merge in the executor (torn-root split-brain).
+                    let outcome = handle_entity_push_locked(
+                        Some(&self.context_client),
+                        &datastore,
+                        &runtime_env,
+                        context_id,
+                        &entities,
+                    )
+                    .await;
                     let applied = outcome.applied;
 
                     // Dispatch any deferred root-entity merges through
@@ -224,33 +233,16 @@ impl SyncManager {
                     let total = deletions.len();
                     trace!(%context_id, total, "Handling EntityDeletePush from initiator");
 
-                    // Apply each tombstone through the authenticated DeleteRef
-                    // path (delete-wins by HLC; signature/nonce verified for
-                    // User/Shared). A deletion that loses the LWW race or fails
-                    // authorization is a safe no-op.
-                    let mut applied: u32 = 0;
-                    for deletion in &deletions {
-                        let action = calimero_storage::action::Action::DeleteRef {
-                            id: Id::new(deletion.id),
-                            deleted_at: deletion.deleted_at,
-                            metadata: deletion.metadata.clone(),
-                        };
-                        let result = with_runtime_env(runtime_env.clone(), || {
-                            Interface::<MainStorage>::apply_action(
-                                action,
-                                &calimero_storage::interface::ApplyContext::empty(),
-                            )
-                        });
-                        match result {
-                            Ok(_) => applied += 1,
-                            Err(e) => debug!(
-                                %context_id,
-                                id = %hex::encode(deletion.id),
-                                error = %e,
-                                "EntityDeletePush: skipped a tombstone (lost LWW or unauthorized)"
-                            ),
-                        }
-                    }
+                    // Apply the tombstones (delete-wins by HLC; signature/nonce
+                    // verified for User/Shared) under the per-context execution
+                    // lock, same split-brain guard as the EntityPush path.
+                    let applied = handle_entity_delete_push_locked(
+                        Some(&self.context_client),
+                        context_id,
+                        &runtime_env,
+                        &deletions,
+                    )
+                    .await;
 
                     let msg = StreamMessage::Message {
                         sequence_id: sqx.next(),
