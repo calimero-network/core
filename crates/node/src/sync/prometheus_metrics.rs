@@ -85,28 +85,31 @@ fn sanitize_crdt_type(crdt_type: &str) -> &'static str {
 }
 
 /// Labels for protocol-specific metrics.
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+///
+/// Label values are `&'static str` sourced from the `sanitize_*` allow-lists
+/// (or other compile-time-known strings), so recording a metric never allocates.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ProtocolLabels {
-    protocol: String,
+    protocol: &'static str,
 }
 
 /// Labels for CRDT type metrics.
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct CrdtLabels {
-    crdt_type: String,
+    crdt_type: &'static str,
 }
 
 /// Labels for phase timing metrics.
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct PhaseLabels {
-    phase: String,
+    phase: &'static str,
 }
 
 /// Labels for sync outcome metrics.
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct OutcomeLabels {
-    protocol: String,
-    outcome: String,
+    protocol: &'static str,
+    outcome: &'static str,
 }
 
 /// Prometheus-based sync metrics collector.
@@ -273,7 +276,7 @@ impl PrometheusSyncMetrics {
 impl SyncMetricsCollector for PrometheusSyncMetrics {
     fn record_message_sent(&self, protocol: &str, bytes: usize) {
         let labels = ProtocolLabels {
-            protocol: sanitize_protocol(protocol).to_string(),
+            protocol: sanitize_protocol(protocol),
         };
         self.messages_sent.get_or_create(&labels).inc();
         self.bytes_sent.get_or_create(&labels).inc_by(bytes as u64);
@@ -281,7 +284,7 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
 
     fn record_round_trip(&self, protocol: &str) {
         let labels = ProtocolLabels {
-            protocol: sanitize_protocol(protocol).to_string(),
+            protocol: sanitize_protocol(protocol),
         };
         self.round_trips.get_or_create(&labels).inc();
     }
@@ -292,7 +295,7 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
 
     fn record_merge(&self, crdt_type: &str) {
         let labels = CrdtLabels {
-            crdt_type: sanitize_crdt_type(crdt_type).to_string(),
+            crdt_type: sanitize_crdt_type(crdt_type),
         };
         self.merges_total.get_or_create(&labels).inc();
     }
@@ -304,7 +307,7 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
     fn record_phase_complete(&self, timer: PhaseTimer) {
         // Phase names are &'static str from our code, so no sanitization needed
         let labels = PhaseLabels {
-            phase: timer.phase().to_string(),
+            phase: timer.phase(),
         };
         self.phase_duration_seconds
             .get_or_create(&labels)
@@ -329,7 +332,7 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
 
     fn record_sync_start(&self, _context_id: &str, protocol: &str, _trigger: &str) {
         let labels = ProtocolLabels {
-            protocol: sanitize_protocol(protocol).to_string(),
+            protocol: sanitize_protocol(protocol),
         };
         self.sync_attempts_total.get_or_create(&labels).inc();
     }
@@ -343,8 +346,8 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
     ) {
         let sanitized = sanitize_protocol(protocol);
         let labels = OutcomeLabels {
-            protocol: sanitized.to_string(),
-            outcome: "success".to_string(),
+            protocol: sanitized,
+            outcome: "success",
         };
         self.sync_duration_seconds
             .get_or_create(&labels)
@@ -352,7 +355,7 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
 
         // Increment success counter
         let success_labels = ProtocolLabels {
-            protocol: sanitized.to_string(),
+            protocol: sanitized,
         };
         self.sync_successes_total
             .get_or_create(&success_labels)
@@ -361,14 +364,14 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
 
     fn record_sync_failure(&self, _context_id: &str, protocol: &str, _reason: &str) {
         let labels = ProtocolLabels {
-            protocol: sanitize_protocol(protocol).to_string(),
+            protocol: sanitize_protocol(protocol),
         };
         self.sync_failures_total.get_or_create(&labels).inc();
     }
 
     fn record_protocol_selected(&self, protocol: &str, _reason: &str, _divergence: f64) {
         let labels = ProtocolLabels {
-            protocol: sanitize_protocol(protocol).to_string(),
+            protocol: sanitize_protocol(protocol),
         };
         self.protocol_selections_total.get_or_create(&labels).inc();
     }
