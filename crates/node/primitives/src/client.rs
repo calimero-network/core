@@ -780,6 +780,30 @@ impl NodeClient {
         &self.sync_client
     }
 
+    /// Read the best-effort sync-status snapshot for `context_id`.
+    ///
+    /// Round-trips through `NodeManager`, which owns the run-loop-published
+    /// snapshot map. `Ok(None)` means the sync run-loop has no record for the
+    /// context — it was created locally, or just joined and has not been
+    /// dispatched yet. The snapshot is advisory (see
+    /// [`SyncStatusSnapshot`](crate::SyncStatusSnapshot)); use it for UX, not
+    /// control flow.
+    pub async fn sync_status(
+        &self,
+        context_id: ContextId,
+    ) -> eyre::Result<Option<crate::SyncStatusSnapshot>> {
+        let (tx, rx) = oneshot::channel();
+        self.node_manager
+            .send(NodeMessage::GetSyncStatus {
+                context_id,
+                outcome: tx,
+            })
+            .await
+            .map_err(|_| eyre::eyre!("node manager mailbox dropped"))?;
+        rx.await
+            .map_err(|_| eyre::eyre!("sync status response channel dropped"))
+    }
+
     pub async fn sync(
         &self,
         context_id: Option<&ContextId>,
