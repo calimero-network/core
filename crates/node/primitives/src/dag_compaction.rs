@@ -36,15 +36,23 @@ pub const DEFAULT_CHECK_INTERVAL_SECS: u64 = 3_600;
 
 /// Operator-tunable DAG compaction settings (`[dag_compaction]`).
 ///
-/// Defaults are conservative and, crucially, compaction is **disabled by
-/// default** ([`enabled`](Self::enabled) is `false`) until the pruned-history
-/// sync fallback has soaked: a node must never prune deltas a peer still
-/// depends on without the requester falling back to a state-based protocol.
+/// Compaction is **enabled by default** with conservative thresholds. It is
+/// safe to prune because deltas are an optimization, not a convergence
+/// requirement: a peer that requests a pruned delta gets "not found" and the
+/// next sync round reconciles via HashComparison — already the protocol
+/// selected for a diverged initialized node — which converges current state
+/// without consulting the delta log. Operators can still set `enabled = false`
+/// to opt out.
+///
+/// **Upgrade note:** a node upgrading from a build where compaction was
+/// disabled-by-default, and whose config has no `[dag_compaction]` section,
+/// will begin compacting automatically on the next restart. Set
+/// `enabled = false` to preserve the old behavior.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct DagCompactionConfig {
     /// Whether periodic DAG compaction runs at all.
-    #[serde(default)]
+    #[serde(default = "default_enabled")]
     pub enabled: bool,
 
     /// Minimum delta rows a context must hold before it is eligible for
@@ -64,7 +72,7 @@ pub struct DagCompactionConfig {
 impl Default for DagCompactionConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_enabled(),
             min_deltas_before_compact: DEFAULT_MIN_DELTAS_BEFORE_COMPACT,
             retain_recent_count: DEFAULT_RETAIN_RECENT_COUNT,
             check_interval: default_check_interval(),
@@ -86,6 +94,10 @@ impl DagCompactionConfig {
     pub fn is_valid(&self) -> bool {
         self.retain_recent_count < self.min_deltas_before_compact && !self.check_interval.is_zero()
     }
+}
+
+const fn default_enabled() -> bool {
+    true
 }
 
 const fn default_min_deltas_before_compact() -> usize {
@@ -122,9 +134,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_disabled_with_sane_thresholds() {
+    fn default_is_enabled_with_sane_thresholds() {
         let cfg = DagCompactionConfig::default();
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
         assert_eq!(
             cfg.min_deltas_before_compact,
             DEFAULT_MIN_DELTAS_BEFORE_COMPACT
@@ -154,16 +166,23 @@ mod tests {
 
     #[test]
     fn absent_fields_fall_back_to_defaults() {
-        // An empty object must deserialize to the disabled default — every
-        // field is `#[serde(default)]`, so omitted sections never break
-        // existing configs.
+        // An empty object must deserialize to the enabled default — every
+        // field has an explicit `#[serde(default = ...)]`, so an omitted
+        // section behaves identically to a fully-defaulted struct.
         let cfg: DagCompactionConfig = serde_json::from_str("{}").expect("empty object");
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
         assert_eq!(
             cfg.min_deltas_before_compact,
             DEFAULT_MIN_DELTAS_BEFORE_COMPACT
         );
         assert_eq!(cfg.check_interval.as_secs(), DEFAULT_CHECK_INTERVAL_SECS);
+    }
+
+    #[test]
+    fn explicit_disable_is_respected() {
+        let cfg: DagCompactionConfig =
+            serde_json::from_str(r#"{"enabled": false}"#).expect("explicit disable");
+        assert!(!cfg.enabled);
     }
 
     #[test]

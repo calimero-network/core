@@ -70,8 +70,9 @@ pub struct ConfigFile {
     pub tee: Option<TeeConfig>,
 
     /// DAG compaction (`[dag_compaction]`) — bounds on-disk delta-log growth
-    /// by pruning history older than a checkpoint. Disabled by default;
-    /// absent section falls back to [`DagCompactionConfig::default`].
+    /// by pruning history older than a recent retain window. Enabled by
+    /// default; an absent section falls back to [`DagCompactionConfig::default`]
+    /// (set `enabled = false` to opt out).
     #[serde(default)]
     pub dag_compaction: DagCompactionConfig,
 }

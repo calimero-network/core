@@ -64,7 +64,7 @@ pub struct NodeConfig {
     pub context: ContextConfig,
     pub server: ServerConfig,
     pub gc_interval_secs: Option<u64>, // Optional GC interval in seconds (default: 12 hours)
-    /// DAG compaction settings (issue #2026). Disabled by default.
+    /// DAG compaction settings (issue #2026). Enabled by default.
     pub dag_compaction: calimero_node_primitives::DagCompactionConfig,
     pub mode: NodeMode,
     pub specialized_node: SpecializedNodeConfig,
@@ -392,19 +392,24 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| gc);
 
-    // Start DAG compaction actor (issue #2026). Disabled by default; only
-    // bounds on-disk delta growth when explicitly enabled in `[dag_compaction]`
-    // and the thresholds are internally consistent.
-    if config.dag_compaction.enabled && config.dag_compaction.is_valid() {
+    // Start DAG compaction actor (issue #2026). Enabled by default; bounds
+    // on-disk delta growth unless `[dag_compaction] enabled = false`.
+    if config.dag_compaction.enabled {
+        // Fail fast on a misconfigured-but-enabled config rather than silently
+        // skipping compaction. With compaction default-on, a silent skip (e.g.
+        // an operator setting `retain_recent_count >= min_deltas_before_compact`
+        // or a zero `check_interval`) would let delta-log growth go unbounded
+        // unnoticed — the opposite of this feature's intent. The default config
+        // is always valid, so this only trips a deliberate misconfiguration.
+        eyre::ensure!(
+            config.dag_compaction.is_valid(),
+            "invalid [dag_compaction] config: retain_recent_count ({}) must be \
+             < min_deltas_before_compact ({}) and check_interval must be non-zero",
+            config.dag_compaction.retain_recent_count,
+            config.dag_compaction.min_deltas_before_compact,
+        );
         let compactor = DagCompactor::new(node_state.delta_stores_handle(), config.dag_compaction);
         let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| compactor);
-    } else if config.dag_compaction.enabled {
-        tracing::warn!(
-            min_deltas_before_compact = config.dag_compaction.min_deltas_before_compact,
-            retain_recent_count = config.dag_compaction.retain_recent_count,
-            "DAG compaction enabled but config is invalid (retain_recent_count must be \
-             < min_deltas_before_compact); compaction will NOT run"
-        );
     }
 
     let mut sync = pin!(sync_manager.start());
