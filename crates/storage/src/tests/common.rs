@@ -289,6 +289,15 @@ pub fn pubkey_of(sk: &SigningKey) -> PublicKey {
 /// referencing it. Mirrors `setup_root::<MockedStorage<N>>` from
 /// `write_hook_stale_writers.rs` for tests that use the `MainInterface`
 /// alias.
+///
+// `unwrap` is fine in this test helper; crate-wide it's denied, and the
+// `cfg(test)` exemption doesn't reach the `feature = "testing"` build that
+// exposes this module cross-crate — so grant it locally on the one function
+// that needs it rather than the whole module.
+#[allow(
+    clippy::unwrap_used,
+    reason = "test helper; setup failure should abort the test"
+)]
 pub fn setup_root_for_main() -> ChildInfo {
     use crate::index::Index;
     use crate::store::MainStorage;

@@ -12,15 +12,14 @@ use std::collections::{HashMap, HashSet};
 /// Tracks a DAG of deltas by parent links. Tests build this incrementally as
 /// they author deltas; the [`Dag::happens_before`] predicate is then derived
 /// via reverse BFS from the descendant.
+#[derive(Default)]
 pub(crate) struct Dag {
     parents: HashMap<[u8; 32], Vec<[u8; 32]>>,
 }
 
 impl Dag {
     pub(crate) fn new() -> Self {
-        Self {
-            parents: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub(crate) fn record(&mut self, delta_id: [u8; 32], parents: Vec<[u8; 32]>) {

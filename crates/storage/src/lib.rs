@@ -118,25 +118,17 @@ pub use interface::Interface;
 /// storage-internal unit tests with no cross-crate consumers, and exposing
 /// them under the feature would pull dev-only dependencies into ordinary
 /// `--features testing` builds.
+///
+/// `#[doc(hidden)]`: this is test/dev scaffolding, not public API. Consumers
+/// must enable `testing` only in `[dev-dependencies]` (as `calimero-node`
+/// does); it is not meant for production dependency graphs.
 #[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
 pub mod tests {
     /// Common test utilities and data structures.
     ///
     /// This is the one submodule exposed cross-crate via the `testing`
-    /// feature, so it compiles outside `cfg(test)` — where the crate-level
-    /// `cfg_attr(test, allow(...))` test-lint exemptions don't apply. The
-    /// `cfg_attr` below re-grants the unwrap/expect/panic exemptions for this
-    /// test-support code so a `--features testing` build lints clean.
-    #[cfg_attr(
-        all(not(test), feature = "testing"),
-        allow(
-            clippy::expect_used,
-            clippy::panic,
-            clippy::unwrap_in_result,
-            clippy::unwrap_used,
-            reason = "test-support helpers; mirror the crate's cfg(test) exemptions"
-        )
-    )]
+    /// feature.
     pub mod common;
 
     /// AuthoredMap/AuthoredVector merge-time auth tests.
