@@ -9,12 +9,12 @@
 //! and apply with the resolved set in `ApplyContext`. See ADR 0001.
 
 use core::num::NonZeroU128;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
-use calimero_storage::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+use calimero_storage::entities::{ChildInfo, Metadata};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{
     disable_nonce_check_for_testing, ApplyContext, Interface, StorageError,
@@ -22,52 +22,19 @@ use calimero_storage::interface::{
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::rotation_log;
 use calimero_storage::store::{MockedStorage, StorageAdaptor};
-use ed25519_dalek::{Signer, SigningKey};
+use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
+use ed25519_dalek::SigningKey;
 
 use crate::sync::rotation_log_reader;
+use crate::sync::test_helpers::Dag;
 
 // =============================================================================
 // Harness
 // =============================================================================
 
-/// Tracks a DAG of deltas by parent links. Tests build this incrementally as
-/// they author deltas; the `happens_before` predicate is then derived via
-/// reverse BFS from the second argument.
-struct Dag {
-    parents: HashMap<[u8; 32], Vec<[u8; 32]>>,
-}
-
-impl Dag {
-    fn new() -> Self {
-        Self {
-            parents: HashMap::new(),
-        }
-    }
-
-    fn record(&mut self, delta_id: [u8; 32], parents: Vec<[u8; 32]>) {
-        self.parents.insert(delta_id, parents);
-    }
-
-    fn happens_before(&self, ancestor: &[u8; 32], descendant: &[u8; 32]) -> bool {
-        if ancestor == descendant {
-            return false;
-        }
-        let mut frontier: Vec<[u8; 32]> = self.parents.get(descendant).cloned().unwrap_or_default();
-        let mut seen: HashSet<[u8; 32]> = HashSet::new();
-        while let Some(node) = frontier.pop() {
-            if !seen.insert(node) {
-                continue;
-            }
-            if node == *ancestor {
-                return true;
-            }
-            if let Some(ps) = self.parents.get(&node) {
-                frontier.extend(ps.iter().copied());
-            }
-        }
-        false
-    }
-}
+// The `Dag` topology mirror is shared with P3 via `crate::sync::test_helpers`.
+// Signing/action builders (`build_signed_shared_action`, `pubkey_of`) come from
+// `calimero_storage::tests::common`.
 
 /// One delta authored on some node; gets delivered to one or more nodes.
 struct Delta {
@@ -104,62 +71,6 @@ fn deliver<S: StorageAdaptor>(delta: &Delta, dag: &Dag) -> Result<(), StorageErr
 
 fn make_signing_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
-}
-
-fn pubkey_of(sk: &SigningKey) -> PublicKey {
-    PublicKey::from(*sk.verifying_key().as_bytes())
-}
-
-/// Build a signed `Shared` storage action (Add or Update). Inlined from
-/// `calimero_storage::tests::common::build_signed_shared_action` because
-/// that module is `#[cfg(test)]` inside storage and not visible across crates.
-fn build_signed_shared_action(
-    add: bool,
-    id: Id,
-    data: Vec<u8>,
-    writers: BTreeSet<PublicKey>,
-    hlc_ns: u64,
-    signer_sk: &SigningKey,
-    ancestors: Vec<ChildInfo>,
-) -> Action {
-    let mut metadata = Metadata::new(hlc_ns, hlc_ns);
-    metadata.storage_type = StorageType::Shared {
-        writers,
-        signature_data: Some(SignatureData {
-            signature: [0; 64],
-            nonce: hlc_ns,
-            signer: Some(pubkey_of(signer_sk)),
-        }),
-    };
-    let mut action = if add {
-        Action::Add {
-            id,
-            data,
-            ancestors,
-            metadata,
-        }
-    } else {
-        Action::Update {
-            id,
-            data,
-            ancestors,
-            metadata,
-        }
-    };
-    let payload = action.payload_for_signing();
-    let signature = signer_sk.sign(&payload).to_bytes();
-    let metadata_mut = match &mut action {
-        Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata,
-        _ => unreachable!(),
-    };
-    if let StorageType::Shared {
-        signature_data: Some(sd),
-        ..
-    } = &mut metadata_mut.storage_type
-    {
-        sd.signature = signature;
-    }
-    action
 }
 
 fn setup_root<S: StorageAdaptor>() -> ChildInfo {

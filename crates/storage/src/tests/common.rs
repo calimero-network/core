@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::PublicKey;
 use ed25519_dalek::{Signer, SigningKey};
-use velcro::btree_map;
 
 use crate::action::Action;
 use crate::address::Id;
@@ -81,9 +80,12 @@ impl Mergeable for Page {
 
 impl Data for Page {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
-        btree_map! {
-            "Paragraphs".to_owned(): MainInterface::child_info_for(self.id()).unwrap_or_default(),
-        }
+        let mut collections = BTreeMap::new();
+        collections.insert(
+            "Paragraphs".to_owned(),
+            MainInterface::child_info_for(self.id()).unwrap_or_default(),
+        );
+        collections
     }
 
     fn element(&self) -> &Element {
@@ -287,6 +289,15 @@ pub fn pubkey_of(sk: &SigningKey) -> PublicKey {
 /// referencing it. Mirrors `setup_root::<MockedStorage<N>>` from
 /// `write_hook_stale_writers.rs` for tests that use the `MainInterface`
 /// alias.
+///
+// `unwrap` is fine in this test helper; crate-wide it's denied, and the
+// `cfg(test)` exemption doesn't reach the `feature = "testing"` build that
+// exposes this module cross-crate — so grant it locally on the one function
+// that needs it rather than the whole module.
+#[allow(
+    clippy::unwrap_used,
+    reason = "test helper; setup failure should abort the test"
+)]
 pub fn setup_root_for_main() -> ChildInfo {
     use crate::index::Index;
     use crate::store::MainStorage;

@@ -65,6 +65,9 @@ mod tracking;
 mod p3_dag_causal_tests;
 #[cfg(test)]
 mod p5_partition_scenarios_tests;
+// Shared scaffolding for the P3/P5 tests above (the `Dag` topology mirror).
+#[cfg(test)]
+mod test_helpers;
 
 pub use config::SyncConfig;
 // Re-export for integration tests so they can mirror the production
