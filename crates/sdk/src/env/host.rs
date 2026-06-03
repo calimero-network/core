@@ -139,6 +139,18 @@ pub(crate) fn set_context_id(id: [u8; 32]) {
     with(|h| h.context_id = id);
 }
 
+/// Writes `value` directly into the SDK host storage map at `key`.
+///
+/// Application state is committed to `calimero_storage`'s own native mock, not
+/// here; this lets the test harness mirror the committed root `Entry` into the
+/// map that [`crate::state::read_raw`] reads, so a `#[app::migrate]` body run
+/// under [`crate::testing::TestHost`] observes the pre-migration state.
+pub(crate) fn seed_storage(key: &[u8], value: Vec<u8>) {
+    with(|h| {
+        let _ = h.storage.insert(key.to_vec(), value);
+    });
+}
+
 // ============================================================================
 // `env` host-function implementations
 // ============================================================================

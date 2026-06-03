@@ -1,13 +1,18 @@
 use calimero_sdk::app;
 use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::state::read_raw;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 
 const SCHEMA_VERSION_V2: &str = "2.0.0";
 const SCHEMA_VERSION_V3: &str = "3.0.0";
 
 #[app::state(emits = for<'a> Event<'a>)]
+#[derive(app::Migrate)]
+#[migrate(
+    from = MigrationSuiteV2,
+    method = migrate_v2_to_v3,
+    emit = Event::Migrated { from_version: SCHEMA_VERSION_V2, to_version: SCHEMA_VERSION_V3 }
+)]
 pub struct MigrationSuiteV3RemoveField {
     items: UnorderedMap<String, LwwRegister<String>>,
     description: LwwRegister<String>,
@@ -37,29 +42,6 @@ struct MigrationSuiteV2 {
     description: LwwRegister<String>,
     counter: LwwRegister<u64>,
     notes: LwwRegister<String>,
-}
-
-#[app::migrate]
-pub fn migrate_v2_to_v3() -> MigrationSuiteV3RemoveField {
-    let old_bytes = read_raw().unwrap_or_else(|| {
-        panic!("Migration failed: no existing state. Create a V2 context first.");
-    });
-
-    let old_state: MigrationSuiteV2 = BorshDeserialize::deserialize(&mut &old_bytes[..])
-        .unwrap_or_else(|e| {
-            panic!("Migration failed: V2 deserialization error {:?}", e);
-        });
-
-    app::emit!(Event::Migrated {
-        from_version: SCHEMA_VERSION_V2,
-        to_version: SCHEMA_VERSION_V3,
-    });
-
-    MigrationSuiteV3RemoveField {
-        items: old_state.items,
-        description: old_state.description,
-        counter: old_state.counter,
-    }
 }
 
 #[app::logic]

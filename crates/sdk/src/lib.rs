@@ -38,6 +38,7 @@ pub mod app {
 
     pub use calimero_sdk_macros::{
         bail, destroy, emit, err, event, init, log, logic, migrate, private, state, Mergeable,
+        Migrate,
     };
 }
 

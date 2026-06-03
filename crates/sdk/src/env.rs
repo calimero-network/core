@@ -66,6 +66,19 @@ pub mod ext;
 #[doc(hidden)]
 pub mod host;
 
+/// Mirrors a committed root `Entry` (read from `calimero_storage`'s native mock)
+/// into the SDK host storage at [`calimero_prelude::root_storage_key`], so
+/// [`crate::state::read_raw`] observes it during `TestHost` migration tests.
+///
+/// Test-harness plumbing: the generated `TestState` bridge calls this after each
+/// commit (it has access to both crates; `calimero_sdk` itself cannot depend on
+/// `calimero_storage`). Native-only.
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub fn __test_seed_root(root_entry: Vec<u8>) {
+    host::seed_storage(&calimero_prelude::root_storage_key(), root_entry);
+}
+
 /// Host-backed `tracing` subscriber (cargo feature `tracing`). Routes
 /// `tracing` macro output through [`log`] so it reaches the execution outcome.
 #[cfg(feature = "tracing")]

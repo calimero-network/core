@@ -1,7 +1,6 @@
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::state::read_raw;
 use calimero_storage::collections::LwwRegister;
 
 const SCHEMA_VERSION_V1: &str = "1.0.0";
@@ -19,9 +18,28 @@ pub enum Status {
 }
 
 #[app::state(emits = for<'a> Event<'a>)]
+#[derive(app::Migrate)]
+#[migrate(
+    from = ScenarioStructToEnumV1,
+    method = migrate_v1_to_v2,
+    emit = Event::Migrated { from_version: SCHEMA_VERSION_V1, to_version: SCHEMA_VERSION_V2 }
+)]
 pub struct ScenarioStructToEnumV2 {
     name: LwwRegister<String>,
+    #[migrate(from = status, with = legacy_status_to_enum)]
     status: LwwRegister<Status>,
+}
+
+// Replicates the hand-written struct->enum collapse: `active = true`
+// becomes `Active` (dropping any reason), otherwise `Inactive(reason)`.
+fn legacy_status_to_enum(status: LwwRegister<LegacyStatus>) -> LwwRegister<Status> {
+    let legacy_status = status.get();
+    let new_status = if legacy_status.active {
+        Status::Active
+    } else {
+        Status::Inactive(legacy_status.reason.clone().unwrap_or_default())
+    };
+    LwwRegister::new(new_status)
 }
 
 #[app::event]
@@ -54,37 +72,6 @@ struct LegacyStatus {
 struct ScenarioStructToEnumV1 {
     name: LwwRegister<String>,
     status: LwwRegister<LegacyStatus>,
-}
-
-#[app::migrate]
-pub fn migrate_v1_to_v2() -> ScenarioStructToEnumV2 {
-    let old_bytes = read_raw().unwrap_or_else(|| {
-        panic!("Migration failed: no existing state. Create a V1 context first.");
-    });
-
-    let old_state: ScenarioStructToEnumV1 = BorshDeserialize::deserialize(&mut &old_bytes[..])
-        .unwrap_or_else(|e| {
-            panic!("Migration failed: V1 deserialization error {:?}", e);
-        });
-
-    app::emit!(Event::Migrated {
-        from_version: SCHEMA_VERSION_V1,
-        to_version: SCHEMA_VERSION_V2,
-    });
-
-    let legacy_status = old_state.status.get();
-    let new_status = if legacy_status.active {
-        // `active = true` collapses to `Active`, dropping any reason
-        // payload that should never have been set in the first place.
-        Status::Active
-    } else {
-        Status::Inactive(legacy_status.reason.clone().unwrap_or_default())
-    };
-
-    ScenarioStructToEnumV2 {
-        name: old_state.name,
-        status: LwwRegister::new(new_status),
-    }
 }
 
 #[app::logic]

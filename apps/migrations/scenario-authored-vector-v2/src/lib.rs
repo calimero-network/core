@@ -1,7 +1,6 @@
 use calimero_sdk::app;
 use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::state::read_raw;
 use calimero_storage::collections::{AuthoredVector, LwwRegister};
 
 const SCHEMA_VERSION_V1: &str = "1.0.0";
@@ -19,9 +18,16 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// element values while preserving authorship — needs a migration-context gate
 /// relaxation and is tracked in #2534.)
 #[app::state(emits = for<'a> Event<'a>)]
+#[derive(app::Migrate)]
+#[migrate(
+    from = ScenarioAuthoredVectorV1,
+    method = migrate_v1_to_v2,
+    emit = Event::Migrated { from_version: SCHEMA_VERSION_V1, to_version: SCHEMA_VERSION_V2 }
+)]
 pub struct ScenarioAuthoredVectorV2 {
     entries: AuthoredVector<LwwRegister<String>>,
     title: LwwRegister<String>,
+    #[migrate(new = LwwRegister::new("migrated-v1-to-v2".to_owned()))]
     migration_note: LwwRegister<String>,
 }
 
@@ -47,33 +53,6 @@ pub struct SchemaInfo {
 struct ScenarioAuthoredVectorV1 {
     entries: AuthoredVector<LwwRegister<String>>,
     title: LwwRegister<String>,
-}
-
-#[app::migrate]
-pub fn migrate_v1_to_v2() -> ScenarioAuthoredVectorV2 {
-    let old_bytes = read_raw().unwrap_or_else(|| {
-        panic!("Migration failed: no existing state. Create a V1 context first.");
-    });
-
-    let old_state: ScenarioAuthoredVectorV1 = BorshDeserialize::deserialize(&mut &old_bytes[..])
-        .unwrap_or_else(|e| {
-            panic!("Migration failed: V1 deserialization error {:?}", e);
-        });
-
-    app::emit!(Event::Migrated {
-        from_version: SCHEMA_VERSION_V1,
-        to_version: SCHEMA_VERSION_V2,
-    });
-
-    // Carry `entries` over unchanged — owners and order preserved. Only the new
-    // `migration_note` is seeded, and it is a plain `LwwRegister` (its
-    // per-replica metadata is zeroed under migrate merge mode), so the seed is
-    // deterministic across nodes.
-    ScenarioAuthoredVectorV2 {
-        entries: old_state.entries,
-        title: old_state.title,
-        migration_note: LwwRegister::new("migrated-v1-to-v2".to_owned()),
-    }
 }
 
 #[app::logic]

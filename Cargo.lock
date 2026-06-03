@@ -6107,6 +6107,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "migration-harness-example"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
 name = "migration-suite-v1"
 version = "0.0.0"
 dependencies = [
