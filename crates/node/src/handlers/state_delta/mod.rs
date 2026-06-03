@@ -731,9 +731,12 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
 /// recording mock).
 ///
 /// For each pending [`AbsorbRecord`] in `context_id`'s absorb buffer:
-/// - skip it if its `producing_app_key` is `None` or differs from the node's
-///   loaded reader (the binary hasn't caught up to *this* record's schema yet —
-///   leave it for a later pass);
+/// - skip it while the node has not reached the migration target AND the
+///   record's `producing_app_key` differs from the node's loaded reader (the
+///   binary hasn't caught up — leave it for a later pass). Once the loaded
+///   reader equals the target, every record buffered for this migration becomes
+///   verbatim-replayable, including a stale straggler whose schema is *behind*
+///   the loaded reader;
 /// - otherwise reconstruct the verbatim [`BufferedDelta`], hand it to `replay`,
 ///   and — only on `Ok(true)` — `delete` the record.
 ///
@@ -750,7 +753,7 @@ where
     Fut: std::future::Future<Output = Result<bool>>,
 {
     use calimero_context::group_store::AbsorbRepository;
-    use calimero_context::hlc_fence::loaded_reader_app_key;
+    use calimero_context::hlc_fence::{loaded_reader_app_key, target_reader_app_key};
 
     // The schema this node can read *right now*. `None` (non-group context /
     // unresolvable meta) means we cannot tell whether any record is readable,
@@ -758,6 +761,14 @@ where
     let Some(loaded) = loaded_reader_app_key(store, context_id)? else {
         return Ok(0);
     };
+    // The migration target (replicated `GroupMeta.app_key`). When the node's
+    // loaded reader has caught up to the target, every record buffered for *this*
+    // migration is replayable verbatim through the now-current wasm — including a
+    // STALE v1 straggler whose `producing_app_key` is *behind* the loaded reader
+    // (the binary advanced past it). Without this signal such a record would be
+    // skipped forever and the offline write lost. Falls back to `loaded` when no
+    // group meta is resolvable (parity: `loaded == target` ⇒ pre-fix behavior).
+    let target = target_reader_app_key(store, context_id)?.unwrap_or(loaded);
 
     let repo = AbsorbRepository::new(store);
     let pending = repo.enumerate_pending(context_id)?;
@@ -773,9 +784,22 @@ where
         if record.leaf.is_some() || record.entity.is_some() {
             continue;
         }
-        // Skip records the loaded binary still can't read — they stay pending
-        // until the node advances to *their* schema.
-        if record.producing_app_key != Some(loaded) {
+        // Drain-ready signal: replay a buffered delta once the node has caught
+        // up to the migration TARGET (not merely once `producing == loaded`).
+        // Within a single migration every buffered delta's schema is <= target,
+        // so when `loaded == target` the now-current wasm can verbatim-replay
+        // ALL of them — a future-schema delta is now current, and a STALE v1
+        // straggler (the bug: `producing == v1 != loaded == v2`) replays through
+        // the current wasm. We also keep `loaded == producing_app_key` as an
+        // ALSO-sufficient condition (covers a future delta whose producing
+        // happens to equal the loaded reader before the target moves). Skip only
+        // when the node has NOT reached the target AND the record's schema does
+        // not match the loaded reader.
+        //
+        // NOTE: the multi-migration edge (a future v3 delta while target is v2)
+        // is out of scope here — within one migration producing <= target. An
+        // ordered `schema_version` (PR-6c) is the eventual robust discriminator.
+        if loaded != target && Some(loaded) != record.producing_app_key {
             continue;
         }
 
@@ -2712,39 +2736,63 @@ mod tests {
             AbsorbRecord::from_buffered(&sample_buffered(delta_id, producing_app_key))
         }
 
-        /// After the binary advances (loaded reader == the record's
-        /// `producing_app_key`), the drain replays the original signed bytes
-        /// verbatim through the replay path and deletes the record. A record
-        /// whose schema is still ≠ the loaded reader is left in place (it will
-        /// be re-drained once the binary catches up to *its* schema).
+        /// Install a loaded reader for `context_id` resolving to `blob`, so
+        /// [`loaded_reader_app_key`] returns `blob` (instead of falling back to
+        /// `GroupMeta.app_key`). Lets a test model `loaded != target`.
+        fn install_loaded_reader(store: &Store, context_id: &ContextId, blob: [u8; 32]) {
+            use calimero_primitives::application::ApplicationId;
+            use calimero_primitives::blobs::BlobId;
+            use calimero_store::key;
+            use calimero_store::types::{ApplicationMeta, ContextMeta};
+
+            let app_key = key::ApplicationMeta::new(ApplicationId::from([0xCC; 32]));
+            let app_meta = ApplicationMeta::new(
+                key::BlobMeta::new(BlobId::from(blob)),
+                0,
+                "".into(),
+                Box::default(),
+                key::BlobMeta::new(BlobId::from([0; 32])),
+                "".into(),
+                "".into(),
+                "".into(),
+            );
+            let ctx_meta = ContextMeta::new(app_key, [0; 32], vec![], None);
+
+            let mut handle = store.handle();
+            handle
+                .put(&key::ContextMeta::new(*context_id), &ctx_meta)
+                .expect("put ContextMeta");
+            handle.put(&app_key, &app_meta).expect("put ApplicationMeta");
+        }
+
+        /// REGRESSION (the PR-6b drain bug): a STALE v1 straggler delta —
+        /// `producing_app_key == v1`, the node already advanced to
+        /// `loaded == target == v2` — must be REPLAYED (verbatim) and deleted,
+        /// NOT skipped forever. The drain-ready signal is "the node reached the
+        /// migration target", not "producing == loaded". This test FAILS against
+        /// the old `producing_app_key != Some(loaded)` skip (the stale record was
+        /// dropped, losing the offline write).
         #[tokio::test]
-        async fn drain_replays_matching_record_verbatim_and_deletes_it() {
-            // Loaded reader falls back to GroupMeta.app_key = APP_V2 here, so
-            // the APP_V2 record is now readable (drain it) while the APP_V1
-            // record is not yet readable (leave it pending).
+        async fn drain_replays_stale_straggler_when_node_reached_target() {
+            // Loaded reader falls back to GroupMeta.app_key = APP_V2, and the
+            // migration target is also APP_V2 ⇒ loaded == target.
             let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
             let repo = AbsorbRepository::new(&store);
 
-            // Drainable: schema matches the loaded reader.
-            repo.save(&ctx, APP_V2, &sample_record([0xA1; 32], APP_V2))
-                .unwrap();
-            // Not yet drainable: schema still behind the loaded reader. (A v1
-            // straggler buffered for a node that has since advanced *past* v1
-            // to v2 — modeled here only to assert the drain leaves
-            // non-matching records in place; the real never-readable case is
-            // out of scope.)
+            // The stale v1 straggler buffered while this node was on v1; the node
+            // has since advanced to v2 (loaded == target == v2). It is now behind
+            // the loaded reader yet replayable through the current wasm.
             repo.save(&ctx, APP_V1, &sample_record([0xB2; 32], APP_V1))
                 .unwrap();
 
-            // Record which deltas the (mocked) replay path saw, so we can
-            // assert the bytes were replayed verbatim — never translated.
             let replayed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<[u8; 32]>::new()));
             let replayed_capture = replayed.clone();
 
             let drained = drain_absorbed_records(&store, &ctx, move |buffered| {
                 let replayed = replayed_capture.clone();
                 async move {
-                    // Verbatim: the replay sees the original payload bytes.
+                    // Verbatim: the replay sees the original payload bytes,
+                    // never a translated re-encoding.
                     assert_eq!(buffered.payload, vec![1, 2, 3]);
                     replayed.lock().unwrap().push(buffered.id);
                     Ok::<bool, eyre::Report>(true)
@@ -2753,17 +2801,100 @@ mod tests {
             .await
             .unwrap();
 
-            assert_eq!(drained, 1, "exactly the now-readable record drains");
+            assert_eq!(
+                drained, 1,
+                "a stale straggler must drain once the node reached the target"
+            );
             assert_eq!(
                 *replayed.lock().unwrap(),
-                vec![[0xA1; 32]],
-                "only the loaded-reader-matching record is replayed (verbatim)"
+                vec![[0xB2; 32]],
+                "the stale v1 straggler is replayed verbatim, not dropped"
             );
+            assert!(
+                repo.enumerate_pending(&ctx).unwrap().is_empty(),
+                "the replayed straggler must be deleted, not left to leak"
+            );
+        }
 
-            // The replayed record is deleted; the not-yet-readable one stays.
+        /// A FUTURE-schema delta — `producing == v2` (the target), node still
+        /// behind on `loaded == v1 < target` — must be SKIPPED (the binary can't
+        /// read it yet, never translate). Once the node advances so
+        /// `loaded == target == v2`, the same record drains.
+        #[tokio::test]
+        async fn drain_skips_future_delta_until_node_advances() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            // Node behind: loaded reader = v1, target (GroupMeta.app_key) = v2.
+            install_loaded_reader(&store, &ctx, APP_V1);
+            let repo = AbsorbRepository::new(&store);
+
+            // Future delta: produced under the target schema v2.
+            repo.save(&ctx, APP_V2, &sample_record([0xC3; 32], APP_V2))
+                .unwrap();
+
+            let noop = |_buffered: BufferedDelta| async move { Ok::<bool, eyre::Report>(true) };
+
+            // While behind (loaded == v1 != target == v2, producing == v2 !=
+            // loaded), the future delta must NOT be replayed.
+            let drained = drain_absorbed_records(&store, &ctx, noop).await.unwrap();
+            assert_eq!(drained, 0, "a future-schema delta is skipped while behind");
             let pending = repo.enumerate_pending(&ctx).unwrap();
-            assert_eq!(pending.len(), 1, "the non-matching record is left in place");
-            assert_eq!((pending[0].1).id, [0xB2; 32]);
+            assert_eq!(pending.len(), 1, "the future delta stays pending");
+            assert_eq!((pending[0].1).id, [0xC3; 32]);
+
+            // The node advances to the target → loaded == target == v2 → drains.
+            install_loaded_reader(&store, &ctx, APP_V2);
+            let drained = drain_absorbed_records(&store, &ctx, noop).await.unwrap();
+            assert_eq!(drained, 1, "the future delta drains once the node advances");
+            assert!(repo.enumerate_pending(&ctx).unwrap().is_empty());
+        }
+
+        /// Leaf- and entity-shaped sync-repair records are NOT replayable deltas
+        /// and must be SKIPPED by the delta drain (they are drained by the
+        /// leaf/entity-replay path), even when the node has reached the target.
+        #[tokio::test]
+        async fn delta_drain_skips_leaf_and_entity_records() {
+            // loaded == target == v2.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+
+            // A sync-repair leaf and a snapshot entity, both stamped v2 (the
+            // target) — the delta drain must still leave them untouched.
+            repo.save(
+                &ctx,
+                APP_V2,
+                &AbsorbRecord::from_leaf([0xD4; 32], vec![1, 2, 3], APP_V2),
+            )
+            .unwrap();
+            repo.save(
+                &ctx,
+                APP_V2,
+                &AbsorbRecord::from_snapshot_entity([0xE5; 32], vec![1], vec![2], APP_V2),
+            )
+            .unwrap();
+
+            let replayed = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+            let replayed_capture = replayed.clone();
+            let drained = drain_absorbed_records(&store, &ctx, move |_buffered| {
+                let replayed = replayed_capture.clone();
+                async move {
+                    *replayed.lock().unwrap() += 1;
+                    Ok::<bool, eyre::Report>(true)
+                }
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(drained, 0, "the delta drain replays no leaf/entity records");
+            assert_eq!(
+                *replayed.lock().unwrap(),
+                0,
+                "leaf/entity records are never fed to the delta replay path"
+            );
+            assert_eq!(
+                repo.enumerate_pending(&ctx).unwrap().len(),
+                2,
+                "leaf/entity records are left for the leaf/entity drain path"
+            );
         }
 
         /// Re-running the drain after a successful pass is a no-op (idempotent
@@ -2811,21 +2942,24 @@ mod tests {
 
         /// On node startup the AbsorbBuffer is durable (RocksDB CF), so any
         /// straggler delta persisted before a restart must be re-considered for
-        /// drain. The recovery scan enumerates *every* context with pending
-        /// absorbs and, for each, replays the records the now-loaded reader can
-        /// read (deleting them) while leaving still-behind records in place — a
-        /// restart mid-window must not lose buffered deltas.
+        /// drain. With the loaded reader at the migration target, both a
+        /// target-schema record and a STALE v1 straggler (behind the loaded
+        /// reader) are now replayable and must drain — a restart mid-window must
+        /// not lose buffered deltas. A genuinely future record (target not yet
+        /// reached) is left behind; that path is exercised below.
         #[tokio::test]
-        async fn startup_recovery_drains_readable_records_and_keeps_behind_ones() {
-            // The store's loaded reader falls back to GroupMeta.app_key = APP_V2.
+        async fn startup_recovery_drains_records_once_target_reached() {
+            // The store's loaded reader falls back to GroupMeta.app_key = APP_V2,
+            // and the target is APP_V2 ⇒ loaded == target.
             let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
             let repo = AbsorbRepository::new(&store);
 
-            // Persisted-before-restart, now readable: must drain on startup.
+            // Persisted-before-restart, target-schema: must drain on startup.
             repo.save(&ctx, APP_V2, &sample_record([0xA1; 32], APP_V2))
                 .unwrap();
-            // Persisted-before-restart, still behind the loaded reader: must
-            // survive the startup scan untouched.
+            // Persisted-before-restart, stale v1 straggler (behind the loaded
+            // reader but the node reached the target): must ALSO drain — the
+            // current wasm verbatim-replays it.
             repo.save(&ctx, APP_V1, &sample_record([0xB2; 32], APP_V1))
                 .unwrap();
 
@@ -2847,34 +2981,63 @@ mod tests {
             .unwrap();
 
             assert_eq!(
-                drained, 1,
-                "exactly the now-readable record drains on startup"
+                drained, 2,
+                "both the target-schema and the stale straggler drain on startup"
             );
+            let mut seen = replayed.lock().unwrap().clone();
+            seen.sort_unstable();
             assert_eq!(
-                *replayed.lock().unwrap(),
-                vec![[0xA1; 32]],
-                "only the loaded-reader-matching record is replayed (verbatim)"
+                seen,
+                vec![[0xA1; 32], [0xB2; 32]],
+                "both records are replayed verbatim once the node reached the target"
             );
 
-            let pending = repo.enumerate_pending(&ctx).unwrap();
-            assert_eq!(
-                pending.len(),
-                1,
-                "the still-behind record must survive the startup scan"
+            assert!(
+                repo.enumerate_pending(&ctx).unwrap().is_empty(),
+                "no record is left stranded once the node reached the target"
             );
-            assert_eq!((pending[0].1).id, [0xB2; 32]);
+        }
+
+        /// A node restarting *still behind* the target (loaded reader < target)
+        /// leaves the unreadable future record pending across the startup scan.
+        #[tokio::test]
+        async fn startup_recovery_keeps_future_record_while_behind() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            // Node behind: loaded reader = v1, target (GroupMeta.app_key) = v2.
+            install_loaded_reader(&store, &ctx, APP_V1);
+            let repo = AbsorbRepository::new(&store);
+
+            // Future delta (target schema) the behind-reader node can't read yet.
+            repo.save(&ctx, APP_V2, &sample_record([0xC3; 32], APP_V2))
+                .unwrap();
+
+            let noop = |_ctx: ContextId, _buffered: BufferedDelta| async move {
+                Ok::<bool, eyre::Report>(true)
+            };
+            let drained = recover_absorbed_records(&store, noop).await.unwrap();
+
+            assert_eq!(drained, 0, "a behind node drains no future record on startup");
+            let pending = repo.enumerate_pending(&ctx).unwrap();
+            assert_eq!(pending.len(), 1, "the future record survives the startup scan");
+            assert_eq!((pending[0].1).id, [0xC3; 32]);
         }
 
         /// The startup scan is idempotent across two recovery calls (e.g. a
-        /// double-init or a quick restart): the already-drained record does not
-        /// re-replay and the surviving record stays put.
+        /// double-init or a quick restart): an already-drained record does not
+        /// re-replay, and a record the node is still too far behind to read
+        /// stays put.
         #[tokio::test]
         async fn startup_recovery_is_idempotent_across_two_calls() {
             let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            // Node behind: loaded == v1 < target == v2, so the future record is
+            // a stable survivor across both scans.
+            install_loaded_reader(&store, &ctx, APP_V1);
             let repo = AbsorbRepository::new(&store);
-            repo.save(&ctx, APP_V2, &sample_record([0xA1; 32], APP_V2))
+            // Readable now (matches the loaded reader v1): drains on the 1st scan.
+            repo.save(&ctx, APP_V1, &sample_record([0xA1; 32], APP_V1))
                 .unwrap();
-            repo.save(&ctx, APP_V1, &sample_record([0xB2; 32], APP_V1))
+            // Future (target schema v2): the behind node leaves it pending.
+            repo.save(&ctx, APP_V2, &sample_record([0xB2; 32], APP_V2))
                 .unwrap();
 
             let noop = |_ctx: ContextId, _buffered: BufferedDelta| async move {
@@ -2887,7 +3050,7 @@ mod tests {
             assert_eq!(second, 0, "a second startup scan re-drains nothing");
 
             let pending = repo.enumerate_pending(&ctx).unwrap();
-            assert_eq!(pending.len(), 1, "the still-behind record persists");
+            assert_eq!(pending.len(), 1, "the future record persists");
             assert_eq!((pending[0].1).id, [0xB2; 32]);
         }
 
