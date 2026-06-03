@@ -673,6 +673,11 @@ impl ContextStorageApplier {
         delta: &CausalDelta<Vec<Action>>,
     ) -> Result<BTreeMap<Id, BTreeSet<PublicKey>>> {
         let mut shared_entities: BTreeSet<Id> = BTreeSet::new();
+        // (member entity id, its anchor id). A `SharedMember` carries no writer
+        // set of its own; it resolves the ANCHOR's writers and the result is
+        // keyed by the MEMBER id so `apply_action` finds it under the member's
+        // own `effective_writers` lookup.
+        let mut members: Vec<(Id, Id)> = Vec::new();
         for action in &delta.payload {
             let metadata = match action {
                 Action::Add { metadata, .. }
@@ -680,13 +685,19 @@ impl ContextStorageApplier {
                 | Action::DeleteRef { metadata, .. } => metadata,
                 Action::Compare { .. } => continue,
             };
-            if matches!(metadata.storage_type, StorageType::Shared { .. }) {
-                let _inserted = shared_entities.insert(action.id());
+            match metadata.storage_type {
+                StorageType::Shared { .. } => {
+                    let _inserted = shared_entities.insert(action.id());
+                }
+                StorageType::SharedMember { anchor, .. } => {
+                    members.push((action.id(), anchor));
+                }
+                StorageType::Public | StorageType::User { .. } | StorageType::Frozen => {}
             }
         }
 
         let mut out: BTreeMap<Id, BTreeSet<PublicKey>> = BTreeMap::new();
-        if shared_entities.is_empty() {
+        if shared_entities.is_empty() && members.is_empty() {
             return Ok(out);
         }
 
@@ -720,6 +731,45 @@ impl ContextStorageApplier {
 
             if let Some(set) = resolved {
                 let _replaced = out.insert(entity_id, set);
+            }
+        }
+
+        // Members resolve from their anchor's rotation log at the same causal
+        // cut. Cache per anchor — one anchor commonly gates many members. When
+        // the anchor has no rotation log (never rotated), leave the member
+        // unset: `apply_action` then falls back to the anchor's settled local
+        // state (genesis writers), which is correct precisely because nothing
+        // has rotated. When the anchor is absent entirely, the fallback yields
+        // the empty set and verification fails closed (the member is retried
+        // once the anchor syncs).
+        let mut anchor_cache: BTreeMap<Id, Option<BTreeSet<PublicKey>>> = BTreeMap::new();
+        for (member_id, anchor) in members {
+            let resolved = match anchor_cache.get(&anchor) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let set = match load_rotation_log_direct(
+                        &self.context_client,
+                        self.context_id,
+                        anchor,
+                    ) {
+                        Ok(Some(log)) => {
+                            rotation_log_reader::writers_at(&log, &delta.parents, |a, b| {
+                                happens_before_in_topology(&topology_snapshot, a, b)
+                            })
+                        }
+                        Ok(None) => None,
+                        Err(e) => {
+                            return Err(eyre::eyre!(
+                                "rotation_log direct read for anchor {anchor:?} failed: {e}"
+                            ))
+                        }
+                    };
+                    let _cached = anchor_cache.insert(anchor, set.clone());
+                    set
+                }
+            };
+            if let Some(set) = resolved {
+                let _replaced = out.insert(member_id, set);
             }
         }
 

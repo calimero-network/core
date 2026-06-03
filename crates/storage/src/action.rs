@@ -302,6 +302,30 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
                 hasher.update([0u8]);
             }
         }
+        StorageType::SharedMember {
+            anchor,
+            signature_data,
+        } => {
+            hasher.update([4u8]); // type tag (distinct from Shared's [3u8])
+                                  // The member commits to its anchor id, not a
+                                  // writer set — the writers live at the anchor
+                                  // and never ride the member's bytes, so the
+                                  // member's hash is stable across rotations.
+            hasher.update(anchor.as_bytes());
+            // sig-data presence tag — mirrors the Shared arm.
+            if let Some(sig_data) = signature_data.as_ref() {
+                hasher.update([1u8]);
+                hasher.update(sig_data.nonce.to_le_bytes());
+                if let Some(signer_hint) = sig_data.signer {
+                    hasher.update([1u8]); // hint-present tag
+                    hasher.update(signer_hint.as_ref() as &[u8; 32]);
+                } else {
+                    hasher.update([0u8]); // hint-absent tag
+                }
+            } else {
+                hasher.update([0u8]);
+            }
+        }
     }
 }
 
