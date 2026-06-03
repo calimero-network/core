@@ -222,6 +222,20 @@ impl<S: StorageAdaptor> Interface<S> {
     /// causal-cut-accurate resolution at merge is the node layer's
     /// `writers_at(anchor_log, delta.parents)`, passed in via
     /// `effective_writers`.
+    ///
+    /// **Best-effort under concurrent rotations** — same caveat the `Shared`
+    /// path carries (see `SharedStorage::current_writers` and the `Shared` arm
+    /// of `apply_action`, which falls back to the entity's *stored* writers the
+    /// same way). The rotation log's *latest* entry is this node's insertion
+    /// order, which can differ from causal order if two rotations arrive
+    /// interleaved; resolving against it (rather than the set causally valid at
+    /// the op's cut) can therefore accept/reject differently across nodes. The
+    /// causal `writers_at` set passed as `effective_writers` is the security
+    /// boundary on the merge path; this fallback only fires when no causal
+    /// context exists (local exec / snapshot) or `writers_at` can't resolve (an
+    /// op causally before any logged rotation). Full causal resolution here is
+    /// deferred to the concurrent-rotation work (P4 / the DAG-causal rotation
+    /// epic), which fixes `Shared` and `SharedMember` uniformly.
     fn resolve_anchor_writers(anchor: Id) -> BTreeSet<PublicKey> {
         if let Ok(Some(log)) = crate::rotation_log::load::<S>(anchor) {
             if let Some(entry) = log.entries.last() {
