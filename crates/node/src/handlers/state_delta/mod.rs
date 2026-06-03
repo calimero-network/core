@@ -651,11 +651,21 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
                 &entity_absorb.entry,
                 &entity_absorb.index,
             ) {
-                Ok(true) => {
+                Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Persisted) => {
                     repo.delete(context_id, producing_app_key, delta_id)?;
                     drained += 1;
                 }
-                Ok(false) => { /* left pending — verify/parse failed */ }
+                // SharedMember is re-applied through the snapshot pass-2
+                // re-drive once the reader has advanced (it already has —
+                // we gated on `schema_app_key == loaded` above). Delete the
+                // orphaned buffer record so it stops blocking the drain
+                // early-exit and wasting a runtime env per state-delta apply.
+                Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::RedrivenElsewhere) => {
+                    repo.delete(context_id, producing_app_key, delta_id)?;
+                }
+                Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Pending) => {
+                    /* left pending — verify/parse failed */
+                }
                 Err(err) => warn!(
                     %context_id,
                     delta_id = ?delta_id,
