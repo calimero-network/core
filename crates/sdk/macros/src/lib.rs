@@ -48,6 +48,7 @@ mod items;
 mod logic;
 mod macros;
 mod mergeable;
+mod migrate_derive;
 mod migration;
 mod private;
 mod reserved;
@@ -340,6 +341,42 @@ pub fn bail(input: TokenStream) -> TokenStream {
 pub fn derive_mergeable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     mergeable::derive(input).into()
+}
+
+/// Generates a `#[app::migrate]` migration function from the new state struct,
+/// so app authors write only the *diff* instead of the full
+/// read-deserialize-carry skeleton.
+///
+/// ```ignore
+/// #[app::state]
+/// #[derive(Migrate)]
+/// #[migrate(from = AppV1, method = migrate_v1_to_v2)]
+/// pub struct AppV2 {
+///     items: UnorderedMap<String, LwwRegister<String>>, // carried from old.items
+///     #[migrate(new = LwwRegister::new("note".to_owned()))]
+///     notes: LwwRegister<String>,                       // additive: seeded
+///     #[migrate(from = legacy)]
+///     renamed: LwwRegister<String>,                     // rename: old.legacy
+/// }
+/// ```
+///
+/// Every field is carried through by name from `from`'s borsh layout unless a
+/// `#[migrate(...)]` attribute overrides it (`new` = additive seed, `from` =
+/// renamed source field). Fields absent from the new struct are dropped
+/// automatically; the generated body runs under the same merge-mode +
+/// deterministic-id machinery as a hand-written `#[app::migrate]`.
+///
+/// # Limitations
+///
+/// Non-generic structs with named fields only. Type-change conversions still
+/// want a hand-written body. The `from` type is the developer-supplied borsh
+/// shadow of the old layout (field order must match the old `#[app::state]`).
+/// The method name defaults to `migrate`; give each derive an explicit
+/// `method = ...` when a module has more than one.
+#[proc_macro_derive(Migrate, attributes(migrate))]
+pub fn derive_migrate(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    migrate_derive::derive(input).into()
 }
 
 /// Logs a message to the runtime's logging system.
