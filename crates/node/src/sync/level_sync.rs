@@ -76,9 +76,9 @@ use eyre::{bail, Result};
 use tracing::{debug, info, trace, warn};
 
 use crate::sync::helpers::{
-    apply_leaf_with_crdt_merge, apply_under_context_lock, generate_nonce,
-    get_local_root_hash_for_context, handle_entity_delete_push_locked,
-    is_leaf_currently_authorized, MAX_ENTITIES_PER_PUSH,
+    apply_leaf_with_crdt_merge, apply_leaf_with_crdt_merge_gated, apply_under_context_lock,
+    generate_nonce, get_local_root_hash_for_context, handle_entity_delete_push_locked,
+    is_leaf_currently_authorized, LeafOutcome, MAX_ENTITIES_PER_PUSH,
 };
 
 // =============================================================================
@@ -474,11 +474,31 @@ async fn run_initiator_impl<T: SyncTransport>(
                         continue;
                     }
 
-                    apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                        apply_leaf_with_crdt_merge(context_id, leaf_data)
-                    })
-                    .await?;
-                    stats.entities_merged += 1;
+                    // PR-6b Task 6b.7: gate on the loaded reader so a
+                    // future-schema leaf is declined+buffered rather than
+                    // LWW-stored as unreadable bytes (sync-repair coverage).
+                    let loaded_app_key =
+                        calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id)
+                            .ok()
+                            .flatten();
+                    let outcome =
+                        apply_under_context_lock(context_client, context_id, &runtime_env, || {
+                            match loaded_app_key {
+                                Some(loaded) => apply_leaf_with_crdt_merge_gated(
+                                    store, context_id, leaf_data, loaded,
+                                ),
+                                None => apply_leaf_with_crdt_merge(context_id, leaf_data)
+                                    .map(|()| LeafOutcome::Applied),
+                            }
+                        })
+                        .await?;
+                    match outcome {
+                        LeafOutcome::Applied => stats.entities_merged += 1,
+                        LeafOutcome::Buffered => {
+                            // Declined: leaf is buffered, not applied. Continue
+                            // the level walk — a later drain replays it.
+                        }
+                    }
                 }
             } else {
                 // Internal node: add to next level query (avoid duplicates with O(1) check)

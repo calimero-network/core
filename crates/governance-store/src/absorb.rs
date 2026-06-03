@@ -161,6 +161,7 @@ mod tests {
             delta_signature: Some([9; 64]),
             governance_drain_attempts: 0,
             producing_app_key: Some([2; 32]),
+            leaf: None,
         }
     }
 

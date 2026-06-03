@@ -585,6 +585,99 @@ pub(crate) async fn drain_absorbed(input: &StateDeltaContext, context_id: &Conte
             "absorb drain: failed to enumerate absorb buffer"
         ),
     }
+
+    // PR-6b Task 6b.7: drain buffered sync-repair leaves as well.
+    if let Err(err) = drain_absorbed_leaves(input, context_id).await {
+        warn!(%context_id, %err, "absorb drain: leaf drain failed");
+    }
+}
+
+/// Drain buffered sync-repair leaves (PR-6b Task 6b.7) once the loaded reader
+/// has advanced to their schema.
+///
+/// Sibling of [`drain_absorbed`] for the leaf-shaped [`AbsorbRecord`]s that the
+/// HashComparison / LevelSync / snapshot apply gate buffered (a receiver on an
+/// older reader declines+buffers a future-schema leaf rather than LWW-storing
+/// unreadable bytes). On binary advance the leaf becomes readable, so we
+/// re-apply its original `TreeLeafData` bytes **verbatim** through
+/// [`apply_leaf_with_crdt_merge`] — the same convergent CRDT-merge the live
+/// sync path uses — and delete the record only on success (idempotent: the leaf
+/// key is part of the absorb-buffer key).
+async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId) -> Result<()> {
+    use borsh::BorshDeserialize;
+    use calimero_context::group_store::AbsorbRepository;
+    use calimero_context::hlc_fence::loaded_reader_app_key;
+    use calimero_node_primitives::sync::TreeLeafData;
+    use calimero_node_primitives::sync::storage_bridge::create_runtime_env;
+
+    let store = input.node_clients.context.datastore();
+
+    // The schema this node can read right now. `None` ⇒ can't tell readability;
+    // leave every leaf record pending.
+    let Some(loaded) = loaded_reader_app_key(store, context_id)? else {
+        return Ok(());
+    };
+
+    let repo = AbsorbRepository::new(store);
+    let pending = repo.enumerate_pending(context_id)?;
+    // Nothing leaf-shaped to do? Avoid building a runtime env / resolving an
+    // identity for the common (delta-only) case.
+    if !pending.iter().any(|(_, r)| r.leaf.is_some()) {
+        return Ok(());
+    }
+
+    let identity = choose_owned_identity(&input.node_clients.context, context_id).await?;
+    let runtime_env = create_runtime_env(store, *context_id, identity);
+
+    let mut drained = 0usize;
+    for ((producing_app_key, delta_id), record) in pending {
+        let Some(leaf_absorb) = record.leaf else {
+            continue; // delta record — handled by `drain_absorbed_records`.
+        };
+        // Only re-apply once the loaded reader matches the leaf's schema.
+        if leaf_absorb.schema_app_key != loaded {
+            continue;
+        }
+
+        let leaf = match TreeLeafData::try_from_slice(&leaf_absorb.leaf_bytes) {
+            Ok(l) => l,
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    %err,
+                    "absorb leaf drain: corrupt buffered leaf bytes — skipping"
+                );
+                continue;
+            }
+        };
+
+        let ctx = *context_id;
+        let apply = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
+            crate::sync::helpers::apply_leaf_with_crdt_merge(ctx, &leaf)
+        });
+        match apply {
+            Ok(()) => {
+                repo.delete(context_id, producing_app_key, delta_id)?;
+                drained += 1;
+            }
+            Err(err) => warn!(
+                %context_id,
+                delta_id = ?delta_id,
+                %err,
+                "absorb leaf drain: re-apply failed — leaving record pending for retry"
+            ),
+        }
+    }
+
+    if drained > 0 {
+        info!(
+            %context_id,
+            drained,
+            "absorb drain: re-applied buffered sync-repair leaves after binary advance"
+        );
+    }
+    Ok(())
 }
 
 /// Core drain mechanics, factored out so the decision/delete logic is unit-
@@ -626,6 +719,14 @@ where
 
     let mut drained = 0usize;
     for ((producing_app_key, delta_id), record) in pending {
+        // PR-6b Task 6b.7: leaf-shaped records (sync-repair absorb) are NOT
+        // replayable deltas — they have no `__calimero_sync_next` payload.
+        // Skip them on the delta-drain; they are drained by the leaf-replay
+        // path (`drain_absorbed_leaves`). Reconstructing a `BufferedDelta` from
+        // one would replay an empty/garbage delta.
+        if record.leaf.is_some() {
+            continue;
+        }
         // Skip records the loaded binary still can't read — they stay pending
         // until the node advances to *their* schema.
         if record.producing_app_key != Some(loaded) {

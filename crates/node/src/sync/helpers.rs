@@ -224,6 +224,78 @@ fn empty_chain_placement_is_safe(parent_is_root: bool, parent_present_locally: b
     parent_is_root || parent_present_locally
 }
 
+/// Outcome of a schema-gated sync-repair leaf apply (PR-6b Task 6b.7).
+///
+/// The sync-repair paths (HashComparison / LevelSync / snapshot) bypass the
+/// gossip state-delta fence, so the readability check lives here instead. A
+/// receiver whose *loaded* reader cannot read a leaf authored under a newer
+/// schema declines + buffers it rather than LWW-storing unreadable bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeafOutcome {
+    /// The leaf was applied to storage (schema matches / legacy leaf / no
+    /// gating context).
+    Applied,
+    /// The leaf was declined and buffered into the absorb buffer — its
+    /// `schema_app_key` is newer than the receiver's loaded reader. It will be
+    /// re-applied verbatim once the reader advances.
+    Buffered,
+}
+
+/// Schema-gated wrapper around [`apply_leaf_with_crdt_merge`] for the
+/// sync-repair paths (PR-6b Task 6b.7 / #2539).
+///
+/// The HashComparison / LevelSync / snapshot repair paths bypass the gossip
+/// state-delta fence entirely, so without this a receiver still on an older
+/// reader would LWW-store unreadable future-schema bytes (the
+/// "v1-binary-fed-v2-bytes" corruption hazard). This gate keys on the
+/// receiver's **loaded** reader (`loaded_app_key`, i.e. `loaded_reader_app_key`)
+/// rather than the replicated `GroupMeta.app_key` (the O3 correction):
+///
+/// * `leaf.metadata.schema_app_key == Some(k)` with `k != loaded_app_key` —
+///   the receiver lacks a reader for the incoming schema. **Decline + buffer**
+///   the leaf verbatim into the absorb buffer (a leaf-shaped [`AbsorbRecord`])
+///   and return [`LeafOutcome::Buffered`]. The bytes are NEVER stored; the
+///   drain re-applies them once the reader advances.
+/// * `schema_app_key == None` (legacy peer) or `== Some(loaded_app_key)` —
+///   apply as today and return [`LeafOutcome::Applied`].
+///
+/// Must be called inside a `with_runtime_env(...)` scope (it delegates to
+/// [`apply_leaf_with_crdt_merge`] on the apply branch).
+pub fn apply_leaf_with_crdt_merge_gated(
+    store: &Store,
+    context_id: ContextId,
+    leaf: &TreeLeafData,
+    loaded_app_key: [u8; 32],
+) -> Result<LeafOutcome> {
+    if let Some(schema) = leaf.metadata.schema_app_key {
+        if schema != loaded_app_key {
+            // The receiver's loaded reader can't read this leaf — buffer it
+            // verbatim instead of storing unreadable bytes. Keyed by the leaf
+            // key (idempotent overwrite on re-delivery), under the *sender's*
+            // schema so the drain only re-applies once this node advances to it.
+            let leaf_bytes = borsh::to_vec(leaf)?;
+            let record = calimero_context::group_store::AbsorbRecord::from_leaf(
+                leaf.key, leaf_bytes, schema,
+            );
+            calimero_context::group_store::AbsorbRepository::new(store)
+                .save(&context_id, schema, &record)?;
+            crate::node_metrics::record_delta_outcome("absorbed_leaf_future_schema");
+            tracing::warn!(
+                %context_id,
+                key = %hex::encode(leaf.key),
+                ?schema,
+                ?loaded_app_key,
+                "sync-repair leaf authored under a newer schema than the loaded \
+                 reader — buffered into the absorb buffer instead of storing \
+                 unreadable bytes (will replay once the reader advances)"
+            );
+            return Ok(LeafOutcome::Buffered);
+        }
+    }
+    apply_leaf_with_crdt_merge(context_id, leaf)?;
+    Ok(LeafOutcome::Applied)
+}
+
 pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) -> Result<()> {
     let entity_id = Id::new(leaf.key);
     let root_id = Id::new(*context_id.as_ref());
@@ -544,9 +616,17 @@ pub fn handle_entity_push(
         entities
     };
 
+    // PR-6b Task 6b.7: the schema this node can read *right now* (its loaded
+    // reader). A future-schema leaf is declined+buffered rather than stored.
+    // `None` (non-group context / unresolvable meta) ⇒ no gate, apply as today.
+    let loaded_app_key = calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id)
+        .ok()
+        .flatten();
+
     calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
         let mut applied = 0u32;
         let mut dropped_unauthorized = 0u32;
+        let mut buffered = 0u32;
         let mut deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)> = Vec::new();
         for leaf in entities {
             if !leaf.is_valid() {
@@ -599,8 +679,21 @@ pub fn handle_entity_push(
                 ));
                 continue;
             }
-            match apply_leaf_with_crdt_merge(context_id, leaf) {
-                Ok(()) => applied += 1,
+            let apply_result = match loaded_app_key {
+                Some(loaded) => {
+                    apply_leaf_with_crdt_merge_gated(store, context_id, leaf, loaded).map(
+                        |outcome| match outcome {
+                            LeafOutcome::Applied => true,
+                            LeafOutcome::Buffered => false,
+                        },
+                    )
+                }
+                // No loaded reader resolvable — apply as before (no gate).
+                None => apply_leaf_with_crdt_merge(context_id, leaf).map(|()| true),
+            };
+            match apply_result {
+                Ok(true) => applied += 1,
+                Ok(false) => buffered += 1,
                 Err(e) => {
                     tracing::warn!(
                         %context_id,
@@ -610,6 +703,13 @@ pub fn handle_entity_push(
                     );
                 }
             }
+        }
+        if buffered > 0 {
+            tracing::info!(
+                %context_id,
+                buffered,
+                "EntityPush: buffered future-schema entities into the absorb buffer"
+            );
         }
         if dropped_unauthorized > 0 {
             tracing::info!(
@@ -884,6 +984,112 @@ mod tests {
     #[test]
     fn extract_author_no_authorization_returns_none() {
         assert_eq!(extract_author_from_leaf_authorization(None), None);
+    }
+
+    // ---- PR-6b / #2539 sync-repair coverage: future-schema leaf is buffered ----
+
+    use calimero_node_primitives::sync::{LeafMetadata, TreeLeafData};
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::crdt::CrdtType;
+    use calimero_storage::address::Id;
+    use calimero_storage::index::Index;
+    use calimero_storage::store::MainStorage;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use std::sync::Arc;
+
+    fn opaque_leaf_with_schema(key: [u8; 32], schema: Option<[u8; 32]>) -> TreeLeafData {
+        // An opaque (non-root) LWW leaf — the simplest leaf the apply path
+        // stores directly without WASM dispatch.
+        let mut md = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        if let Some(k) = schema {
+            md = md.with_schema_app_key(k);
+        }
+        TreeLeafData::new(key, b"v2-bytes".to_vec(), md)
+    }
+
+    #[test]
+    fn leaf_with_future_schema_is_buffered_not_stored() {
+        // The v1-binary-fed-v2-bytes corruption hazard: a receiver whose loaded
+        // reader is v1 must DECLINE + BUFFER a leaf authored under v2 instead of
+        // LWW-storing unreadable bytes. The leaf must NOT be persisted.
+        let context_id = ContextId::from([0xCA; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = calimero_node_primitives::sync::storage_bridge::create_runtime_env(
+            &store, context_id, identity,
+        );
+
+        let leaf_key = [0x42u8; 32];
+        let leaf = opaque_leaf_with_schema(leaf_key, Some([2u8; 32])); // v2
+        let loaded_v1 = [1u8; 32];
+
+        let outcome = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
+            apply_leaf_with_crdt_merge_gated(&store, context_id, &leaf, loaded_v1)
+        })
+        .expect("gated apply must not error");
+
+        assert!(
+            matches!(outcome, LeafOutcome::Buffered),
+            "future-schema leaf must be buffered, got {outcome:?}"
+        );
+
+        // Must not have persisted the unreadable bytes.
+        let stored = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
+            Index::<MainStorage>::get_index(Id::new(leaf_key))
+                .ok()
+                .flatten()
+        });
+        assert!(stored.is_none(), "future-schema leaf must NOT be stored");
+
+        // And it landed in the absorb buffer for a later drain.
+        let pending = calimero_context::group_store::AbsorbRepository::new(&store)
+            .enumerate_pending(&context_id)
+            .expect("enumerate pending");
+        assert_eq!(pending.len(), 1, "future-schema leaf must be buffered");
+    }
+
+    #[test]
+    fn leaf_with_matching_schema_applies() {
+        let context_id = ContextId::from([0xCB; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = calimero_node_primitives::sync::storage_bridge::create_runtime_env(
+            &store, context_id, identity,
+        );
+
+        let leaf_key = [0x43u8; 32];
+        let loaded = [1u8; 32];
+        let leaf = opaque_leaf_with_schema(leaf_key, Some(loaded)); // same schema
+
+        let outcome = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
+            apply_leaf_with_crdt_merge_gated(&store, context_id, &leaf, loaded)
+        })
+        .expect("gated apply must not error");
+
+        assert!(matches!(outcome, LeafOutcome::Applied));
+    }
+
+    #[test]
+    fn legacy_leaf_without_schema_marker_applies() {
+        // Back-compat: an older peer's leaf carries `schema_app_key = None`.
+        // Treat as "no newer schema" → Apply (never buffer).
+        let context_id = ContextId::from([0xCC; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = calimero_node_primitives::sync::storage_bridge::create_runtime_env(
+            &store, context_id, identity,
+        );
+
+        let leaf_key = [0x44u8; 32];
+        let leaf = opaque_leaf_with_schema(leaf_key, None); // legacy: no marker
+
+        let outcome = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
+            apply_leaf_with_crdt_merge_gated(&store, context_id, &leaf, [1u8; 32])
+        })
+        .expect("gated apply must not error");
+
+        assert!(matches!(outcome, LeafOutcome::Applied));
     }
 }
 

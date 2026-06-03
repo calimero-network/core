@@ -59,6 +59,41 @@ pub struct AbsorbRecord {
     pub governance_drain_attempts: u8,
     /// App-schema key the sender stamped onto the state-delta wire.
     pub producing_app_key: Option<[u8; 32]>,
+    /// Set when this record holds a buffered **sync-repair leaf** (PR-6b Task
+    /// 6b.7) rather than a full straggler delta. The sync-repair paths
+    /// (HashComparison / LevelSync / snapshot) bypass the gossip state-delta
+    /// fence, so a receiver on an older reader buffers a future-schema leaf
+    /// here instead of LWW-storing unreadable bytes.
+    ///
+    /// `None` for the delta-absorb path (the gossip fence). The leaf-vs-delta
+    /// drain branches on this tag: a delta replays verbatim through
+    /// `__calimero_sync_next`; a leaf re-applies through
+    /// `apply_leaf_with_crdt_merge` once the reader advances.
+    ///
+    /// Backward-compatible trailing field — see the borsh note on
+    /// [`AbsorbedLeaf`].
+    pub leaf: Option<AbsorbedLeaf>,
+}
+
+/// A buffered sync-repair leaf (PR-6b Task 6b.7).
+///
+/// Holds the original `TreeLeafData` borsh bytes (re-applied verbatim once the
+/// reader advances — never translated) plus the `schema_app_key` it was
+/// authored under, so the drain only re-applies it when the loaded reader has
+/// caught up to that schema.
+///
+/// Borsh round-trips directly (both fields derive). Because `AbsorbRecord.leaf`
+/// is a trailing `Option`, the derived `BorshDeserialize` would normally fail
+/// on the pre-#2539 record layout; in practice the `AbsorbBuffer` column is new
+/// in this train (PR-6b) so no legacy records exist on disk, and every record
+/// is written by this binary. We still keep the field trailing for forward
+/// hygiene.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct AbsorbedLeaf {
+    /// Borsh-serialized `TreeLeafData` — replayed verbatim on drain.
+    pub leaf_bytes: Vec<u8>,
+    /// App-schema (loaded-reader) key the leaf was authored under.
+    pub schema_app_key: [u8; 32],
 }
 
 impl AbsorbRecord {
@@ -80,11 +115,48 @@ impl AbsorbRecord {
             delta_signature: bd.delta_signature,
             governance_drain_attempts: bd.governance_drain_attempts,
             producing_app_key: bd.producing_app_key,
+            leaf: None,
+        }
+    }
+
+    /// Build a leaf-shaped absorb record (PR-6b Task 6b.7). The buffered leaf is
+    /// re-applied verbatim through `apply_leaf_with_crdt_merge` once the loaded
+    /// reader advances to `schema_app_key`; it is NOT a replayable delta, so the
+    /// delta-only fields are left empty / defaulted and the leaf-vs-delta drain
+    /// branches on `self.leaf.is_some()`.
+    ///
+    /// `id` is the leaf's entity key (the absorb-buffer key's `delta_id`
+    /// component), giving the same idempotent-overwrite-on-redelivery property
+    /// the delta path gets from the real `delta_id`.
+    #[must_use]
+    pub fn from_leaf(leaf_key: [u8; 32], leaf_bytes: Vec<u8>, schema_app_key: [u8; 32]) -> Self {
+        Self {
+            id: leaf_key,
+            parents: Vec::new(),
+            hlc: HybridTimestamp::zero(),
+            payload: Vec::new(),
+            nonce: [0; 12],
+            author_id: PublicKey::from([0; 32]),
+            root_hash: Hash::from([0; 32]),
+            events: None,
+            source_peer: Vec::new(),
+            key_id: [0; 32],
+            governance_position: None,
+            delta_signature: None,
+            governance_drain_attempts: 0,
+            producing_app_key: Some(schema_app_key),
+            leaf: Some(AbsorbedLeaf {
+                leaf_bytes,
+                schema_app_key,
+            }),
         }
     }
 
     /// Reconstruct a [`BufferedDelta`] from this mirror. The `PeerId` parse can
     /// fail (corrupt on-disk bytes), so this returns a `Result`.
+    ///
+    /// Only valid for delta-shaped records (`leaf.is_none()`); leaf-shaped
+    /// records have no replayable delta and must be drained via the leaf path.
     pub fn into_buffered(self) -> EyreResult<BufferedDelta> {
         let source_peer = libp2p::PeerId::from_bytes(&self.source_peer)
             .wrap_err("AbsorbRecord.source_peer is not a valid PeerId")?;
