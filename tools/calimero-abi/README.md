@@ -11,6 +11,26 @@ CLI for working with the Calimero WASM ABI (`abi.json` / `state-schema.json`).
 | `state <wasm>` | Extract the state schema (state root + its type dependencies). |
 | `inspect <wasm>` | List the wasm's custom sections. |
 | `diff <current> <baseline>` | **Compare two `state-schema.json` versions and flag changes that require (or forbid) a migration.** |
+| `embed <wasm> <state-schema.json>` | **Embed a state schema into a wasm as the `calimero_abi_v1` custom section (in place).** |
+
+## `calimero-abi embed` — ship the schema inside the wasm
+
+Writes `state-schema.json` into `<wasm>` as a `calimero_abi_v1` custom section, so
+the app's state shape travels with its bytecode. Run it in the app's build script
+**after `wasm-opt`** (which would otherwise strip an unknown custom section):
+
+```bash
+cargo build --target wasm32-unknown-unknown --profile app-release
+wasm-opt -Oz --enable-bulk-memory res/app.wasm -o res/app.wasm
+calimero-abi embed res/app.wasm res/state-schema.json
+```
+
+Because the section is part of the wasm bytes, it is covered by the app's content
+hash (`blob_id`) — the declared schema cannot be altered without changing the app's
+identity. The node reads this section at upgrade time to enforce the **L1
+identity-downgrade gate** (it refuses a migration that strips authorship/writer-ACL
+from an identity-gated CRDT). The command is idempotent — re-running replaces any
+existing `calimero_abi_v1` section — and fails closed on a malformed wasm.
 
 ## `calimero-abi diff` — migration safety lint
 
