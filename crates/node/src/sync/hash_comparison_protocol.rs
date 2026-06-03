@@ -52,6 +52,7 @@ use calimero_node_primitives::sync::{
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::env::with_runtime_env;
@@ -606,34 +607,41 @@ async fn run_initiator_impl<T: SyncTransport>(
         );
     }
 
+    // Re-read the peer's CURRENT root before closing, so the convergence
+    // check below compares against the peer's live state rather than the
+    // root captured at handshake.
+    //
+    // The handshake root goes stale the moment either side moves: after a
+    // bidirectional reconcile the initiator pushed local-only leaves /
+    // tombstones, so the peer's root advanced past the captured value; the
+    // peer may also have applied its own concurrent writes. Comparing a
+    // converged session against that stale snapshot has two failure modes,
+    // both observed in production:
+    //   - false negative: a session that fully converged reports
+    //     `root_hash_verified = false`, producing the WARN that fires on
+    //     every interval-sync tick "forever";
+    //   - false positive: a session that merely re-reached the stale
+    //     snapshot reports `verified = true` while the peer has actually
+    //     moved on, masking a real divergence.
+    // Both collapse to "the guard never asked the peer where it is now."
+    // One extra request closes the gap.
+    //
+    // Falls back to the captured handshake root when the peer does not
+    // answer — an older peer closes the stream on the unrecognized request,
+    // and a transport error is non-fatal here — preserving prior behaviour
+    // for mixed-version clusters.
+    let peer_current_root = match query_peer_current_root(transport, context_id, identity).await {
+        Ok(Some(root)) => root,
+        Ok(None) | Err(_) => remote_root_hash,
+    };
+
     // Close the transport to signal completion to the responder
     transport.close().await?;
 
-    // Post-sync convergence check (#2407). We compare the local
-    // root against the remote root the initiator started with, but
-    // do NOT treat mismatch as fatal:
-    //
-    // - Pull-only convergence: local should equal remote_root_hash.
-    // - Bidirectional sync: the initiator pushed local-only data to
-    //   the peer, so the peer's root advanced past
-    //   `remote_root_hash` (which we captured at handshake) — the
-    //   initiator's post-sync root won't match that stale value,
-    //   even though both peers have converged to the same NEW root.
-    // - Concurrent local writes between handshake and now: same
-    //   shape — local moves on, won't match captured remote.
-    //
-    // We can't distinguish "real divergence bug (#2407)" from
-    // "legitimate bidirectional drift" without a second handshake
-    // round-trip. So instead: set the flag, surface mismatch at
-    // WARN level (was: silent debug), and let the sync manager /
-    // metrics consumer react to *patterns* of unverified syncs.
-    // The bug #2407 documents is a node logging this WARN every
-    // second forever — that's now visible in logs and via the
-    // `root_hash_verified` stats field.
     let local_root_hash = with_runtime_env(runtime_env.clone(), || {
         get_local_root_hash_for_context(context_id)
     })?;
-    stats.root_hash_verified = local_root_hash == remote_root_hash;
+    stats.root_hash_verified = local_root_hash == peer_current_root;
 
     info!(
         %context_id,
@@ -649,19 +657,56 @@ async fn run_initiator_impl<T: SyncTransport>(
         warn!(
             %context_id,
             local_hash = %hex::encode(&local_root_hash[..8]),
-            remote_hash = %hex::encode(&remote_root_hash[..8]),
+            peer_hash = %hex::encode(&peer_current_root[..8]),
             nodes_compared = stats.nodes_compared,
             entities_merged = stats.entities_merged,
             entities_pushed = stats.entities_pushed,
             nodes_skipped = stats.nodes_skipped,
-            "HashComparison sync did not match remote handshake root (#2407). \
-             Legitimate in bidirectional sync (peer's root advanced after our push) \
-             or with concurrent local writes; persistent occurrences of this WARN \
-             across many interval-sync ticks indicate a real merge convergence bug."
+            "HashComparison sync did not converge with the peer's live root. \
+             Compared against the peer's post-sync root (re-read at session end), \
+             so a mismatch here means the two nodes are genuinely divergent — \
+             persistent occurrences across interval-sync ticks indicate a real \
+             merge convergence bug rather than benign handshake drift."
         );
     }
 
     Ok(stats)
+}
+
+/// Ask the peer for its current root hash at the end of a HashComparison
+/// session, after both sides have applied every merge/push in this exchange.
+///
+/// Reuses the `DagHeadsRequest` / `DagHeadsResponse` pair (which already
+/// carries the peer's live `root_hash`) so no new wire message is needed. The
+/// initiator uses the returned root as the post-sync convergence target.
+///
+/// Returns `Ok(None)` when the peer closes the stream or replies with an
+/// unexpected payload — an older peer that does not handle this mid-session
+/// request — so the caller can fall back to the handshake root.
+async fn query_peer_current_root<T: SyncTransport>(
+    transport: &mut T,
+    context_id: ContextId,
+    identity: PublicKey,
+) -> Result<Option<[u8; 32]>> {
+    let request = StreamMessage::Init {
+        context_id,
+        party_id: identity,
+        payload: InitPayload::DagHeadsRequest { context_id },
+        next_nonce: generate_nonce(),
+    };
+    transport.send(&request).await?;
+
+    let Some(response) = transport.recv().await? else {
+        return Ok(None);
+    };
+
+    match response {
+        StreamMessage::Message {
+            payload: MessagePayload::DagHeadsResponse { root_hash, .. },
+            ..
+        } => Ok(Some(*root_hash)),
+        _ => Ok(None),
+    }
 }
 
 // =============================================================================
@@ -896,6 +941,35 @@ async fn run_responder_impl<T: SyncTransport>(
                 requests_handled += 1;
 
                 info!(%context_id, applied, total, "Applied pushed tombstones (delete-wins)");
+            }
+
+            InitPayload::DagHeadsRequest { .. } => {
+                // End-of-session convergence re-read for the initiator's
+                // post-sync check. Re-read our root NOW — after applying every
+                // leaf/tombstone pushed in this session — instead of reusing
+                // the value captured at the top of this responder, so the
+                // initiator compares against our live post-merge state rather
+                // than a stale snapshot.
+                let current_root = with_runtime_env(runtime_env.clone(), || {
+                    Index::<MainStorage>::get_hashes_for(Id::new(*context_id.as_ref()))
+                        .ok()
+                        .flatten()
+                        .map(|(full, _)| full)
+                        .unwrap_or([0; 32])
+                });
+
+                let msg = StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::DagHeadsResponse {
+                        dag_heads: Vec::new(),
+                        root_hash: Hash::from(current_root),
+                    },
+                    next_nonce: generate_nonce(),
+                };
+
+                transport.send(&msg).await?;
+                sequence_id += 1;
+                requests_handled += 1;
             }
 
             _ => {

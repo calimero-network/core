@@ -1752,4 +1752,246 @@ mod tests {
             "error message should mention not_found; got: {msg}"
         );
     }
+
+    /// Like `execute_hash_comparison_sync`, but lets the caller inject the
+    /// exact `remote_root_hash` the initiator carries into the post-sync
+    /// convergence guard, and returns the *raw* `HashComparisonStats` (the
+    /// `SimSyncStats` wrapper drops `root_hash_verified`).
+    ///
+    /// In production, `remote_root_hash` is the peer's root captured at
+    /// handshake time. If the peer advances *after* the handshake (e.g. a
+    /// cross-DAG governance buffer drains), this captured value goes stale
+    /// while the responder still serves its live tree — which is exactly the
+    /// condition we reproduce here.
+    async fn run_hash_comparison_with_remote_root(
+        initiator: &mut SimNode,
+        responder: &SimNode,
+        remote_root_hash: [u8; 32],
+    ) -> Result<HashComparisonStats> {
+        let (mut init_stream, mut resp_stream) = SimStream::pair();
+
+        let initiator_store = initiator.storage().store();
+        let responder_store = responder.storage().store();
+        let initiator_context = initiator.context_id();
+        let responder_context = responder.context_id();
+        let identity = PublicKey::from([0u8; 32]);
+
+        // The stale handshake snapshot — NOT re-derived from the responder's
+        // current state.
+        let config = HashComparisonConfig {
+            remote_root_hash,
+            context_client: None,
+        };
+
+        let initiator_fut = async {
+            HashComparisonProtocol::run_initiator(
+                &mut init_stream,
+                initiator_store,
+                initiator_context,
+                identity,
+                config,
+            )
+            .await
+        };
+
+        let responder_fut = async {
+            let first_msg = resp_stream
+                .recv()
+                .await?
+                .ok_or_else(|| eyre::eyre!("Stream closed before first message"))?;
+            let first_request = match first_msg {
+                StreamMessage::Init {
+                    payload:
+                        InitPayload::TreeNodeRequest {
+                            node_id, max_depth, ..
+                        },
+                    ..
+                } => HashComparisonFirstRequest { node_id, max_depth },
+                _ => bail!("Expected TreeNodeRequest Init message"),
+            };
+            HashComparisonProtocol::run_responder(
+                &mut resp_stream,
+                responder_store,
+                responder_context,
+                identity,
+                first_request,
+            )
+            .await
+        };
+
+        let (init_result, resp_result) = tokio::join!(initiator_fut, responder_fut);
+        resp_result.wrap_err("responder failed")?;
+        init_result.wrap_err("initiator failed")
+    }
+
+    /// **BUG REPRODUCTION (#2607)**: the post-sync convergence guard compares
+    /// the local root against the `remote_root_hash` captured at handshake,
+    /// rather than the peer's root *as it stands after the sync*. So
+    /// `root_hash_verified` tracks a stale snapshot, not actual convergence.
+    ///
+    /// This is the failure mode the guard's own comment documents but treats
+    /// as unavoidable ("we can't distinguish a real divergence bug from
+    /// legitimate bidirectional drift without a second handshake round-trip"):
+    ///
+    /// 1. At handshake the initiator captures the responder's root,
+    ///    `bob_handshake_root` (bob holds only the shared base entity).
+    /// 2. Alice holds the base entity plus several local-only entities, so she
+    ///    pushes them to bob during the bidirectional reconcile.
+    /// 3. Both nodes converge byte-for-byte to a NEW root that is strictly
+    ///    past `bob_handshake_root`. They are genuinely IN SYNC.
+    /// 4. The guard evaluates `local (new_root) == bob_handshake_root` and
+    ///    reports `root_hash_verified == false` — even though the peers fully
+    ///    converged. In production this is the WARN that fires every
+    ///    interval-sync tick "forever"; the identical stale comparison is also
+    ///    what lets `verified == true` mask a *real* divergence elsewhere.
+    ///
+    /// Regression contract: after the fix re-derives the comparison from the
+    /// peer's CURRENT root (a second root exchange), this fully-converged sync
+    /// must report `root_hash_verified == true`. This test FAILS against
+    /// current `master` (verified is wrongly false).
+    #[tokio::test]
+    async fn test_verify_guard_uses_stale_handshake_root() {
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared base entity: both non-empty, equal root at handshake.
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        assert_eq!(alice.root_hash(), bob.root_hash());
+
+        // (1) The root the initiator captures at handshake = bob's CURRENT
+        //     root. The responder can serve this tree (no not_found), so the
+        //     DFS completes normally.
+        let bob_handshake_root = bob.root_hash();
+
+        // (2) Alice writes local-only entities she will push to bob.
+        for i in 1..=5 {
+            alice.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("seed-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+        assert_ne!(alice.root_hash(), bob_handshake_root);
+
+        // (3) Bidirectional HashComparison: alice pushes her extras, both
+        //     converge to a NEW root past the captured snapshot.
+        let stats = run_hash_comparison_with_remote_root(&mut alice, &bob, bob_handshake_root)
+            .await
+            .expect("sync should succeed");
+
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "alice and bob must be fully converged after the bidirectional sync"
+        );
+        let converged_root = alice.root_hash();
+        assert_ne!(
+            converged_root, bob_handshake_root,
+            "precondition: convergence advanced both nodes past the handshake snapshot"
+        );
+
+        // (4) THE BUG: despite perfect convergence, the guard reports
+        //     unverified because it compared `converged_root == bob_handshake_root`.
+        assert!(
+            stats.root_hash_verified,
+            "root_hash_verified must be true after a fully-converged sync; \
+             it is false here only because the guard compared the local root \
+             against the STALE handshake snapshot instead of the peer's \
+             post-sync root (#2607)"
+        );
+    }
+
+    /// **BUG REPRODUCTION (#2607), pull-dominant variant**: the same stale-root
+    /// guard fires its false-negative WARN even when the initiator is mostly
+    /// *pulling*, as long as it also contributes anything that moves the peer
+    /// past the handshake snapshot.
+    ///
+    /// This is the "fully-converged pull where the peer advanced" shape — the
+    /// closest reproduction of the production WARN that fires every
+    /// interval-sync tick. The initiator pulls the bulk of the divergent state
+    /// from the peer and pushes a single local-only entity back; the push
+    /// advances the peer's root past what the initiator captured at handshake,
+    /// so the post-sync comparison against that captured value reports
+    /// `root_hash_verified == false` despite the nodes being byte-identical.
+    ///
+    /// Distinct from `test_verify_guard_uses_stale_handshake_root` (where the
+    /// initiator is a strict superset and only pushes): here the initiator
+    /// genuinely merges remote leaves (`entities_transferred > 0`) *and*
+    /// advances the peer, exercising both directions.
+    ///
+    /// Regression contract: after the fix re-reads the peer's CURRENT root,
+    /// this fully-converged sync must report `root_hash_verified == true`.
+    /// FAILS against current `master` (verified is wrongly false).
+    #[tokio::test]
+    async fn test_verify_guard_false_negative_on_converged_pull() {
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared base entity: equal root at handshake.
+        let base_id = EntityId::from_u64(2000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        assert_eq!(alice.root_hash(), bob.root_hash());
+
+        // Bob holds the bulk of the divergent state — alice will PULL these.
+        for i in 1..=3 {
+            bob.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("bob-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        // The root captured at handshake = bob's CURRENT root (servable, so the
+        // DFS root request does not hit not_found). Bob does not change again
+        // until alice's push lands mid-session.
+        let bob_handshake_root = bob.root_hash();
+
+        // Alice contributes a single local-only entity she will PUSH, which
+        // advances bob's root past the captured snapshot.
+        alice.insert_entity_with_metadata(
+            EntityId::from_u64(99),
+            b"alice-only".to_vec(),
+            EntityMetadata::default(),
+        );
+
+        let stats = run_hash_comparison_with_remote_root(&mut alice, &bob, bob_handshake_root)
+            .await
+            .expect("sync should succeed");
+
+        // Fully converged, byte-for-byte.
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "alice and bob must be fully converged"
+        );
+        let converged_root = alice.root_hash();
+
+        // This was a real pull (alice merged bob's three entities)...
+        assert!(
+            stats.entities_merged >= 3,
+            "alice should have pulled bob's divergent leaves, got {}",
+            stats.entities_merged
+        );
+        // ...and the peer genuinely advanced past the captured snapshot.
+        assert_ne!(
+            converged_root, bob_handshake_root,
+            "precondition: bob advanced past the handshake snapshot it served"
+        );
+
+        // THE BUG: the guard compares the converged local root against the
+        // stale `bob_handshake_root` and reports the sync unverified — the
+        // forever-WARN false negative.
+        assert!(
+            stats.root_hash_verified,
+            "root_hash_verified must be true after a fully-converged pull; \
+             it is false here only because the guard compared the local root \
+             against the STALE handshake snapshot instead of the peer's \
+             post-sync root (#2607)"
+        );
+    }
 }
