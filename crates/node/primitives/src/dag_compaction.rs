@@ -43,6 +43,11 @@ pub const DEFAULT_CHECK_INTERVAL_SECS: u64 = 3_600;
 /// selected for a diverged initialized node — which converges current state
 /// without consulting the delta log. Operators can still set `enabled = false`
 /// to opt out.
+///
+/// **Upgrade note:** a node upgrading from a build where compaction was
+/// disabled-by-default, and whose config has no `[dag_compaction]` section,
+/// will begin compacting automatically on the next restart. Set
+/// `enabled = false` to preserve the old behavior.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct DagCompactionConfig {
