@@ -110,32 +110,60 @@ pub use error::StorageError;
 pub use interface::Interface;
 
 /// Shared test functionality.
-#[cfg(test)]
+///
+/// The module gate is `any(test, feature = "testing")` rather than plain
+/// `#[cfg(test)]` so the cross-crate helpers in [`common`] (action signing /
+/// builder utilities) are visible to dependent crates' tests through the
+/// `testing` feature. Every other submodule stays `#[cfg(test)]`: they are
+/// storage-internal unit tests with no cross-crate consumers, and exposing
+/// them under the feature would pull dev-only dependencies into ordinary
+/// `--features testing` builds.
+///
+/// `#[doc(hidden)]`: this is test/dev scaffolding, not public API. Consumers
+/// must enable `testing` only in `[dev-dependencies]` (as `calimero-node`
+/// does); it is not meant for production dependency graphs.
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
 pub mod tests {
+    /// Common test utilities and data structures.
+    ///
+    /// This is the one submodule exposed cross-crate via the `testing`
+    /// feature.
+    pub mod common;
+
     /// AuthoredMap/AuthoredVector merge-time auth tests.
+    #[cfg(test)]
     pub mod authored_primitives;
     /// CRDT collections (UnorderedMap, Vector, Counter) tests.
+    #[cfg(test)]
     pub mod collections;
-    /// Common test utilities and data structures.
-    pub mod common;
     /// Concurrency race reproduction (core#2571).
+    #[cfg(test)]
     pub mod concurrency;
     /// Comprehensive CRDT behavior tests.
+    #[cfg(test)]
     pub mod crdt;
     /// Delta creation and commit tests.
+    #[cfg(test)]
     pub mod delta;
     /// LWW (Last-Write-Wins) Register CRDT tests.
+    #[cfg(test)]
     pub mod lww_register;
     /// CRDT type-based merge dispatch tests (TDD for PR #1889).
+    #[cfg(test)]
     pub mod merge_dispatch;
     /// Merge integration tests (using serialization instead of Clone).
+    #[cfg(test)]
     pub mod merge_integration;
     /// Merkle hash propagation tests.
+    #[cfg(test)]
     pub mod merkle;
     /// RGA (Replicated Growable Array) CRDT tests.
+    #[cfg(test)]
     pub mod rga;
     /// Storage-internal regression: the rotation-write hook depends on the
     /// stored-writers field staying frozen at bootstrap (see #2266 step 5).
+    #[cfg(test)]
     pub mod write_hook_stale_writers;
     // TODO: Re-enable once Clone is implemented for collections
     // /// Nested CRDT merge behavior tests.
