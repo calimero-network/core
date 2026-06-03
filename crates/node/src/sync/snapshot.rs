@@ -1,6 +1,7 @@
 //! Snapshot sync protocol for full state bootstrap.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::time::Instant;
 
 use borsh::BorshDeserialize;
 use calimero_crypto::Nonce;
@@ -185,6 +186,7 @@ impl SyncManager {
                     cursor: None,
                     page_count: 0,
                     sent_count: 0,
+                    total_records: 0,
                 },
                 next_nonce: super::helpers::generate_nonce(),
             };
@@ -223,6 +225,7 @@ impl SyncManager {
                     cursor,
                     page_count,
                     sent_count: (i + 1) as u64,
+                    total_records: total_entries,
                 },
                 next_nonce: super::helpers::generate_nonce(),
             };
@@ -446,6 +449,9 @@ impl SyncManager {
         // Set sync-in-progress marker for crash recovery detection
         self.set_sync_in_progress_marker(context_id, &boundary.boundary_root_hash)?;
 
+        // Wall-clock start, for the snapshot-progress ETA estimate.
+        let started_at = Instant::now();
+
         // Collect existing keys BEFORE receiving any pages
         // We'll use this to determine which keys to delete after sync completes
         let existing_keys: HashSet<[u8; 32]> = {
@@ -518,6 +524,7 @@ impl SyncManager {
                         cursor,
                         page_count,
                         sent_count,
+                        total_records,
                     } => {
                         // Handle empty snapshot (no entries)
                         if payload.is_empty() && uncompressed_len == 0 {
@@ -659,6 +666,26 @@ impl SyncManager {
                                     } = &index_entity.metadata.storage_type
                                     {
                                         let _ = anchor_writers.insert(id_obj, writers.clone());
+                                        // P4: seed this anchor's rotation-log floor
+                                        // with the settled writers at the snapshot
+                                        // boundary, so post-join `writers_at` is
+                                        // total (the joiner never applies deltas
+                                        // predating its boundary). Idempotent.
+                                        if let Err(e) =
+                                            crate::delta_store::seed_rotation_log_genesis_direct(
+                                                &self.context_client,
+                                                context_id,
+                                                id_obj,
+                                                writers.clone(),
+                                            )
+                                        {
+                                            warn!(
+                                                %context_id,
+                                                id = ?id_obj.as_bytes(),
+                                                error = ?e,
+                                                "snapshot: failed to seed anchor rotation-log floor"
+                                            );
+                                        }
                                     }
                                 }
                                 SnapshotRecord::Auxiliary { kind, id, .. } => {
@@ -743,7 +770,12 @@ impl SyncManager {
                         // Surface snapshot progress (per page-burst, a natural
                         // throttle) so a subscriber watching this uninitialized
                         // context sees forward motion rather than a silent wait.
-                        self.emit_snapshot_progress(context_id, total_applied as u64);
+                        self.emit_snapshot_progress(
+                            context_id,
+                            total_applied as u64,
+                            total_records,
+                            started_at.elapsed(),
+                        );
 
                         // Check if this is the last page in this burst
                         let is_last_in_burst = sent_count == page_count;
@@ -907,10 +939,23 @@ impl SyncManager {
 
     /// Record snapshot progress on the advisory `sync_status` mirror and push a
     /// `SyncStatus` event to subscribers. Best-effort: a broadcast with no
-    /// receivers is fine, and `records_received` is a monotonic liveness signal
-    /// (not a percentage — the receiver isn't told a grand total up front).
-    fn emit_snapshot_progress(&self, context_id: ContextId, records_received: u64) {
-        let state = SyncState::ReceivingSnapshot { records_received };
+    /// receivers is fine. `percent`/`eta_secs` are derived only when the sender
+    /// advertised a non-zero grand total (`total_records`); otherwise the
+    /// update carries the raw `records_received` liveness signal alone.
+    fn emit_snapshot_progress(
+        &self,
+        context_id: ContextId,
+        records_received: u64,
+        total_records: u64,
+        elapsed: std::time::Duration,
+    ) {
+        let (percent, eta_secs) =
+            snapshot_progress_estimate(records_received, total_records, elapsed);
+        let state = SyncState::ReceivingSnapshot {
+            records_received,
+            percent,
+            eta_secs,
+        };
         let handle = self.node_state.sync_status_handle();
         // Preserve any failure history the run-loop has already published for
         // this context; this path only advances the snapshot phase. Writing
@@ -986,7 +1031,12 @@ struct SnapshotBoundary {
     dag_heads: Vec<[u8; 32]>,
 }
 
-/// Generate snapshot pages. Returns (pages, next_cursor, total_entries).
+/// Generate snapshot pages. Returns `(pages, next_cursor, total_entries)`,
+/// where `total_entries` is the grand total of shippable `Entity` records at
+/// this boundary — every entity with both an `Index` and an `Entry`, counted
+/// across the whole snapshot regardless of the cursor window, and excluding
+/// orphans that are never shipped. It is therefore the exact denominator the
+/// receiver's cumulative applied count converges to.
 ///
 /// Uses a snapshot iterator to ensure consistent reads even if writes occur
 /// during iteration. The snapshot provides a frozen point-in-time view.
@@ -1394,6 +1444,41 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     Ok((pages, None, total_entries))
 }
 
+/// Derive `(percent, eta_secs)` for a snapshot in progress.
+///
+/// `percent` is `records_received / total_records` clamped to `0..=100`, or
+/// `None` when `total_records` is `0` (sender didn't advertise a total — an
+/// empty snapshot or a peer too old). `eta_secs` extrapolates the remaining
+/// records from the average rate so far; it is `None` until there is at least
+/// one record and a non-zero elapsed window, and `Some(0)` at completion.
+fn snapshot_progress_estimate(
+    records_received: u64,
+    total_records: u64,
+    elapsed: std::time::Duration,
+) -> (Option<u8>, Option<u64>) {
+    if total_records == 0 {
+        return (None, None);
+    }
+    let percent = (records_received.saturating_mul(100) / total_records).min(100) as u8;
+    let secs = elapsed.as_secs_f64();
+    let eta = if records_received > 0 && secs > 0.0 {
+        let rate = records_received as f64 / secs; // records/sec
+        let remaining = total_records.saturating_sub(records_received) as f64;
+        let est = (remaining / rate).ceil();
+        // `as u64` already saturates in current Rust (NaN → 0, +∞ → u64::MAX),
+        // but guard explicitly so a degenerate rate can't surface a misleading
+        // near-zero ETA, and an absurdly large estimate clamps cleanly.
+        if est.is_finite() {
+            Some(est.min(u64::MAX as f64) as u64)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    (Some(percent), eta)
+}
+
 /// Decompress a received snapshot page, guarding against a decompression bomb.
 ///
 /// The page is produced by [`lz4_flex::compress_prepend_size`], so `payload`
@@ -1518,6 +1603,7 @@ fn collect_context_state_keys<L: calimero_store::layer::ReadLayer>(
 mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use calimero_primitives::context::ContextId;
     use calimero_storage::index::EntityIndex;
@@ -1525,6 +1611,42 @@ mod tests {
     use calimero_store::Store;
 
     use super::*;
+
+    #[test]
+    fn snapshot_progress_unknown_total_yields_no_estimate() {
+        // total_records == 0 (empty snapshot or pre-feature peer) → no derived
+        // percent/ETA; the caller still reports raw records_received.
+        let (percent, eta) = snapshot_progress_estimate(5, 0, Duration::from_secs(1));
+        assert_eq!(percent, None);
+        assert_eq!(eta, None);
+    }
+
+    #[test]
+    fn snapshot_progress_percent_is_clamped_and_eta_extrapolates() {
+        // 50 of 200 records in 5s → 25%, rate 10/s, 150 remaining → 15s ETA.
+        let (percent, eta) = snapshot_progress_estimate(50, 200, Duration::from_secs(5));
+        assert_eq!(percent, Some(25));
+        assert_eq!(eta, Some(15));
+
+        // Over-count (receiver applied more than advertised) clamps to 100.
+        let (percent, _) = snapshot_progress_estimate(250, 200, Duration::from_secs(1));
+        assert_eq!(percent, Some(100));
+    }
+
+    #[test]
+    fn snapshot_progress_eta_none_before_any_record_or_time() {
+        // No elapsed window yet → percent known, ETA not.
+        let (percent, eta) = snapshot_progress_estimate(0, 100, Duration::ZERO);
+        assert_eq!(percent, Some(0));
+        assert_eq!(eta, None);
+    }
+
+    #[test]
+    fn snapshot_progress_complete_reports_zero_eta() {
+        let (percent, eta) = snapshot_progress_estimate(100, 100, Duration::from_secs(2));
+        assert_eq!(percent, Some(100));
+        assert_eq!(eta, Some(0));
+    }
 
     /// Persist a well-formed entity (Index + Entry pair) for `ctx`
     /// into `store`, mirroring how production state is laid out: the

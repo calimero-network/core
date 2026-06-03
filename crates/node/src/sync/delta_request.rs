@@ -463,6 +463,18 @@ impl SyncManager {
                         }
                     }
                     Ok(None) => {
+                        // The peer didn't return this delta. `DeltaNotFound` is
+                        // overloaded: a delta compacted away (#2026), a delta
+                        // present in-memory but not yet persisted (a normal
+                        // post-broadcast race), or an unverifiable row (snapshot
+                        // checkpoint / pre-author-tracking). We can't tell which
+                        // from the wire, so we just skip this id and keep
+                        // fetching the rest of the batch and other branches.
+                        // No explicit fallback is needed: a genuinely pruned
+                        // ancestor leaves its descendants pending, and the next
+                        // sync round converges via HashComparison — already the
+                        // protocol selected for a diverged initialized node —
+                        // which reconciles state without the delta log.
                         warn!(%context_id, delta_id = ?missing_id, "Peer doesn't have requested delta");
                     }
                     Err(e) => {

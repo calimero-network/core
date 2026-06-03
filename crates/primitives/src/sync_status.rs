@@ -22,13 +22,19 @@ pub enum SyncState {
     /// A sync attempt is in flight (handshake / delta exchange).
     Syncing,
     /// Receiving an initial-state snapshot. `records_received` is a monotonic
-    /// count of applied entries — a liveness/progress signal. It is not a
-    /// percentage: the snapshot stream is cursor-paged and the receiver is not
-    /// told a grand total up front, so a true percent/ETA would require the
-    /// sender to advertise one (a follow-up wire change).
+    /// count of applied entries. `percent` and `eta_secs` are populated once
+    /// the sender advertises the snapshot's total entity count; they are
+    /// `None` against a peer too old to advertise it (the count then degrades
+    /// to the raw `records_received` liveness signal).
     ReceivingSnapshot {
         /// Entries applied from the snapshot so far.
         records_received: u64,
+        /// Completion percentage in `0..=100`, or `None` if the total is
+        /// unknown. Derived as `records_received / total` and clamped.
+        percent: Option<u8>,
+        /// Estimated seconds remaining, from the observed transfer rate.
+        /// `None` until measurable (or when the total is unknown).
+        eta_secs: Option<u64>,
     },
     /// The last attempt failed and the next retry is gated behind backoff.
     BackingOff {

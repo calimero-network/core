@@ -25,7 +25,7 @@ use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::delta::StorageDelta;
 use calimero_storage::entities::StorageType;
-use calimero_storage::rotation_log::RotationLog;
+use calimero_storage::rotation_log::{RotationLog, RotationLogEntry, RotationSnapshot};
 use calimero_storage::store::Key as StorageKey;
 use eyre::Result;
 use indexmap::IndexMap;
@@ -920,7 +920,7 @@ fn cap_topology(topology: &mut IndexMap<[u8; 32], Vec<[u8; 32]>>) {
 /// Returns `Ok(None)` for entities with no rotation log yet (every
 /// pre-rotation Shared entity), which is fine — the receiver verifier
 /// then falls back to v2 stored-writers, matching pre-#2266 behavior.
-fn load_rotation_log_direct(
+pub(crate) fn load_rotation_log_direct(
     context_client: &ContextClient,
     context_id: ContextId,
     entity_id: Id,
@@ -942,6 +942,135 @@ fn load_rotation_log_direct(
     let log = borsh::from_slice::<RotationLog>(&bytes)
         .map_err(|e| eyre::eyre!("rotation_log decode failed: {e}"))?;
     Ok(Some(log))
+}
+
+/// Write `log` for `entity_id` via a DIRECT datastore write (no WASM
+/// `RUNTIME_ENV`). The byte format is identical to
+/// [`rotation_log::save`](calimero_storage::rotation_log) (borsh `RotationLog`
+/// under `StorageKey::RotationLog`), so a log written here and one written by
+/// the receive-path `MainStorage` hook are interchangeable. Used to self-log a
+/// locally-created delta's own rotations, which happens after execute returns —
+/// outside the env where `MainStorage` is valid.
+fn save_rotation_log_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    entity_id: Id,
+    log: &RotationLog,
+) -> Result<()> {
+    let bytes = borsh::to_vec(log).map_err(|e| eyre::eyre!("rotation_log encode failed: {e}"))?;
+    let storage_key = StorageKey::RotationLog(entity_id).to_bytes();
+    let state_key = calimero_store::key::ContextState::new(context_id, storage_key);
+    let mut handle = context_client.datastore_handle();
+    handle
+        .put(
+            &state_key,
+            &calimero_store::types::ContextState::from(calimero_store::slice::Slice::from(bytes)),
+        )
+        .map_err(|e| eyre::eyre!("rotation_log datastore write failed: {e:?}"))?;
+    Ok(())
+}
+
+/// Seed `entity_id`'s rotation log with `writers` as its genesis/floor snapshot
+/// via a direct datastore write, **if no log exists yet** (idempotent — never
+/// clobbers real history). Datastore-direct counterpart of
+/// [`rotation_log::seed_genesis`](calimero_storage::rotation_log::seed_genesis)
+/// for the cold-join snapshot path (no `RUNTIME_ENV`): a joiner that receives
+/// settled state needs the boundary writer set as its causal floor, so
+/// `writers_at` is total for any post-join cut (it never applies deltas
+/// predating its snapshot boundary).
+pub(crate) fn seed_rotation_log_genesis_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    entity_id: Id,
+    writers: BTreeSet<PublicKey>,
+) -> Result<()> {
+    if load_rotation_log_direct(context_client, context_id, entity_id)?.is_some() {
+        return Ok(());
+    }
+    let log = RotationLog {
+        snapshot: Some(RotationSnapshot {
+            writers,
+            cutoff_index: 0,
+        }),
+        entries: Vec::new(),
+    };
+    save_rotation_log_direct(context_client, context_id, entity_id, &log)
+}
+
+/// Self-log the `Shared` rotations carried by a locally-originated delta's
+/// `actions` into their entities' rotation logs, via direct datastore writes.
+///
+/// The receive path records rotations in `Interface::maybe_append_rotation_log`
+/// (inside the WASM sync-apply); a locally-created delta never goes through that
+/// path, so without this a node is missing its OWN rotations and `writers_at`
+/// stays asymmetric across nodes under concurrent rotation. Mirrors the
+/// receive-path logic: append only on a real rotation — bootstrap (no prior
+/// writers) or a changed writer set — never on a plain value-write. Idempotent
+/// (dedup on `delta_id`), so it is safe to run on both the live notify
+/// (`add_local_applied_delta`) and crash/restart recovery
+/// (`load_persisted_deltas`); the latter backstops the case where the live
+/// notify was skipped (DeltaStore not yet up) and the delta is later restored
+/// as already-applied.
+///
+/// Best-effort: a per-entity read/write failure is logged and skipped, leaving
+/// that entry for the next restart's restore to re-attempt — it never aborts
+/// the (already-committed) delta.
+fn self_log_rotations_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    delta_id: [u8; 32],
+    delta_hlc: calimero_storage::logical_clock::HybridTimestamp,
+    actions: &[Action],
+) {
+    for action in actions {
+        let (entity_id, metadata) = match action {
+            Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
+                (*id, metadata)
+            }
+            Action::DeleteRef { .. } | Action::Compare { .. } => continue,
+        };
+        // Only `Shared` anchors own a rotation log; members/others don't.
+        let StorageType::Shared {
+            writers,
+            signature_data,
+        } = &metadata.storage_type
+        else {
+            continue;
+        };
+        let mut log = match load_rotation_log_direct(context_client, context_id, entity_id) {
+            Ok(existing) => existing.unwrap_or_else(RotationLog::empty),
+            Err(e) => {
+                warn!(?e, %context_id, %entity_id,
+                    "self-log: failed to read rotation log — skipping (restore will retry)");
+                continue;
+            }
+        };
+        // Append only on an actual rotation — bootstrap (no prior writers) OR
+        // the writer set changed. Mirrors `maybe_append_rotation_log`.
+        let prior = log
+            .entries
+            .last()
+            .map(|e| &e.new_writers)
+            .or_else(|| log.snapshot.as_ref().map(|s| &s.writers));
+        if !prior.map_or(true, |p| p != writers) {
+            continue;
+        }
+        // Idempotent on delta_id (one rotation per entity per delta).
+        if log.entries.iter().any(|e| e.delta_id == delta_id) {
+            continue;
+        }
+        log.entries.push(RotationLogEntry {
+            delta_id,
+            delta_hlc,
+            signer: signature_data.as_ref().and_then(|s| s.signer),
+            new_writers: writers.clone(),
+            writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
+        });
+        if let Err(e) = save_rotation_log_direct(context_client, context_id, entity_id, &log) {
+            warn!(?e, %context_id, %entity_id,
+                "self-log: failed to write rotation log — leaving for restore retry");
+        }
+    }
 }
 
 /// Whether the anchor entity `anchor` has synced to this node, by a direct
@@ -1168,6 +1297,25 @@ impl DeltaStore {
                     continue;
                 }
             };
+
+            // P4 backstop: re-self-log this delta's `Shared` rotations on
+            // restore. If the live notify (`add_local_applied_delta`) was
+            // skipped — e.g. the DeltaStore wasn't up when the delta was created
+            // and persisted — the originator's own rotation would otherwise be
+            // missing from its log forever (this delta is restored as
+            // already-applied, so `add_local_applied_delta` won't re-run for
+            // it). Idempotent (dedup on delta_id): a no-op for deltas already
+            // logged at creation or by the receive path. Only applied deltas
+            // represent rotations that actually took effect.
+            if stored_delta.applied {
+                self_log_rotations_direct(
+                    &self.applier.context_client,
+                    self.applier.context_id,
+                    stored_delta.delta_id,
+                    stored_delta.hlc,
+                    &actions,
+                );
+            }
 
             // Reconstruct the delta
             // Infer checkpoint status: checkpoints have genesis as parent and empty payload
@@ -1663,6 +1811,20 @@ impl DeltaStore {
                 return Ok(Vec::new());
             }
         }
+
+        // P4: self-log this delta's own `Shared` rotations (the receive path
+        // logs received rotations; locally-created deltas need this so the node
+        // records its OWN, keeping `writers_at` symmetric across nodes). Runs
+        // after the `is_applied` dedup, so a live local delta is logged once;
+        // `load_persisted_deltas` re-runs the same idempotent helper on restore,
+        // backstopping the case where this live notify was skipped.
+        self_log_rotations_direct(
+            &self.applier.context_client,
+            self.applier.context_id,
+            delta_id,
+            delta.hlc,
+            &delta.payload,
+        );
 
         // Mirror the hash-tracking writes load_persisted_deltas does.
         {
@@ -3092,6 +3254,109 @@ impl DeltaStore {
         );
 
         added_count
+    }
+
+    /// Compact this context's DAG history, bounding on-disk delta growth
+    /// (issue #2026).
+    ///
+    /// When the in-memory DAG holds more than `min_deltas_before_compact`
+    /// deltas, history older than the most-recent `retain_recent_count` is
+    /// dropped from both the in-memory DAG and the durable delta column. The
+    /// retained window keeps cheap incremental delta catch-up working for
+    /// peers with small gaps; a peer that needs older history will request a
+    /// pruned delta, get "not found", and fall back to HashComparison — which
+    /// reconciles current state without the delta log, so the pruned history
+    /// is never required for convergence.
+    ///
+    /// The whole operation runs under the DAG write lock so it serialises
+    /// against `get_delta`/`has_delta` (the responder send path) and the apply
+    /// path: a peer either sees a delta or sees it gone, never a torn view.
+    /// Pruning is skipped while pending deltas exist — a mid-sync DAG whose
+    /// heads are about to advance is not a good moment to draw the retain
+    /// window.
+    ///
+    /// The in-memory prune happens first, then the DB delete. Order is not
+    /// correctness-critical: a crash between them leaves extra delta rows that
+    /// the next sweep re-prunes (and that `load_persisted_deltas` would simply
+    /// reload), never lost state — context state lives in the storage tree,
+    /// not the delta log.
+    ///
+    /// Returns the number of deltas pruned (0 when not eligible or skipped).
+    pub async fn compact(
+        &self,
+        min_deltas_before_compact: usize,
+        retain_recent_count: usize,
+    ) -> usize {
+        let mut dag = self.dag.write().await;
+
+        // `delta_count()` is the in-memory DAG size (applied + pending). It is
+        // NOT the number of DB rows: after a restart `load_persisted_deltas`
+        // is bounded by the in-memory caps (`MAX_TOPOLOGY_ENTRIES`), so a
+        // context with far more rows on disk can report a smaller count here
+        // and under-prune the DB. Bounding cold/large contexts' on-disk rows
+        // is the separate "cold-context compaction" follow-up; this sweep only
+        // bounds the live working set.
+        let total = dag.delta_count();
+        if total <= min_deltas_before_compact {
+            return 0;
+        }
+
+        // Don't compact mid-catch-up: pending deltas mean heads are still
+        // advancing, so the retain window would be drawn against a moving
+        // target. `prune_to_recent` already refuses to drop pending deltas,
+        // but skipping wholesale here also avoids needless churn. A delta
+        // stuck pending blocks its context's compaction until it resolves or
+        // the existing stale-pending eviction (PENDING_DELTA_MAX_AGE) clears
+        // it — so this never wedges a context permanently.
+        let pending = dag.pending_stats().count;
+        if pending > 0 {
+            debug!(
+                context_id = %self.applier.context_id,
+                total,
+                pending,
+                "Skipping DAG compaction: pending deltas present (mid-sync)"
+            );
+            return 0;
+        }
+
+        let pruned_ids = dag.prune_to_recent(retain_recent_count);
+        if pruned_ids.is_empty() {
+            return 0;
+        }
+
+        // Mirror the prune to durable storage. Done while the write lock is
+        // still held so the in-memory and on-disk views can't diverge under a
+        // concurrent responder read.
+        let delta_keys: Vec<calimero_store::key::ContextDagDelta> = pruned_ids
+            .iter()
+            .map(|id| calimero_store::key::ContextDagDelta::new(self.applier.context_id, *id))
+            .collect();
+
+        match self.applier.context_client.prune_delta_records(&delta_keys) {
+            Ok(()) => {
+                let remaining = dag.delta_count();
+                tracing::info!(
+                    context_id = %self.applier.context_id,
+                    pruned = pruned_ids.len(),
+                    remaining,
+                    "Compacted DAG history"
+                );
+            }
+            Err(e) => {
+                // In-memory is already pruned; the DB still carries the rows.
+                // That's the safe direction — the next sweep re-deletes them,
+                // and a restart reloads them into the DAG (no lost state). Log
+                // and report the in-memory prune count regardless.
+                tracing::warn!(
+                    ?e,
+                    context_id = %self.applier.context_id,
+                    pruned = pruned_ids.len(),
+                    "DAG compaction pruned in-memory but failed to delete rows; next sweep retries"
+                );
+            }
+        }
+
+        pruned_ids.len()
     }
 }
 
