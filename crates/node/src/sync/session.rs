@@ -18,9 +18,12 @@
 //! helpers with a single typed `SessionTracker`.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
+use calimero_node_primitives::{SyncPhase, SyncStatusSnapshot};
 use calimero_primitives::context::ContextId;
+use dashmap::DashMap;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -79,6 +82,13 @@ pub(super) struct SessionTracker {
     /// outcome, AND the minimum between successful syncs before the
     /// next attempt is considered (subject to a `force` override).
     dispatch_backoff: Duration,
+    /// Lock-free mirror of the per-context sync phase, published after
+    /// every `SyncState` transition so an out-of-band reader (the
+    /// JSON-RPC `sync_status` endpoint) can distinguish "syncing" from
+    /// "stuck" without reaching into this run-loop-owned tracker. The
+    /// tracker is the sole writer; readers only ever see committed
+    /// snapshots. Shares the `Arc` held by `NodeState::sync_status`.
+    status_sink: Arc<DashMap<ContextId, SyncStatusSnapshot>>,
 }
 
 /// Outcome of [`SessionTracker::dispatch_decision`].
@@ -136,7 +146,11 @@ impl SessionTracker {
     /// per-session timeout the `SyncSessionActor` enforces.
     /// `dispatch_backoff` is `sync_config.interval` — the minimum
     /// between dispatch attempts and successful syncs.
-    pub(super) fn new(session_deadline: Duration, dispatch_backoff: Duration) -> Self {
+    pub(super) fn new(
+        session_deadline: Duration,
+        dispatch_backoff: Duration,
+        status_sink: Arc<DashMap<ContextId, SyncStatusSnapshot>>,
+    ) -> Self {
         const SESSION_WEDGE_GRACE_MULTIPLIER: u32 = 2;
         Self {
             state: HashMap::new(),
@@ -148,7 +162,39 @@ impl SessionTracker {
             full_window_started: Instant::now(),
             session_wedge_grace: session_deadline * SESSION_WEDGE_GRACE_MULTIPLIER,
             dispatch_backoff,
+            status_sink,
         }
+    }
+
+    /// Recompute and publish the observable sync-status snapshot for `ctx`
+    /// from its current `SyncState`. Called after every transition so the
+    /// out-of-band reader sees a fresh phase. Cheap: one map lookup plus a
+    /// `DashMap` insert. A context with no tracked state is left absent
+    /// (the reader treats absence as "no sync activity recorded").
+    fn publish_status(&self, ctx: &ContextId) {
+        let Some(state) = self.state.get(ctx) else {
+            return;
+        };
+        let phase = match state.last_sync() {
+            // `last_sync == None` is the in-progress marker the tracker uses.
+            None => SyncPhase::Syncing,
+            Some(last) if state.failure_count() > 0 => {
+                // Mirror `dispatch_decision`'s eligibility floor so the
+                // reported wait matches when the next attempt actually fires.
+                let minimum = self.dispatch_backoff.max(state.backoff_delay());
+                let retry_in_secs = minimum.saturating_sub(last.elapsed()).as_secs();
+                SyncPhase::BackingOff { retry_in_secs }
+            }
+            Some(_) => SyncPhase::Idle,
+        };
+        let _prev = self.status_sink.insert(
+            *ctx,
+            SyncStatusSnapshot {
+                phase,
+                failure_count: state.failure_count(),
+                last_error: state.last_error().map(ToOwned::to_owned),
+            },
+        );
     }
 
     /// `session_wedge_grace` exposed for the caller's wedge warn-log
@@ -264,6 +310,7 @@ impl SessionTracker {
         } else if let Some(existing) = self.state.get_mut(&ctx) {
             let _ignored = existing.take_last_sync();
         }
+        self.publish_status(&ctx);
     }
 
     /// Apply a `SyncSessionResult` from the result channel. Clears
@@ -365,9 +412,7 @@ impl SessionTracker {
                         // the next tick pick a different peer is the
                         // graceful recovery.
                         s.on_not_materialized();
-                        return;
-                    }
-                    if err.downcast_ref::<NoPeersAvailable>().is_some() {
+                    } else if err.downcast_ref::<NoPeersAvailable>().is_some() {
                         // Transient: no co-member is connected for this
                         // context right now (empty mesh + no namespace
                         // fallback). This is a connectivity condition,
@@ -385,17 +430,17 @@ impl SessionTracker {
                              waiting for a co-member, not a failure"
                         );
                         s.on_not_materialized();
-                        return;
+                    } else {
+                        s.on_failure(err.to_string());
+                        warn!(
+                            %context_id,
+                            ?took,
+                            error = %err,
+                            failure_count = s.failure_count(),
+                            backoff_secs = s.backoff_delay().as_secs(),
+                            "Sync failed, applying exponential backoff"
+                        );
                     }
-                    s.on_failure(err.to_string());
-                    warn!(
-                        %context_id,
-                        ?took,
-                        error = %err,
-                        failure_count = s.failure_count(),
-                        backoff_secs = s.backoff_delay().as_secs(),
-                        "Sync failed, applying exponential backoff"
-                    );
                 }
                 Err(ref timeout_err) => {
                     s.on_failure(timeout_err.to_string());
@@ -409,6 +454,9 @@ impl SessionTracker {
                 }
             },
         }
+        // The mutable `s` borrow above is released; publish the settled phase
+        // so the out-of-band reader observes success/idle/backoff immediately.
+        self.publish_status(&context_id);
     }
 
     /// Wedge-watchdog tick. Returns contexts whose initiator was
@@ -446,6 +494,7 @@ impl SessionTracker {
                         .to_owned(),
                 );
             }
+            self.publish_status(ctx);
         }
         self.initiator_dispatched_at
             .retain(|_, dispatched_at| dispatched_at.elapsed() < grace);
@@ -540,7 +589,11 @@ mod tests {
     fn tracker() -> SessionTracker {
         // Use small but realistic durations so the `force` override
         // tests have a meaningful "minimum".
-        SessionTracker::new(Duration::from_secs(30), Duration::from_secs(5))
+        SessionTracker::new(
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+            Arc::new(DashMap::new()),
+        )
     }
 
     // -----------------------------------------------------------------
@@ -1318,5 +1371,72 @@ mod tests {
             s.last_sync().is_none(),
             "second record_dispatch_succeeded must clear last_sync"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // publish_status — the observable sync-status snapshot
+    // -----------------------------------------------------------------
+
+    fn tracker_with_sink() -> (SessionTracker, Arc<DashMap<ContextId, SyncStatusSnapshot>>) {
+        let sink = Arc::new(DashMap::new());
+        let t = SessionTracker::new(
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+            Arc::clone(&sink),
+        );
+        (t, sink)
+    }
+
+    #[test]
+    fn publish_status_reports_syncing_while_in_flight() {
+        let (mut t, sink) = tracker_with_sink();
+        // A dispatched first sync leaves the in-progress marker set.
+        t.record_dispatch_succeeded(ctx(1), true);
+        let snap = sink.get(&ctx(1)).expect("status published on dispatch");
+        assert!(matches!(snap.phase, SyncPhase::Syncing));
+        assert_eq!(snap.failure_count, 0);
+        assert!(snap.last_error.is_none());
+    }
+
+    #[test]
+    fn publish_status_reports_idle_after_success() {
+        let (mut t, sink) = tracker_with_sink();
+        let mut s = SyncState::new();
+        s.on_success(
+            libp2p::PeerId::random(),
+            super::super::tracking::SyncProtocol::DagCatchup,
+        );
+        let _ = t.state.insert(ctx(1), s);
+        t.publish_status(&ctx(1));
+        let snap = sink.get(&ctx(1)).expect("status published");
+        assert!(matches!(snap.phase, SyncPhase::Idle));
+        assert_eq!(snap.failure_count, 0);
+        assert!(snap.last_error.is_none());
+    }
+
+    #[test]
+    fn publish_status_reports_backing_off_after_failure() {
+        let (mut t, sink) = tracker_with_sink();
+        let mut s = SyncState::new();
+        s.on_failure("No peers to sync with".to_owned());
+        let _ = t.state.insert(ctx(1), s);
+        t.publish_status(&ctx(1));
+        let snap = sink.get(&ctx(1)).expect("status published");
+        match snap.phase {
+            // backoff_delay(2^1=2s) is below the 5s dispatch floor, so the
+            // reported wait is the floor minus the (near-zero) elapsed time.
+            SyncPhase::BackingOff { retry_in_secs } => assert!(retry_in_secs <= 5),
+            other => panic!("expected BackingOff, got {other:?}"),
+        }
+        assert_eq!(snap.failure_count, 1);
+        assert_eq!(snap.last_error.as_deref(), Some("No peers to sync with"));
+    }
+
+    #[test]
+    fn publish_status_absent_for_untracked_context() {
+        let (t, sink) = tracker_with_sink();
+        // No state recorded for this context → nothing to publish.
+        t.publish_status(&ctx(9));
+        assert!(sink.get(&ctx(9)).is_none());
     }
 }

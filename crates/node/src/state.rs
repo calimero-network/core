@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use calimero_blobstore::BlobManager as BlobStore;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::SyncStatusSnapshot;
 use calimero_primitives::identity::PublicKey;
 use calimero_primitives::{blobs::BlobId, context::ContextId};
 use dashmap::DashMap;
@@ -157,6 +158,12 @@ pub(crate) struct NodeState {
     /// - Cooldown computed as exponential backoff capped at 30 min;
     ///   see [`reconcile_cooldown`] in `sync::manager`.
     pub(crate) reconcile_attempts: Arc<DashMap<ContextId, ReconcileAttempt>>,
+    /// Per-context, best-effort sync-progress snapshot published by the sync
+    /// run-loop and read out-of-band (JSON-RPC `sync_status`). Lets a client
+    /// blocked on `Uninitialized` tell "syncing" from "stuck" instead of
+    /// guessing. Advisory only — see [`SyncStatusSnapshot`] — and absent for
+    /// contexts the run-loop has never touched.
+    pub(crate) sync_status: Arc<DashMap<ContextId, SyncStatusSnapshot>>,
 }
 
 /// Per-context backoff state for the reconcile-after-divergence path.
@@ -204,7 +211,23 @@ impl NodeState {
             governance_pending: Arc::new(DashMap::new()),
             peer_identities: Arc::new(DashMap::new()),
             reconcile_attempts: Arc::new(DashMap::new()),
+            sync_status: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Shared handle to the sync-status map, for the run-loop publisher.
+    pub(crate) fn sync_status_handle(&self) -> Arc<DashMap<ContextId, SyncStatusSnapshot>> {
+        self.sync_status.clone()
+    }
+
+    /// Read the latest sync-status snapshot for a context, if the run-loop has
+    /// recorded one. `None` means the context has had no sync activity (e.g.
+    /// it was created locally, or just joined and not yet dispatched).
+    pub(crate) fn sync_status_snapshot(
+        &self,
+        context_id: &ContextId,
+    ) -> Option<SyncStatusSnapshot> {
+        self.sync_status.get(context_id).map(|s| s.value().clone())
     }
 
     /// Record that `peer_id` has successfully delivered a message

@@ -74,6 +74,7 @@ impl Request<RequestPayload> {
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum RequestPayload {
     Execute(ExecutionRequest),
+    SyncStatus(SyncStatusRequest),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -192,7 +193,102 @@ pub enum ExecutionError {
     ExecuteError(ExecuteError),
 }
 
+/// Request the current state-sync status of a context. Lets a client that
+/// hit `Uninitialized` on `execute` tell whether sync is actively running,
+/// waiting for a peer, or wedged — instead of guessing from one opaque error.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct SyncStatusRequest {
+    pub context_id: ContextId,
+}
+
+impl SyncStatusRequest {
+    #[must_use]
+    pub const fn new(context_id: ContextId) -> Self {
+        Self { context_id }
+    }
+}
+
+/// Coarse, wire-facing sync phase. Serialized internally-tagged as
+/// `{ "state": "syncing" }`, with `backingOff` additionally carrying
+/// `retryInSecs`. A typed enum (rather than a bare string) keeps `retry_in_secs`
+/// structurally bound to the one state it applies to and lets callers match
+/// exhaustively. Not `#[non_exhaustive]` so the server handler can construct it.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum SyncState {
+    /// Context is settled — no sync in flight, nothing pending.
+    Idle,
+    /// Not yet initialized and nothing is actively syncing: typically waiting
+    /// for a co-member peer to appear to sync the initial state from.
+    WaitingForPeers,
+    /// A sync attempt is currently in flight.
+    Syncing,
+    /// The last attempt failed and the next retry is gated behind backoff.
+    BackingOff {
+        /// Estimated seconds until the next retry is eligible.
+        retry_in_secs: u64,
+    },
+}
+
+/// Sync-status response. `sync_state` carries the coarse phase; a non-zero
+/// `failure_count` with `last_error` set is the "stuck" signal. Note
+/// `is_initialized` and `sync_state` are orthogonal: an already-initialized
+/// context may still report `syncing` while it catches up on later deltas.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct SyncStatusResponse {
+    pub context_id: ContextId,
+    /// `true` once the context has a non-zero root hash, i.e. initial state
+    /// has been adopted and `execute` will no longer return `Uninitialized`.
+    pub is_initialized: bool,
+    /// Coarse sync phase.
+    pub sync_state: SyncState,
+    /// Consecutive failed sync attempts (0 when healthy).
+    pub failure_count: u32,
+    /// Most recent sync error, if the last attempt failed. Carries the reason
+    /// behind a `backingOff` state (e.g. "No peers to sync with").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl SyncStatusResponse {
+    #[must_use]
+    pub const fn new(
+        context_id: ContextId,
+        is_initialized: bool,
+        sync_state: SyncState,
+        failure_count: u32,
+        last_error: Option<String>,
+    ) -> Self {
+        Self {
+            context_id,
+            is_initialized,
+            sync_state,
+            failure_count,
+            last_error,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Error)]
+#[serde(tag = "type", content = "data")]
+#[non_exhaustive]
+pub enum SyncStatusError {
+    #[error("context not found")]
+    ContextNotFound,
+}
+
 // -------------------------------------------- Validation Implementation --------------------------------------------
+
+impl Validate for SyncStatusRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        // `context_id` is a typed, fixed-size identifier — nothing to bound.
+        Vec::new()
+    }
+}
 
 impl Validate for ExecutionRequest {
     fn validate(&self) -> Vec<ValidationError> {
