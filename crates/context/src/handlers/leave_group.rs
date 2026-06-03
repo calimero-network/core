@@ -11,6 +11,15 @@
 //! forward-secrecy rationale (briefly: the leaver cannot generate the
 //! new key without retaining it; proper two-phase rotation is a
 //! deferred follow-up).
+//!
+//! Local cleanup: the local apply of `MemberLeft` emits
+//! `OpEvent::MemberRemoved`, which the [`crate::self_purge`] listener
+//! reacts to by dropping the subgroup's local rows (signing keys
+//! included). The listener deliberately does NOT unsubscribe from the
+//! namespace gossipsub topic for a subgroup-only leave — other
+//! memberships under the same namespace still need it. See ADR 0002
+//! (`docs/adr/0002-fleet-tee-leave-protocol.md`).
+
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};

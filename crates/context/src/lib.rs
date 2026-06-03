@@ -35,6 +35,7 @@ pub mod governance_dag;
 pub mod handlers;
 pub mod hlc_fence;
 mod lifecycle;
+pub mod self_purge;
 
 pub(crate) use cache::{BoundedCache, Evictable};
 
@@ -691,6 +692,12 @@ impl Actor for ContextManager {
         // op-apply events and emits JoinContext on behalf of members
         // with `auto_follow.contexts = true`.
         auto_follow::spawn(self.datastore.clone(), self.context_client.clone());
+        // Self-purge handler (see docs/adr/0002-fleet-tee-leave-protocol.md) — reacts
+        // to `OpEvent::MemberRemoved` for our own identity and drops the local rows
+        // (signing keys, gov ops, namespace identity, membership-side metadata) that
+        // the apply layer leaves behind after eviction or self-leave. Mirrors
+        // auto_follow's listener pattern. Idempotent across restarts.
+        self_purge::spawn(self.datastore.clone(), self.node_client.clone());
     }
 }
 
