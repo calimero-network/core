@@ -2,7 +2,6 @@
 #[path = "codec_test.rs"]
 mod tests;
 
-use core::slice;
 use std::borrow::Cow;
 use std::io::Error as IoError;
 
@@ -63,11 +62,14 @@ impl<'a> Encoder<Message<'a>> for MessageCodec {
     type Error = CodecError;
 
     fn encode(&mut self, item: Message<'a>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let data = item.data.as_ref();
-        let data = Bytes::from_static(
-            // safety: `LengthDelimitedCodec: Encoder` must prepend the length, so it copies `data`
-            unsafe { slice::from_raw_parts(data.as_ptr(), data.len()) },
-        );
+        // Hand the length codec owned bytes: an already-owned payload moves in for free,
+        // a borrowed one is copied once (which the length-prefix codec would do anyway).
+        // This avoids fabricating a `'static` borrow whose soundness would hinge on
+        // `LengthDelimitedCodec` copying before it returns — an unenforced cross-crate invariant.
+        let data = match item.data {
+            Cow::Borrowed(data) => Bytes::copy_from_slice(data),
+            Cow::Owned(data) => Bytes::from(data),
+        };
         self.length_codec
             .encode(data, dst)
             .map_err(CodecError::StdIo)
