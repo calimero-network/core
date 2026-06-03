@@ -2452,4 +2452,22 @@ mod tests {
             "migration_v2 must default off so master behavior is unchanged"
         );
     }
+
+    // PR-6a Task 6a.2: characterize today's group-wide freeze. With
+    // `migration_v2` OFF (the default), `InProgress` blocks *all* writes —
+    // including state-op writes such as `__calimero_sync_next`. This is the
+    // freeze that namespace cascades impose group-wide. Locking it here proves
+    // 6a.3 (which gates this behind `migration_v2`) only changes flag-ON
+    // behavior; the flag-OFF contract stays exactly as it is today.
+    #[test]
+    fn flag_off_inprogress_blocks_state_op_write() {
+        assert!(
+            upgrade_blocks_write(&GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            }),
+            "today's group-wide freeze: InProgress must block state-op writes"
+        );
+    }
 }
