@@ -2483,16 +2483,18 @@ mod tests {
         );
     }
 
-    // PR-6a Task 6a.1: the `migration_v2` feature flag must default OFF so
-    // master behavior is completely unchanged until the flag is flipped (after
-    // 6b lands). The flag lives on `ContextManagerConfig` — the same
-    // runtime-tunable knobs struct threaded into this handler via `self.config`.
+    // PR-6b Task 6b.8: the `migration_v2` feature flag now defaults ON, the
+    // flip enabled by both PR-6a (no-freeze) and PR-6b (absorb-don't-drop
+    // straggler safety net) having landed. The flag lives on
+    // `ContextManagerConfig` — the same runtime-tunable knobs struct threaded
+    // into this handler via `self.config`. With it on, the group-wide
+    // `InProgress` write-freeze no longer fires (see `should_block`).
     #[test]
-    fn migration_v2_flag_defaults_off() {
+    fn migration_v2_flag_defaults_on() {
         let cfg = crate::ContextManagerConfig::default();
         assert!(
-            !cfg.migration_v2,
-            "migration_v2 must default off so master behavior is unchanged"
+            cfg.migration_v2,
+            "migration_v2 must default on now that 6a + 6b have landed"
         );
     }
 

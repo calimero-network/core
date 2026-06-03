@@ -115,7 +115,7 @@ use calimero_context_client::local_governance::AckRouter;
 /// tooling can override them without source patches, plus behavioral
 /// feature flags (e.g. [`Self::migration_v2`]) that gate in-progress
 /// framework work. Timing defaults match the values that shipped with
-/// #2237 Phase 12; feature flags default off.
+/// #2237 Phase 12.
 #[derive(Clone, Copy, Debug)]
 pub struct ContextManagerConfig {
     /// How long `join_group` will wait for a `KeyDelivery` op to arrive
@@ -130,13 +130,13 @@ pub struct ContextManagerConfig {
 
     /// Master switch for the PR-6 hybrid zero-downtime migration framework.
     ///
-    /// Defaults to `false` so master behavior is completely unchanged: with the
-    /// flag off, a namespace-cascade migration keeps the group-wide
+    /// Defaults to `true` now that both PR-6a (no-freeze) and PR-6b
+    /// (absorb-don't-drop straggler safety net) have landed: a
+    /// namespace-cascade migration no longer freezes writes group-wide; each
+    /// context migrates lazily/briefly and stragglers are absorbed rather than
+    /// dropped. Setting it back to `false` restores the legacy group-wide
     /// `InProgress` write-freeze (see [`handlers::execute`]'s
-    /// `upgrade_blocks_write`). When flipped on — only legal in a deployment
-    /// once PR-6a *and* PR-6b have landed — the cascade no longer freezes
-    /// writes group-wide; each context migrates lazily/briefly and stragglers
-    /// are absorbed rather than dropped.
+    /// `upgrade_blocks_write`) for operators that want the old behavior.
     pub migration_v2: bool,
 }
 
@@ -144,7 +144,7 @@ impl Default for ContextManagerConfig {
     fn default() -> Self {
         Self {
             key_delivery_fallback_wait: Duration::from_secs(5),
-            migration_v2: false,
+            migration_v2: true,
         }
     }
 }
