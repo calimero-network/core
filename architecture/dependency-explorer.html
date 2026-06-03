@@ -1,4 +1,27 @@
-<!DOCTYPE html>
+Looking at the code diff, I need to check if the HTML documentation needs updating based on the Cargo.toml changes.
+
+The diff shows:
+1. `calimero-storage-macros` dependency was removed from `apps/team-metrics-macro/Cargo.toml`
+2. The `Mergeable` macro was moved from `calimero-storage-macros` to `calimero-storage`
+3. The `Mergeable` derive macro implementation was removed from `crates/storage-macros/src/lib.rs`
+
+Looking at the HTML file, it contains a dependency graph of crates including `calimero-storage-macros`. The CRATES object in the JavaScript section defines:
+
+```javascript
+"calimero-storage-macros": { color: "#06b6d4", group: "data", deps: [] },
+```
+
+And `calimero-storage` has this dependency:
+```javascript
+"calimero-storage": { color: "#06b6d4", group: "data", deps: ["calimero-prelude","calimero-primitives","calimero-storage-macros"] },
+```
+
+Since `calimero-storage-macros` is being removed as a separate dependency (the macro was moved into `calimero-storage`), I need to:
+1. Remove `calimero-storage-macros` from the CRATES object
+2. Remove `calimero-storage-macros` from the dependencies of `calimero-storage`
+
+Let me verify this is correct by checking the diff - yes, `calimero-storage-macros` is being removed from the dependency list of what uses it.
+
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -107,8 +130,7 @@ const CRATES = {
   "calimero-store-encryption": { color: "#06b6d4", group: "data", deps: ["calimero-store"] },
   "calimero-blobstore": { color: "#06b6d4", group: "data", deps: ["calimero-primitives","calimero-store"] },
   "calimero-dag": { color: "#f59e0b", group: "data", deps: ["calimero-storage"] },
-  "calimero-storage": { color: "#06b6d4", group: "data", deps: ["calimero-prelude","calimero-primitives","calimero-storage-macros"] },
-  "calimero-storage-macros": { color: "#06b6d4", group: "data", deps: [] },
+  "calimero-storage": { color: "#06b6d4", group: "data", deps: ["calimero-prelude","calimero-primitives"] },
   "calimero-primitives": { color: "#d4d4dc", group: "foundation", deps: [] },
   "calimero-prelude": { color: "#d4d4dc", group: "foundation", deps: ["calimero-primitives"] },
   "calimero-crypto": { color: "#d4d4dc", group: "foundation", deps: ["calimero-primitives"] },
@@ -434,30 +456,30 @@ searchInput.addEventListener('input', () => {
 
   nodeElements.select('.node-circle')
     .attr('stroke-width', d => matches.has(d.id) ? 2.5 : 1.5)
-    .attr('stroke', d => matches.has(d.id) ? '#f0f0f5' : d.color + '25')
-    .attr('fill', d => matches.has(d.id) ? d.color + '40' : d.color + '06');
+    .attr('stroke', d => matches.has(d.id) ? '#f0f0f5' : d.color)
+    .attr('fill', d => matches.has(d.id) ? d.color + '40' : d.color + '12');
 
   nodeElements.select('.node-label')
-    .attr('fill', d => matches.has(d.id) ? '#d4d4dc' : '#6b6b8020');
+    .attr('fill', d => matches.has(d.id) ? '#d4d4dc' : '#6b6b8040');
 
   linkElements
-    .attr('stroke', '#252538' + '18')
+    .attr('stroke', '#252538' + (matches.size > 0 ? '30' : ''))
     .attr('stroke-width', 0.5);
 });
 
 document.getElementById('btn-reset').addEventListener('click', () => {
   searchInput.value = '';
   clearSelection();
-  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity);
-  simulation.alpha(0.5).restart();
+  nodeElements.select('.node-circle')
+    .attr('stroke-width', 1.5)
+    .attr('stroke', d => d.color)
+    .attr('fill', d => d.color + '20');
+  nodeElements.select('.node-label')
+    .attr('fill', '#6b6b80');
+  linkElements
+    .attr('stroke', '#252538')
+    .attr('stroke-width', 1);
 });
-
-if (window.arch && window.arch.buildBreadcrumb) {
-  window.arch.buildBreadcrumb([
-    { label: 'Home', href: 'index.html' },
-    { label: 'Dependency Explorer' },
-  ]);
-}
 
 });
 </script>
