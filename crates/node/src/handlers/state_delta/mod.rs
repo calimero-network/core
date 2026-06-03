@@ -620,9 +620,12 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
 
     let repo = AbsorbRepository::new(store);
     let pending = repo.enumerate_pending(context_id)?;
-    // Nothing leaf-shaped to do? Avoid building a runtime env / resolving an
-    // identity for the common (delta-only) case.
-    if !pending.iter().any(|(_, r)| r.leaf.is_some()) {
+    // Nothing leaf- or entity-shaped to do? Avoid building a runtime env /
+    // resolving an identity for the common (delta-only) case.
+    if !pending
+        .iter()
+        .any(|(_, r)| r.leaf.is_some() || r.entity.is_some())
+    {
         return Ok(());
     }
 
@@ -631,6 +634,38 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
 
     let mut drained = 0usize;
     for ((producing_app_key, delta_id), record) in pending {
+        // Snapshot-entity-shaped records (PR-6b Task 6b.7): re-verify + persist
+        // the raw `entry` + `index` blobs via the snapshot path's `handle.put`
+        // (NOT through `apply_leaf_with_crdt_merge` — the snapshot apply path
+        // deliberately bypasses CRDT merge), once the loaded reader matches the
+        // entity's schema.
+        if let Some(entity_absorb) = record.entity {
+            if entity_absorb.schema_app_key != loaded {
+                continue;
+            }
+            let mut handle = input.node_clients.context.datastore_handle();
+            match crate::sync::snapshot::persist_buffered_snapshot_entity(
+                &mut handle,
+                *context_id,
+                entity_absorb.id,
+                &entity_absorb.entry,
+                &entity_absorb.index,
+            ) {
+                Ok(true) => {
+                    repo.delete(context_id, producing_app_key, delta_id)?;
+                    drained += 1;
+                }
+                Ok(false) => { /* left pending — verify/parse failed */ }
+                Err(err) => warn!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    %err,
+                    "absorb entity drain: persist failed — leaving record pending for retry"
+                ),
+            }
+            continue;
+        }
+
         let Some(leaf_absorb) = record.leaf else {
             continue; // delta record — handled by `drain_absorbed_records`.
         };
@@ -674,7 +709,7 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
         info!(
             %context_id,
             drained,
-            "absorb drain: re-applied buffered sync-repair leaves after binary advance"
+            "absorb drain: re-applied buffered sync-repair leaves/entities after binary advance"
         );
     }
     Ok(())
@@ -719,12 +754,13 @@ where
 
     let mut drained = 0usize;
     for ((producing_app_key, delta_id), record) in pending {
-        // PR-6b Task 6b.7: leaf-shaped records (sync-repair absorb) are NOT
-        // replayable deltas — they have no `__calimero_sync_next` payload.
-        // Skip them on the delta-drain; they are drained by the leaf-replay
-        // path (`drain_absorbed_leaves`). Reconstructing a `BufferedDelta` from
-        // one would replay an empty/garbage delta.
-        if record.leaf.is_some() {
+        // PR-6b Task 6b.7: leaf- and snapshot-entity-shaped records (sync-repair
+        // absorb) are NOT replayable deltas — they have no
+        // `__calimero_sync_next` payload. Skip them on the delta-drain; they are
+        // drained by the leaf/entity-replay path (`drain_absorbed_leaves`).
+        // Reconstructing a `BufferedDelta` from one would replay an
+        // empty/garbage delta.
+        if record.leaf.is_some() || record.entity.is_some() {
             continue;
         }
         // Skip records the loaded binary still can't read — they stay pending

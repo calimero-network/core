@@ -162,6 +162,7 @@ mod tests {
             governance_drain_attempts: 0,
             producing_app_key: Some([2; 32]),
             leaf: None,
+            entity: None,
         }
     }
 

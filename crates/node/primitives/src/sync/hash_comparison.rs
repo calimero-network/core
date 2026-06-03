@@ -484,7 +484,11 @@ impl BorshDeserialize for LeafMetadata {
 /// Read the next byte as an `Option` discriminant, tolerating a clean EOF.
 /// Returns `Ok(None)` on EOF (legacy wire with no trailing field), `Ok(Some(b))`
 /// otherwise. Mirrors `read_byte` in `crates/store/src/key/group/mod.rs`.
-fn read_option_tag<R: borsh::io::Read>(
+///
+/// Shared with [`super::snapshot::SnapshotRecord`]'s hand-written
+/// `BorshDeserialize`, which carries the same backward-compatible trailing
+/// `schema_app_key` field.
+pub(crate) fn read_option_tag<R: borsh::io::Read>(
     reader: &mut R,
     buf: &mut [u8; 1],
 ) -> borsh::io::Result<Option<u8>> {

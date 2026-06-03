@@ -73,6 +73,22 @@ pub struct AbsorbRecord {
     /// Backward-compatible trailing field — see the borsh note on
     /// [`AbsorbedLeaf`].
     pub leaf: Option<AbsorbedLeaf>,
+    /// Set when this record holds a buffered **snapshot entity** (PR-6b Task
+    /// 6b.7) rather than a delta or a HashComparison/LevelSync leaf.
+    ///
+    /// The snapshot apply path decodes its own `SnapshotRecord::Entity` wire
+    /// type and persists each verified entity via a raw `handle.put` (it does
+    /// NOT route through `apply_leaf_with_crdt_merge`, so it has no
+    /// `TreeLeafData` to buffer). A receiver on an older reader buffers the raw
+    /// `entry` + `index` blobs here instead of storing unreadable bytes; the
+    /// drain re-verifies + `handle.put`s them once the loaded reader advances.
+    ///
+    /// `None` for the delta-absorb and HashComparison/LevelSync-leaf paths. The
+    /// drain branches on this tag (it is mutually exclusive with `leaf`).
+    ///
+    /// Backward-compatible trailing field — see the borsh note on
+    /// [`AbsorbedLeaf`].
+    pub entity: Option<AbsorbedEntity>,
 }
 
 /// A buffered sync-repair leaf (PR-6b Task 6b.7).
@@ -96,6 +112,29 @@ pub struct AbsorbedLeaf {
     pub schema_app_key: [u8; 32],
 }
 
+/// A buffered future-schema **snapshot entity** (PR-6b Task 6b.7).
+///
+/// The snapshot wire ships an entity as its raw persisted blobs — the `entry`
+/// (data) and the borsh-encoded `EntityIndex` (metadata) — verified together
+/// and written via `handle.put`. When the receiver's loaded reader can't read
+/// the sender's `schema_app_key`, those blobs are held here verbatim (never
+/// translated) and re-verified + persisted on drain once the reader advances.
+///
+/// Trailing-`Option` borsh hygiene is identical to [`AbsorbedLeaf`]: the
+/// `AbsorbBuffer` column is new in this train, so no legacy on-disk records
+/// exist and every record is written by this binary.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct AbsorbedEntity {
+    /// The entity's 32-byte id.
+    pub id: [u8; 32],
+    /// Raw `Key::Entry(id)` blob — the entity's data, persisted verbatim.
+    pub entry: Vec<u8>,
+    /// Raw `Key::Index(id)` blob — the borsh-encoded `EntityIndex` metadata.
+    pub index: Vec<u8>,
+    /// App-schema (loaded-reader) key the entity was authored under.
+    pub schema_app_key: [u8; 32],
+}
+
 impl AbsorbRecord {
     /// Build a durable mirror from a live [`BufferedDelta`]. Lossless.
     #[must_use]
@@ -116,6 +155,7 @@ impl AbsorbRecord {
             governance_drain_attempts: bd.governance_drain_attempts,
             producing_app_key: bd.producing_app_key,
             leaf: None,
+            entity: None,
         }
     }
 
@@ -147,6 +187,48 @@ impl AbsorbRecord {
             producing_app_key: Some(schema_app_key),
             leaf: Some(AbsorbedLeaf {
                 leaf_bytes,
+                schema_app_key,
+            }),
+            entity: None,
+        }
+    }
+
+    /// Build a snapshot-entity-shaped absorb record (PR-6b Task 6b.7). The
+    /// buffered entity is re-verified + persisted via `handle.put` once the
+    /// loaded reader advances to `schema_app_key`; it is neither a replayable
+    /// delta nor a `TreeLeafData`, so the delta/leaf fields are left
+    /// empty/defaulted and the drain branches on `self.entity.is_some()`.
+    ///
+    /// `id` is the entity's key (the absorb-buffer key's `delta_id` component),
+    /// giving the same idempotent-overwrite-on-redelivery property the delta
+    /// path gets from the real `delta_id`.
+    #[must_use]
+    pub fn from_snapshot_entity(
+        id: [u8; 32],
+        entry: Vec<u8>,
+        index: Vec<u8>,
+        schema_app_key: [u8; 32],
+    ) -> Self {
+        Self {
+            id,
+            parents: Vec::new(),
+            hlc: HybridTimestamp::zero(),
+            payload: Vec::new(),
+            nonce: [0; 12],
+            author_id: PublicKey::from([0; 32]),
+            root_hash: Hash::from([0; 32]),
+            events: None,
+            source_peer: Vec::new(),
+            key_id: [0; 32],
+            governance_position: None,
+            delta_signature: None,
+            governance_drain_attempts: 0,
+            producing_app_key: Some(schema_app_key),
+            leaf: None,
+            entity: Some(AbsorbedEntity {
+                id,
+                entry,
+                index,
                 schema_app_key,
             }),
         }

@@ -43,6 +43,32 @@ pub const DEFAULT_PAGE_LIMIT: u16 = 16;
 /// Exactly 16 bytes to match SCOPE_SIZE.
 const SYNC_IN_PROGRESS_SCOPE: [u8; SCOPE_SIZE] = *b"sync-in-progres\0";
 
+/// Whether a snapshot `Entity` whose sender stamped `schema_app_key` is readable
+/// by a receiver whose loaded reader is `loaded_app_key` (PR-6b Task 6b.7).
+///
+/// The snapshot apply path writes each verified entity via a raw `handle.put` —
+/// it deliberately does NOT route through `apply_leaf_with_crdt_merge_gated`, so
+/// the same readability check the HashComparison / LevelSync leaf paths get from
+/// that wrapper has to be applied explicitly here. A receiver still on an older
+/// reader must DECLINE + BUFFER a future-schema entity rather than persist
+/// unreadable bytes (the "v1-binary-fed-v2-bytes" corruption hazard the
+/// snapshot path otherwise side-steps entirely).
+///
+/// Returns `true` (apply) when the schema is absent (legacy sender), when no
+/// loaded reader could be resolved (no gate — parity with the leaf path), or
+/// when the stamped schema matches the loaded reader; `false` (decline+buffer)
+/// only when both are known and differ.
+fn snapshot_entity_is_readable(
+    schema_app_key: Option<[u8; 32]>,
+    loaded_app_key: Option<[u8; 32]>,
+) -> bool {
+    match (schema_app_key, loaded_app_key) {
+        (Some(schema), Some(loaded)) => schema == loaded,
+        // Legacy sender (no marker) or unresolvable loaded reader ⇒ no gate.
+        _ => true,
+    }
+}
+
 impl SyncManager {
     /// Handle incoming snapshot boundary request from a peer.
     pub async fn handle_snapshot_boundary_request(
@@ -149,12 +175,24 @@ impl SyncManager {
         stream: &mut Stream,
     ) -> Result<()> {
         let handle = self.context_client.datastore_handle();
+        // PR-6b Task 6b.7: stamp every emitted `Entity` with the sender's loaded
+        // reader so a receiver still on an older binary can decline+buffer a
+        // future-schema entity instead of persisting unreadable bytes. `None`
+        // (non-group context / unresolvable meta) leaves the marker absent —
+        // legacy semantics; the receiver then applies as today.
+        let schema_app_key = calimero_context::hlc_fence::loaded_reader_app_key(
+            self.context_client.datastore(),
+            &context_id,
+        )
+        .ok()
+        .flatten();
         let (pages, next_cursor, total_entries) = generate_snapshot_pages(
             &handle,
             context_id,
             start_cursor.as_ref(),
             page_limit,
             byte_limit,
+            schema_app_key,
         )?;
 
         // Post-iteration recheck: verify root hash hasn't changed during page generation.
@@ -478,6 +516,18 @@ impl SyncManager {
         let mut total_applied = 0;
         let mut resume_cursor: Option<Vec<u8>> = None;
 
+        // PR-6b Task 6b.7: the schema this node can read *right now* (its loaded
+        // reader). A snapshot `Entity` whose sender stamped a newer
+        // `schema_app_key` is declined+buffered rather than `handle.put`-stored.
+        // `None` (non-group context / unresolvable meta) ⇒ no gate — apply as
+        // today (parity with the leaf path's `handle_entity_push`).
+        let loaded_app_key = calimero_context::hlc_fence::loaded_reader_app_key(
+            self.context_client.datastore(),
+            &context_id,
+        )
+        .ok()
+        .flatten();
+
         // `SharedMember` entities are verified in a SECOND pass, after every
         // page has been applied. A member carries no inline writer set — its
         // writers live at its anchor (a `Shared` wrapper) — and the snapshot
@@ -563,7 +613,45 @@ impl SyncManager {
                         // `apply_leaf_with_crdt_merge` provides.
                         for record in &records {
                             match record {
-                                SnapshotRecord::Entity { id, entry, index } => {
+                                SnapshotRecord::Entity {
+                                    id,
+                                    entry,
+                                    index,
+                                    schema_app_key,
+                                } => {
+                                    // PR-6b Task 6b.7: the snapshot apply path
+                                    // writes verified entities via a raw
+                                    // `handle.put`, bypassing the gossip
+                                    // state-delta fence AND
+                                    // `apply_leaf_with_crdt_merge_gated`. So the
+                                    // readability check has to live here: if the
+                                    // sender stamped a `schema_app_key` newer
+                                    // than this node's loaded reader, DECLINE +
+                                    // BUFFER the raw entity into the absorb
+                                    // buffer instead of persisting unreadable
+                                    // bytes. The buffered entity is re-applied
+                                    // (re-verified + `handle.put`) once the
+                                    // loaded reader advances to that schema.
+                                    if !snapshot_entity_is_readable(*schema_app_key, loaded_app_key)
+                                    {
+                                        if let Err(e) = self.buffer_future_schema_snapshot_entity(
+                                            context_id,
+                                            *id,
+                                            entry,
+                                            index,
+                                            schema_app_key.expect("gate only declines when Some"),
+                                        ) {
+                                            warn!(
+                                                %context_id,
+                                                id = ?id,
+                                                error = ?e,
+                                                "snapshot Entity record: failed to buffer \
+                                                 future-schema entity into the absorb buffer"
+                                            );
+                                        }
+                                        rejected += 1;
+                                        continue;
+                                    }
                                     // Per-entity signature verification
                                     // (closes the peer-trust gap from
                                     // issue #2387). Parse the index
@@ -1013,6 +1101,98 @@ impl SyncManager {
             None => Ok(None),
         }
     }
+
+    /// Buffer a future-schema snapshot `Entity` into the absorb buffer instead
+    /// of `handle.put`-storing unreadable bytes (PR-6b Task 6b.7).
+    ///
+    /// Keyed by the entity id (idempotent overwrite on re-delivery), under the
+    /// *sender's* schema so the drain only re-verifies + persists it once this
+    /// node advances to that reader. Caller has already confirmed
+    /// `!snapshot_entity_is_readable(Some(schema), loaded)`.
+    fn buffer_future_schema_snapshot_entity(
+        &self,
+        context_id: ContextId,
+        id: [u8; 32],
+        entry: &[u8],
+        index: &[u8],
+        schema: [u8; 32],
+    ) -> Result<()> {
+        let record = calimero_context::group_store::AbsorbRecord::from_snapshot_entity(
+            id,
+            entry.to_vec(),
+            index.to_vec(),
+            schema,
+        );
+        calimero_context::group_store::AbsorbRepository::new(self.context_client.datastore())
+            .save(&context_id, schema, &record)?;
+        crate::node_metrics::record_delta_outcome("absorbed_snapshot_entity_future_schema");
+        warn!(
+            %context_id,
+            id = ?id,
+            ?schema,
+            "snapshot entity authored under a newer schema than the loaded reader \
+             — buffered into the absorb buffer instead of storing unreadable bytes \
+             (will re-verify + persist once the reader advances)"
+        );
+        Ok(())
+    }
+}
+
+/// Re-verify and persist a buffered future-schema snapshot entity (PR-6b Task
+/// 6b.7), mirroring the inline persist in `request_and_apply_snapshot_pages`'s
+/// `Entity` arm: parse the `index` blob as an `EntityIndex`, re-run
+/// `verify_snapshot_entity_signature`, then `handle.put` the `entry` + `index`
+/// blobs under their hashed storage keys. Returns `Ok(false)` (leave pending)
+/// on a malformed index or signature failure; `Ok(true)` once persisted.
+///
+/// `SharedMember` entities — which the apply path defers to a second pass that
+/// authenticates against anchor writer sets — are not re-derivable in this
+/// standalone drain, so they are left pending (`Ok(false)`); in practice the
+/// fresh-node snapshot is re-driven end-to-end once the reader advances.
+pub(crate) fn persist_buffered_snapshot_entity(
+    handle: &mut calimero_store::Handle<calimero_store::Store>,
+    context_id: ContextId,
+    id: [u8; 32],
+    entry: &[u8],
+    index: &[u8],
+) -> Result<bool> {
+    let index_entity: calimero_storage::index::EntityIndex = match borsh::from_slice(index) {
+        Ok(idx) => idx,
+        Err(e) => {
+            warn!(%context_id, id = ?id, error = ?e,
+                "absorb entity drain: index blob failed to deserialize — leaving pending");
+            return Ok(false);
+        }
+    };
+    let id_obj = Id::new(id);
+
+    if matches!(
+        index_entity.metadata.storage_type,
+        calimero_storage::entities::StorageType::SharedMember { .. }
+    ) {
+        warn!(%context_id, id = ?id,
+            "absorb entity drain: SharedMember requires anchor-writer authentication \
+             (snapshot pass 2) — leaving pending for snapshot re-drive");
+        return Ok(false);
+    }
+
+    if let Err(e) = Interface::<MainStorage>::verify_snapshot_entity_signature(
+        id_obj,
+        entry,
+        &index_entity.metadata,
+    ) {
+        warn!(%context_id, id = ?id, error = ?e,
+            "absorb entity drain: signature verification failed — leaving pending");
+        return Ok(false);
+    }
+
+    let entry_key = ContextStateKey::new(context_id, StorageKey::Entry(id_obj).to_bytes());
+    let index_key = ContextStateKey::new(context_id, StorageKey::Index(id_obj).to_bytes());
+    let entry_slice: Slice<'_> = entry.to_vec().into();
+    let index_slice: Slice<'_> = index.to_vec().into();
+    handle.put(&entry_key, &ContextStateValue::from(entry_slice))?;
+    handle.put(&index_key, &ContextStateValue::from(index_slice))?;
+    Ok(true)
 }
 
 /// Result of a successful snapshot sync.
@@ -1083,6 +1263,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     start_cursor: Option<&SnapshotCursor>,
     page_limit: u16,
     byte_limit: u32,
+    schema_app_key: Option<[u8; 32]>,
 ) -> Result<(Vec<Vec<u8>>, Option<SnapshotCursor>, u64)> {
     // Pass 1 — single snapshot scan, memory bounded to keys + ids.
     //
@@ -1414,6 +1595,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             id: id_bytes,
             entry,
             index,
+            schema_app_key,
         })?;
 
         // Page-break BEFORE adding this record if it would exceed
@@ -1700,7 +1882,7 @@ mod tests {
         let mut completed = false;
         for _ in 0..10_000 {
             let (pages, next, total) =
-                generate_snapshot_pages(&handle, ctx, cursor.as_ref(), page_limit, byte_limit)
+                generate_snapshot_pages(&handle, ctx, cursor.as_ref(), page_limit, byte_limit, None)
                     .unwrap();
             totals.push(total);
             for page in &pages {
@@ -1738,6 +1920,7 @@ mod tests {
             None,
             DEFAULT_PAGE_LIMIT,
             DEFAULT_PAGE_BYTE_LIMIT,
+            None,
         )
         .unwrap();
         assert!(pages.is_empty());
@@ -1760,7 +1943,7 @@ mod tests {
 
         // One generous page — everything fits, cursor signals done.
         let (pages, cursor, total) =
-            generate_snapshot_pages(&store.handle(), ctx, None, DEFAULT_PAGE_LIMIT, 1 << 20)
+            generate_snapshot_pages(&store.handle(), ctx, None, DEFAULT_PAGE_LIMIT, 1 << 20, None)
                 .unwrap();
         assert!(cursor.is_none(), "single page should not request a resume");
         assert_eq!(pages.len(), 1, "20 small entities should fit on one page");
@@ -1892,6 +2075,30 @@ mod tests {
     }
 
     #[test]
+    fn test_snapshot_entity_future_schema_is_declined_not_stored() {
+        // Matching schema, legacy (None) schema, and unresolvable loaded reader
+        // all apply; only a known-and-different schema declines (decline =
+        // buffer instead of `handle.put`).
+        let v1 = [1u8; 32];
+        let v2 = [2u8; 32];
+
+        // Future-schema entity vs a v1 loaded reader: DECLINE.
+        assert!(
+            !snapshot_entity_is_readable(Some(v2), Some(v1)),
+            "a v2-authored snapshot entity must be declined by a v1 reader \
+             (else its bytes are stored unreadable)"
+        );
+
+        // Matching schema: apply.
+        assert!(snapshot_entity_is_readable(Some(v1), Some(v1)));
+        // Legacy sender (no marker): apply (back-compat).
+        assert!(snapshot_entity_is_readable(None, Some(v1)));
+        // Unresolvable loaded reader (non-group / missing meta): no gate, apply.
+        assert!(snapshot_entity_is_readable(Some(v2), None));
+        assert!(snapshot_entity_is_readable(None, None));
+    }
+
+    #[test]
     fn test_decode_snapshot_records_empty() {
         let records = decode_snapshot_records(&[]).unwrap();
         assert!(records.is_empty());
@@ -1903,13 +2110,14 @@ mod tests {
             id: [1u8; 32],
             entry: vec![10, 20, 30],
             index: vec![40, 50, 60],
+            schema_app_key: None,
         };
         let encoded = borsh::to_vec(&record).unwrap();
 
         let records = decode_snapshot_records(&encoded).unwrap();
         assert_eq!(records.len(), 1);
         match &records[0] {
-            SnapshotRecord::Entity { id, entry, index } => {
+            SnapshotRecord::Entity { id, entry, index, .. } => {
                 assert_eq!(*id, [1u8; 32]);
                 assert_eq!(entry, &vec![10, 20, 30]);
                 assert_eq!(index, &vec![40, 50, 60]);
@@ -1926,6 +2134,7 @@ mod tests {
             id: [1u8; 32],
             entry: vec![10],
             index: vec![20],
+            schema_app_key: None,
         };
         let aux = SnapshotRecord::Auxiliary {
             kind: snapshot_record_kind::ROTATION_LOG,
