@@ -1639,4 +1639,54 @@ mod tests {
             "State should be completely unchanged after multiple failed hijacking attempts"
         );
     }
+
+    /// Characterizes the clean-rollback property PR-6d's logical abort relies
+    /// on: the v1 root entry is never mutated until the migration commits, so a
+    /// pre-commit early-return (a logical abort) leaves it fully intact.
+    ///
+    /// The whole-root migrate path writes the root through exactly **one**
+    /// seam — `write_migration_state`, which is the sole caller of
+    /// `Interface::write_pre_merged_root_state` in this file. Everything before
+    /// that (`execute_migration` producing `new_state_bytes`) is pure
+    /// computation against a still-v1 store. So "abort" is simply *not reaching*
+    /// that single writer: there is no byte snapshot to restore because the v1
+    /// root was never overwritten.
+    ///
+    /// This test locks that single-writer invariant at the source level. If a
+    /// second root-write site appears, the abort path can no longer guarantee a
+    /// clean rollback and this test must be revisited (not merely updated).
+    #[test]
+    fn clean_rollback_root_written_only_via_write_migration_state() {
+        let full = include_str!("mod.rs");
+        // Scope to the non-test region so this test's own string literals
+        // (which mention the writer by name) don't pollute the count.
+        let source = full
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("file should contain a #[cfg(test)] mod tests boundary");
+
+        let write_sites = source.matches("write_pre_merged_root_state(").count();
+        assert_eq!(
+            write_sites, 1,
+            "expected exactly one `write_pre_merged_root_state(` call site (the sole \
+             root writer, inside `write_migration_state`) so a pre-commit logical abort \
+             leaves the v1 root untouched; found {write_sites}. A new root-write site \
+             breaks PR-6d's clean-rollback guarantee."
+        );
+
+        // The single writer must live inside `write_migration_state` — the
+        // function the abort path skips. Assert the writer call appears after
+        // `fn write_migration_state(` in source order (it is its only caller).
+        let writer_fn = source
+            .find("fn write_migration_state(")
+            .expect("write_migration_state should be defined in this file");
+        let write_call = source
+            .find("write_pre_merged_root_state(")
+            .expect("the root writer call should exist in this file");
+        assert!(
+            write_call > writer_fn,
+            "the sole `write_pre_merged_root_state` call must sit inside \
+             `write_migration_state` (the seam a logical abort skips)"
+        );
+    }
 }
