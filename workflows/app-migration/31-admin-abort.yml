@@ -1,7 +1,8 @@
-name: 31 — admin abort-migration substrate (PR-6d, node-log validated)
+name: 31 — admin abort-migration POSTs the route (PR-6d, node-log validated)
 description: >
-  Single-node lazy migration that exercises the substrate the admin
-  abort-migration RPC operates on (PR-6d task 6d.6).
+  Single-node lazy migration whose pending v1→v2 cascade is cancelled by an
+  ACTUAL POST to the admin abort-migration route BEFORE the context is accessed
+  (PR-6d task 6d.6 step 3). The context therefore stays on v1.
 
   Task 6d.4 shipped the logical-abort surface as a core RPC + admin HTTP route:
     - `ContextClient::abort_migration` →
@@ -22,15 +23,18 @@ description: >
   `abort_mixed_state_group_flips_target_to_pre_migration_v1`,
   `abort_is_idempotent_noop_when_nothing_pending`, `abort_unknown_group_is_noop`).
 
-  Scope note (mirrors scenario 28): merobox has no `abort_migration` step type
-  and no generic admin-HTTP step yet, so this e2e cannot POST the abort route
-  from a workflow step. Instead it node-log-validates the lazy-migration
-  substrate the abort interacts with: a pending namespace migration is created
-  and gossips (the in-flight state the abort would flip back), and on access the
-  context migrates cleanly (proving the migration the abort would have
-  cancelled is real, not a no-op). When a merobox `abort_migration` step lands,
-  this scenario gains the direct assertions (POST the route, then assert the
-  accessed context stays v1 and a non-admin POST is rejected).
+  How the route is POSTed without a dedicated merobox step: merobox 0.6.24 has
+  no `abort_migration` step type and no generic admin-HTTP step, but its
+  `script` step (`target: nodes`) runs a shell script INSIDE the node
+  container, where the admin API is reachable on 127.0.0.1:2528/admin-api
+  (DEFAULT_RPC_PORT). `31-abort-migration-post.sh` curls
+  `POST /admin-api/groups/{{namespace_id}}/migration/abort`; the abort handler
+  admin-gates the call against the node's own identity (the namespace admin in
+  this single-node scenario). The load-bearing proof is the node log line the
+  handler emits ("migration logically aborted: target flipped back ..."), plus
+  the post-abort access returning v1 — both asserted below. (When a first-class
+  merobox `abort_migration` step lands, swap the `script` step for it and add a
+  non-admin-rejected assertion; the rest of this scenario is unchanged.)
 
   Because migration_v2 defaults ON (PR-6b task 6b.8), the migration runs
   natively — no merobox feature flag is needed.
@@ -47,7 +51,7 @@ nodes:
   base_rpc_port: 10350
 
 steps:
-  # Install v1 + v2 (the PASS fixture — a clean migration the abort would cancel).
+  # Install v1 + v2 (the PASS fixture — a clean migration the abort cancels).
   - name: Install scenario-migration-check-pass-v1
     type: install_application
     node: app-migration-admin-abort-1
@@ -95,7 +99,7 @@ steps:
     outputs:
       ctx_id: contextId
 
-  # Seed v1 state.
+  # Seed v1 state (alpha, bravo).
   - name: Seed v1 item alpha
     type: call
     node: app-migration-admin-abort-1
@@ -114,8 +118,8 @@ steps:
       key: "bravo"
       value: "b"
 
-  # LazyOnAccess: a pending migration that an admin abort could flip back BEFORE
-  # the context is accessed (and thus before it lazy-migrates).
+  # LazyOnAccess: the migration only applies on the NEXT context access, giving
+  # the admin abort a window to flip the target back first.
   - name: Set upgrade policy to lazy-on-access
     type: update_group_settings
     node: app-migration-admin-abort-1
@@ -123,8 +127,8 @@ steps:
     upgrade_policy: lazy_on_access
 
   # Fire the cascade. This publishes the pending migration (the in-flight state
-  # the admin abort RPC would flip back). This is the substrate the abort
-  # operates on.
+  # the admin abort RPC flips back). NOTE: the context is NOT accessed here, so
+  # it has not yet lazy-migrated.
   - name: Cascade namespace v1 → v2 (creates the pending migration)
     type: upgrade_group
     node: app-migration-admin-abort-1
@@ -133,43 +137,65 @@ steps:
     migrate_method: migrate_v1_to_v2
     cascade: true
 
-  - name: Wait for the pending migration to gossip
+  - name: Wait for the pending migration to settle
     type: wait
     seconds: 5
 
-  # Prove the pending migration is real (NOT a no-op the abort would trivially
-  # cancel): accessing the context performs the lazy migration cleanly to v2.
-  # (When a merobox abort_migration step exists, this access instead asserts the
-  # context stays v1 because the abort flipped the target back first.)
-  - name: Read schema_info (triggers the real lazy migration to v2)
+  # ── ABORT: actually POST /admin-api/groups/:namespace_id/migration/abort ──
+  # Runs inside the node container; the script curls the local admin API. The
+  # abort handler admin-gates against the node identity (namespace admin) and
+  # flips the target back to v1, dropping the pending migration marker.
+  - name: POST the admin abort-migration route (cancels the pending migration)
+    type: script
+    target: nodes
+    script: workflows/app-migration/31-abort-migration-post.sh
+    args:
+      - "{{namespace_id}}"
+
+  - name: Wait for the abort to be persisted
+    type: wait
+    seconds: 3
+
+  # NODE-LOG VALIDATION — the abort handler ran and flipped the target back.
+  - name: Assert the abort handler flipped the target back
+    type: assert_log_present
+    nodes:
+      - app-migration-admin-abort-1
+    patterns:
+      - "migration logically aborted: target flipped back"
+    min_matches: 1
+
+  # Accessing the context now must NOT migrate — the abort flipped the target
+  # back to v1, so the lazy switch no longer triggers. schema_info stays v1.
+  - name: Read schema_info (must stay v1 — the migration was aborted)
     type: call
     node: app-migration-admin-abort-1
     context_id: "{{ctx_id}}"
     method: schema_info
     outputs:
-      v2_schema: result
+      post_abort_schema: result
 
-  - name: Assert the migration the abort would cancel is real (reaches v2)
+  - name: Assert the context is still v1 (abort prevented the migration)
     type: json_assert
     statements:
-      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "item_count": 2}})'
+      - 'json_subset({{post_abort_schema}}, {"output": {"schema_version": "1.0.0", "item_count": 2}})'
 
-  # NODE-LOG VALIDATION — the migration the admin abort RPC targets is genuine.
-  - name: Assert a lazy upgrade was performed (the abort's in-flight target)
-    type: assert_log_present
+  # The lazy migration must NEVER have run after the abort: no lazy-upgrade log,
+  # and the pre-commit migration_check never reached the pass path (because the
+  # migration was cancelled before it could execute).
+  - name: Assert NO lazy upgrade was performed (abort cancelled it)
+    type: assert_log_absent
     nodes:
       - app-migration-admin-abort-1
     patterns:
       - "performing lazy upgrade before execution"
-    min_matches: 1
 
-  - name: Assert the pre-commit migration_check passed on this clean migration
-    type: assert_log_present
+  - name: Assert the migration_check pass path was never taken
+    type: assert_log_absent
     nodes:
       - app-migration-admin-abort-1
     patterns:
       - "migration_check passed"
-    min_matches: 1
 
   # Teardown.
   - name: Delete context
