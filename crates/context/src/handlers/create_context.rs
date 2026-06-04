@@ -11,22 +11,23 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_node_primitives::client::NodeClient;
 
+use calimero_context_client::ContextGuard;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::delta::{CausalDelta, StorageDelta};
 use calimero_store::{key, types, Store};
+use either::Either;
 use eyre::{bail, OptionExt};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{debug, error, warn};
 
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
 use crate::handlers::execute::{persist_signed_signatures, sign_authorized_actions};
-use crate::{BoundedCache, ContextManager, ContextMeta};
+use crate::{BoundedCache, ContextLock, ContextManager, ContextMeta};
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -81,11 +82,10 @@ impl Handler<CreateContextRequest> for ContextManager {
 
         let group_id_for_response = group_id;
 
-        let guard = context
-            .lock
-            .clone()
-            .try_lock_owned()
-            .expect("logically exclusive");
+        let guard = match context.lock() {
+            Either::Left(guard) => guard,
+            Either::Right(_) => unreachable!("logically exclusive"),
+        };
 
         let mut context_meta = context.meta.clone();
         context_meta.service_name = service_name;
@@ -280,7 +280,7 @@ impl Prepared<'_> {
 
         let context = entry.insert(ContextMeta {
             meta,
-            lock: Arc::new(Mutex::new(context_id)),
+            lock: ContextLock::new(context_id),
         });
 
         Ok(Self {
@@ -311,7 +311,7 @@ async fn create_context(
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
     init_params: Vec<u8>,
-    guard: OwnedMutexGuard<ContextId>,
+    guard: ContextGuard,
     group_id: ContextGroupId,
     name: Option<String>,
 ) -> eyre::Result<Hash> {

@@ -13,7 +13,7 @@ use calimero_context_client::client::ContextClient;
 use calimero_context_client::messages::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, MigrationParams,
 };
-use calimero_context_client::{ContextAtomic, ContextAtomicKey};
+use calimero_context_client::{ContextAtomic, ContextAtomicKey, ContextGuard};
 use calimero_context_config::types::{ContextGroupId, GovernancePosition};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
@@ -40,7 +40,6 @@ use eyre::{bail, WrapErr};
 use futures_util::future::TryFutureExt;
 use futures_util::io::Cursor;
 use memchr::memmem;
-use tokio::sync::OwnedMutexGuard;
 use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
@@ -541,16 +540,15 @@ impl Handler<ExecuteRequest> for ContextManager {
         });
 
         // Re-fetch context after possible lazy upgrade (application_id may have changed)
-        let context_task = context_task.map(
-            move |guard_result: eyre::Result<OwnedMutexGuard<ContextId>>, act, _ctx| {
+        let context_task =
+            context_task.map(move |guard_result: eyre::Result<ContextGuard>, act, _ctx| {
                 let guard = guard_result?;
                 let Some(context) = act.get_or_fetch_context(&context_id)? else {
                     bail!(ContextError::ContextDeleted { context_id });
                 };
 
                 Ok((guard, context.meta.clone()))
-            },
-        );
+            });
 
         let module_task = context_task.and_then(move |(guard, context), act, _ctx| {
             act.get_module(context.application_id, context.service_name.clone())
@@ -1310,7 +1308,7 @@ async fn internal_execute(
     node_client: &NodeClient,
     _context_client: &ContextClient,
     module: calimero_runtime::Module,
-    guard: &OwnedMutexGuard<ContextId>,
+    guard: &ContextGuard,
     context: &mut Context,
     executor: PublicKey,
     method: Cow<'static, str>,
@@ -1797,7 +1795,7 @@ async fn internal_execute(
 }
 
 pub async fn execute(
-    context: &OwnedMutexGuard<ContextId>,
+    context: &ContextGuard,
     module: calimero_runtime::Module,
     executor: PublicKey,
     method: Cow<'static, str>,
