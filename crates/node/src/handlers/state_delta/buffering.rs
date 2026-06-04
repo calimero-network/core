@@ -690,11 +690,6 @@ pub(crate) async fn recover_absorbed_on_startup(input: &StateDeltaContext) {
     }
 }
 
-/// Reconstruct a [`StateDeltaMessage`] from a [`BufferedDelta`] for re-apply
-/// from the governance-pending drain path. Mirrors the borsh decode in
-/// [`super::network_event::handle`] — every field that the network handler
-/// destructures must be reconstructable here, otherwise drained deltas
-/// would replay with missing data.
 /// Outcome of the gossip-fence evaluation at the state-delta apply chokepoint.
 ///
 /// `Fall` means the delta is readable now (`FenceDecision::Apply`) and the

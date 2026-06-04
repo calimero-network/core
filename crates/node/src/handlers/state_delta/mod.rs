@@ -67,6 +67,11 @@ pub(crate) struct StateDeltaContext {
     pub(crate) sync_timeout: std::time::Duration,
 }
 
+/// Reconstruct a [`StateDeltaMessage`] from a [`BufferedDelta`] for re-apply
+/// from the governance-pending drain path. Mirrors the borsh decode in
+/// [`super::network_event::handle`] — every field that the network handler
+/// destructures must be reconstructable here, otherwise drained deltas
+/// would replay with missing data.
 fn state_delta_message_from_buffered(
     buffered: calimero_node_primitives::delta_buffer::BufferedDelta,
     context_id: ContextId,
