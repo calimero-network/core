@@ -693,9 +693,14 @@ impl Actor for ContextManager {
         // with `auto_follow.contexts = true`.
         auto_follow::spawn(self.datastore.clone(), self.context_client.clone());
         // Self-purge handler (see docs/adr/0002-fleet-tee-leave-protocol.md) — reacts
-        // to `OpEvent::MemberRemoved` for our own identity and drops the local rows
-        // (signing keys, gov ops, namespace identity, membership-side metadata) that
-        // the apply layer leaves behind after eviction or self-leave. Mirrors
+        // to `OpEvent::TeeMemberRemoved` (paired follow-up emitted ONLY when the
+        // removed member's prior role was `ReadOnlyTee`) for our own identity and
+        // drops the local rows (signing keys, gov ops, namespace identity,
+        // membership-side metadata) that the apply layer leaves behind after TEE
+        // eviction. The listener intentionally does NOT react to plain
+        // `OpEvent::MemberRemoved` — non-TEE removals (admin kicks, voluntary
+        // leave, leave-and-rejoin via inheritance) keep soft-leave semantics so
+        // existing rejoin codepaths can re-establish state. Mirrors
         // auto_follow's listener pattern. Idempotent across restarts.
         self_purge::spawn(self.datastore.clone(), self.node_client.clone());
     }

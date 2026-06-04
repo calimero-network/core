@@ -1,19 +1,33 @@
-//! Self-purge handler for evicted node identities.
+//! Self-purge handler for evicted TEE node identities.
 //!
 //! Subscribes to the op-apply event channel (see [`crate::op_events`])
-//! and reacts to `OpEvent::MemberRemoved` events that target THIS node's
-//! identity for the affected namespace — purging local state for the
-//! group (or, for namespace-root removals, the whole subtree) so that
-//! signing-key material, gov-op log, namespace identity, and
-//! membership-side metadata do not linger after eviction.
+//! and reacts to `OpEvent::TeeMemberRemoved` events that target THIS
+//! node's identity for the affected namespace — purging local state for
+//! the group (or, for namespace-root removals, the whole subtree) so
+//! that signing-key material, gov-op log, namespace identity, and
+//! membership-side metadata do not linger after a TEE eviction.
 //!
 //! See `docs/adr/0002-fleet-tee-leave-protocol.md` for the architectural
-//! framing. The TL;DR: cryptographic forward secrecy on new writes is
-//! already given by the existing `MemberRemoved` key-rotation pipeline
-//! (`calimero_governance_store::group_governance_publisher`); what this module adds is
-//! the local on-disk hygiene that the architecture doc's
-//! `architecture/membership-and-leave.html` § 5/§ 6 labels as the
-//! deferred "soft-vs-hard local cleanup" follow-up.
+//! framing.
+//!
+//! # Role-scoped: TEE removals only
+//!
+//! The listener intentionally gates on `OpEvent::TeeMemberRemoved`,
+//! NOT the generic `OpEvent::MemberRemoved`. Both events are emitted
+//! by the apply path on a removal whose role was `ReadOnlyTee`; only
+//! `MemberRemoved` is emitted for `Admin`/`Member`/`Observer` removals.
+//! Non-TEE removals deliberately stay on the SOFT-leave path — the
+//! local rows remain so kick-and-readd / rejoin-via-keyshare /
+//! inheritance-rejoin flows can re-use them. Hardening to hard-purge
+//! on every removal regresses the e2e workflows under
+//! `apps/scaffolding-e2e/workflows/group-{kick,leave}-*` that depend on
+//! that soft-leave invariant.
+//!
+//! TEE removals are different: a `ReadOnlyTee` node has no rejoin
+//! pathway (the only admission op for the role is
+//! `MemberJoinedViaTeeAttestation`, which re-derives identity from a
+//! fresh attestation), so leaving on-disk key material around buys
+//! nothing and risks forward-secrecy hygiene. Hard-purge.
 //!
 //! # Why a separate handler (not in the apply arm)
 //!
@@ -26,9 +40,9 @@
 //!
 //! # Scope split: subgroup vs namespace root
 //!
-//! `MemberRemoved` can fire at either the namespace root (a kick from
-//! the namespace, which cascades to all descendant subgroups via the
-//! existing apply code) or at a subgroup (a kick from one subgroup
+//! `TeeMemberRemoved` can fire at either the namespace root (a kick
+//! from the namespace, which cascades to all descendant subgroups via
+//! the existing apply code) or at a subgroup (a kick from one subgroup
 //! only, while the node may still be in other subgroups under the
 //! same namespace).
 //!
@@ -47,7 +61,7 @@
 //! `calimero_governance_store::group_governance_publisher::sign_apply_and_publish_inner`
 //! (the publisher generates a fresh group key wrapped for everyone
 //! EXCEPT the removed member). This handler only deletes what the
-//! evicted node held locally — including the now-useless old key
+//! evicted TEE node held locally — including the now-useless old key
 //! material the rotation already orphaned.
 
 use std::sync::Mutex;
@@ -134,14 +148,31 @@ async fn run(store: Store, node_client: NodeClient) {
             }
         };
 
-        if let OpEvent::MemberRemoved { group_id, member } = event {
+        // Role-scoped: only TEE removals trigger the hard-purge. See the
+        // module docstring for why we don't also react to
+        // `OpEvent::MemberRemoved` here.
+        if let Some((group_id, member)) = dispatch_target(&event) {
             handle_member_removed(&store, &node_client, group_id, member).await;
         }
     }
 }
 
-/// The dispatch decision for a `MemberRemoved` event: do nothing, purge
-/// a single subgroup, or cascade-purge the whole namespace.
+/// Listener match-arm predicate, extracted so a unit test can verify
+/// that the non-TEE `MemberRemoved` event is intentionally ignored
+/// (i.e. the soft-leave path is preserved for `Admin`/`Member`/
+/// `Observer` removals).
+///
+/// Returns `Some((group_id, member))` iff the listener should dispatch
+/// a purge for this event; `None` otherwise.
+pub(crate) fn dispatch_target(event: &OpEvent) -> Option<([u8; 32], PublicKey)> {
+    match event {
+        OpEvent::TeeMemberRemoved { group_id, member } => Some((*group_id, *member)),
+        _ => None,
+    }
+}
+
+/// The dispatch decision for a `TeeMemberRemoved` event: do nothing,
+/// purge a single subgroup, or cascade-purge the whole namespace.
 ///
 /// Split out from [`handle_member_removed`] so the dispatch logic
 /// (which is the part most likely to regress on a refactor) is unit-
@@ -597,7 +628,7 @@ mod tests {
     //! Sync-side tests for the purge orchestration. The listener loop
     //! itself is template boilerplate mirroring [`crate::auto_follow`]
     //! and is not unit-tested here (covered indirectly by integration
-    //! once `OpEvent::MemberRemoved` lands in a real-apply-path test).
+    //! once `OpEvent::TeeMemberRemoved` lands in a real-apply-path test).
     //!
     //! What we DO verify: the store-side orchestration drops the right
     //! column families on the subgroup-only and namespace-root branches,
@@ -838,7 +869,7 @@ mod tests {
     //
     // These exercise `decide_purge_action`, the pure-read function the
     // listener calls to choose which purge branch (None / Subgroup /
-    // Namespace) applies for a given `OpEvent::MemberRemoved` event.
+    // Namespace) applies for a given `OpEvent::TeeMemberRemoved` event.
     // Together with the broadcast-channel sanity test below, they cover
     // the wiring the cascade unit tests deliberately skip.
 
@@ -913,18 +944,19 @@ mod tests {
 
     /// Sanity check that the event channel wiring works end-to-end with
     /// our event variant: subscribe to `op_events`, notify a
-    /// `MemberRemoved`, verify the receiver gets it intact. This is the
-    /// channel-level contract the listener depends on; if a future
+    /// `TeeMemberRemoved`, verify the receiver gets it intact. This is
+    /// the channel-level contract the listener depends on; if a future
     /// refactor renames the variant or breaks the broadcast plumbing,
     /// this test fails fast.
     ///
     /// Test isolation: the broadcast channel is process-wide and other
-    /// tests in the same suite may emit `MemberRemoved` events. We use
-    /// a per-run random `group_id` as a discriminator and drain non-
-    /// matching events in a recv loop. mdma#106 v6 review (meroreviewer
-    /// "test is not isolated — can receive events from other tests").
+    /// tests in the same suite may emit `TeeMemberRemoved` events. We
+    /// use a per-run random `group_id` as a discriminator and drain
+    /// non-matching events in a recv loop. mdma#106 v6 review
+    /// (meroreviewer "test is not isolated — can receive events from
+    /// other tests").
     #[tokio::test]
-    async fn broadcast_channel_delivers_member_removed_to_subscriber() {
+    async fn broadcast_channel_delivers_tee_member_removed_to_subscriber() {
         let mut rng = OsRng;
         let member = PrivateKey::random(&mut rng).public_key();
         // Random 32-byte tag, not a fixed pattern, so the chance of any
@@ -934,7 +966,7 @@ mod tests {
 
         // Subscribe BEFORE notifying so we don't miss the fire.
         let mut rx = op_events::subscribe();
-        op_events::notify(OpEvent::MemberRemoved { group_id, member });
+        op_events::notify(OpEvent::TeeMemberRemoved { group_id, member });
 
         // Receive in a loop, skipping events that aren't ours. The
         // channel is in-process and dispatch is sub-millisecond, so
@@ -945,14 +977,14 @@ mod tests {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             assert!(
                 !remaining.is_zero(),
-                "timed out without receiving our discriminated MemberRemoved event",
+                "timed out without receiving our discriminated TeeMemberRemoved event",
             );
             let received = tokio::time::timeout(remaining, rx.recv())
                 .await
                 .expect("broadcast::recv timed out — channel wiring broken")
                 .expect("broadcast::recv returned an error");
             match received {
-                OpEvent::MemberRemoved {
+                OpEvent::TeeMemberRemoved {
                     group_id: g,
                     member: m,
                 } if g == group_id => {
@@ -996,5 +1028,123 @@ mod tests {
                 .is_none(),
             "namespace identity remains purged after second cascade"
         );
+    }
+
+    // --- Role-scoped dispatch regression tests --------------------------
+    //
+    // These guard the contract that closed PR #2653: only
+    // `TeeMemberRemoved` triggers the listener's purge. Non-TEE
+    // `MemberRemoved` events stay on the soft-leave path (existing
+    // kick-and-readd / rejoin-via-keyshare / inheritance-rejoin e2e
+    // workflows under `apps/scaffolding-e2e/workflows/group-{kick,leave}-*`
+    // depend on this).
+
+    #[test]
+    fn dispatch_target_skips_non_tee_member_removed() {
+        // Regression: a soft-leave or admin-kick of a non-TEE member
+        // must NOT trip the self-purge listener. If the predicate ever
+        // starts returning `Some` for `MemberRemoved`, the 4 e2e
+        // workflows that this PR was narrowed to preserve will break.
+        let mut rng = OsRng;
+        let member = PrivateKey::random(&mut rng).public_key();
+        let event = OpEvent::MemberRemoved {
+            group_id: [0xAAu8; 32],
+            member,
+        };
+        assert_eq!(
+            dispatch_target(&event),
+            None,
+            "non-TEE MemberRemoved must NOT dispatch the self-purge listener"
+        );
+    }
+
+    #[test]
+    fn dispatch_target_fires_on_tee_member_removed() {
+        // Positive path: the role-scoped follow-up event is exactly the
+        // listener's wake-up signal.
+        let mut rng = OsRng;
+        let member = PrivateKey::random(&mut rng).public_key();
+        let gid = [0xBBu8; 32];
+        let event = OpEvent::TeeMemberRemoved {
+            group_id: gid,
+            member,
+        };
+        assert_eq!(
+            dispatch_target(&event),
+            Some((gid, member)),
+            "TeeMemberRemoved MUST dispatch the self-purge listener"
+        );
+    }
+
+    #[test]
+    fn dispatch_target_skips_unrelated_op_events() {
+        // Any other op-event variant must be ignored by the listener
+        // (auto-follow / context-registered / etc. handlers own those).
+        let mut rng = OsRng;
+        let member = PrivateKey::random(&mut rng).public_key();
+        let gid = [0xCCu8; 32];
+
+        assert_eq!(
+            dispatch_target(&OpEvent::MemberAdded {
+                group_id: gid,
+                member,
+                role: GroupMemberRole::ReadOnlyTee,
+            }),
+            None,
+        );
+        assert_eq!(
+            dispatch_target(&OpEvent::TeeMemberAdmitted {
+                group_id: gid,
+                member,
+            }),
+            None,
+        );
+    }
+
+    /// Live broadcast-channel sanity for the negative path: emit a
+    /// non-TEE `MemberRemoved` event on the global op-events channel
+    /// and verify the listener's match-arm predicate continues to
+    /// reject it after a round-trip through the broadcast channel.
+    /// Belt-and-suspenders with the unit-level `dispatch_target_*`
+    /// tests above — this one would catch a future refactor that moved
+    /// the role gate INTO the channel (e.g. variant rename) and broke
+    /// the wire-format compatibility.
+    #[tokio::test]
+    async fn live_channel_skips_non_tee_member_removed() {
+        let mut rng = OsRng;
+        let member = PrivateKey::random(&mut rng).public_key();
+        let mut group_id = [0u8; 32];
+        rng.fill_bytes(&mut group_id);
+
+        let mut rx = op_events::subscribe();
+        op_events::notify(OpEvent::MemberRemoved { group_id, member });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out without receiving our discriminated MemberRemoved event",
+            );
+            let received = tokio::time::timeout(remaining, rx.recv())
+                .await
+                .expect("broadcast::recv timed out")
+                .expect("broadcast::recv returned an error");
+            match received {
+                OpEvent::MemberRemoved {
+                    group_id: g,
+                    member: _,
+                } if g == group_id => {
+                    assert_eq!(
+                        dispatch_target(&received),
+                        None,
+                        "the listener must NOT dispatch on a non-TEE MemberRemoved \
+                         delivered via the live broadcast channel",
+                    );
+                    break;
+                }
+                _ => continue,
+            }
+        }
     }
 }

@@ -7,7 +7,7 @@ use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError,
     MembershipRepository, MetaRepository,
 };
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
 
@@ -37,6 +37,27 @@ pub(crate) fn apply(
     }
     ctx.membership_policy()
         .ensure_not_last_admin_removal(member)?;
+    // Capture role BEFORE removal so we can emit a role-scoped
+    // `TeeMemberRemoved` event alongside the generic `MemberRemoved`.
+    // The cascade below touches `ContextIdentity` rows only (disjoint
+    // column from `GroupMember`), and `remove_member` is the call that
+    // clears the role row — so `role_of` is still authoritative here.
+    let removed_role = MembershipRepository::new(store).role_of(group_id, member)?;
+    if removed_role.is_none() {
+        // By this point in the apply path the member row should be present
+        // (the earlier `require_manage_members` + `ensure_not_last_admin_removal`
+        // checks would have bailed if it weren't). A `None` here means
+        // something concurrent removed it, OR a prior partial apply left
+        // the row in an inconsistent state. Either way, we lose the ability
+        // to fire a role-scoped `TeeMemberRemoved` follow-up for this op,
+        // so any `ReadOnlyTee` purge that should have run won't. Surface
+        // at `warn!` so the gap is observable in aggregate logs.
+        tracing::warn!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            member = %member,
+            "MemberRemoved apply: role_of returned None — TeeMemberRemoved follow-up will be skipped"
+        );
+    }
     cascade_remove_member_from_group_tree(store, group_id, member)?;
     MembershipRepository::new(store).remove_member(group_id, member)?;
     // Add to deny-list: state deltas from this member will be
@@ -78,5 +99,15 @@ pub(crate) fn apply(
         group_id: group_id.to_bytes(),
         member: *member,
     });
+    // Role-scoped follow-up: TEE evictions need extra local hygiene
+    // (forward-secrecy purge in `calimero_context::self_purge`) that the
+    // soft-leave path deliberately skips. Non-TEE removals stay
+    // soft-leave so rejoin/keyshare flows can re-use the local rows.
+    if removed_role == Some(GroupMemberRole::ReadOnlyTee) {
+        crate::op_events::notify(crate::op_events::OpEvent::TeeMemberRemoved {
+            group_id: group_id.to_bytes(),
+            member: *member,
+        });
+    }
     Ok(())
 }
