@@ -5,7 +5,7 @@
 //! match the context's owning group?", shared by the apply path and the
 //! DAG-catchup paths in `sync::manager` / `sync::delta_request`.
 
-use super::*;
+use calimero_primitives::context::ContextId;
 
 /// Outcome of the anti-bypass `group_id` check that runs at every
 /// apply path consulting a state delta's `governance_position`.

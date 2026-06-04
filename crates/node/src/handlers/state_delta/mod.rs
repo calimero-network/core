@@ -2,7 +2,7 @@
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
 use calimero_context::group_store::{membership_status_at, MembershipStatus};
-use calimero_context::group_store::{DenyListRepository, GroupKeyring, NamespaceRepository};
+use calimero_context::group_store::{DenyListRepository, NamespaceRepository};
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::GovernancePosition;
 use calimero_crypto::Nonce;
@@ -12,9 +12,9 @@ use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
-use eyre::{bail, OptionExt, Result};
+use eyre::{bail, Result};
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 

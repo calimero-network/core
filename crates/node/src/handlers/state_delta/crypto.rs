@@ -4,7 +4,12 @@
 //! delta's group encryption key (with a bounded wait for a late
 //! `KeyDelivery`) and decrypting the borsh-encoded storage delta.
 
-use super::*;
+use calimero_context::group_store::{GroupKeyring, NamespaceRepository};
+use calimero_crypto::Nonce;
+use calimero_primitives::identity::PrivateKey;
+use calimero_storage::action::Action;
+use eyre::{bail, OptionExt, Result};
+use tracing::debug;
 
 /// Bounded wait for a `KeyDelivery` (carried by `NamespaceGovernanceDelta`)
 /// to land before we give up on decrypting an inbound state delta.
