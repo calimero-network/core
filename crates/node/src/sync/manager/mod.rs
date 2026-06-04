@@ -611,17 +611,55 @@ impl SyncManager {
             )))
         };
 
-        let outcome = super::peers::discover_mesh_peers_with_namespace_fallback(
+        // Durably-cached member peers for this context's group — the
+        // cold-start signal that survives a restart. Empty when nothing
+        // is cached, in which case topic discovery below carries the
+        // selection exactly as before.
+        let cached_members: Vec<libp2p::PeerId> = self
+            .member_peers_for_context(&context_id)
+            .into_iter()
+            .map(|(peer, _role)| peer)
+            .collect();
+
+        let discovery = super::peers::discover_mesh_peers_with_namespace_fallback(
             &*self.sync_network,
             context_id,
             max_retries,
             std::time::Duration::from_millis(retry_delay_ms),
             resolve_namespace_topic,
         )
-        .await?;
-        let peers = outcome.peers;
-        let final_attempt = outcome.attempts;
-        let mesh_elapsed = outcome.elapsed;
+        .await;
+
+        let (peers, final_attempt, mesh_elapsed, source) = match discovery {
+            Ok(outcome) => {
+                // Members first, then topic-discovered peers not already
+                // present. `partition_peers_anchor_first` below still
+                // orders anchors within the merged set, so this only
+                // changes which non-anchor peers we reach for first.
+                let peers = Self::merge_members_first(cached_members, outcome.peers);
+                (peers, outcome.attempts, outcome.elapsed, outcome.source)
+            }
+            Err(err) => {
+                // Topic discovery came up empty. If the durable cache has
+                // members, dial them directly — they're real members and
+                // reachable via the address cache / DHT even before a mesh
+                // forms. Otherwise preserve the benign "no peers" outcome.
+                if cached_members.is_empty() {
+                    return Err(err);
+                }
+                debug!(
+                    %context_id,
+                    count = cached_members.len(),
+                    "mesh discovery empty; falling back to durably-cached member peers"
+                );
+                (
+                    cached_members,
+                    0,
+                    std::time::Duration::ZERO,
+                    super::peers::PeerSource::PersistentCache,
+                )
+            }
+        };
 
         info!(
             %context_id,
@@ -629,7 +667,7 @@ impl SyncManager {
             attempts = final_attempt,
             ?mesh_elapsed,
             is_uninitialized,
-            source = ?outcome.source,
+            source = ?source,
             "Mesh peer discovery succeeded"
         );
 
@@ -809,7 +847,6 @@ impl SyncManager {
     /// callers fall back to topic-subscriber discovery. A routing hint:
     /// `anchor_identities_for_context` (governance `trusted_anchors`,
     /// which includes the owner) stays authoritative for anchor status.
-    #[allow(dead_code)] // wired into peer selection in a follow-up
     fn member_peers_for_context(
         &self,
         context_id: &ContextId,
@@ -830,7 +867,6 @@ impl SyncManager {
     /// [`GroupMemberRole`] (it's a group `Meta` field) so it doesn't
     /// appear here — owner preference is applied via the authoritative
     /// `trusted_anchors` set at selection time, not from this hint.
-    #[allow(dead_code)] // used by `member_peers_for_context`, wired in a follow-up
     fn role_rank(role: &calimero_primitives::context::GroupMemberRole) -> u8 {
         use calimero_primitives::context::GroupMemberRole::{Admin, Member, ReadOnly, ReadOnlyTee};
         match role {
@@ -845,7 +881,6 @@ impl SyncManager {
     /// strongest role (a peer hosting several member identities is
     /// returned once, tagged with its most-anchor role). Output is
     /// sorted by `PeerId` for determinism.
-    #[allow(dead_code)] // used by `member_peers_for_context`, wired in a follow-up
     fn dedup_peers_by_strongest_role(
         pairs: Vec<(PeerId, calimero_primitives::context::GroupMemberRole)>,
     ) -> Vec<(PeerId, calimero_primitives::context::GroupMemberRole)> {
@@ -862,6 +897,21 @@ impl SyncManager {
             }
         }
         best.into_iter().collect()
+    }
+
+    /// Merge cached member peers ahead of topic-discovered peers: the
+    /// members come first (cold-start preference for real members), then
+    /// any discovered peer not already in the list, preserving discovery
+    /// order. Deduplicates so a peer that's both a cached member and a
+    /// current subscriber appears once, up front.
+    fn merge_members_first(members: Vec<PeerId>, discovered: Vec<PeerId>) -> Vec<PeerId> {
+        let mut merged = members;
+        for peer in discovered {
+            if !merged.contains(&peer) {
+                merged.push(peer);
+            }
+        }
+        merged
     }
 
     /// Find a peer that has state (non-zero root_hash and non-empty DAG heads)

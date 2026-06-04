@@ -36,6 +36,31 @@ fn dedup_peers_keeps_strongest_role() {
     assert_eq!(map.get(&q), Some(&GroupMemberRole::ReadOnlyTee));
 }
 
+/// `merge_members_first` puts cached members ahead of discovered peers,
+/// preserves discovery order for the rest, and dedups the overlap.
+#[test]
+fn merge_members_first_orders_and_dedups() {
+    use libp2p::PeerId;
+
+    let m1 = PeerId::random();
+    let m2 = PeerId::random();
+    let d1 = PeerId::random();
+
+    // m2 also appears among discovered → must not be duplicated.
+    let merged = SyncManager::merge_members_first(vec![m1, m2], vec![d1, m2]);
+    assert_eq!(
+        merged,
+        vec![m1, m2, d1],
+        "members first, discovered appended once"
+    );
+
+    // No cached members → discovery order is preserved verbatim.
+    assert_eq!(
+        SyncManager::merge_members_first(vec![], vec![d1, m1]),
+        vec![d1, m1]
+    );
+}
+
 // =========================================================================
 // Tests for handshake estimation fallback
 // =========================================================================
