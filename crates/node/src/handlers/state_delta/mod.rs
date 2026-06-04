@@ -2328,6 +2328,7 @@ mod tests {
                             initiated_by: dummy_pk,
                             status: GroupUpgradeStatus::Completed { completed_at: None },
                             cascade_hlc: Some(cascade_hlc),
+                            cascade_seq: None,
                         },
                     )
                     .expect("save group upgrade");

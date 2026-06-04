@@ -20,10 +20,10 @@
 //! legitimately advances it to its own newer `cascade_hlc`.
 
 use super::context::GroupApplyCtx;
-use crate::{GroupSettingsService, PermissionChecker, UpgradesRepository};
+use crate::{GroupSettingsService, NamespaceRepository, PermissionChecker, UpgradesRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_storage::logical_clock::HybridTimestamp;
-use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue, NamespaceGovHead};
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
@@ -45,6 +45,28 @@ pub(crate) fn apply(
     // ops racing the same subtree. See the legacy
     // `cascade_target_application_set` module for the longer rationale.
     let entries = crate::cascade::walk_for_predicate(store, *group_id, *from_app_key)?;
+
+    // The migration's expand-entry governance position: the namespace gov-head
+    // sequence as it stands when this CascadeUpgrade applies (BEFORE the op's own
+    // head advance, which `apply_signed_op` runs after mutations). This is the
+    // governance cut immediately preceding the migration — the same
+    // `NamespaceGovHead.sequence` space the migration heartbeat reports as
+    // `synced_up_to_hlc` (see `MigrationEmitter::refresh_hlc`). The
+    // migration-status rollup pins the cohort by comparing those two SEQUENCES
+    // like-for-like; `cascade_hlc` (an NTP64 HLC) must never serve as that pin.
+    // Best-effort: a missing head or read error leaves `cascade_seq` `None`
+    // (no pin) rather than failing the apply.
+    let cascade_seq = NamespaceRepository::new(store)
+        .resolve(group_id)
+        .ok()
+        .and_then(|ns| {
+            store
+                .handle()
+                .get(&NamespaceGovHead::new(ns.to_bytes()))
+                .ok()
+                .flatten()
+        })
+        .map(|head| head.sequence);
 
     // Pre-scan: verify the signer would pass the per-descendant
     // `require_manage_application` check on EVERY matched descendant
@@ -104,6 +126,7 @@ pub(crate) fn apply(
             initiated_by: *signer,
             status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc: None,
+            cascade_seq: None,
         });
         // Reflect THIS cascade's migration bytes on an existing record too, so
         // the record's `migration` matches the `GroupMeta.migration` we just
@@ -111,6 +134,7 @@ pub(crate) fn apply(
         // existing record from a prior upgrade would carry stale migration bytes.
         value.migration = migration.clone();
         value.cascade_hlc = Some(cascade_hlc);
+        value.cascade_seq = cascade_seq;
         repo.save(&gid, &value)?;
 
         tracing::info!(

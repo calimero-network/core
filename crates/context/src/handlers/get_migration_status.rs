@@ -75,6 +75,13 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
             let upgrade = UpgradesRepository::new(&self.datastore).load(&namespace_id)?;
             let cohort_pinned_at_hlc: Option<HybridTimestamp> =
                 upgrade.as_ref().and_then(|u| u.cascade_hlc);
+            // The overlay pin: the migration's expand-entry governance position
+            // (`NamespaceGovHead.sequence`), captured by `cascade_upgrade::apply`.
+            // It lives in the SAME number space as the heartbeat's
+            // `synced_up_to_hlc` (`= head.sequence`), so the rollup compares them
+            // like-for-like. `cohort_pinned_at_hlc` is the replicated NTP64 HLC
+            // fence surfaced for display only — never the overlay pin.
+            let cohort_pinned_at_seq: Option<u64> = upgrade.as_ref().and_then(|u| u.cascade_seq);
             let target_version = upgrade
                 .as_ref()
                 .and_then(|u| parse_schema_version(&u.to_version))
@@ -97,6 +104,7 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
             Ok::<MigrationStatus, eyre::Report>(compute_migration_status_rollup(
                 target_version,
                 cohort_pinned_at_hlc,
+                cohort_pinned_at_seq,
                 &closure,
                 |peer| member_reports.get(peer).copied(),
             ))

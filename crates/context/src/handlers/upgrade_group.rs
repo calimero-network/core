@@ -220,6 +220,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         initiated_by: requester,
                         status: completed_status.clone(),
                         cascade_hlc: None,
+                        cascade_seq: None,
                     };
 
                     UpgradesRepository::new(&datastore).save(&group_id, &upgrade_value)?;
@@ -277,6 +278,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             initiated_by: requester,
             status: initial_status.clone(),
             cascade_hlc: None,
+            cascade_seq: None,
         };
 
         if let Err(err) = UpgradesRepository::new(&self.datastore).save(&group_id, &upgrade_value) {
@@ -1179,6 +1181,18 @@ fn dispatch_cascade(
         // group's contexts on entry and drives `update_application` per
         // context, exactly like the single-group path.
         for (gid, total) in matched_descendants.iter().zip(pre_spawn_totals.iter()) {
+            // Carry forward the expand-entry governance position the
+            // `CascadeUpgrade` apply just stamped onto this descendant's record
+            // (`cascade_upgrade::apply`, run during the local apply above). This
+            // per-descendant write replaces that `Completed` record with an
+            // `InProgress` one to drive the propagator; without preserving
+            // `cascade_seq` the migration-status rollup would lose its sequence
+            // pin on the initiator.
+            let cascade_seq = UpgradesRepository::new(&datastore)
+                .load(gid)
+                .ok()
+                .flatten()
+                .and_then(|v| v.cascade_seq);
             // Per-descendant `GroupUpgradeValue` so the propagator's
             // `update_upgrade_status` writes hit a live record. Same
             // shape the single-group canary path uses.
@@ -1194,6 +1208,7 @@ fn dispatch_cascade(
                     failed: 0,
                 },
                 cascade_hlc: Some(cascade_hlc),
+                cascade_seq,
             };
             if let Err(err) = UpgradesRepository::new(&datastore).save(gid, &upgrade_value) {
                 error!(

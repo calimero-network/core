@@ -1077,16 +1077,21 @@ pub struct MigrationStatus {
 ///
 /// `closure` is the current inherited-membership closure for the namespace
 /// subtree (the `list ∪ enumerate_inherited` set, computed by the caller).
-/// `cohort_pinned_at_hlc` is the migration's expand-entry HLC: a member whose
-/// freshest heartbeat proves it had not yet synced through the pin
-/// (`synced_up_to_hlc < pin`) was not part of the converged state the migration
-/// pinned and is **excluded** from the cohort (this is the
+/// `cohort_pinned_at_seq` is the migration's expand-entry governance position
+/// (`NamespaceGovHead.sequence` captured when the cascade was stamped): a member
+/// whose freshest heartbeat proves it had not yet synced through the pin
+/// (`synced_up_to_hlc < cohort_pinned_at_seq`) was not part of the converged
+/// state the migration pinned and is **excluded** from the cohort (this is the
 /// `synced_up_to_hlc` overlay that realizes pinning — a post-expand joiner that
-/// reports a sync position behind the pin is dropped rather than counted). A
-/// member with no report is kept in the cohort as `unknown` (its membership is
-/// not contradicted), so a silent member never produces a false green.
-/// `report_for` resolves each member to its freshest in-TTL heartbeat report,
-/// or `None` if the member has no fresh heartbeat (→ `unknown`).
+/// reports a sync position behind the pin is dropped rather than counted). The
+/// pin and the report are BOTH `NamespaceGovHead.sequence` values, so the
+/// comparison is like-for-like; `cohort_pinned_at_hlc` is the replicated NTP64
+/// HLC fence surfaced for display only and is NEVER used as the overlay pin (it
+/// lives in a different, physical-time number space). A member with no report is
+/// kept in the cohort as `unknown` (its membership is not contradicted), so a
+/// silent member never produces a false green. `report_for` resolves each member
+/// to its freshest in-TTL heartbeat report, or `None` if the member has no fresh
+/// heartbeat (→ `unknown`).
 ///
 /// Pure and side-effect free — this is observability only and never gates
 /// correctness or progress. `all_migrated` is `true` IFF every pinned-cohort
@@ -1095,6 +1100,7 @@ pub struct MigrationStatus {
 pub fn compute_migration_status_rollup(
     target_version: u32,
     cohort_pinned_at_hlc: Option<HybridTimestamp>,
+    cohort_pinned_at_seq: Option<u64>,
     closure: &[PublicKey],
     mut report_for: impl FnMut(&PublicKey) -> Option<MemberMigrationReport>,
 ) -> MigrationStatus {
@@ -1103,17 +1109,24 @@ pub fn compute_migration_status_rollup(
     let mut in_progress = 0usize;
     let mut unknown = 0usize;
 
-    let pin_hlc = cohort_pinned_at_hlc.map(|ts| ts.get_time().as_u64());
-
     for peer in closure {
         let report = report_for(peer);
 
         // Pin overlay: a member whose freshest heartbeat proves it synced only
-        // up to a position strictly before the expand-entry HLC was not part of
-        // the converged pinned state — exclude it from the cohort entirely (not
-        // even `unknown`). A member with no report is NOT excluded (we cannot
-        // prove it joined late), so it stays in-cohort as `unknown`.
-        if let (Some(pin), Some(r)) = (pin_hlc, report) {
+        // up to a governance position strictly before the expand-entry position
+        // was not part of the converged pinned state — exclude it from the
+        // cohort entirely (not even `unknown`). A member with no report is NOT
+        // excluded (we cannot prove it joined late), so it stays in-cohort as
+        // `unknown`.
+        //
+        // The pin is a `NamespaceGovHead.sequence` (the migration's expand-entry
+        // governance position), compared like-for-like against the heartbeat's
+        // `synced_up_to_hlc` — which is ALSO a `NamespaceGovHead.sequence`
+        // (`MigrationEmitter::refresh_hlc` sets it from `head.sequence`), NOT an
+        // HLC physical time. `cohort_pinned_at_hlc` is the replicated HLC fence
+        // surfaced for display only; it lives in NTP64 physical-time space and
+        // must never be compared against the sequence-space sync position.
+        if let (Some(pin), Some(r)) = (cohort_pinned_at_seq, report) {
             if r.synced_up_to_hlc < pin {
                 continue;
             }
@@ -1188,23 +1201,31 @@ mod migration_status_tests {
         report_synced(schema_version, residue_auto, residue_identity, u64::MAX)
     }
 
+    /// Build a report whose `synced_up_to_hlc` is a `NamespaceGovHead.sequence`
+    /// — the exact value the emitter publishes (`MigrationEmitter::refresh_hlc`
+    /// sets `synced_up_to_hlc = head.sequence`). Models the producing space so
+    /// the pin overlay is exercised against real units, not a fabricated HLC.
     fn report_synced(
         schema_version: u32,
         residue_auto: u64,
         residue_identity: u64,
-        synced_up_to_hlc: u64,
+        synced_up_to_seq: u64,
     ) -> MemberMigrationReport {
         MemberMigrationReport {
             schema_version,
             residue_auto,
             residue_identity,
-            synced_up_to_hlc,
+            synced_up_to_hlc: synced_up_to_seq,
             reported_at: 0,
         }
     }
 
-    /// Build an `Option<HybridTimestamp>` pin from a raw physical-time `u64`.
-    fn pin_at(t: u64) -> Option<HybridTimestamp> {
+    /// Build the DISPLAY-only HLC fence (`cascade_hlc`) the way the initiator
+    /// stamps it: an NTP64 physical-time `HybridTimestamp` produced by the
+    /// storage HLC. Its raw `as_u64()` is on the order of ~7.6e18 — a number
+    /// space the sequence-based `synced_up_to_hlc` must NEVER be compared
+    /// against. Used here to prove the rollup does NOT use it as the overlay pin.
+    fn cascade_hlc_at(t: u64) -> Option<HybridTimestamp> {
         let id = ID::from(std::num::NonZeroU128::new(1).unwrap());
         Some(HybridTimestamp::new(Timestamp::new(NTP64(t), id)))
     }
@@ -1219,8 +1240,9 @@ mod migration_status_tests {
         let _ = reports.insert(b, report(2, 0, 0));
         // C absent — no fresh heartbeat.
 
-        let st =
-            compute_migration_status_rollup(2, None, &[a, b, c], |peer| reports.get(peer).copied());
+        let st = compute_migration_status_rollup(2, None, None, &[a, b, c], |peer| {
+            reports.get(peer).copied()
+        });
 
         assert_eq!(st.rollup.unknown, 1);
         assert_eq!(st.rollup.migrated, 2);
@@ -1234,32 +1256,46 @@ mod migration_status_tests {
     }
 
     /// A member whose freshest heartbeat proves it had not synced through the
-    /// expand-entry HLC pin (`synced_up_to_hlc < pin`) is a post-expand joiner
-    /// from the migration's perspective: the pin overlay EXCLUDES it from the
-    /// cohort entirely (it is not even surfaced in `members`) and it does not
-    /// flip `all_migrated`. This realizes the cohort-pinning in the rollup the
-    /// handler actually calls, via the `synced_up_to_hlc` overlay — not a
-    /// caller-supplied partition.
+    /// expand-entry governance position (`synced_up_to_hlc < cohort_pinned_at_seq`)
+    /// is a post-expand joiner from the migration's perspective: the pin overlay
+    /// EXCLUDES it from the cohort entirely (it is not even surfaced in
+    /// `members`) and it does not flip `all_migrated`.
+    ///
+    /// Both the pin and the reports here are `NamespaceGovHead.sequence` values
+    /// — the SAME space the producing code emits (`head.sequence` on both the
+    /// `cascade_seq` stamp and the heartbeat's `synced_up_to_hlc`). A separate
+    /// HLC `cascade_hlc` (the display fence) is supplied too, to prove it is NOT
+    /// the value the overlay compares against.
     #[test]
     fn cohort_pinned_ignores_post_expand_joiner() {
         let (a, b, c, d) = (pk(0xA), pk(0xB), pk(0xC), pk(0xD));
-        let pin = 1_000u64;
+        // Realistic governance-head sequence values (tens of ops), as the
+        // governance store produces — NOT NTP64 physical time.
+        let pin_seq = 10u64;
         let mut reports = BTreeMap::new();
-        // A,B,C synced well past the pin -> in-cohort, migrated.
-        let _ = reports.insert(a, report_synced(2, 0, 0, pin + 5));
-        let _ = reports.insert(b, report_synced(2, 0, 0, pin + 9));
-        let _ = reports.insert(c, report_synced(2, 0, 0, pin + 2));
-        // D's freshest sync position is BEFORE the pin -> excluded by the
-        // overlay even though it carries residue and is behind on version.
-        let _ = reports.insert(d, report_synced(1, 5, 5, pin - 1));
+        // A,B,C synced at/after the pinned expand-entry sequence -> in-cohort.
+        let _ = reports.insert(a, report_synced(2, 0, 0, pin_seq + 2));
+        let _ = reports.insert(b, report_synced(2, 0, 0, pin_seq + 5));
+        let _ = reports.insert(c, report_synced(2, 0, 0, pin_seq));
+        // D's freshest sync position (head sequence 9) is BELOW the pinned
+        // expand-entry sequence (10) -> a joiner whose governance head trails
+        // the migration cut, excluded by the overlay even though it carries
+        // residue and is behind on version.
+        let _ = reports.insert(d, report_synced(1, 5, 5, pin_seq - 1));
 
-        let st = compute_migration_status_rollup(2, pin_at(pin), &[a, b, c, d], |peer| {
-            reports.get(peer).copied()
-        });
+        // Display HLC fence in its own (physical-time) space — must not affect
+        // the overlay, which keys on `pin_seq`.
+        let st = compute_migration_status_rollup(
+            2,
+            cascade_hlc_at(7_600_000_000_000_000_000),
+            Some(pin_seq),
+            &[a, b, c, d],
+            |peer| reports.get(peer).copied(),
+        );
 
         assert_eq!(
             st.expected_members, 3,
-            "D synced only before the pin and is excluded from the cohort"
+            "D's head sequence trails the pinned expand-entry sequence; excluded"
         );
         assert_eq!(st.rollup.total, 3);
         assert!(
@@ -1272,6 +1308,45 @@ mod migration_status_tests {
         );
     }
 
+    /// Regression guard for the unit/number-space mismatch: the pin is the
+    /// expand-entry `NamespaceGovHead.sequence` (a small counter) while the
+    /// DISPLAY `cascade_hlc` is an NTP64 physical-time HLC (~7.6e18). If the
+    /// overlay (incorrectly) compared `synced_up_to_hlc` against
+    /// `cascade_hlc.get_time().as_u64()`, EVERY reporting member's tiny head
+    /// sequence (e.g. 12) would be `< 7.6e18` and get excluded, collapsing the
+    /// cohort to only unknown members so `all_migrated` could never be true.
+    /// With the like-for-like sequence comparison, members synced past the
+    /// expand-entry sequence stay in-cohort and `all_migrated` holds.
+    #[test]
+    fn overlay_uses_sequence_pin_not_display_hlc() {
+        let (a, b) = (pk(0xA), pk(0xB));
+        let mut reports = BTreeMap::new();
+        // Real gov-head sequences, both at/after the expand-entry sequence (10).
+        let _ = reports.insert(a, report_synced(2, 0, 0, 12));
+        let _ = reports.insert(b, report_synced(2, 0, 0, 11));
+
+        // A large display HLC (NTP64 physical time) alongside a small sequence
+        // pin — the exact mismatch the old `.get_time().as_u64()` comparison hit.
+        let st = compute_migration_status_rollup(
+            2,
+            cascade_hlc_at(7_600_000_000_000_000_000),
+            Some(10),
+            &[a, b],
+            |peer| reports.get(peer).copied(),
+        );
+
+        assert_eq!(
+            st.expected_members, 2,
+            "members synced past the expand-entry SEQUENCE must stay in-cohort; \
+             the display HLC must not be used as the pin"
+        );
+        assert_eq!(st.rollup.migrated, 2);
+        assert!(
+            st.rollup.all_migrated,
+            "with a like-for-like sequence pin every reporting member is migrated"
+        );
+    }
+
     /// A member with NO report is never excluded by the pin (we cannot prove it
     /// joined late) — it stays in-cohort as `unknown` and keeps `all_migrated`
     /// false, so the overlay can never silently drop a member into a false
@@ -1280,10 +1355,11 @@ mod migration_status_tests {
     fn pin_does_not_exclude_unreported_member() {
         let (a, b) = (pk(0xA), pk(0xB));
         let mut reports = BTreeMap::new();
-        let _ = reports.insert(a, report_synced(2, 0, 0, 2_000));
+        // A reports a head sequence past the pin.
+        let _ = reports.insert(a, report_synced(2, 0, 0, 20));
         // B absent.
 
-        let st = compute_migration_status_rollup(2, pin_at(1_000), &[a, b], |peer| {
+        let st = compute_migration_status_rollup(2, None, Some(10), &[a, b], |peer| {
             reports.get(peer).copied()
         });
 
@@ -1300,7 +1376,7 @@ mod migration_status_tests {
 
         // All migrated -> green.
         let all_ok =
-            compute_migration_status_rollup(2, None, &[a, b, c], |_| Some(report(2, 0, 0)));
+            compute_migration_status_rollup(2, None, None, &[a, b, c], |_| Some(report(2, 0, 0)));
         assert!(all_ok.rollup.all_migrated);
         assert_eq!(all_ok.rollup.migrated, 3);
 
@@ -1309,8 +1385,9 @@ mod migration_status_tests {
         let _ = reports.insert(a, report(2, 0, 0));
         let _ = reports.insert(b, report(2, 0, 0));
         let _ = reports.insert(c, report(2, 0, 1));
-        let with_residue =
-            compute_migration_status_rollup(2, None, &[a, b, c], |peer| reports.get(peer).copied());
+        let with_residue = compute_migration_status_rollup(2, None, None, &[a, b, c], |peer| {
+            reports.get(peer).copied()
+        });
         assert!(!with_residue.rollup.all_migrated);
         assert_eq!(with_residue.rollup.in_progress, 1);
         let c_row = with_residue
@@ -1325,13 +1402,14 @@ mod migration_status_tests {
         let _ = behind.insert(a, report(2, 0, 0));
         let _ = behind.insert(b, report(1, 0, 0));
         let _ = behind.insert(c, report(2, 0, 0));
-        let behind_status =
-            compute_migration_status_rollup(2, None, &[a, b, c], |peer| behind.get(peer).copied());
+        let behind_status = compute_migration_status_rollup(2, None, None, &[a, b, c], |peer| {
+            behind.get(peer).copied()
+        });
         assert!(!behind_status.rollup.all_migrated);
         assert_eq!(behind_status.rollup.in_progress, 1);
 
         // An empty cohort is never green.
-        let empty = compute_migration_status_rollup(2, None, &[], |_| None);
+        let empty = compute_migration_status_rollup(2, None, None, &[], |_| None);
         assert!(!empty.rollup.all_migrated);
         assert_eq!(empty.rollup.total, 0);
     }

@@ -100,6 +100,7 @@ mod tests {
             initiated_by: PublicKey::from([0x01; 32]),
             status,
             cascade_hlc: None,
+            cascade_seq: None,
         }
     }
 
