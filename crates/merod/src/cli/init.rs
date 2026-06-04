@@ -108,8 +108,10 @@ pub struct InitCommand {
 
     /// Static external multiaddr(s) to advertise (e.g.
     /// `/ip4/203.0.113.7/tcp/2428`). Seeded directly into the swarm's
-    /// external-address set when `--advertise-address` is set; otherwise
-    /// external addresses are discovered via identify + AutoNAT v2.
+    /// external-address set at startup; requires `--advertise-address`.
+    /// AutoNAT v2 always additionally discovers and confirms reachable
+    /// addresses regardless of this flag. Non-routable values (loopback /
+    /// unspecified / link-local) are ignored.
     #[clap(long = "external-address", value_name = "MULTIADDR")]
     pub external_address: Vec<Multiaddr>,
 
