@@ -8,9 +8,7 @@ use calimero_context_config::types::GovernancePosition;
 use calimero_crypto::Nonce;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::events::{
-    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
-};
+use calimero_primitives::events::ExecutionEvent;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
@@ -658,7 +656,7 @@ pub(crate) async fn apply_authorized_state_delta(
         // Still emit events to WebSocket clients for consistency
         let events_payload = parse_events_payload(&events, &context_id);
         if let Some(payload) = events_payload {
-            emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
+            emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload);
         }
         return Ok(());
     }
@@ -873,6 +871,21 @@ pub(crate) async fn apply_authorized_state_delta(
 
     let events_payload = parse_events_payload(&events, &context_id);
 
+    // A present-but-undeserializable events blob will never parse on any
+    // future restart. Clear it once the delta is applied so
+    // `load_persisted_deltas` doesn't resurface it on every boot in a
+    // permanent warn-and-skip loop — mirrors the deserialization-error
+    // path in `execute_cascaded_events`. (`events == None` is the normal
+    // "no events" case and is left untouched.)
+    if applied && events.is_some() && events_payload.is_none() {
+        warn!(
+            %context_id,
+            delta_id = ?delta_id,
+            "Events blob failed to deserialize; clearing to prevent a permanent restart replay loop"
+        );
+        delta_store_ref.mark_events_executed(&delta_id);
+    }
+
     if applied && !handlers_already_executed {
         if let Some(ref payload) = events_payload {
             let is_author = author_id == our_identity;
@@ -933,7 +946,7 @@ pub(crate) async fn apply_authorized_state_delta(
     }
 
     if let Some(payload) = events_payload {
-        emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
+        emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload);
     }
 
     // Same log-and-continue policy: a cascade failure here must not abort the
@@ -2735,7 +2748,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     &context_id,
                     buffered.root_hash,
                     events,
-                )?;
+                );
             }
         }
     } else {
