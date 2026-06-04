@@ -5241,8 +5241,8 @@ async fn force_carry_by_admin_records_intent() {
         target_schema_version: 3,
     };
 
-    let (handled, divergence) = apply_group_op_mutations(&store, &gid, &admin, &op)
-        .expect("admin force-carry authorized");
+    let (handled, divergence) =
+        apply_group_op_mutations(&store, &gid, &admin, &op).expect("admin force-carry authorized");
     assert!(handled, "MigrationForceCarry should be handled");
     assert!(
         divergence.is_none(),

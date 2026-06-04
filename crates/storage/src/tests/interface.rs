@@ -2687,8 +2687,7 @@ mod owner_driven_convert {
         let serialized = borsh::to_vec(&page).unwrap();
 
         let nonce = env::time_now();
-        let mut action =
-            create_signed_user_add_action(signing_key, owner, id, serialized, nonce);
+        let mut action = create_signed_user_add_action(signing_key, owner, id, serialized, nonce);
         // Re-parent the add under the registered root so it is not an orphan.
         if let Action::Add {
             ref mut ancestors, ..
@@ -2859,7 +2858,10 @@ mod owner_driven_convert {
             env::with_merge_mode(|| MainInterface::save_raw(id, b"v2".to_vec(), convert_meta))
         });
         assert!(out.is_ok(), "the write itself still succeeds in merge mode");
-        assert!(!env::in_merge_mode(), "merge mode must be restored after the write");
+        assert!(
+            !env::in_merge_mode(),
+            "merge mode must be restored after the write"
+        );
 
         let m = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
         assert_eq!(
@@ -2880,8 +2882,12 @@ mod owner_driven_convert {
     ) -> (Id, crate::entities::ChildInfo) {
         let root_id = Id::root();
         let root_meta = Metadata::default();
-        Index::<S>::add_root(crate::entities::ChildInfo::new(root_id, [0; 32], root_meta.clone()))
-            .unwrap();
+        Index::<S>::add_root(crate::entities::ChildInfo::new(
+            root_id,
+            [0; 32],
+            root_meta.clone(),
+        ))
+        .unwrap();
         let (root_full, _) = Index::<S>::get_hashes_for(root_id).unwrap().unwrap();
         let root = crate::entities::ChildInfo::new(root_id, root_full, root_meta);
 
