@@ -925,6 +925,32 @@ impl Message for GetCascadeStatusRequest {
     type Result = eyre::Result<Vec<CascadeStatusEntry>>;
 }
 
+/// Request the migration-status rollup for a namespace subtree (Task 6c.9).
+///
+/// Resolves the pinned-cohort expected members (the inherited-membership
+/// closure pinned at the expand-entry HLC) and rolls up the per-member
+/// heartbeat reports into a [`MigrationStatus`]. Observability only.
+///
+/// `member_reports` carries the freshest in-TTL heartbeat each member emitted,
+/// projected from the node-side `MigrationStatusCache` (Task 6c.8) by the
+/// caller that holds it (the admin route, Task 6c.10, via
+/// `NodeClient::migration_status_reports`). `ContextManager` itself cannot
+/// reach the node-side cache, so the cache snapshot is threaded in here rather
+/// than read inside the handler. A member absent from this map resolves to
+/// `unknown`; an empty map yields an all-`unknown` rollup (never a false
+/// green).
+#[derive(Clone, Debug)]
+pub struct GetMigrationStatusRequest {
+    pub namespace_id: ContextGroupId,
+    /// Freshest per-member heartbeat reports (peer → report), snapshotted from
+    /// the node-side TTL cache by the caller.
+    pub member_reports: BTreeMap<PublicKey, MemberMigrationReport>,
+}
+
+impl Message for GetMigrationStatusRequest {
+    type Result = eyre::Result<MigrationStatus>;
+}
+
 /// One entry in the cascade-status response: upgrade info for a single group
 /// in the namespace subtree, plus the sticky HLC fence that the atomic
 /// `CascadeUpgrade` op stamped on it.
@@ -950,5 +976,363 @@ impl From<calimero_store::key::GroupUpgradeValue> for GroupUpgradeInfo {
             initiated_by: v.initiated_by,
             status: v.status.into(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Migration status rollup (PR-6c task 6c.9)
+// ---------------------------------------------------------------------------
+
+/// Per-member reported migration facts, as observed from the freshest
+/// in-TTL heartbeat that member emitted (Task 6c.8's `MigrationStatusCache`).
+///
+/// This is the cache-agnostic projection the rollup consumes: the node maps a
+/// fresh `CacheEntry` into one of these, and a member with no fresh heartbeat
+/// maps to `None` (→ [`MemberMigrationState::Unknown`]). Keeping the rollup
+/// over this plain struct rather than the node-only cache type lets the
+/// rollup live in the shared types crate, so it carries no `calimero-node`
+/// dependency and stays unit-testable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemberMigrationReport {
+    /// Schema/binary version the member has loaded.
+    pub schema_version: u32,
+    /// Unconverted Convergent ("auto") entries the member still has pending.
+    pub residue_auto: u64,
+    /// Unconverted identity-gated entries the member still has pending.
+    pub residue_identity: u64,
+    /// Governance HLC the member has synced/applied through.
+    pub synced_up_to_hlc: u64,
+    /// Member-signed millis-since-epoch from the heartbeat itself.
+    pub reported_at: u64,
+}
+
+/// The migration state the rollup assigns a pinned-cohort member.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemberMigrationState {
+    /// Reported `schema_version >= target` with both residue counts at 0.
+    Migrated,
+    /// Reported a fresh heartbeat but is still behind the target version or
+    /// carrying residue.
+    InProgress,
+    /// No fresh heartbeat within the TTL. Treated as *not migrated* — it
+    /// keeps `all_migrated == false` rather than being silently dropped, so a
+    /// member that stopped reporting can never produce a false green.
+    Unknown,
+}
+
+impl MemberMigrationState {
+    /// Stable JSON discriminant used by the admin API (Task 6c.10).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Migrated => "migrated",
+            Self::InProgress => "in_progress",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// One row in the migration-status response: a single pinned-cohort member
+/// and the state derived from its freshest in-TTL heartbeat (if any).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemberMigrationStatus {
+    pub peer: PublicKey,
+    /// The member's reported facts, or `None` when it has no fresh heartbeat
+    /// (in which case `state == Unknown`).
+    pub report: Option<MemberMigrationReport>,
+    pub state: MemberMigrationState,
+}
+
+/// Rollup counters across the pinned cohort.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MigrationStatusRollup {
+    pub migrated: usize,
+    pub in_progress: usize,
+    pub unknown: usize,
+    pub total: usize,
+    /// `true` iff **every** pinned-cohort member reported
+    /// `schema_version >= target && residue_auto == 0 && residue_identity == 0`.
+    /// Any `unknown` (or any member still in progress) keeps this `false`.
+    pub all_migrated: bool,
+}
+
+/// Full migration-status answer for a namespace: the pinned cohort, the
+/// per-member rows, and the rollup. Observability only — never gates a
+/// write/apply. Shape matches spec §8 exactly.
+#[derive(Clone, Debug)]
+pub struct MigrationStatus {
+    pub target_version: u32,
+    /// Size of the pinned cohort (the inherited-membership closure, minus any
+    /// member excluded by the expand-entry HLC pin). Members excluded by the
+    /// pin are NOT counted here and do not gate `all_migrated`.
+    pub expected_members: usize,
+    /// The governance HLC the cohort was pinned at (migration expand-entry).
+    pub cohort_pinned_at_hlc: Option<HybridTimestamp>,
+    pub rollup: MigrationStatusRollup,
+    pub members: Vec<MemberMigrationStatus>,
+}
+
+/// Compute the migration-status rollup over a namespace's inherited-membership
+/// closure, pinned at the migration expand-entry HLC.
+///
+/// `closure` is the current inherited-membership closure for the namespace
+/// subtree (the `list ∪ enumerate_inherited` set, computed by the caller).
+/// `cohort_pinned_at_hlc` is the migration's expand-entry HLC: a member whose
+/// freshest heartbeat proves it had not yet synced through the pin
+/// (`synced_up_to_hlc < pin`) was not part of the converged state the migration
+/// pinned and is **excluded** from the cohort (this is the
+/// `synced_up_to_hlc` overlay that realizes pinning — a post-expand joiner that
+/// reports a sync position behind the pin is dropped rather than counted). A
+/// member with no report is kept in the cohort as `unknown` (its membership is
+/// not contradicted), so a silent member never produces a false green.
+/// `report_for` resolves each member to its freshest in-TTL heartbeat report,
+/// or `None` if the member has no fresh heartbeat (→ `unknown`).
+///
+/// Pure and side-effect free — this is observability only and never gates
+/// correctness or progress. `all_migrated` is `true` IFF every pinned-cohort
+/// member reported `schema_version >= target_version` with both residue counts
+/// at 0; a single `unknown` or in-progress member keeps it `false`.
+pub fn compute_migration_status_rollup(
+    target_version: u32,
+    cohort_pinned_at_hlc: Option<HybridTimestamp>,
+    closure: &[PublicKey],
+    mut report_for: impl FnMut(&PublicKey) -> Option<MemberMigrationReport>,
+) -> MigrationStatus {
+    let mut members = Vec::with_capacity(closure.len());
+    let mut migrated = 0usize;
+    let mut in_progress = 0usize;
+    let mut unknown = 0usize;
+
+    let pin_hlc = cohort_pinned_at_hlc.map(|ts| ts.get_time().as_u64());
+
+    for peer in closure {
+        let report = report_for(peer);
+
+        // Pin overlay: a member whose freshest heartbeat proves it synced only
+        // up to a position strictly before the expand-entry HLC was not part of
+        // the converged pinned state — exclude it from the cohort entirely (not
+        // even `unknown`). A member with no report is NOT excluded (we cannot
+        // prove it joined late), so it stays in-cohort as `unknown`.
+        if let (Some(pin), Some(r)) = (pin_hlc, report) {
+            if r.synced_up_to_hlc < pin {
+                continue;
+            }
+        }
+
+        let state = match report {
+            None => {
+                unknown += 1;
+                MemberMigrationState::Unknown
+            }
+            Some(r) => {
+                if r.schema_version >= target_version
+                    && r.residue_auto == 0
+                    && r.residue_identity == 0
+                {
+                    migrated += 1;
+                    MemberMigrationState::Migrated
+                } else {
+                    in_progress += 1;
+                    MemberMigrationState::InProgress
+                }
+            }
+        };
+        members.push(MemberMigrationStatus {
+            peer: *peer,
+            report,
+            state,
+        });
+    }
+
+    let total = members.len();
+    // all_migrated only when the cohort is non-empty and every member is
+    // `Migrated` (no unknown, no in-progress). An empty cohort is NOT green.
+    let all_migrated = total > 0 && migrated == total;
+
+    MigrationStatus {
+        target_version,
+        expected_members: total,
+        cohort_pinned_at_hlc,
+        rollup: MigrationStatusRollup {
+            migrated,
+            in_progress,
+            unknown,
+            total,
+            all_migrated,
+        },
+        members,
+    }
+}
+
+#[cfg(test)]
+mod migration_status_tests {
+    use std::collections::BTreeMap;
+
+    use calimero_primitives::identity::PublicKey;
+
+    use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+
+    use super::{compute_migration_status_rollup, MemberMigrationReport, MemberMigrationState};
+
+    fn pk(b: u8) -> PublicKey {
+        PublicKey::from([b; 32])
+    }
+
+    /// A heartbeat report whose freshest sync position is well past any pin
+    /// used in these tests, so the pin overlay keeps the member in-cohort.
+    fn report(
+        schema_version: u32,
+        residue_auto: u64,
+        residue_identity: u64,
+    ) -> MemberMigrationReport {
+        report_synced(schema_version, residue_auto, residue_identity, u64::MAX)
+    }
+
+    fn report_synced(
+        schema_version: u32,
+        residue_auto: u64,
+        residue_identity: u64,
+        synced_up_to_hlc: u64,
+    ) -> MemberMigrationReport {
+        MemberMigrationReport {
+            schema_version,
+            residue_auto,
+            residue_identity,
+            synced_up_to_hlc,
+            reported_at: 0,
+        }
+    }
+
+    /// Build an `Option<HybridTimestamp>` pin from a raw physical-time `u64`.
+    fn pin_at(t: u64) -> Option<HybridTimestamp> {
+        let id = ID::from(std::num::NonZeroU128::new(1).unwrap());
+        Some(HybridTimestamp::new(Timestamp::new(NTP64(t), id)))
+    }
+
+    /// Cohort {A,B,C}; A,B report v2+residue0; C never reports.
+    /// C must be `unknown` and keep `all_migrated == false`.
+    #[test]
+    fn unknown_member_blocks_all_migrated() {
+        let (a, b, c) = (pk(0xA), pk(0xB), pk(0xC));
+        let mut reports = BTreeMap::new();
+        let _ = reports.insert(a, report(2, 0, 0));
+        let _ = reports.insert(b, report(2, 0, 0));
+        // C absent — no fresh heartbeat.
+
+        let st =
+            compute_migration_status_rollup(2, None, &[a, b, c], |peer| reports.get(peer).copied());
+
+        assert_eq!(st.rollup.unknown, 1);
+        assert_eq!(st.rollup.migrated, 2);
+        assert!(
+            !st.rollup.all_migrated,
+            "an unknown member must keep all_migrated false"
+        );
+        let c_row = st.members.iter().find(|m| m.peer == c).expect("C present");
+        assert_eq!(c_row.state, MemberMigrationState::Unknown);
+        assert!(c_row.report.is_none());
+    }
+
+    /// A member whose freshest heartbeat proves it had not synced through the
+    /// expand-entry HLC pin (`synced_up_to_hlc < pin`) is a post-expand joiner
+    /// from the migration's perspective: the pin overlay EXCLUDES it from the
+    /// cohort entirely (it is not even surfaced in `members`) and it does not
+    /// flip `all_migrated`. This realizes the cohort-pinning in the rollup the
+    /// handler actually calls, via the `synced_up_to_hlc` overlay — not a
+    /// caller-supplied partition.
+    #[test]
+    fn cohort_pinned_ignores_post_expand_joiner() {
+        let (a, b, c, d) = (pk(0xA), pk(0xB), pk(0xC), pk(0xD));
+        let pin = 1_000u64;
+        let mut reports = BTreeMap::new();
+        // A,B,C synced well past the pin -> in-cohort, migrated.
+        let _ = reports.insert(a, report_synced(2, 0, 0, pin + 5));
+        let _ = reports.insert(b, report_synced(2, 0, 0, pin + 9));
+        let _ = reports.insert(c, report_synced(2, 0, 0, pin + 2));
+        // D's freshest sync position is BEFORE the pin -> excluded by the
+        // overlay even though it carries residue and is behind on version.
+        let _ = reports.insert(d, report_synced(1, 5, 5, pin - 1));
+
+        let st = compute_migration_status_rollup(2, pin_at(pin), &[a, b, c, d], |peer| {
+            reports.get(peer).copied()
+        });
+
+        assert_eq!(
+            st.expected_members, 3,
+            "D synced only before the pin and is excluded from the cohort"
+        );
+        assert_eq!(st.rollup.total, 3);
+        assert!(
+            st.rollup.all_migrated,
+            "post-pin joiner must not flip all_migrated"
+        );
+        assert!(
+            st.members.iter().all(|m| m.peer != d),
+            "excluded member is not surfaced in members[]"
+        );
+    }
+
+    /// A member with NO report is never excluded by the pin (we cannot prove it
+    /// joined late) — it stays in-cohort as `unknown` and keeps `all_migrated`
+    /// false, so the overlay can never silently drop a member into a false
+    /// green.
+    #[test]
+    fn pin_does_not_exclude_unreported_member() {
+        let (a, b) = (pk(0xA), pk(0xB));
+        let mut reports = BTreeMap::new();
+        let _ = reports.insert(a, report_synced(2, 0, 0, 2_000));
+        // B absent.
+
+        let st = compute_migration_status_rollup(2, pin_at(1_000), &[a, b], |peer| {
+            reports.get(peer).copied()
+        });
+
+        assert_eq!(st.expected_members, 2, "unreported member is not excluded");
+        assert_eq!(st.rollup.unknown, 1);
+        assert!(!st.rollup.all_migrated);
+    }
+
+    /// `all_migrated` is true only when every pinned member reports
+    /// `v >= target` with both residue counts at 0.
+    #[test]
+    fn all_migrated_true_only_when_every_pinned_member_v2_residue0() {
+        let (a, b, c) = (pk(0xA), pk(0xB), pk(0xC));
+
+        // All migrated -> green.
+        let all_ok =
+            compute_migration_status_rollup(2, None, &[a, b, c], |_| Some(report(2, 0, 0)));
+        assert!(all_ok.rollup.all_migrated);
+        assert_eq!(all_ok.rollup.migrated, 3);
+
+        // One member still carries identity residue -> in_progress, not green.
+        let mut reports = BTreeMap::new();
+        let _ = reports.insert(a, report(2, 0, 0));
+        let _ = reports.insert(b, report(2, 0, 0));
+        let _ = reports.insert(c, report(2, 0, 1));
+        let with_residue =
+            compute_migration_status_rollup(2, None, &[a, b, c], |peer| reports.get(peer).copied());
+        assert!(!with_residue.rollup.all_migrated);
+        assert_eq!(with_residue.rollup.in_progress, 1);
+        let c_row = with_residue
+            .members
+            .iter()
+            .find(|m| m.peer == c)
+            .expect("C present");
+        assert_eq!(c_row.state, MemberMigrationState::InProgress);
+
+        // One member behind target version -> in_progress, not green.
+        let mut behind = BTreeMap::new();
+        let _ = behind.insert(a, report(2, 0, 0));
+        let _ = behind.insert(b, report(1, 0, 0));
+        let _ = behind.insert(c, report(2, 0, 0));
+        let behind_status =
+            compute_migration_status_rollup(2, None, &[a, b, c], |peer| behind.get(peer).copied());
+        assert!(!behind_status.rollup.all_migrated);
+        assert_eq!(behind_status.rollup.in_progress, 1);
+
+        // An empty cohort is never green.
+        let empty = compute_migration_status_rollup(2, None, &[], |_| None);
+        assert!(!empty.rollup.all_migrated);
+        assert_eq!(empty.rollup.total, 0);
     }
 }

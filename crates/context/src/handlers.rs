@@ -26,6 +26,7 @@ pub mod get_group_metadata;
 pub mod get_group_upgrade_status;
 pub mod get_member_capabilities;
 pub mod get_member_metadata;
+pub mod get_migration_status;
 pub mod get_namespace_identity;
 pub mod issue_ownership_proof;
 pub mod join_context;
