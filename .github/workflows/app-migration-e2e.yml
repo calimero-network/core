@@ -204,6 +204,9 @@ jobs:
           - 20-scenario-unordered-set
           - 21-reads-available-during-upgrade
           - 22-scenario-identity-downgrade
+          - 26-owner-driven-authored
+          - 27-departed-owner-forcecarry
+          - 28-get-migration-status
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:
