@@ -671,6 +671,40 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(())
     }
 
+    /// Persist a new `schema_version` for an existing entity's index entry
+    /// (owner-driven identity-gated migration, PR-6c).
+    ///
+    /// `schema_version` is Merkle-invisible (it lives in
+    /// [`EntityIndex::metadata`], never in the hashed entity bytes — see
+    /// [`Metadata::schema_version`]), so this is hash-neutral and cannot cause
+    /// root-hash divergence. It exists because a re-write of an existing entry
+    /// flows through [`Index::update_hash_for`], which only touches the entity
+    /// hashes and `updated_at` — it deliberately does NOT rewrite the stored
+    /// metadata (see `tests/write_hook_stale_writers.rs`). The owner-driven
+    /// convert therefore stamps the new schema tag through this dedicated,
+    /// field-scoped setter rather than widening `update_hash_for`.
+    ///
+    /// No-op if the entity has no index entry yet, or if the tag is unchanged.
+    ///
+    /// [`Metadata::schema_version`]: crate::entities::Metadata::schema_version
+    ///
+    /// # Errors
+    /// Returns `StorageError` if the index cannot be loaded or written.
+    pub(crate) fn set_schema_version(
+        id: Id,
+        schema_version: Option<u32>,
+    ) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
+        if let Some(mut index) = Self::get_index(id)? {
+            if index.metadata.schema_version == schema_version {
+                return Ok(()); // unchanged — skip the redundant write
+            }
+            index.metadata.schema_version = schema_version;
+            Self::save_index(&index)?;
+        }
+        Ok(())
+    }
+
     /// Checks if an entity is deleted (tombstone marker set).
     ///
     /// Returns false if entity has no index (not found).
