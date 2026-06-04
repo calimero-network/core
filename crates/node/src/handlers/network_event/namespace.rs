@@ -78,6 +78,13 @@ pub(super) fn handle_namespace_governance_delta(
             super::readiness::handle_readiness_probe(this, ctx, source, probe);
             return;
         }
+        // 6c.7 reserves the wire variant; 6c.8 wires the TTL-cache ingest
+        // (signature + cohort-membership verified). Until then a received
+        // heartbeat is dropped — it carries no governance state, only
+        // ephemeral telemetry, so ignoring it is safe.
+        NamespaceTopicMsg::MigrationHeartbeat(_heartbeat) => {
+            return;
+        }
     };
 
     if op.namespace_id != namespace_id {

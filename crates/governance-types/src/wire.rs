@@ -23,6 +23,9 @@ pub const ACK_SIGN_DOMAIN: &[u8] = b"calimero.ack.v1";
 /// Domain separation prefix for [`SignedReadinessBeacon`] signatures.
 pub const READINESS_BEACON_SIGN_DOMAIN: &[u8] = b"calimero.beacon.v1";
 
+/// Domain separation prefix for [`SignedMigrationHeartbeat`] signatures.
+pub const MIGRATION_HEARTBEAT_SIGN_DOMAIN: &[u8] = b"calimero.migheartbeat.v1";
+
 /// Topic-scoped op hash: `blake3(topic_id || borsh(SignedNamespaceOp))`.
 ///
 /// The hash binds an op to the topic on which it was published so an ack
@@ -158,6 +161,84 @@ impl SignedReadinessBeacon {
     }
 }
 
+/// Body of a migration heartbeat — every field except the signature.
+/// Borsh-serialized inside [`SignedMigrationHeartbeat::signable_bytes`] so
+/// the Ed25519 signature covers all seven fields and field-substitution
+/// replays (e.g. zeroing `residue_identity` to fake a completed migration)
+/// are detected at verification time.
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct SignableMigrationHeartbeat {
+    pub namespace_id: [u8; 32],
+    pub peer_pubkey: PublicKey,
+    /// Schema/binary version the publishing node has loaded.
+    pub schema_version: u32,
+    /// Unconverted Convergent ("auto") contexts still pending (from the 6a marker).
+    pub residue_auto: u64,
+    /// Unconverted identity-gated entries still pending (from the 6c.6 local scan).
+    pub residue_identity: u64,
+    /// Governance HLC the publisher has synced/applied through.
+    pub synced_up_to_hlc: u64,
+    pub ts_millis: u64,
+}
+
+/// Ephemeral, per-node migration-status gossip a peer publishes on the
+/// namespace topic to advertise its loaded `schema_version` and remaining
+/// unconverted residue. Purely observability telemetry — it is signed TTL
+/// gossip, NOT replicated governance state, and must never be treated as a
+/// migration gate.
+///
+/// `residue_auto == 0 && residue_identity == 0 && schema_version >= target`
+/// across every pinned cohort member is what a rollup reads as "all migrated";
+/// the signature prevents a peer from forging another peer's completion.
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct SignedMigrationHeartbeat {
+    pub namespace_id: [u8; 32],
+    pub peer_pubkey: PublicKey,
+    pub schema_version: u32,
+    pub residue_auto: u64,
+    pub residue_identity: u64,
+    pub synced_up_to_hlc: u64,
+    pub ts_millis: u64,
+    pub signature: [u8; 64],
+}
+
+impl SignedMigrationHeartbeat {
+    /// Strip the signature to obtain the signable body.
+    #[must_use]
+    pub fn to_signable(&self) -> SignableMigrationHeartbeat {
+        SignableMigrationHeartbeat {
+            namespace_id: self.namespace_id,
+            peer_pubkey: self.peer_pubkey,
+            schema_version: self.schema_version,
+            residue_auto: self.residue_auto,
+            residue_identity: self.residue_identity,
+            synced_up_to_hlc: self.synced_up_to_hlc,
+            ts_millis: self.ts_millis,
+        }
+    }
+
+    /// Canonical bytes that the heartbeat signature covers:
+    /// [`MIGRATION_HEARTBEAT_SIGN_DOMAIN`] || `borsh(SignableMigrationHeartbeat)`.
+    pub fn signable_bytes(&self) -> Result<Vec<u8>, GovernanceError> {
+        let body = borsh::to_vec(&self.to_signable())
+            .map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+        let mut out = Vec::with_capacity(MIGRATION_HEARTBEAT_SIGN_DOMAIN.len() + body.len());
+        out.extend_from_slice(MIGRATION_HEARTBEAT_SIGN_DOMAIN);
+        out.extend_from_slice(&body);
+        Ok(out)
+    }
+
+    /// Verify the Ed25519 signature over [`Self::signable_bytes`].
+    ///
+    /// Consumed by 6c.8's `MigrationStatusCache` ingest once that lands.
+    pub fn verify_signature(&self) -> Result<(), GovernanceError> {
+        let msg = self.signable_bytes()?;
+        self.peer_pubkey
+            .verify_raw_signature(&msg, &self.signature)?;
+        Ok(())
+    }
+}
+
 /// Solicits an out-of-cycle [`SignedReadinessBeacon`] from any peer
 /// subscribed to the namespace topic. Used by joiners to short-circuit
 /// the periodic beacon interval when waiting for `await_namespace_ready`.
@@ -177,6 +258,7 @@ pub enum NamespaceTopicMsg {
     Ack(SignedAck),
     ReadinessBeacon(SignedReadinessBeacon),
     ReadinessProbe(ReadinessProbe),
+    MigrationHeartbeat(SignedMigrationHeartbeat),
 }
 
 /// Discriminated envelope for messages on the `group/<id>` topic.
@@ -386,5 +468,111 @@ mod tests {
             beacon.verify_signature().is_err(),
             "verify must reject rewound applied_through"
         );
+    }
+
+    #[test]
+    fn signed_migration_heartbeat_verify_round_trip() {
+        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let mut hb = SignedMigrationHeartbeat {
+            namespace_id: [7u8; 32],
+            peer_pubkey: sk.public_key(),
+            schema_version: 2,
+            residue_auto: 5,
+            residue_identity: 3,
+            synced_up_to_hlc: 99,
+            ts_millis: 1_700_000_000_000,
+            signature: [0u8; 64],
+        };
+        hb.signature = sk
+            .sign(&hb.signable_bytes().expect("signable"))
+            .expect("sign")
+            .to_bytes();
+        hb.verify_signature().expect("valid heartbeat must verify");
+    }
+
+    #[test]
+    fn signed_migration_heartbeat_rejects_residue_identity_flip() {
+        // Field-substitution attack: rewriting `residue_identity` to 0 to
+        // fake a completed migration must break the signature.
+        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let mut hb = SignedMigrationHeartbeat {
+            namespace_id: [7u8; 32],
+            peer_pubkey: sk.public_key(),
+            schema_version: 2,
+            residue_auto: 0,
+            residue_identity: 4,
+            synced_up_to_hlc: 99,
+            ts_millis: 1_700_000_000_000,
+            signature: [0u8; 64],
+        };
+        hb.signature = sk
+            .sign(&hb.signable_bytes().expect("signable"))
+            .expect("sign")
+            .to_bytes();
+        hb.residue_identity = 0; // tampered after signing
+        assert!(
+            hb.verify_signature().is_err(),
+            "verify must reject mutated `residue_identity`"
+        );
+    }
+
+    #[test]
+    fn signed_migration_heartbeat_rejects_wrong_domain() {
+        // An attacker cannot lift a heartbeat signature from another protocol
+        // surface that signs borsh(body) without the migration-heartbeat
+        // domain prefix.
+        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let hb_unsigned = SignableMigrationHeartbeat {
+            namespace_id: [7u8; 32],
+            peer_pubkey: sk.public_key(),
+            schema_version: 2,
+            residue_auto: 0,
+            residue_identity: 0,
+            synced_up_to_hlc: 99,
+            ts_millis: 1_700_000_000_000,
+        };
+        let body = borsh::to_vec(&hb_unsigned).expect("ser");
+        let signature = sk.sign(&body).expect("sign").to_bytes(); // no domain prefix
+        let hb = SignedMigrationHeartbeat {
+            namespace_id: hb_unsigned.namespace_id,
+            peer_pubkey: hb_unsigned.peer_pubkey,
+            schema_version: hb_unsigned.schema_version,
+            residue_auto: hb_unsigned.residue_auto,
+            residue_identity: hb_unsigned.residue_identity,
+            synced_up_to_hlc: hb_unsigned.synced_up_to_hlc,
+            ts_millis: hb_unsigned.ts_millis,
+            signature,
+        };
+        assert!(
+            hb.verify_signature().is_err(),
+            "verify must reject signature without migration-heartbeat domain prefix"
+        );
+    }
+
+    #[test]
+    fn namespace_topic_msg_migration_heartbeat_roundtrip() {
+        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let envelope = NamespaceTopicMsg::MigrationHeartbeat(SignedMigrationHeartbeat {
+            namespace_id: [3u8; 32],
+            peer_pubkey: sk.public_key(),
+            schema_version: 2,
+            residue_auto: 7,
+            residue_identity: 1,
+            synced_up_to_hlc: 1234,
+            ts_millis: 42,
+            signature: [5u8; 64],
+        });
+        let bytes = borsh::to_vec(&envelope).expect("ser");
+        let parsed: NamespaceTopicMsg = borsh::from_slice(&bytes).expect("de");
+        match parsed {
+            NamespaceTopicMsg::MigrationHeartbeat(hb) => {
+                assert_eq!(hb.namespace_id, [3u8; 32]);
+                assert_eq!(hb.schema_version, 2);
+                assert_eq!(hb.residue_auto, 7);
+                assert_eq!(hb.residue_identity, 1);
+                assert_eq!(hb.synced_up_to_hlc, 1234);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 }
