@@ -106,13 +106,32 @@ pub(super) async fn execute_cascaded_events(
                     phase = phase,
                     "Executing handlers for cascaded delta"
                 );
-                let all_succeeded = execute_event_handlers_parsed(
+                // Match-and-log rather than `?`: this function's contract
+                // (see the doc comment) is log-and-continue, because a `?`
+                // here would abort the cascade loop mid-batch *after* the
+                // DAG was mutated, leaving later cascaded deltas
+                // unprocessed. Treat a handler-execution error as "not all
+                // succeeded" so the events blob is kept for restart replay.
+                let all_succeeded = match execute_event_handlers_parsed(
                     &node_clients.context,
                     context_id,
                     our_identity,
                     &cascaded_payload,
                 )
-                .await?;
+                .await
+                {
+                    Ok(succeeded) => succeeded,
+                    Err(err) => {
+                        warn!(
+                            %context_id,
+                            delta_id = ?cascaded_id,
+                            error = %err,
+                            phase = phase,
+                            "Handler execution errored for cascaded delta; keeping events for restart replay"
+                        );
+                        false
+                    }
+                };
 
                 // Clear the DB's `events` blob only when every handler
                 // in the payload succeeded (#2185, #2194 review). On a
@@ -276,7 +295,7 @@ pub(super) fn emit_state_mutation_event_parsed(
     context_id: &ContextId,
     root_hash: Hash,
     events_payload: Vec<ExecutionEvent>,
-) -> Result<()> {
+) {
     let state_mutation = ContextEvent {
         context_id: *context_id,
         payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
@@ -285,6 +304,9 @@ pub(super) fn emit_state_mutation_event_parsed(
         )),
     };
 
+    // Infallible to callers: a failed WebSocket emit is logged and
+    // swallowed (frontend notification is best-effort, not part of the
+    // node-to-node apply path), so there is no error for callers to handle.
     if let Err(e) = node_client.send_event(NodeEvent::Context(state_mutation)) {
         warn!(
             %context_id,
@@ -292,8 +314,6 @@ pub(super) fn emit_state_mutation_event_parsed(
             "Failed to emit state mutation event to WebSocket clients"
         );
     }
-
-    Ok(())
 }
 
 // ---- parse_events_payload ----
