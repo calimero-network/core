@@ -27,21 +27,23 @@ description: >
   the rotating node is always connected (callable) yet the node it
   rotates on never receives the other rotation:
 
-    1. Disconnect node-1 and node-3. node-2 (still connected)
-       rotates {A,B} -> {B,C}. Neither node-1 nor node-3 sees it.
+    1. Disconnect node-1 and node-3. node-2 (still connected) rotates
+       {A,B} -> {A}, dropping B (itself). Neither node-1 nor node-3
+       sees it.
     2. Disconnect node-2; connect node-1. Now only node-1 is online,
-       and it is still at H (it was offline when {B,C} was created,
-       and {B,C}'s only holder — node-2 — is now offline, so it
-       can't be fetched). node-1 rotates {A,B} -> {A,C}: causally
-       CONCURRENT with {B,C}.
+       and it is still at H (it was offline when node-2 rotated, and
+       the only holder of that rotation — node-2 — is now offline, so
+       it can't be fetched). node-1 rotates {A,B} -> {A,C}: causally
+       CONCURRENT with node-2's {A}.
     3. Reconnect node-2 and node-3. wait_for_sync converges all
        three — the root-hash convergence assertion — with both
        rotations merged.
     4. Assert every node resolves the SAME writer set directly from
        the two concurrent rotations — no settling rotation needed
-       (see the #2673 note below). It resolves to {A,C}: A and C are
-       writers, B is NOT — retroactive revocation of B holds under
-       concurrency, on every node.
+       (see the #2673 note below). Both rotations dropped B and kept
+       A, so the resolved set retains A and revokes B on every node —
+       retroactive revocation of a baseline writer under concurrency,
+       independent of which rotation wins the tiebreak.
     5. Assert the rotated-out writer's write is rejected: node-2 (B)
        calling `shared_set` fails on every node, while node-1 (A)
        writing succeeds and the legitimate value converges.
@@ -50,18 +52,21 @@ description: >
   `SharedStorage::writers()` used to read the rotation log's
   most-recently-*appended* entry — per-node insertion order, not
   causal order — so under two concurrent rotations the nodes could
-  read {A,C} on one and {B,C} on another even though their logs held
-  the same entries. This workflow originally papered over that with a
-  causally-latest "settling" rotation by node-3. #2673 changed the
-  local gate to resolve by max-(HLC, signer), which is
-  insertion-order invariant: every node now resolves the SAME set
-  straight from the two concurrent entries. The converged set is
-  {A,C} because node-1's rotation ran ~20s after node-2's (window 2
-  vs window 1), so it carries the later HLC and wins the concurrent
-  tiebreak — the window gap dwarfs any same-host clock skew. (The
-  merge-path security boundary is still the causal
-  `writers_at(parents)`; the post-heal `wait_for_sync` asserts the
-  storage-root convergence #2665 guarantees.)
+  read different sets from the same log. This workflow originally
+  papered over that with a causally-latest "settling" rotation by
+  node-3. #2673 changed the local gate to resolve by
+  max-(HLC, signer), which is insertion-order invariant: every node
+  now resolves the SAME set straight from the two concurrent entries.
+
+  The two rotations ({A,C} from node-1, {A} from node-2) deliberately
+  DIFFER — so the resolution is order-dependent under the old gate and
+  must collapse identically on every node — yet BOTH drop B and keep
+  A. That makes the A/B assertions hermetic (A retained, B revoked
+  regardless of which rotation wins the HLC tiebreak); only C's
+  membership is HLC-dependent, and it is asserted winner-agnostically
+  (all three nodes agree). The merge-path security boundary is still
+  the causal `writers_at(parents)`; the post-heal `wait_for_sync`
+  asserts the storage-root convergence #2665 guarantees.
 
   Why a plain bridge (no NAT): the concurrent-rotation guarantee is
   a CRDT/merge property — it has nothing to do with relay recovery,
@@ -335,7 +340,7 @@ steps:
       - 'json_equal({{base_b_n3}}, {"output": true})'
       - 'json_equal({{base_c_n3}}, {"output": false})'
 
-  # ---------- Concurrent rotation, window 1: node-2 -> {B, C} ----------
+  # ---------- Concurrent rotation, window 1: node-2 -> {A} ----------
   # Isolate the two non-rotators (node-1, node-3) so node-2 can rotate while
   # connected (callable) without either of them seeing it.
 
@@ -350,22 +355,12 @@ steps:
     type: wait
     seconds: 20
 
-  # node-2 (the only connected node) rotates {A,B} -> {B,C}: drops A, adds C.
-  - name: Node-2 rotates writer set to {B, C}
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: shared_rotate_writers
-    args:
-      writers:
-        - '{{id_b}}'
-        - '{{id_c}}'
-
-  # node-2 (B) is a writer in its own {B, C} view, so this shared write is
-  # authorized locally — a write to the Shared *value* entity concurrent with
-  # node-1's branch. After the heal, the causally-latest legitimate write
-  # (node-1's "by-writer-a-final" below) must win LWW, so this value must NOT
-  # survive on any node. The final assertion proves that.
+  # node-2 (the only connected node) is still a writer ({A,B}), so it first
+  # makes a Shared *value* write — concurrent with node-1's branch. After the
+  # heal the causally-latest legitimate write (node-1's "by-writer-a-final"
+  # below) must win LWW, so this value must NOT survive on any node; the final
+  # assertion proves that. It's done BEFORE node-2's rotation because that
+  # rotation drops B (below), after which node-2 could no longer write.
   - name: Node-2 writes the shared value during the split
     type: call
     node: e2e-node-2
@@ -373,6 +368,23 @@ steps:
     method: shared_set
     args:
       value: "shared-by-b-split"
+
+  # node-2 then rotates {A,B} -> {A}: drops B (itself). Combined with node-1's
+  # concurrent {A,B} -> {A,C}, BOTH rotations drop B and keep A. So whichever
+  # wins the HLC tiebreak, the resolved set retains A and revokes B — the
+  # A/B assertions are hermetic, with no reliance on rotation timing. Only C
+  # (node-1's addition) is HLC-dependent, and that is asserted winner-
+  # agnostically below. The two sets still DIFFER ({A,C} vs {A}), so the
+  # order-dependent resolution #2673 must collapse identically on every node.
+  - name: Node-2 rotates writer set to {A} (drops B, itself)
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_rotate_writers
+    args:
+      writers:
+        - '{{id_a}}'
+
   - name: Node-2 writes member entry during the split
     type: call
     node: e2e-node-2
@@ -383,9 +395,10 @@ steps:
       value: "from-n2"
 
   # ---------- Concurrent rotation, window 2: node-1 -> {A, C} ----------
-  # Take node-2 (the sole holder of {B,C}) offline and bring node-1 back. node-1
-  # is still at H — it was offline when {B,C} was created, and {B,C}'s only
-  # holder is now offline — so it rotates from the pristine head, concurrently.
+  # Take node-2 (the sole holder of its {A} rotation) offline and bring node-1
+  # back. node-1 is still at H — it was offline when node-2 rotated, and the
+  # only holder of that rotation is now offline — so it rotates from the
+  # pristine head, concurrently.
 
   - name: Disconnect node-2 from the bridge
     type: disconnect_node
@@ -399,7 +412,7 @@ steps:
     seconds: 20
 
   # node-1 rotates {A,B} -> {A,C}: drops B, adds C. Causally CONCURRENT with
-  # node-2's {B,C} (node-1 never saw it).
+  # node-2's {A} (node-1 never saw it). Both dropped B; they differ on C.
   - name: Node-1 rotates writer set to {A, C}
     type: call
     node: e2e-node-1
@@ -451,7 +464,7 @@ steps:
   # No settling rotation is needed. Before #2673 the app-facing writer set was
   # read from the rotation log's most-recently-*appended* entry (this node's
   # insertion order), so after the heal the two nodes could read DIFFERENT sets
-  # ({A,C} vs {B,C}) from the same log — and this workflow had to issue a
+  # ({A,C} vs {A}) from the same log — and this workflow had to issue a
   # causally-latest "settling" rotation by node-3 (C, common to both sets) to
   # collapse that ambiguity. #2673 changed the gate to resolve by
   # max-(HLC, signer), which is insertion-order invariant, so every node now
@@ -563,19 +576,19 @@ steps:
       - 'json_equal({{c_n1}}, {{c_n2}})'
       - 'json_equal({{c_n2}}, {{c_n3}})'
 
-  # And the concrete value they converge on is {A, C} (node-1's rotation won
-  # the HLC tiebreak — see the window-timing note above), so B is revoked.
-  - name: Assert all nodes resolved the same writer set {A, C} (B revoked)
+  # Concrete, hermetic facts (independent of the HLC tiebreak): both concurrent
+  # rotations dropped B and kept A, so EVERY node retains A and revokes B. (C's
+  # membership is the only HLC-dependent bit — covered winner-agnostically by
+  # the agreement assertion above.) This is the retroactive revocation of a
+  # baseline writer (B) under concurrency.
+  - name: Assert all nodes retained A and revoked B
     type: json_assert
     statements:
       - 'json_equal({{a_n1}}, {"output": true})'
-      - 'json_equal({{c_n1}}, {"output": true})'
       - 'json_equal({{b_n1}}, {"output": false})'
       - 'json_equal({{a_n2}}, {"output": true})'
-      - 'json_equal({{c_n2}}, {"output": true})'
       - 'json_equal({{b_n2}}, {"output": false})'
       - 'json_equal({{a_n3}}, {"output": true})'
-      - 'json_equal({{c_n3}}, {"output": true})'
       - 'json_equal({{b_n3}}, {"output": false})'
 
   # ---------- Assert: member entries converged on every node ----------
