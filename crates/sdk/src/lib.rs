@@ -19,6 +19,10 @@ pub use {borsh, serde, serde_json};
 pub mod env;
 pub mod event;
 mod macros;
+/// Built-in `migration_check` invariant helpers (entity-count parity,
+/// no-orphaned-refs, conservation) an app author composes inside their
+/// [`#[app::migration_check]`](app::migration_check) body. Native + wasm.
+pub mod migration_check;
 pub mod private_storage;
 mod returns;
 pub mod state;
