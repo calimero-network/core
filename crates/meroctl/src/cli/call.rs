@@ -164,18 +164,22 @@ async fn run_shell(
     }
 
     let mut lines = BufReader::new(stdin()).lines();
-    loop {
+    'shell: loop {
         eprint!("{context}> ");
         let _ = std::io::stderr().flush();
 
         // Wait for a command, but keep servicing the socket (answering pings)
         // while idle so the node doesn't drop a connection that sat at the
-        // prompt longer than its ping timeout. `keepalive` only resolves on a
-        // socket error/close, so it just propagates the failure when it wins.
-        let next_line = loop {
-            tokio::select! {
-                line = lines.next_line() => break line?,
-                result = session.keepalive() => result?,
+        // prompt longer than its ping timeout. `keepalive` only resolves when
+        // the socket errors or closes; treat that as a clean end of session
+        // with a one-line message rather than an error trace.
+        let next_line = tokio::select! {
+            line = lines.next_line() => line?,
+            result = session.keepalive() => {
+                if let Err(err) = result {
+                    eprintln!("Connection closed: {err}");
+                }
+                break 'shell;
             }
         };
 

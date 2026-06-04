@@ -109,16 +109,11 @@ impl WsSession {
 
         while let Some(message) = self.read.next().await {
             match message.wrap_err("error reading from WebSocket")? {
+                // `None` is an event push or a reply for another id — keep waiting.
                 WsMessage::Text(text) => {
-                    let response = serde_json::from_str::<WsResponse>(&text)
-                        .wrap_err("failed to parse WebSocket response")?;
-
-                    if response.id != Some(request_id) {
-                        // Event push or an unrelated reply — keep waiting.
-                        continue;
+                    if let Some(response) = match_text_reply(&text, request_id)? {
+                        return Ok(response);
                     }
-
-                    return into_jsonrpc(RequestId::Number(request_id), response);
                 }
                 // Keep the connection alive while waiting for the reply.
                 WsMessage::Ping(payload) => self.write.send(WsMessage::Pong(payload)).await?,
@@ -157,6 +152,21 @@ impl WsSession {
     }
 }
 
+/// Classify an inbound text frame for a call awaiting `request_id`:
+/// `Ok(Some(..))` is the matching reply, already adapted to a JSON-RPC
+/// [`Response`]; `Ok(None)` means skip it — an unsolicited event push (no `id`)
+/// or a reply for some other request.
+fn match_text_reply(text: &str, request_id: WsRequestId) -> Result<Option<Response>> {
+    let response =
+        serde_json::from_str::<WsResponse>(text).wrap_err("failed to parse WebSocket response")?;
+
+    if response.id != Some(request_id) {
+        return Ok(None);
+    }
+
+    Ok(Some(into_jsonrpc(RequestId::Number(request_id), response)?))
+}
+
 /// Adapt the WebSocket [`WsResponse`] to the JSON-RPC [`Response`]. The two wire
 /// envelopes share an identical body shape on the wire (same camelCase tags),
 /// so the body round-trips cleanly through `serde_json::Value`; only the
@@ -178,7 +188,7 @@ mod tests {
     };
     use serde_json::json;
 
-    use super::{into_jsonrpc, RequestId};
+    use super::{into_jsonrpc, match_text_reply, RequestId};
 
     #[test]
     fn result_body_adapts_and_echoes_id() {
@@ -233,5 +243,50 @@ mod tests {
             response.body,
             ResponseBody::Error(ResponseBodyError::ServerError(_))
         ));
+    }
+
+    #[test]
+    fn matching_id_reply_is_returned() {
+        let reply = WsResponse {
+            id: Some(1),
+            body: WsResponseBody::Result(json!({ "output": 42 })),
+        };
+        let text = serde_json::to_string(&reply).unwrap();
+
+        let response = match_text_reply(&text, 1)
+            .unwrap()
+            .expect("matching reply should be returned");
+        match response.body {
+            ResponseBody::Result(result) => assert_eq!(result.0, json!({ "output": 42 })),
+            other => panic!("expected result body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reply_for_other_id_is_skipped() {
+        let other = WsResponse {
+            id: Some(2),
+            body: WsResponseBody::Result(json!({ "output": 1 })),
+        };
+        let text = serde_json::to_string(&other).unwrap();
+
+        assert!(
+            match_text_reply(&text, 1).unwrap().is_none(),
+            "a reply for a different request id must be skipped"
+        );
+    }
+
+    #[test]
+    fn event_push_without_id_is_skipped() {
+        let push = WsResponse {
+            id: None,
+            body: WsResponseBody::Result(json!({ "event": "state_mutation" })),
+        };
+        let text = serde_json::to_string(&push).unwrap();
+
+        assert!(
+            match_text_reply(&text, 1).unwrap().is_none(),
+            "an unsolicited event push (no id) must be skipped"
+        );
     }
 }
