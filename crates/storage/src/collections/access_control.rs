@@ -38,9 +38,9 @@ use crate::entities::{ChildInfo, Data, Element};
 use crate::env;
 use crate::interface::StorageError;
 
-/// Separator between the role name and the member key in a registry key. A NUL
-/// byte cannot appear in a well-formed role name, so the composite key is
-/// unambiguous without escaping.
+/// Separator between the role name and the member key in a registry key. Role
+/// names containing this byte are rejected (see `check_role`), so the composite
+/// key is unambiguous without escaping.
 const ROLE_MEMBER_SEP: char = '\0';
 
 /// The registry value type: a last-writer-wins boolean. `true` = the member
@@ -91,8 +91,22 @@ impl AccessControl {
         self.grants.reassign_deterministic_id(field_name);
     }
 
+    /// Reject role names containing the separator byte. Without this a role
+    /// name like `"editor\0<hex>"` could craft a key that collides with a
+    /// different `(role, member)` pair — a privilege-confusion vector. Called by
+    /// every role method before a key is built.
+    fn check_role(role: &str) -> Result<(), StoreError> {
+        if role.contains(ROLE_MEMBER_SEP) {
+            return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
+                "Role name must not contain a NUL byte".to_owned(),
+            )));
+        }
+        Ok(())
+    }
+
     /// Composite registry key for `(role, member)`. Member is hex of its 32
-    /// bytes — a stable, separator-free encoding.
+    /// bytes — a stable, separator-free encoding. Callers must `check_role`
+    /// first so `role` cannot contain the separator.
     fn key(role: &str, member: &PublicKey) -> String {
         let member_hex = hex::encode(member.as_ref() as &[u8; 32]);
         format!("{role}{ROLE_MEMBER_SEP}{member_hex}")
@@ -126,7 +140,13 @@ impl AccessControl {
     }
 
     /// Add `who` to the admin set via an authenticated writer-set rotation.
-    /// Only a current admin may; enforced at merge.
+    /// Only a current admin may.
+    ///
+    /// The admin check is the single `guard(Op::Admin)` inside
+    /// [`rotate_writers`](SharedStorage::rotate_writers) — no separate
+    /// `only_admin()` here, matching the one-gate-per-method rule (unlike
+    /// `grant`/`revoke`, whose collection-insert path is not locally gated and
+    /// so need the explicit fail-fast).
     ///
     /// # Errors
     /// `ActionNotAllowed` if the executor is not a current admin.
@@ -137,7 +157,13 @@ impl AccessControl {
     }
 
     /// Remove `who` from the admin set via an authenticated rotation. Only a
-    /// current admin may; enforced at merge. The set may not become empty.
+    /// current admin may; the set may not become empty.
+    ///
+    /// The empty-set guard is **best-effort at the API surface**: two admins
+    /// concurrently revoking each other both pass their local check, and the
+    /// rotations merge per ADR 0001 — the result could drop to one admin. The
+    /// merge layer (`rotate_writers` rejecting an empty set) is the backstop;
+    /// this local check just gives a clear early error in the common case.
     ///
     /// # Errors
     /// `ActionNotAllowed` if the executor is not a current admin, or if removing
@@ -159,9 +185,15 @@ impl AccessControl {
 
     /// Whether `who` currently holds `role`.
     ///
+    /// Returns `false` for both "never granted" and "granted then revoked" —
+    /// the registry is a current-membership boolean, not a history, so callers
+    /// cannot distinguish those two states.
+    ///
     /// # Errors
-    /// Propagates a storage error from the registry lookup.
+    /// `ActionNotAllowed` if `role` contains the separator byte; propagates a
+    /// storage error from the registry lookup.
     pub fn has_role(&self, role: &str, who: &PublicKey) -> Result<bool, StoreError> {
+        Self::check_role(role)?;
         let key = Self::key(role, who);
         Ok(self
             .grants
@@ -191,11 +223,16 @@ impl AccessControl {
     /// Grant `role` to `who`. Only an admin may; enforced at merge (the registry
     /// entry inherits the admin writer set).
     ///
+    /// Concurrent `grant`/`revoke` of the same `(role, member)` from different
+    /// admins resolve last-writer-wins by the `LwwRegister` timestamp — there is
+    /// no semantic tie-break.
+    ///
     /// # Errors
-    /// `ActionNotAllowed` if the executor is not an admin; propagates a storage
-    /// error from the write.
+    /// `ActionNotAllowed` if the executor is not an admin or `role` contains the
+    /// separator byte; propagates a storage error from the write.
     pub fn grant(&mut self, role: &str, who: PublicKey) -> Result<(), StoreError> {
         self.only_admin()?;
+        Self::check_role(role)?;
         let key = Self::key(role, &who);
         let _ = self.grants.get_mut()?.insert(key, LwwRegister::new(true))?;
         Ok(())
@@ -204,11 +241,18 @@ impl AccessControl {
     /// Revoke `role` from `who` (sets the present-flag to `false`). Only an admin
     /// may; enforced at merge.
     ///
+    /// A revoke writes `false` rather than removing the entry (so membership is
+    /// a plain LWW boolean with no tombstone). One consequence: a registry that
+    /// sees many distinct `(role, member)` pairs over its lifetime accumulates a
+    /// `false` entry per pair and does not shrink; this is acceptable for the
+    /// expected scale (a context's member/role count), not for unbounded churn.
+    ///
     /// # Errors
-    /// `ActionNotAllowed` if the executor is not an admin; propagates a storage
-    /// error from the write.
+    /// `ActionNotAllowed` if the executor is not an admin or `role` contains the
+    /// separator byte; propagates a storage error from the write.
     pub fn revoke(&mut self, role: &str, who: &PublicKey) -> Result<(), StoreError> {
         self.only_admin()?;
+        Self::check_role(role)?;
         let key = Self::key(role, who);
         let _ = self
             .grants
@@ -328,5 +372,47 @@ mod tests {
 
         assert!(!ac.has_role("editor", &BOB.into()).unwrap());
         assert!(ac.has_role("viewer", &BOB.into()).unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn only_role_gates_on_held_role() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        let mut ac = Root::new(AccessControl::new_admin_caller);
+        ac.grant("editor", BOB.into()).unwrap();
+
+        // Alice (admin, but no editor role) is refused; Bob (editor) passes.
+        assert!(ac.only_role("editor").is_err());
+        env::set_executor_id(BOB);
+        assert!(ac.only_role("editor").is_ok());
+    }
+
+    #[test]
+    #[serial]
+    fn revoke_then_check_in_same_execution_is_false() {
+        // grant -> revoke -> has_role within one execution must read `false`
+        // (the registry is read from storage, not a stale in-memory snapshot).
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        let mut ac = Root::new(AccessControl::new_admin_caller);
+
+        ac.grant("editor", BOB.into()).unwrap();
+        assert!(ac.has_role("editor", &BOB.into()).unwrap());
+        ac.revoke("editor", &BOB.into()).unwrap();
+        assert!(!ac.has_role("editor", &BOB.into()).unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn role_name_with_separator_is_rejected() {
+        // A NUL in the role name could otherwise craft a colliding key.
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        let mut ac = Root::new(AccessControl::new_admin_caller);
+
+        assert!(ac.grant("editor\0evil", BOB.into()).is_err());
+        assert!(ac.revoke("editor\0evil", &BOB.into()).is_err());
+        assert!(ac.has_role("editor\0evil", &BOB.into()).is_err());
     }
 }
