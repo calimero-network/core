@@ -5157,6 +5157,193 @@ fn apply_group_op_mutations_no_divergence_on_matching_hash() {
 }
 
 // -----------------------------------------------------------------------
+// `GroupOp::MigrationForceCarry` apply — task 6c.5
+//
+// Admin force-carry of a departed owner's stale identity-gated entry:
+// the governance op's job is AUTHORIZATION + RECORDING. The actual
+// storage tombstone+rekey is performed downstream by the
+// `OpEvent::MigrationForceCarried` subscriber, which emits an
+// admin-signed `Action::Delete(old)` + `Action::Add(new, owner=admin)`
+// pair that verifies normally at `apply_action` (no owner-forge, no
+// owner-change). Authorization reuses the namespace admin/owner gate.
+// -----------------------------------------------------------------------
+
+#[test]
+fn force_carry_requires_admin_capability() {
+    // A non-admin signer must be rejected before any intent is recorded.
+    use super::apply_group_op_mutations;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let non_admin = PublicKey::from([0xE0; 32]);
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &non_admin, GroupMemberRole::Member)
+        .unwrap();
+    register_context_in_group(&store, &gid, &ContextId::from([0x11; 32])).unwrap();
+
+    let op = GroupOp::MigrationForceCarry {
+        context_id: [0x11; 32],
+        entry_id: [0x22; 32],
+        departed_owner: PublicKey::from([0xDE; 32]),
+        target_schema_version: 1,
+    };
+
+    let result = apply_group_op_mutations(&store, &gid, &non_admin, &op);
+    assert!(
+        result.is_err(),
+        "non-admin force-carry must be rejected, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn force_carry_by_admin_records_intent() {
+    // An admin force-carry is authorized and records its intent by
+    // broadcasting `OpEvent::MigrationForceCarried`. The downstream
+    // subscriber (storage path) is what emits the admin-signed
+    // tombstone+rekey actions — the new entity is owned by the ADMIN
+    // (not the departed owner), so it verifies at `apply_action`.
+    use super::apply_group_op_mutations;
+    use crate::op_events::{subscribe, OpEvent};
+
+    let mut rx = subscribe();
+
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    // Unique tag so the process-wide broadcast channel doesn't bleed
+    // events from parallel tests into this assertion.
+    let context_id = [0xC7; 32];
+    let entry_id = [0x77; 32];
+    let departed_owner = PublicKey::from([0xDE; 32]);
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    register_context_in_group(&store, &gid, &ContextId::from(context_id)).unwrap();
+
+    let op = GroupOp::MigrationForceCarry {
+        context_id,
+        entry_id,
+        departed_owner,
+        target_schema_version: 3,
+    };
+
+    let (handled, divergence) = apply_group_op_mutations(&store, &gid, &admin, &op)
+        .expect("admin force-carry authorized");
+    assert!(handled, "MigrationForceCarry should be handled");
+    assert!(
+        divergence.is_none(),
+        "force-carry produces no divergence report"
+    );
+
+    // The recorded intent: a `MigrationForceCarried` event carrying the
+    // ADMIN as the new owner, the departed owner for audit, and the
+    // tombstone target.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let event = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "expected MigrationForceCarried event"
+        );
+        match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+            Ok(Ok(ev)) => {
+                if matches!(
+                    &ev,
+                    OpEvent::MigrationForceCarried { context_id: c, .. } if *c == context_id
+                ) {
+                    break ev;
+                }
+            }
+            Ok(Err(_)) => panic!("broadcast channel closed before event"),
+            Err(_) => continue,
+        }
+    };
+
+    match event {
+        OpEvent::MigrationForceCarried {
+            group_id,
+            context_id: got_ctx,
+            entry_id: got_entry,
+            departed_owner: got_departed,
+            new_owner,
+            target_schema_version,
+        } => {
+            assert_eq!(group_id, gid.to_bytes());
+            assert_eq!(got_ctx, context_id);
+            assert_eq!(got_entry, entry_id);
+            assert_eq!(got_departed, departed_owner);
+            assert_eq!(
+                new_owner, admin,
+                "new entity must be owned by the admin signer, not the departed owner"
+            );
+            assert_ne!(
+                new_owner, departed_owner,
+                "force-carry never re-owns under the departed owner"
+            );
+            assert_eq!(target_schema_version, 3);
+        }
+        other => panic!("unexpected event {other:?}"),
+    }
+}
+
+#[test]
+fn force_carry_rejects_context_in_other_group() {
+    // Cross-group authorization gap: an admin of group A must NOT be able
+    // to force-carry an entry in a context that belongs to a *different*
+    // group B (which they do not administer). `require_admin` passes on
+    // A's group, so without an explicit context-in-group guard the handler
+    // would broadcast a tombstone+rekey intent for B's entry. Mirrors the
+    // sibling guard in `context_metadata_set` (`NotInGroup`).
+    use super::apply_group_op_mutations;
+
+    let store = test_store();
+    let gid_a = test_group_id();
+    let gid_b = ContextGroupId::from([0xBB; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+
+    // Admin administers group A only.
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    MetaRepository::new(&store).save(&gid_a, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid_a, &admin, GroupMemberRole::Admin)
+        .unwrap();
+
+    // The targeted context is registered under group B, not A.
+    let context_id = [0xB7; 32];
+    register_context_in_group(&store, &gid_b, &ContextId::from(context_id)).unwrap();
+
+    let op = GroupOp::MigrationForceCarry {
+        context_id,
+        entry_id: [0x22; 32],
+        departed_owner: PublicKey::from([0xDE; 32]),
+        target_schema_version: 1,
+    };
+
+    // Apply against group A: admin gate passes, but the context belongs to
+    // group B, so the in-group guard must reject the force-carry.
+    let result = apply_group_op_mutations(&store, &gid_a, &admin, &op);
+    assert!(
+        result.is_err(),
+        "force-carry of a context owned by a different group must be rejected, got {result:?}"
+    );
+}
+
+// -----------------------------------------------------------------------
 // Effective capabilities for `Open` subgroups — issue #2378
 //
 // Sibling of #2371/#2372. `get_member_capabilities` (admin-api) gates on
