@@ -77,8 +77,9 @@ pub trait Authorizer {
     /// Is `who` permitted to perform `op` on the guarded resource, given its
     /// current writer set? Pure function of (who, op, writers) — no I/O, so the
     /// same call is valid at the API call-site and conceptually mirrors what
-    /// merge enforces.
-    fn authorize(&self, who: &PublicKey, op: Op, writers: &BTreeSet<PublicKey>) -> bool;
+    /// merge enforces. An associated function (no `&self`): policies are
+    /// zero-sized markers carried as a type parameter, not stateful values.
+    fn authorize(who: &PublicKey, op: Op, writers: &BTreeSet<PublicKey>) -> bool;
 }
 
 /// Default: membership in the writer set authorizes any op. This is exactly
@@ -86,7 +87,7 @@ pub trait Authorizer {
 /// by construction.
 pub struct WriterSetAcl;
 impl Authorizer for WriterSetAcl {
-    fn authorize(&self, who: &PublicKey, _op: Op, writers: &BTreeSet<PublicKey>) -> bool {
+    fn authorize(who: &PublicKey, _op: Op, writers: &BTreeSet<PublicKey>) -> bool {
         writers.contains(who)
     }
 }

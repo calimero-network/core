@@ -23,6 +23,17 @@
 //! from one base: the group-writable form is
 //! `PermissionedStorage<T, WriterSetAcl>` (the default), and a single-owner cell
 //! is [`Ownable<T>`] = `PermissionedStorage<T, OwnerAcl>`.
+//!
+//! # Security model — what you MUST store inside the wrapper
+//!
+//! Access control holds only for data stored *inside* a `PermissionedStorage` /
+//! `Ownable` (or another writer-set-guarded type). A value kept in a plain field
+//! — a bare `String`, a `u64`, an unguarded collection — rides root state and is
+//! writable by **any** context member; the merge-time check guards only the
+//! guarded entities. A method that calls `only_owner()?` and then mutates a
+//! plain field therefore provides **no** protection for that field. Rule of
+//! thumb: every piece of mutable state an [`Authorizer`] is meant to protect
+//! must live in the wrapper.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
@@ -93,8 +104,11 @@ impl Authorizer for WriterSetAcl {
 pub struct OwnerAcl;
 
 impl Authorizer for OwnerAcl {
-    fn authorize(who: &PublicKey, _op: Op, writers: &BTreeSet<PublicKey>) -> bool {
-        writers.contains(who)
+    fn authorize(who: &PublicKey, op: Op, writers: &BTreeSet<PublicKey>) -> bool {
+        // Same predicate as `WriterSetAcl` (membership); delegate so the two
+        // cannot drift if the rule ever changes. The single-owner distinction is
+        // an API-surface + constructor invariant, not a different merge rule.
+        WriterSetAcl::authorize(who, op, writers)
     }
 }
 
@@ -171,6 +185,10 @@ where
     /// Fail-fast guard: `Ok(())` if the current executor may perform `op`,
     /// else `ActionNotAllowed`. This is UX sugar — the authoritative check is at
     /// merge. Apps may call it for an early, clear rejection before doing work.
+    ///
+    /// # Errors
+    /// `ActionNotAllowed` if the current executor is not authorised for `op`
+    /// under policy `A`.
     pub fn guard(&self, op: Op) -> Result<(), StoreError> {
         let me: PublicKey = env::executor_id().into();
         if self.can(&me, op) {
@@ -224,6 +242,10 @@ where
     /// `ActionNotAllowed` if frozen, if `new_writers` is empty, or if the
     /// executor is not a current writer.
     pub fn rotate_writers(&mut self, new_writers: BTreeSet<PublicKey>) -> Result<(), StoreError> {
+        // Apply the policy at the API surface too, so the fail-fast gate and the
+        // merge-time check agree. `SharedStorage::rotate_writers` then re-checks
+        // membership (and frozen/empty) authoritatively.
+        self.guard(Op::Admin)?;
         self.inner.rotate_writers(new_writers)
     }
 }
@@ -317,7 +339,13 @@ where
 
     /// The current owner, if any (the single writer).
     pub fn owner(&self) -> Option<PublicKey> {
-        self.writers().into_iter().next()
+        let mut writers = self.writers().into_iter();
+        let first = writers.next();
+        debug_assert!(
+            writers.next().is_none(),
+            "Ownable must hold at most one writer; construct via new_owned_by*"
+        );
+        first
     }
 
     /// Whether `who` is the owner.
@@ -339,6 +367,10 @@ where
     /// # Errors
     /// `ActionNotAllowed` if frozen or the executor is not the current owner.
     pub fn transfer_ownership(&mut self, new_owner: PublicKey) -> Result<(), StoreError> {
+        // Self-contained owner gate (`rotate_writers` also guards `Op::Admin`,
+        // which for `OwnerAcl` is the same predicate) so the method enforces its
+        // own contract rather than relying on the caller.
+        self.only_owner()?;
         self.rotate_writers(BTreeSet::from([new_owner]))
     }
 }
