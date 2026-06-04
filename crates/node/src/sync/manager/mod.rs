@@ -859,7 +859,7 @@ impl SyncManager {
     /// callers fall back to topic-subscriber discovery. A routing hint:
     /// `anchor_identities_for_context` (governance `trusted_anchors`,
     /// which includes the owner) stays authoritative for anchor status.
-    fn member_peers_for_context(
+    pub(crate) fn member_peers_for_context(
         &self,
         context_id: &ContextId,
     ) -> Vec<(PeerId, calimero_primitives::context::GroupMemberRole)> {

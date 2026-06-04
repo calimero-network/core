@@ -35,6 +35,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 
 use crate::arbiter_pool::ArbiterPool;
+use crate::peer_identity_cache::ObservedMembership;
 use crate::sync::{SyncConfig, SyncManager};
 use crate::{NodeManager, NodeState};
 
@@ -710,5 +711,114 @@ async fn group_topic_announce_is_not_routed_as_namespace_admission() {
             .expect("count"),
         1,
         "no member should be admitted from a group/ topic announce (owner only)"
+    );
+}
+
+/// Build a standalone `SyncManager` against an in-memory store, without
+/// the surrounding `NodeManager` actor — enough to exercise the
+/// synchronous peer-selection helpers (`member_peers_for_context`)
+/// end-to-end against real governance state. Returns the manager, the
+/// shared store, the shared `NodeState` (its peer-identity cache is an
+/// `Arc` shared with the manager's `state_access`, so seeding it here is
+/// visible to the manager), and the `TempDir` guard the blob fs needs.
+async fn build_standalone_sync_manager() -> (SyncManager, Store, NodeState, TempDir) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+
+    let blob_store_config =
+        BlobStoreConfig::new(tmp.path().to_path_buf().try_into().expect("utf8 blob path"));
+    let file_system = FileSystem::new(&blob_store_config).await.expect("blob fs");
+    let blob_store = BlobStore::new(store.clone(), file_system);
+    let blob_manager = BlobManager::new(blob_store);
+
+    let node_recipient = LazyRecipient::<NodeMessage>::new();
+    let context_recipient = LazyRecipient::new();
+    let network_recipient = LazyRecipient::new();
+    let network_client = NetworkClient::new(network_recipient);
+    let (event_sender, _) = broadcast::channel(16);
+    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(64);
+    let (ns_sync_tx, ns_sync_rx) = mpsc::channel(16);
+    let (ns_join_tx, ns_join_rx) = mpsc::channel(16);
+    let (open_subgroup_join_tx, open_subgroup_join_rx) = mpsc::channel(16);
+    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+
+    let node_client = NodeClient::new(
+        store.clone(),
+        blob_manager,
+        network_client.clone(),
+        node_recipient,
+        event_sender,
+        sync_client,
+        String::new(),
+        None,
+    );
+    let context_client = ContextClient::new(store.clone(), node_client.clone(), context_recipient);
+    let node_state = NodeState::new(false, NodeMode::Standard);
+
+    let sync_manager = SyncManager::new(
+        SyncConfig::default(),
+        node_client,
+        context_client,
+        network_client,
+        node_state.clone(),
+        ctx_sync_rx,
+        ns_sync_rx,
+        ns_join_rx,
+        open_subgroup_join_rx,
+    );
+
+    (sync_manager, store, node_state, tmp)
+}
+
+/// End-to-end resolver (#2642): with a context registered to a group in
+/// the real governance store and the durable peer-identity cache seeded
+/// via the authenticated observe path, `member_peers_for_context`
+/// resolves `context → group → cached member peers`, deduped by role.
+#[tokio::test]
+async fn member_peers_for_context_resolves_cached_members_end_to_end() {
+    let (sync_manager, store, node_state, _tmp) = build_standalone_sync_manager().await;
+
+    let group_id = ContextGroupId::from([0x11; 32]);
+    let context_id = calimero_primitives::context::ContextId::from([0x22; 32]);
+    calimero_context::group_store::register_context_in_group(&store, &group_id, &context_id)
+        .expect("register context -> group");
+
+    let admin_peer = libp2p::PeerId::random();
+    let member_peer = libp2p::PeerId::random();
+    // Seed the shared cache through the same gate the production receive
+    // paths use (group + role at the cross-DAG cut).
+    node_state.observe_peer_identity(
+        admin_peer,
+        PublicKey::from([0x33; 32]),
+        Some(ObservedMembership {
+            group_id,
+            role: GroupMemberRole::Admin,
+        }),
+    );
+    node_state.observe_peer_identity(
+        member_peer,
+        PublicKey::from([0x44; 32]),
+        Some(ObservedMembership {
+            group_id,
+            role: GroupMemberRole::Member,
+        }),
+    );
+
+    let resolved: std::collections::BTreeMap<_, _> = sync_manager
+        .member_peers_for_context(&context_id)
+        .into_iter()
+        .collect();
+    assert_eq!(resolved.len(), 2, "both cached members resolved");
+    assert_eq!(resolved.get(&admin_peer), Some(&GroupMemberRole::Admin));
+    assert_eq!(resolved.get(&member_peer), Some(&GroupMemberRole::Member));
+
+    // A context with no group mapping resolves to nothing (caller then
+    // falls back to topic discovery).
+    let unregistered = calimero_primitives::context::ContextId::from([0x99; 32]);
+    assert!(
+        sync_manager
+            .member_peers_for_context(&unregistered)
+            .is_empty(),
+        "unregistered context yields no cached members"
     );
 }
