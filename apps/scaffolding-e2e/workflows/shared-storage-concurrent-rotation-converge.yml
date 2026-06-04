@@ -457,11 +457,13 @@ steps:
   # max-(HLC, signer), which is insertion-order invariant, so every node now
   # resolves the SAME set directly from the two concurrent rotations.
   #
-  # That set is {A, C}: node-1's rotation ran in window 2, ~20s+ after node-2's
-  # in window 1, so it carries the later HLC and wins the concurrent tiebreak
-  # (the window gap dwarfs any same-host clock skew). The assertions below
-  # confirm all three nodes agree on {A, C} with no settling step — which is
-  # exactly the convergence #2673 establishes.
+  # Which of the two concurrent sets "wins" (i.e. whether C survives) is decided
+  # by the HLC tiebreak between the two rotations, and with both issued
+  # back-to-back inside one partition window that is NOT deterministic — so the
+  # assertions below are winner-agnostic: every node AGREES on the resolved set,
+  # and — because both rotations dropped B and kept A — A is retained and B is
+  # revoked on every node regardless of the winner. That cross-node agreement
+  # with no settling step is exactly the convergence #2673 establishes.
 
   # ---------- Assert: identical resolved writer set on every node ----------
   # A and C are writers, B is revoked — on node-1, node-2, AND node-3.
