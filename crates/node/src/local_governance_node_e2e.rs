@@ -175,12 +175,18 @@ pub(crate) async fn boot_test_node() -> TestNode {
     );
 
     let mut registry = Registry::default();
+    // These node-e2e fixtures assert the *legacy* cascade write-gate behaviour
+    // (an InProgress upgrade freezes state-op writes). PR-6b flipped the
+    // `migration_v2` default ON (no freeze + absorb-don't-drop), so pin the
+    // flag OFF here to keep exercising the legacy gate; the new default is
+    // covered by the absorb tests and the migration e2e scenarios.
     let context_manager = ContextManager::new(
         store.clone(),
         node_client.clone(),
         context_client.clone(),
         Some(&mut registry),
-    );
+    )
+    .with_migration_v2(false);
 
     let node_state = NodeState::new(false, NodeMode::Standard);
 

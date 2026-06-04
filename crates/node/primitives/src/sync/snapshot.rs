@@ -111,7 +111,14 @@ pub const MAX_COMPRESSED_PAYLOAD_SIZE: usize = 8 * 1024 * 1024;
 /// pointers) ship as [`SnapshotRecord::Auxiliary`] — they're
 /// either implicit-from-the-signed-entity (rotation log) or
 /// local-state-ish (sync state) and not individually verifiable.
-#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+/// A hand-written [`BorshDeserialize`] (not the derive) keeps the trailing
+/// `Entity.schema_app_key` field backward-compatible: a peer running the
+/// pre-#2539 binary serialises `Entity` as `{id, entry, index}` and stops, so
+/// the reader must tolerate a clean EOF at that boundary and decode
+/// `schema_app_key` as `None`. This mirrors the
+/// `LeafMetadata.schema_app_key` / `GroupUpgradeValue.cascade_hlc`
+/// backward-compatible-trailing-field precedent.
+#[derive(Clone, Debug, PartialEq, BorshSerialize)]
 pub enum SnapshotRecord {
     /// An entity's `Entry` (data) and `Index` (metadata) shipped
     /// together so the receiver can verify the signature before
@@ -128,6 +135,24 @@ pub enum SnapshotRecord {
         /// carries the `Metadata` with the writer's signed
         /// `signature_data` inside `storage_type`.
         index: Vec<u8>,
+        /// App-schema (loaded-reader) key the **sender** was running when it
+        /// emitted this entity — `blob_id(loaded bytecode)`, the same
+        /// discriminator the state-delta fence keys on
+        /// (`loaded_reader_app_key`).
+        ///
+        /// PR-6b / #2539 sync-repair coverage. The snapshot apply path writes
+        /// each verified entity via a raw `handle.put` — it deliberately does
+        /// NOT route through `apply_leaf_with_crdt_merge`, so without this
+        /// marker a receiver still on an older reader would persist unreadable
+        /// future-schema bytes (the "v1-binary-fed-v2-bytes" corruption
+        /// hazard). With it, the receiver declines + buffers any entity whose
+        /// `schema_app_key` differs from its **loaded** reader into the absorb
+        /// buffer, rather than storing it.
+        ///
+        /// `None` for legacy peers (pre-#2539 binary) — treated as "no newer
+        /// schema" → apply. Defaulted via the hand-written backward-compatible
+        /// `BorshDeserialize`.
+        schema_app_key: Option<[u8; 32]>,
     },
     /// Auxiliary state keyed under the same context but not
     /// signature-verifiable per record. Currently used for:
@@ -151,6 +176,58 @@ pub enum SnapshotRecord {
         /// Raw value bytes from the source peer's store.
         value: Vec<u8>,
     },
+}
+
+impl BorshDeserialize for SnapshotRecord {
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        // Mirror the derived enum encoding: a u8 variant discriminant followed
+        // by the variant's fields in declaration order.
+        let variant = u8::deserialize_reader(reader)?;
+        match variant {
+            0 => {
+                let id = <[u8; 32]>::deserialize_reader(reader)?;
+                let entry = Vec::<u8>::deserialize_reader(reader)?;
+                let index = Vec::<u8>::deserialize_reader(reader)?;
+                // Backward-compatible trailing field (#2539): legacy peers stop
+                // after `index`, so a clean EOF here means `schema_app_key =
+                // None`. The byte present at this position (if any) is the
+                // `Option` discriminant: 0 = None, 1 = Some([u8; 32]). Same
+                // scheme as `LeafMetadata.schema_app_key`.
+                let mut first = [0u8; 1];
+                let schema_app_key =
+                    match crate::sync::hash_comparison::read_option_tag(reader, &mut first)? {
+                        None => None,
+                        Some(0) => None,
+                        Some(1) => Some(<[u8; 32]>::deserialize_reader(reader)?),
+                        Some(tag) => {
+                            return Err(borsh::io::Error::new(
+                                borsh::io::ErrorKind::InvalidData,
+                                format!(
+                                    "invalid Option tag {tag} for \
+                                     SnapshotRecord::Entity.schema_app_key"
+                                ),
+                            ))
+                        }
+                    };
+                Ok(Self::Entity {
+                    id,
+                    entry,
+                    index,
+                    schema_app_key,
+                })
+            }
+            1 => {
+                let kind = u8::deserialize_reader(reader)?;
+                let id = <[u8; 32]>::deserialize_reader(reader)?;
+                let value = Vec::<u8>::deserialize_reader(reader)?;
+                Ok(Self::Auxiliary { kind, id, value })
+            }
+            other => Err(borsh::io::Error::new(
+                borsh::io::ErrorKind::InvalidData,
+                format!("invalid SnapshotRecord variant discriminant {other}"),
+            )),
+        }
+    }
 }
 
 /// Snapshot record kind discriminators — mirror the
@@ -1373,5 +1450,75 @@ mod tests {
 
         assert_eq!(cursor, decoded);
         assert_eq!(decoded.last_key, [0xAB; 32]);
+    }
+
+    #[test]
+    fn test_snapshot_entity_schema_app_key_defaults_none_and_round_trips() {
+        // Default constructor leaves the schema marker absent (legacy semantics).
+        let bare = SnapshotRecord::Entity {
+            id: [1u8; 32],
+            entry: vec![1, 2, 3],
+            index: vec![4, 5, 6],
+            schema_app_key: None,
+        };
+        let encoded = borsh::to_vec(&bare).expect("serialize");
+        let decoded: SnapshotRecord = borsh::from_slice(&encoded).expect("deserialize");
+        assert_eq!(bare, decoded);
+
+        // A stamped schema survives the round-trip.
+        let stamped = SnapshotRecord::Entity {
+            id: [2u8; 32],
+            entry: vec![7, 8],
+            index: vec![9],
+            schema_app_key: Some([7u8; 32]),
+        };
+        let encoded = borsh::to_vec(&stamped).expect("serialize");
+        let decoded: SnapshotRecord = borsh::from_slice(&encoded).expect("deserialize");
+        assert_eq!(stamped, decoded);
+        match decoded {
+            SnapshotRecord::Entity { schema_app_key, .. } => {
+                assert_eq!(schema_app_key, Some([7u8; 32]));
+            }
+            SnapshotRecord::Auxiliary { .. } => panic!("expected Entity"),
+        }
+
+        // Auxiliary is unaffected by the new trailing field.
+        let aux = SnapshotRecord::Auxiliary {
+            kind: snapshot_record_kind::ROTATION_LOG,
+            id: [3u8; 32],
+            value: vec![1],
+        };
+        let encoded = borsh::to_vec(&aux).expect("serialize");
+        let decoded: SnapshotRecord = borsh::from_slice(&encoded).expect("deserialize");
+        assert_eq!(aux, decoded);
+    }
+
+    #[test]
+    fn test_snapshot_entity_legacy_bytes_decode_as_none() {
+        // A pre-#2539 sender serialised `Entity` as the three fields
+        // {id, entry, index} with NO trailing `schema_app_key`. Reconstruct
+        // exactly those legacy bytes and confirm they decode with the marker
+        // absent (clean EOF tolerated).
+        let id = [9u8; 32];
+        let entry = vec![1u8, 2, 3];
+        let index = vec![4u8, 5];
+        let mut legacy = Vec::new();
+        // Enum discriminant for `Entity` (variant 0).
+        legacy.push(0u8);
+        legacy.extend_from_slice(&id);
+        legacy.extend_from_slice(&borsh::to_vec(&entry).unwrap());
+        legacy.extend_from_slice(&borsh::to_vec(&index).unwrap());
+        // No trailing Option byte — legacy stops here.
+
+        let decoded: SnapshotRecord = borsh::from_slice(&legacy).expect("deserialize legacy");
+        assert_eq!(
+            decoded,
+            SnapshotRecord::Entity {
+                id,
+                entry,
+                index,
+                schema_app_key: None,
+            }
+        );
     }
 }

@@ -145,12 +145,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                             block_writes_for_group = Some(group_id);
                         } else if self.config.migration_v2 && upgrade_blocks_write(&upgrade.status)
                         {
-                            // The freeze that would otherwise apply was
-                            // intentionally bypassed by `migration_v2`. Emit a
-                            // signal so a canary operator can tell the freeze was
-                            // skipped by the flag (not a missing upgrade row);
-                            // stragglers are absorbed rather than dropped once
-                            // PR-6b lands.
+                            // The freeze was bypassed by `migration_v2`; log so a
+                            // canary operator can tell the flag skipped it (not a
+                            // missing upgrade row). Stragglers are absorbed.
                             debug!(
                                 %context_id,
                                 ?group_id,
@@ -2207,9 +2204,8 @@ fn upgrade_blocks_write(status: &calimero_store::key::GroupUpgradeStatus) -> boo
 /// Whether the cascade write-gate should fire, given the `migration_v2` flag.
 ///
 /// Equal to `!migration_v2 && upgrade_blocks_write(status)`: with the flag OFF
-/// (the default) the group-wide `InProgress` freeze is byte-for-byte the same
-/// as today; with the flag ON the freeze is lifted entirely (PR-6b's
-/// absorb-don't-drop is what keeps stragglers safe once the freeze is gone).
+/// the group-wide `InProgress` freeze applies; with it ON the freeze is lifted
+/// (absorb-don't-drop keeps stragglers safe instead).
 fn should_block(migration_v2: bool, status: &calimero_store::key::GroupUpgradeStatus) -> bool {
     !migration_v2 && upgrade_blocks_write(status)
 }
@@ -2483,16 +2479,18 @@ mod tests {
         );
     }
 
-    // PR-6a Task 6a.1: the `migration_v2` feature flag must default OFF so
-    // master behavior is completely unchanged until the flag is flipped (after
-    // 6b lands). The flag lives on `ContextManagerConfig` — the same
-    // runtime-tunable knobs struct threaded into this handler via `self.config`.
+    // PR-6b Task 6b.8: the `migration_v2` feature flag now defaults ON, the
+    // flip enabled by both PR-6a (no-freeze) and PR-6b (absorb-don't-drop
+    // straggler safety net) having landed. The flag lives on
+    // `ContextManagerConfig` — the same runtime-tunable knobs struct threaded
+    // into this handler via `self.config`. With it on, the group-wide
+    // `InProgress` write-freeze no longer fires (see `should_block`).
     #[test]
-    fn migration_v2_flag_defaults_off() {
+    fn migration_v2_flag_defaults_on() {
         let cfg = crate::ContextManagerConfig::default();
         assert!(
-            !cfg.migration_v2,
-            "migration_v2 must default off so master behavior is unchanged"
+            cfg.migration_v2,
+            "migration_v2 must default on now that 6a + 6b have landed"
         );
     }
 

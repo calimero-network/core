@@ -108,11 +108,25 @@ impl SyncManager {
         let datastore = self.context_client.datastore_handle().into_inner();
         let runtime_env = create_runtime_env(&datastore, context_id, our_identity);
 
+        // PR-6b Task 6b.7: the responder's loaded-reader schema, stamped onto
+        // every leaf it emits so a peer on an older reader can decline+buffer a
+        // future-schema leaf. `None` when unresolvable (no group / missing meta).
+        let schema_app_key =
+            calimero_context::hlc_fence::loaded_reader_app_key(&datastore, &context_id)
+                .ok()
+                .flatten();
+
         // Handle the first request (already parsed by handle_sync_request)
         {
             let clamped_depth = first_max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
             let response = self
-                .build_tree_node_response(context_id, &first_node_id, clamped_depth, &runtime_env)
+                .build_tree_node_response(
+                    context_id,
+                    &first_node_id,
+                    clamped_depth,
+                    &runtime_env,
+                    schema_app_key,
+                )
                 .await?;
 
             let msg = StreamMessage::Message {
@@ -162,7 +176,13 @@ impl SyncManager {
 
                     let clamped_depth = max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
                     let response = self
-                        .build_tree_node_response(context_id, &node_id, clamped_depth, &runtime_env)
+                        .build_tree_node_response(
+                            context_id,
+                            &node_id,
+                            clamped_depth,
+                            &runtime_env,
+                            schema_app_key,
+                        )
                         .await?;
 
                     let msg = StreamMessage::Message {
@@ -314,6 +334,7 @@ impl SyncManager {
         node_id: &[u8; 32],
         max_depth: Option<u8>,
         runtime_env: &RuntimeEnv,
+        schema_app_key: Option<[u8; 32]>,
     ) -> Result<TreeNodeResponse> {
         // Get context to check if this is a root request
         let context = self.context_client.get_context(&context_id)?;
@@ -330,7 +351,12 @@ impl SyncManager {
 
         // Get the local node
         let local_node = with_runtime_env(runtime_env.clone(), || {
-            self.get_local_tree_node_from_index(context_id, node_id, is_root_request)
+            self.get_local_tree_node_from_index(
+                context_id,
+                node_id,
+                is_root_request,
+                schema_app_key,
+            )
         })?;
 
         let Some(node) = local_node else {
@@ -350,7 +376,7 @@ impl SyncManager {
             // Include child nodes
             for child_id in &node.children {
                 let child_node = with_runtime_env(runtime_env.clone(), || {
-                    self.get_local_tree_node_from_index(context_id, child_id, false)
+                    self.get_local_tree_node_from_index(context_id, child_id, false, schema_app_key)
                 })?;
 
                 if let Some(child) = child_node {
@@ -382,6 +408,7 @@ impl SyncManager {
         context_id: ContextId,
         node_id: &[u8; 32],
         is_root_request: bool,
+        schema_app_key: Option<[u8; 32]>,
     ) -> Result<Option<TreeNode>> {
         // Determine the entity ID to look up
         let entity_id = if is_root_request {
@@ -479,6 +506,12 @@ impl SyncManager {
                 }
                 if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
                     metadata = metadata.with_authorization(auth);
+                }
+                // PR-6b Task 6b.7: stamp the responder's loaded-reader schema so
+                // a receiver on an older reader can decline+buffer this leaf if
+                // it's future-schema.
+                if let Some(schema) = schema_app_key {
+                    metadata = metadata.with_schema_app_key(schema);
                 }
 
                 let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
