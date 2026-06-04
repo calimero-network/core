@@ -206,6 +206,7 @@ jobs:
           - 22-scenario-identity-downgrade
           - 26-owner-driven-authored
           - 28-get-migration-status
+          - 32-authored-migrate-ux
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:

@@ -212,22 +212,26 @@ steps:
     outputs:
       v2_schema_node2: result
 
-  - name: Assert lazy migration ran on node 1
+  # The migration EXECUTED (not just which WASM is loaded): the migrate body
+  # ran and rewrote the root. These two logs fire whenever a migration is
+  # applied, on whatever trigger path — under a cascade upgrade (migration_v2,
+  # PR-6b) the cascade propagator drives it, so the lazy-on-read-only
+  # "performing lazy upgrade before execution" log does NOT fire and is not
+  # asserted here. Each node self-derives v2 from its own v1 under LazyOnAccess.
+  - name: Assert the migration executed on node 1
     type: assert_log_present
     nodes:
       - app-migration-owner-1
     patterns:
-      - "performing lazy upgrade before execution"
       - "Executing migration"
       - "Migrated state written successfully"
     min_matches: 1
 
-  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+  - name: Assert the migration executed on node 2 (receiver self-migrated)
     type: assert_log_present
     nodes:
       - app-migration-owner-2
     patterns:
-      - "performing lazy upgrade before execution"
       - "Executing migration"
       - "Migrated state written successfully"
     min_matches: 1
