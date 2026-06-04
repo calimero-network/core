@@ -104,6 +104,13 @@ impl Handler<NodeMessage> for NodeManager {
                          dropping (FSM will reconcile via next op or peer beacon)"
                     );
                 }
+                // PR-6c Task 6c.8: the same local-progress signal drives the
+                // migration-heartbeat emitter. A governance apply may have
+                // advanced the group's target schema or drained residue, so
+                // recompute and post the node's facts — this both edge-triggers
+                // an on-change heartbeat and seeds the namespace into the
+                // emitter so its periodic keep-alive tick goes live.
+                self.notify_migration_facts(namespace_id);
             }
         }
     }

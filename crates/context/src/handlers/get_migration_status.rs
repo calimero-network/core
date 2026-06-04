@@ -46,6 +46,21 @@ pub fn collect_migration_cohort(
     Ok(cohort.into_iter().collect())
 }
 
+/// Admin-gate the `get_migration_status` read.
+///
+/// `get_migration_status` is an admin-API read (it exposes per-member completion
+/// across the cohort), so it requires the same MANAGE/admin authority the sibling
+/// migration admin operations (`retry_group_upgrade`, `upgrade_group`) enforce
+/// via `require_admin`, NOT mere membership. Extracted as a pure (store read
+/// only) helper so the gate the handler applies can be exercised directly.
+pub fn authorize_migration_status(
+    store: &calimero_store::Store,
+    namespace_id: &ContextGroupId,
+    node_identity: &PublicKey,
+) -> eyre::Result<()> {
+    MembershipRepository::new(store).require_admin(namespace_id, node_identity)
+}
+
 impl Handler<GetMigrationStatusRequest> for ContextManager {
     type Result = ActorResponse<Self, <GetMigrationStatusRequest as Message>::Result>;
 
@@ -61,11 +76,12 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
             let Some((node_identity, _)) = self.node_namespace_identity(&namespace_id) else {
                 bail!("node has no group identity configured");
             };
-            if !MembershipRepository::new(&self.datastore)
-                .is_member(&namespace_id, &node_identity)?
-            {
-                bail!("node is not a member of namespace '{namespace_id:?}'");
-            }
+            // Admin-gated observability: `get_migration_status` is an admin-API
+            // read (it exposes per-member completion across the cohort), so it
+            // requires the same MANAGE/admin authority the sibling migration
+            // admin operations (`retry_group_upgrade`, `upgrade_group`) enforce
+            // via `require_admin`, not merely membership.
+            authorize_migration_status(&self.datastore, &namespace_id, &node_identity)?;
 
             // Pin the cohort at the migration's expand-entry HLC (the sticky
             // `cascade_hlc` the originating op stamped). `target_version` reads
@@ -82,10 +98,7 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
             // like-for-like. `cohort_pinned_at_hlc` is the replicated NTP64 HLC
             // fence surfaced for display only — never the overlay pin.
             let cohort_pinned_at_seq: Option<u64> = upgrade.as_ref().and_then(|u| u.cascade_seq);
-            let target_version = upgrade
-                .as_ref()
-                .and_then(|u| parse_schema_version(&u.to_version))
-                .unwrap_or(0);
+            let target_version = derive_target_version(upgrade.as_ref());
 
             // The full inherited-membership closure for the subtree (the #2371
             // `list ∪ enumerate_inherited` set). The rollup applies the
@@ -115,12 +128,37 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
 
 /// Parse the leading integer of a semver `to_version` ("2", "2.0.0") into the
 /// `u32` schema-version a heartbeat reports. Best-effort: a non-numeric leading
-/// component yields `None` and the handler falls back to `0`.
+/// component yields `None`.
 fn parse_schema_version(version: &str) -> Option<u32> {
     version
         .split('.')
         .next()
         .and_then(|major| major.trim().parse::<u32>().ok())
+}
+
+/// Derive the `target_version` the cohort is rolled up against from the group's
+/// local upgrade record.
+///
+/// * `None` — no migration has ever been recorded, so nothing is in flight: the
+///   target is the group's current (baseline) app version `0`. Every member is
+///   trivially at target (the SDK's unversioned default is `0`), so a converged
+///   cohort rolls up to `all_migrated`. Reporting `0` here is correct, NOT a
+///   bogus "no migration to compare against" sentinel.
+/// * `Some(record)` — the group is at / heading to `record.to_version`. For a
+///   `Completed` record that is the version it reached (current); for an
+///   `InProgress` one it is the pending destination. Either way the cohort
+///   rolls up against `to_version`.
+///
+/// A `Some(record)` whose `to_version` does not parse to a `u32` must NOT
+/// collapse to `0`: doing so makes every member reporting `schema_version >= 0`
+/// (all of them) trivially "migrated" — a false green over a real migration.
+/// An unknowable target pins to [`u32::MAX`] so no real version satisfies it and
+/// `all_migrated` stays false until the record is replaced by a parseable one.
+fn derive_target_version(upgrade: Option<&calimero_store::key::GroupUpgradeValue>) -> u32 {
+    match upgrade {
+        None => 0,
+        Some(record) => parse_schema_version(&record.to_version).unwrap_or(u32::MAX),
+    }
 }
 
 #[cfg(test)]
@@ -139,7 +177,7 @@ mod tests {
     use calimero_store::key::GroupMetaValue;
     use calimero_store::Store;
 
-    use super::{collect_migration_cohort, parse_schema_version};
+    use super::{authorize_migration_status, collect_migration_cohort, parse_schema_version};
 
     fn meta(admin: PublicKey) -> GroupMetaValue {
         GroupMetaValue {
@@ -225,5 +263,122 @@ mod tests {
         assert_eq!(parse_schema_version("11.3.1"), Some(11));
         assert_eq!(parse_schema_version("v2"), None);
         assert_eq!(parse_schema_version(""), None);
+    }
+
+    /// The handler gates `GetMigrationStatusRequest` on admin authority (the
+    /// same `require_admin` the sibling migration admin ops enforce), NOT mere
+    /// membership: a plain member must be rejected, the group admin allowed.
+    ///
+    /// This drives `authorize_migration_status` — the exact gate the handler
+    /// calls — so reverting the gate back to a membership check (the regression
+    /// this test is named to catch) fails it.
+    #[test]
+    fn admin_gate_rejects_non_admin_member() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0x33; 32]);
+        let admin = PublicKey::from([0xAD; 32]);
+        let member = PublicKey::from([0x11; 32]);
+
+        MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+        // `member` is a plain (non-admin) member of the namespace.
+        MembershipRepository::new(&store)
+            .add_member(&ns, &member, GroupMemberRole::Member)
+            .unwrap();
+
+        // A genuine member is still rejected by the handler's gate — the gate is
+        // admin authority, not membership.
+        assert!(
+            MembershipRepository::new(&store)
+                .is_member(&ns, &member)
+                .unwrap(),
+            "the rejected caller is genuinely a member — membership alone is not enough"
+        );
+        assert!(
+            authorize_migration_status(&store, &ns, &member).is_err(),
+            "a non-admin member must be rejected by the migration-status admin gate"
+        );
+        // The admin passes the same gate.
+        assert!(authorize_migration_status(&store, &ns, &admin).is_ok());
+    }
+
+    fn upgrade_record(
+        from: &str,
+        to: &str,
+        status: calimero_store::key::GroupUpgradeStatus,
+    ) -> calimero_store::key::GroupUpgradeValue {
+        calimero_store::key::GroupUpgradeValue {
+            from_version: from.to_owned(),
+            to_version: to.to_owned(),
+            migration: None,
+            initiated_at: 0,
+            initiated_by: PublicKey::from([0x01; 32]),
+            status,
+            cascade_hlc: None,
+            cascade_seq: None,
+        }
+    }
+
+    /// No upgrade record ⇒ no migration is in flight, so the target is the
+    /// group's current (baseline) app version `0` — every member trivially at
+    /// target. NOT a value that makes a fully-converged cohort look stuck.
+    #[test]
+    fn target_version_no_record_is_current_baseline() {
+        assert_eq!(
+            super::derive_target_version(None),
+            0,
+            "no migration pending ⇒ target is the current baseline version"
+        );
+    }
+
+    /// A Completed (non-pending) record ⇒ the group's current version is the
+    /// version it reached (`to_version`), so the cohort rolls up against that.
+    #[test]
+    fn target_version_completed_record_is_reached_version() {
+        let rec = upgrade_record(
+            "1",
+            "2",
+            calimero_store::key::GroupUpgradeStatus::Completed { completed_at: None },
+        );
+        assert_eq!(super::derive_target_version(Some(&rec)), 2);
+    }
+
+    /// An InProgress record with a parseable `to_version` targets that version.
+    #[test]
+    fn target_version_in_progress_record_targets_to_version() {
+        let rec = upgrade_record(
+            "1",
+            "2",
+            calimero_store::key::GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            },
+        );
+        assert_eq!(super::derive_target_version(Some(&rec)), 2);
+    }
+
+    /// Regression: a PENDING (`InProgress`) record whose `to_version` does not
+    /// parse to a `u32` (e.g. a "v2"-style or otherwise non-numeric semver)
+    /// must NOT collapse to target `0`. Target `0` would make every member
+    /// reporting `schema_version >= 0` (i.e. all of them) trivially "migrated"
+    /// — a FALSE GREEN in the middle of a real pending migration. An
+    /// unknowable pending target pins to `u32::MAX` so no real version can
+    /// satisfy it and `all_migrated` stays false until the migration resolves.
+    #[test]
+    fn target_version_in_progress_unparseable_to_version_is_not_false_green() {
+        let rec = upgrade_record(
+            "1",
+            "v2",
+            calimero_store::key::GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            },
+        );
+        assert_eq!(
+            super::derive_target_version(Some(&rec)),
+            u32::MAX,
+            "an unparseable pending target must not collapse to 0 (false green)"
+        );
     }
 }

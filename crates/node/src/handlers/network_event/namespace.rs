@@ -139,6 +139,12 @@ pub(super) fn handle_namespace_governance_delta(
     let pull_budget_duration = this.managers.sync.sync_config.parent_pull_budget;
     let op_for_delivery = op.clone();
     let readiness_addr = this.readiness_addr.clone();
+    // PR-6c Task 6c.8: capture the migration-heartbeat emitter address + a
+    // datastore handle so the apply path can drive an on-change heartbeat once
+    // the governance op applies (mirrors the `readiness_addr` capture). Cloning
+    // is cheap (Arc-wrapped) and the spawned future needs owned handles.
+    let migration_emitter_addr = this.migration_emitter_addr.clone();
+    let migration_datastore = this.datastore.clone();
 
     let op_for_ack = op.clone();
     // Capture the signer for the peer-identity cache before `op` is
@@ -168,6 +174,25 @@ pub(super) fn handle_namespace_governance_delta(
             if let NamespaceApplyOutcome::Applied { divergence } = &outcome {
                 if let Some(addr) = &readiness_addr {
                     addr.do_send(crate::readiness::NamespaceOpApplied { namespace_id });
+                }
+
+                // PR-6c Task 6c.8: drive the migration-heartbeat emitter on the
+                // same applied edge. Recompute the node's facts from the (now
+                // updated) local governance state and post them — this seeds the
+                // namespace into the emitter (making its periodic keep-alive
+                // tick live) and edge-triggers an on-change heartbeat when the
+                // target schema / residue changed. Best-effort: a `None` address
+                // (emitter not yet mounted) drops the signal; the next applied
+                // op re-drives it.
+                if let Some(addr) = &migration_emitter_addr {
+                    let facts = crate::migration_status::compute_namespace_migration_facts(
+                        &migration_datastore,
+                        namespace_id,
+                    );
+                    addr.do_send(crate::migration_status::MigrationFactsUpdate {
+                        namespace_id,
+                        facts,
+                    });
                 }
 
                 // Record the (peer, identity) pair now that the

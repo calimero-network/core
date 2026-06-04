@@ -216,4 +216,32 @@ impl NodeManager {
         };
         self.migration_emitter_addr = Some(emitter.start());
     }
+
+    /// Drive the [`MigrationEmitter`] with the node's freshly-computed migration
+    /// facts for `namespace_id`. Called from every governance-apply seam that
+    /// also notifies the readiness FSM (gossip-receive, backfill-apply, and the
+    /// publisher-side `ForwardNamespaceOpApplied`), so a residue/schema change
+    /// edge-triggers an immediate heartbeat and the namespace is seeded into the
+    /// emitter's `last_emitted` map — the seam that makes the periodic
+    /// keep-alive tick live (before this, `last_emitted` stayed empty forever
+    /// and no heartbeat was ever emitted).
+    ///
+    /// Facts are computed from local governance state
+    /// ([`crate::migration_status::compute_namespace_migration_facts`]); the
+    /// emitter overlays the live `synced_up_to_hlc` and publishes. Best-effort:
+    /// a `None` address (the brief window before `setup_migration_emitter` runs
+    /// in `Actor::started`) drops the signal — the next applied op re-drives it.
+    pub(crate) fn notify_migration_facts(&self, namespace_id: [u8; 32]) {
+        let Some(addr) = &self.migration_emitter_addr else {
+            return;
+        };
+        let facts = crate::migration_status::compute_namespace_migration_facts(
+            &self.datastore,
+            namespace_id,
+        );
+        addr.do_send(crate::migration_status::MigrationFactsUpdate {
+            namespace_id,
+            facts,
+        });
+    }
 }

@@ -298,6 +298,49 @@ pub fn record_facts_update(
     emit
 }
 
+/// Compute this node's locally-advertised migration facts for `namespace_id`.
+///
+/// `schema_version` is the version the group is converging to, read from the
+/// local `UpgradesRepository` record's `to_version` (`0` — the SDK baseline —
+/// when no migration has been recorded). `synced_up_to_hlc` is left at `0`
+/// here; the emitter overlays the live `NamespaceGovHead.sequence`
+/// ([`MigrationEmitter::refresh_hlc`]) at publish time so the periodic and
+/// on-change beats always carry the freshest position.
+///
+/// `residue_auto` / `residue_identity` are reported as `0` — the honest
+/// "nothing pending locally that this layer has counted" telemetry (see the
+/// [`MigrationEmitter`] docs). Precise per-context residue (the
+/// `count_unconverted_identity_gated` scan, Task 6c.6) is a separable refinement
+/// of this seam; reporting `0` until then keeps the rollup conservative (a node
+/// that has genuinely converged reports `0`, and the cohort's `unknown`-safety
+/// already prevents a false green from a silent member).
+#[must_use]
+pub fn compute_namespace_migration_facts(
+    datastore: &Store,
+    namespace_id: [u8; 32],
+) -> MigrationFacts {
+    let group_id = calimero_context_config::types::ContextGroupId::from(namespace_id);
+    let schema_version = calimero_context::group_store::UpgradesRepository::new(datastore)
+        .load(&group_id)
+        .ok()
+        .flatten()
+        .and_then(|record| {
+            record
+                .to_version
+                .split('.')
+                .next()
+                .and_then(|major| major.trim().parse::<u32>().ok())
+        })
+        .unwrap_or(0);
+
+    MigrationFacts {
+        schema_version,
+        residue_auto: 0,
+        residue_identity: 0,
+        synced_up_to_hlc: 0,
+    }
+}
+
 /// Build and sign a [`SignedMigrationHeartbeat`] for `namespace_id` over the
 /// canonical `MIGRATION_HEARTBEAT_SIGN_DOMAIN || borsh(body)` payload.
 ///
@@ -821,6 +864,53 @@ mod tests {
         };
         let emit = record_facts_update(&mut last_emitted, NS, drained);
         assert!(emit, "residue drop must edge-trigger");
+    }
+
+    #[test]
+    fn facts_for_namespace_reads_target_from_upgrade_record() {
+        // The on-change driver computes the node's advertised facts from local
+        // governance state. With no upgrade record the group is at the baseline
+        // (`schema_version == 0`); once a record targets v2 the facts advertise
+        // schema_version 2 — the value a rollup compares each member against.
+        use calimero_context::group_store::UpgradesRepository;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x55u8; 32];
+
+        // No record yet -> baseline target.
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(
+            facts.schema_version, 0,
+            "no upgrade record => baseline schema version 0"
+        );
+        assert_eq!(facts.residue_auto, 0);
+        assert_eq!(facts.residue_identity, 0);
+
+        // Record targeting v2 -> facts advertise 2.
+        UpgradesRepository::new(&store)
+            .save(
+                &ContextGroupId::from(ns),
+                &GroupUpgradeValue {
+                    from_version: "1".to_owned(),
+                    to_version: "2".to_owned(),
+                    migration: None,
+                    initiated_at: 0,
+                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    status: GroupUpgradeStatus::Completed { completed_at: None },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                },
+            )
+            .unwrap();
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(
+            facts.schema_version, 2,
+            "an upgrade record targeting v2 must advertise schema_version 2"
+        );
     }
 
     #[test]
