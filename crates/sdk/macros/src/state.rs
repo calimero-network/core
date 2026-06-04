@@ -894,6 +894,14 @@ fn generate_assign_deterministic_ids_impl(
             || type_str.contains("UserStorage")
             || type_str.contains("FrozenStorage")
             || type_str.contains("SharedStorage")
+            // `PermissionedStorage` and its `Ownable` alias wrap a
+            // `SharedStorage`; their `reassign_deterministic_id` delegates to it,
+            // so the inner wrapper gets the field-derived id and converges. Both
+            // must be listed: a field written as `Ownable<_>` shows the `Ownable`
+            // token (alias is not resolved here), and `PermissionedStorage` is not
+            // a substring of `SharedStorage`.
+            || type_str.contains("PermissionedStorage")
+            || type_str.contains("Ownable")
             // `AuthoredVector` is already matched by the `"Vector"` substring above;
             // `AuthoredMap` is NOT a substring of any entry, so it must be listed
             // explicitly or its outer wrapper id stays `Id::random()` and a
