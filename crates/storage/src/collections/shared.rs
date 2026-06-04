@@ -368,21 +368,23 @@ where
     /// The current writer set, resolved only from **verified** local sources.
     ///
     /// Resolution order:
-    /// 1. **Rotation log** (`rotation_log::load`). On a node that *received*
-    ///    rotations, the apply path appends every signature-verified rotation
-    ///    here, so the latest entry is the authoritative, verified writer set.
-    ///    (The full causal `writers_at(parents)` resolution is the node-side
-    ///    apply-time check; with no DAG context during local execution the
-    ///    most-recently-appended entry is the right local answer.)
+    /// 1. **Rotation log** (`rotation_log::load`), resolved via
+    ///    [`rotation_log::resolve_local`]. On a node that *received* rotations,
+    ///    the apply path appends every signature-verified rotation here.
+    ///    `resolve_local` picks the live entry that is **max by
+    ///    `(delta_hlc, signer)`** (falling back to the compaction snapshot when
+    ///    there are no live entries).
     ///
-    ///    Note this local gate is **best-effort under concurrent rotations**:
-    ///    "most-recently-appended" is this node's insertion order, which can
-    ///    differ from causal order if concurrent rotations arrive interleaved.
-    ///    A local `insert`/`rotate_writers` may then accept/reject against a set
-    ///    the merge-time verifier (which uses the proper causal `writers_at`)
-    ///    would resolve differently. The merge check is the security boundary;
-    ///    full local causal resolution is deferred to the concurrent-rotation
-    ///    work (P4).
+    ///    This is the local-execution gate (core#2673). It has no DAG context,
+    ///    so it cannot run the full causal `writers_at(parents)` the merge-time
+    ///    verifier uses — but because the HLC is causally monotonic since #2635
+    ///    (a rotation made after applying another carries a greater HLC), the
+    ///    `(delta_hlc, signer)` max coincides with the causal latest for any
+    ///    well-formed log, and — unlike the old `entries.last()` — it is
+    ///    **insertion-order invariant**, so two nodes that applied the same
+    ///    concurrent rotations gate against the *same* set. The merge check
+    ///    (`writers_at`) remains the security boundary for the pathological
+    ///    HLC-skew case; this gate is never weaker than `entries.last()` was.
     /// 2. **Index `storage_type`** — written by `add_child_to` at construction,
     ///    by `apply_action` for a received bootstrap/write, and by
     ///    [`Index::set_storage_type`] on the *originating* node's own rotation
@@ -398,11 +400,8 @@ where
     /// than trust unverified bytes.
     fn current_writers(&self) -> BTreeSet<PublicKey> {
         if let Ok(Some(log)) = rotation_log::load::<S>(self.inner.id()) {
-            if let Some(entry) = log.entries.last() {
-                return entry.new_writers.clone();
-            }
-            if let Some(snapshot) = log.snapshot {
-                return snapshot.writers;
+            if let Some(writers) = rotation_log::resolve_local(&log) {
+                return writers;
             }
         }
         if let Ok(Some(metadata)) = <Index<S>>::get_metadata(self.inner.id()) {
