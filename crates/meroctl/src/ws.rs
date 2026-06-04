@@ -11,6 +11,8 @@
 //! it to the upgrade request below; long-lived sockets that outlive token
 //! expiry would need to reconnect.
 
+use std::convert::Infallible;
+
 use calimero_server_primitives::jsonrpc::{
     ExecutionRequest, RequestId, Response, ResponseBody, Version,
 };
@@ -133,12 +135,13 @@ impl WsSession {
     /// (~`ping_interval + pong_timeout`, 40s by default), which would otherwise
     /// kill the shell between commands.
     ///
-    /// This never resolves to `Ok`: it loops until the stream errors or closes,
-    /// then returns `Err`. Callers race it against their input source (e.g. via
-    /// `tokio::select!`) and drop it once a command is ready — sound because
-    /// `StreamExt::next` is cancel-safe and no request is outstanding while
-    /// idle, so any text frame seen here is an unsolicited event push.
-    pub async fn keepalive(&mut self) -> Result<()> {
+    /// The [`Infallible`] success type encodes that this only ever returns on
+    /// failure: it loops until the stream errors or closes, then returns `Err`.
+    /// Callers race it against their input source (e.g. via `tokio::select!`)
+    /// and drop it once a command is ready — sound because `StreamExt::next` is
+    /// cancel-safe and no request is outstanding while idle, so any text frame
+    /// seen here is an unsolicited event push.
+    pub async fn keepalive(&mut self) -> Result<Infallible> {
         while let Some(message) = self.read.next().await {
             match message.wrap_err("error reading from WebSocket")? {
                 WsMessage::Ping(payload) => self.write.send(WsMessage::Pong(payload)).await?,
@@ -154,11 +157,14 @@ impl WsSession {
 
 /// Classify an inbound text frame for a call awaiting `request_id`:
 /// `Ok(Some(..))` is the matching reply, already adapted to a JSON-RPC
-/// [`Response`]; `Ok(None)` means skip it — an unsolicited event push (no `id`)
-/// or a reply for some other request.
+/// [`Response`]; `Ok(None)` means skip it. On a long-lived socket a text frame
+/// can be an event push, a reply for another id, or — defensively — any
+/// non-RPC frame the server sends; none should be fatal, so an unparseable
+/// frame is skipped rather than failing the call.
 fn match_text_reply(text: &str, request_id: WsRequestId) -> Result<Option<Response>> {
-    let response =
-        serde_json::from_str::<WsResponse>(text).wrap_err("failed to parse WebSocket response")?;
+    let Ok(response) = serde_json::from_str::<WsResponse>(text) else {
+        return Ok(None);
+    };
 
     if response.id != Some(request_id) {
         return Ok(None);
@@ -287,6 +293,14 @@ mod tests {
         assert!(
             match_text_reply(&text, 1).unwrap().is_none(),
             "an unsolicited event push (no id) must be skipped"
+        );
+    }
+
+    #[test]
+    fn unparseable_frame_is_skipped_not_fatal() {
+        assert!(
+            match_text_reply("not json at all", 1).unwrap().is_none(),
+            "a non-RPC text frame must be skipped, not fail the call"
         );
     }
 }

@@ -151,6 +151,11 @@ where
         url.set_scheme(scheme)
             .map_err(|()| eyre::eyre!("failed to set WebSocket URL scheme"))?;
         url.set_path("ws");
+        // Drop any query/fragment from the HTTP base so they don't ride along
+        // to the upgrade request (they're meaningless to `/ws` and could carry
+        // sensitive values).
+        url.set_query(None);
+        url.set_fragment(None);
 
         Ok(url)
     }

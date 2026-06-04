@@ -1,4 +1,5 @@
 use std::io::Write as _;
+use std::time::Duration;
 
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
@@ -74,6 +75,14 @@ pub struct CallCommand {
         help = "Open an interactive shell that keeps one WebSocket open and runs many calls through it"
     )]
     pub interactive: bool,
+
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = 120,
+        help = "Per-call timeout for the interactive shell, in seconds (0 disables)"
+    )]
+    pub timeout: u64,
 }
 
 fn serde_value(s: &str) -> serde_json::Result<Value> {
@@ -85,6 +94,7 @@ impl CallCommand {
         let client = environment.client()?;
 
         if self.interactive {
+            let timeout = (self.timeout > 0).then(|| Duration::from_secs(self.timeout));
             return run_shell(
                 environment,
                 client,
@@ -92,6 +102,7 @@ impl CallCommand {
                 self.substitute,
                 self.method,
                 self.args,
+                timeout,
             )
             .await;
         }
@@ -144,6 +155,7 @@ async fn run_shell(
     substitute: Vec<Alias<PublicKey>>,
     seed_method: Option<String>,
     seed_args: Option<Value>,
+    timeout: Option<Duration>,
 ) -> Result<()> {
     let mut context_id = resolve_context(client, context).await?;
     let mut session = WsSession::connect(client).await?;
@@ -157,10 +169,16 @@ async fn run_shell(
     eprintln!("Meta-commands: :context <alias>, :help, :quit (or Ctrl-D to exit).");
 
     // A method passed on the command line runs as the first call, honouring
-    // any `--args` given alongside it.
+    // any `--args` given alongside it. A dead socket here means the shell can't
+    // start, so a transport failure ends it.
     if let Some(method) = seed_method {
         let args = seed_args.unwrap_or_else(|| json!({}));
-        run_call(&mut session, context_id, &substitute, method, args).await?;
+        if let CallOutcome::Closed(err) =
+            run_call(&mut session, timeout, context_id, &substitute, method, args).await
+        {
+            eprintln!("Connection closed: {err}");
+            return Ok(());
+        }
     }
 
     let mut lines = BufReader::new(stdin()).lines();
@@ -176,8 +194,11 @@ async fn run_shell(
         let next_line = tokio::select! {
             line = lines.next_line() => line?,
             result = session.keepalive() => {
-                if let Err(err) = result {
-                    eprintln!("Connection closed: {err}");
+                match result {
+                    // `keepalive` returns `Infallible` on success, so `Ok` is
+                    // unreachable — the match proves the shell never exits silently.
+                    Ok(never) => match never {},
+                    Err(err) => eprintln!("Connection closed: {err}"),
                 }
                 break 'shell;
             }
@@ -229,26 +250,62 @@ async fn run_shell(
             None => json!({}),
         };
 
-        run_call(&mut session, context_id, &substitute, method, args).await?;
+        match run_call(&mut session, timeout, context_id, &substitute, method, args).await {
+            CallOutcome::Done => {}
+            CallOutcome::TimedOut(dur) => eprintln!(
+                "No response within {}s; the call may still be running on the node.",
+                dur.as_secs()
+            ),
+            CallOutcome::Closed(err) => {
+                eprintln!("Connection closed: {err}");
+                break 'shell;
+            }
+        }
     }
 
     Ok(())
 }
 
-/// Run a single call within the shell and print its outcome. A handler-level
-/// failure comes back as an error body (printed, shell continues); only a
-/// transport/protocol failure propagates and ends the session.
+/// What became of one shell call. A handler-level failure is printed inside
+/// `run_call` (the shell stays alive); the variants here are the outcomes the
+/// caller must act on.
+enum CallOutcome {
+    /// Completed — the result (or a handler error) was printed.
+    Done,
+    /// No reply arrived within the per-call timeout. The session is still
+    /// usable, so the shell keeps going.
+    TimedOut(Duration),
+    /// The socket errored or closed; the session is dead and the shell ends.
+    Closed(eyre::Report),
+}
+
+/// Run a single call within the shell, bounding the wait by `timeout` so a
+/// server that never replies can't hang the prompt indefinitely.
 async fn run_call(
     session: &mut WsSession,
+    timeout: Option<Duration>,
     context_id: ContextId,
     substitute: &[Alias<PublicKey>],
     method: String,
     args: Value,
-) -> Result<()> {
+) -> CallOutcome {
     let request = ExecutionRequest::new(context_id, method, args, substitute.to_vec());
-    let response = session.execute(request).await?;
-    print_response(&response);
-    Ok(())
+
+    let result = match timeout {
+        Some(dur) => match tokio::time::timeout(dur, session.execute(request)).await {
+            Ok(result) => result,
+            Err(_elapsed) => return CallOutcome::TimedOut(dur),
+        },
+        None => session.execute(request).await,
+    };
+
+    match result {
+        Ok(response) => {
+            print_response(&response);
+            CallOutcome::Done
+        }
+        Err(err) => CallOutcome::Closed(err),
+    }
 }
 
 fn print_response(response: &Response) {
