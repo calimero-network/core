@@ -5742,31 +5742,53 @@ mod tee_member_removed_event_tests {
     /// `(gid, member)` tuple. Other in-flight events (from parallel
     /// tests on the process-wide channel) are filtered out by the
     /// tuple-match guard.
+    /// Count `MemberRemoved` / `TeeMemberRemoved` events emitted for
+    /// `(gid_bytes, member)`.
+    ///
+    /// Deterministic, not time-based. `op_events::notify` performs a
+    /// synchronous `broadcast::Sender::send` from inside the apply arm, so
+    /// once `apply_local_signed_group_op` has returned every event the op
+    /// emitted is already sitting in `rx`'s buffer. Draining with
+    /// `try_recv` until the buffer is empty therefore observes the
+    /// complete, final event set with no polling window — no 500ms sleep,
+    /// no CI-load flake (the old fixed-duration poll could both waste
+    /// 500ms on the happy path and, under load, miss a late event). The
+    /// `group_id`/`member` filter still discards events that parallel
+    /// tests interleave onto the process-wide channel.
+    ///
+    /// Kept `async` only so the call sites read uniformly; the body never
+    /// awaits.
     async fn count_removed_events_for(
         rx: &mut tokio::sync::broadcast::Receiver<OpEvent>,
         gid_bytes: [u8; 32],
         member: PublicKey,
     ) -> (usize, usize) {
+        use tokio::sync::broadcast::error::TryRecvError;
         let mut member_removed = 0;
         let mut tee_member_removed = 0;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        while std::time::Instant::now() < deadline {
-            match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
-                Ok(Ok(OpEvent::MemberRemoved {
+        loop {
+            match rx.try_recv() {
+                Ok(OpEvent::MemberRemoved {
                     group_id,
                     member: m,
-                })) if group_id == gid_bytes && m == member => {
+                }) if group_id == gid_bytes && m == member => {
                     member_removed += 1;
                 }
-                Ok(Ok(OpEvent::TeeMemberRemoved {
+                Ok(OpEvent::TeeMemberRemoved {
                     group_id,
                     member: m,
-                })) if group_id == gid_bytes && m == member => {
+                }) if group_id == gid_bytes && m == member => {
                     tee_member_removed += 1;
                 }
-                Ok(Ok(_)) => {} // unrelated parallel-test events
-                Ok(Err(_)) => break,
-                Err(_) => continue,
+                Ok(_) => {} // unrelated parallel-test events
+                // Parallel tests overran the shared buffer. Keep draining;
+                // `try_recv` resumes at the oldest still-buffered event. If
+                // our own events were the ones dropped the counts come up
+                // short and the assertion fails loudly — never a silent
+                // flaky pass.
+                Err(TryRecvError::Lagged(_)) => continue,
+                // Empty or Closed: nothing left to drain.
+                Err(_) => break,
             }
         }
         (member_removed, tee_member_removed)

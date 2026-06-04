@@ -42,22 +42,26 @@ pub(crate) fn apply(
     // The cascade below touches `ContextIdentity` rows only (disjoint
     // column from `GroupMember`), and `remove_member` is the call that
     // clears the role row — so `role_of` is still authoritative here.
-    let removed_role = MembershipRepository::new(store).role_of(group_id, member)?;
-    if removed_role.is_none() {
-        // By this point in the apply path the member row should be present
-        // (the earlier `require_manage_members` + `ensure_not_last_admin_removal`
-        // checks would have bailed if it weren't). A `None` here means
-        // something concurrent removed it, OR a prior partial apply left
-        // the row in an inconsistent state. Either way, we lose the ability
-        // to fire a role-scoped `TeeMemberRemoved` follow-up for this op,
-        // so any `ReadOnlyTee` purge that should have run won't. Surface
-        // at `warn!` so the gap is observable in aggregate logs.
-        tracing::warn!(
-            group_id = %hex::encode(group_id.to_bytes()),
-            member = %member,
-            "MemberRemoved apply: role_of returned None — TeeMemberRemoved follow-up will be skipped"
-        );
-    }
+    let removed_role = match MembershipRepository::new(store).role_of(group_id, member)? {
+        Some(role) => role,
+        None => {
+            // By this point in the apply path the member row MUST be present:
+            // the earlier `require_manage_members` + `ensure_not_last_admin_removal`
+            // checks both read it and would have bailed if it weren't there, and
+            // the apply path is single-threaded so nothing can have removed it
+            // since. A `None` here is therefore not a recoverable runtime
+            // condition — it is an internal inconsistency (a prior partial apply
+            // that left the row in a torn state). Fail the apply loudly rather
+            // than silently dropping the role-scoped `TeeMemberRemoved` follow-up,
+            // so the bug surfaces immediately instead of degrading to a missed
+            // `ReadOnlyTee` purge.
+            bail!(
+                "internal: role_of returned None after authorization checks passed \
+                 (group_id={}, member={member})",
+                hex::encode(group_id.to_bytes()),
+            );
+        }
+    };
     cascade_remove_member_from_group_tree(store, group_id, member)?;
     MembershipRepository::new(store).remove_member(group_id, member)?;
     // Add to deny-list: state deltas from this member will be
@@ -103,7 +107,7 @@ pub(crate) fn apply(
     // (forward-secrecy purge in `calimero_context::self_purge`) that the
     // soft-leave path deliberately skips. Non-TEE removals stay
     // soft-leave so rejoin/keyshare flows can re-use the local rows.
-    if removed_role == Some(GroupMemberRole::ReadOnlyTee) {
+    if removed_role == GroupMemberRole::ReadOnlyTee {
         crate::op_events::notify(crate::op_events::OpEvent::TeeMemberRemoved {
             group_id: group_id.to_bytes(),
             member: *member,

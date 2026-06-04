@@ -865,6 +865,101 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cascade_namespace_state_drops_multi_group_subtree() {
+        // Multi-subtree cascade: a namespace root with TWO nested
+        // descendant groups (root → mid → leaf). The single-root test
+        // above seeds no subgroups, so `collect_subtree_for_cascade`
+        // returns an empty `descendant_groups` and the
+        // `for gid in all_groups` loop only ever ran for the root — the
+        // multi-group purge path was structurally untested (PR #2680
+        // review, comment #3354456866). This fixture seeds real
+        // descendants so each one's signing-key + meta rows must be swept,
+        // not just the root's.
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+
+        let mid_id = ContextGroupId::from([0x91u8; 32]);
+        let leaf_id = ContextGroupId::from([0x92u8; 32]);
+        for sub in [mid_id, leaf_id] {
+            MetaRepository::new(&store)
+                .save(&sub, &make_meta(self_pk))
+                .unwrap();
+            MembershipRepository::new(&store)
+                .add_member_with_keys(
+                    &sub,
+                    &self_pk,
+                    GroupMemberRole::Member,
+                    Some([0xCC; 32]),
+                    Some([0xDD; 32]),
+                )
+                .unwrap();
+            SigningKeysRepository::new(&store)
+                .store_key(&sub, &self_pk, &[0xFF; 32])
+                .unwrap();
+        }
+        // Wire the tree edges the way the apply path does. `nest` writes
+        // BOTH `GroupParentRef` and `GroupChildIndex`; a bare
+        // `GroupParentRef` would leave `list_children` blind and the
+        // subtree walk would come up empty — defeating the point of the
+        // test.
+        NamespaceRepository::new(&store)
+            .nest(&ns_id, &mid_id)
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&mid_id, &leaf_id)
+            .unwrap();
+
+        // Pre-condition: the subtree walk actually sees both descendants,
+        // otherwise this test would silently degrade to the single-root
+        // case it is meant to complement.
+        let payload = NamespaceRepository::new(&store)
+            .collect_subtree_for_cascade(&ns_id)
+            .unwrap();
+        assert_eq!(
+            payload.descendant_groups.len(),
+            2,
+            "fixture must produce a 2-deep subtree so the cascade exercises \
+             the multi-group loop, got {:?}",
+            payload.descendant_groups
+        );
+
+        let result = cascade_namespace_state(&store, ns_id);
+
+        assert_eq!(
+            result.purged_groups, 3,
+            "root + mid + leaf = 3 groups must all be purged, got {}",
+            result.purged_groups
+        );
+        assert!(
+            result.all_succeeded,
+            "happy-path multi-group cascade should report all_succeeded=true"
+        );
+
+        // Forward-secrecy hygiene must reach every descendant, not just
+        // the root: signing-key + meta rows gone for all three groups.
+        for gid in [ns_id, mid_id, leaf_id] {
+            let gid_hex = hex::encode(gid.to_bytes());
+            assert!(
+                SigningKeysRepository::new(&store)
+                    .get_key(&gid, &self_pk)
+                    .unwrap()
+                    .is_none(),
+                "signing key for {gid_hex} MUST be purged across the whole subtree"
+            );
+            assert!(
+                MetaRepository::new(&store).load(&gid).unwrap().is_none(),
+                "meta for {gid_hex} MUST be purged across the whole subtree"
+            );
+        }
+        assert!(
+            NamespaceRepository::new(&store)
+                .identity_record(&ns_id)
+                .unwrap()
+                .is_none(),
+            "namespace identity MUST be purged once the full subtree cascade succeeds"
+        );
+    }
+
     // --- Dispatch tests (Layer 2: wiring) ------------------------------
     //
     // These exercise `decide_purge_action`, the pure-read function the
