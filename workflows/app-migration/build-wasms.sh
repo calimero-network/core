@@ -37,6 +37,8 @@ SUITES=(
     "apps/migrations/scenario-invariant-reshuffle-v2"
     "apps/migrations/scenario-authored-map-v1"
     "apps/migrations/scenario-authored-map-v2"
+    "apps/migrations/scenario-authored-migrate-ux-v1"
+    "apps/migrations/scenario-authored-migrate-ux-v2"
     "apps/migrations/scenario-user-storage-v1"
     "apps/migrations/scenario-user-storage-v2"
     "apps/migrations/scenario-frozen-storage-v1"
