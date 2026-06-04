@@ -42,26 +42,29 @@ pub(crate) fn apply(
     // The cascade below touches `ContextIdentity` rows only (disjoint
     // column from `GroupMember`), and `remove_member` is the call that
     // clears the role row — so `role_of` is still authoritative here.
-    let removed_role = match MembershipRepository::new(store).role_of(group_id, member)? {
-        Some(role) => role,
-        None => {
-            // By this point in the apply path the member row MUST be present:
-            // the earlier `require_manage_members` + `ensure_not_last_admin_removal`
-            // checks both read it and would have bailed if it weren't there, and
-            // the apply path is single-threaded so nothing can have removed it
-            // since. A `None` here is therefore not a recoverable runtime
-            // condition — it is an internal inconsistency (a prior partial apply
-            // that left the row in a torn state). Fail the apply loudly rather
-            // than silently dropping the role-scoped `TeeMemberRemoved` follow-up,
-            // so the bug surfaces immediately instead of degrading to a missed
-            // `ReadOnlyTee` purge.
-            bail!(
-                "internal: role_of returned None after authorization checks passed \
-                 (group_id={}, member={member})",
-                hex::encode(group_id.to_bytes()),
-            );
-        }
-    };
+    //
+    // `role_of` legitimately returns `None` here, so this must NOT bail:
+    // a member can be removed from an Open subgroup where their membership
+    // is *inherited* from a parent group and they hold no direct
+    // `GroupMember` row (exercised by the `group-kick-and-rejoin-keyshare`
+    // and `group-kick-and-readd-deny-list` e2e flows). The preceding checks
+    // do not guarantee a direct row — `require_manage_members` gates the
+    // *signer*, and `ensure_not_last_admin_removal` short-circuits for any
+    // non-admin (which includes a member with no row at all). So `None` is
+    // the no-direct-row case, not an inconsistency: such a member cannot
+    // have held `ReadOnlyTee` (a directly-rowed role), so skipping the
+    // `TeeMemberRemoved` follow-up is exactly right, while the generic
+    // `MemberRemoved` + deny-list below still fire to drive the soft-leave
+    // path. Surface at `warn!` purely for observability.
+    let removed_role = MembershipRepository::new(store).role_of(group_id, member)?;
+    if removed_role.is_none() {
+        tracing::warn!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            member = %member,
+            "MemberRemoved apply: role_of returned None (no direct row — likely \
+             inherited membership); skipping TeeMemberRemoved follow-up"
+        );
+    }
     cascade_remove_member_from_group_tree(store, group_id, member)?;
     MembershipRepository::new(store).remove_member(group_id, member)?;
     // Add to deny-list: state deltas from this member will be
@@ -107,7 +110,7 @@ pub(crate) fn apply(
     // (forward-secrecy purge in `calimero_context::self_purge`) that the
     // soft-leave path deliberately skips. Non-TEE removals stay
     // soft-leave so rejoin/keyshare flows can re-use the local rows.
-    if removed_role == GroupMemberRole::ReadOnlyTee {
+    if removed_role == Some(GroupMemberRole::ReadOnlyTee) {
         crate::op_events::notify(crate::op_events::OpEvent::TeeMemberRemoved {
             group_id: group_id.to_bytes(),
             member: *member,
