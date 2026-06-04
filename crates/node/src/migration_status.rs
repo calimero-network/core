@@ -30,6 +30,7 @@ use actix::{Actor, AsyncContext, Context, Handler, Message};
 use calimero_context::group_store::NamespaceRepository;
 use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedMigrationHeartbeat};
 use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::messages::MigrationStatusReport;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -68,6 +69,23 @@ pub struct CacheEntry {
     pub ts_millis: u64,
     /// Local receive instant — the TTL freshness reference.
     pub received_at: Instant,
+}
+
+/// Project a cached heartbeat into the transport-neutral
+/// [`MigrationStatusReport`] DTO the admin route threads into the
+/// `get_migration_status` rollup (Task 6c.9). Pure 1:1 field map; the peer's
+/// `ts_millis` becomes the report's `reported_at`. The cache-local
+/// `received_at` instant is intentionally dropped — the rollup pins on the
+/// signed `synced_up_to_hlc`, never on local receive time.
+#[must_use]
+pub fn cache_entry_to_report(entry: &CacheEntry) -> MigrationStatusReport {
+    MigrationStatusReport {
+        schema_version: entry.schema_version,
+        residue_auto: entry.residue_auto,
+        residue_identity: entry.residue_identity,
+        synced_up_to_hlc: entry.synced_up_to_hlc,
+        reported_at: entry.ts_millis,
+    }
 }
 
 /// Per-namespace, per-peer migration-heartbeat cache.
@@ -180,6 +198,26 @@ impl MigrationStatusCache {
         g.iter()
             .filter(|((nns, _), e)| *nns == ns && now.duration_since(e.received_at) <= ttl)
             .map(|((_, pk), e)| (*pk, e.clone()))
+            .collect()
+    }
+
+    /// Snapshot the freshest in-TTL heartbeats for `ns` into the
+    /// `BTreeMap<PublicKey, MigrationStatusReport>` the rollup consumes.
+    ///
+    /// This is the projection the admin route (Task 6c.10) threads into
+    /// `GetMigrationStatusRequest::member_reports`: each fresh [`CacheEntry`]
+    /// maps 1:1 to a [`MigrationStatusReport`] DTO (the peer's `ts_millis`
+    /// becomes `reported_at`). A member absent from this map resolves to
+    /// `unknown` in the rollup, never a false green. Stale entries past `ttl`
+    /// are filtered out by [`fresh_peers`](Self::fresh_peers).
+    pub fn migration_status_reports(
+        &self,
+        ns: [u8; 32],
+        ttl: Duration,
+    ) -> BTreeMap<PublicKey, MigrationStatusReport> {
+        self.fresh_peers(ns, ttl)
+            .into_iter()
+            .map(|(pk, e)| (pk, cache_entry_to_report(&e)))
             .collect()
     }
 
@@ -535,6 +573,44 @@ mod tests {
             .expect("entry readable by (ns, peer)");
         assert_eq!(entry.schema_version, 2);
         assert_eq!(entry.residue_identity, 0);
+    }
+
+    #[test]
+    fn migration_status_reports_projects_fresh_entries() {
+        // The admin route (Task 6c.10) snapshots the cache into the
+        // `BTreeMap<PublicKey, MemberMigrationReport>` the rollup consumes.
+        // Each fresh entry projects 1:1; `ts_millis` becomes `reported_at`.
+        let cache = MigrationStatusCache::default();
+        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let hb = signed_hb(&sk, NS, 2, 1, 3, 7);
+        cache.insert(&hb);
+
+        let reports = cache.migration_status_reports(NS, DEFAULT_HEARTBEAT_TTL);
+        assert_eq!(reports.len(), 1, "fresh entry must project into a report");
+        let report = reports
+            .get(&sk.public_key())
+            .copied()
+            .expect("report keyed by peer pubkey");
+        assert_eq!(report.schema_version, 2);
+        assert_eq!(report.residue_auto, 1);
+        assert_eq!(report.residue_identity, 3);
+        assert_eq!(report.reported_at, 7, "ts_millis projects to reported_at");
+    }
+
+    #[test]
+    fn migration_status_reports_excludes_other_namespaces() {
+        // Only the requested namespace's peers project — a heartbeat from a
+        // different namespace must not leak into the rollup snapshot.
+        let cache = MigrationStatusCache::default();
+        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let other_ns = [7u8; 32];
+        cache.insert(&signed_hb(&sk, other_ns, 2, 0, 0, 0));
+
+        let reports = cache.migration_status_reports(NS, DEFAULT_HEARTBEAT_TTL);
+        assert!(
+            reports.is_empty(),
+            "an other-namespace heartbeat must not appear in this namespace's reports"
+        );
     }
 
     #[test]

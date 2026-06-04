@@ -63,4 +63,41 @@ pub enum NodeMessage {
         context_id: ContextId,
         outcome: oneshot::Sender<Option<crate::SyncStatusSnapshot>>,
     },
+    /// Snapshot the node-side migration-heartbeat TTL cache (Task 6c.8) for a
+    /// namespace into the per-member reports the `get_migration_status` rollup
+    /// (Task 6c.9) consumes. Routed through `NodeClient -> NodeManager` because
+    /// the cache lives on the node-crate-private `NodeManager`, which the server
+    /// layer cannot name directly. Observability only — a member absent from the
+    /// returned map resolves to `unknown` in the rollup.
+    ///
+    /// Returns the transport-neutral [`MigrationStatusReport`] DTO rather than
+    /// `calimero-context-client`'s `MemberMigrationReport`: that crate depends on
+    /// *this* one, so naming it here would be a dependency cycle. The server
+    /// admin handler (which sees both crates) maps the DTO across.
+    GetMigrationStatusReports {
+        namespace_id: [u8; 32],
+        outcome: oneshot::Sender<std::collections::BTreeMap<PublicKey, MigrationStatusReport>>,
+    },
+}
+
+/// Transport-neutral snapshot of a peer's freshest in-TTL migration heartbeat,
+/// projected from the node-side cache (Task 6c.8) and handed to the server admin
+/// layer, which maps it into `calimero-context-client`'s `MemberMigrationReport`
+/// for the `get_migration_status` rollup (Task 6c.9).
+///
+/// Defined here (not in `calimero-context-client`) because that crate depends on
+/// this one — referencing its `MemberMigrationReport` in [`NodeMessage`] would
+/// form a dependency cycle. Field-for-field identical to the rollup's report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MigrationStatusReport {
+    /// Schema/binary version the member has loaded.
+    pub schema_version: u32,
+    /// Unconverted Convergent ("auto") entries the member still has pending.
+    pub residue_auto: u64,
+    /// Unconverted identity-gated entries the member still has pending.
+    pub residue_identity: u64,
+    /// Governance HLC the member has synced/applied through.
+    pub synced_up_to_hlc: u64,
+    /// Member-signed millis-since-epoch from the heartbeat itself.
+    pub reported_at: u64,
 }
