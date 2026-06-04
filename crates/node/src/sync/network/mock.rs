@@ -1,22 +1,42 @@
 //! Scriptable mock for [`super::SyncNetwork`].
 //!
-//! `mesh_peers` returns recorded peer lists; `open_stream` returns
-//! recorded errors, hangs, or — via `Stream::test_pair()` behind the
-//! `test-utils` feature — a real `Ok(Stream)`. The success arm lets
-//! tests cover the discovery loop's recovery path (a peer succeeds
-//! after earlier ones fail), not just its give-up paths.
+//! `subscribed_peers` returns recorded peer lists; `open_stream`
+//! returns recorded errors, hangs, or — via `Stream::test_pair()`
+//! behind the `test-utils` feature — a real `Ok(Stream)`. The success
+//! arm lets tests cover the discovery loop's recovery path (a peer
+//! succeeds after earlier ones fail), not just its give-up paths.
+//!
+//! ## Per-topic vs shared queues
+//!
+//! `subscribed_peers` is scripted two ways:
+//!
+//! - **Per-topic** ([`MockSyncNetwork::push_subscribed_peers_for`]):
+//!   responses are keyed by `TopicHash`, so a test can say "context
+//!   topic returns empty, namespace topic returns peers" — the two
+//!   draw from independent queues. This is what the discovery code's
+//!   namespace-fallback path needs, since it queries two distinct
+//!   topics and the outcome depends on which one yields peers.
+//! - **Shared** ([`MockSyncNetwork::push_subscribed_peers`]): a
+//!   single topic-agnostic queue, used by tests that don't care which
+//!   topic was requested. When a topic has no per-topic queue seeded,
+//!   `subscribed_peers` falls through to this shared queue, so the
+//!   simpler callers keep working unchanged.
+//!
+//! Per-topic queues take precedence; the shared queue is the
+//! fallthrough.
 //!
 //! ## Exhaustion semantics
 //!
 //! The two methods behave **asymmetrically** when their queue is
 //! drained. This is intentional and matches production:
 //!
-//! - `mesh_peers` — **sticky last**: if N entries are queued and the
-//!   method is called >N times, every call past N returns the Nth
-//!   value. Matches production "mesh stable after discovery
-//!   completes" behaviour — a sync loop polling `mesh_peers` while
-//!   waiting for a peer to come up sees the same answer until the
-//!   mesh actually changes, so the mock shouldn't suddenly start
+//! - `subscribed_peers` — **sticky last** (per queue, shared or
+//!   per-topic): if N entries are queued and the method draws from
+//!   that queue >N times, every draw past N returns the Nth value.
+//!   Matches production "subscriber set stable after discovery
+//!   completes" behaviour — a sync loop polling `subscribed_peers`
+//!   while waiting for a peer to come up sees the same answer until
+//!   the set actually changes, so the mock shouldn't suddenly start
 //!   returning empty when the test forgets to script another tick.
 //! - `open_stream` — **error on exhaust**: every call past the
 //!   scripted count returns `Err("…no queued response")`. Each
@@ -28,7 +48,7 @@
 //! against either method should use [`MockSyncNetwork::assert_all_consumed`]
 //! after running the code under test.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -61,24 +81,53 @@ pub(crate) enum OpenStreamResponse {
 /// the synchronous pop in each method; never across `.await`.
 #[derive(Default)]
 pub(crate) struct MockSyncNetwork {
-    mesh_peers_responses: Mutex<VecDeque<Vec<PeerId>>>,
+    /// Shared, topic-agnostic queue. Used when no per-topic queue is
+    /// seeded for the requested topic (see `subscribed_peers_by_topic`).
+    subscribed_peers_responses: Mutex<VecDeque<Vec<PeerId>>>,
+    /// Per-topic queues. When a queue exists for the requested topic
+    /// it takes precedence over the shared queue, letting a test
+    /// script distinct responses per topic (e.g. context-topic empty,
+    /// namespace-topic populated) without relying on the global
+    /// ordering of cross-topic calls.
+    subscribed_peers_by_topic: Mutex<HashMap<TopicHash, VecDeque<Vec<PeerId>>>>,
     open_stream_responses: Mutex<VecDeque<OpenStreamResponse>>,
-    /// `mesh_peers` call count — needed to distinguish "queued 1
-    /// sticky-last entry and the code under test called mesh_peers
-    /// ≥1 times" (consumed) from "queued 1 entry and the code under
-    /// test never called mesh_peers at all" (silently-unused queue).
+    /// `subscribed_peers` call count (across all topics) — needed to
+    /// distinguish "queued 1 sticky-last entry and the code under test
+    /// called subscribed_peers ≥1 times" (consumed) from "queued 1
+    /// entry and the code under test never called it at all"
+    /// (silently-unused shared queue).
     ///
     /// No analogous counter exists for `open_stream`: it has no
     /// sticky-last semantic, so "seeded but never called" already
     /// fails `assert_all_consumed`'s `open_stream_remaining > 0`
     /// check without needing a separate guard.
-    mesh_peers_calls: Mutex<u32>,
+    subscribed_peers_calls: Mutex<u32>,
+    /// Per-topic call counts, for the same "seeded but never called"
+    /// guard applied to each per-topic queue independently — the
+    /// global `subscribed_peers_calls` can't tell whether a *specific*
+    /// topic's queue was ever read.
+    subscribed_peers_calls_by_topic: Mutex<HashMap<TopicHash, u32>>,
 }
 
 impl MockSyncNetwork {
-    /// Queue a response for the next `mesh_peers` call.
-    pub(crate) fn push_mesh_peers(&self, peers: Vec<PeerId>) -> &Self {
-        self.mesh_peers_responses.lock().push_back(peers);
+    /// Queue a response on the shared, topic-agnostic queue. Served to
+    /// any topic that has no per-topic queue seeded. Use this for tests
+    /// that don't distinguish topics.
+    pub(crate) fn push_subscribed_peers(&self, peers: Vec<PeerId>) -> &Self {
+        self.subscribed_peers_responses.lock().push_back(peers);
+        self
+    }
+
+    /// Queue a response on the per-topic queue for `topic`. Calls to
+    /// `subscribed_peers(topic)` draw from this queue (sticky-last)
+    /// instead of the shared one, so a test can script context- and
+    /// namespace-topic responses independently.
+    pub(crate) fn push_subscribed_peers_for(&self, topic: TopicHash, peers: Vec<PeerId>) -> &Self {
+        self.subscribed_peers_by_topic
+            .lock()
+            .entry(topic)
+            .or_default()
+            .push_back(peers);
         self
     }
 
@@ -127,13 +176,14 @@ impl MockSyncNetwork {
     /// Checks:
     ///
     /// - `open_stream`: queue must be empty.
-    /// - `mesh_peers`: queue must have ≤1 entry left (the
-    ///   sticky-last steady state), AND if any entries were
-    ///   queued the code under test must have called
-    ///   `mesh_peers` at least once. The latter catches "test
-    ///   queued a single sticky-last entry but never exercised
-    ///   the discovery path at all" — without the call-count
-    ///   guard the assertion would pass silently in that case.
+    /// - `subscribed_peers` (shared queue, and each per-topic queue
+    ///   independently): the queue must have ≤1 entry left (the
+    ///   sticky-last steady state), AND if any entries were queued the
+    ///   code under test must have drawn from that queue at least once.
+    ///   The latter catches "test queued a single sticky-last entry but
+    ///   never exercised the discovery path at all" — without the
+    ///   call-count guard the assertion would pass silently in that
+    ///   case.
     ///
     /// `#[track_caller]` so panics point at the test's call
     /// site, not inside this helper.
@@ -147,28 +197,52 @@ impl MockSyncNetwork {
     /// ```
     #[track_caller]
     pub(crate) fn assert_all_consumed(&self) {
-        let mesh_remaining = self.mesh_peers_responses.lock().len();
-        let mesh_calls = *self.mesh_peers_calls.lock();
+        let shared_remaining = self.subscribed_peers_responses.lock().len();
+        let shared_calls = *self.subscribed_peers_calls.lock();
         let open_stream_remaining = self.open_stream_responses.lock().len();
 
-        if mesh_remaining > 1 {
+        if shared_remaining > 1 {
             panic!(
-                "MockSyncNetwork: {} unconsumed `mesh_peers` responses queued (sticky-last \
-                 leaves 1 by design; >1 means the code under test made fewer calls than expected)",
-                mesh_remaining
+                "MockSyncNetwork: {shared_remaining} unconsumed `subscribed_peers` responses queued \
+                 (sticky-last leaves 1 by design; >1 means the code under test made fewer calls \
+                 than expected)",
             );
         }
-        // Sticky-last guard: if anything was queued and the code
-        // under test never called mesh_peers, the queue still has
-        // 1 entry but `mesh_calls == 0` — flag that, otherwise the
-        // unconsumed-1-entry case is indistinguishable from the
-        // healthy steady-state read.
-        if mesh_remaining > 0 && mesh_calls == 0 {
+        // Sticky-last guard: if anything was queued on the shared
+        // queue and the code under test never called subscribed_peers
+        // (against any topic that fell through to it), the queue still
+        // has 1 entry but `shared_calls == 0` — flag that, otherwise
+        // the unconsumed-1-entry case is indistinguishable from the
+        // healthy steady-state read. A per-topic call still bumps the
+        // global counter, so this is a lower-bound guard (it can't
+        // mis-fire), and the per-topic loop below catches the more
+        // precise "this topic's queue was never read".
+        if shared_remaining > 0 && shared_calls == 0 {
             panic!(
-                "MockSyncNetwork: `mesh_peers` was seeded with {} entries but the code under \
-                 test never called it",
-                mesh_remaining
+                "MockSyncNetwork: `subscribed_peers` shared queue was seeded with {shared_remaining} \
+                 entries but the code under test never called it",
             );
+        }
+        // Same two checks, applied to each per-topic queue. The
+        // per-topic call map lets us tell "this topic was never
+        // queried" apart from "queried, drew its single sticky entry".
+        let by_topic = self.subscribed_peers_by_topic.lock();
+        let calls_by_topic = self.subscribed_peers_calls_by_topic.lock();
+        for (topic, queue) in by_topic.iter() {
+            let remaining = queue.len();
+            if remaining > 1 {
+                panic!(
+                    "MockSyncNetwork: {remaining} unconsumed `subscribed_peers` responses queued \
+                     for topic {topic:?} (sticky-last leaves 1 by design; >1 means the code under \
+                     test made fewer calls than expected)",
+                );
+            }
+            if remaining > 0 && calls_by_topic.get(topic).copied().unwrap_or(0) == 0 {
+                panic!(
+                    "MockSyncNetwork: `subscribed_peers` was seeded with {remaining} entries for \
+                     topic {topic:?} but the code under test never queried it",
+                );
+            }
         }
         if open_stream_remaining > 0 {
             panic!(
@@ -181,28 +255,51 @@ impl MockSyncNetwork {
 
 #[async_trait]
 impl SyncNetwork for MockSyncNetwork {
-    // Trait method is `subscribed_peers` (the sync layer now selects from
-    // the full subscriber set, not the grafted mesh); the mock's internal
-    // queue keeps its historical `mesh_peers_*` field names — they're just
-    // the response store and renaming them would churn unrelated tests.
-    async fn subscribed_peers(&self, _topic: TopicHash) -> Vec<PeerId> {
-        *self.mesh_peers_calls.lock() += 1;
-        // Pull out a borrow indicator under the lock and do the
-        // (possibly-cloning) work after dropping it. Keeps the
-        // critical section minimal and bounded to synchronous
-        // operations regardless of how the work below evolves.
+    async fn subscribed_peers(&self, topic: TopicHash) -> Vec<PeerId> {
+        *self.subscribed_peers_calls.lock() += 1;
+
+        // Per-topic queue takes precedence: if this topic was seeded
+        // via `push_subscribed_peers_for`, draw from its own queue
+        // (sticky-last). Otherwise fall through to the shared queue so
+        // topic-agnostic callers keep working. The whole match runs
+        // under one lock with no `.await` in scope, so cloning the
+        // sticky entry inline is fine.
+        let served = {
+            let mut by_topic = self.subscribed_peers_by_topic.lock();
+            by_topic.get_mut(&topic).map(|queue| match queue.len() {
+                0 => Vec::new(),
+                // Last entry: clone (don't pop) so repeated reads keep
+                // returning the final value — matches "subscriber set
+                // is stable after discovery completes".
+                1 => queue.front().cloned().unwrap_or_default(),
+                _ => queue.pop_front().unwrap_or_default(),
+            })
+        };
+        if let Some(peers) = served {
+            *self
+                .subscribed_peers_calls_by_topic
+                .lock()
+                .entry(topic)
+                .or_insert(0) += 1;
+            return peers;
+        }
+
+        // Shared, topic-agnostic queue (fallthrough). Pull out a
+        // borrow indicator under the lock and do the (possibly-cloning)
+        // work after dropping it. Keeps the critical section minimal
+        // and bounded to synchronous operations.
         enum Take {
             Empty,
             Stick,
             Pop(Vec<PeerId>),
         }
         let take = {
-            let mut queue = self.mesh_peers_responses.lock();
+            let mut queue = self.subscribed_peers_responses.lock();
             match queue.len() {
                 0 => Take::Empty,
                 // Last entry: clone *after* dropping the lock so
                 // repeated reads keep returning the final value
-                // (matches "mesh is stable after discovery
+                // (matches "subscriber set is stable after discovery
                 // completes" production behaviour).
                 1 => Take::Stick,
                 _ => Take::Pop(queue.pop_front().unwrap_or_default()),
@@ -213,7 +310,7 @@ impl SyncNetwork for MockSyncNetwork {
             Take::Stick => {
                 // Re-lock briefly just to clone the last entry —
                 // bounded work, no `.await` in scope.
-                self.mesh_peers_responses
+                self.subscribed_peers_responses
                     .lock()
                     .front()
                     .cloned()
@@ -244,12 +341,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn mesh_peers_returns_queued_value_then_repeats_last() {
+    async fn shared_queue_returns_queued_value_then_repeats_last() {
         let mock = MockSyncNetwork::default();
         let peer_a = PeerId::random();
         let peer_b = PeerId::random();
-        mock.push_mesh_peers(vec![peer_a])
-            .push_mesh_peers(vec![peer_b]);
+        mock.push_subscribed_peers(vec![peer_a])
+            .push_subscribed_peers(vec![peer_b]);
 
         let topic = TopicHash::from_raw("test");
         assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_a]);
@@ -260,7 +357,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mesh_peers_empty_when_never_seeded() {
+    async fn subscribed_peers_empty_when_never_seeded() {
         let mock = MockSyncNetwork::default();
         assert!(mock
             .subscribed_peers(TopicHash::from_raw("x"))
@@ -268,17 +365,17 @@ mod tests {
             .is_empty());
     }
 
-    /// Explicit boundary test for the `match queue.len()` arms in
-    /// `mesh_peers`: seed N entries, call N+1 times, the (N+1)th
+    /// Explicit boundary test for the `match queue.len()` arms in the
+    /// shared-queue path: seed N entries, call N+1 times, the (N+1)th
     /// should return the Nth value (the "sticky last" semantic).
     /// Catches off-by-one regressions in the pop-vs-clone branch.
     #[tokio::test]
-    async fn mesh_peers_sticky_last_at_len_1_boundary() {
+    async fn shared_queue_sticky_last_at_len_1_boundary() {
         let mock = MockSyncNetwork::default();
         let peer_a = PeerId::random();
         let peer_b = PeerId::random();
-        mock.push_mesh_peers(vec![peer_a])
-            .push_mesh_peers(vec![peer_b]);
+        mock.push_subscribed_peers(vec![peer_a])
+            .push_subscribed_peers(vec![peer_b]);
 
         let topic = TopicHash::from_raw("test");
         // Call 1: 2 entries queued → pop_front returns first.
@@ -287,6 +384,74 @@ mod tests {
         assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_b]);
         // Call 3: still 1 entry left (cloning didn't pop) → same value again.
         assert_eq!(mock.subscribed_peers(topic).await, vec![peer_b]);
+    }
+
+    /// Per-topic queues are independent: a response seeded for one
+    /// topic is never served to a different topic. This is the core
+    /// capability that lets discovery tests script "context topic
+    /// empty, namespace topic populated".
+    #[tokio::test]
+    async fn per_topic_queues_are_independent() {
+        let mock = MockSyncNetwork::default();
+        let ctx_peer = PeerId::random();
+        let ns_peer = PeerId::random();
+        let ctx_topic = TopicHash::from_raw("ctx");
+        let ns_topic = TopicHash::from_raw("ns");
+
+        mock.push_subscribed_peers_for(ctx_topic.clone(), vec![ctx_peer])
+            .push_subscribed_peers_for(ns_topic.clone(), vec![ns_peer]);
+
+        // Each topic draws only from its own queue, regardless of the
+        // order the two topics are queried in.
+        assert_eq!(mock.subscribed_peers(ns_topic.clone()).await, vec![ns_peer]);
+        assert_eq!(
+            mock.subscribed_peers(ctx_topic.clone()).await,
+            vec![ctx_peer]
+        );
+        // Sticky-last applies per topic.
+        assert_eq!(mock.subscribed_peers(ctx_topic).await, vec![ctx_peer]);
+        assert_eq!(mock.subscribed_peers(ns_topic).await, vec![ns_peer]);
+    }
+
+    /// A topic with a per-topic queue draws from it; a topic without
+    /// one falls through to the shared queue. The two coexist in a
+    /// single mock.
+    #[tokio::test]
+    async fn per_topic_takes_precedence_then_shared_fallthrough() {
+        let mock = MockSyncNetwork::default();
+        let seeded = PeerId::random();
+        let shared = PeerId::random();
+        let seeded_topic = TopicHash::from_raw("seeded");
+
+        mock.push_subscribed_peers_for(seeded_topic.clone(), vec![seeded])
+            .push_subscribed_peers(vec![shared]);
+
+        // Seeded topic → its own queue.
+        assert_eq!(mock.subscribed_peers(seeded_topic).await, vec![seeded]);
+        // Any other topic → shared queue.
+        assert_eq!(
+            mock.subscribed_peers(TopicHash::from_raw("other")).await,
+            vec![shared]
+        );
+    }
+
+    /// Per-topic sequencing: seed `[empty, populated]` for a topic and
+    /// confirm the first read is empty, the second (sticky-last)
+    /// populated — the shape the discovery retry→intersection path
+    /// relies on for a single topic queried across phases.
+    #[tokio::test]
+    async fn per_topic_sticky_last_sequence() {
+        let mock = MockSyncNetwork::default();
+        let peer = PeerId::random();
+        let topic = TopicHash::from_raw("ctx");
+
+        mock.push_subscribed_peers_for(topic.clone(), vec![])
+            .push_subscribed_peers_for(topic.clone(), vec![peer]);
+
+        assert!(mock.subscribed_peers(topic.clone()).await.is_empty());
+        assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer]);
+        // Sticky-last: repeats the final populated entry.
+        assert_eq!(mock.subscribed_peers(topic).await, vec![peer]);
     }
 
     #[tokio::test]
@@ -341,13 +506,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assert_all_consumed_passes_with_sticky_last_mesh_entry() {
-        // Sticky-last semantic: leaving the last `mesh_peers` entry
-        // unconsumed is by design (steady-state mesh after
+    async fn assert_all_consumed_passes_with_sticky_last_shared_entry() {
+        // Sticky-last semantic: leaving the last shared-queue entry
+        // unconsumed is by design (steady-state subscriber set after
         // discovery), so the assertion accepts ≤1 remaining.
         let mock = MockSyncNetwork::default();
         let peer = PeerId::random();
-        mock.push_mesh_peers(vec![peer]);
+        mock.push_subscribed_peers(vec![peer]);
         let _ = mock.subscribed_peers(TopicHash::from_raw("x")).await;
         mock.assert_all_consumed();
     }
@@ -361,26 +526,66 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic(expected = "unconsumed `mesh_peers` responses")]
-    async fn assert_all_consumed_panics_on_excess_mesh_peers() {
+    #[should_panic(expected = "unconsumed `subscribed_peers` responses")]
+    async fn assert_all_consumed_panics_on_excess_shared_responses() {
         let mock = MockSyncNetwork::default();
         let p1 = PeerId::random();
         let p2 = PeerId::random();
         // 2 entries queued, none consumed → sticky-last allows 1, panics on >1.
-        mock.push_mesh_peers(vec![p1]).push_mesh_peers(vec![p2]);
+        mock.push_subscribed_peers(vec![p1])
+            .push_subscribed_peers(vec![p2]);
         mock.assert_all_consumed();
     }
 
     /// Catches the silent footgun the previous version had: a test
-    /// that queues a single `mesh_peers` entry but never exercises
+    /// that queues a single shared-queue entry but never exercises
     /// the discovery path would have passed `assert_all_consumed`
     /// without complaint (sticky-last accepts 1 leftover). With the
     /// call-count guard, "seeded but never called" panics loudly.
     #[tokio::test]
     #[should_panic(expected = "never called it")]
-    async fn assert_all_consumed_panics_on_mesh_peers_seeded_but_never_called() {
+    async fn assert_all_consumed_panics_on_shared_seeded_but_never_called() {
         let mock = MockSyncNetwork::default();
-        mock.push_mesh_peers(vec![PeerId::random()]);
+        mock.push_subscribed_peers(vec![PeerId::random()]);
+        mock.assert_all_consumed();
+    }
+
+    /// Per-topic leak detection mirrors the shared-queue checks: a
+    /// topic queue with >1 unconsumed entry (code made fewer calls
+    /// than scripted) panics.
+    #[tokio::test]
+    #[should_panic(expected = "fewer calls than expected")]
+    async fn assert_all_consumed_panics_on_excess_per_topic_responses() {
+        let mock = MockSyncNetwork::default();
+        let topic = TopicHash::from_raw("ctx");
+        mock.push_subscribed_peers_for(topic.clone(), vec![PeerId::random()])
+            .push_subscribed_peers_for(topic, vec![PeerId::random()]);
+        mock.assert_all_consumed();
+    }
+
+    /// A per-topic queue seeded but never queried panics — the global
+    /// call counter can't catch this (another topic may have bumped
+    /// it), so the per-topic call map is what flags it.
+    #[tokio::test]
+    #[should_panic(expected = "never queried it")]
+    async fn assert_all_consumed_panics_on_per_topic_seeded_but_never_queried() {
+        let mock = MockSyncNetwork::default();
+        // Query a *different* topic (via the shared fallthrough) so the
+        // global call counter is non-zero, proving the per-topic guard
+        // is what fires.
+        mock.push_subscribed_peers_for(TopicHash::from_raw("never"), vec![PeerId::random()]);
+        let _ = mock.subscribed_peers(TopicHash::from_raw("other")).await;
+        mock.assert_all_consumed();
+    }
+
+    /// Sticky-last leftover on a per-topic queue that *was* queried is
+    /// accepted, same as the shared queue.
+    #[tokio::test]
+    async fn assert_all_consumed_passes_with_sticky_last_per_topic_entry() {
+        let mock = MockSyncNetwork::default();
+        let topic = TopicHash::from_raw("ctx");
+        mock.push_subscribed_peers_for(topic.clone(), vec![PeerId::random()]);
+        let _ = mock.subscribed_peers(topic).await;
         mock.assert_all_consumed();
     }
 }
