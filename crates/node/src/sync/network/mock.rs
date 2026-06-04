@@ -73,6 +73,25 @@ pub(crate) enum OpenStreamResponse {
     SleepThenErr(Duration, String),
 }
 
+/// Draw one response from a sticky-last queue: while more than one
+/// entry remains, pop the front; on the final entry, clone (don't pop)
+/// so repeated reads keep returning it — matching production
+/// "subscriber set is stable after discovery completes". Shared by the
+/// per-topic and shared-queue paths so the semantic lives in one place.
+///
+/// The `0` arm is a defensive fallback that is unreachable in normal
+/// use: a per-topic queue key is only created by
+/// `push_subscribed_peers_for` (which always pushes ≥1 entry) and the
+/// last entry is never popped, so a seeded queue never drains to empty;
+/// the shared queue only reaches 0 when it was never seeded at all.
+fn sticky_last(queue: &mut VecDeque<Vec<PeerId>>) -> Vec<PeerId> {
+    match queue.len() {
+        0 => Vec::new(),
+        1 => queue.front().cloned().unwrap_or_default(),
+        _ => queue.pop_front().unwrap_or_default(),
+    }
+}
+
 /// See module doc for exhaustion semantics.
 ///
 /// **Mutex choice**: `parking_lot::Mutex` (not `std::sync::Mutex`)
@@ -91,22 +110,26 @@ pub(crate) struct MockSyncNetwork {
     /// ordering of cross-topic calls.
     subscribed_peers_by_topic: Mutex<HashMap<TopicHash, VecDeque<Vec<PeerId>>>>,
     open_stream_responses: Mutex<VecDeque<OpenStreamResponse>>,
-    /// `subscribed_peers` call count (across all topics) — needed to
-    /// distinguish "queued 1 sticky-last entry and the code under test
-    /// called subscribed_peers ≥1 times" (consumed) from "queued 1
-    /// entry and the code under test never called it at all"
-    /// (silently-unused shared queue).
+    /// Count of reads served by the **shared** queue specifically —
+    /// needed to distinguish "queued 1 sticky-last entry and the
+    /// shared queue was read ≥1 times" (consumed) from "queued 1 entry
+    /// and the shared queue was never read" (silently-unused queue).
+    ///
+    /// Counts only shared-queue fallthrough reads, NOT per-topic reads:
+    /// a per-topic read must not satisfy the shared queue's
+    /// "seeded but never read" guard, or seeding both and querying only
+    /// the per-topic topic would leave a shared leak undetected.
     ///
     /// No analogous counter exists for `open_stream`: it has no
     /// sticky-last semantic, so "seeded but never called" already
     /// fails `assert_all_consumed`'s `open_stream_remaining > 0`
     /// check without needing a separate guard.
-    subscribed_peers_calls: Mutex<u32>,
-    /// Per-topic call counts, for the same "seeded but never called"
-    /// guard applied to each per-topic queue independently — the
-    /// global `subscribed_peers_calls` can't tell whether a *specific*
-    /// topic's queue was ever read.
-    subscribed_peers_calls_by_topic: Mutex<HashMap<TopicHash, u32>>,
+    shared_queue_reads: Mutex<u32>,
+    /// Per-topic read counts, for the same "seeded but never read"
+    /// guard applied to each per-topic queue independently — a single
+    /// global counter can't tell whether a *specific* topic's queue
+    /// was ever read.
+    subscribed_peers_reads_by_topic: Mutex<HashMap<TopicHash, u32>>,
 }
 
 impl MockSyncNetwork {
@@ -198,7 +221,7 @@ impl MockSyncNetwork {
     #[track_caller]
     pub(crate) fn assert_all_consumed(&self) {
         let shared_remaining = self.subscribed_peers_responses.lock().len();
-        let shared_calls = *self.subscribed_peers_calls.lock();
+        let shared_reads = *self.shared_queue_reads.lock();
         let open_stream_remaining = self.open_stream_responses.lock().len();
 
         if shared_remaining > 1 {
@@ -208,26 +231,24 @@ impl MockSyncNetwork {
                  than expected)",
             );
         }
-        // Sticky-last guard: if anything was queued on the shared
-        // queue and the code under test never called subscribed_peers
-        // (against any topic that fell through to it), the queue still
-        // has 1 entry but `shared_calls == 0` — flag that, otherwise
-        // the unconsumed-1-entry case is indistinguishable from the
-        // healthy steady-state read. A per-topic call still bumps the
-        // global counter, so this is a lower-bound guard (it can't
-        // mis-fire), and the per-topic loop below catches the more
-        // precise "this topic's queue was never read".
-        if shared_remaining > 0 && shared_calls == 0 {
+        // Sticky-last guard: if anything was queued on the shared queue
+        // but it was never read, the queue still has 1 entry while
+        // `shared_reads == 0` — flag that, otherwise the unconsumed-1
+        // case is indistinguishable from the healthy steady-state read.
+        // `shared_reads` counts shared-queue reads only (per-topic reads
+        // don't bump it), so a test that queries only per-topic queues
+        // can't mask a never-read shared queue.
+        if shared_remaining > 0 && shared_reads == 0 {
             panic!(
                 "MockSyncNetwork: `subscribed_peers` shared queue was seeded with {shared_remaining} \
-                 entries but the code under test never called it",
+                 entries but the code under test never read it",
             );
         }
         // Same two checks, applied to each per-topic queue. The
-        // per-topic call map lets us tell "this topic was never
+        // per-topic read map lets us tell "this topic was never
         // queried" apart from "queried, drew its single sticky entry".
         let by_topic = self.subscribed_peers_by_topic.lock();
-        let calls_by_topic = self.subscribed_peers_calls_by_topic.lock();
+        let reads_by_topic = self.subscribed_peers_reads_by_topic.lock();
         for (topic, queue) in by_topic.iter() {
             let remaining = queue.len();
             if remaining > 1 {
@@ -237,7 +258,7 @@ impl MockSyncNetwork {
                      test made fewer calls than expected)",
                 );
             }
-            if remaining > 0 && calls_by_topic.get(topic).copied().unwrap_or(0) == 0 {
+            if remaining > 0 && reads_by_topic.get(topic).copied().unwrap_or(0) == 0 {
                 panic!(
                     "MockSyncNetwork: `subscribed_peers` was seeded with {remaining} entries for \
                      topic {topic:?} but the code under test never queried it",
@@ -256,68 +277,28 @@ impl MockSyncNetwork {
 #[async_trait]
 impl SyncNetwork for MockSyncNetwork {
     async fn subscribed_peers(&self, topic: TopicHash) -> Vec<PeerId> {
-        *self.subscribed_peers_calls.lock() += 1;
-
         // Per-topic queue takes precedence: if this topic was seeded
-        // via `push_subscribed_peers_for`, draw from its own queue
-        // (sticky-last). Otherwise fall through to the shared queue so
-        // topic-agnostic callers keep working. The whole match runs
-        // under one lock with no `.await` in scope, so cloning the
-        // sticky entry inline is fine.
-        let served = {
+        // via `push_subscribed_peers_for`, draw from its own queue.
+        // Both paths use the shared `sticky_last` helper; the locks are
+        // held only across synchronous work (no `.await` in scope).
+        let per_topic = {
             let mut by_topic = self.subscribed_peers_by_topic.lock();
-            by_topic.get_mut(&topic).map(|queue| match queue.len() {
-                0 => Vec::new(),
-                // Last entry: clone (don't pop) so repeated reads keep
-                // returning the final value — matches "subscriber set
-                // is stable after discovery completes".
-                1 => queue.front().cloned().unwrap_or_default(),
-                _ => queue.pop_front().unwrap_or_default(),
-            })
+            by_topic.get_mut(&topic).map(sticky_last)
         };
-        if let Some(peers) = served {
+        if let Some(peers) = per_topic {
             *self
-                .subscribed_peers_calls_by_topic
+                .subscribed_peers_reads_by_topic
                 .lock()
                 .entry(topic)
                 .or_insert(0) += 1;
             return peers;
         }
 
-        // Shared, topic-agnostic queue (fallthrough). Pull out a
-        // borrow indicator under the lock and do the (possibly-cloning)
-        // work after dropping it. Keeps the critical section minimal
-        // and bounded to synchronous operations.
-        enum Take {
-            Empty,
-            Stick,
-            Pop(Vec<PeerId>),
-        }
-        let take = {
-            let mut queue = self.subscribed_peers_responses.lock();
-            match queue.len() {
-                0 => Take::Empty,
-                // Last entry: clone *after* dropping the lock so
-                // repeated reads keep returning the final value
-                // (matches "subscriber set is stable after discovery
-                // completes" production behaviour).
-                1 => Take::Stick,
-                _ => Take::Pop(queue.pop_front().unwrap_or_default()),
-            }
-        };
-        match take {
-            Take::Empty => Vec::new(),
-            Take::Stick => {
-                // Re-lock briefly just to clone the last entry —
-                // bounded work, no `.await` in scope.
-                self.subscribed_peers_responses
-                    .lock()
-                    .front()
-                    .cloned()
-                    .unwrap_or_default()
-            }
-            Take::Pop(peers) => peers,
-        }
+        // Shared, topic-agnostic fallthrough. Count the read HERE (not
+        // before the per-topic check) so a per-topic read can't satisfy
+        // the shared queue's "seeded but never read" guard.
+        *self.shared_queue_reads.lock() += 1;
+        sticky_last(&mut self.subscribed_peers_responses.lock())
     }
 
     async fn open_stream(&self, _peer_id: PeerId) -> eyre::Result<Stream> {
@@ -541,12 +522,28 @@ mod tests {
     /// that queues a single shared-queue entry but never exercises
     /// the discovery path would have passed `assert_all_consumed`
     /// without complaint (sticky-last accepts 1 leftover). With the
-    /// call-count guard, "seeded but never called" panics loudly.
+    /// read-count guard, "seeded but never read" panics loudly.
     #[tokio::test]
-    #[should_panic(expected = "never called it")]
-    async fn assert_all_consumed_panics_on_shared_seeded_but_never_called() {
+    #[should_panic(expected = "never read it")]
+    async fn assert_all_consumed_panics_on_shared_seeded_but_never_read() {
         let mock = MockSyncNetwork::default();
         mock.push_subscribed_peers(vec![PeerId::random()]);
+        mock.assert_all_consumed();
+    }
+
+    /// Regression: a per-topic read must NOT satisfy the shared queue's
+    /// "seeded but never read" guard. Seed both queues, query only the
+    /// per-topic topic — the shared queue is never read, so the guard
+    /// must still fire even though *a* read happened.
+    #[tokio::test]
+    #[should_panic(expected = "shared queue was seeded")]
+    async fn assert_all_consumed_detects_shared_leak_despite_per_topic_read() {
+        let mock = MockSyncNetwork::default();
+        let topic = TopicHash::from_raw("ctx");
+        mock.push_subscribed_peers_for(topic.clone(), vec![PeerId::random()])
+            .push_subscribed_peers(vec![PeerId::random()]);
+        // Only the per-topic queue is read.
+        let _ = mock.subscribed_peers(topic).await;
         mock.assert_all_consumed();
     }
 
