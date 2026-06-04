@@ -65,6 +65,8 @@ pub mod permissioned;
 pub use permissioned::{
     Authorizer, Op, Ownable, OwnerAcl, PermissionedStorage, SharedStorage, WriterSetAcl,
 };
+pub mod access_control;
+pub use access_control::AccessControl;
 mod authored_common;
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
