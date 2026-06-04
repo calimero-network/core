@@ -501,7 +501,14 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                     };
 
                     // Read/write intent from #[app::view]; default Unspecified.
-                    let intent = if has_app_view_attribute(&method.attrs) {
+                    // init is always mutating regardless of any attribute — the
+                    // SDK macro rejects #[app::view] + #[app::init] at compile
+                    // time, but a non-SDK toolchain could produce both; guard
+                    // here so a rogue annotation can't cause the node to take a
+                    // shared read lock for an initializer that always writes.
+                    let intent = if method_name == "init" {
+                        MethodIntent::Unspecified
+                    } else if has_app_view_attribute(&method.attrs) {
                         MethodIntent::ReadOnly
                     } else {
                         MethodIntent::Unspecified

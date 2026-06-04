@@ -731,9 +731,26 @@ mod tests {
         let back: Method = serde_json::from_str(&json).unwrap();
         assert_eq!(back.intent, MethodIntent::ReadOnly);
 
+        // Mutating serialises as "mutating" and round-trips.
+        let m_mut = Method {
+            name: "mutate".to_owned(),
+            params: vec![],
+            returns: None,
+            returns_nullable: None,
+            errors: vec![],
+            intent: MethodIntent::Mutating,
+        };
+        let json_mut = serde_json::to_string(&m_mut).unwrap();
+        assert!(
+            json_mut.contains("mutating"),
+            "expected 'mutating' in {json_mut}"
+        );
+        let back_mut: Method = serde_json::from_str(&json_mut).unwrap();
+        assert_eq!(back_mut.intent, MethodIntent::Mutating);
+
         // Unspecified is omitted from JSON (backward-compatible wire format).
         let m2 = Method {
-            name: "mutate".to_owned(),
+            name: "unspecified".to_owned(),
             params: vec![],
             returns: None,
             returns_nullable: None,
