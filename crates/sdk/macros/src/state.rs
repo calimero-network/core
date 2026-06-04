@@ -18,6 +18,7 @@ pub struct StateImpl<'a> {
     ident: &'a Ident,
     generics: &'a Generics,
     emits: &'a Option<MaybeBoundEvent>,
+    version: Option<u32>,
     orig: &'a StructOrEnumItem,
 }
 
@@ -27,8 +28,14 @@ impl ToTokens for StateImpl<'_> {
             ident,
             generics,
             emits,
+            version,
             orig,
         } = *self;
+
+        // `#[app::state(version = N)]` overrides the AppState::SCHEMA_VERSION
+        // default (0). This is the target the owner-driven convert +
+        // migrate_my_entries() compare each identity-gated entry against.
+        let schema_version_const = version.map(|v| quote! { const SCHEMA_VERSION: u32 = #v; });
 
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
@@ -86,6 +93,7 @@ impl ToTokens for StateImpl<'_> {
 
             impl #impl_generics ::calimero_sdk::state::AppState for #ident #ty_generics #where_clause {
                 type Event<#lifetime> = #event;
+                #schema_version_const
             }
 
             // Auto-generated CRDT merge support
@@ -246,13 +254,22 @@ impl Parse for MaybeBoundEvent {
 
 pub struct StateArgs {
     emits: Option<MaybeBoundEvent>,
+    /// The `AppState::SCHEMA_VERSION` this binary targets, from
+    /// `#[app::state(version = N)]`. `None` ⇒ unversioned (defaults to 0).
+    /// The owner-driven convert + `migrate_my_entries()` compare against this,
+    /// so a v2 binary that omits it would never convert its identity-gated data.
+    version: Option<u32>,
 }
 
 impl Parse for StateArgs {
     fn parse(input: ParseStream<'_>) -> SynResult<Self> {
         let mut emits = None;
+        let mut version = None;
 
-        if !input.is_empty() {
+        // Comma-separated `key = value` pairs. `emits` consumes the rest of the
+        // stream (its event type may itself contain commas, e.g. generics), so
+        // it must come last; `version = N` may precede it or stand alone.
+        while !input.is_empty() {
             if !input.peek(Ident) {
                 return Err(input.error("expected an identifier"));
             }
@@ -281,7 +298,18 @@ impl Parse for StateArgs {
                             "expected an event type after `=`",
                         ));
                     }
+                    // Consumes the remainder of the args (must be the last key).
                     emits = Some(input.parse::<MaybeBoundEvent>()?);
+                    break;
+                }
+                "version" => {
+                    if input.is_empty() {
+                        return Err(SynError::new_spanned(
+                            eq,
+                            "expected an integer schema version after `=`",
+                        ));
+                    }
+                    version = Some(input.parse::<syn::LitInt>()?.base10_parse::<u32>()?);
                 }
                 _ => {
                     return Err(SynError::new_spanned(
@@ -291,12 +319,14 @@ impl Parse for StateArgs {
                 }
             }
 
-            if !input.is_empty() {
-                return Err(input.error("unexpected token"));
+            if input.peek(Token![,]) {
+                let _: Token![,] = input.parse()?;
+            } else if !input.is_empty() {
+                return Err(input.error("expected `,` between `#[app::state]` arguments"));
             }
         }
 
-        Ok(Self { emits })
+        Ok(Self { emits, version })
     }
 }
 
@@ -417,6 +447,7 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
             ident,
             generics,
             emits: &input.args.emits,
+            version: input.args.version,
             orig: input.item,
         })
     }
@@ -1273,10 +1304,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn state_version_arg_emits_schema_version_const() {
+        // `version = N` must surface as AppState::SCHEMA_VERSION = N (the convert
+        // target); omitting it must leave the trait default (0) untouched.
+        let with_version: StateArgs = syn::parse_quote! { version = 2 };
+        assert_eq!(with_version.version, Some(2));
+
+        let with_both: StateArgs = syn::parse_quote! { version = 3, emits = for<'a> Event<'a> };
+        assert_eq!(with_both.version, Some(3));
+        assert!(with_both.emits.is_some());
+
+        let none: StateArgs = syn::parse_quote! {};
+        assert_eq!(none.version, None);
+
+        let item: syn::ItemStruct = parse_quote! { pub struct S { x: u32 } };
+        let orig = StructOrEnumItem::Struct(item.clone());
+        let rendered = StateImpl {
+            ident: &item.ident,
+            generics: &item.generics,
+            emits: &None,
+            version: Some(2),
+            orig: &orig,
+        }
+        .to_token_stream()
+        .to_string();
+        assert!(
+            rendered.contains("const SCHEMA_VERSION : u32 = 2"),
+            "version=2 must emit the SCHEMA_VERSION const, got:\n{rendered}",
+        );
+    }
+
     /// Run the `#[app::state]` input validation (which includes the
     /// borsh-attribute guard) over `item`, returning whether it was accepted.
     fn state_accepts(item: StructOrEnumItem) -> bool {
-        let args = StateArgs { emits: None };
+        let args = StateArgs {
+            emits: None,
+            version: None,
+        };
         let accepted = match StateImpl::try_from(StateImplInput {
             item: &item,
             args: &args,
