@@ -51,6 +51,47 @@ pub trait AppStateInit: Sized {
 /// * `Some(Vec<u8>)` - The raw serialized state bytes (user data only) if state exists
 /// * `None` - If no state has been stored yet
 
+/// Result of a [`migrate_my_entries`] batch convert.
+///
+/// `converted` = the caller's identity-gated entries re-written to the target
+/// schema this call; `remaining` = the caller's entries still below target
+/// after it (a re-write that failed this pass, or a non-empty count that drives
+/// the frontend to re-offer "finish"). The generated `migrate_my_entries()`
+/// sums these across every declared identity-gated collection.
+///
+/// [`migrate_my_entries`]: the `#[app::state]`-generated method
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq, Eq)]
+pub struct MigrateMyEntriesSummary {
+    /// Entries re-written to the target schema version this call.
+    pub converted: u32,
+    /// Entries the caller still owns that are below target after this call.
+    pub remaining: u32,
+}
+
+impl MigrateMyEntriesSummary {
+    /// The caller's data is fully migrated: nothing left below target.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.remaining == 0
+    }
+}
+
+/// Reads the raw bytes of the application's root state from storage.
+///
+/// This function directly reads the serialized state bytes without deserializing them.
+/// It is primarily used during state migrations to access the old state format
+/// before transforming it to a new schema.
+///
+/// The storage layer wraps user data in an `Entry<T>` envelope that appends a
+/// 32-byte `Element.id` suffix after the Borsh-serialized user struct. This
+/// function strips that suffix so callers receive only the user data portion,
+/// matching the layout of the user's `#[app::state]` struct.
+///
+/// # Returns
+///
+/// * `Some(Vec<u8>)` - The raw serialized state bytes (user data only) if state exists
+/// * `None` - If no state has been stored yet
+
 #[must_use]
 pub fn read_raw() -> Option<Vec<u8>> {
     let root_key = root_storage_key();
@@ -66,5 +107,32 @@ pub fn read_raw() -> Option<Vec<u8>> {
         Some(bytes[..bytes.len() - ELEMENT_SUFFIX_LEN].to_vec())
     } else {
         Some(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use borsh::BorshDeserialize;
+
+    use super::MigrateMyEntriesSummary;
+
+    #[test]
+    fn migrate_summary_roundtrips_and_reports_completion() {
+        let done = MigrateMyEntriesSummary {
+            converted: 3,
+            remaining: 0,
+        };
+        let bytes = borsh::to_vec(&done).unwrap();
+        assert_eq!(
+            MigrateMyEntriesSummary::try_from_slice(&bytes).unwrap(),
+            done
+        );
+        assert!(done.is_complete());
+
+        let pending = MigrateMyEntriesSummary {
+            converted: 1,
+            remaining: 2,
+        };
+        assert!(!pending.is_complete());
     }
 }

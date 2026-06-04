@@ -29,7 +29,7 @@ pub mod types;
 pub use calimero_primitives::blobs::BlobId;
 pub use calimero_primitives::context::ContextId;
 pub use calimero_primitives::identity::PublicKey;
-pub use state::read_raw;
+pub use state::{read_raw, MigrateMyEntriesSummary};
 
 pub mod app {
     use super::types::Error;
