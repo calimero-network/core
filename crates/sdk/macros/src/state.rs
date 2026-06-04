@@ -952,23 +952,24 @@ fn generate_migrate_my_entries_impl(
         // first, then fall to the vector shape (keyed-by-index vs keyed-by-key).
         let loop_body = if type_str.contains("AuthoredMap") {
             quote! {
-                // Collect first so the immutable `entries()` borrow is released
-                // before the mutable owner re-write below.
-                if let ::core::result::Result::Ok(__iter) = #access.entries() {
-                    let __entries: ::std::vec::Vec<_> = __iter.collect();
-                    for (__k, __v) in __entries {
-                        let __owned = #access.owned_by_me(&__k).unwrap_or(false);
-                        let __stale =
-                            #access.entry_schema_version(&__k).ok().flatten().unwrap_or(0)
-                                < __target;
-                        if __owned && __stale {
-                            match #access.update(&__k, __v) {
-                                ::core::result::Result::Ok(()) => {
-                                    __converted = __converted.saturating_add(1);
-                                }
-                                ::core::result::Result::Err(_) => {
-                                    __remaining = __remaining.saturating_add(1);
-                                }
+                // Collect into an owned Vec in its own statement so the immutable
+                // `entries()` borrow is fully released before the mutable owner
+                // re-write below (an `if let` would extend it across the block).
+                let __entries: ::std::vec::Vec<_> = match #access.entries() {
+                    ::core::result::Result::Ok(__it) => __it.collect(),
+                    ::core::result::Result::Err(_) => ::std::vec::Vec::new(),
+                };
+                for (__k, __v) in __entries {
+                    let __owned = #access.owned_by_me(&__k).unwrap_or(false);
+                    let __stale =
+                        #access.entry_schema_version(&__k).ok().flatten().unwrap_or(0) < __target;
+                    if __owned && __stale {
+                        match #access.update(&__k, __v) {
+                            ::core::result::Result::Ok(()) => {
+                                __converted = __converted.saturating_add(1);
+                            }
+                            ::core::result::Result::Err(_) => {
+                                __remaining = __remaining.saturating_add(1);
                             }
                         }
                     }
@@ -976,23 +977,22 @@ fn generate_migrate_my_entries_impl(
             }
         } else {
             quote! {
-                if let ::core::result::Result::Ok(__len) = #access.len() {
-                    for __i in 0..__len {
-                        let __owned = #access.owned_by_me(__i).unwrap_or(false);
-                        let __stale =
-                            #access.entry_schema_version(__i).ok().flatten().unwrap_or(0)
-                                < __target;
-                        if __owned && __stale {
-                            if let ::core::result::Result::Ok(::core::option::Option::Some(__val)) =
-                                #access.get(__i)
-                            {
-                                match #access.update(__i, __val) {
-                                    ::core::result::Result::Ok(()) => {
-                                        __converted = __converted.saturating_add(1);
-                                    }
-                                    ::core::result::Result::Err(_) => {
-                                        __remaining = __remaining.saturating_add(1);
-                                    }
+                let __len = #access.len().unwrap_or(0);
+                for __i in 0..__len {
+                    let __owned = #access.owned_by_me(__i).unwrap_or(false);
+                    let __stale =
+                        #access.entry_schema_version(__i).ok().flatten().unwrap_or(0) < __target;
+                    if __owned && __stale {
+                        // Read into an owned Option in its own statement, same
+                        // borrow-release reason as the map arm above.
+                        let __val = #access.get(__i).ok().flatten();
+                        if let ::core::option::Option::Some(__v) = __val {
+                            match #access.update(__i, __v) {
+                                ::core::result::Result::Ok(()) => {
+                                    __converted = __converted.saturating_add(1);
+                                }
+                                ::core::result::Result::Err(_) => {
+                                    __remaining = __remaining.saturating_add(1);
                                 }
                             }
                         }
@@ -1283,6 +1283,32 @@ mod tests {
         assert!(
             rendered.contains("fn migrate_my_entries"),
             "expected a migrate_my_entries wasm export, got:\n{rendered}",
+        );
+    }
+
+    #[test]
+    fn migrate_my_entries_retains_entitlement_and_idempotency_guards() {
+        // Regression guard: the generated sweep MUST keep both gates, else it
+        // would convert foreign entries (no `owned_by_me`) or re-convert already
+        // migrated ones (no `< __target` skip — breaking idempotency).
+        let item: syn::ItemStruct = parse_quote! {
+            pub struct AppRoot {
+                pub notes: AuthoredMap<String, Note>,
+                pub log: AuthoredVector<Entry>,
+            }
+        };
+        let rendered = render_migrate(item);
+        assert!(
+            rendered.contains("owned_by_me"),
+            "must gate conversion on ownership, got:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("entry_schema_version"),
+            "must read each entry's stored schema_version, got:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("< __target"),
+            "must skip entries already at/above target (idempotency), got:\n{rendered}",
         );
     }
 
