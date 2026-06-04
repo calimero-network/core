@@ -496,6 +496,12 @@ pub(crate) async fn update_application_with_migration(
             true
         };
 
+        // Funnel the verdict through the single gate-decision seam (6d.5). Today
+        // the decision source is the in-place `migration_check` verdict; a future
+        // canary-subgroup soak (spec §8/§10, deferred) plugs in here without
+        // touching `commit_or_abort_migration`.
+        let decision = MigrationGateDecision::from_check_result(check_passed);
+
         // Commit the produced v2 root, or logically abort. On a failed check
         // this returns `Err(MigrationCheckFailed)` BEFORE the v1 root is ever
         // written, propagating out and skipping `finalize_application_update`.
@@ -504,7 +510,7 @@ pub(crate) async fn update_application_with_migration(
             &mut context,
             &new_state_bytes,
             public_key,
-            check_passed,
+            decision,
         )?;
 
         // Emit migration events to WebSocket clients
@@ -545,37 +551,84 @@ pub(crate) async fn update_application_with_migration(
     Ok((application, context))
 }
 
+/// The decision driving the post-`execute_migration` commit-vs-abort seam.
+///
+/// Every path that has produced a candidate v2 root funnels its verdict through
+/// this enum before reaching [`commit_or_abort_migration`], so the *source* of
+/// the decision is pluggable while the commit/abort mechanics stay fixed.
+///
+/// Today the only decision source is the in-place `migration_check` verdict
+/// (PR-6d, 6d.3): a passing check ⇒ [`Commit`](MigrationGateDecision::Commit),
+/// a failing/trapping one ⇒ [`Abort`](MigrationGateDecision::Abort).
+///
+/// **Deferred — canary-subgroup gating (spec §8, §10).** A future soak gate that
+/// rolls the produced v2 root out to a canary subgroup before committing for the
+/// whole context plugs in *here* as a third decision source (e.g. a
+/// `Canary { subgroup }` variant, or a `from_canary_soak(..)` constructor that
+/// also yields `Commit`/`Abort`). It would feed this same enum, so it can drop in
+/// **without** reworking `commit_or_abort_migration`'s check/abort flow. Do NOT
+/// build canary here — this is only the seam (6d.5); canary itself is a non-goal
+/// of PR-6d (spec §10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MigrationGateDecision {
+    /// Persist the produced v2 root via `write_migration_state` and advance the
+    /// context to it.
+    Commit,
+    /// Logically abort: discard the produced v2 root and leave the still-v1 root
+    /// intact (no byte restore — v1 was never mutated).
+    Abort,
+}
+
+impl MigrationGateDecision {
+    /// Map the in-place `migration_check` verdict onto a gate decision.
+    ///
+    /// This is the single point a future canary-subgroup gate would replace (or
+    /// sit beside): `true ⇒ Commit`, `false ⇒ Abort`.
+    pub(crate) const fn from_check_result(check_passed: bool) -> Self {
+        if check_passed {
+            Self::Commit
+        } else {
+            Self::Abort
+        }
+    }
+}
+
 /// Commit the produced v2 migration root, or perform a **logical abort**.
 ///
 /// This is the single seam every post-`execute_migration` commit/abort decision
 /// funnels through:
 ///
-/// - `check_passed == false` ⇒ return `Err(MigrationCheckFailed { context_id })`
-///   **without touching the v1 root**. Because the caller propagates this error
-///   *before* `write_migration_state` runs and *before*
-///   `finalize_application_update`, the committed context (root_hash, dag_heads,
-///   application_id) stays entirely on v1. This early return IS the logical
-///   abort — there is NO byte snapshot and NO restore; the v1 root is intact
-///   simply because it was never mutated (the clean-rollback property
-///   characterized in 6d.0). The deterministic v2-shaped child entries
+/// - [`MigrationGateDecision::Abort`] ⇒ return
+///   `Err(MigrationCheckFailed { context_id })` **without touching the v1 root**.
+///   Because the caller propagates this error *before* `write_migration_state`
+///   runs and *before* `finalize_application_update`, the committed context
+///   (root_hash, dag_heads, application_id) stays entirely on v1. This early
+///   return IS the logical abort — there is NO byte snapshot and NO restore; the
+///   v1 root is intact simply because it was never mutated (the clean-rollback
+///   property characterized in 6d.0). The deterministic v2-shaped child entries
 ///   `execute_migration` already committed remain as idempotent residue under
 ///   the still-v1 root; they are deliberately NOT deleted (deleting them would
 ///   be the byte-restore we explicitly do not do).
 ///
-/// - `check_passed == true` ⇒ write the produced `new_state_bytes` through
-///   `write_migration_state` (the sole root writer), advance
+/// - [`MigrationGateDecision::Commit`] ⇒ write the produced `new_state_bytes`
+///   through `write_migration_state` (the sole root writer), advance
 ///   `context.root_hash`/`context.dag_heads` to the new v2 root, and return the
 ///   new Merkle root hash so the caller can emit events against it.
+///
+/// The decision arrives pre-computed via [`MigrationGateDecision`] so the
+/// *source* of the verdict (today: the in-place `migration_check`; deferred: a
+/// canary-subgroup soak — spec §8/§10) is pluggable without reworking the
+/// commit/abort mechanics below.
 fn commit_or_abort_migration(
     datastore: &calimero_store::Store,
     context: &mut Context,
     new_state_bytes: &[u8],
     executor_identity: PublicKey,
-    check_passed: bool,
+    decision: MigrationGateDecision,
 ) -> eyre::Result<Hash> {
     let context_id = context.id;
 
-    if !check_passed {
+    if decision == MigrationGateDecision::Abort {
         // LOGICAL ABORT: do not write the root, do not finalize. The v1 root is
         // left intact because it was never mutated — no byte restore is needed
         // (and none exists). The caller's `?` propagates this out of
@@ -2104,8 +2157,13 @@ mod tests {
         // Drive the seam with a FAILED check (what migration_v2 produces when
         // the app's migration_check returns false).
         let v2_bytes = borsh::to_vec(&("v2-state-much-longer".to_owned())).expect("serialize v2");
-        let result =
-            super::commit_or_abort_migration(&store, &mut context, &v2_bytes, executor, false);
+        let result = super::commit_or_abort_migration(
+            &store,
+            &mut context,
+            &v2_bytes,
+            executor,
+            super::MigrationGateDecision::Abort,
+        );
 
         // (a) the seam returns the abort error.
         let err = result.expect_err("a failed migration_check must abort with an error");
@@ -2149,8 +2207,14 @@ mod tests {
         );
 
         // A passing check, by contrast, commits: the root full_hash changes.
-        super::commit_or_abort_migration(&store, &mut context, &v2_bytes, executor, true)
-            .expect("a passing check must commit");
+        super::commit_or_abort_migration(
+            &store,
+            &mut context,
+            &v2_bytes,
+            executor,
+            super::MigrationGateDecision::Commit,
+        )
+        .expect("a passing check must commit");
         assert_ne!(
             root_full_hash(&store, context_id),
             Some(full_hash_v1),
@@ -2160,6 +2224,90 @@ mod tests {
             context.root_hash,
             root_full_hash(&store, context_id).map(Hash::from).unwrap(),
             "a passing check must advance context.root_hash to the new v2 root"
+        );
+    }
+
+    /// 6d.5 seam: every post-`execute_migration` commit/abort decision funnels
+    /// through one [`MigrationGateDecision`] so a future canary-subgroup gate
+    /// (spec §8/§10, deferred) can supply the decision later **without** touching
+    /// the commit/abort mechanics in `commit_or_abort_migration`.
+    ///
+    /// This locks two properties:
+    ///   (a) the in-place `migration_check` verdict maps onto the gate decision —
+    ///       `true ⇒ Commit`, `false ⇒ Abort` — via `MigrationGateDecision`'s
+    ///       `from_check_result`, the single point a canary path would replace;
+    ///   (b) the seam routes `Commit` to a real root write and `Abort` to the
+    ///       logical abort (`Err(MigrationCheckFailed)`, v1 root untouched),
+    ///       reusing the 6d.3 storage harness.
+    #[tokio::test]
+    async fn migration_gate_decision_maps_verdict_to_commit_or_abort() {
+        use super::MigrationGateDecision;
+
+        // (a) the verdict → decision mapping (the seam canary will later own).
+        assert!(
+            matches!(
+                MigrationGateDecision::from_check_result(true),
+                MigrationGateDecision::Commit
+            ),
+            "a passing check must yield Commit"
+        );
+        assert!(
+            matches!(
+                MigrationGateDecision::from_check_result(false),
+                MigrationGateDecision::Abort
+            ),
+            "a failing check must yield Abort"
+        );
+
+        // (b) the seam routes each decision through `commit_or_abort_migration`.
+        let store = create_test_store();
+        let context_id = ContextId::from([4u8; 32]);
+        let app_id_v1 = ApplicationId::from([11u8; 32]);
+        let mut context = create_test_context(context_id, app_id_v1);
+        let executor = calimero_primitives::identity::PublicKey::from([6u8; 32]);
+
+        let v1_bytes = borsh::to_vec(&("v1-state".to_owned())).expect("serialize v1 state");
+        let full_hash_v1 = super::write_migration_state(&store, &context, &v1_bytes, executor)
+            .expect("install v1 root");
+        context.root_hash = Hash::from(full_hash_v1);
+        context.dag_heads = vec![full_hash_v1];
+
+        let v2_bytes = borsh::to_vec(&("v2-state-much-longer".to_owned())).expect("serialize v2");
+
+        // Abort decision ⇒ logical abort, v1 root untouched.
+        let abort = super::commit_or_abort_migration(
+            &store,
+            &mut context,
+            &v2_bytes,
+            executor,
+            MigrationGateDecision::Abort,
+        );
+        assert!(
+            abort
+                .expect_err("Abort must surface the logical-abort error")
+                .downcast_ref::<super::MigrationCheckFailed>()
+                .is_some(),
+            "Abort must map to MigrationCheckFailed (logical abort)"
+        );
+        assert_eq!(
+            root_full_hash(&store, context_id),
+            Some(full_hash_v1),
+            "Abort must leave the v1 root byte-for-byte unchanged"
+        );
+
+        // Commit decision ⇒ root write, v1 root overwritten.
+        super::commit_or_abort_migration(
+            &store,
+            &mut context,
+            &v2_bytes,
+            executor,
+            MigrationGateDecision::Commit,
+        )
+        .expect("Commit must write the produced v2 root");
+        assert_ne!(
+            root_full_hash(&store, context_id),
+            Some(full_hash_v1),
+            "Commit must overwrite the v1 root with the produced v2 bytes"
         );
     }
 }
