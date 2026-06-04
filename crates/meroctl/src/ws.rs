@@ -19,6 +19,7 @@ use calimero_server_primitives::ws::{
     Response as WsResponse,
 };
 use eyre::{bail, Result, WrapErr};
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -55,57 +56,76 @@ pub async fn connect(client: &Client) -> Result<WsStream> {
     Ok(stream)
 }
 
-/// Issue a single `execute` (query/mutate) call over a fresh WebSocket
-/// connection and return the result in the same [`Response`] shape as the
-/// JSON-RPC path, so callers render output identically regardless of transport.
+/// A persistent WebSocket session that keeps the socket open across multiple
+/// `execute` calls — the bidirectional counterpart to one-shot HTTP JSON-RPC.
 ///
-/// Responses are correlated by the request `id`: event pushes (which carry no
-/// `id`) and any unrelated frames are skipped until the matching reply arrives.
-pub async fn execute(
-    client: &Client,
-    id: RequestId,
-    request: ExecutionRequest,
-) -> Result<Response> {
-    let stream = connect(client).await?;
-    let (mut write, mut read) = stream.split();
+/// A one-off call gains nothing from WebSocket over HTTP (it pays the upgrade
+/// handshake to send a single frame), so the socket only earns its keep when
+/// reused: the interactive `call -i` shell connects once and runs many calls
+/// through the same session, correlating each reply by its request `id`.
+pub struct WsSession {
+    write: SplitSink<WsStream, WsMessage>,
+    read: SplitStream<WsStream>,
+    /// Monotonic correlation id, incremented per call so a reply can be matched
+    /// to its request and distinguished from unsolicited event pushes.
+    next_id: WsRequestId,
+}
 
-    // Local correlation id on the socket. Only one call is in flight per
-    // connection here, but the read loop still matches on it so additional
-    // multiplexed calls (or interleaved event pushes) wouldn't be mistaken for
-    // this reply.
-    const WS_REQUEST_ID: WsRequestId = 1;
-
-    let ws_request = WsRequest {
-        id: Some(WS_REQUEST_ID),
-        payload: WsRequestPayload::Execute(request),
-    };
-    let payload = serde_json::to_string(&ws_request)?;
-    write
-        .send(WsMessage::Text(payload))
-        .await
-        .wrap_err("failed to send execute request over WebSocket")?;
-
-    while let Some(message) = read.next().await {
-        match message.wrap_err("error reading from WebSocket")? {
-            WsMessage::Text(text) => {
-                let response = serde_json::from_str::<WsResponse>(&text)
-                    .wrap_err("failed to parse WebSocket response")?;
-
-                if response.id != Some(WS_REQUEST_ID) {
-                    // Event push or an unrelated reply — keep waiting.
-                    continue;
-                }
-
-                return into_jsonrpc(id, response);
-            }
-            // Keep the connection alive while waiting for the reply.
-            WsMessage::Ping(payload) => write.send(WsMessage::Pong(payload)).await?,
-            WsMessage::Close(_) => bail!("WebSocket closed before execute response was received"),
-            _ => {}
-        }
+impl WsSession {
+    /// Open a session by connecting to the node's `/ws` endpoint.
+    pub async fn connect(client: &Client) -> Result<Self> {
+        let (write, read) = connect(client).await?.split();
+        Ok(Self {
+            write,
+            read,
+            next_id: 1,
+        })
     }
 
-    bail!("WebSocket stream ended before execute response was received")
+    /// Issue one `execute` (query/mutate) call and await its reply, returned in
+    /// the same [`Response`] shape as the JSON-RPC path so callers render output
+    /// identically regardless of transport.
+    ///
+    /// Replies are correlated by id: event pushes (which carry no `id`) and any
+    /// reply for a different request are skipped until the matching one arrives.
+    pub async fn execute(&mut self, request: ExecutionRequest) -> Result<Response> {
+        let request_id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+
+        let ws_request = WsRequest {
+            id: Some(request_id),
+            payload: WsRequestPayload::Execute(request),
+        };
+        let payload = serde_json::to_string(&ws_request)?;
+        self.write
+            .send(WsMessage::Text(payload))
+            .await
+            .wrap_err("failed to send execute request over WebSocket")?;
+
+        while let Some(message) = self.read.next().await {
+            match message.wrap_err("error reading from WebSocket")? {
+                WsMessage::Text(text) => {
+                    let response = serde_json::from_str::<WsResponse>(&text)
+                        .wrap_err("failed to parse WebSocket response")?;
+
+                    if response.id != Some(request_id) {
+                        // Event push or an unrelated reply — keep waiting.
+                        continue;
+                    }
+
+                    return into_jsonrpc(RequestId::Number(request_id), response);
+                }
+                // Keep the connection alive while waiting for the reply.
+                WsMessage::Ping(payload) => self.write.send(WsMessage::Pong(payload)).await?,
+                WsMessage::Close(_) => {
+                    bail!("WebSocket closed before execute response was received")
+                }
+                _ => {}
+            }
+        }
+
+        bail!("WebSocket stream ended before execute response was received")
+    }
 }
 
 /// Adapt the WebSocket [`WsResponse`] to the JSON-RPC [`Response`]. The two wire
