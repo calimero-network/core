@@ -14,6 +14,7 @@ use actix::prelude::{ActorResponse, WrapFuture};
 use actix::{Actor, AsyncContext};
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_client::ContextGuard;
 use calimero_context_config::types::ContextGroupId;
 use calimero_dag::DagStore;
 use calimero_node_primitives::client::NodeClient;
@@ -22,7 +23,7 @@ use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
 use either::Either;
 use prometheus_client::registry::Registry;
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::Mutex;
 
 use calimero_governance_store::metrics::Metrics;
 
@@ -223,36 +224,93 @@ impl ContextCacheStats {
     }
 }
 
+/// The per-context lock that serializes all operations on a single context.
+///
+/// This wraps the `Arc<Mutex<ContextId>>` so that the entire lifecycle of the
+/// lock — how it is acquired, the owned guard it hands out, and the
+/// reference-count rule that decides when its owning cache entry may be evicted
+/// — lives behind one type. Concentrating it here is the seam through which the
+/// idle/TTL eviction policy and the read/write-intent split (parallel reads)
+/// will later be introduced without disturbing every call site.
+#[derive(Clone, Debug)]
+struct ContextLock {
+    lock: Arc<Mutex<ContextId>>,
+}
+
+impl ContextLock {
+    /// Create a fresh per-context lock keyed by `id`.
+    fn new(id: ContextId) -> Self {
+        Self {
+            lock: Arc::new(Mutex::new(id)),
+        }
+    }
+
+    /// Acquire the lock for this context.
+    ///
+    /// This is a performance-optimized acquisition strategy. It first attempts
+    /// an optimistic, non-blocking `try_lock_owned()`, which is very fast when
+    /// the lock is uncontended.
+    ///
+    /// # Returns
+    ///
+    /// An `Either` containing one of two possibilities:
+    /// - `Either::Left(ContextGuard)`: the lock was acquired immediately.
+    /// - `Either::Right(impl Future)`: the lock was contended; the future
+    ///   resolves to a [`ContextGuard`] once it becomes available and must be
+    ///   awaited by the caller.
+    fn lock(&self) -> Either<ContextGuard, impl Future<Output = ContextGuard>> {
+        let Ok(guard) = self.lock.clone().try_lock_owned() else {
+            let lock = self.lock.clone();
+            return Either::Right(async move { ContextGuard::new(lock.lock_owned().await) });
+        };
+
+        Either::Left(ContextGuard::new(guard))
+    }
+
+    /// Whether the owning cache entry may be evicted: true only while no
+    /// operation is in flight against this context.
+    ///
+    /// The guard handed out by [`lock`](Self::lock) is an *owned* guard held
+    /// outside the actor across the entire WASM execution — it can even be
+    /// passed back in as `ContextAtomic::Held(..)`. An outstanding guard holds a
+    /// clone of the `Arc`, so a context with an in-flight operation always has
+    /// `Arc::strong_count >= 2`; an idle, evictable lock is exactly
+    /// `strong_count == 1` (only the cache holds it).
+    ///
+    /// If we evicted a *live* entry, the next `get_or_fetch_context` would mint
+    /// a brand-new `Arc<Mutex>` for that context, and two concurrent operations
+    /// would then serialize on *different* mutexes — breaking the invariant and
+    /// corrupting state. Hence this lock-gated check.
+    ///
+    /// `strong_count` is racy in isolation, but the check is safe here because
+    /// the only consumer — `BoundedCache::evict_if_full` — runs it and the
+    /// subsequent `remove` synchronously (no `.await` between them) inside a
+    /// single `ContextManager` actor turn. New guards are only ever minted by
+    /// `lock()` on that same actor, so no acquisition can interleave between
+    /// this returning `true` and the eviction: an entry seen idle stays idle
+    /// until the eviction completes.
+    fn is_idle(&self) -> bool {
+        Arc::strong_count(&self.lock) == 1
+    }
+}
+
 /// A metadata container for a single, in-memory context.
 ///
-/// It holds the context's core properties and an asynchronous mutex (`lock`).
+/// It holds the context's core properties and a per-context [`ContextLock`].
 /// This lock is crucial for serializing operations on this specific context,
 /// allowing the `ContextManager` to process requests for different contexts in parallel
 /// while ensuring data consistency for any single context.
 #[derive(Debug)]
 struct ContextMeta {
     meta: Context,
-    lock: Arc<Mutex<ContextId>>,
+    lock: ContextLock,
 }
 
-/// A context is evictable only while no operation is in flight against it.
-///
-/// Each [`ContextMeta`] carries a per-context `lock: Arc<Mutex<ContextId>>`
-/// that serializes all operations on that context. The guard is handed out as
-/// an *owned* guard (`try_lock_owned`/`lock_owned`) and is held outside the
-/// actor across the entire WASM execution — it can even be passed back in as
-/// `ContextAtomic::Held(..)`. An outstanding guard therefore holds a clone of
-/// the `Arc`, so a context with an in-flight operation always has
-/// `Arc::strong_count(&lock) >= 2`; an idle, evictable entry is exactly
-/// `strong_count == 1` (only the cache holds it).
-///
-/// If we evicted a *live* entry, the next `get_or_fetch_context` would mint a
-/// brand-new `Arc<Mutex>` for that context, and two concurrent operations would
-/// then serialize on *different* mutexes — breaking the invariant and
-/// corrupting state. Hence the lock-gated `is_idle`.
+/// A context is evictable only while no operation is in flight against it; the
+/// lock-gated rule lives on [`ContextLock::is_idle`].
 impl Evictable for ContextMeta {
     fn is_idle(&self) -> bool {
-        Arc::strong_count(&self.lock) == 1
+        self.lock.is_idle()
     }
 }
 
@@ -607,25 +665,9 @@ impl Actor for ContextManager {
 // are in lifecycle.rs
 
 impl ContextMeta {
-    /// Acquires an asynchronous lock for this specific context.
-    ///
-    /// This is a performance-optimized lock acquisition strategy. It first attempts an
-    /// optimistic, non-blocking `try_lock_owned()`. This is very fast if the lock is not contended.
-    ///
-    /// # Returns
-    ///
-    /// An `Either` enum containing one of two possibilities:
-    /// - `Either::Left(OwnedMutexGuard)`: If the lock was acquired immediately without waiting.
-    /// - `Either::Right(impl Future)`: If the lock was contended. This future will resolve
-    ///    to an `OwnedMutexGuard` once the lock becomes available. The caller must `.await` this future.
-    fn lock(
-        &self,
-    ) -> Either<OwnedMutexGuard<ContextId>, impl Future<Output = OwnedMutexGuard<ContextId>>> {
-        let Ok(guard) = self.lock.clone().try_lock_owned() else {
-            return Either::Right(self.lock.clone().lock_owned());
-        };
-
-        Either::Left(guard)
+    /// Acquire this context's lock; see [`ContextLock::lock`].
+    fn lock(&self) -> Either<ContextGuard, impl Future<Output = ContextGuard>> {
+        self.lock.lock()
     }
 }
 
@@ -732,12 +774,11 @@ impl ContextManager {
             };
             self.record_cache_access(false);
 
-            let lock = Arc::new(Mutex::new(*context_id));
             let _ = self.contexts.insert_new(
                 *context_id,
                 ContextMeta {
                     meta: context,
-                    lock,
+                    lock: ContextLock::new(*context_id),
                 },
             );
         }
@@ -821,15 +862,18 @@ mod cache_eviction_tests {
     fn idle_meta(id: ContextId) -> ContextMeta {
         ContextMeta {
             meta: Context::new(id, ApplicationId::from([0u8; 32]), Hash::default()),
-            lock: Arc::new(Mutex::new(id)),
+            lock: ContextLock::new(id),
         }
     }
 
     /// An entry with an outstanding owned guard → `strong_count == 2` (live,
     /// MUST NOT be evicted). The returned guard must be kept alive by the test.
-    fn live_meta(id: ContextId) -> (ContextMeta, OwnedMutexGuard<ContextId>) {
-        let lock = Arc::new(Mutex::new(id));
-        let guard = lock.clone().try_lock_owned().expect("fresh lock is free");
+    fn live_meta(id: ContextId) -> (ContextMeta, ContextGuard) {
+        let lock = ContextLock::new(id);
+        let guard = match lock.lock() {
+            Either::Left(guard) => guard,
+            Either::Right(_) => unreachable!("fresh lock is free"),
+        };
         let meta = ContextMeta {
             meta: Context::new(id, ApplicationId::from([0u8; 32]), Hash::default()),
             lock,
