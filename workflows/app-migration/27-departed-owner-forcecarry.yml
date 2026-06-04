@@ -24,12 +24,16 @@ description: >
       entry that the owner-driven path (scenario 26) can never resolve.
 
   Node-log validation (the explicit 6c.11 requirement):
-    - The admin/owner capability boundary the force-carry reuses is asserted
-      positively (node 1 holds admin caps) and negatively (node 2, before
-      removal, does NOT) via get_member_capabilities — this is the exact gate
-      `migration_force_carry::apply` enforces with `require_admin`, so an
-      admin-issued force-carry would pass and a non-admin one would be
-      rejected with `MembershipError::NotAdmin`.
+    - The per-member capability map distinguishes admin from departing owner,
+      asserted with exact values via get_member_capabilities: the namespace
+      creator's stored map is `0` (its authority is the Admin ROLE, which is
+      what `require_admin` checks and is deliberately NOT a capability bit),
+      while the invited owner (node 2) holds exactly `CAN_JOIN_OPEN_SUBGROUPS`
+      (4) — a plain member with NO manage/admin bit. This establishes that the
+      departing identity is an ordinary member, not an admin; the role-based
+      `require_admin` gate `migration_force_carry::apply` enforces (admin op
+      passes, non-admin rejected with `MembershipError::NotAdmin`) is itself
+      unit-covered in 6c.5 (see scope note), not minted from a step here.
     - The departed owner's stale entry is NOT silently dropped by the schema
       fence and node 1 (the surviving admin) holds the v2 root — the entry
       survives as residue awaiting force-carry, never vanishing.
@@ -192,6 +196,27 @@ steps:
     member_id: "{{departed_owner_key}}"
     outputs:
       departed_caps: capabilities
+
+  # Assert the per-member capability map distinguishes the two identities. The
+  # bitmask `effective_capabilities` returns is the STORED per-member row, not a
+  # role projection: the namespace creator is added with role Admin and NO
+  # per-member capability row, so its map is 0 — its authority is the Admin ROLE
+  # (what `require_admin` checks), which is deliberately separate from this map.
+  # The invited member (node 2) is materialised with the namespace's
+  # `default_capabilities`, which `create_group` seeds as exactly
+  # `CAN_JOIN_OPEN_SUBGROUPS` (1<<2 = 4) — a plain member that does NOT hold
+  # `MANAGE_MEMBERS` (1<<3 = 8) or any admin bit. These exact values are the
+  # boundary this scenario can node-validate; the role-based `require_admin`
+  # gate force-carry enforces is unit-covered in 6c.5 (see scope note).
+  - name: Assert the admin's per-member capability map is empty (authority is the Admin role, not a bit)
+    type: json_assert
+    statements:
+      - 'json_equal({{admin_caps}}, 0)'
+
+  - name: Assert the departing owner holds exactly the default member capability (no manage/admin bit)
+    type: json_assert
+    statements:
+      - 'json_equal({{departed_caps}}, 4)'
 
   # Phase 6: lazy-on-access upgrade policy, then ONE cascade v1 → v2.
   - name: Set upgrade policy to lazy-on-access on node 1

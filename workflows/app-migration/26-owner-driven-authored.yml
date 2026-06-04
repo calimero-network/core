@@ -13,18 +13,25 @@ description: >
   path — NOT under merge mode, NOT entropy-suppressed (resolves spec O4).
 
   The discriminating node-log assertions (the explicit 6c.11 requirement):
-    - The OWNER's own re-write succeeds and replicates as a normal signed
-      Action::Update — the owner gate ("Cannot change owner of User storage"
-      / "ActionNotAllowed") must NOT fire for the owner converting its OWN
-      entry (assert_log_absent on the owner's node across the convert).
-    - A NON-owner attempt to write another identity's slot is rejected by the
-      authored_common owner gate — node 2 cannot drive node 1's convert. This
-      is exercised positively at the storage layer (a non-owner write of a
-      foreign User slot is impossible because UserStorage::insert always
-      stamps the CALLER's executor_id as owner), so the negative is pinned by
-      a cross-node convergence read: node 2's view of node 1's converted note
-      is identical to node 1's, proving only the owner drove the convert and
-      it replicated as one convergent signed delta.
+    - POSITIVE, regression-coupled: the per-entry re-stamp branch in
+      `Interface::save_raw` (6c.3) emits a debug log when an owner's own write
+      re-stamps its identity-gated entry's `schema_version` to the target. Each
+      owner re-writes its OWN slot, so this log MUST be present on both nodes
+      (assert_log_present). This is the signal that the per-entry owner-driven
+      convert actually ran — remove the 6c convert code and this log, and the
+      entry, never get re-stamped, so the assert fails. (The `schema_info`
+      `2.0.0` checks only reflect which WASM is loaded — a HARDCODED constant —
+      not the per-entry stamp, so they cannot stand in for this signal.)
+    - The OWNER's own re-write must NOT trip the owner gate ("Cannot change
+      owner of User storage"): an owner re-writing its own slot keeps the same
+      owner (assert_log_absent on both nodes across the convert).
+    - A NON-owner can never drive another identity's convert — at the storage
+      layer a non-owner write of a foreign User slot is impossible because
+      UserStorage::insert always stamps the CALLER's executor_id as owner, and
+      the re-stamp branch above only fires for the local owner. The negative is
+      pinned by a cross-node convergence read: node 2's view of node 1's
+      converted note is identical to node 1's, proving only the owner drove the
+      convert and it replicated as one convergent signed delta.
     - The migrate machinery ran (lazy upgrade fired on both nodes) and the
       schema advanced to 2.0.0 with both per-user notes preserved.
 
@@ -259,6 +266,32 @@ steps:
       - app-migration-owner-2
     timeout: 90
     trigger_sync: true
+
+  # Phase 7b: POSITIVE, REGRESSION-COUPLED SIGNAL for the owner-driven convert.
+  # The per-entry re-stamp branch in `Interface::save_raw` (6c.3) emits exactly
+  # one debug log when an owner's own write re-stamps its identity-gated entry's
+  # `schema_version` to the binary's target. Each owner re-wrote its OWN slot in
+  # Phase 7, so this MUST be present on BOTH nodes. This is the only assertion in
+  # the scenario coupled to the 6c convert itself: if the owner-driven-convert
+  # code were removed, the entry would never be re-stamped and this log would
+  # never fire — so the assert would fail. (The `schema_info` checks below only
+  # observe which WASM is loaded, not the per-entry stamp; this log is the signal
+  # that the per-entry convert actually ran.)
+  - name: Assert the owner-driven per-entry convert fired on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-owner-1
+    patterns:
+      - "owner-driven convert: re-stamped identity-gated entry schema_version"
+    min_matches: 1
+
+  - name: Assert the owner-driven per-entry convert fired on node 2
+    type: assert_log_present
+    nodes:
+      - app-migration-owner-2
+    patterns:
+      - "owner-driven convert: re-stamped identity-gated entry schema_version"
+    min_matches: 1
 
   # Phase 8: NODE-LOG VALIDATION — the explicit requirement for scenario 26.
   #

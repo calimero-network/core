@@ -3184,7 +3184,19 @@ impl<S: StorageAdaptor> Interface<S> {
         // can never drive the convert. Merkle-invisible, so it cannot diverge
         // the root hash.
         if let Some(target) = local_owner_schema_stamp {
+            // Read the prior stored stamp before overwriting so the log shows
+            // the actual old -> new transition (the convert only "lands" when
+            // these differ — a no-op re-write of an already-current entry keeps
+            // the same value). This single emit is the node-log-observable signal
+            // for the owner-driven convert; scenario 26 `assert_log_present`s it.
+            let prior_schema = <Index<S>>::get_metadata(id)?.and_then(|m| m.schema_version);
             <Index<S>>::set_schema_version(id, Some(target))?;
+            debug!(
+                %id,
+                old_schema_version = ?prior_schema,
+                new_schema_version = target,
+                "owner-driven convert: re-stamped identity-gated entry schema_version"
+            );
         }
 
         let ancestors = <Index<S>>::get_ancestors_of(id)?;
