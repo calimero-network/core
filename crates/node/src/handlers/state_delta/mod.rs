@@ -922,6 +922,81 @@ where
     Ok(total)
 }
 
+/// Startup-recovery core for the **snapshot-entity-shaped** absorb records (PR-6b
+/// Task 6b.7), factored out so the enumerate-then-drain scan is unit-testable
+/// without a live snapshot apply: `persist` is the injection seam (the
+/// production startup hook passes [`crate::sync::snapshot::persist_buffered_snapshot_entity`]
+/// driving a real store handle; tests pass a recording mock).
+///
+/// Counterpart to [`recover_absorbed_records`] for the entity drain. The
+/// delta-replay recovery skips leaf/entity-shaped records (they have no
+/// replayable `__calimero_sync_next` payload), so without this a buffered
+/// future-schema snapshot entity persisted before a restart would never be
+/// re-considered on boot — stranded forever. This enumerates every context with
+/// pending absorbs and, for each **entity**-shaped record whose `schema_app_key`
+/// now matches the loaded reader, runs `persist` and deletes the record on
+/// `Persisted` / `RedrivenElsewhere` (a `Pending` outcome — transient
+/// parse/verify failure — leaves it for a later pass). Records still behind the
+/// loaded reader, and all leaf/delta records, are left untouched.
+///
+/// Returns the number of entity records drained (persisted-or-redriven + deleted)
+/// across all contexts.
+pub(crate) async fn recover_absorbed_entities<F>(
+    store: &calimero_store::Store,
+    persist: F,
+) -> Result<usize>
+where
+    F: Fn(
+        &ContextId,
+        &calimero_context::group_store::AbsorbedEntity,
+    ) -> Result<crate::sync::snapshot::SnapshotEntityDrainOutcome>,
+{
+    use calimero_context::group_store::AbsorbRepository;
+    use calimero_context::hlc_fence::loaded_reader_app_key;
+
+    let store_ref = store;
+    let context_ids = AbsorbRepository::new(store_ref).enumerate_all_contexts()?;
+    if context_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let repo = AbsorbRepository::new(store_ref);
+    let mut total = 0usize;
+    for context_id in context_ids {
+        // The schema this node can read right now. `None` ⇒ can't tell
+        // readability; leave every entity record pending for this context.
+        let Some(loaded) = loaded_reader_app_key(store_ref, &context_id)? else {
+            continue;
+        };
+
+        for ((producing_app_key, delta_id), record) in repo.enumerate_pending(&context_id)? {
+            let Some(entity) = record.entity else {
+                continue; // delta/leaf record — handled elsewhere.
+            };
+            if entity.schema_app_key != loaded {
+                continue; // still behind the entity's schema.
+            }
+            match persist(&context_id, &entity) {
+                Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Persisted)
+                | Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::RedrivenElsewhere) => {
+                    repo.delete(&context_id, producing_app_key, delta_id)?;
+                    total += 1;
+                }
+                Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Pending) => {
+                    /* transient parse/verify failure — leave pending */
+                }
+                Err(err) => warn!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    %err,
+                    "absorb entity recovery: persist failed — leaving record pending for retry"
+                ),
+            }
+        }
+    }
+    Ok(total)
+}
+
 /// Startup recovery scan for the durable AbsorbBuffer (PR-6b Task 6b.6).
 ///
 /// Called once during node boot — the absorb counterpart to the
@@ -966,6 +1041,56 @@ pub(crate) async fn recover_absorbed_on_startup(input: &StateDeltaContext) {
             %err,
             "absorb recovery: failed to scan absorb buffer on startup"
         ),
+    }
+
+    // The delta-replay recovery above skips leaf/entity-shaped records (they
+    // have no `__calimero_sync_next` payload), so a buffered future-schema
+    // sync-repair leaf/entity (Task 6b.7) persisted before a restart would be
+    // stranded forever without this. Drain the snapshot-entity records via the
+    // standalone (WASM-free) persist path, then run the leaf drain for every
+    // context that still holds a leaf record (the leaf re-apply needs the live
+    // runtime env that `drain_absorbed_leaves` builds).
+    let entities = recover_absorbed_entities(store, |context_id, entity| {
+        let mut handle = input.node_clients.context.datastore_handle();
+        crate::sync::snapshot::persist_buffered_snapshot_entity(
+            &mut handle,
+            *context_id,
+            entity.id,
+            &entity.entry,
+            &entity.index,
+        )
+    })
+    .await;
+    match entities {
+        Ok(0) => {}
+        Ok(n) => info!(
+            recovered = n,
+            "absorb recovery: drained buffered snapshot entities on startup"
+        ),
+        Err(err) => warn!(
+            %err,
+            "absorb recovery: failed to drain snapshot entities on startup"
+        ),
+    }
+
+    // Leaf records: re-apply through the live drain (it builds the runtime env
+    // and re-applies the original `TreeLeafData` bytes verbatim once the loaded
+    // reader has advanced). Enumerate contexts with any pending absorb and run
+    // the leaf drain; it is a no-op for contexts holding only delta/entity
+    // records.
+    let leaf_contexts = match calimero_context::group_store::AbsorbRepository::new(store)
+        .enumerate_all_contexts()
+    {
+        Ok(ids) => ids,
+        Err(err) => {
+            warn!(%err, "absorb recovery: failed to enumerate contexts for leaf drain on startup");
+            return;
+        }
+    };
+    for context_id in leaf_contexts {
+        if let Err(err) = drain_absorbed_leaves(input, &context_id).await {
+            warn!(%context_id, %err, "absorb recovery: leaf drain failed on startup");
+        }
     }
 }
 
@@ -2762,7 +2887,9 @@ mod tests {
             handle
                 .put(&key::ContextMeta::new(*context_id), &ctx_meta)
                 .expect("put ContextMeta");
-            handle.put(&app_key, &app_meta).expect("put ApplicationMeta");
+            handle
+                .put(&app_key, &app_meta)
+                .expect("put ApplicationMeta");
         }
 
         /// REGRESSION (the PR-6b drain bug): a STALE v1 straggler delta —
@@ -2938,7 +3065,7 @@ mod tests {
 
         // ---- PR-6b Task 6b.6: startup recovery scan ----
 
-        use super::super::recover_absorbed_records;
+        use super::super::{recover_absorbed_entities, recover_absorbed_records};
 
         /// On node startup the AbsorbBuffer is durable (RocksDB CF), so any
         /// straggler delta persisted before a restart must be re-considered for
@@ -3016,9 +3143,16 @@ mod tests {
             };
             let drained = recover_absorbed_records(&store, noop).await.unwrap();
 
-            assert_eq!(drained, 0, "a behind node drains no future record on startup");
+            assert_eq!(
+                drained, 0,
+                "a behind node drains no future record on startup"
+            );
             let pending = repo.enumerate_pending(&ctx).unwrap();
-            assert_eq!(pending.len(), 1, "the future record survives the startup scan");
+            assert_eq!(
+                pending.len(),
+                1,
+                "the future record survives the startup scan"
+            );
             assert_eq!((pending[0].1).id, [0xC3; 32]);
         }
 
@@ -3052,6 +3186,100 @@ mod tests {
             let pending = repo.enumerate_pending(&ctx).unwrap();
             assert_eq!(pending.len(), 1, "the future record persists");
             assert_eq!((pending[0].1).id, [0xB2; 32]);
+        }
+
+        /// REGRESSION ([0], #2678 review): startup recovery must drain
+        /// buffered snapshot-**entity** records too, not just deltas. A
+        /// future-schema snapshot entity persisted before a restart is skipped
+        /// by the delta-replay recovery (it has no replayable payload); without
+        /// a dedicated entity drain on startup it would be stranded forever.
+        /// Once the loaded reader has advanced to the entity's schema, the
+        /// startup entity scan must drain (and delete) it.
+        #[tokio::test]
+        async fn startup_recovery_drains_entity_record_once_reader_advanced() {
+            use calimero_context::group_store::AbsorbedEntity;
+            use calimero_storage::address::Id;
+            use calimero_storage::index::EntityIndex;
+
+            // loaded reader falls back to GroupMeta.app_key = APP_V2.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+
+            // A buffered future-schema snapshot entity stamped APP_V2 (== the
+            // loaded reader), built as a SharedMember so the standalone drain
+            // resolves `RedrivenElsewhere` (delete) without a live snapshot
+            // apply.
+            let id = [0xE7; 32];
+            let mut index = EntityIndex::minimal_for_test(Id::new(id));
+            index.metadata.storage_type = calimero_storage::entities::StorageType::SharedMember {
+                anchor: Id::new([0xA9; 32]),
+                signature_data: None,
+            };
+            let index_bytes = borsh::to_vec(&index).unwrap();
+            repo.save(
+                &ctx,
+                APP_V2,
+                &AbsorbRecord::from_snapshot_entity(id, vec![1, 2, 3], index_bytes, APP_V2),
+            )
+            .unwrap();
+
+            let drained =
+                recover_absorbed_entities(&store, |context_id, entity: &AbsorbedEntity| {
+                    let mut handle = store.handle();
+                    crate::sync::snapshot::persist_buffered_snapshot_entity(
+                        &mut handle,
+                        *context_id,
+                        entity.id,
+                        &entity.entry,
+                        &entity.index,
+                    )
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(
+                drained, 1,
+                "the buffered snapshot entity must drain on startup once the reader advanced"
+            );
+            assert!(
+                repo.enumerate_pending(&ctx).unwrap().is_empty(),
+                "the drained entity record must be deleted, not stranded across restart"
+            );
+        }
+
+        /// A node restarting *still behind* the entity's schema leaves the
+        /// buffered entity pending across the startup scan (mirrors the
+        /// future-delta case).
+        #[tokio::test]
+        async fn startup_recovery_keeps_entity_record_while_behind() {
+            use calimero_context::group_store::AbsorbedEntity;
+
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            // Node behind: loaded reader = v1, entity stamped v2.
+            install_loaded_reader(&store, &ctx, APP_V1);
+            let repo = AbsorbRepository::new(&store);
+            repo.save(
+                &ctx,
+                APP_V2,
+                &AbsorbRecord::from_snapshot_entity([0xE8; 32], vec![1], vec![2], APP_V2),
+            )
+            .unwrap();
+
+            let drained = recover_absorbed_entities(&store, |_ctx, _entity: &AbsorbedEntity| {
+                panic!("a behind node must not attempt to persist a future-schema entity")
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(
+                drained, 0,
+                "a behind node drains no future entity on startup"
+            );
+            assert_eq!(
+                repo.enumerate_pending(&ctx).unwrap().len(),
+                1,
+                "the future entity survives the startup scan"
+            );
         }
 
         /// With nothing buffered (the common case) the startup scan is a cheap

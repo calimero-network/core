@@ -64,7 +64,7 @@ mod upgrades;
 use self::local_state::{op_log_contains_content_hash, persist_group_governance_progress};
 
 pub use self::absorb::AbsorbRepository;
-pub use self::absorb_record::AbsorbRecord;
+pub use self::absorb_record::{AbsorbRecord, AbsorbedEntity, AbsorbedLeaf};
 pub use self::capabilities::CapabilitiesRepository;
 
 pub use self::context_registration::ContextRegistrationService;

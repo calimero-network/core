@@ -67,6 +67,7 @@ pub mod group_store {
         // Absorb buffer (PR-6b straggler safety).
         AbsorbRecord,
         AbsorbRepository,
+        AbsorbedEntity,
         // Typed errors (#2305). Bundled because external callers that
         // downcast on `eyre::Report` need access to the error types; only
         // adding the ones currently imported would surface the same
