@@ -91,6 +91,7 @@ impl CallCommand {
                 self.context,
                 self.substitute,
                 self.method,
+                self.args,
             )
             .await;
         }
@@ -142,6 +143,7 @@ async fn run_shell(
     mut context: Alias<ContextId>,
     substitute: Vec<Alias<PublicKey>>,
     seed_method: Option<String>,
+    seed_args: Option<Value>,
 ) -> Result<()> {
     let mut context_id = resolve_context(client, context).await?;
     let mut session = WsSession::connect(client).await?;
@@ -154,9 +156,11 @@ async fn run_shell(
     eprintln!("Enter `<method> [args-json]`, e.g. `set {{\"key\":\"k\",\"value\":\"v\"}}`.");
     eprintln!("Meta-commands: :context <alias>, :help, :quit (or Ctrl-D to exit).");
 
-    // A method passed on the command line runs as the first call.
+    // A method passed on the command line runs as the first call, honouring
+    // any `--args` given alongside it.
     if let Some(method) = seed_method {
-        run_call(&mut session, context_id, &substitute, method, json!({})).await?;
+        let args = seed_args.unwrap_or_else(|| json!({}));
+        run_call(&mut session, context_id, &substitute, method, args).await?;
     }
 
     let mut lines = BufReader::new(stdin()).lines();
@@ -164,7 +168,18 @@ async fn run_shell(
         eprint!("{context}> ");
         let _ = std::io::stderr().flush();
 
-        let Some(line) = lines.next_line().await? else {
+        // Wait for a command, but keep servicing the socket (answering pings)
+        // while idle so the node doesn't drop a connection that sat at the
+        // prompt longer than its ping timeout. `keepalive` only resolves on a
+        // socket error/close, so it just propagates the failure when it wins.
+        let next_line = loop {
+            tokio::select! {
+                line = lines.next_line() => break line?,
+                result = session.keepalive() => result?,
+            }
+        };
+
+        let Some(line) = next_line else {
             eprintln!();
             break; // Ctrl-D / end of input
         };

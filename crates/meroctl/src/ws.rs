@@ -63,6 +63,11 @@ pub async fn connect(client: &Client) -> Result<WsStream> {
 /// handshake to send a single frame), so the socket only earns its keep when
 /// reused: the interactive `call -i` shell connects once and runs many calls
 /// through the same session, correlating each reply by its request `id`.
+///
+/// Only one request is ever in flight: [`Self::execute`] takes `&mut self`, so
+/// the borrow checker forbids concurrent calls on the same session. The id
+/// match in the read loop therefore guards against stray event pushes, not
+/// against interleaved responses from a second caller.
 pub struct WsSession {
     write: SplitSink<WsStream, WsMessage>,
     read: SplitStream<WsStream>,
@@ -125,6 +130,30 @@ impl WsSession {
         }
 
         bail!("WebSocket stream ended before execute response was received")
+    }
+
+    /// Service the socket while otherwise idle — answering server pings and
+    /// detecting a server-side close — so the connection survives long pauses
+    /// at an interactive prompt. The node closes a socket that misses pings
+    /// (~`ping_interval + pong_timeout`, 40s by default), which would otherwise
+    /// kill the shell between commands.
+    ///
+    /// This never resolves to `Ok`: it loops until the stream errors or closes,
+    /// then returns `Err`. Callers race it against their input source (e.g. via
+    /// `tokio::select!`) and drop it once a command is ready — sound because
+    /// `StreamExt::next` is cancel-safe and no request is outstanding while
+    /// idle, so any text frame seen here is an unsolicited event push.
+    pub async fn keepalive(&mut self) -> Result<()> {
+        while let Some(message) = self.read.next().await {
+            match message.wrap_err("error reading from WebSocket")? {
+                WsMessage::Ping(payload) => self.write.send(WsMessage::Pong(payload)).await?,
+                WsMessage::Close(_) => bail!("WebSocket closed by server"),
+                // Ignore event pushes / pongs / binary frames while idle.
+                _ => {}
+            }
+        }
+
+        bail!("WebSocket stream ended")
     }
 }
 

@@ -16,7 +16,7 @@ use calimero_server_primitives::admin::{
     CreateContextIdAlias, CreateContextIdentityAlias, DeleteAliasResponse, ListAliasesResponse,
     LookupAliasResponse,
 };
-use eyre::Result;
+use eyre::{bail, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
@@ -136,12 +136,17 @@ where
     /// The WebSocket endpoint URL (`ws(s)://…/ws`) for this connection, derived
     /// from the HTTP `api_url` by swapping the scheme and pointing at `/ws`.
     /// Used by the event-stream (`subscribe`) and `execute`-over-WS paths.
+    ///
+    /// The scheme mapping is explicit (`http`→`ws`, `https`→`wss`); an
+    /// unexpected scheme errors rather than silently degrading to cleartext
+    /// `ws://`, which would leak the bearer token attached to the handshake.
     pub fn ws_url(&self) -> Result<Url> {
         let mut url = self.connection.api_url.clone();
 
         let scheme = match url.scheme() {
+            "http" => "ws",
             "https" => "wss",
-            _ => "ws",
+            other => bail!("cannot derive a WebSocket URL from scheme `{other}://`"),
         };
         url.set_scheme(scheme)
             .map_err(|()| eyre::eyre!("failed to set WebSocket URL scheme"))?;
