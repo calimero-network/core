@@ -23,7 +23,7 @@ use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
 use either::Either;
 use prometheus_client::registry::Registry;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use calimero_governance_store::metrics::Metrics;
 
@@ -224,32 +224,39 @@ impl ContextCacheStats {
     }
 }
 
-/// The per-context lock that serializes all operations on a single context.
+/// The per-context lock that serializes operations on a single context.
 ///
-/// This wraps the `Arc<Mutex<ContextId>>` so that the entire lifecycle of the
+/// This wraps the `Arc<RwLock<ContextId>>` so that the entire lifecycle of the
 /// lock — how it is acquired, the owned guard it hands out, and the
 /// reference-count rule that decides when its owning cache entry may be evicted
 /// — lives behind one type. Concentrating it here is the seam through which the
 /// idle/TTL eviction policy and the read/write-intent split (parallel reads)
-/// will later be introduced without disturbing every call site.
+/// are introduced without disturbing every call site.
+///
+/// The lock is an `RwLock`, but [`lock`](Self::lock) currently only ever takes
+/// the *write* (exclusive) guard, so it behaves exactly like the prior
+/// `Mutex` — every caller serializes. Shared read guards are introduced
+/// separately, gated on declared read-only method intent; until then there is
+/// no behavior change.
 #[derive(Clone, Debug)]
 struct ContextLock {
-    lock: Arc<Mutex<ContextId>>,
+    lock: Arc<RwLock<ContextId>>,
 }
 
 impl ContextLock {
     /// Create a fresh per-context lock keyed by `id`.
     fn new(id: ContextId) -> Self {
         Self {
-            lock: Arc::new(Mutex::new(id)),
+            lock: Arc::new(RwLock::new(id)),
         }
     }
 
-    /// Acquire the lock for this context.
+    /// Acquire the lock for this context in *exclusive* (write) mode.
     ///
-    /// This is a performance-optimized acquisition strategy. It first attempts
-    /// an optimistic, non-blocking `try_lock_owned()`, which is very fast when
-    /// the lock is uncontended.
+    /// This is the default acquisition for any call whose read/write intent is
+    /// not known to be read-only — i.e. every call today. It is a
+    /// performance-optimized strategy: it first attempts an optimistic,
+    /// non-blocking `try_write_owned()`, which is very fast when uncontended.
     ///
     /// # Returns
     ///
@@ -259,12 +266,12 @@ impl ContextLock {
     ///   resolves to a [`ContextGuard`] once it becomes available and must be
     ///   awaited by the caller.
     fn lock(&self) -> Either<ContextGuard, impl Future<Output = ContextGuard>> {
-        let Ok(guard) = self.lock.clone().try_lock_owned() else {
+        let Ok(guard) = self.lock.clone().try_write_owned() else {
             let lock = self.lock.clone();
-            return Either::Right(async move { ContextGuard::new(lock.lock_owned().await) });
+            return Either::Right(async move { ContextGuard::write(lock.write_owned().await) });
         };
 
-        Either::Left(ContextGuard::new(guard))
+        Either::Left(ContextGuard::write(guard))
     }
 
     /// Whether the owning cache entry may be evicted: true only while no
@@ -278,8 +285,8 @@ impl ContextLock {
     /// `strong_count == 1` (only the cache holds it).
     ///
     /// If we evicted a *live* entry, the next `get_or_fetch_context` would mint
-    /// a brand-new `Arc<Mutex>` for that context, and two concurrent operations
-    /// would then serialize on *different* mutexes — breaking the invariant and
+    /// a brand-new `Arc<RwLock>` for that context, and two concurrent operations
+    /// would then synchronize on *different* locks — breaking the invariant and
     /// corrupting state. Hence this lock-gated check.
     ///
     /// `strong_count` is racy in isolation, but the check is safe here because
