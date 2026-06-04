@@ -1676,3 +1676,201 @@ mod update_signature_in_place_tests {
         );
     }
 }
+
+/// Task 6c.6: residue = a LOCAL DERIVED scan of the converged store counting
+/// identity-gated entries that still trail the target schema (reuses
+/// `needs_owner_convert`). It is NOT a replicated shrink-CRDT — it is a pure
+/// function of each node's own converged view, so it is idempotent and a
+/// concurrent convert on N nodes decrements each node's local count by exactly
+/// 1 (never double-counts).
+mod index__residue_scan {
+    use calimero_primitives::identity::PublicKey;
+
+    use super::*;
+    use crate::entities::StorageType;
+    use crate::store::MockedStorage;
+
+    /// Isolate each test on its own `MockedStorage` scope (a fresh in-memory
+    /// store) so the residue scan only sees this test's seeded entries.
+    type S = MockedStorage<3100>;
+
+    fn owner(byte: u8) -> PublicKey {
+        PublicKey::from([byte; 32])
+    }
+
+    /// Seed a `User`-owned (identity-gated) entry into store `St` with the given
+    /// schema tag. Generic over the store so two distinct scope bands can model
+    /// two separate nodes.
+    fn seed_user_in<St>(id: Id, owner: PublicKey, schema: Option<u32>)
+    where
+        St: crate::store::StorageAdaptor,
+    {
+        let mut md = Metadata::new(1, 1);
+        md.storage_type = StorageType::User {
+            owner,
+            signature_data: None,
+        };
+        md.schema_version = schema;
+        <Index<St>>::add_root(ChildInfo::new(id, [0u8; 32], md)).expect("seed user entry");
+    }
+
+    /// Seed a `User`-owned (identity-gated) entry with the given schema tag.
+    fn seed_user(id: Id, owner: PublicKey, schema: Option<u32>) {
+        seed_user_in::<S>(id, owner, schema);
+    }
+
+    /// Seed a `Public` (Convergent / whole-root) entry — never identity-gated.
+    fn seed_public(id: Id) {
+        let mut md = Metadata::new(1, 1);
+        md.storage_type = StorageType::Public;
+        <Index<S>>::add_root(ChildInfo::new(id, [0u8; 32], md)).expect("seed public entry");
+    }
+
+    #[test]
+    fn residue_counts_only_stale_identity_gated() {
+        // K = 2 stale identity-gated (None == v0, and an explicit older tag).
+        seed_user(Id::new([1; 32]), owner(0xAA), None);
+        seed_user(Id::new([2; 32]), owner(0xAB), Some(1));
+        // M = 1 already-converged identity-gated entry (at target) -> excluded.
+        seed_user(Id::new([3; 32]), owner(0xAC), Some(2));
+        // P = 2 convergent (Public) entries -> never counted, regardless of tag.
+        seed_public(Id::new([4; 32]));
+        seed_public(Id::new([5; 32]));
+
+        assert_eq!(
+            <Index<S>>::count_unconverted_identity_gated(2).unwrap(),
+            2,
+            "residue == K: only stale identity-gated entries count"
+        );
+    }
+
+    #[test]
+    fn converting_one_stale_entry_decrements_residue_by_one() {
+        let stale_a = Id::new([0x11; 32]);
+        let stale_b = Id::new([0x12; 32]);
+        seed_user(stale_a, owner(0xAA), None);
+        seed_user(stale_b, owner(0xBB), None);
+        assert_eq!(
+            <Index<S>>::count_unconverted_identity_gated(1).unwrap(),
+            2,
+            "two stale identity-gated entries before any convert"
+        );
+
+        // Owner-driven convert of one entry stamps it at the target. The scan is
+        // a pure derive of the converged store, so it drops by exactly 1.
+        <Index<S>>::set_schema_version(stale_a, Some(1)).expect("convert one entry");
+        assert_eq!(
+            <Index<S>>::count_unconverted_identity_gated(1).unwrap(),
+            1,
+            "residue == K-1 after converting exactly one stale entry"
+        );
+    }
+
+    #[test]
+    fn convergent_entries_never_count_even_when_untagged() {
+        seed_public(Id::new([0x21; 32]));
+        seed_public(Id::new([0x22; 32]));
+        seed_public(Id::new([0x23; 32]));
+        assert_eq!(
+            <Index<S>>::count_unconverted_identity_gated(5).unwrap(),
+            0,
+            "Public (Convergent whole-root) entries are never residue"
+        );
+    }
+
+    #[test]
+    fn scan_is_idempotent() {
+        seed_user(Id::new([0x31; 32]), owner(0xAA), None);
+        seed_user(Id::new([0x32; 32]), owner(0xBB), Some(1));
+        let first = <Index<S>>::count_unconverted_identity_gated(2).unwrap();
+        let second = <Index<S>>::count_unconverted_identity_gated(2).unwrap();
+        assert_eq!(first, second, "re-running the scan yields the same count");
+        assert_eq!(first, 2);
+    }
+
+    /// Two-node concurrent convert (spec decision 8). Node A and node B each
+    /// hold the SAME converged identity-gated entry in their OWN store (two
+    /// disjoint `MockedStorage` scope bands = two nodes). Both start with
+    /// residue 1. Node A owner-converts the entry locally (A.residue 1 -> 0).
+    /// Node B then applies A's replicated delta — the converted metadata — to
+    /// its own store (B.residue 1 -> 0). Each node's LOCAL derived scan drops by
+    /// exactly 1; there is NO shared counter that could sum the two converts to
+    /// 2. Re-applying A's delta on B (duplicate/out-of-order delivery) is a
+    /// no-op, so B never under-counts below 0 either.
+    #[test]
+    fn residue_is_idempotent_under_concurrent_convert() {
+        type NodeA = MockedStorage<3101>;
+        type NodeB = MockedStorage<3102>;
+
+        let id1 = Id::new([0x51; 32]);
+        let owner = owner(0xAA);
+
+        // Both nodes converge to the same stale identity-gated entry.
+        seed_user_in::<NodeA>(id1, owner, None);
+        seed_user_in::<NodeB>(id1, owner, None);
+        assert_eq!(
+            <Index<NodeA>>::count_unconverted_identity_gated(1).unwrap(),
+            1,
+            "node A starts with residue 1"
+        );
+        assert_eq!(
+            <Index<NodeB>>::count_unconverted_identity_gated(1).unwrap(),
+            1,
+            "node B starts with residue 1"
+        );
+
+        // Node A owner-converts id1: stamps schema_version at the target. A's
+        // local scan is a pure derive of A's own store, so A's residue 1 -> 0.
+        <Index<NodeA>>::set_schema_version(id1, Some(1)).expect("A converts id1");
+        assert_eq!(
+            <Index<NodeA>>::count_unconverted_identity_gated(1).unwrap(),
+            0,
+            "node A residue drops to 0 after its own convert"
+        );
+        // B has not yet seen A's delta — B's local count is unchanged at 1. This
+        // is the load-bearing point: the count is per-node, not a replicated
+        // shrink-CRDT that would already read 0 globally.
+        assert_eq!(
+            <Index<NodeB>>::count_unconverted_identity_gated(1).unwrap(),
+            1,
+            "node B residue is still 1 until it applies A's delta"
+        );
+
+        // Node B applies A's replicated delta (the converted metadata). B's own
+        // local scan now drops by exactly 1: B.residue 1 -> 0. Two converts seen
+        // across two nodes decrement each node's local count by exactly 1, never
+        // a combined 2.
+        <Index<NodeB>>::set_schema_version(id1, Some(1)).expect("B applies A's delta");
+        assert_eq!(
+            <Index<NodeB>>::count_unconverted_identity_gated(1).unwrap(),
+            0,
+            "node B residue drops to 0 after applying A's delta — by exactly 1"
+        );
+
+        // Duplicate / out-of-order re-delivery of A's delta to B is idempotent:
+        // the entry is already at target, so B's residue stays at 0 (never
+        // double-decrements below 0).
+        <Index<NodeB>>::set_schema_version(id1, Some(1)).expect("B re-applies A's delta");
+        assert_eq!(
+            <Index<NodeB>>::count_unconverted_identity_gated(1).unwrap(),
+            0,
+            "re-applying an already-converted delta is a no-op on residue"
+        );
+    }
+
+    #[test]
+    fn tombstoned_stale_entries_are_not_residue() {
+        let live = Id::new([0x41; 32]);
+        let gone = Id::new([0x42; 32]);
+        seed_user(live, owner(0xAA), None);
+        seed_user(gone, owner(0xBB), None);
+        // A tombstoned entry is no longer part of the converged live state; it
+        // cannot be owner-converted and must not inflate the residue.
+        <Index<S>>::mark_deleted(gone, 100).expect("tombstone");
+        assert_eq!(
+            <Index<S>>::count_unconverted_identity_gated(1).unwrap(),
+            1,
+            "tombstoned stale entries are excluded from residue"
+        );
+    }
+}
