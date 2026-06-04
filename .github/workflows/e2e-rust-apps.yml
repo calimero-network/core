@@ -209,6 +209,9 @@ jobs:
           - workflow: hashcomparison-shared-user-reconcile
             file: workflows/hashcomparison-shared-user-reconcile.yml
             app: scaffolding-e2e
+          - workflow: shared-storage-concurrent-rotation-converge
+            file: workflows/shared-storage-concurrent-rotation-converge.yml
+            app: scaffolding-e2e
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
             app: scaffolding-e2e

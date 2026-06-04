@@ -286,4 +286,83 @@ mod tests {
         let writers = writers_at(&log, &[[1; 32]], |_, _| false);
         assert_eq!(writers, Some(snap_writers));
     }
+
+    // ---- Cross-node concurrent-rotation convergence (the #2668 guarantee) ----
+    //
+    // #2665 makes each node self-log its OWN rotations alongside received ones,
+    // so after sync every node holds the SAME SET of rotation-log entries — but
+    // in its own *insertion order* (a node appends its locally-created rotation
+    // when it executes, and a peer's when sync delivers it; two nodes that
+    // rotate concurrently append the pair in opposite orders). The convergence
+    // guarantee therefore rests on `writers_at` being a deterministic function
+    // of (entry set, causal parents) that is INVARIANT to insertion order. The
+    // tests above resolve a single ordering; these assert order-invariance
+    // directly — the property that makes two nodes agree end-to-end.
+    //
+    // Scenario mirrors the merobox e2e: genesis writers {A, B}; node-1 rotates
+    // -> {A, C} (R1) and node-2 rotates -> {B, C} (R2) concurrently; then a
+    // settling rotation -> {A, C} (R3) causally after both. A = 0xAA,
+    // B = 0xBB, C = 0xCC.
+
+    #[test]
+    fn writers_at_is_insertion_order_invariant_under_concurrent_rotations() {
+        // R1 {A,C} and R2 {B,C} are causally concurrent (neither precedes the
+        // other); R2 has the larger HLC, so it wins the tie.
+        let r1 = entry(1, 20, 0xAA, &[0xAA, 0xCC], 1);
+        let r2 = entry(2, 21, 0xBB, &[0xBB, 0xCC], 1);
+
+        // node-1 self-logged R1 first, then received R2; node-2 the reverse.
+        let log_node1 = log_of(vec![r1.clone(), r2.clone()]);
+        let log_node2 = log_of(vec![r2, r1]);
+
+        // Merged frontier sees both; they are concurrent, so nothing precedes.
+        let parents = [[1; 32], [2; 32]];
+        let none_precede = |_: &[u8; 32], _: &[u8; 32]| false;
+
+        let from_node1 = writers_at(&log_node1, &parents, none_precede);
+        let from_node2 = writers_at(&log_node2, &parents, none_precede);
+
+        // Both nodes resolve the SAME set despite opposite insertion order —
+        // this is what makes them converge.
+        assert_eq!(from_node1, from_node2);
+        // ...and it is the HLC winner R2 = {B, C}.
+        assert_eq!(from_node1, Some([0xBB, 0xCC].into_iter().map(pk).collect()));
+        // C is in both concurrent sets, so it survives whichever wins — the
+        // property the e2e relies on to pick a guaranteed-authorized settler.
+        assert!(from_node1.unwrap().contains(&pk(0xCC)));
+    }
+
+    #[test]
+    fn settling_rotation_converges_and_revokes_under_concurrency() {
+        // After the concurrent pair, a settling rotation R3 -> {A, C} is issued
+        // causally after BOTH (it builds on the merged frontier).
+        let r1 = entry(1, 20, 0xAA, &[0xAA, 0xCC], 1);
+        let r2 = entry(2, 21, 0xBB, &[0xBB, 0xCC], 1);
+        let r3 = entry(3, 30, 0xCC, &[0xAA, 0xCC], 2);
+
+        // Same entry set, opposite insertion order for the concurrent pair; R3
+        // is last on both (it is causally newest, so it is appended last
+        // everywhere).
+        let log_node1 = log_of(vec![r1.clone(), r2.clone(), r3.clone()]);
+        let log_node2 = log_of(vec![r2, r1, r3]);
+
+        // R1 and R2 both happen-before R3; R1 and R2 are concurrent.
+        let happens_before = |a: &[u8; 32], b: &[u8; 32]| {
+            (a == &[1; 32] && b == &[3; 32]) || (a == &[2; 32] && b == &[3; 32])
+        };
+        let parents = [[3; 32]];
+
+        let from_node1 = writers_at(&log_node1, &parents, happens_before);
+        let from_node2 = writers_at(&log_node2, &parents, happens_before);
+
+        // Deterministic convergence to the settled set on every node...
+        assert_eq!(from_node1, from_node2);
+        let resolved = from_node1.expect("settled writer set");
+        assert_eq!(resolved, [0xAA, 0xCC].into_iter().map(pk).collect());
+        // ...and B is retroactively revoked everywhere (the bonus the e2e
+        // asserts by rejecting B's post-settle write).
+        assert!(!resolved.contains(&pk(0xBB)));
+        assert!(resolved.contains(&pk(0xAA)));
+        assert!(resolved.contains(&pk(0xCC)));
+    }
 }
