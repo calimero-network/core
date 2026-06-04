@@ -206,6 +206,58 @@ pub fn append<S: StorageAdaptor>(id: Id, entry: RotationLogEntry) -> Result<(), 
     save::<S>(id, &log)
 }
 
+/// Resolve the writer set for the **local-execution gate** — the set
+/// `SharedStorage` checks in `insert` / `rotate_writers` *before* the action
+/// syncs (and the settled-state fallback in `Interface::resolve_anchor_writers`).
+///
+/// Unlike the merge-time resolver (`rotation_log_reader::writers_at` in the
+/// node crate), this has **no DAG and no `happens_before`**: it runs inside the
+/// WASM guest, which can read the rotation log but not the context DAG. Instead
+/// it leans on an invariant the HLC already provides. After the HLC
+/// receive-rule fix (#2635) the hybrid clock is **causally monotonic** — a
+/// rotation created after applying another always carries a strictly greater
+/// `delta_hlc`. So ADR-0001's ordering ("causal precedence, then HLC, then
+/// signer") collapses, for a well-formed log, to just **max by
+/// `(delta_hlc, signer)`** over the live entries, computable from the log alone.
+///
+/// Two properties this buys over the old `entries.last()` gate (core#2673):
+/// - **Insertion-order invariant.** `max_by` over the entry *set* is
+///   independent of the order this node happened to append them, so two nodes
+///   that applied the same concurrent rotations resolve the *same* writer set
+///   locally — the convergence the insertion-order gate lacked.
+/// - **Matches the merge verifier** for any log whose HLCs respect causality
+///   (the normal case post-#2635). If a pathological log violates HLC
+///   monotonicity (pre-#2635 data, or a clock pushed backwards) this may pick a
+///   different winner than the causal `writers_at`, but that only loosens the
+///   *local* gate; the merge path stays the security boundary and still rejects
+///   anything genuinely unauthorized. It is never weaker than `entries.last()`.
+///
+/// Returns `None` only when the log has neither entries nor a compaction
+/// snapshot.
+#[must_use]
+pub fn resolve_local(log: &RotationLog) -> Option<BTreeSet<PublicKey>> {
+    if let Some(entry) = log.entries.iter().max_by(|a, b| {
+        // HLC first (causally monotonic post-#2635), then signer as the
+        // ADR-0001 tiebreak: smaller signer bytes win, `None` (unsigned legacy)
+        // treated as larger so it loses ties. This mirrors the `(delta_hlc,
+        // signer)` tail of `rotation_log_reader::writers_at`, minus the
+        // `happens_before` steps the guest can't evaluate.
+        match a.delta_hlc.cmp(&b.delta_hlc) {
+            core::cmp::Ordering::Equal => {}
+            non_eq => return non_eq,
+        }
+        match (&a.signer, &b.signer) {
+            (Some(sa), Some(sb)) => sb.digest().cmp(sa.digest()),
+            (Some(_), None) => core::cmp::Ordering::Greater,
+            (None, Some(_)) => core::cmp::Ordering::Less,
+            (None, None) => core::cmp::Ordering::Equal,
+        }
+    }) {
+        return Some(entry.new_writers.clone());
+    }
+    log.snapshot.as_ref().map(|s| s.writers.clone())
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -296,5 +348,94 @@ mod tests {
         // The original entry stays put; nothing was overwritten.
         let log = load::<Store>(id).unwrap().unwrap();
         assert_eq!(log.entries, vec![e1]);
+    }
+
+    // ---- resolve_local: the DAG-free local-execution gate (core#2673) ----
+
+    fn log_of(entries: Vec<RotationLogEntry>) -> RotationLog {
+        RotationLog {
+            snapshot: None,
+            entries,
+        }
+    }
+
+    #[test]
+    fn resolve_local_none_when_empty() {
+        assert_eq!(resolve_local(&RotationLog::empty()), None);
+    }
+
+    #[test]
+    fn resolve_local_picks_max_hlc() {
+        // Sequential rotations: the later (greater-HLC) one wins, regardless of
+        // vector position.
+        let log = log_of(vec![
+            entry(2, 200, 0xBB, &[0xAA, 0xBB], 2),
+            entry(1, 100, 0xAA, &[0xAA], 1),
+        ]);
+        assert_eq!(
+            resolve_local(&log),
+            Some([0xAA, 0xBB].into_iter().map(pk).collect())
+        );
+    }
+
+    #[test]
+    fn resolve_local_is_insertion_order_invariant() {
+        // The core#2673 property: two nodes append the same two concurrent
+        // rotations in opposite orders and must resolve the SAME writer set
+        // (the old `entries.last()` gate returned different sets per node).
+        let r1 = entry(1, 20, 0xAA, &[0xAA, 0xCC], 1); // {A, C}
+        let r2 = entry(2, 21, 0xBB, &[0xBB, 0xCC], 1); // {B, C}, larger HLC
+
+        let node1 = log_of(vec![r1.clone(), r2.clone()]); // self-logged R1, then got R2
+        let node2 = log_of(vec![r2, r1]); // self-logged R2, then got R1
+
+        assert_eq!(resolve_local(&node1), resolve_local(&node2));
+        // ...and it is the HLC winner R2 = {B, C}.
+        assert_eq!(
+            resolve_local(&node1),
+            Some([0xBB, 0xCC].into_iter().map(pk).collect())
+        );
+    }
+
+    #[test]
+    fn resolve_local_hlc_tie_broken_by_signer() {
+        // Equal HLC (same time + same node ID) → smaller signer bytes win,
+        // matching `rotation_log_reader::writers_at`.
+        let identical = |delta_id: u8, signer: u8, writers: &[u8]| {
+            use core::num::NonZeroU128;
+
+            use crate::logical_clock::{Timestamp, ID, NTP64};
+            let ts = Timestamp::new(NTP64(50), ID::from(NonZeroU128::new(1).unwrap()));
+            RotationLogEntry {
+                delta_id: [delta_id; 32],
+                delta_hlc: HybridTimestamp::new(ts),
+                signer: Some(pk(signer)),
+                new_writers: writers.iter().copied().map(pk).collect(),
+                writers_nonce: 1,
+            }
+        };
+        let log = log_of(vec![
+            identical(1, 0xAA, &[0xAA, 0xCC]),
+            identical(2, 0xBB, &[0xBB, 0xDD]),
+        ]);
+        // 0xAA < 0xBB → {A, C} wins; order-independent.
+        assert_eq!(
+            resolve_local(&log),
+            Some([0xAA, 0xCC].into_iter().map(pk).collect())
+        );
+    }
+
+    #[test]
+    fn resolve_local_falls_back_to_snapshot() {
+        // Compacted log with no live entries → the snapshot's writer set.
+        let snap: BTreeSet<PublicKey> = [0xEE].into_iter().map(pk).collect();
+        let log = RotationLog {
+            snapshot: Some(RotationSnapshot {
+                writers: snap.clone(),
+                cutoff_index: 3,
+            }),
+            entries: Vec::new(),
+        };
+        assert_eq!(resolve_local(&log), Some(snap));
     }
 }
