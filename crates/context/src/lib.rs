@@ -268,10 +268,10 @@ impl ContextLock {
     fn lock(&self) -> Either<ContextGuard, impl Future<Output = ContextGuard>> {
         let Ok(guard) = self.lock.clone().try_write_owned() else {
             let lock = self.lock.clone();
-            return Either::Right(async move { ContextGuard::write(lock.write_owned().await) });
+            return Either::Right(async move { ContextGuard::new(lock.write_owned().await) });
         };
 
-        Either::Left(ContextGuard::write(guard))
+        Either::Left(ContextGuard::new(guard))
     }
 
     /// Whether the owning cache entry may be evicted: true only while no
