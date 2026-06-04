@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, GovernanceError, NamespaceOp, NamespaceTopicMsg, RootOp,
-    SignedAck, SignedNamespaceOp, SignedReadinessBeacon,
+    SignedAck, SignedMigrationHeartbeat, SignedNamespaceOp, SignedReadinessBeacon,
 };
 use calimero_network_primitives::client::is_no_peers_subscribed_error;
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
@@ -190,6 +190,32 @@ pub fn verify_readiness_beacon(store: &Store, beacon: &SignedReadinessBeacon) ->
     MembershipRepository::new(store)
         .namespace_pubkeys(beacon.namespace_id)
         .map(|members| members.contains(&beacon.peer_pubkey))
+        .unwrap_or(false)
+}
+
+/// Verify a [`SignedMigrationHeartbeat`] against the local store's view of
+/// namespace membership.
+///
+/// Mirrors [`verify_readiness_beacon`] exactly: the Ed25519 signature is
+/// checked via [`SignedMigrationHeartbeat::verify_signature`] (which uses
+/// the canonical `MIGRATION_HEARTBEAT_SIGN_DOMAIN || borsh(SignableMigrationHeartbeat)`
+/// payload and rejects field-substitution replays such as zeroing
+/// `residue_identity` to fake completion), and the `peer_pubkey` must be a
+/// member of the heartbeat's namespace cohort. The membership check reuses
+/// [`namespace_pubkeys`], which includes the meta admin even when the admin
+/// has no member row.
+///
+/// Returns `false` on any failure (signature, membership, store error) so
+/// the receiver can drop an unsigned / non-member heartbeat without it ever
+/// entering the migration-status TTL cache — telemetry, never governance state.
+#[must_use]
+pub fn verify_migration_heartbeat(store: &Store, heartbeat: &SignedMigrationHeartbeat) -> bool {
+    if heartbeat.verify_signature().is_err() {
+        return false;
+    }
+    MembershipRepository::new(store)
+        .namespace_pubkeys(heartbeat.namespace_id)
+        .map(|members| members.contains(&heartbeat.peer_pubkey))
         .unwrap_or(false)
 }
 

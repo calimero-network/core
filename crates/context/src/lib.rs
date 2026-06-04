@@ -102,7 +102,7 @@ pub mod group_store {
 
 pub mod governance_broadcast {
     pub use calimero_governance_store::governance_broadcast::{
-        ns_topic, sign_ack, verify_readiness_beacon, ObserveDelivery,
+        ns_topic, sign_ack, verify_migration_heartbeat, verify_readiness_beacon, ObserveDelivery,
     };
 }
 

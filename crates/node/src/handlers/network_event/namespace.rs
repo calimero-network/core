@@ -78,11 +78,39 @@ pub(super) fn handle_namespace_governance_delta(
             super::readiness::handle_readiness_probe(this, ctx, source, probe);
             return;
         }
-        // 6c.7 reserves the wire variant; 6c.8 wires the TTL-cache ingest
-        // (signature + cohort-membership verified). Until then a received
-        // heartbeat is dropped — it carries no governance state, only
-        // ephemeral telemetry, so ignoring it is safe.
-        NamespaceTopicMsg::MigrationHeartbeat(_heartbeat) => {
+        // PR-6c Task 6c.8: ingest a signed migration heartbeat into the
+        // per-(namespace, peer) TTL cache. Cross-check the heartbeat's
+        // namespace against the topic's namespace FIRST (same guard as the
+        // `ReadinessBeacon` arm) so a peer can't pollute namespace X's cache
+        // from a namespace-Y subscription. Then verify the Ed25519 signature
+        // AND cohort membership via `verify_migration_heartbeat` before
+        // inserting — an unsigned or non-member heartbeat must never enter a
+        // rollup. The heartbeat is ephemeral telemetry, not governance state,
+        // so there is no apply / ack / backfill — just the cache upsert.
+        NamespaceTopicMsg::MigrationHeartbeat(heartbeat) => {
+            if heartbeat.namespace_id != namespace_id {
+                warn!("MigrationHeartbeat namespace_id mismatch with topic; dropping");
+                return;
+            }
+            if !calimero_context::governance_broadcast::verify_migration_heartbeat(
+                &this.datastore,
+                &heartbeat,
+            ) {
+                debug!(
+                    namespace_id = %hex::encode(heartbeat.namespace_id),
+                    "MigrationHeartbeat failed verification (sig/membership); dropping"
+                );
+                return;
+            }
+            this.migration_status_cache.insert(&heartbeat);
+            debug!(
+                namespace_id = %hex::encode(heartbeat.namespace_id),
+                peer = %heartbeat.peer_pubkey,
+                schema_version = heartbeat.schema_version,
+                residue_auto = heartbeat.residue_auto,
+                residue_identity = heartbeat.residue_identity,
+                "migration heartbeat cached"
+            );
             return;
         }
     };

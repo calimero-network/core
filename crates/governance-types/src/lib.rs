@@ -35,7 +35,7 @@ use thiserror::Error;
 pub mod wire;
 pub use wire::{
     hash_scoped_group, hash_scoped_namespace, GroupTopicMsg, NamespaceTopicMsg, ReadinessProbe,
-    SignedAck, SignedReadinessBeacon,
+    SignedAck, SignedMigrationHeartbeat, SignedReadinessBeacon,
 };
 
 // `AckRouter` and its pub/sub plumbing stay in `calimero-context-client`
