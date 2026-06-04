@@ -925,6 +925,38 @@ impl Message for GetCascadeStatusRequest {
     type Result = eyre::Result<Vec<CascadeStatusEntry>>;
 }
 
+// ---------------------------------------------------------------------------
+// Admin abort-migration (PR-6d task 6d.4)
+// ---------------------------------------------------------------------------
+
+/// Logically abort an in-flight namespace migration (Task 6d.4).
+///
+/// Flips the group's pending migration target back to the pre-migration
+/// application id and drops the pending `migration` marker so not-yet-applied
+/// lazy contexts stop migrating on their next access (`maybe_lazy_upgrade` no
+/// longer triggers). This is a **logical** abort: there is no byte snapshot to
+/// restore, and an already-committed v2 context is *not* recalled (that would
+/// be the replicated-delta recall this train explicitly does not do — spec §7
+/// invariant 5). Idempotent: aborting a group with no pending migration is a
+/// no-op success.
+#[derive(Clone, Debug)]
+pub struct AbortMigrationRequest {
+    pub namespace_id: ContextGroupId,
+}
+
+impl Message for AbortMigrationRequest {
+    type Result = eyre::Result<AbortMigrationResponse>;
+}
+
+/// Outcome of an [`AbortMigrationRequest`].
+#[derive(Clone, Debug)]
+pub struct AbortMigrationResponse {
+    pub namespace_id: ContextGroupId,
+    /// `true` when a pending migration was found and flipped back; `false` when
+    /// there was nothing to abort (the idempotent no-op case).
+    pub aborted: bool,
+}
+
 /// Request the migration-status rollup for a namespace subtree (Task 6c.9).
 ///
 /// Resolves the pinned-cohort expected members (the inherited-membership

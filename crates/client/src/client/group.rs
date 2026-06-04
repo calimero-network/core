@@ -2,6 +2,7 @@
 
 use eyre::Result;
 
+use calimero_server_primitives::admin::AbortMigrationApiResponse;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::AddGroupMembersApiResponse;
 use calimero_server_primitives::admin::ClaimGroupInvitationApiRequest;
@@ -246,6 +247,17 @@ where
         let response = self
             .connection
             .get(&format!("admin-api/groups/{namespace_id}/cascade-status"))
+            .await?;
+        Ok(response)
+    }
+
+    /// Logically abort an in-flight namespace migration: flips the migration
+    /// target back so not-yet-applied lazy contexts stop migrating. Idempotent.
+    /// Does not recall an already-committed v2 context.
+    pub async fn abort_migration(&self, namespace_id: &str) -> Result<AbortMigrationApiResponse> {
+        let response = self
+            .connection
+            .post_no_body(&format!("admin-api/groups/{namespace_id}/migration/abort"))
             .await?;
         Ok(response)
     }
