@@ -13,8 +13,8 @@
 //! 5. The runtime writes the returned bytes back to the root state slot
 
 use proc_macro2::TokenStream;
-use quote::quote;
-use syn::{ItemFn, ReturnType};
+use quote::{quote, ToTokens};
+use syn::{FnArg, ItemFn, Pat, ReturnType};
 
 /// Generates the migration function implementation.
 ///
@@ -146,6 +146,188 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// Generates the migration-check function implementation.
+///
+/// This is the sibling of [`migrate_impl`]: where `#[app::migrate]` *produces*
+/// the new v2 root, `#[app::migration_check]` is a read-only predicate the
+/// runtime invokes on that produced root **before** it is committed. A `false`
+/// result (or a trap) lets the runtime logically abort the migration, leaving
+/// the still-untouched v1 root intact.
+///
+/// The user writes `fn check(old: OldTy, new: NewTy) -> bool { .. }`. This
+/// function transforms it into:
+/// - A WASM export (for `wasm32` target) named `__calimero_migration_check`
+///   that:
+///   - Sets up the panic hook for better error messages
+///   - Reads the OLD v1 root via `calimero_sdk::read_raw()` and borsh-decodes
+///     it into the `old` parameter type (still v1 in the store, exactly as
+///     `#[app::migrate]` reads it)
+///   - Borsh-decodes the produced NEW root from `env::input()` into the `new`
+///     parameter type (the same bytes `write_migration_state` would persist)
+///   - Runs the user's predicate body
+///   - Borsh-serializes the `bool` result and returns it via `value_return`
+/// - The original function (for non-WASM targets) for testing
+///
+/// Unlike `migrate_impl` this is **not** wrapped in `with_merge_mode`: it is a
+/// pure read-only predicate, never assigns deterministic ids, and produces no
+/// state — so none of the cross-node determinism machinery applies.
+///
+/// # Arguments
+///
+/// * `_attr` - Attribute arguments (currently unused)
+/// * `item` - The function item to transform
+///
+/// # Returns
+///
+/// A `TokenStream` containing the generated code for both WASM and non-WASM targets.
+pub fn migration_check_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = match syn::parse2::<ItemFn>(item) {
+        Ok(i) => i,
+        Err(e) => return e.to_compile_error(),
+    };
+
+    let block = &input.block;
+    let vis = &input.vis;
+    let attrs = &input.attrs;
+    let sig = &input.sig;
+
+    // Require exactly two value params: `old: OldTy`, `new: NewTy`.
+    let typed: Vec<_> = sig
+        .inputs
+        .iter()
+        .filter_map(|arg| match arg {
+            FnArg::Typed(pt) => Some(pt),
+            FnArg::Receiver(_) => None,
+        })
+        .collect();
+
+    if typed.len() != sig.inputs.len() || typed.len() != 2 {
+        return quote! {
+            ::core::compile_error!(
+                "calimero: #[app::migration_check] requires exactly two parameters, \
+                 `fn check(old: OldState, new: NewState) -> bool` — the old (v1) root \
+                 and the produced new (v2) root"
+            );
+        };
+    }
+
+    // Require a concrete `-> bool` return.
+    match &sig.output {
+        ReturnType::Type(_, ty) => {
+            if ty.to_token_stream().to_string().replace(' ', "") != "bool" {
+                return quote! {
+                    ::core::compile_error!(
+                        "calimero: #[app::migration_check] must return `bool` — \
+                         `true` to commit the migration, `false` to logically abort it"
+                    );
+                };
+            }
+        }
+        ReturnType::Default => {
+            return quote! {
+                ::core::compile_error!(
+                    "calimero: #[app::migration_check] must return `bool` — \
+                     `true` to commit the migration, `false` to logically abort it"
+                );
+            };
+        }
+    }
+
+    let old_arg = typed[0];
+    let new_arg = typed[1];
+
+    // Bind names for the user body — copy the user's own param idents so their
+    // block compiles unchanged.
+    let old_pat = match &*old_arg.pat {
+        Pat::Ident(p) => &p.ident,
+        _ => {
+            return quote! {
+                ::core::compile_error!(
+                    "calimero: #[app::migration_check]'s first parameter must be a plain \
+                     identifier, e.g. `old: OldState`"
+                );
+            };
+        }
+    };
+    let new_pat = match &*new_arg.pat {
+        Pat::Ident(p) => &p.ident,
+        _ => {
+            return quote! {
+                ::core::compile_error!(
+                    "calimero: #[app::migration_check]'s second parameter must be a plain \
+                     identifier, e.g. `new: NewState`"
+                );
+            };
+        }
+    };
+    let old_ty = &old_arg.ty;
+    let new_ty = &new_arg.ty;
+
+    quote! {
+        /// WASM export for the migration-check predicate.
+        ///
+        /// This function is called by the node runtime on the produced v2 root
+        /// *before* it is committed. It reads the old (v1) state, deserializes
+        /// the produced new (v2) state from the runtime-supplied input, runs the
+        /// author's predicate, and returns the borsh-serialized `bool` verdict.
+        #[cfg(target_arch = "wasm32")]
+        #[no_mangle]
+        pub extern "C" fn __calimero_migration_check() {
+            ::calimero_sdk::env::setup_panic_hook();
+
+            // Read the OLD v1 root — still v1 in the store, exactly as
+            // `#[app::migrate]` reads it (the v1 root is not mutated until the
+            // migration commits, which has not happened yet at check time).
+            let __old_bytes = match ::calimero_sdk::state::read_raw() {
+                Some(b) => b,
+                None => ::calimero_sdk::env::panic_str(
+                    "migration_check: no old root state found via read_raw()"
+                ),
+            };
+            let #old_pat: #old_ty = match ::calimero_sdk::borsh::from_slice(&__old_bytes) {
+                Ok(v) => v,
+                Err(e) => ::calimero_sdk::env::panic_str(
+                    &::std::format!("migration_check: failed to deserialize old state: {:?}", e)
+                ),
+            };
+
+            // The produced NEW v2 root arrives as the runtime input — the same
+            // bytes `write_migration_state` would persist.
+            let __new_bytes = match ::calimero_sdk::env::input() {
+                Some(b) => b,
+                None => ::calimero_sdk::env::panic_str(
+                    "migration_check: no new state provided via env::input()"
+                ),
+            };
+            let #new_pat: #new_ty = match ::calimero_sdk::borsh::from_slice(&__new_bytes) {
+                Ok(v) => v,
+                Err(e) => ::calimero_sdk::env::panic_str(
+                    &::std::format!("migration_check: failed to deserialize new state: {:?}", e)
+                ),
+            };
+
+            // Run the author's predicate.
+            let __result: bool = (|| #block)();
+
+            // Return the borsh-serialized verdict. Mirroring `#[app::migrate]`,
+            // the raw payload handed to `value_return`'s Ok branch is what the
+            // runtime extracts from `outcome.returns` — here `borsh(bool)`.
+            let __verdict = match ::calimero_sdk::borsh::to_vec(&__result) {
+                Ok(b) => b,
+                Err(e) => ::calimero_sdk::env::panic_str(
+                    &::std::format!("migration_check: failed to serialize verdict: {:?}", e)
+                ),
+            };
+            ::calimero_sdk::env::value_return(&Ok::<Vec<u8>, Vec<u8>>(__verdict));
+        }
+
+        /// Native version of the migration-check function for testing.
+        #[cfg(not(target_arch = "wasm32"))]
+        #(#attrs)*
+        #vis #sig #block
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +387,69 @@ mod tests {
             "expected with_merge_mode wrap in expansion (CIP I9 cross-node determinism: \
              suppresses LwwRegister/Element node-local timestamps during migrate): {}",
             expanded
+        );
+    }
+
+    #[test]
+    fn migration_check_expansion_produces_wasm_export() {
+        let input = quote! {
+            fn check(old: AppV1, new: AppV2) -> bool {
+                old.len() == new.len()
+            }
+        };
+        let out = migration_check_impl(TokenStream::new(), input).to_string();
+
+        assert!(
+            out.contains("extern \"C\""),
+            "expected WASM extern \"C\" export in expansion: {}",
+            out
+        );
+        assert!(
+            out.contains("__calimero_migration_check"),
+            "expected #[no_mangle] __calimero_migration_check export name in expansion: {}",
+            out
+        );
+        assert!(
+            out.contains("read_raw"),
+            "expected read_raw() to load the old v1 root in expansion: {}",
+            out
+        );
+        assert!(
+            out.contains("input"),
+            "expected env::input() to load the produced v2 root bytes in expansion: {}",
+            out
+        );
+        assert!(
+            out.contains("value_return"),
+            "expected value_return of the borsh Ok::<bool, _> result in expansion: {}",
+            out
+        );
+        assert!(
+            out.contains("no_mangle"),
+            "expected #[no_mangle] in expansion: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn migration_check_expansion_preserves_native_stub() {
+        let input = quote! {
+            pub fn my_check(old: AppV1, new: AppV2) -> bool {
+                true
+            }
+        };
+        let out = migration_check_impl(TokenStream::new(), input).to_string();
+
+        assert!(
+            out.contains("my_check"),
+            "expected function name in expansion: {}",
+            out
+        );
+        assert!(
+            out.contains("not (target_arch = \"wasm32\")")
+                || out.contains("not(target_arch = \"wasm32\")"),
+            "expected native cfg stub in expansion: {}",
+            out
         );
     }
 

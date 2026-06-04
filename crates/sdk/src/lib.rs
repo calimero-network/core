@@ -37,8 +37,8 @@ pub mod app {
     pub type Result<T, E = Error> = core::result::Result<T, E>;
 
     pub use calimero_sdk_macros::{
-        bail, destroy, emit, err, event, init, log, logic, migrate, private, state, Mergeable,
-        Migrate,
+        bail, destroy, emit, err, event, init, log, logic, migrate, migration_check, private,
+        state, Mergeable, Migrate,
     };
 
     use core::sync::atomic::{AtomicU32, Ordering};
