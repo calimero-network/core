@@ -514,3 +514,194 @@ fn cascade_group_migration_set_borsh_round_trip() {
         other => panic!("expected CascadeGroupMigrationSet, got {:?}", other),
     }
 }
+
+// --- Departed-owner force-carry (PR-6c task 6c.4) ---
+
+fn sample_force_carry(seed: u8, departed_owner: PublicKey) -> GroupOp {
+    GroupOp::MigrationForceCarry {
+        context_id: [seed; 32],
+        entry_id: [!seed; 32],
+        departed_owner,
+        target_schema_version: 2,
+    }
+}
+
+#[test]
+fn migration_force_carry_sign_verify_and_label() {
+    let mut rng = OsRng;
+    let sk = PrivateKey::random(&mut rng);
+    let departed_owner = PrivateKey::random(&mut rng).public_key();
+
+    let op = SignedGroupOp::sign(
+        &sk,
+        sample_group_id(),
+        vec![],
+        [0u8; 32],
+        1,
+        sample_force_carry(0x33, departed_owner),
+    )
+    .expect("sign");
+
+    op.verify_signature().expect("verify");
+    assert_eq!(
+        op.op.op_kind_label(),
+        "migration_force_carry",
+        "op_kind_label must distinguish the force-carry variant for metrics"
+    );
+}
+
+#[test]
+fn migration_force_carry_borsh_round_trip() {
+    // Wire-format round-trip for the new variant. Guards against an enum
+    // reordering silently shifting variant tags, and asserts every field
+    // survives a standalone serialize -> deserialize.
+    let mut rng = OsRng;
+    let departed_owner = PrivateKey::random(&mut rng).public_key();
+    let original = GroupOp::MigrationForceCarry {
+        context_id: [9u8; 32],
+        entry_id: [10u8; 32],
+        departed_owner,
+        target_schema_version: 7,
+    };
+
+    let bytes = borsh::to_vec(&original).expect("serialize");
+    let decoded: GroupOp = borsh::from_slice(&bytes).expect("deserialize");
+
+    match decoded {
+        GroupOp::MigrationForceCarry {
+            context_id,
+            entry_id,
+            departed_owner: decoded_owner,
+            target_schema_version,
+        } => {
+            assert_eq!(context_id, [9u8; 32]);
+            assert_eq!(entry_id, [10u8; 32]);
+            assert_eq!(decoded_owner, departed_owner);
+            assert_eq!(target_schema_version, 7);
+        }
+        other => panic!("expected MigrationForceCarry, got {:?}", other),
+    }
+}
+
+#[test]
+fn migration_force_carry_back_compat_appended_at_end() {
+    // `MigrationForceCarry` is appended at the END of `GroupOp`, so every
+    // prior variant's Borsh discriminant must stay fixed. This is a GOLDEN
+    // byte-vector guard: the bytes below were produced by the enum BEFORE the
+    // append (CascadeUpgrade at ordinal 25, its leading discriminant byte).
+    // We decode these EXTERNALLY-FIXED bytes with the CURRENT enum — we never
+    // re-encode them here. A same-binary serialize -> deserialize round-trip
+    // (see `migration_force_carry_borsh_round_trip`) would NOT catch a
+    // mid-enum insertion, because both sides would use the shifted layout and
+    // still agree. Decoding frozen bytes is what actually catches it: insert a
+    // variant in the MIDDLE of `GroupOp` and CascadeUpgrade's ordinal shifts
+    // off 25, so byte `25` here decodes as a DIFFERENT variant (or fails).
+    //
+    // Golden encoding of:
+    //   GroupOp::CascadeUpgrade {
+    //       from_app_key: [3u8; 32],
+    //       app_key: [4u8; 32],
+    //       target_application_id: sample_application_id(5),
+    //       migration: Some(b"migrate".to_vec()),
+    //       cascade_hlc: HybridTimestamp::zero(),
+    //   }
+    const GOLDEN_CASCADE_UPGRADE: &[u8] = &[
+        25, // <- CascadeUpgrade's fixed Borsh discriminant (ordinal 25)
+        3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+        3, 3, 3, // from_app_key
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        4, 4, 4, // app_key
+        5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 250, // target_application_id = sample_application_id(5)
+        1, 7, 0, 0, 0, 109, 105, 103, 114, 97, 116, 101, // migration = Some("migrate")
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, // cascade_hlc = HybridTimestamp::zero()
+    ];
+
+    // Up-front: the leading discriminant byte must equal CascadeUpgrade's
+    // known ordinal, so a mid-enum insertion (which shifts it) is caught.
+    assert_eq!(
+        GOLDEN_CASCADE_UPGRADE[0], 25,
+        "CascadeUpgrade's Borsh discriminant must stay at ordinal 25; a \
+         changed leading byte means a prior variant moved"
+    );
+
+    let decoded: GroupOp =
+        borsh::from_slice(GOLDEN_CASCADE_UPGRADE).expect("decode frozen CascadeUpgrade bytes");
+    match decoded {
+        GroupOp::CascadeUpgrade {
+            from_app_key,
+            app_key,
+            target_application_id,
+            migration,
+            cascade_hlc,
+        } => {
+            assert_eq!(from_app_key, [3u8; 32]);
+            assert_eq!(app_key, [4u8; 32]);
+            assert_eq!(target_application_id, sample_application_id(5));
+            assert_eq!(migration, Some(b"migrate".to_vec()));
+            assert_eq!(cascade_hlc, HybridTimestamp::zero());
+        }
+        other => panic!(
+            "frozen CascadeUpgrade bytes (discriminant 25) decoded as {:?}; a \
+             variant was inserted mid-enum, shifting prior variant tags",
+            other
+        ),
+    }
+}
+
+#[test]
+fn migration_force_carry_fields_covered_by_content_hash() {
+    // Each carried field must be part of the signed content hash so that
+    // two force-carry ops differing in any one field hash distinctly
+    // (otherwise replay/dedup would conflate distinct governance intents).
+    let mut rng = OsRng;
+    let sk = PrivateKey::random(&mut rng);
+    let owner_a = PrivateKey::random(&mut rng).public_key();
+    let owner_b = PrivateKey::random(&mut rng).public_key();
+
+    let sign = |op: GroupOp| {
+        SignedGroupOp::sign(&sk, sample_group_id(), vec![], [0u8; 32], 1, op)
+            .expect("sign")
+            .content_hash()
+            .expect("hash")
+    };
+
+    let base = sign(GroupOp::MigrationForceCarry {
+        context_id: [1u8; 32],
+        entry_id: [2u8; 32],
+        departed_owner: owner_a,
+        target_schema_version: 1,
+    });
+
+    // different departed_owner
+    assert_ne!(
+        base,
+        sign(GroupOp::MigrationForceCarry {
+            context_id: [1u8; 32],
+            entry_id: [2u8; 32],
+            departed_owner: owner_b,
+            target_schema_version: 1,
+        })
+    );
+    // different entry_id
+    assert_ne!(
+        base,
+        sign(GroupOp::MigrationForceCarry {
+            context_id: [1u8; 32],
+            entry_id: [3u8; 32],
+            departed_owner: owner_a,
+            target_schema_version: 1,
+        })
+    );
+    // different target_schema_version
+    assert_ne!(
+        base,
+        sign(GroupOp::MigrationForceCarry {
+            context_id: [1u8; 32],
+            entry_id: [2u8; 32],
+            departed_owner: owner_a,
+            target_schema_version: 2,
+        })
+    );
+}

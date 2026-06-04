@@ -87,7 +87,16 @@ pub use wire::{
 /// the out-of-order apply window that existed between the two v6 ops.
 /// Variant ordinal is appended after the v6 variants; v6 ordinals are
 /// preserved.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 7;
+///
+/// Schema v8: adds the `MigrationForceCarry` variant at the END of the
+/// `GroupOp` enum for departed-owner identity-gated migration (PR-6c). It
+/// authorizes the namespace admin to tombstone a stale identity-gated entry
+/// whose owner never returns and re-create it under the admin's own key
+/// (no owner-forge, no owner-change). Variant ordinal is appended after the
+/// v7 variant; all prior ordinals are preserved. Same operator-discipline
+/// rollout posture as v6/v7: older peers cannot deserialize the new variant,
+/// so deploy v8 to every peer before issuing a force-carry.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 8;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
@@ -342,6 +351,33 @@ pub enum GroupOp {
         migration: Option<Vec<u8>>,
         cascade_hlc: HybridTimestamp,
     },
+    /// Admin force-carry of a departed owner's stale identity-gated entry
+    /// (PR-6c). An identity-gated entry whose owner never returns cannot be
+    /// owner-converted (the owner-driven convert path requires the owner's
+    /// own signed write). This op authorizes the namespace admin to resolve
+    /// it WITHOUT forging the owner's signature or changing an entry's owner
+    /// (both forbidden — `verify_action_update` rejects an owner change on a
+    /// `User`/`Shared` entry). Resolution is therefore a **tombstone + rekey**:
+    /// delete the stale entry and re-create a fresh entity stamped under the
+    /// admin's OWN key (which the admin signs normally, so it verifies at
+    /// `apply_action` with no new crypto), carrying `target_schema_version`.
+    ///
+    /// Authorized ONLY for the namespace admin/owner capability (enforced in
+    /// the apply handler, task 6c.5); observability-driven, never automatic.
+    /// `departed_owner` is carried for audit (whose entry is being carried)
+    /// and is NOT used to re-sign. Appended at the END of the enum (schema
+    /// v8) so all prior variant ordinals are preserved.
+    MigrationForceCarry {
+        /// Context the stale entry lives under.
+        context_id: [u8; 32],
+        /// Storage `Id` of the stale identity-gated entry to tombstone.
+        entry_id: [u8; 32],
+        /// Audit: the departed owner whose entry is being carried. Not used
+        /// to re-sign — the admin cannot forge this key's signature.
+        departed_owner: PublicKey,
+        /// Schema version stamped on the fresh admin-owned replacement entity.
+        target_schema_version: u32,
+    },
 }
 
 impl GroupOp {
@@ -380,6 +416,7 @@ impl GroupOp {
             GroupOp::CascadeTargetApplicationSet { .. } => "cascade_target_application_set",
             GroupOp::CascadeGroupMigrationSet { .. } => "cascade_group_migration_set",
             GroupOp::CascadeUpgrade { .. } => "cascade_upgrade",
+            GroupOp::MigrationForceCarry { .. } => "migration_force_carry",
         }
     }
 }
