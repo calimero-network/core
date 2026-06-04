@@ -44,7 +44,8 @@ impl ComponentsDemo {
         Ok(())
     }
 
-    /// Read the config (anyone may read).
+    /// Read the config (anyone may read). Returns the empty string until
+    /// `set_config` is first called (the `LwwRegister` default).
     pub fn get_config(&self) -> app::Result<String> {
         Ok(self.config.get()?.get().clone())
     }
@@ -95,7 +96,10 @@ mod tests {
     #[test]
     fn non_owner_cannot_set_config() {
         let mut app = TestHost::new(ComponentsDemo::init);
-        // A different executor is not the owner — the guard rejects it.
+        // This exercises the fail-fast *API* guard only. The authoritative
+        // boundary is merge-time signature verification against the writer set,
+        // which requires a 2-node adversarial e2e (design doc §6.3) — a
+        // single-host unit test cannot reach the merge path.
         let result = app.call_as(OTHER, |s| s.set_config("forged".to_owned()));
         assert!(result.is_err());
     }

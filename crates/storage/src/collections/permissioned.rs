@@ -214,9 +214,11 @@ where
     /// # Errors
     /// `ActionNotAllowed` if the executor is not in the writer set.
     pub fn insert(&mut self, value: T) -> Result<Option<T>, StoreError> {
-        // `SharedStorage::insert` already gates on writer-set membership, which
-        // is exactly `WriterSetAcl`/`OwnerAcl` for `Op::Write` — delegate rather
-        // than duplicate the predicate so the API gate cannot drift from merge.
+        // Apply the policy at the API surface so a custom `Authorizer` that
+        // restricts `Op::Write` more narrowly than plain membership is honoured
+        // — the whole point of the seam. `SharedStorage::insert` then performs
+        // the authoritative membership check that peers re-verify at merge.
+        self.guard(Op::Write)?;
         self.inner.insert(value)
     }
 
@@ -242,9 +244,9 @@ where
     /// `ActionNotAllowed` if frozen, if `new_writers` is empty, or if the
     /// executor is not a current writer.
     pub fn rotate_writers(&mut self, new_writers: BTreeSet<PublicKey>) -> Result<(), StoreError> {
-        // Apply the policy at the API surface too, so the fail-fast gate and the
-        // merge-time check agree. `SharedStorage::rotate_writers` then re-checks
-        // membership (and frozen/empty) authoritatively.
+        // Single API-surface policy gate (honours a custom `Authorizer`).
+        // `SharedStorage::rotate_writers` is authoritative: it re-checks
+        // membership and enforces the frozen / non-empty rules.
         self.guard(Op::Admin)?;
         self.inner.rotate_writers(new_writers)
     }
@@ -367,10 +369,8 @@ where
     /// # Errors
     /// `ActionNotAllowed` if frozen or the executor is not the current owner.
     pub fn transfer_ownership(&mut self, new_owner: PublicKey) -> Result<(), StoreError> {
-        // Self-contained owner gate (`rotate_writers` also guards `Op::Admin`,
-        // which for `OwnerAcl` is the same predicate) so the method enforces its
-        // own contract rather than relying on the caller.
-        self.only_owner()?;
+        // Owner-gated through `rotate_writers`, which guards `Op::Admin` — for
+        // `OwnerAcl` that is exactly the owner check. One gate, no redundancy.
         self.rotate_writers(BTreeSet::from([new_owner]))
     }
 }
