@@ -926,19 +926,16 @@ impl Message for GetCascadeStatusRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Admin abort-migration (PR-6d task 6d.4)
+// Admin abort-migration
 // ---------------------------------------------------------------------------
 
-/// Logically abort an in-flight namespace migration (Task 6d.4).
+/// Logically abort an in-flight namespace migration.
 ///
 /// Flips the group's pending migration target back to the pre-migration
 /// application id and drops the pending `migration` marker so not-yet-applied
-/// lazy contexts stop migrating on their next access (`maybe_lazy_upgrade` no
-/// longer triggers). This is a **logical** abort: there is no byte snapshot to
-/// restore, and an already-committed v2 context is *not* recalled (that would
-/// be the replicated-delta recall this train explicitly does not do — spec §7
-/// invariant 5). Idempotent: aborting a group with no pending migration is a
-/// no-op success.
+/// lazy contexts stop migrating on their next access. Logical abort: no byte
+/// snapshot is restored and an already-committed v2 context is not recalled.
+/// Idempotent: aborting a group with no pending migration is a no-op success.
 #[derive(Clone, Debug)]
 pub struct AbortMigrationRequest {
     pub namespace_id: ContextGroupId,

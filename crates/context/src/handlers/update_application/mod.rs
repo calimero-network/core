@@ -435,10 +435,9 @@ pub(crate) async fn update_application_with_migration(
             "Executing migration"
         );
 
-        // Clone the (Arc-backed, cheap) module before `execute_migration`
-        // moves its copy into `spawn_blocking`, so the pre-commit
-        // `migration_check` below can run a second `module.run` on the same
-        // already-compiled v2 artifact without re-loading it.
+        // Clone the (Arc-backed, cheap) module before `execute_migration` moves
+        // its copy into `spawn_blocking`, so the migration_check below can run a
+        // second `module.run` on the same already-compiled v2 artifact.
         let check_module = module.clone();
 
         // Execute migration function via module.run()
@@ -457,23 +456,13 @@ pub(crate) async fn update_application_with_migration(
             info!(%context_id, migration_log = %log_line, "Migration log");
         }
 
-        // ── Pre-commit migration_check + LOGICAL ABORT (PR-6d, migration_v2) ──
-        //
-        // Run the app's `__calimero_migration_check` export over the produced
-        // v2 root (`new_state_bytes`) while the old v1 root is still readable
-        // from the store via `read_raw()`. This happens AFTER `execute_migration`
-        // produced the v2 bytes but BEFORE `write_migration_state` — the first
-        // (and only) mutation of the v1 root — and before
-        // `finalize_application_update`.
-        //
-        // A failing (or trapping) check makes `commit_or_abort_migration`
-        // return `Err(MigrationCheckFailed)` below. That early return IS the
-        // logical abort: it skips BOTH `write_migration_state` AND
-        // `finalize_application_update`, so the committed context (root_hash,
-        // dag_heads, application_id) stays on v1. There is NO byte snapshot and
-        // NO restore — the v1 root is intact simply because it was never
-        // mutated. (An app with no `migration_check` export ⇒ `Ok(true)` ⇒
-        // commits, backwards-compatible.)
+        // Pre-commit migration_check (migration_v2). Run the app's
+        // `__calimero_migration_check` export over the produced v2 bytes while
+        // the v1 root is still readable, before `write_migration_state` (the
+        // only mutation of the v1 root) and `finalize_application_update`. A
+        // failing check makes `commit_or_abort_migration` return early, leaving
+        // the committed context on v1 (no byte restore — v1 was never mutated).
+        // An app with no check export ⇒ pass ⇒ commits (backwards-compatible).
         let check_passed = if migration_v2 {
             let passed = run_migration_check(
                 &datastore,
@@ -496,14 +485,14 @@ pub(crate) async fn update_application_with_migration(
             true
         };
 
-        // Funnel the verdict through the single gate-decision seam (6d.5). Today
-        // the decision source is the in-place `migration_check` verdict; a future
-        // canary-subgroup soak (spec §8/§10, deferred) plugs in here without
-        // touching `commit_or_abort_migration`.
+        // Funnel the verdict through the single gate-decision seam. The decision
+        // source is pluggable (today: the migration_check verdict; a future
+        // canary-subgroup soak would plug in here) without touching
+        // `commit_or_abort_migration`.
         let decision = MigrationGateDecision::from_check_result(check_passed);
 
         // Commit the produced v2 root, or logically abort. On a failed check
-        // this returns `Err(MigrationCheckFailed)` BEFORE the v1 root is ever
+        // this returns `Err(MigrationCheckFailed)` before the v1 root is ever
         // written, propagating out and skipping `finalize_application_update`.
         let new_root_hash = commit_or_abort_migration(
             &datastore,
@@ -554,21 +543,11 @@ pub(crate) async fn update_application_with_migration(
 /// The decision driving the post-`execute_migration` commit-vs-abort seam.
 ///
 /// Every path that has produced a candidate v2 root funnels its verdict through
-/// this enum before reaching [`commit_or_abort_migration`], so the *source* of
-/// the decision is pluggable while the commit/abort mechanics stay fixed.
-///
-/// Today the only decision source is the in-place `migration_check` verdict
-/// (PR-6d, 6d.3): a passing check ⇒ [`Commit`](MigrationGateDecision::Commit),
-/// a failing/trapping one ⇒ [`Abort`](MigrationGateDecision::Abort).
-///
-/// **Deferred — canary-subgroup gating (spec §8, §10).** A future soak gate that
-/// rolls the produced v2 root out to a canary subgroup before committing for the
-/// whole context plugs in *here* as a third decision source (e.g. a
-/// `Canary { subgroup }` variant, or a `from_canary_soak(..)` constructor that
-/// also yields `Commit`/`Abort`). It would feed this same enum, so it can drop in
-/// **without** reworking `commit_or_abort_migration`'s check/abort flow. Do NOT
-/// build canary here — this is only the seam (6d.5); canary itself is a non-goal
-/// of PR-6d (spec §10).
+/// this enum before reaching [`commit_or_abort_migration`], so the source of the
+/// decision is pluggable while the commit/abort mechanics stay fixed. Today the
+/// only source is the migration_check verdict (pass ⇒ `Commit`, fail ⇒ `Abort`);
+/// a future canary-subgroup soak gate (deferred) would plug in as another source
+/// feeding this same enum, without reworking `commit_or_abort_migration`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MigrationGateDecision {
     /// Persist the produced v2 root via `write_migration_state` and advance the
@@ -580,10 +559,9 @@ pub(crate) enum MigrationGateDecision {
 }
 
 impl MigrationGateDecision {
-    /// Map the in-place `migration_check` verdict onto a gate decision.
-    ///
-    /// This is the single point a future canary-subgroup gate would replace (or
-    /// sit beside): `true ⇒ Commit`, `false ⇒ Abort`.
+    /// Map the migration_check verdict onto a gate decision: `true ⇒ Commit`,
+    /// `false ⇒ Abort`. This is the single point a future canary-subgroup gate
+    /// would replace (or sit beside).
     pub(crate) const fn from_check_result(check_passed: bool) -> Self {
         if check_passed {
             Self::Commit
@@ -593,32 +571,23 @@ impl MigrationGateDecision {
     }
 }
 
-/// Commit the produced v2 migration root, or perform a **logical abort**.
+/// Commit the produced v2 migration root, or perform a logical abort. This is
+/// the single seam every post-`execute_migration` commit/abort decision funnels
+/// through.
 ///
-/// This is the single seam every post-`execute_migration` commit/abort decision
-/// funnels through:
-///
-/// - [`MigrationGateDecision::Abort`] ⇒ return
-///   `Err(MigrationCheckFailed { context_id })` **without touching the v1 root**.
-///   Because the caller propagates this error *before* `write_migration_state`
-///   runs and *before* `finalize_application_update`, the committed context
-///   (root_hash, dag_heads, application_id) stays entirely on v1. This early
-///   return IS the logical abort — there is NO byte snapshot and NO restore; the
-///   v1 root is intact simply because it was never mutated (the clean-rollback
-///   property characterized in 6d.0). The deterministic v2-shaped child entries
+/// - [`MigrationGateDecision::Abort`] ⇒ return `Err(MigrationCheckFailed)`
+///   without touching the v1 root. The caller propagates this before
+///   `write_migration_state` and `finalize_application_update` run, so the
+///   committed context (root_hash, dag_heads, application_id) stays on v1. No
+///   byte snapshot or restore — the v1 root is intact because it was never
+///   mutated (clean rollback). The deterministic v2-shaped child entries
 ///   `execute_migration` already committed remain as idempotent residue under
-///   the still-v1 root; they are deliberately NOT deleted (deleting them would
-///   be the byte-restore we explicitly do not do).
+///   the still-v1 root; they are deliberately not deleted.
 ///
-/// - [`MigrationGateDecision::Commit`] ⇒ write the produced `new_state_bytes`
-///   through `write_migration_state` (the sole root writer), advance
+/// - [`MigrationGateDecision::Commit`] ⇒ write `new_state_bytes` through
+///   `write_migration_state` (the sole root writer), advance
 ///   `context.root_hash`/`context.dag_heads` to the new v2 root, and return the
 ///   new Merkle root hash so the caller can emit events against it.
-///
-/// The decision arrives pre-computed via [`MigrationGateDecision`] so the
-/// *source* of the verdict (today: the in-place `migration_check`; deferred: a
-/// canary-subgroup soak — spec §8/§10) is pluggable without reworking the
-/// commit/abort mechanics below.
 fn commit_or_abort_migration(
     datastore: &calimero_store::Store,
     context: &mut Context,
@@ -629,11 +598,10 @@ fn commit_or_abort_migration(
     let context_id = context.id;
 
     if decision == MigrationGateDecision::Abort {
-        // LOGICAL ABORT: do not write the root, do not finalize. The v1 root is
-        // left intact because it was never mutated — no byte restore is needed
-        // (and none exists). The caller's `?` propagates this out of
-        // `update_application_with_migration`, skipping both
-        // `write_migration_state` and `finalize_application_update`.
+        // Logical abort: do not write the root, do not finalize. The v1 root is
+        // left intact because it was never mutated (no byte restore exists). The
+        // caller's `?` propagates this out, skipping both `write_migration_state`
+        // and `finalize_application_update`.
         return Err(MigrationCheckFailed { context_id }.into());
     }
 
@@ -773,13 +741,12 @@ async fn execute_migration(
 /// Error surfaced when a pre-commit `migration_check` rejects (or could not
 /// run on) the produced v2 root.
 ///
-/// Surfacing this error from `update_application_with_migration` IS the logical
-/// abort: the early return happens *before* `write_migration_state` (the first
-/// and only mutation of the v1 root) and *before* `finalize_application_update`,
-/// so the committed context — root_hash, dag_heads and application_id — stays
-/// entirely on v1. There is NO byte snapshot and NO restore: the v1 root is
-/// intact simply because it was never mutated (the clean-rollback property
-/// characterized in 6d.0).
+/// Surfacing this error from `update_application_with_migration` is the logical
+/// abort: the early return happens before `write_migration_state` (the only
+/// mutation of the v1 root) and `finalize_application_update`, so the committed
+/// context (root_hash, dag_heads, application_id) stays on v1. No byte snapshot
+/// or restore — the v1 root is intact because it was never mutated (clean
+/// rollback).
 #[derive(Debug, thiserror::Error)]
 #[error(
     "migration_check failed for context '{context_id}': logical abort — the produced v2 root was \
@@ -1928,17 +1895,16 @@ mod tests {
         );
     }
 
-    /// Characterizes the clean-rollback property PR-6d's logical abort relies
-    /// on: the v1 root entry is never mutated until the migration commits, so a
+    /// Characterizes the clean-rollback property the logical abort relies on:
+    /// the v1 root entry is never mutated until the migration commits, so a
     /// pre-commit early-return (a logical abort) leaves it fully intact.
     ///
-    /// The whole-root migrate path writes the root through exactly **one**
-    /// seam — `write_migration_state`, which is the sole caller of
+    /// The whole-root migrate path writes the root through exactly one seam —
+    /// `write_migration_state`, the sole caller of
     /// `Interface::write_pre_merged_root_state` in this file. Everything before
-    /// that (`execute_migration` producing `new_state_bytes`) is pure
-    /// computation against a still-v1 store. So "abort" is simply *not reaching*
-    /// that single writer: there is no byte snapshot to restore because the v1
-    /// root was never overwritten.
+    /// that is pure computation against a still-v1 store, so "abort" is simply
+    /// not reaching that single writer; there is no byte snapshot to restore
+    /// because the v1 root was never overwritten.
     ///
     /// This test locks that single-writer invariant at the source level. If a
     /// second root-write site appears, the abort path can no longer guarantee a
@@ -1959,7 +1925,7 @@ mod tests {
             "expected exactly one `write_pre_merged_root_state(` call site (the sole \
              root writer, inside `write_migration_state`) so a pre-commit logical abort \
              leaves the v1 root untouched; found {write_sites}. A new root-write site \
-             breaks PR-6d's clean-rollback guarantee."
+             breaks the clean-rollback guarantee."
         );
 
         // The single writer must live inside `write_migration_state` — the
@@ -2040,8 +2006,8 @@ mod tests {
     }
 
     /// The `MigrationCheckFailed` error carries the context id and surfaces a
-    /// recognisable "logical abort" message so callers (and the e2e log
-    /// assertions in 6d.6) can detect the abort.
+    /// recognisable "logical abort" message so callers (and e2e log assertions)
+    /// can detect the abort.
     #[test]
     fn migration_check_error_is_recognisable() {
         let context_id = ContextId::from([7u8; 32]);
@@ -2096,22 +2062,17 @@ mod tests {
         })
     }
 
-    /// Headline PR-6d invariant: a failed `migration_check` drives a **logical
-    /// abort** through the real commit/abort seam — no v1 byte is mutated.
-    ///
-    /// This exercises `commit_or_abort_migration` (the seam the flow funnels its
-    /// post-`execute_migration` decision through) with `check_passed = false`,
-    /// which is what `update_application_with_migration` produces when the v2
-    /// app's `__calimero_migration_check` returns `false`. It asserts:
+    /// A failed `migration_check` drives a logical abort through the real
+    /// commit/abort seam — no v1 byte is mutated. Exercises
+    /// `commit_or_abort_migration` with an `Abort` decision and asserts:
     ///   (a) the seam returns `Err(MigrationCheckFailed { context_id })`;
-    ///   (b) the committed root entry's `full_hash` is **identical** to the
+    ///   (b) the committed root entry's `full_hash` is identical to the
     ///       pre-migration v1 hash (clean rollback — v1 root never overwritten);
     ///   (c) the in-flight `Context` (application_id, root_hash, dag_heads) is
     ///       left untouched, so a later `finalize_application_update` would never
     ///       publish the v2 application_id;
-    ///   (d) the documented idempotent residue shape: v2-shaped child entries may
-    ///       sit under the still-v1 root (we plant one here), but the v1 root
-    ///       still points only at v1 entries — residue, not corruption.
+    ///   (d) v2-shaped child entries may sit under the still-v1 root (idempotent
+    ///       residue), but the v1 root still points only at v1 entries.
     #[tokio::test]
     async fn failed_migration_check_logically_aborts() {
         let store = create_test_store();
@@ -2227,18 +2188,15 @@ mod tests {
         );
     }
 
-    /// 6d.5 seam: every post-`execute_migration` commit/abort decision funnels
-    /// through one [`MigrationGateDecision`] so a future canary-subgroup gate
-    /// (spec §8/§10, deferred) can supply the decision later **without** touching
-    /// the commit/abort mechanics in `commit_or_abort_migration`.
-    ///
-    /// This locks two properties:
-    ///   (a) the in-place `migration_check` verdict maps onto the gate decision —
-    ///       `true ⇒ Commit`, `false ⇒ Abort` — via `MigrationGateDecision`'s
-    ///       `from_check_result`, the single point a canary path would replace;
+    /// The gate-decision seam: every commit/abort decision funnels through one
+    /// [`MigrationGateDecision`] so a future canary-subgroup gate (deferred) can
+    /// supply the decision later without touching `commit_or_abort_migration`.
+    /// Locks two properties:
+    ///   (a) the migration_check verdict maps onto the gate decision —
+    ///       `true ⇒ Commit`, `false ⇒ Abort` — via `from_check_result`, the
+    ///       single point a canary path would replace;
     ///   (b) the seam routes `Commit` to a real root write and `Abort` to the
-    ///       logical abort (`Err(MigrationCheckFailed)`, v1 root untouched),
-    ///       reusing the 6d.3 storage harness.
+    ///       logical abort (`Err(MigrationCheckFailed)`, v1 root untouched).
     #[tokio::test]
     async fn migration_gate_decision_maps_verdict_to_commit_or_abort() {
         use super::MigrationGateDecision;
