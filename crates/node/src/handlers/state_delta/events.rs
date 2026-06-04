@@ -5,7 +5,20 @@
 //! Extracted from the state-delta handler; the orchestrators in `mod.rs`
 //! call these after a delta's storage actions have been applied.
 
-use super::*;
+use calimero_context_client::client::ContextClient;
+use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::context::ContextId;
+use calimero_primitives::events::{
+    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
+};
+use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PublicKey;
+use eyre::Result;
+use tracing::{debug, info, warn};
+
+use crate::delta_store::DeltaStore;
+
+use super::ensure_application_available;
 
 // ---- CascadeOutcome ----
 #[derive(Default)]
@@ -158,14 +171,14 @@ pub(super) async fn execute_cascaded_events(
 ///
 /// # Handler Execution Model
 ///
-/// **IMPORTANTMenuHandlers currently execute **sequentially** in the order they appear
+/// **IMPORTANT**: Handlers currently execute **sequentially** in the order they appear
 /// in the events array. Future optimization may execute handlers in **parallel**.
 ///
 /// ## Requirements for Application Handlers
 ///
 /// Event handlers **MUST** satisfy these properties to be correct:
 ///
-/// 1. **CommutativeMenuHandler order must not affect final state
+/// 1. **Commutative**: Handler order must not affect final state
 ///    - ✅ SAFE: CRDT operations (Counter::increment, UnorderedMap::insert)
 ///    - ❌ UNSAFE: Dependent operations (create → update → delete chains)
 ///
@@ -177,7 +190,7 @@ pub(super) async fn execute_cascaded_events(
 ///    - ✅ SAFE: CRDT operations (naturally idempotent)
 ///    - ❌ UNSAFE: External API calls (charge_payment, send_email)
 ///
-/// 4. **No side effectsMenuHandlers should only modify CRDT state
+/// 4. **No side effects**: Handlers should only modify CRDT state
 ///    - ✅ SAFE: Pure state updates
 ///    - ❌ UNSAFE: HTTP requests, file I/O, blockchain transactions
 ///
@@ -187,7 +200,7 @@ pub(super) async fn execute_cascaded_events(
 /// - `kv-store-with-handlers`: All handlers just call `Counter::increment()`
 /// - Other apps: No handlers defined
 ///
-/// **VerdictMenuCurrent handlers are **100% safe** for parallel execution.
+/// **Verdict**: Current handlers are **100% safe** for parallel execution.
 ///
 /// ## Future Developers
 ///
@@ -195,6 +208,7 @@ pub(super) async fn execute_cascaded_events(
 /// 1. Document why parallelization is unsafe
 /// 2. Consider refactoring to use CRDTs
 /// 3. Or disable parallelization if absolutely necessary
+///
 /// Returns `Ok(true)` if every handler in the payload ran successfully,
 /// `Ok(false)` if at least one handler errored (individual errors are
 /// logged but swallowed so later handlers in the list still run). Callers
