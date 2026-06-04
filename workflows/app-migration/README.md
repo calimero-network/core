@@ -130,6 +130,43 @@ merobox bootstrap run workflows/app-migration/00-single-group-migration-baseline
     --image merod:local --e2e-mode --verbose
 ```
 
+## Straggler-absorb coverage (PR-6b / #2539) — why there is no live `24`/`25`
+
+PR-6b ("absorb-don't-drop") guarantees no straggler delta is silently
+dropped: a node offline across a migration window — including one still
+running the **v1 binary** — has its original signed bytes buffered durably
+and replayed verbatim once its loaded reader advances. Two live merobox
+scenarios were drafted for this (`24-straggler-absorbed`,
+`25-v1binary-not-corrupted`) and have been **descoped**: merobox's
+`disconnect_node` / `inject_network_fault` / `pause` all sever the node's
+RPC interface too (RPC and P2P share one container interface), so you
+cannot author a write on a peer-isolated-but-still-running node — the
+actual straggler condition. `24` failed because `set_description` never
+reached the disconnected node; `25` asserted post-reconnect convergence of
+a v1-pinned node, which legitimately does **not** converge to v2 (the
+assert was wrong).
+
+The absorb → buffer → drain → replay → converge logic is fully covered by
+unit + in-process-integration tests instead:
+
+| Property | Test (name → location) |
+|---|---|
+| buffer, never drop | `buffer_decision_persists_absorb_record_not_drop`, `apply_decision_does_not_persist_absorb_record` (`crates/node/src/handlers/state_delta/mod.rs`); `fence_decision_buffers_v2_delta_for_v1_loaded_reader` (`crates/context/tests/hlc_fence.rs`) |
+| drain replays a stale straggler once `loaded == target`, bypassing the fence | `drain_replays_stale_straggler_when_node_reached_target`, `drain_replay_bypasses_fence_for_stale_straggler` (`crates/node/src/handlers/state_delta/mod.rs`) |
+| convergence — absorb→replay refolds into a byte-identical v2 root | `absorbed_v1_delta_refolds_into_v2_root_deterministically` (+ negative `order_sensitive_migrate_fails_absorb_replay`) via `assert_absorb_replay_converges` (`apps/migration-harness-example/src/lib.rs`, helper in `crates/sdk/src/testing.rs`) |
+| survives a restart | `startup_recovery_drains_records_once_target_reached`, `startup_recovery_keeps_future_record_while_behind`, `startup_recovery_is_idempotent_across_two_calls` (`crates/node/src/handlers/state_delta/mod.rs`) |
+| v1 binary fed a future-schema leaf/entity → buffered verbatim, not deserialized (no corruption) | `test_snapshot_entity_future_schema_is_declined_not_stored`, `test_persist_buffered_snapshot_entity_sharedmember_is_redriven_not_pending` (`crates/node/src/sync/snapshot.rs`); `future_schema_entity_bytes_are_buffered_verbatim_not_deserialized` (`crates/governance-store/src/absorb.rs`) |
+
+**Follow-ups** (tracked so the live coverage can be reinstated):
+
+1. A merobox "peer-only partition that keeps RPC reachable" fault — would
+   let a workflow author a write on an isolated-but-running node, making
+   the real `24-straggler-absorbed` condition stageable.
+2. A **restart-based** live e2e merobox *can* stage today: a node with
+   unsent v1 writes restarts after the migration, then rejoins → its
+   buffered straggler is absorbed and converges. This exercises the durable
+   AbsorbBuffer + startup-recovery drain across a process boundary.
+
 ## CI
 
 `.github/workflows/app-migration-e2e.yml` runs every workflow in this

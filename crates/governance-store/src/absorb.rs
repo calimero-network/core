@@ -230,6 +230,83 @@ mod tests {
     }
 
     #[test]
+    fn future_schema_entity_bytes_are_buffered_verbatim_not_deserialized() {
+        // PR-6b straggler safety — the v1-binary-not-corrupted property the
+        // descoped live scenario 25 would have proven: a node on an older
+        // (v1) loaded reader fed a future-schema (v2) snapshot entity must
+        // BUFFER the raw `entry` + `index` blobs verbatim, never attempting to
+        // interpret them. Were the buffer to deserialize-on-store it would
+        // corrupt (or reject) unreadable v2 bytes; instead they survive the
+        // round trip byte-for-byte, to be re-verified + persisted once the
+        // reader advances.
+        //
+        // We use deliberately-unparseable "v2-shaped" blobs (an index that is
+        // NOT a valid v1 `EntityIndex`) — proving the absorb path treats them
+        // as opaque bytes: a deserialize attempt on store/load would error
+        // here, but the verbatim round trip succeeds.
+        let store = test_store();
+        let repo = AbsorbRepository::new(&store);
+        let ctx = ContextId::from([0xAA; 32]);
+        let v2_app_key = [0x22; 32];
+        let entity_id = [0xE5; 32];
+        // Bytes a v1 reader's `EntityIndex`/entry decoder could never parse —
+        // they only make sense to the v2 binary's schema.
+        let future_entry = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x99];
+        let future_index = vec![0xFF; 64];
+
+        let record = AbsorbRecord::from_snapshot_entity(
+            entity_id,
+            future_entry.clone(),
+            future_index.clone(),
+            v2_app_key,
+        );
+        repo.save(&ctx, v2_app_key, &record).unwrap();
+
+        // It lands in the AbsorbBuffer keyed under the SENDER's (v2) schema,
+        // not under the loaded (v1) reader — the drain re-applies it only once
+        // the reader advances to v2.
+        let pending = repo.enumerate_pending(&ctx).unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "a future-schema entity must be buffered, not dropped or stored"
+        );
+        let ((producing_app_key, delta_id), loaded) = &pending[0];
+        assert_eq!(
+            *producing_app_key, v2_app_key,
+            "buffered under the sender's v2 schema so the drain gates on the reader advancing"
+        );
+        assert_eq!(*delta_id, entity_id);
+
+        // The verbatim bytes survived the borsh round trip untouched — the
+        // buffer never tried to deserialize the future-schema payload.
+        let entity = loaded
+            .entity
+            .as_ref()
+            .expect("future-schema record must carry the entity payload, not be a delta");
+        assert!(
+            loaded.leaf.is_none(),
+            "an entity record must not be tagged as a leaf"
+        );
+        assert_eq!(
+            entity.entry, future_entry,
+            "entry blob must round-trip the absorb buffer byte-for-byte"
+        );
+        assert_eq!(
+            entity.index, future_index,
+            "index blob must round-trip the absorb buffer byte-for-byte (never deserialized)"
+        );
+        assert_eq!(entity.schema_app_key, v2_app_key);
+
+        // And it is NOT convertible to a replayable delta — it must drain via
+        // the entity path, not the verbatim-delta replay.
+        assert!(
+            loaded.clone().into_buffered().is_err(),
+            "a buffered future-schema entity is not a replayable delta"
+        );
+    }
+
+    #[test]
     fn enumerate_all_contexts_returns_distinct_contexts() {
         let store = test_store();
         let repo = AbsorbRepository::new(&store);
