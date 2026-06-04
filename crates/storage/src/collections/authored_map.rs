@@ -232,6 +232,31 @@ where
         self.inner.len()
     }
 
+    /// Returns the entry's stamped `schema_version`, or `None` if the key is
+    /// absent or the entry was never stamped (legacy). Reads the Merkle-invisible
+    /// `Metadata.schema_version`; used to skip already-migrated entries.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn entry_schema_version(&self, k: &K) -> Result<Option<u32>, StoreError> {
+        let id = self.entry_id(k);
+        let metadata = <Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
+        Ok(metadata.and_then(|m| m.schema_version))
+    }
+
+    /// Returns whether the current executor owns `k`. False for absent keys.
+    /// Only the owner can drive the per-entry convert, so this gates which
+    /// entries `migrate_my_entries()` re-writes.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn owned_by_me(&self, k: &K) -> Result<bool, StoreError> {
+        Ok(self
+            .owner_of(k)?
+            .as_ref()
+            .is_some_and(super::authored_common::executor_matches_owner))
+    }
+
     pub(crate) fn entry_id(&self, k: &K) -> crate::address::Id {
         compute_id(self.inner.element().id(), k.as_ref())
     }
@@ -500,6 +525,33 @@ mod tests {
 
         let map = Root::new(|| AuthoredMap::<String, u64>::new());
         assert_eq!(map.owner_of(&"ghost".to_owned()).unwrap(), None);
+    }
+
+    #[test]
+    #[serial]
+    fn entry_schema_version_and_ownership_reflect_stored_metadata() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+
+        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        map.insert("apple".to_owned(), 1).unwrap();
+
+        // An owner write stamps the binary's current target schema version
+        // (0 in the unit env, where no app is registered).
+        assert_eq!(
+            map.entry_schema_version(&"apple".to_owned()).unwrap(),
+            Some(calimero_sdk::app::schema_version()),
+        );
+        assert!(map.owned_by_me(&"apple".to_owned()).unwrap());
+
+        // A different executor is not the owner.
+        env::set_executor_id(BOB);
+        assert!(!map.owned_by_me(&"apple".to_owned()).unwrap());
+
+        // Absent key: no version, not owned.
+        env::set_executor_id(ALICE);
+        assert_eq!(map.entry_schema_version(&"ghost".to_owned()).unwrap(), None);
+        assert!(!map.owned_by_me(&"ghost".to_owned()).unwrap());
     }
 
     #[test]
