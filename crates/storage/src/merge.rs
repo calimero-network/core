@@ -250,19 +250,27 @@ pub fn merge_root_state(
             Err(MergeError::NoMergeFunctionRegistered)
         }
         registry::MergeRegistryResult::AllFunctionsFailed => {
-            // Merge functions are registered but none could merge the data.
-            // This typically happens when:
-            // - The data type doesn't match any registered type (test contamination)
-            // - Deserialization failed (corrupt data)
-            //
-            // Fall back to LWW to maintain backwards compatibility.
-            // The incoming value wins if timestamps are equal or incoming is newer.
-            //
-            // Per Delivery Contract Rule: any drop MUST be observable.
-            tracing::warn!(
+            // Merge functions are registered, but none could deserialize+merge
+            // these bytes. Dispatch is type-blind (no per-entity type hint yet,
+            // #1993), so two cases land here indistinguishably:
+            //   * EXPECTED (common): this entity's type simply has no custom
+            //     CRDT merge, so plain LWW is the correct resolution — e.g. a
+            //     routine `set`, or a root "shell" whose real data lives in
+            //     child entities that merge on their own paths.
+            //   * RARE: a custom-merge type's bytes are a genuine
+            //     mismatch/corruption.
+            // This used to log a WARN reading "type mismatch or corrupt data",
+            // which made every routine write look like data loss and once sent
+            // a split-brain investigation down a false path (#2626). The benign
+            // case dominates, and a real corruption also surfaces downstream
+            // (hash divergence) and via the loud I5 `NoMergeFunctionRegistered`
+            // path above — so log at DEBUG with accurate wording instead.
+            tracing::debug!(
                 target: "calimero_storage::merge",
-                "All registered merge functions failed, falling back to LWW. \
-                 This may indicate type mismatch or corrupt data."
+                existing_ts,
+                incoming_ts,
+                "no registered merge function matched this entity; resolving by \
+                 LWW (expected when the type has no custom CRDT merge)"
             );
             if incoming_ts >= existing_ts {
                 Ok(incoming.to_vec())
