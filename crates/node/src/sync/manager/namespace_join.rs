@@ -210,7 +210,7 @@ mod tests {
         let p1 = PeerId::random();
         let p2 = PeerId::random();
         // Sticky-last on mesh_peers means every round sees this pair.
-        mock.push_mesh_peers(vec![p1, p2]);
+        mock.push_subscribed_peers(vec![p1, p2]);
         let (open_timeout, retries, retry_delay) = defaults();
         // Each round tries every peer (3 × 2 = 6 attempts) and the
         // deadline guard fires before any extra inner-loop attempt.
@@ -254,7 +254,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn hanging_peers_are_interrupted_by_per_peer_timeout() {
         let mock = MockSyncNetwork::default();
-        mock.push_mesh_peers(vec![PeerId::random(), PeerId::random()]);
+        mock.push_subscribed_peers(vec![PeerId::random(), PeerId::random()]);
         // Every peer hangs far longer than open_timeout; tokio's
         // timeout should fire each time and we move on.
         for i in 0..20 {
@@ -296,7 +296,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn empty_mesh_every_round_returns_err() {
         let mock = MockSyncNetwork::default();
-        // No `push_mesh_peers` calls → mesh_peers returns Vec::new()
+        // No `push_subscribed_peers` calls → subscribed_peers returns Vec::new()
         // (the "never seeded" path; production-legitimate when the
         // mesh hasn't formed yet).
 
@@ -328,7 +328,7 @@ mod tests {
         let mock = MockSyncNetwork::default();
         // 10 peers — far more than DEADLINE_MAX_PEERS_PER_ROUND (4).
         let many_peers: Vec<PeerId> = (0..10).map(|_| PeerId::random()).collect();
-        mock.push_mesh_peers(many_peers);
+        mock.push_subscribed_peers(many_peers);
         // Every peer hangs for the full open_timeout — so the
         // per-peer cost lower-bound is open_timeout.
         for i in 0..50 {
@@ -401,7 +401,7 @@ mod tests {
         let mock = MockSyncNetwork::default();
         let p1 = PeerId::random();
         let p2 = PeerId::random();
-        mock.push_mesh_peers(vec![p1, p2]);
+        mock.push_subscribed_peers(vec![p1, p2]);
         let mut excluded = HashSet::new();
         excluded.insert(p1);
         excluded.insert(p2);
@@ -449,12 +449,12 @@ mod tests {
         let kept = PeerId::random();
         let blocked = PeerId::random();
         // `mesh_peers` is sticky-last in the mock (see module doc): a
-        // single `push_mesh_peers` call seeds the same list for every
+        // single `push_subscribed_peers` call seeds the same list for every
         // round. The test budget below (`retries` open_stream Errs)
         // depends on that — if sticky-last ever changes to return an
         // empty list after the first read, the assertion below would
         // pass vacuously instead of guarding the filter behaviour.
-        mock.push_mesh_peers(vec![kept, blocked]);
+        mock.push_subscribed_peers(vec![kept, blocked]);
         let mut excluded = HashSet::new();
         excluded.insert(blocked);
 
@@ -497,7 +497,7 @@ mod tests {
         let mock = MockSyncNetwork::default();
         // Three candidates in the (sticky) mesh; all are tried in
         // round 1 since 3 < DEADLINE_MAX_PEERS_PER_ROUND.
-        mock.push_mesh_peers(vec![PeerId::random(), PeerId::random(), PeerId::random()]);
+        mock.push_subscribed_peers(vec![PeerId::random(), PeerId::random(), PeerId::random()]);
         // The mock ignores peer identity and pops responses in order:
         // the first two opens fail, the third succeeds.
         mock.push_open_stream_err("peer down")

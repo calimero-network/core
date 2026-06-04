@@ -2,7 +2,7 @@
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
 use calimero_context::group_store::{membership_status_at, MembershipStatus};
-use calimero_context::group_store::{DenyListRepository, GroupKeyring, NamespaceRepository};
+use calimero_context::group_store::{DenyListRepository, NamespaceRepository};
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::GovernancePosition;
 use calimero_crypto::Nonce;
@@ -12,230 +12,20 @@ use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
-use eyre::{bail, OptionExt, Result};
+use eyre::{bail, Result};
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use crate::delta_store::DeltaStore;
 use crate::utils::choose_stream;
 
-/// Bounded wait for a `KeyDelivery` (carried by `NamespaceGovernanceDelta`)
-/// to land before we give up on decrypting an inbound state delta.
-/// Mirrors `KEY_DELIVERY_FALLBACK_WAIT` in
-/// `crates/context/src/handlers/join_group.rs`.
-///
-/// Why: once StateDelta processing runs on its own Arbiter (issue
-/// #2299), the race window where a delta wakes before its associated
-/// `KeyDelivery` has been applied to the group store widens. Without
-/// this short wait, the failure mode is "rely on the next 30s
-/// heartbeat to trigger sync rebroadcast" — exactly the lull pattern
-/// the actor isolation was meant to remove. Bounded at 3s so it can't
-/// itself starve the actor's mailbox.
-const STATE_DELTA_KEY_LOOKUP_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
-const STATE_DELTA_KEY_LOOKUP_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+mod crypto;
+mod verify;
 
-/// Resolve a state delta's encryption key for a given group, polling
-/// the group store up to `max_wait` if the key hasn't landed yet.
-/// Tries the direct group-id keyring first, then the namespace-id
-/// keyring on `Open` subgroups (issue #2256).
-///
-/// Pass `Duration::ZERO` for a single-shot lookup (no polling). The
-/// `replay_buffered_delta` path uses this — by the time replay runs,
-/// snapshot sync has settled and any late `KeyDelivery` is already
-/// applied; a stall there would multiply per-delta into multi-second
-/// sync recovery delays.
-///
-/// Returns `Ok(Some(_))` on success, `Ok(None)` when the wait expires
-/// without the key arriving, `Err(_)` on store errors.
-async fn lookup_group_key_with_wait(
-    context_client: &calimero_context_client::client::ContextClient,
-    group_id: &calimero_context_config::types::ContextGroupId,
-    key_id: &[u8; 32],
-    max_wait: std::time::Duration,
-) -> Result<Option<calimero_primitives::identity::PrivateKey>> {
-    use tokio::time::{sleep, Instant};
-
-    // Explicit single-shot path: when max_wait is zero we want exactly
-    // one lookup with no polling, regardless of the relationship
-    // between max_wait and STATE_DELTA_KEY_LOOKUP_POLL. Without this,
-    // single-shot semantics depend on POLL > 0, which is fragile.
-    let single_shot = max_wait.is_zero();
-    let deadline = Instant::now() + max_wait;
-    let mut logged_wait = false;
-    loop {
-        // Scope the &Store borrow to a sub-block so it cannot be
-        // mistaken for being held across the sleep below.
-        let resolved = {
-            let store = context_client.datastore();
-            let direct = GroupKeyring::new(store, *group_id).load_key_by_id(key_id)?;
-            match direct {
-                Some(k) => Some(k),
-                None => {
-                    let ns_id = NamespaceRepository::new(store).resolve(group_id)?;
-                    if &ns_id != group_id {
-                        GroupKeyring::new(store, ns_id).load_key_by_id(key_id)?
-                    } else {
-                        None
-                    }
-                }
-            }
-        };
-
-        if let Some(k) = resolved {
-            return Ok(Some(calimero_primitives::identity::PrivateKey::from(k)));
-        }
-
-        if single_shot {
-            return Ok(None);
-        }
-
-        // Stop before sleeping if the next poll wouldn't fit inside
-        // the deadline — bounds wall-time at exactly `max_wait`
-        // instead of `max_wait + STATE_DELTA_KEY_LOOKUP_POLL`.
-        if Instant::now() + STATE_DELTA_KEY_LOOKUP_POLL > deadline {
-            return Ok(None);
-        }
-
-        // Log on the first miss only — keeps the happy path silent
-        // but makes a slow KeyDelivery race visible to operators.
-        if !logged_wait {
-            debug!(
-                ?group_id,
-                key_id = %hex::encode(key_id),
-                wait_ms = max_wait.as_millis(),
-                "Group key not yet available — polling for KeyDelivery"
-            );
-            logged_wait = true;
-        }
-
-        sleep(STATE_DELTA_KEY_LOOKUP_POLL).await;
-    }
-}
-
-/// Outcome of the anti-bypass `group_id` check that runs at every
-/// apply path consulting a state delta's `governance_position`.
-///
-/// Two bypasses this check closes:
-///
-/// 1. **Mismatched `group_id` on a signed position.** A delta with
-///    `governance_position: Some(pos)` carries a `group_id` the *sender*
-///    chose at sign time. Without verification, a malicious sender could
-///    craft a delta for context X (owned by group A) carrying a position
-///    with `group_id = B` (a group the sender IS a member of). The
-///    cross-DAG membership check would succeed against group B and the
-///    write would land in context X without verifying membership in
-///    group A.
-///
-/// 2. **Lying about being a non-group context.** `governance_position:
-///    None` skips the cross-DAG check entirely (legacy non-group
-///    contexts have no governance DAG). A malicious sender could omit
-///    the position on a group-context delta to bypass enforcement. The
-///    `GroupContextNoPosition` variant catches this.
-///
-/// Each call site translates the outcome to its local error handling
-/// (warn-message wording, return-value shape, metric labels).
-///
-/// `pub(crate)` because the DAG-catchup paths in `sync::manager` and
-/// `sync::delta_request` now share the same anti-bypass logic — a
-/// single source of truth for "does the claimed governance position's
-/// group match this context's owning group?". A copy-paste of the
-/// match table across modules drifted in review (the DAG-catchup
-/// head-pull was running `membership_status_at` without first checking
-/// the group_id, leaving the bypass gap open); centralising fixes that
-/// for good. New consumers must respect the TOCTOU and forward-only
-/// invariants documented on `verify_position_group_id_matches_context`.
-pub(crate) enum GroupIdCheck {
-    /// Non-group context with no claimed group on the position. Legacy
-    /// path: no enforcement applies. Fall through to apply.
-    NonGroupOk,
-    /// Group context with a position whose `group_id` matches the
-    /// context's owning group. Proceed to the membership check.
-    Match,
-    /// Group context but the delta carries no `governance_position`.
-    /// `None` is only legitimate for non-group contexts; rejected here.
-    GroupContextNoPosition {
-        owning: calimero_context_config::types::ContextGroupId,
-    },
-    /// Position claims a group, but the context is not part of any
-    /// group. Rejected — a `Some` position is only legitimate for
-    /// group contexts.
-    NonGroupContextWithPosition {
-        claimed: calimero_context_config::types::ContextGroupId,
-    },
-    /// Position claims a group, context is owned by a different group.
-    /// Rejected — the bypass case described above.
-    Mismatch {
-        owning: calimero_context_config::types::ContextGroupId,
-        claimed: calimero_context_config::types::ContextGroupId,
-    },
-    /// Store lookup failed; reject conservatively to avoid silent bypass
-    /// on a transient I/O / corruption error.
-    LookupError(eyre::Error),
-}
-
-// Hand-written `Debug` (rather than `#[derive(Debug)]`) because the
-// `LookupError` variant wraps an `eyre::Error`, which we want to render
-// via its own `Debug` impl rather than expose the full backtrace.
-// Available in production code (not just tests) so call sites can
-// debug-print outcomes in tracing spans.
-impl std::fmt::Debug for GroupIdCheck {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            GroupIdCheck::NonGroupOk => write!(f, "NonGroupOk"),
-            GroupIdCheck::Match => write!(f, "Match"),
-            GroupIdCheck::GroupContextNoPosition { owning } => {
-                write!(f, "GroupContextNoPosition {{ owning: {owning:?} }}")
-            }
-            GroupIdCheck::NonGroupContextWithPosition { claimed } => {
-                write!(f, "NonGroupContextWithPosition {{ claimed: {claimed:?} }}")
-            }
-            GroupIdCheck::Mismatch { owning, claimed } => {
-                write!(f, "Mismatch {{ owning: {owning:?}, claimed: {claimed:?} }}")
-            }
-            GroupIdCheck::LookupError(err) => write!(f, "LookupError({err:?})"),
-        }
-    }
-}
-
-/// Anti-bypass check for the apply-path consumers of a state delta's
-/// `governance_position`. The `claimed_group_id` argument is the
-/// `group_id` from `Some(pos)` (the sender's signed claim), or `None`
-/// when the delta has no position. Returns the outcome each call site
-/// interprets to log + recover in its local idiom. See [`GroupIdCheck`]
-/// for the bypasses this closes.
-///
-/// **TOCTOU note.** Each call site runs this check immediately before
-/// `membership_status_at`, which internally walks the governance DAG
-/// scoped to `pos.group_id`. Between the two calls no lock is held;
-/// in principle a concurrent governance op could reassign the context
-/// to a different group, leaving the bypass check satisfied against
-/// the old group while the membership walk runs against the new one.
-/// In practice the `ContextManager` actor applies governance ops
-/// sequentially, so no concurrent reassignment can interleave between
-/// the check and the membership walk. The actor isolation is the
-/// invariant that mitigates the TOCTOU window; if that ever changes,
-/// the check needs to be promoted to a snapshot read across both
-/// lookups.
-pub(crate) fn verify_position_group_id_matches_context(
-    store: &calimero_store::Store,
-    context_id: &ContextId,
-    claimed_group_id: Option<calimero_context_config::types::ContextGroupId>,
-) -> GroupIdCheck {
-    let owning = match calimero_context::group_store::get_group_for_context(store, context_id) {
-        Ok(owning) => owning,
-        Err(err) => return GroupIdCheck::LookupError(err),
-    };
-
-    match (owning, claimed_group_id) {
-        (None, None) => GroupIdCheck::NonGroupOk,
-        (Some(owning), None) => GroupIdCheck::GroupContextNoPosition { owning },
-        (None, Some(claimed)) => GroupIdCheck::NonGroupContextWithPosition { claimed },
-        (Some(owning), Some(claimed)) if owning == claimed => GroupIdCheck::Match,
-        (Some(owning), Some(claimed)) => GroupIdCheck::Mismatch { owning, claimed },
-    }
-}
+use crypto::{decrypt_delta_actions, lookup_group_key_with_wait, STATE_DELTA_KEY_LOOKUP_WAIT};
+pub(crate) use verify::{verify_position_group_id_matches_context, GroupIdCheck};
 
 pub(crate) struct StateDeltaMessage {
     pub(crate) source: PeerId,
@@ -2026,25 +1816,6 @@ struct DeltaStoreSetup {
     is_uninitialized: bool,
 }
 
-fn decrypt_delta_actions(
-    artifact: Vec<u8>,
-    nonce: Nonce,
-    sender_key: PrivateKey,
-) -> Result<Vec<Action>> {
-    let shared_key = calimero_crypto::SharedKey::from_sk(&sender_key);
-    let decrypted_artifact = shared_key
-        .decrypt(artifact, nonce)
-        .ok_or_eyre("failed to decrypt artifact")?;
-
-    let storage_delta: calimero_storage::delta::StorageDelta =
-        borsh::from_slice(&decrypted_artifact)?;
-
-    match storage_delta {
-        calimero_storage::delta::StorageDelta::Actions(actions) => Ok(actions),
-        _ => bail!("Expected Actions variant in state delta"),
-    }
-}
-
 async fn choose_owned_identity(
     context_client: &ContextClient,
     context_id: &ContextId,
@@ -2356,37 +2127,6 @@ mod tests {
         // Invalid JSON should be rejected gracefully
         let parsed = parse_events_payload(&Some(b"not-json".to_vec()), &ContextId::zero());
         assert!(parsed.is_none());
-    }
-
-    #[test]
-    fn decrypt_delta_actions_roundtrip() -> Result<()> {
-        let mut rng = thread_rng();
-        let sender_key = PrivateKey::random(&mut rng);
-        let shared_key = SharedKey::from_sk(&sender_key);
-        let nonce = [7u8; NONCE_LEN];
-
-        let storage_delta = StorageDelta::Actions(Vec::new());
-        let plaintext = borsh::to_vec(&storage_delta)?;
-        let cipher = shared_key
-            .encrypt(plaintext, nonce)
-            .ok_or_eyre("encryption failed")?;
-
-        // Encrypted storage delta should decrypt back to empty actions
-        let decrypted = decrypt_delta_actions(cipher, nonce, sender_key)?;
-        assert!(decrypted.is_empty());
-
-        Ok(())
-    }
-
-    #[test]
-    fn decrypt_delta_actions_rejects_bad_cipher() {
-        let mut rng = thread_rng();
-        let sender_key = PrivateKey::random(&mut rng);
-        let nonce = [9u8; NONCE_LEN];
-
-        // Garbage ciphertext should fail to decrypt/deserialize
-        let result = decrypt_delta_actions(vec![1, 2, 3, 4], nonce, sender_key);
-        assert!(result.is_err());
     }
 
     // ---- verify_position_group_id_matches_context ----
