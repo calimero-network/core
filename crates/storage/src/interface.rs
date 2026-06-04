@@ -2052,7 +2052,16 @@ impl<S: StorageAdaptor> Interface<S> {
                                 actions.1.push(Action::Add {
                                     id: *child_id,
                                     data: local_child,
-                                    ancestors: <Index<S>>::get_ancestors_of(id)?,
+                                    // Ancestors of the entity being added (the
+                                    // child), not its parent `id` — apply
+                                    // rebuilds the path down to `*child_id` and
+                                    // links it under `ancestors[0]` (its
+                                    // immediate parent). Using `id` here dropped
+                                    // the immediate parent from the chain,
+                                    // orphaning the child on the receiver (the
+                                    // "collection entirely missing" arm below
+                                    // already does this correctly).
+                                    ancestors: <Index<S>>::get_ancestors_of(*child_id)?,
                                     metadata,
                                 });
                             }

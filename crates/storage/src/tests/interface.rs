@@ -509,6 +509,26 @@ mod interface__comparison {
             ]
         );
         local_para2.element_mut().is_dirty = true;
+        // Para2 is a local-only child within a collection both sides share, so
+        // it takes the "child missing from foreign" arm. Its Add must carry
+        // para2's *own* ancestor chain — i.e. its immediate parent, the page —
+        // exactly like the "collection entirely missing" arm does for para3
+        // below. Regression guard: this previously asserted `ancestors: vec![]`,
+        // which only held because the parent is the root page (whose ancestors
+        // are empty); the action was being built from the parent's ancestors
+        // instead of the child's, orphaning para2 on the receiver.
+        let local_para2_ancestor_hash = {
+            let Action::Add { ancestors, .. } = foreign_actions[1].clone() else {
+                panic!("Expected para2 to be added to foreign");
+            };
+            assert_eq!(ancestors.len(), 1, "para2 must carry exactly its parent");
+            assert_eq!(
+                ancestors[0].id(),
+                local_page.id(),
+                "para2's ancestor must be its immediate parent (the page)"
+            );
+            ancestors[0].merkle_hash()
+        };
         assert_eq!(
             foreign_actions,
             vec![
@@ -516,11 +536,15 @@ mod interface__comparison {
                 Action::Compare {
                     id: local_para1.id()
                 },
-                // Para2 needs to be added to foreign
+                // Para2 needs to be added to foreign, under its parent page
                 Action::Add {
                     id: local_para2.id(),
                     data: to_vec(&local_para2).unwrap(),
-                    ancestors: vec![],
+                    ancestors: vec![ChildInfo::new(
+                        local_page.id(),
+                        local_para2_ancestor_hash,
+                        local_page.element().metadata.clone(),
+                    )],
                     metadata: local_para2.element().metadata.clone(),
                 },
                 // Para3 needs to be added locally, but we don't have the data, so we compare
