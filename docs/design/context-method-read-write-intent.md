@@ -1,6 +1,6 @@
 # Per-method read/write intent (parallel-read accelerator)
 
-**Status:** design / spike — for team review. Not implemented.
+**Status:** design — decisions resolved, ready for implementation.
 **Issue:** #2684 · **Epic:** #2022 · **Consumes:** #2685 increment 2
 
 ## 1. Problem
@@ -107,11 +107,7 @@ RPC marks a call read-only; node verifies against the ABI before honoring it.
 - ➖ Adds a wire/API surface and a trust-but-verify step for no gain over A/B;
   not recommended.
 
-**Recommendation:** ship **A first** (smallest, fully explicit, easy to review),
-designed so the ABI carries a tri-state (`ReadOnly` / `Mutating` / `Unspecified`)
-rather than a bool — that leaves the door open to **B** later (flip the default
-for `Unspecified`+`&self`) without an ABI break. Either way the §5 enforcement is
-identical and mandatory.
+**Decision: A — explicit `#[app::view]`, tri-state ABI.** See §10.
 
 ## 5. Runtime enforcement — the load-bearing part
 
@@ -183,15 +179,29 @@ case — are unaffected.)
 4. *(Optional, later)* flip `Unspecified`+`&self` to read-only (Option B) — pure
    default change, no ABI break.
 
-## 10. Open questions for review
+## 10. Decisions
 
-- **A vs B for v1?** Explicit `#[app::view]` only, or infer-from-`&self` from the
-  start? (Recommend A with a tri-state ABI so B is a later, non-breaking flip.)
-- **Where does the read-only set live** — a field on `calimero_runtime::Module`
-  (couples runtime↔wasm-abi) or a sibling cache in `ContextManager`?
-- **Write-rejecting view granularity:** reject at the host-function boundary
-  (cleanest) vs. a read-only `ContextStorage` wrapper — which fits the existing
-  storage traits best?
-- **Does the ABI emitter see attributes reliably?** Confirm `emitter.rs` (the
-  source→manifest step) can read `#[app::view]`, or whether the proc-macro must
-  emit the flag into the section directly.
+All open questions resolved.
+
+**Q: Explicit `#[app::view]` (A) or infer-from-`&self` (B) for v1?**
+**→ A — explicit `#[app::view]`, tri-state ABI (`ReadOnly`/`Mutating`/`Unspecified`).**
+Smallest scope, fully explicit, easy to review. The tri-state field leaves the
+door open to flip `Unspecified`+`&self` to read-only later (no ABI break).
+
+**Q: Where does the per-application read-only method set live?**
+**→ Sibling `BoundedCache<ApplicationId, Arc<ReadOnlySet>>` in `ContextManager`.**
+Populated from the embedded ABI when the module is loaded into the module cache.
+Keeps `calimero-runtime` decoupled from `calimero-wasm-abi`.
+
+**Q: How are writes blocked during a read-lock execution?**
+**→ Read-only `ContextStorage` wrapper** — storage handle passed to the runtime
+has write/delete methods that return an error when the execution holds a read
+guard. Fits the existing `Storage` trait surface and mirrors the shape of the
+existing read-only-member machinery.
+
+**Q (factual): Does the ABI emitter see `#[app::view]` reliably?**
+**→ Yes.** `crates/wasm-abi/src/emitter.rs` is a `syn::visit::Visit` source
+parser — it already reads `#[app::state]` attributes (`emitter.rs:282`) and the
+full method signature via `visit_item_impl` (`:437`). It will see `#[app::view]`
+directly; the proc-macro does not need to emit anything into the WASM section
+independently.
