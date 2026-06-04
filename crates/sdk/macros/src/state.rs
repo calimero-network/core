@@ -62,6 +62,9 @@ impl ToTokens for StateImpl<'_> {
         // Generate deterministic ID assignment method
         let assign_ids_impl = generate_assign_deterministic_ids_impl(ident, generics, orig);
 
+        // Generate the one-tap migrate_my_entries() export over authored fields
+        let migrate_my_entries_impl = generate_migrate_my_entries_impl(ident, generics, orig);
+
         // Generate the in-process test-harness bridge (native-only)
         let test_state_impl = generate_test_state_impl(ident, generics, orig, &rekey_call);
 
@@ -96,6 +99,9 @@ impl ToTokens for StateImpl<'_> {
 
             // Auto-generated deterministic ID assignment
             #assign_ids_impl
+
+            // Auto-generated one-tap authored-data migration export
+            #migrate_my_entries_impl
 
             // Auto-generated TestHost bridge
             #test_state_impl
@@ -869,6 +875,162 @@ fn generate_test_state_impl(
     }
 }
 
+/// Whether a field type is a single-owner identity-gated collection that the
+/// one-tap `migrate_my_entries()` sweeps. Matches `AuthoredMap`/`AuthoredVector`
+/// only. `SharedStorage` (group writer-set) is deliberately excluded: its value
+/// converts via the organic writer-write substrate, and a batch re-write would
+/// force a `T: Clone` bound on every shared value type.
+fn is_identity_gated_collection(type_str: &str) -> bool {
+    type_str.contains("AuthoredMap") || type_str.contains("AuthoredVector")
+}
+
+/// Generate the one-tap `migrate_my_entries()` wasm export + its inherent
+/// helper. For each declared `AuthoredMap`/`AuthoredVector` field, re-write
+/// every entry the caller owns that is still below the target schema version,
+/// routing through the owner-driven convert (which re-stamps + re-signs). Plain
+/// (convergent) collections are skipped — they migrate via the whole-root
+/// rebuild. Emitted only when the state has at least one authored field.
+fn generate_migrate_my_entries_impl(
+    ident: &Ident,
+    generics: &Generics,
+    orig: &StructOrEnumItem,
+) -> TokenStream {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let fields = match orig {
+        StructOrEnumItem::Struct(s) => &s.fields,
+        StructOrEnumItem::Enum(_) => return quote! {},
+    };
+
+    let mut field_loops: Vec<TokenStream> = Vec::new();
+    for (idx, field) in fields.iter().enumerate() {
+        let field_type = &field.ty;
+        let type_str = quote! { #field_type }.to_string();
+        if !is_identity_gated_collection(&type_str) {
+            continue;
+        }
+
+        let access = if let Some(name) = &field.ident {
+            quote! { self.#name }
+        } else {
+            let index = syn::Index::from(idx);
+            quote! { self.#index }
+        };
+
+        // `AuthoredVector` also contains the substring "Vector"; check the map
+        // first, then fall to the vector shape (keyed-by-index vs keyed-by-key).
+        let loop_body = if type_str.contains("AuthoredMap") {
+            quote! {
+                // Collect first so the immutable `entries()` borrow is released
+                // before the mutable owner re-write below.
+                if let ::core::result::Result::Ok(__iter) = #access.entries() {
+                    let __entries: ::std::vec::Vec<_> = __iter.collect();
+                    for (__k, __v) in __entries {
+                        let __owned = #access.owned_by_me(&__k).unwrap_or(false);
+                        let __stale =
+                            #access.entry_schema_version(&__k).ok().flatten().unwrap_or(0)
+                                < __target;
+                        if __owned && __stale {
+                            match #access.update(&__k, __v) {
+                                ::core::result::Result::Ok(()) => {
+                                    __converted = __converted.saturating_add(1);
+                                }
+                                ::core::result::Result::Err(_) => {
+                                    __remaining = __remaining.saturating_add(1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            quote! {
+                if let ::core::result::Result::Ok(__len) = #access.len() {
+                    for __i in 0..__len {
+                        let __owned = #access.owned_by_me(__i).unwrap_or(false);
+                        let __stale =
+                            #access.entry_schema_version(__i).ok().flatten().unwrap_or(0)
+                                < __target;
+                        if __owned && __stale {
+                            if let ::core::result::Result::Ok(::core::option::Option::Some(__val)) =
+                                #access.get(__i)
+                            {
+                                match #access.update(__i, __val) {
+                                    ::core::result::Result::Ok(()) => {
+                                        __converted = __converted.saturating_add(1);
+                                    }
+                                    ::core::result::Result::Err(_) => {
+                                        __remaining = __remaining.saturating_add(1);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        field_loops.push(loop_body);
+    }
+
+    // No authored fields → nothing to migrate; emit nothing.
+    if field_loops.is_empty() {
+        return quote! {};
+    }
+
+    quote! {
+        impl #impl_generics #ident #ty_generics #where_clause {
+            /// Convert all of the caller's still-stale identity-gated entries to
+            /// the target schema in one pass. Each re-write rides the owner's
+            /// monotonic nonce (owner-driven convert), so it replicates as a
+            /// fresh signed delta. Idempotent: already-current entries are skipped.
+            #[doc(hidden)]
+            pub fn __calimero_migrate_my_entries(&mut self) -> ::calimero_sdk::MigrateMyEntriesSummary {
+                let __target = ::calimero_sdk::app::schema_version();
+                let mut __converted: u32 = 0;
+                let mut __remaining: u32 = 0;
+                #(#field_loops)*
+                ::calimero_sdk::MigrateMyEntriesSummary {
+                    converted: __converted,
+                    remaining: __remaining,
+                }
+            }
+        }
+
+        // One signed RPC call (`app_call "migrate_my_entries"`) converts the
+        // caller's authored entries and returns `{converted, remaining}` as JSON.
+        #[cfg(target_arch = "wasm32")]
+        #[no_mangle]
+        pub extern "C" fn migrate_my_entries() {
+            ::calimero_sdk::env::setup_panic_hook();
+            ::calimero_sdk::env::init_logging();
+            ::calimero_sdk::event::register::<#ident #ty_generics>();
+            ::calimero_sdk::app::register_schema_version::<#ident #ty_generics>();
+
+            let ::core::option::Option::Some(mut app) =
+                ::calimero_storage::collections::Root::<#ident #ty_generics>::fetch()
+            else {
+                ::calimero_sdk::env::panic_str("Failed to find or read app state")
+            };
+            let __summary = app.__calimero_migrate_my_entries();
+            let __out = {
+                #[allow(unused_imports)]
+                use ::calimero_sdk::__private::IntoResult;
+                match ::calimero_sdk::__private::WrappedReturn::new(__summary)
+                    .into_result()
+                    .to_json()
+                {
+                    ::core::result::Result::Ok(__o) => __o,
+                    ::core::result::Result::Err(__e) => ::calimero_sdk::env::panic_str(
+                        &format!("Failed to serialize migrate_my_entries output: {:?}", __e)
+                    ),
+                }
+            };
+            ::calimero_sdk::env::value_return(&__out);
+            app.commit();
+        }
+    }
+}
+
 /// Generate method to assign deterministic IDs to all collection fields.
 ///
 /// This method is called by the init wrapper to ensure all top-level collections
@@ -1045,6 +1207,70 @@ mod tests {
                 "expected merge call referencing `{index}` in:\n{rendered}",
             );
         }
+    }
+
+    /// Helper: render the generated `migrate_my_entries` block for a struct.
+    fn render_migrate(item: syn::ItemStruct) -> String {
+        let ident = item.ident.clone();
+        let generics = item.generics.clone();
+        let orig = StructOrEnumItem::Struct(item);
+        generate_migrate_my_entries_impl(&ident, &generics, &orig).to_string()
+    }
+
+    #[test]
+    fn migrate_my_entries_targets_only_identity_gated_fields() {
+        let item: syn::ItemStruct = parse_quote! {
+            pub struct AppRoot {
+                pub notes: AuthoredMap<String, Note>,
+                pub log: AuthoredVector<Entry>,
+                pub counters: UnorderedMap<String, Counter>,
+                pub shared: SharedStorage<Doc>,
+            }
+        };
+
+        let rendered = render_migrate(item);
+
+        // The single-owner authored fields are swept...
+        assert!(
+            rendered.contains("self . notes"),
+            "AuthoredMap field must be converted, got:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("self . log"),
+            "AuthoredVector field must be converted, got:\n{rendered}",
+        );
+        // ...convergent and group-shared fields are NOT.
+        assert!(
+            !rendered.contains("self . counters"),
+            "plain UnorderedMap must NOT be touched, got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains("self . shared"),
+            "SharedStorage (group writer-set) must NOT be in the batch, got:\n{rendered}",
+        );
+        // The wasm export is emitted because the struct has authored fields.
+        assert!(
+            rendered.contains("fn migrate_my_entries"),
+            "expected a migrate_my_entries wasm export, got:\n{rendered}",
+        );
+    }
+
+    #[test]
+    fn migrate_my_entries_not_generated_without_identity_gated_fields() {
+        let item: syn::ItemStruct = parse_quote! {
+            pub struct PlainRoot {
+                pub counters: UnorderedMap<String, Counter>,
+                pub items: Vector<u64>,
+            }
+        };
+
+        let rendered = render_migrate(item);
+
+        // No authored fields → no method, no export (nothing to convert).
+        assert!(
+            !rendered.contains("migrate_my_entries"),
+            "apps without authored data must get no migrate export, got:\n{rendered}",
+        );
     }
 
     /// Run the `#[app::state]` input validation (which includes the

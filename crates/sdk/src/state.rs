@@ -61,6 +61,8 @@ pub trait AppStateInit: Sized {
 ///
 /// [`migrate_my_entries`]: the `#[app::state]`-generated method
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(crate::serde::Serialize, crate::serde::Deserialize)]
+#[serde(crate = "crate::serde")]
 pub struct MigrateMyEntriesSummary {
     /// Entries re-written to the target schema version this call.
     pub converted: u32,
