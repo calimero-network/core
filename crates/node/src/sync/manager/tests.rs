@@ -17,6 +17,25 @@ fn build_estimated_handshake(root_hash: [u8; 32], dag_heads: Vec<[u8; 32]>) -> S
     build_handshake_from_raw(root_hash, entity_count, max_depth, dag_heads)
 }
 
+/// `dedup_peers_by_strongest_role` collapses a peer's multiple role
+/// observations to its strongest, regardless of input order.
+#[test]
+fn dedup_peers_keeps_strongest_role() {
+    use calimero_primitives::context::GroupMemberRole;
+    use libp2p::PeerId;
+
+    let p = PeerId::random();
+    let q = PeerId::random();
+    let out = SyncManager::dedup_peers_by_strongest_role(vec![
+        (p, GroupMemberRole::Member),
+        (p, GroupMemberRole::Admin), // strongest for p
+        (q, GroupMemberRole::ReadOnlyTee),
+    ]);
+    let map: std::collections::BTreeMap<_, _> = out.into_iter().collect();
+    assert_eq!(map.get(&p), Some(&GroupMemberRole::Admin));
+    assert_eq!(map.get(&q), Some(&GroupMemberRole::ReadOnlyTee));
+}
+
 // =========================================================================
 // Tests for handshake estimation fallback
 // =========================================================================

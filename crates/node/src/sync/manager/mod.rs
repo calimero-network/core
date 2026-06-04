@@ -798,6 +798,72 @@ impl SyncManager {
             .unwrap_or_default()
     }
 
+    /// Resolve the cached member peers for the group that owns
+    /// `context_id`: peers we've durably observed hosting members of
+    /// that group, deduped to one entry per peer carrying its strongest
+    /// observed role. Drives cold-start member-preferred dialing before
+    /// live traffic has refilled the in-memory reverse view.
+    ///
+    /// Empty when the context isn't registered to a group, the store
+    /// read fails, or the durable cache holds nothing for the group —
+    /// callers fall back to topic-subscriber discovery. A routing hint:
+    /// `anchor_identities_for_context` (governance `trusted_anchors`,
+    /// which includes the owner) stays authoritative for anchor status.
+    #[allow(dead_code)] // wired into peer selection in a follow-up
+    fn member_peers_for_context(
+        &self,
+        context_id: &ContextId,
+    ) -> Vec<(PeerId, calimero_primitives::context::GroupMemberRole)> {
+        let store = self.context_client.datastore_handle().into_inner();
+        let Ok(Some(group_id)) =
+            calimero_context::group_store::get_group_for_context(&store, context_id)
+        else {
+            return Vec::new();
+        };
+        Self::dedup_peers_by_strongest_role(
+            self.state_access.cached_member_peers_for_group(&group_id),
+        )
+    }
+
+    /// Anchor-preference ordering of a cached role: higher binds the
+    /// peer more strongly to the trusted-anchor set. Owner isn't a
+    /// [`GroupMemberRole`] (it's a group `Meta` field) so it doesn't
+    /// appear here — owner preference is applied via the authoritative
+    /// `trusted_anchors` set at selection time, not from this hint.
+    #[allow(dead_code)] // used by `member_peers_for_context`, wired in a follow-up
+    fn role_rank(role: &calimero_primitives::context::GroupMemberRole) -> u8 {
+        use calimero_primitives::context::GroupMemberRole::{Admin, Member, ReadOnly, ReadOnlyTee};
+        match role {
+            Admin => 3,
+            ReadOnlyTee => 2,
+            ReadOnly => 1,
+            Member => 0,
+        }
+    }
+
+    /// Collapse `(peer, role)` pairs to one entry per peer, keeping the
+    /// strongest role (a peer hosting several member identities is
+    /// returned once, tagged with its most-anchor role). Output is
+    /// sorted by `PeerId` for determinism.
+    #[allow(dead_code)] // used by `member_peers_for_context`, wired in a follow-up
+    fn dedup_peers_by_strongest_role(
+        pairs: Vec<(PeerId, calimero_primitives::context::GroupMemberRole)>,
+    ) -> Vec<(PeerId, calimero_primitives::context::GroupMemberRole)> {
+        let mut best: std::collections::BTreeMap<
+            PeerId,
+            calimero_primitives::context::GroupMemberRole,
+        > = std::collections::BTreeMap::new();
+        for (peer, role) in pairs {
+            match best.get(&peer) {
+                Some(existing) if Self::role_rank(existing) >= Self::role_rank(&role) => {}
+                _ => {
+                    let _ = best.insert(peer, role);
+                }
+            }
+        }
+        best.into_iter().collect()
+    }
+
     /// Find a peer that has state (non-zero root_hash and non-empty DAG heads)
     ///
     /// This is critical for bootstrapping newly joined nodes. Without this,

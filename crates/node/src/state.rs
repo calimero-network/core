@@ -4,17 +4,21 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use calimero_blobstore::BlobManager as BlobStore;
 use calimero_context_client::client::ContextClient;
+use calimero_context_config::types::ContextGroupId;
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::SyncStatusSnapshot;
 use calimero_primitives::identity::PublicKey;
-use calimero_primitives::{blobs::BlobId, context::ContextId};
+use calimero_primitives::{
+    blobs::BlobId,
+    context::{ContextId, GroupMemberRole},
+};
 use dashmap::DashMap;
 use libp2p::PeerId;
 use tracing::{debug, warn};
 
 use crate::constants;
 use crate::delta_store::DeltaStore;
-use crate::peer_identity_cache::{ObservedMembership, PeerIdentityCache};
+use crate::peer_identity_cache::{ObservedMembership, PeerIdentityCache, PEER_IDENTITY_TTL_SECS};
 use crate::run::NodeMode;
 use crate::specialized_node_invite_state::{
     new_pending_specialized_node_invites, PendingSpecializedNodeInvites,
@@ -750,6 +754,23 @@ impl crate::sync::state_access::SyncStateAccess for NodeState {
         self.peer_identities.get(peer_id).map(|entry| entry.clone())
     }
 
+    fn cached_member_peers_for_group(
+        &self,
+        group: &ContextGroupId,
+    ) -> Vec<(PeerId, GroupMemberRole)> {
+        self.lock_peer_identity_cache()
+            .members_for_group(group, now_unix_secs(), PEER_IDENTITY_TTL_SECS)
+            .into_iter()
+            .flat_map(|member| {
+                let role = member.role;
+                member
+                    .peers
+                    .into_iter()
+                    .map(move |peer| (peer, role.clone()))
+            })
+            .collect()
+    }
+
     fn reconcile_remaining_cooldown(&self, context_id: &ContextId) -> Option<(Duration, u32)> {
         crate::sync::reconcile_remaining_cooldown(&self.reconcile_attempts, context_id)
     }
@@ -770,6 +791,40 @@ mod tests {
     use calimero_storage::logical_clock::HybridTimestamp;
 
     use super::*;
+
+    /// An observation carrying membership populates the durable cache so
+    /// `cached_member_peers_for_group` returns the (peer, role); an
+    /// observation with `None` membership does not.
+    #[test]
+    fn cached_member_peers_reflects_observed_membership() {
+        use crate::sync::state_access::SyncStateAccess;
+
+        let state = NodeState::new(false, NodeMode::Standard);
+        let group = ContextGroupId::from([3u8; 32]);
+        let identity = PublicKey::from([4u8; 32]);
+        let peer = PeerId::random();
+
+        state.observe_peer_identity(
+            peer,
+            identity,
+            Some(ObservedMembership {
+                group_id: group,
+                role: GroupMemberRole::Admin,
+            }),
+        );
+        assert_eq!(
+            state.cached_member_peers_for_group(&group),
+            vec![(peer, GroupMemberRole::Admin)]
+        );
+
+        // Membership-less observation (namespace path) doesn't reach the
+        // per-group durable cache.
+        state.observe_peer_identity(PeerId::random(), PublicKey::from([5u8; 32]), None);
+        assert_eq!(
+            state.cached_member_peers_for_group(&group),
+            vec![(peer, GroupMemberRole::Admin)]
+        );
+    }
 
     fn buffered(id: u8, source_peer: PeerId) -> BufferedDelta {
         BufferedDelta {
