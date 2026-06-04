@@ -402,31 +402,39 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // reader must be declined+buffered (into the absorb buffer)
                     // rather than LWW-stored as unreadable bytes — the
                     // v1-binary-fed-v2-bytes corruption hazard.
+                    //
+                    // Keep the FULL `Result` (no `.ok().flatten()`): a STORE
+                    // ERROR must not silently disable the gate. `apply_hc_leaf_gated`
+                    // distinguishes `Err` (fail closed: skip the leaf, re-pushed
+                    // next sync) from `Ok(None)` (legitimately no group ⇒ apply
+                    // ungated as today) — see `apply_entity_push_batch`.
                     let loaded_app_key =
-                        calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id)
-                            .ok()
-                            .flatten();
+                        calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id);
 
                     // Under the per-context execution lock: this leaf merge is a
                     // read-modify-write up to the root and must not interleave
                     // with a concurrent delta merge (torn-root split-brain).
                     let outcome =
                         apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                            match loaded_app_key {
-                                Some(loaded) => apply_leaf_with_crdt_merge_gated(
-                                    store, context_id, leaf_data, loaded,
-                                ),
-                                None => apply_leaf_with_crdt_merge(context_id, leaf_data)
-                                    .map(|()| LeafOutcome::Applied),
-                            }
+                            apply_hc_leaf_gated(store, context_id, leaf_data, loaded_app_key)
                         })
                         .await?;
-                    if matches!(outcome, LeafOutcome::Buffered) {
-                        // Declined: the leaf is buffered, not applied. Don't
-                        // count it as merged and skip the bidirectional
-                        // push-back — there's nothing newer to reconcile until
-                        // this node advances its reader and the drain replays it.
-                        continue;
+                    match outcome {
+                        HcLeafGateOutcome::Buffered => {
+                            // Declined: the leaf is buffered, not applied. Don't
+                            // count it as merged and skip the bidirectional
+                            // push-back — there's nothing newer to reconcile until
+                            // this node advances its reader and the drain replays it.
+                            continue;
+                        }
+                        HcLeafGateOutcome::SkippedStoreError => {
+                            // Fail-closed: a store error prevented resolving the
+                            // loaded reader, so we declined to apply (rather than
+                            // applying ungated). The leaf is re-pushed next sync;
+                            // skip the bidirectional push-back too.
+                            continue;
+                        }
+                        HcLeafGateOutcome::Applied => {}
                     }
                     stats.entities_merged += 1;
 
@@ -1514,6 +1522,72 @@ pub(crate) fn collect_deleted_children_wire(
         .collect()
 }
 
+/// Outcome of gating a single HashComparison sync-repair leaf against the
+/// receiver's loaded reader (PR-6b Task 6b.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HcLeafGateOutcome {
+    /// The leaf was applied to storage.
+    Applied,
+    /// The leaf was declined + buffered (its schema is newer than the loaded
+    /// reader); the DFS skips it until the drain replays it.
+    Buffered,
+    /// The loaded reader could not be resolved (store error). Fail CLOSED: the
+    /// leaf was NOT applied; the DFS skips it and it is re-pushed next cycle.
+    SkippedStoreError,
+}
+
+/// Apply (or decline+buffer) a single HC sync-repair leaf, gating on the
+/// receiver's loaded-reader schema.
+///
+/// `loaded_app_key` is the resolution of the receiver's loaded reader schema —
+/// the FULL `Result`, not collapsed with `.ok().flatten()`, so the three gate
+/// states stay distinct:
+/// * `Ok(Some(k))` — gate active; a future-schema leaf is declined+buffered.
+/// * `Ok(None)` — legitimately no group / unresolvable meta ⇒ no gate, apply as
+///   today.
+/// * `Err(_)` — a STORE ERROR; readability cannot be determined. Fail CLOSED:
+///   warn and SKIP the leaf ([`HcLeafGateOutcome::SkippedStoreError`]) rather
+///   than applying ungated, which would let a future-schema leaf the node can't
+///   read get LWW-stored (the v1-binary-fed-v2-bytes corruption this gate
+///   prevents). HC repair leaves are non-destructive and are re-pushed on the
+///   next sync cycle, so skipping here is safe.
+///
+/// Must be called inside the per-context execution lock + `with_runtime_env`
+/// scope (it delegates to the apply helpers).
+fn apply_hc_leaf_gated(
+    store: &Store,
+    context_id: ContextId,
+    leaf: &TreeLeafData,
+    loaded_app_key: Result<Option<[u8; 32]>>,
+) -> Result<HcLeafGateOutcome> {
+    let loaded_app_key = match loaded_app_key {
+        Ok(key) => key,
+        Err(e) => {
+            warn!(
+                %context_id,
+                error = %e,
+                key = %hex::encode(leaf.key),
+                "HC merge: could not resolve loaded reader schema (store error); \
+                 skipping leaf fail-closed — it will be re-pushed next sync"
+            );
+            return Ok(HcLeafGateOutcome::SkippedStoreError);
+        }
+    };
+
+    match loaded_app_key {
+        Some(loaded) => Ok(
+            match apply_leaf_with_crdt_merge_gated(store, context_id, leaf, loaded)? {
+                LeafOutcome::Applied => HcLeafGateOutcome::Applied,
+                LeafOutcome::Buffered => HcLeafGateOutcome::Buffered,
+            },
+        ),
+        None => {
+            apply_leaf_with_crdt_merge(context_id, leaf)?;
+            Ok(HcLeafGateOutcome::Applied)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1944,5 +2018,101 @@ mod tests {
                  root hash diverges from a peer that applied the delete"
             );
         });
+    }
+
+    // ---- PR-6b fail-closed (cursor): the HC DFS leaf-merge gate must NOT be
+    //      disabled by a store error resolving the loaded reader. The old
+    //      `.ok().flatten()` collapsed `Err` into `None` (ungated apply). ----
+
+    use calimero_node_primitives::sync::hash_comparison::{LeafMetadata, TreeLeafData};
+    use calimero_primitives::crdt::CrdtType;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use std::sync::Arc;
+
+    fn hc_opaque_leaf(key: [u8; 32], schema: Option<[u8; 32]>) -> TreeLeafData {
+        let mut md = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        if let Some(k) = schema {
+            md = md.with_schema_app_key(k);
+        }
+        TreeLeafData::new(key, b"v2-bytes".to_vec(), md)
+    }
+
+    #[test]
+    fn hc_store_error_resolving_gate_skips_leaf_not_applies() {
+        // A transient store error while resolving the loaded reader on the HC
+        // DFS apply path must fail CLOSED: the leaf is skipped (re-pushed next
+        // sync), NOT applied ungated. The old `.ok().flatten()` collapsed `Err`
+        // into `None` and would have LWW-stored the (possibly future-schema)
+        // leaf — the v1-binary-fed-v2-bytes corruption hazard.
+        let context_id = ContextId::from([0xCD; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(&store, context_id, identity);
+
+        let leaf_key = [0x45u8; 32];
+        // No schema marker — under `Ok(None)` (no gate) this WOULD apply, so the
+        // only thing keeping it out of storage is the fail-closed skip.
+        let leaf = hc_opaque_leaf(leaf_key, None);
+
+        let outcome = with_runtime_env(runtime_env.clone(), || {
+            apply_hc_leaf_gated(
+                &store,
+                context_id,
+                &leaf,
+                Err(eyre::eyre!("simulated transient store error")),
+            )
+        })
+        .expect("gate must not propagate the store error");
+
+        assert_eq!(
+            outcome,
+            HcLeafGateOutcome::SkippedStoreError,
+            "fail-closed: a store error must skip the leaf, not apply it"
+        );
+
+        let stored = with_runtime_env(runtime_env.clone(), || {
+            Index::<MainStorage>::get_index(Id::new(leaf_key))
+                .ok()
+                .flatten()
+        });
+        assert!(
+            stored.is_none(),
+            "store error must NOT result in an ungated apply/store"
+        );
+    }
+
+    #[test]
+    fn hc_no_gate_ok_none_still_applies_leaf() {
+        // Distinct from the `Err` case: `Ok(None)` is the legitimate "no group /
+        // unresolvable meta" case and MUST still apply as today.
+        let context_id = ContextId::from([0xCE; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(&store, context_id, identity);
+
+        let leaf_key = [0x46u8; 32];
+        let leaf = hc_opaque_leaf(leaf_key, None);
+
+        let outcome = with_runtime_env(runtime_env.clone(), || {
+            apply_hc_leaf_gated(&store, context_id, &leaf, Ok(None))
+        })
+        .expect("gate must apply the leaf");
+
+        assert_eq!(
+            outcome,
+            HcLeafGateOutcome::Applied,
+            "Ok(None) legitimate-no-gate case must apply the leaf"
+        );
+
+        let stored = with_runtime_env(runtime_env.clone(), || {
+            Index::<MainStorage>::get_index(Id::new(leaf_key))
+                .ok()
+                .flatten()
+        });
+        assert!(
+            stored.is_some(),
+            "Ok(None) no-gate case must store the leaf"
+        );
     }
 }
