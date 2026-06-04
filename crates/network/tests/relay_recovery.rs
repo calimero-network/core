@@ -75,6 +75,7 @@ fn client_config(keypair: Keypair, listen: Multiaddr, bootstrap: Vec<Multiaddr>)
         DiscoveryConfig::new(
             false,
             false,
+            Vec::new(),
             RendezvousConfig::default(),
             RelayConfig::default(),
             AutonatConfig::new(5, Duration::from_secs(10)),

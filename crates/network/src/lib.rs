@@ -90,20 +90,25 @@ impl NetworkManager {
         reserved_topics: BTreeSet<String>,
         store: Option<Store>,
     ) -> eyre::Result<Self> {
-        let swarm = Behaviour::build_swarm(config)?;
+        let mut swarm = Behaviour::build_swarm(config)?;
+
+        // Seed operator-configured external addresses directly into the
+        // swarm's confirmed set. Deterministic, no third-party lookup —
+        // for known-static-IP / hosted deployments. When none are
+        // configured, external addresses are discovered via identify +
+        // AutoNAT v2 confirmation instead (see the identify handler).
+        if config.discovery.advertise_address {
+            for addr in &config.discovery.external_address {
+                swarm.add_external_address(addr.clone());
+            }
+        }
 
         let discovery = Discovery::new(
             &config.discovery.rendezvous,
             &config.discovery.relay,
             &config.discovery.autonat,
-            if config.discovery.advertise_address {
-                &config.swarm.listen
-            } else {
-                &[]
-            },
             reserved_topics,
-        )
-        .await?;
+        );
 
         let this = Self {
             swarm: Box::new(swarm),

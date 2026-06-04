@@ -167,6 +167,15 @@ pub struct DiscoveryConfig {
 
     pub advertise_address: bool,
 
+    /// Operator-configured external addresses, seeded directly into the
+    /// swarm's confirmed external-address set at init (gated on
+    /// `advertise_address`). This is the deterministic alternative to
+    /// AutoNAT-based discovery for known-static-IP / hosted deployments,
+    /// and supports both IPv4 and IPv6. When empty, external addresses
+    /// are discovered solely via identify + AutoNAT v2 confirmation.
+    #[serde(default)]
+    pub external_address: Vec<Multiaddr>,
+
     pub rendezvous: RendezvousConfig,
 
     pub relay: RelayConfig,
@@ -179,6 +188,7 @@ impl DiscoveryConfig {
     pub const fn new(
         mdns: bool,
         advertise_address: bool,
+        external_address: Vec<Multiaddr>,
         rendezvous: RendezvousConfig,
         relay: RelayConfig,
         autonat: AutonatConfig,
@@ -186,6 +196,7 @@ impl DiscoveryConfig {
         Self {
             mdns,
             advertise_address,
+            external_address,
             rendezvous,
             relay,
             autonat,
@@ -198,6 +209,7 @@ impl Default for DiscoveryConfig {
         Self {
             mdns: true,
             advertise_address: false,
+            external_address: Vec::new(),
             rendezvous: RendezvousConfig::default(),
             relay: RelayConfig::default(),
             autonat: AutonatConfig::default(),

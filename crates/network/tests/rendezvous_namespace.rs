@@ -42,6 +42,7 @@ fn client_config(keypair: Keypair, listen: Multiaddr) -> NetworkConfig {
             // rendezvous server — exactly what we're testing.
             false,
             false,
+            Vec::new(),
             RendezvousConfig::default(),
             RelayConfig::default(),
             AutonatConfig::new(5, Duration::from_secs(10)),
