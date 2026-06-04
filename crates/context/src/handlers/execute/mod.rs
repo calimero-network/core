@@ -125,7 +125,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     .load(&group_id)
                 {
                     Ok(Some(upgrade)) => {
-                        if upgrade_blocks_write(&upgrade.status) {
+                        if should_block(self.config.migration_v2, &upgrade.status) {
                             if is_state_op {
                                 // Known write — refuse before execution.
                                 warn!(
@@ -143,6 +143,19 @@ impl Handler<ExecuteRequest> for ContextManager {
                             // pre-migration root; reject post-execution only if
                             // it actually mutates state (a write). Reads pass.
                             block_writes_for_group = Some(group_id);
+                        } else if self.config.migration_v2 && upgrade_blocks_write(&upgrade.status)
+                        {
+                            // The freeze that would otherwise apply was
+                            // intentionally bypassed by `migration_v2`. Emit a
+                            // signal so a canary operator can tell the freeze was
+                            // skipped by the flag (not a missing upgrade row);
+                            // stragglers are absorbed rather than dropped once
+                            // PR-6b lands.
+                            debug!(
+                                %context_id,
+                                ?group_id,
+                                "migration_v2: bypassing InProgress write-freeze (flag on)"
+                            );
                         }
                     }
                     Ok(None) => {
@@ -2191,6 +2204,16 @@ fn upgrade_blocks_write(status: &calimero_store::key::GroupUpgradeStatus) -> boo
     )
 }
 
+/// Whether the cascade write-gate should fire, given the `migration_v2` flag.
+///
+/// Equal to `!migration_v2 && upgrade_blocks_write(status)`: with the flag OFF
+/// (the default) the group-wide `InProgress` freeze is byte-for-byte the same
+/// as today; with the flag ON the freeze is lifted entirely (PR-6b's
+/// absorb-don't-drop is what keeps stragglers safe once the freeze is gone).
+fn should_block(migration_v2: bool, status: &calimero_store::key::GroupUpgradeStatus) -> bool {
+    !migration_v2 && upgrade_blocks_write(status)
+}
+
 /// Post-execution write-gate decision: during an in-progress upgrade a pure read
 /// (`produced_write == false`) is served from the pre-migration root; a
 /// side-effecting call is refused. Write-intent is derived post-execution (a
@@ -2319,7 +2342,10 @@ mod tests {
     use calimero_store::key::GroupMetaValue;
     use calimero_store::Store;
 
-    use super::{resolve_producing_app_key, upgrade_blocks_write, upgrade_rejects_committed_write};
+    use super::{
+        resolve_producing_app_key, should_block, upgrade_blocks_write,
+        upgrade_rejects_committed_write,
+    };
     use calimero_store::key::GroupUpgradeStatus;
 
     fn fresh_store() -> Store {
@@ -2454,6 +2480,80 @@ mod tests {
         assert!(
             !upgrade_rejects_committed_write(/* block_writes */ false, /* produced_write */ false),
             "a read outside any in-progress upgrade must not be gated"
+        );
+    }
+
+    // PR-6a Task 6a.1: the `migration_v2` feature flag must default OFF so
+    // master behavior is completely unchanged until the flag is flipped (after
+    // 6b lands). The flag lives on `ContextManagerConfig` — the same
+    // runtime-tunable knobs struct threaded into this handler via `self.config`.
+    #[test]
+    fn migration_v2_flag_defaults_off() {
+        let cfg = crate::ContextManagerConfig::default();
+        assert!(
+            !cfg.migration_v2,
+            "migration_v2 must default off so master behavior is unchanged"
+        );
+    }
+
+    // PR-6a Task 6a.2: characterize today's group-wide freeze. With
+    // `migration_v2` OFF (the default), `InProgress` blocks *all* writes —
+    // including state-op writes such as `__calimero_sync_next`. This is the
+    // freeze that namespace cascades impose group-wide. Locking it here proves
+    // 6a.3 (which gates this behind `migration_v2`) only changes flag-ON
+    // behavior; the flag-OFF contract stays exactly as it is today.
+    #[test]
+    fn flag_off_inprogress_blocks_state_op_write() {
+        assert!(
+            upgrade_blocks_write(&GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            }),
+            "today's group-wide freeze: InProgress must block state-op writes"
+        );
+    }
+
+    // PR-6a Task 6a.3: the cascade write-freeze is gated behind `migration_v2`.
+    // `should_block` is `!migration_v2 && upgrade_blocks_write(status)`: with the
+    // flag OFF the freeze is unchanged (master behavior); with the flag ON the
+    // group-wide `InProgress` freeze stops blocking writes (PR-6b's
+    // absorb-don't-drop later keeps stragglers safe once the freeze is gone).
+    #[test]
+    fn should_block_flag_off_in_progress_blocks() {
+        assert!(
+            should_block(
+                false,
+                &GroupUpgradeStatus::InProgress {
+                    total: 1,
+                    completed: 0,
+                    failed: 0,
+                },
+            ),
+            "flag OFF: InProgress must still block writes (unchanged)"
+        );
+    }
+
+    #[test]
+    fn should_block_flag_on_in_progress_does_not_block() {
+        assert!(
+            !should_block(
+                true,
+                &GroupUpgradeStatus::InProgress {
+                    total: 1,
+                    completed: 0,
+                    failed: 0,
+                },
+            ),
+            "flag ON: InProgress must not freeze writes group-wide"
+        );
+    }
+
+    #[test]
+    fn should_block_flag_off_completed_does_not_block() {
+        assert!(
+            !should_block(false, &GroupUpgradeStatus::Completed { completed_at: None }),
+            "Completed never blocks, regardless of the flag"
         );
     }
 }

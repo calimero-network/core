@@ -109,8 +109,10 @@ use calimero_context_client::local_governance::AckRouter;
 /// Distinct from the on-disk [`config::ContextConfig`] (which holds the
 /// chain/client config). This struct centralises timing constants that
 /// were previously hard-coded in handler modules so future operator
-/// tooling can override them without source patches. Defaults match the
-/// values that shipped with #2237 Phase 12.
+/// tooling can override them without source patches, plus behavioral
+/// feature flags (e.g. [`Self::migration_v2`]) that gate in-progress
+/// framework work. Timing defaults match the values that shipped with
+/// #2237 Phase 12; feature flags default off.
 #[derive(Clone, Copy, Debug)]
 pub struct ContextManagerConfig {
     /// How long `join_group` will wait for a `KeyDelivery` op to arrive
@@ -122,12 +124,24 @@ pub struct ContextManagerConfig {
     /// admin + their `publish_and_await_ack` budget", not the full
     /// gossipsub heartbeat reconciliation window.
     pub key_delivery_fallback_wait: Duration,
+
+    /// Master switch for the PR-6 hybrid zero-downtime migration framework.
+    ///
+    /// Defaults to `false` so master behavior is completely unchanged: with the
+    /// flag off, a namespace-cascade migration keeps the group-wide
+    /// `InProgress` write-freeze (see [`handlers::execute`]'s
+    /// `upgrade_blocks_write`). When flipped on — only legal in a deployment
+    /// once PR-6a *and* PR-6b have landed — the cascade no longer freezes
+    /// writes group-wide; each context migrates lazily/briefly and stragglers
+    /// are absorbed rather than dropped.
+    pub migration_v2: bool,
 }
 
 impl Default for ContextManagerConfig {
     fn default() -> Self {
         Self {
             key_delivery_fallback_wait: Duration::from_secs(5),
+            migration_v2: false,
         }
     }
 }
@@ -473,6 +487,16 @@ impl ContextManager {
     #[must_use]
     pub fn with_vm_limits(mut self, vm_limits: calimero_runtime::logic::VMLimits) -> Self {
         self.vm_limits = vm_limits;
+        self
+    }
+
+    /// Override the [`ContextManagerConfig::migration_v2`] master switch.
+    /// Builder-style so node startup can thread the operator's
+    /// `[context] migration_v2` config through while tests (and any caller that
+    /// doesn't set it) keep the default-off behavior. See [`Self::with_vm_limits`].
+    #[must_use]
+    pub fn with_migration_v2(mut self, migration_v2: bool) -> Self {
+        self.config.migration_v2 = migration_v2;
         self
     }
 

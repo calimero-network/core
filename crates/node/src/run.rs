@@ -209,7 +209,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         context_client.clone(),
         Some(&mut registry),
     )
-    .with_vm_limits(config.vm_limits);
+    .with_vm_limits(config.vm_limits)
+    .with_migration_v2(config.context.migration_v2);
 
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
         assert!(context_recipient.init(ctx), "failed to initialize");

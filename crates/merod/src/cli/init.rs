@@ -299,6 +299,7 @@ impl InitCommand {
             BlobStoreConfig::new("blobs".into()),
             ContextConfig {
                 client: client_config,
+                migration_v2: false,
             },
         );
 
