@@ -281,6 +281,14 @@ impl ContextLock {
     /// a brand-new `Arc<Mutex>` for that context, and two concurrent operations
     /// would then serialize on *different* mutexes — breaking the invariant and
     /// corrupting state. Hence this lock-gated check.
+    ///
+    /// `strong_count` is racy in isolation, but the check is safe here because
+    /// the only consumer — `BoundedCache::evict_if_full` — runs it and the
+    /// subsequent `remove` synchronously (no `.await` between them) inside a
+    /// single `ContextManager` actor turn. New guards are only ever minted by
+    /// `lock()` on that same actor, so no acquisition can interleave between
+    /// this returning `true` and the eviction: an entry seen idle stays idle
+    /// until the eviction completes.
     fn is_idle(&self) -> bool {
         Arc::strong_count(&self.lock) == 1
     }
