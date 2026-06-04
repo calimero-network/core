@@ -23,11 +23,12 @@ use libp2p::kad::QueryId;
 use libp2p::swarm::{ConnectionId, Swarm};
 use libp2p::PeerId;
 use libp2p_metrics::Metrics;
+use multiaddr::{Multiaddr, Protocol};
 use prometheus_client::registry::Registry;
 use tokio::sync::oneshot;
 use tokio::time::interval;
 use tokio_stream::wrappers::IntervalStream;
-use tracing::error;
+use tracing::{error, info, warn};
 
 use crate::handlers::stream::incoming::FromIncoming;
 
@@ -90,20 +91,42 @@ impl NetworkManager {
         reserved_topics: BTreeSet<String>,
         store: Option<Store>,
     ) -> eyre::Result<Self> {
-        let swarm = Behaviour::build_swarm(config)?;
+        let mut swarm = Behaviour::build_swarm(config)?;
+
+        // Seed operator-configured external addresses directly into the
+        // swarm's confirmed set. Deterministic, no third-party lookup —
+        // for known-static-IP / hosted deployments. When none are
+        // configured, external addresses are discovered via identify +
+        // AutoNAT v2 confirmation instead (see the identify handler).
+        //
+        // These bypass AutoNAT dial-back confirmation, so a typo or a
+        // stale entry would otherwise be advertised to every peer as
+        // reachable. Skip addresses that can never be reached by a remote
+        // peer (loopback / unspecified / link-local) rather than poison
+        // the swarm's external set with them; warn on private/ULA ranges,
+        // which are legitimate for same-network deployments but a common
+        // misconfiguration when a node is meant to be publicly reachable.
+        if config.discovery.advertise_address {
+            for addr in &config.discovery.external_address {
+                if is_seedable_external_address(addr) {
+                    info!(%addr, "Seeding operator-configured external address");
+                    swarm.add_external_address(addr.clone());
+                } else {
+                    warn!(
+                        %addr,
+                        "Ignoring non-routable external_address (loopback / unspecified / \
+                         link-local): remote peers cannot dial it",
+                    );
+                }
+            }
+        }
 
         let discovery = Discovery::new(
             &config.discovery.rendezvous,
             &config.discovery.relay,
             &config.discovery.autonat,
-            if config.discovery.advertise_address {
-                &config.swarm.listen
-            } else {
-                &[]
-            },
             reserved_topics,
-        )
-        .await?;
+        );
 
         let this = Self {
             swarm: Box::new(swarm),
@@ -120,6 +143,47 @@ impl NetworkManager {
 
         Ok(this)
     }
+}
+
+/// Whether an operator-configured external address is worth seeding into
+/// the swarm's confirmed external-address set.
+///
+/// Configured addresses skip AutoNAT dial-back confirmation, so we filter
+/// out the ones a remote peer can provably never reach — loopback,
+/// unspecified (`0.0.0.0` / `::`), and link-local — instead of advertising
+/// nonsense. Private (RFC-1918) and IPv6 unique-local (`fc00::/7`)
+/// addresses are kept, since they're valid for same-network / overlay
+/// deployments, but warned about because they're a frequent slip when the
+/// node is actually meant to be publicly reachable. Addresses with no IP
+/// component (e.g. a DNS multiaddr) are passed through unchanged.
+fn is_seedable_external_address(addr: &Multiaddr) -> bool {
+    for proto in addr.iter() {
+        match proto {
+            Protocol::Ip4(ip) => {
+                if ip.is_loopback() || ip.is_unspecified() || ip.is_link_local() {
+                    return false;
+                }
+                if ip.is_private() {
+                    warn!(%addr, "external_address is a private (RFC-1918) range; only reachable within the same network");
+                }
+            }
+            Protocol::Ip6(ip) => {
+                if ip.is_loopback() || ip.is_unspecified() {
+                    return false;
+                }
+                // Link-local fe80::/10 — never routable off-link.
+                if (ip.segments()[0] & 0xffc0) == 0xfe80 {
+                    return false;
+                }
+                // Unique-local fc00::/7 — site-scoped, not globally reachable.
+                if (ip.segments()[0] & 0xfe00) == 0xfc00 {
+                    warn!(%addr, "external_address is an IPv6 unique-local (fc00::/7) range; only reachable within the same network");
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 impl Actor for NetworkManager {
@@ -167,5 +231,36 @@ impl Actor for NetworkManager {
         // rendezvous rediscovery has a chance to run. Best-effort and
         // deduped at the swarm level; stale entries fail and age out.
         self.load_peer_cache_and_dial();
+    }
+}
+
+#[cfg(test)]
+mod external_address_tests {
+    use super::is_seedable_external_address;
+
+    fn seedable(s: &str) -> bool {
+        is_seedable_external_address(&s.parse().expect("valid multiaddr"))
+    }
+
+    #[test]
+    fn routable_addresses_are_seedable() {
+        assert!(seedable("/ip4/203.0.113.7/tcp/2428"));
+        assert!(seedable("/ip6/2001:db8::1/tcp/2428"));
+        // Private / unique-local are kept (warned), valid for overlays.
+        assert!(seedable("/ip4/10.0.0.5/tcp/2428"));
+        assert!(seedable("/ip4/192.168.1.20/udp/2428/quic-v1"));
+        assert!(seedable("/ip6/fd00::1/tcp/2428"));
+        // No IP component (DNS) is passed through.
+        assert!(seedable("/dns4/node.example.com/tcp/2428"));
+    }
+
+    #[test]
+    fn non_routable_addresses_are_skipped() {
+        assert!(!seedable("/ip4/127.0.0.1/tcp/2428"));
+        assert!(!seedable("/ip4/0.0.0.0/tcp/2428"));
+        assert!(!seedable("/ip4/169.254.1.1/tcp/2428"));
+        assert!(!seedable("/ip6/::1/tcp/2428"));
+        assert!(!seedable("/ip6/::/tcp/2428"));
+        assert!(!seedable("/ip6/fe80::1/tcp/2428"));
     }
 }

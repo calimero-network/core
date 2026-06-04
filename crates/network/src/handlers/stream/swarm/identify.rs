@@ -1,5 +1,4 @@
 use libp2p::identify::{Event, Info};
-use libp2p::Multiaddr;
 use libp2p_metrics::Recorder;
 use multiaddr::Protocol;
 use owo_colors::OwoColorize;
@@ -47,62 +46,27 @@ impl EventHandler<Event> for NetworkManager {
                 }
             }
 
-            // Branch 1: observed-address → external-address promotion.
-            //
-            // Only relevant for operators who configured the node with
-            // `advertise_address: true` AND have at least one listen
-            // address — that's the only case `self.discovery.advertise`
-            // is `Some(_)`. If the peer reports it observed us on an
-            // address that matches our advertised IP+port pair, we
-            // treat that as confirmation that we're publicly dialable
-            // there and promote it to a swarm external address.
-            if let Some(advertise_address) = &self.discovery.advertise {
-                let is_external_addr = observed_addr
-                    .iter()
-                    .fold((false, false), |(found_ip, found_port), p| {
-                        let found_ip = found_ip
-                            || match p {
-                                Protocol::Ip4(ipv4_addr) => ipv4_addr == advertise_address.ip,
-                                _ => false,
-                            };
+            // External-address promotion is left entirely to libp2p:
+            // `identify` reports each peer-observed address as a
+            // `NewExternalAddrCandidate`, and the AutoNAT v2 client
+            // probes those candidates and emits `ExternalAddrConfirmed`
+            // only for addresses that are actually dial-back reachable
+            // (handled in the swarm event handler). We deliberately do
+            // NOT `add_external_address(observed_addr)` here: a single
+            // peer's observation is unverified, and asserting it would
+            // bypass AutoNAT — advertising an address we can't prove is
+            // reachable. Operators who want a deterministic external
+            // address set it via `discovery.external_address`, which is
+            // seeded directly into the swarm at init.
 
-                        let found_port = found_port
-                            || match p {
-                                Protocol::Tcp(port) | Protocol::Udp(port) => {
-                                    advertise_address.ports.contains(&port)
-                                }
-                                _ => false,
-                            };
-
-                        (found_ip, found_port)
-                    })
-                    .eq(&(true, true));
-
-                if !self.swarm.external_addresses().any(|a| *a == observed_addr) && is_external_addr
-                {
-                    debug!(
-                        "Current external addresses: {:?}",
-                        self.swarm.external_addresses().collect::<Vec<&Multiaddr>>()
-                    );
-                    debug!(
-                        "Add observed address to external addresses: {:?}",
-                        observed_addr
-                    );
-                    self.swarm.add_external_address(observed_addr);
-                }
-            }
-
-            // Branch 2: opportunistic relay-reservation request.
+            // Opportunistic relay-reservation request.
             //
             // If the just-identified peer offers `/libp2p/circuit/-
             // relay/0.2.0/hop`, kick off a reservation request against
-            // it. This MUST run independently of branch 1: a node
-            // configured with `advertise_address: true` can still be
-            // behind a NAT (the `advertise_address.ip` field reflects
-            // what `api.ipify.org` returned, not what's actually
-            // dialable). Without an opportunistic reservation it would
-            // sit forever assuming reachability that AutoNAT later
-            // disproves — and by the time autonat reports failure,
+            // it. This runs regardless of external-address state: a node
+            // can still be behind a NAT until AutoNAT confirms a direct
+            // address. Without an opportunistic reservation it would sit
+            // unreachable until AutoNAT reports failure — and by then
             // there's no event-driven path that retries relay setup.
             //
             // Cost is bounded: `create_relay_reservation` short-
