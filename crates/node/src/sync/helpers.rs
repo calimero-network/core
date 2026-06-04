@@ -621,10 +621,48 @@ pub fn handle_entity_push(
 
     // PR-6b Task 6b.7: the schema this node can read *right now* (its loaded
     // reader). A future-schema leaf is declined+buffered rather than stored.
-    // `None` (non-group context / unresolvable meta) ⇒ no gate, apply as today.
-    let loaded_app_key = calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id)
-        .ok()
-        .flatten();
+    //
+    // Fail CLOSED on a store error: keep the full `Result` rather than
+    // collapsing it with `.ok().flatten()`. `Ok(None)` legitimately means
+    // "no group / unresolvable meta" ⇒ no gate, apply as today. But an `Err`
+    // means we CANNOT determine readability — silently applying ungated would
+    // let a future-schema leaf the node can't read get LWW-stored (the exact
+    // v1-binary-fed-v2-bytes corruption this gate prevents). These pushed
+    // leaves are non-destructive sync-repair leaves that get re-pushed on the
+    // next sync cycle, so skipping the batch here is safe.
+    let loaded_app_key = calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id);
+    apply_entity_push_batch(store, runtime_env, context_id, entities, loaded_app_key)
+}
+
+/// Apply (or buffer) a pre-truncated, pre-resolved `EntityPush` batch.
+///
+/// `loaded_app_key` is the resolution of the receiver's loaded reader schema:
+/// * `Ok(Some(k))` — gate active; future-schema leaves are buffered.
+/// * `Ok(None)` — legitimately no group / unresolvable meta ⇒ no gate, apply
+///   as today.
+/// * `Err(_)` — a STORE ERROR; readability cannot be determined. Fail closed:
+///   log and SKIP the batch (return an empty outcome). The leaves are
+///   non-destructive and are re-pushed on the next sync cycle.
+fn apply_entity_push_batch(
+    store: &Store,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    context_id: ContextId,
+    entities: &[TreeLeafData],
+    loaded_app_key: Result<Option<[u8; 32]>>,
+) -> EntityPushOutcome {
+    let loaded_app_key = match loaded_app_key {
+        Ok(key) => key,
+        Err(e) => {
+            tracing::warn!(
+                %context_id,
+                error = %e,
+                count = entities.len(),
+                "EntityPush: could not resolve loaded reader schema (store error); \
+                 skipping batch fail-closed — leaves will be re-pushed next sync"
+            );
+            return EntityPushOutcome::default();
+        }
+    };
 
     calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
         let mut applied = 0u32;
@@ -1090,6 +1128,79 @@ mod tests {
         .expect("gated apply must not error");
 
         assert!(matches!(outcome, LeafOutcome::Applied));
+    }
+
+    // ---- PR-6b fail-closed: a store error resolving the loaded reader must
+    //      NOT disable the schema gate (no silent ungated apply). ----
+
+    #[test]
+    fn store_error_resolving_gate_skips_batch_not_applies() {
+        // A transient store error while resolving the loaded reader schema must
+        // fail CLOSED: the batch is skipped (re-pushed next sync), NOT applied
+        // ungated. The old `.ok().flatten()` collapsed `Err` into `None` and
+        // would have LWW-stored the (possibly future-schema) leaf.
+        let context_id = ContextId::from([0xCD; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = calimero_node_primitives::sync::storage_bridge::create_runtime_env(
+            &store, context_id, identity,
+        );
+
+        let leaf_key = [0x45u8; 32];
+        // No schema marker — under `Ok(None)` (no gate) this WOULD apply, so
+        // the only thing that keeps it out of storage is the fail-closed skip.
+        let leaf = opaque_leaf_with_schema(leaf_key, None);
+
+        let outcome = apply_entity_push_batch(
+            &store,
+            &runtime_env,
+            context_id,
+            std::slice::from_ref(&leaf),
+            Err(eyre::eyre!("simulated transient store error")),
+        );
+
+        assert_eq!(
+            outcome.applied, 0,
+            "fail-closed: a store error must skip the batch, not apply it"
+        );
+
+        let stored = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
+            Index::<MainStorage>::get_index(Id::new(leaf_key))
+                .ok()
+                .flatten()
+        });
+        assert!(
+            stored.is_none(),
+            "store error must NOT result in an ungated apply/store"
+        );
+    }
+
+    #[test]
+    fn no_gate_ok_none_still_applies_leaf() {
+        // Distinct from the `Err` case: `Ok(None)` is the legitimate
+        // "no group / unresolvable meta" case and MUST still apply as today.
+        let context_id = ContextId::from([0xCE; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = calimero_node_primitives::sync::storage_bridge::create_runtime_env(
+            &store, context_id, identity,
+        );
+
+        let leaf_key = [0x46u8; 32];
+        let leaf = opaque_leaf_with_schema(leaf_key, None);
+
+        let outcome = apply_entity_push_batch(
+            &store,
+            &runtime_env,
+            context_id,
+            std::slice::from_ref(&leaf),
+            Ok(None),
+        );
+
+        assert_eq!(
+            outcome.applied, 1,
+            "Ok(None) legitimate-no-gate case must apply the leaf"
+        );
     }
 }
 
