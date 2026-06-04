@@ -12,11 +12,11 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::cli::Environment;
 use crate::output::{ErrorLine, InfoLine, Report};
+use crate::ws::connect;
 
 pub const EXAMPLES: &str = r#"
   # Watch events from default context
@@ -86,7 +86,6 @@ impl Report for Response {
 impl WatchCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;
-        let api_url = client.api_url().clone();
 
         let resolve_response = client.resolve_alias(self.context, None).await?;
         let context_id = resolve_response
@@ -94,22 +93,12 @@ impl WatchCommand {
             .copied()
             .ok_or_eyre("unable to resolve")?;
 
-        let mut url = api_url;
+        environment.output.write(&InfoLine(&format!(
+            "Connecting to WebSocket at {}",
+            client.ws_url()?
+        )));
 
-        let scheme = match url.scheme() {
-            "https" => "wss",
-            "http" | _ => "ws",
-        };
-
-        url.set_scheme(scheme)
-            .map_err(|()| eyre::eyre!("Failed to set URL scheme"))?;
-        url.set_path("ws");
-
-        environment
-            .output
-            .write(&InfoLine(&format!("Connecting to WebSocket at {url}")));
-
-        let (ws_stream, _) = connect_async(url.as_str()).await?;
+        let ws_stream = connect(client).await?;
         let (mut write, mut read) = ws_stream.split();
 
         let subscribe_request = RequestPayload::Subscribe(SubscribeRequest {

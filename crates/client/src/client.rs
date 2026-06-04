@@ -16,7 +16,7 @@ use calimero_server_primitives::admin::{
     CreateContextIdAlias, CreateContextIdentityAlias, DeleteAliasResponse, ListAliasesResponse,
     LookupAliasResponse,
 };
-use eyre::Result;
+use eyre::{bail, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
@@ -131,6 +131,44 @@ where
 
     pub fn api_url(&self) -> &Url {
         &self.connection.api_url
+    }
+
+    /// The WebSocket endpoint URL (`ws(s)://…/ws`) for this connection, derived
+    /// from the HTTP `api_url` by swapping the scheme and pointing at `/ws`.
+    /// Used by the event-stream (`subscribe`) and `execute`-over-WS paths.
+    ///
+    /// The scheme mapping is explicit (`http`→`ws`, `https`→`wss`); an
+    /// unexpected scheme errors rather than silently degrading to cleartext
+    /// `ws://`, which would leak the bearer token attached to the handshake.
+    pub fn ws_url(&self) -> Result<Url> {
+        let mut url = self.connection.api_url.clone();
+
+        let scheme = match url.scheme() {
+            "http" => "ws",
+            "https" => "wss",
+            other => bail!("cannot derive a WebSocket URL from scheme `{other}://`"),
+        };
+        url.set_scheme(scheme)
+            .map_err(|()| eyre::eyre!("failed to set WebSocket URL scheme"))?;
+        url.set_path("ws");
+        // Drop any query/fragment from the HTTP base so they don't ride along
+        // to the upgrade request (they're meaningless to `/ws` and could carry
+        // sensitive values).
+        url.set_query(None);
+        url.set_fragment(None);
+
+        Ok(url)
+    }
+
+    /// Resolve the bearer auth header for this connection, if the node requires
+    /// auth and credentials are available (triggering proactive authentication
+    /// when no token is stored, just like the HTTP request helpers).
+    ///
+    /// WebSocket auth is connection-level — validated once at the upgrade
+    /// handshake — so callers attach this to the upgrade request rather than to
+    /// every message.
+    pub async fn auth_header(&self) -> Result<Option<String>> {
+        self.connection.auth_header().await
     }
 
     /// Create context identity alias (legacy method for backward compatibility)
