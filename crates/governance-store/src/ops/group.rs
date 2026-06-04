@@ -34,7 +34,6 @@ mod member_metadata_set;
 mod member_removed;
 mod member_role_set;
 mod member_set_auto_follow;
-mod migration_force_carry;
 mod noop;
 mod subgroup_visibility_set;
 mod target_application_set;
@@ -172,18 +171,6 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             target_application_id,
             migration,
             *cascade_hlc,
-        )?,
-        GroupOp::MigrationForceCarry {
-            context_id,
-            entry_id,
-            departed_owner,
-            target_schema_version,
-        } => migration_force_carry::apply(
-            ctx,
-            context_id,
-            entry_id,
-            departed_owner,
-            *target_schema_version,
         )?,
         // `GroupOp` is `#[non_exhaustive]` from a different crate,
         // so the wildcard is required by the compiler. When a new

@@ -82,24 +82,6 @@ pub enum OpEvent {
         contexts: bool,
         subgroups: bool,
     },
-    /// `GroupOp::MigrationForceCarry` — an admin force-carried a departed
-    /// owner's stale identity-gated entry. The governance op only records
-    /// this intent; the subscriber on the storage path is what performs
-    /// the tombstone+rekey by emitting an admin-signed
-    /// `Action::Delete(entry_id)` + `Action::Add(new, owner=new_owner)`
-    /// pair. `new_owner` is the admin signer (NOT `departed_owner`) — the
-    /// admin cannot forge the departed owner's signature nor change an
-    /// entry's owner, so re-creating under the admin's own key is the
-    /// only crypto-sound resolution and verifies normally at
-    /// `apply_action`. `departed_owner` is carried for audit only.
-    MigrationForceCarried {
-        group_id: [u8; 32],
-        context_id: [u8; 32],
-        entry_id: [u8; 32],
-        departed_owner: PublicKey,
-        new_owner: PublicKey,
-        target_schema_version: u32,
-    },
     /// `RootOp::KeyDelivery` — the local node successfully unwrapped and
     /// stored a group key from a `KeyDelivery` op addressed to it.
     /// Subscribers (notably `join_group`) use this as the wake-up signal
