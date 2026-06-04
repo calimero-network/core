@@ -303,7 +303,10 @@ mod tests {
             .expect("save upgrade");
 
         let resp = abort_group_migration(&store, &group_id).expect("abort");
-        assert!(resp.aborted, "a pending migration must report aborted = true");
+        assert!(
+            resp.aborted,
+            "a pending migration must report aborted = true"
+        );
 
         let meta = MetaRepository::new(&store)
             .load(&group_id)
