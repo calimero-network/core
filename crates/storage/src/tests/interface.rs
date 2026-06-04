@@ -517,6 +517,12 @@ mod interface__comparison {
         // which only held because the parent is the root page (whose ancestors
         // are empty); the action was being built from the parent's ancestors
         // instead of the child's, orphaning para2 on the receiver.
+        // Expected ancestor hash, derived independently of the action under
+        // test: the page's own full Merkle hash, which is what
+        // `get_ancestors_of` records for the parent entry.
+        let expected_page_hash = MainInterface::generate_comparison_data(Some(local_page.id()))
+            .unwrap()
+            .full_hash;
         let local_para2_ancestor_hash = {
             let Action::Add { ancestors, .. } = foreign_actions[1].clone() else {
                 panic!("Expected para2 to be added to foreign");
@@ -526,6 +532,11 @@ mod interface__comparison {
                 ancestors[0].id(),
                 local_page.id(),
                 "para2's ancestor must be its immediate parent (the page)"
+            );
+            assert_eq!(
+                ancestors[0].merkle_hash(),
+                expected_page_hash,
+                "para2's ancestor hash must be the page's full Merkle hash"
             );
             ancestors[0].merkle_hash()
         };
