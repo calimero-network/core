@@ -133,6 +133,34 @@ where
         &self.connection.api_url
     }
 
+    /// The WebSocket endpoint URL (`ws(s)://…/ws`) for this connection, derived
+    /// from the HTTP `api_url` by swapping the scheme and pointing at `/ws`.
+    /// Used by the event-stream (`subscribe`) and `execute`-over-WS paths.
+    pub fn ws_url(&self) -> Result<Url> {
+        let mut url = self.connection.api_url.clone();
+
+        let scheme = match url.scheme() {
+            "https" => "wss",
+            _ => "ws",
+        };
+        url.set_scheme(scheme)
+            .map_err(|()| eyre::eyre!("failed to set WebSocket URL scheme"))?;
+        url.set_path("ws");
+
+        Ok(url)
+    }
+
+    /// Resolve the bearer auth header for this connection, if the node requires
+    /// auth and credentials are available (triggering proactive authentication
+    /// when no token is stored, just like the HTTP request helpers).
+    ///
+    /// WebSocket auth is connection-level — validated once at the upgrade
+    /// handshake — so callers attach this to the upgrade request rather than to
+    /// every message.
+    pub async fn auth_header(&self) -> Result<Option<String>> {
+        self.connection.auth_header().await
+    }
+
     /// Create context identity alias (legacy method for backward compatibility)
     pub async fn create_context_identity_alias(
         &self,

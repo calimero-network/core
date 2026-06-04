@@ -56,6 +56,12 @@ pub struct CallCommand {
         value_delimiter = ','
     )]
     pub substitute: Vec<Alias<PublicKey>>,
+
+    #[arg(
+        long = "ws",
+        help = "Issue the call over a WebSocket connection instead of HTTP JSON-RPC"
+    )]
+    pub ws: bool,
 }
 
 fn serde_value(s: &str) -> serde_json::Result<Value> {
@@ -72,26 +78,25 @@ impl CallCommand {
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
 
-        let payload = RequestPayload::Execute(ExecutionRequest::new(
+        let execution = ExecutionRequest::new(
             context_id,
             self.method,
             self.args.unwrap_or(json!({})),
             self.substitute,
-        ));
-
-        let request = Request::new(
-            Version::TwoPointZero,
-            self.id.map(RequestId::String).unwrap_or_default(),
-            payload,
         );
 
-        let response = client.execute_jsonrpc(request).await?;
+        let id = self.id.map(RequestId::String).unwrap_or_default();
 
-        // Debug: Print what we're about to output
-        eprintln!(
-            "🔍 meroctl call output: {}",
-            serde_json::to_string_pretty(&response)?
-        );
+        let response = if self.ws {
+            crate::ws::execute(client, id, execution).await?
+        } else {
+            let request = Request::new(
+                Version::TwoPointZero,
+                id,
+                RequestPayload::Execute(execution),
+            );
+            client.execute_jsonrpc(request).await?
+        };
 
         environment.output.write(&response);
 

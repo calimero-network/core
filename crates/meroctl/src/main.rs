@@ -12,6 +12,7 @@ mod defaults;
 
 mod output;
 mod storage;
+mod ws;
 
 mod version;
 
