@@ -342,9 +342,23 @@ steps:
       - e2e-node-2
       - e2e-node-3
 
-  - name: Wait for libp2p connections across the partition to drop
+  # Settle margin, NOT a "wait for the connection to be marked dead" (which is
+  # what disconnect_node's interface teardown needs, hence its 20s). The
+  # DOCKER-USER DROP rule is effective the instant partition_peers returns — it
+  # drops every packet between the pair, including on the already-established
+  # libp2p stream — so from here no rotation can cross the partition regardless
+  # of libp2p's keep-alive state. This short wait just lets any pre-partition
+  # in-flight gossip quiesce; the baseline already converged, so there is none
+  # in practice.
+  - name: Settle after the partition takes effect
     type: wait
-    seconds: 8
+    seconds: 12
+
+  # The two rotations below are issued sequentially by the orchestrator, but
+  # that ordering is irrelevant: the partition means neither node can receive
+  # the other's rotation, so they are DAG-concurrent (each builds on head H)
+  # however they interleave in wall-clock time. Concurrency comes from the
+  # partition, not from simultaneous issuance.
 
   # node-1 (isolated) rotates {A,B} -> {A,C}: drops B, adds C.
   - name: Node-1 rotates writer set to {A, C}
