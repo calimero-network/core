@@ -55,10 +55,12 @@ pub(crate) fn apply(
     // have held `ReadOnlyTee` (a directly-rowed role), so skipping the
     // `TeeMemberRemoved` follow-up is exactly right, while the generic
     // `MemberRemoved` + deny-list below still fire to drive the soft-leave
-    // path. Surface at `warn!` purely for observability.
+    // path. Log at `debug!`, not `warn!`: this is an expected, common path
+    // for Open subgroups (inherited-member removals), not an anomaly —
+    // warning on every one would be pure noise.
     let removed_role = MembershipRepository::new(store).role_of(group_id, member)?;
     if removed_role.is_none() {
-        tracing::warn!(
+        tracing::debug!(
             group_id = %hex::encode(group_id.to_bytes()),
             member = %member,
             "MemberRemoved apply: role_of returned None (no direct row — likely \

@@ -5756,9 +5756,7 @@ mod tee_member_removed_event_tests {
     /// `group_id`/`member` filter still discards events that parallel
     /// tests interleave onto the process-wide channel.
     ///
-    /// Kept `async` only so the call sites read uniformly; the body never
-    /// awaits.
-    async fn count_removed_events_for(
+    fn count_removed_events_for(
         rx: &mut tokio::sync::broadcast::Receiver<OpEvent>,
         gid_bytes: [u8; 32],
         member: PublicKey,
@@ -5797,8 +5795,8 @@ mod tee_member_removed_event_tests {
     /// Removing a `ReadOnlyTee` member via `GroupOp::MemberRemoved`
     /// must emit BOTH `MemberRemoved` and `TeeMemberRemoved` for the
     /// same `(group_id, member)`.
-    #[tokio::test(flavor = "current_thread")]
-    async fn member_removed_op_emits_tee_event_for_readonly_tee_role() {
+    #[test]
+    fn member_removed_op_emits_tee_event_for_readonly_tee_role() {
         let store = test_store();
         let gid = test_group_id();
         let admin_sk = PrivateKey::random(&mut OsRng);
@@ -5832,7 +5830,7 @@ mod tee_member_removed_event_tests {
         .expect("sign MemberRemoved");
         apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
 
-        let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), tee_pk).await;
+        let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), tee_pk);
         assert_eq!(
             mr, 1,
             "MemberRemoved must still fire for a TEE removal (auto-follow + downstream rely on it)"
@@ -5849,8 +5847,8 @@ mod tee_member_removed_event_tests {
     /// `group-{kick-and-readd-deny-list, kick-and-rejoin-keyshare,
     /// leave-namespace, leave-then-rejoin-via-inheritance}` that
     /// closing #2653 was about.
-    #[tokio::test(flavor = "current_thread")]
-    async fn member_removed_op_does_not_emit_tee_event_for_regular_member() {
+    #[test]
+    fn member_removed_op_does_not_emit_tee_event_for_regular_member() {
         let store = test_store();
         let gid = test_group_id();
         let admin_sk = PrivateKey::random(&mut OsRng);
@@ -5883,7 +5881,7 @@ mod tee_member_removed_event_tests {
         .expect("sign MemberRemoved");
         apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
 
-        let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), target_pk).await;
+        let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), target_pk);
         assert_eq!(
             mr, 1,
             "MemberRemoved must fire for a regular-Member removal"
@@ -5897,8 +5895,8 @@ mod tee_member_removed_event_tests {
     /// Same role-scoped contract on the `MemberLeft` (self-leave) arm:
     /// a `ReadOnlyTee` self-leave emits both events; an `Admin`/
     /// `Member` self-leave emits only `MemberRemoved`.
-    #[tokio::test(flavor = "current_thread")]
-    async fn member_left_op_emits_tee_event_only_for_readonly_tee_role() {
+    #[test]
+    fn member_left_op_emits_tee_event_only_for_readonly_tee_role() {
         // Case 1: TEE self-leave fires both.
         {
             let store = test_store();
@@ -5941,7 +5939,7 @@ mod tee_member_removed_event_tests {
             .expect("sign MemberLeft (TEE)");
             apply_local_signed_group_op(&store, &op).expect("apply MemberLeft (TEE)");
 
-            let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), tee_pk).await;
+            let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), tee_pk);
             assert_eq!(
                 mr, 1,
                 "MemberRemoved must fire for a TEE self-leave (existing subscribers)"
@@ -5990,7 +5988,7 @@ mod tee_member_removed_event_tests {
             .expect("sign MemberLeft (regular)");
             apply_local_signed_group_op(&store, &op).expect("apply MemberLeft (regular)");
 
-            let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), leaver_pk).await;
+            let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), leaver_pk);
             assert_eq!(mr, 1, "MemberRemoved must fire for a regular self-leave");
             assert_eq!(
                 tmr, 0,
