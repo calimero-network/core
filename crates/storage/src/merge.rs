@@ -251,20 +251,21 @@ pub fn merge_root_state(
         }
         registry::MergeRegistryResult::AllFunctionsFailed => {
             // Merge functions are registered, but none could deserialize+merge
-            // these bytes. Dispatch is type-blind (no per-entity type hint yet,
-            // #1993), so two cases land here indistinguishably:
+            // these bytes. Dispatch is type-blind — there is no per-entity type
+            // hint to select a merger by, so every registered fn is tried and
+            // this arm is reached whenever none deserializes the bytes. Two
+            // cases land here indistinguishably:
             //   * EXPECTED (common): this entity's type simply has no custom
             //     CRDT merge, so plain LWW is the correct resolution — e.g. a
             //     routine `set`, or a root "shell" whose real data lives in
             //     child entities that merge on their own paths.
             //   * RARE: a custom-merge type's bytes are a genuine
             //     mismatch/corruption.
-            // This used to log a WARN reading "type mismatch or corrupt data",
-            // which made every routine write look like data loss and once sent
-            // a split-brain investigation down a false path (#2626). The benign
-            // case dominates, and a real corruption also surfaces downstream
-            // (hash divergence) and via the loud I5 `NoMergeFunctionRegistered`
-            // path above — so log at DEBUG with accurate wording instead.
+            // Log at DEBUG, not WARN: the benign case dominates (a WARN reading
+            // "type mismatch or corrupt data" here made every routine write look
+            // like data loss), and a real corruption still surfaces downstream
+            // as hash divergence and via the loud `NoMergeFunctionRegistered`
+            // error path above (which fires when NO merger is registered).
             tracing::debug!(
                 target: "calimero_storage::merge",
                 existing_ts,
@@ -670,5 +671,47 @@ mod typed_dispatch_tests {
             "expected SerializationError, got {:?}",
             result
         );
+    }
+
+    #[test]
+    #[serial]
+    fn merge_root_state_all_functions_failed_falls_back_to_lww() {
+        // The type-blind `merge_root_state` path (vs the typed one above): a
+        // merger IS registered, but the bytes don't deserialize as its type, so
+        // the registry returns `AllFunctionsFailed` and we resolve by LWW. This
+        // pins that fallback after the log-level change — it is the branch a
+        // routine `set` exercises in production.
+        env::reset_for_testing();
+        clear_merge_registry();
+        register_crdt_merge::<DispatchTestApp>();
+
+        // Neither side deserializes as DispatchTestApp (a 0xFFFFFFFF borsh
+        // length prefix overruns), so the one registered fn fails on both.
+        let existing = vec![0xff, 0xff, 0xff, 0xff];
+        let incoming = vec![0x01, 0x02, 0x03, 0x04];
+
+        // Non-bootstrap timestamps (created_at != existing_ts) so the
+        // accept-incoming fast-path is skipped and we reach the LWW fallback.
+        let newer_incoming = merge_root_state(
+            &existing, &incoming, /* created_at */ 50, /* existing_ts */ 100,
+            /* incoming_ts */ 200,
+        )
+        .expect("LWW fallback returns Ok");
+        assert_eq!(
+            newer_incoming, incoming,
+            "incoming_ts >= existing_ts → incoming wins"
+        );
+
+        let older_incoming = merge_root_state(
+            &existing, &incoming, /* created_at */ 50, /* existing_ts */ 200,
+            /* incoming_ts */ 100,
+        )
+        .expect("LWW fallback returns Ok");
+        assert_eq!(
+            older_incoming, existing,
+            "incoming_ts < existing_ts → existing wins"
+        );
+
+        clear_merge_registry();
     }
 }
