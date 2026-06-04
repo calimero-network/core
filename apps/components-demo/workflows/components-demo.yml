@@ -1,0 +1,171 @@
+description: Access-control components (Ownable / PermissionedStorage / AccessControl) e2e
+name: Components demo workflow
+
+# Proves the components' core claim end-to-end across two nodes: authorized
+# writes converge, and an UNAUTHORIZED write is rejected at merge (not just by
+# the fail-fast API guard). The adversarial step is last because it deliberately
+# diverges the forging node.
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: new-calimero-node
+
+steps:
+  # Node 1 installs; the installer is config owner, sole settings writer, admin.
+  - name: Install Application on Node 1
+    type: install_application
+    node: new-calimero-node-1
+    path: "./res/components_demo.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: new-calimero-node-1
+    application_id: '{{app_id}}'
+    path: "./res/components_demo.wasm"
+    nodes:
+      - new-calimero-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # ============================================
+  # Ownable — owner writes config, it converges to node 2.
+  # ============================================
+
+  - name: Node 1 (owner) sets config
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: set_config
+    args:
+      value: "owner-config"
+
+  - name: Wait for config to sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads the owner's config
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: get_config
+    outputs:
+      node2_config: result
+
+  - name: Assert config converged to node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_config}}, {"output": "owner-config"})'
+
+  # ============================================
+  # AccessControl — admin (node 1) grants node 2 the "editor" role; it converges.
+  # ============================================
+
+  - name: Node 1 (admin) grants editor to node 2
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: grant_role
+    args:
+      role: "editor"
+      who: "{{public_key_new-calimero-node-2}}"
+
+  - name: Wait for the grant to sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 sees its editor role
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: has_role
+    args:
+      role: "editor"
+      who: "{{public_key_new-calimero-node-2}}"
+    outputs:
+      node2_has_editor: result
+
+  - name: Assert the grant converged to node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_has_editor}}, {"output": true})'
+
+  # ============================================
+  # AccessControl fail-fast — node 2 is an editor but NOT an admin, so its grant
+  # attempt is refused at the API surface (the call errors).
+  # ============================================
+
+  - name: Node 2 (non-admin) attempts to grant a role
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: try_grant_role
+    args:
+      role: "editor"
+      who: "{{public_key_new-calimero-node-1}}"
+    outputs:
+      node2_grant_accepted: result
+
+  - name: Assert node 2's non-admin grant was refused
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_grant_accepted}}, {"output": false})'
+
+  # ============================================
+  # Adversarial (LAST — deliberately diverges node 2). Node 2 is NOT a writer of
+  # the settings map (only node 1 is), so its forged settings write is applied
+  # locally but rejected by node 1 at MERGE — proving the boundary is merge-time
+  # signature verification, not the fail-fast guard. `settings_set` has no local
+  # admin/owner guard (it just writes the guarded entity), so this exercises the
+  # merge path exactly like a hand-crafted delta would. The AccessControl grant
+  # registry above is the same writer-set-guarded map shape, so this proves the
+  # same enforcement that protects role grants. Nothing convergent may follow.
+  # ============================================
+
+  - name: Node 2 (non-writer) forges a settings write
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: settings_set
+    args:
+      key: "evil"
+      value: "forged"
+
+  - name: Let the forged delta attempt (and fail) to propagate
+    type: wait
+    seconds: 20
+
+  - name: Node 1 reads the entry the non-writer tried to set
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: settings_get
+    args:
+      key: "evil"
+    outputs:
+      node1_evil_read: result
+
+  - name: Assert the non-writer's forged settings write did NOT reach node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_evil_read}}, {"output": null})'

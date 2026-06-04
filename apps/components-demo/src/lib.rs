@@ -61,6 +61,20 @@ impl ComponentsDemo {
         Ok(self.roles.has_role(&role, &who)?)
     }
 
+    /// e2e-support method (not for production). Attempt to grant a role,
+    /// returning whether the local admin guard accepted it (`true`) or refused
+    /// it (`false`) instead of trapping — so the adversarial workflow can assert
+    /// a non-admin is refused without failing the RPC call itself. A real app
+    /// should propagate the error (use `grant_role`). The authoritative
+    /// rejection of a *forged grant delta* that bypasses this gate happens at
+    /// merge (same writer-set-guarded mechanism the settings adversarial proves).
+    pub fn try_grant_role(&mut self, role: String, who: PublicKey) -> app::Result<bool> {
+        match self.roles.grant(&role, who) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+
     /// Owner-only write. The guard fails fast; the boundary is that `config` is
     /// a writer-set-guarded entity whose sole writer is the owner.
     pub fn set_config(&mut self, value: String) -> app::Result<()> {

@@ -142,17 +142,22 @@ impl AccessControl {
     /// Add `who` to the admin set via an authenticated writer-set rotation.
     /// Only a current admin may.
     ///
-    /// The admin check is the single `guard(Op::Admin)` inside
-    /// [`rotate_writers`](SharedStorage::rotate_writers) — no separate
-    /// `only_admin()` here, matching the one-gate-per-method rule (unlike
-    /// `grant`/`revoke`, whose collection-insert path is not locally gated and
-    /// so need the explicit fail-fast).
+    /// One authorization gate per path: `rotate_writers`'s `guard(Op::Admin)`
+    /// when the set actually changes, or `only_admin()` on the idempotent no-op
+    /// path (where no rotation runs). Never both — matching the one-gate rule.
+    /// (Unlike `grant`/`revoke`, whose collection-insert path is not locally
+    /// gated and so always need the explicit fail-fast.)
     ///
     /// # Errors
     /// `ActionNotAllowed` if the executor is not a current admin.
     pub fn grant_admin(&mut self, who: PublicKey) -> Result<(), StoreError> {
         let mut admins = self.grants.writers();
-        let _ = admins.insert(who);
+        if !admins.insert(who) {
+            // Already an admin: no set change, so skip the (otherwise no-op)
+            // rotation — but still authorize the caller, since on this path
+            // `rotate_writers` wouldn't run to provide the gate.
+            return self.only_admin();
+        }
         self.grants.rotate_writers(admins)
     }
 
@@ -170,7 +175,11 @@ impl AccessControl {
     /// `who` would leave no admins.
     pub fn revoke_admin(&mut self, who: &PublicKey) -> Result<(), StoreError> {
         let mut admins = self.grants.writers();
-        let _ = admins.remove(who);
+        if !admins.remove(who) {
+            // `who` is not an admin: no set change, so skip the no-op rotation —
+            // but still authorize the caller (the rotation gate wouldn't run).
+            return self.only_admin();
+        }
         // `rotate_writers` also rejects an empty set, but bail early with a
         // clearer message before attempting the rotation.
         if admins.is_empty() {
