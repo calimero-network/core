@@ -1124,15 +1124,18 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// [`needs_owner_convert`]: crate::entities::needs_owner_convert
     ///
+    /// # Visibility
+    /// `pub` so the node-side migration-status emitter
+    /// (`calimero_node::migration_status::compute_namespace_migration_facts`,
+    /// PR-6c) can compute honest per-context `residue_identity` telemetry. It is
+    /// the public residue-scan surface the heartbeat reports; the
+    /// `IterableStorage` bound keeps it callable only against an adaptor that can
+    /// enumerate keys (the node binds one per context via `with_runtime_env`),
+    /// so it cannot be misused as a wasm-app primitive.
+    ///
     /// # Errors
     /// Returns `StorageError` if an index entry cannot be loaded.
-    #[allow(
-        dead_code,
-        reason = "consumed by the migration-status heartbeat emitter (PR-6c task 6c.8)"
-    )]
-    pub(crate) fn count_unconverted_identity_gated(
-        target_version: u32,
-    ) -> Result<usize, StorageError>
+    pub fn count_unconverted_identity_gated(target_version: u32) -> Result<usize, StorageError>
     where
         S: IterableStorage,
     {

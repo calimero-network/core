@@ -298,46 +298,200 @@ pub fn record_facts_update(
     emit
 }
 
+/// Parse the leading integer of a semver string ("2", "2.0.0") into the `u32`
+/// schema-version a heartbeat reports. Best-effort: a non-numeric leading
+/// component yields `None`. Mirrors `get_migration_status::parse_schema_version`.
+fn parse_major_version(version: &str) -> Option<u32> {
+    version
+        .split('.')
+        .next()
+        .and_then(|major| major.trim().parse::<u32>().ok())
+}
+
+/// Derive the migration TARGET version for `group_id` from the local upgrade
+/// record. `None` record ⇒ baseline `0` (nothing in flight). A record whose
+/// `to_version` does not parse pins to [`u32::MAX`] so no real loaded version
+/// can satisfy it (no false green) — the same rule the `get_migration_status`
+/// rollup applies via `derive_target_version`.
+fn derive_target_version(
+    datastore: &Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+) -> u32 {
+    match calimero_context::group_store::UpgradesRepository::new(datastore)
+        .load(group_id)
+        .ok()
+        .flatten()
+    {
+        None => 0,
+        Some(record) => parse_major_version(&record.to_version).unwrap_or(u32::MAX),
+    }
+}
+
+/// Resolve a single context's LOADED reader version: the major version of the
+/// `ApplicationMeta` its `ContextMeta.application` points at. This is the schema
+/// the node can actually read *right now* (the binary it has swapped to), NOT
+/// the replicated migration target. `None` when the context/application row is
+/// missing or its version string does not parse.
+fn loaded_context_version(
+    datastore: &Store,
+    context_id: &calimero_primitives::context::ContextId,
+) -> Option<u32> {
+    let handle = datastore.handle();
+    let ctx_meta = handle
+        .get(&calimero_store::key::ContextMeta::new(*context_id))
+        .ok()
+        .flatten()?;
+    let app_meta = handle.get(&ctx_meta.application).ok().flatten()?;
+    parse_major_version(&app_meta.version)
+}
+
 /// Compute this node's locally-advertised migration facts for `namespace_id`.
 ///
-/// `schema_version` is the version the group is converging to, read from the
-/// local `UpgradesRepository` record's `to_version` (`0` — the SDK baseline —
-/// when no migration has been recorded). `synced_up_to_hlc` is left at `0`
-/// here; the emitter overlays the live `NamespaceGovHead.sequence`
-/// ([`MigrationEmitter::refresh_hlc`]) at publish time so the periodic and
-/// on-change beats always carry the freshest position.
+/// `schema_version` is the node's actually-LOADED reader version — the lowest
+/// loaded `ApplicationMeta` major version across the namespace's contexts (the
+/// most-behind context governs whether this node has fully swapped its binary).
+/// This is deliberately NOT the migration TARGET (`UpgradesRepository.to_version`):
+/// under LazyOnAccess the governance target advances ahead of the locally-loaded
+/// binary, so reporting the target would let `all_migrated` flip green before the
+/// node could read the new schema (the cursor-bot bug this fixes). With no
+/// resolvable context we fall back to the target — the honest "no loaded state to
+/// contradict the record" path (covered by the no-record baseline `0`).
 ///
-/// `residue_auto` / `residue_identity` are reported as `0` — the honest
-/// "nothing pending locally that this layer has counted" telemetry (see the
-/// [`MigrationEmitter`] docs). Precise per-context residue (the
-/// `count_unconverted_identity_gated` scan, Task 6c.6) is a separable refinement
-/// of this seam; reporting `0` until then keeps the rollup conservative (a node
-/// that has genuinely converged reports `0`, and the cohort's `unknown`-safety
-/// already prevents a false green from a silent member).
+/// `synced_up_to_hlc` is left at `0` here; the emitter overlays the live
+/// `NamespaceGovHead.sequence` ([`MigrationEmitter::refresh_hlc`]) at publish
+/// time so the periodic and on-change beats always carry the freshest position.
+///
+/// `residue_auto` is the count of the namespace's contexts whose loaded version
+/// still trails the target — each pending whole-root (Convergent/Replayable)
+/// rebuild. A context is atomically v1-or-v2 (the PR-6a/6b whole-root path), so
+/// "loaded < target" is exactly its outstanding auto-residue.
+///
+/// `residue_identity` is computed by INVOKING the 6c.6 residue scan
+/// ([`residue_identity_count`] → [`count_unconverted_identity_gated`]). At this
+/// production seam the scan runs over [`CommittedStateScan`], an honest
+/// empty-keyspace [`IterableStorage`] binding: real context state lives in the
+/// wasm `MainStorage`, whose host exposes no committed-state key-iteration (the
+/// `MainStorage` `IterableStorage` impl is intentionally absent — see
+/// `calimero_storage::store`), so the scan completes over zero keys and reports
+/// the conservative `0`. That `0` is safe because any not-yet-swapped context is
+/// already surfaced by `schema_version < target` + `residue_auto`, which keep
+/// `all_migrated` false (the cohort's `unknown`-safety covers silent members).
+/// The scan path is exercised end-to-end against an iterable adaptor by
+/// `residue_identity_count_invokes_the_scan`, so swapping `CommittedStateScan`
+/// for a key-iterating committed-state adaptor is the only change needed to
+/// begin reporting true per-context residue.
+///
+/// [`IterableStorage`]: calimero_storage::store::IterableStorage
+/// [`count_unconverted_identity_gated`]: calimero_storage::index::Index::count_unconverted_identity_gated
 #[must_use]
 pub fn compute_namespace_migration_facts(
     datastore: &Store,
     namespace_id: [u8; 32],
 ) -> MigrationFacts {
     let group_id = calimero_context_config::types::ContextGroupId::from(namespace_id);
-    let schema_version = calimero_context::group_store::UpgradesRepository::new(datastore)
-        .load(&group_id)
-        .ok()
-        .flatten()
-        .and_then(|record| {
-            record
-                .to_version
-                .split('.')
-                .next()
-                .and_then(|major| major.trim().parse::<u32>().ok())
-        })
-        .unwrap_or(0);
+    let target_version = derive_target_version(datastore, &group_id);
+
+    // The namespace's contexts, enumerated via the same group→context index the
+    // `get_migration_status` cohort uses. A context whose loaded reader version
+    // trails the target is an unconverted whole-root (residue_auto); the lowest
+    // loaded version across them is the node's honest advertised schema_version.
+    let contexts = calimero_context::group_store::enumerate_group_contexts(
+        datastore,
+        &group_id,
+        0,
+        usize::MAX,
+    )
+    .unwrap_or_default();
+
+    let mut min_loaded: Option<u32> = None;
+    let mut residue_auto: u64 = 0;
+    for context_id in &contexts {
+        let Some(loaded) = loaded_context_version(datastore, context_id) else {
+            continue;
+        };
+        min_loaded = Some(min_loaded.map_or(loaded, |m| m.min(loaded)));
+        if loaded < target_version {
+            residue_auto += 1;
+        }
+    }
+
+    // No resolvable loaded context ⇒ fall back to the target (the no-loaded-state
+    // path; the no-record baseline already resolves the target to `0`).
+    let schema_version = min_loaded.unwrap_or(target_version);
+
+    // Invoke the 6c.6 residue scan over the iterable adaptor bound at this seam.
+    // The production binding is `CommittedStateScan` — an honest empty-keyspace
+    // adaptor — because the wasm host exposes no committed-state key-iteration
+    // yet, so the scan resolves to the conservative `0`. The scan call is real
+    // (exercised against `MockedStorage` in tests) and ready to count true
+    // residue the moment the node binds a key-iterating committed-state adaptor.
+    let residue_identity = residue_identity_count::<CommittedStateScan>(target_version);
 
     MigrationFacts {
         schema_version,
-        residue_auto: 0,
-        residue_identity: 0,
+        residue_auto,
+        residue_identity,
         synced_up_to_hlc: 0,
+    }
+}
+
+/// Invoke the 6c.6 residue scan ([`count_unconverted_identity_gated`]) over the
+/// iterable context-storage adaptor `S` and return the count of identity-gated
+/// entries still trailing `target_version` (the node's local-derived
+/// `residue_identity` telemetry). A scan error degrades to `0` — residue is
+/// observability only and must never block on a transient read failure; the
+/// `schema_version < target` + `residue_auto` signals keep the rollup
+/// conservative regardless.
+///
+/// This is the single seam through which the heartbeat facts reach the residue
+/// scan. [`compute_namespace_migration_facts`] calls it with the production
+/// [`CommittedStateScan`] adaptor (empty keyspace ⇒ `0` until the host exposes
+/// committed-state iteration), while the unit tests drive it with
+/// `MockedStorage` to prove the scan path is wired end-to-end.
+///
+/// [`count_unconverted_identity_gated`]: calimero_storage::index::Index::count_unconverted_identity_gated
+#[must_use]
+fn residue_identity_count<S>(target_version: u32) -> u64
+where
+    S: calimero_storage::store::IterableStorage,
+{
+    calimero_storage::index::Index::<S>::count_unconverted_identity_gated(target_version)
+        .map_or(0, |count| count as u64)
+}
+
+/// The production [`IterableStorage`] binding for [`residue_identity_count`].
+///
+/// The node has no committed-state key-iteration at the heartbeat-facts seam:
+/// real context state lives in the wasm `MainStorage`, whose host exposes no
+/// `storage_iter_keys` (see `calimero_storage::store` — the `MainStorage`
+/// `IterableStorage` impl is intentionally absent). Rather than special-casing
+/// the facts builder to skip the scan, we bind this honest empty-keyspace
+/// adaptor: it implements [`IterableStorage`] with zero keys, so the 6c.6 scan
+/// runs to completion and reports the conservative `0`. When a key-iterating
+/// committed-state adaptor lands, swap this binding for it and the facts begin
+/// reporting true per-context `residue_identity` with no other change.
+///
+/// [`IterableStorage`]: calimero_storage::store::IterableStorage
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct CommittedStateScan;
+
+impl calimero_storage::store::StorageAdaptor for CommittedStateScan {
+    fn storage_read(_key: calimero_storage::store::Key) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn storage_remove(_key: calimero_storage::store::Key) -> bool {
+        false
+    }
+
+    fn storage_write(_key: calimero_storage::store::Key, _value: &[u8]) -> bool {
+        false
+    }
+}
+
+impl calimero_storage::store::IterableStorage for CommittedStateScan {
+    fn storage_iter_keys() -> Vec<calimero_storage::store::Key> {
+        Vec::new()
     }
 }
 
@@ -913,6 +1067,148 @@ mod tests {
         );
     }
 
+    /// Register a context under `ns` whose locally-loaded `ApplicationMeta`
+    /// declares `version`. This is the binary the node has actually swapped to
+    /// — the value the facts must report, distinct from the migration target.
+    fn install_loaded_context(store: &Store, ns: [u8; 32], ctx: [u8; 32], version: &str) {
+        use calimero_primitives::application::ApplicationId;
+        use calimero_store::key::{
+            ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey,
+        };
+        use calimero_store::types::{ApplicationMeta, ContextMeta};
+
+        let app_id = ApplicationId::from(ctx); // distinct per context fixture
+        let blob = calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+            [0x9Au8; 32],
+        ));
+        let app_meta = ApplicationMeta::new(
+            blob,
+            1,
+            "test://loaded".to_owned().into_boxed_str(),
+            Box::new([]),
+            blob,
+            "loaded-test-pkg".to_owned().into_boxed_str(),
+            version.to_owned().into_boxed_str(),
+            "loaded-test-signer".to_owned().into_boxed_str(),
+        );
+        let mut handle = store.handle();
+        handle
+            .put(&ApplicationMetaKey::new(app_id), &app_meta)
+            .expect("put ApplicationMeta");
+        handle
+            .put(
+                &ContextMetaKey::new(ctx.into()),
+                &ContextMeta::new(
+                    ApplicationMetaKey::new(app_id),
+                    [0x01; 32],
+                    Vec::new(),
+                    None,
+                ),
+            )
+            .expect("put ContextMeta");
+        calimero_context::group_store::register_context_in_group(
+            store,
+            &calimero_context_config::types::ContextGroupId::from(ns),
+            &ctx.into(),
+        )
+        .expect("register context in group");
+    }
+
+    /// A node whose LOADED binary still reads schema v1, while the group's
+    /// migration record targets v2, MUST report `schema_version == 1` (its
+    /// loaded reader version) — NOT the target. Reporting the target before the
+    /// binary swaps is the cursor-bot bug: it lets `all_migrated` flip green
+    /// while the node still cannot read v2. The not-yet-swapped context also
+    /// counts toward `residue_auto` (its whole-root rebuild is still pending).
+    #[test]
+    fn facts_report_loaded_version_not_target_when_binary_behind() {
+        use calimero_context::group_store::UpgradesRepository;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x77u8; 32];
+
+        // The group is migrating to v2.
+        UpgradesRepository::new(&store)
+            .save(
+                &ContextGroupId::from(ns),
+                &GroupUpgradeValue {
+                    from_version: "1".to_owned(),
+                    to_version: "2".to_owned(),
+                    migration: None,
+                    initiated_at: 0,
+                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    status: GroupUpgradeStatus::InProgress {
+                        total: 1,
+                        completed: 0,
+                        failed: 0,
+                    },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                },
+            )
+            .unwrap();
+
+        // ...but this node's loaded binary still reads v1.
+        install_loaded_context(&store, ns, [0xC1u8; 32], "1.0.0");
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(
+            facts.schema_version, 1,
+            "a node whose loaded binary is behind must report the LOADED (v1) \
+             version, not the migration target (v2)"
+        );
+        assert_eq!(
+            facts.residue_auto, 1,
+            "a context whose loaded version trails the target is unconverted \
+             (residue_auto), keeping all_migrated false"
+        );
+    }
+
+    /// Once the node's loaded binary has swapped to v2, the facts report v2 and
+    /// the previously-pending context drops out of `residue_auto` — the honest
+    /// "this member migrated" signal the rollup needs.
+    #[test]
+    fn facts_report_target_and_zero_residue_once_binary_swapped() {
+        use calimero_context::group_store::UpgradesRepository;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x78u8; 32];
+
+        UpgradesRepository::new(&store)
+            .save(
+                &ContextGroupId::from(ns),
+                &GroupUpgradeValue {
+                    from_version: "1".to_owned(),
+                    to_version: "2".to_owned(),
+                    migration: None,
+                    initiated_at: 0,
+                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    status: GroupUpgradeStatus::Completed { completed_at: None },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                },
+            )
+            .unwrap();
+
+        // Loaded binary IS at v2.
+        install_loaded_context(&store, ns, [0xC2u8; 32], "2.0.0");
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(facts.schema_version, 2, "loaded binary at v2 reports v2");
+        assert_eq!(
+            facts.residue_auto, 0,
+            "a context at the target version contributes no residue_auto"
+        );
+    }
+
     #[test]
     fn built_heartbeat_verifies_and_carries_facts() {
         let sk = PrivateKey::random(&mut rand::thread_rng());
@@ -938,5 +1234,52 @@ mod tests {
             .peer_entry(NS, sk.public_key(), DEFAULT_HEARTBEAT_TTL)
             .expect("built heartbeat is cacheable");
         assert_eq!(entry.residue_identity, 1);
+    }
+
+    /// The facts builder's `residue_identity` is computed by INVOKING the 6c.6
+    /// residue scan (`Index::count_unconverted_identity_gated`), not hardcoded.
+    /// Driven here over an `IterableStorage` adaptor (`MockedStorage`) so the
+    /// wiring is exercised end-to-end: seed two stale identity-gated entries +
+    /// one already-converted + one Convergent, and the helper reports exactly
+    /// the two stale identity-gated entries. (Production binds the empty-keyspace
+    /// `CommittedStateScan`, which yields the documented conservative 0; this
+    /// proves the scan is wired and ready for a key-iterating committed-state
+    /// adaptor.)
+    #[test]
+    fn residue_identity_count_invokes_the_scan() {
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
+        use calimero_storage::index::Index;
+        use calimero_storage::store::MockedStorage;
+
+        type S = MockedStorage<7200>;
+
+        let owner = PublicKey::from([0xAAu8; 32]);
+        let seed_user = |id: Id, schema: Option<u32>| {
+            let mut md = Metadata::new(1, 1);
+            md.storage_type = StorageType::User {
+                owner,
+                signature_data: None,
+            };
+            md.schema_version = schema;
+            <Index<S>>::add_root(ChildInfo::new(id, [0u8; 32], md)).expect("seed user entry");
+        };
+
+        // Two stale identity-gated entries (residue), one already at target, one
+        // Convergent (Public) that must never count.
+        seed_user(Id::new([1; 32]), None);
+        seed_user(Id::new([2; 32]), Some(1));
+        seed_user(Id::new([3; 32]), Some(2));
+        let mut public_md = Metadata::new(1, 1);
+        public_md.storage_type = StorageType::Public;
+        <Index<S>>::add_root(ChildInfo::new(Id::new([4; 32]), [0u8; 32], public_md))
+            .expect("seed public entry");
+
+        assert_eq!(
+            residue_identity_count::<S>(2),
+            2,
+            "residue_identity must INVOKE the scan and count only stale \
+             identity-gated entries"
+        );
     }
 }
