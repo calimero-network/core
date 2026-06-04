@@ -276,6 +276,104 @@ impl PeerIdentityCache {
     }
 }
 
+/// The role a peer's identity was observed holding in a group, paired
+/// with the group, as passed to [`PeerIdentityCache::record`] from the
+/// authenticated observation gate. `None` at a call site that can't
+/// cheaply resolve the membership means the observation updates only the
+/// in-memory reverse view, not the persistent cache.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ObservedMembership {
+    pub(crate) group_id: ContextGroupId,
+    pub(crate) role: GroupMemberRole,
+}
+
+/// One group's persisted bucket: the group id (hex of its 32 bytes,
+/// since `ContextGroupId` has no `Display`) and its `(identity, peer)`
+/// rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PersistedGroup {
+    pub(crate) group_id: String,
+    pub(crate) entries: Vec<PersistedIdentityPeer>,
+}
+
+/// Whole-cache on-disk form: every non-empty group bucket. Stored as a
+/// single blob under one `Generic` key (like `PeerAddrCache`) — the
+/// per-group structure lives *inside* the blob, which keeps load/snapshot
+/// to one get/put and avoids per-group key enumeration and stale-key
+/// pruning. A struct (not a bare `Vec`) leaves room to version the format.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct PersistedPeerIdentityCache {
+    pub(crate) groups: Vec<PersistedGroup>,
+}
+
+impl PeerIdentityCache {
+    /// Serialize every group's still-fresh entries into the single-blob
+    /// form. Groups with no fresh rows are omitted so the blob shrinks as
+    /// members age out.
+    pub(crate) fn to_persisted_all(
+        &self,
+        now_secs: u64,
+        ttl_secs: u64,
+    ) -> PersistedPeerIdentityCache {
+        let groups = self
+            .groups
+            .keys()
+            .filter_map(|group| {
+                let entries = self.to_persisted(group, now_secs, ttl_secs);
+                (!entries.is_empty()).then(|| PersistedGroup {
+                    group_id: hex::encode(group.to_bytes()),
+                    entries,
+                })
+            })
+            .collect();
+        PersistedPeerIdentityCache { groups }
+    }
+
+    /// Rebuild a cache from the single-blob form, dropping groups whose id
+    /// is unparseable and (per group) rows that are malformed or past
+    /// `ttl_secs`. A bad group id is logged at debug and skipped rather
+    /// than failing the whole load.
+    pub(crate) fn load_all_from_persisted(
+        blob: PersistedPeerIdentityCache,
+        now_secs: u64,
+        ttl_secs: u64,
+    ) -> Self {
+        let mut cache = Self::default();
+        for g in blob.groups {
+            let Some(group) = parse_group_id(&g.group_id) else {
+                debug!(group_id = %g.group_id, "skipping unparseable cached group id");
+                continue;
+            };
+            cache.load_group_from_persisted(group, g.entries, now_secs, ttl_secs);
+        }
+        cache
+    }
+
+    /// All `(peer, identity)` pairs currently held, across every group —
+    /// used to hydrate the in-memory reverse view (`peer_identities`)
+    /// after a load. No freshness filter: a load has already pruned stale
+    /// rows, and the reverse view is intersected with an authoritative
+    /// anchor set downstream.
+    pub(crate) fn all_peer_identity_pairs(&self) -> Vec<(PeerId, PublicKey)> {
+        let mut out = Vec::new();
+        for g in self.groups.values() {
+            for (identity, hosts) in &g.members {
+                for peer in hosts.peers.keys() {
+                    out.push((*peer, *identity));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Parse a hex-encoded 32-byte group id back into a [`ContextGroupId`].
+fn parse_group_id(s: &str) -> Option<ContextGroupId> {
+    let bytes = hex::decode(s).ok()?;
+    let arr: [u8; 32] = bytes.try_into().ok()?;
+    Some(ContextGroupId::from(arr))
+}
+
 /// `last_seen_secs` is within `ttl_secs` of `now_secs`. A backwards clock
 /// jump (`now < last_seen`) counts as fresh — better to keep a
 /// possibly-good entry than drop it on a clock glitch.
@@ -511,5 +609,94 @@ mod tests {
 
         let listed: BTreeSet<ContextGroupId> = c.groups().copied().collect();
         assert_eq!(listed, BTreeSet::from([group(1), group(3)]));
+    }
+
+    #[test]
+    fn whole_blob_round_trips_across_groups() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Admin, 100);
+        c.record(group(2), pk(2), peer(2), GroupMemberRole::ReadOnlyTee, 100);
+
+        let blob = c.to_persisted_all(100, 1000);
+        // JSON serialize/deserialize as the node-side persistence would.
+        let json = serde_json::to_string(&blob).expect("serialize");
+        let back: PersistedPeerIdentityCache = serde_json::from_str(&json).expect("deserialize");
+        let restored = PeerIdentityCache::load_all_from_persisted(back, 100, 1000);
+
+        assert_eq!(
+            restored.groups().copied().collect::<BTreeSet<_>>(),
+            BTreeSet::from([group(1), group(2)]),
+            "both groups survive the whole-blob round trip"
+        );
+        assert_eq!(
+            restored.members_for_group(&group(1), 100, 1000)[0].role,
+            GroupMemberRole::Admin
+        );
+        assert_eq!(
+            restored.members_for_group(&group(2), 100, 1000)[0].role,
+            GroupMemberRole::ReadOnlyTee
+        );
+    }
+
+    #[test]
+    fn to_persisted_all_omits_fully_stale_groups() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Member, 100); // stale at now=2000
+        c.record(group(2), pk(2), peer(2), GroupMemberRole::Member, 1900); // fresh
+
+        let blob = c.to_persisted_all(2000, 1000);
+        assert_eq!(blob.groups.len(), 1, "the all-stale group is dropped");
+        assert_eq!(
+            blob.groups[0].group_id,
+            hex::encode(group(2).to_bytes()),
+            "only the fresh group persists"
+        );
+    }
+
+    #[test]
+    fn load_all_skips_unparseable_group_id() {
+        let blob = PersistedPeerIdentityCache {
+            groups: vec![
+                PersistedGroup {
+                    group_id: "not-hex".to_owned(),
+                    entries: vec![PersistedIdentityPeer {
+                        identity: pk(1).to_string(),
+                        peer_id: peer(1).to_base58(),
+                        role: GroupMemberRole::Member,
+                        last_seen_secs: 100,
+                    }],
+                },
+                PersistedGroup {
+                    group_id: hex::encode(group(2).to_bytes()),
+                    entries: vec![PersistedIdentityPeer {
+                        identity: pk(2).to_string(),
+                        peer_id: peer(2).to_base58(),
+                        role: GroupMemberRole::Member,
+                        last_seen_secs: 100,
+                    }],
+                },
+            ],
+        };
+        let c = PeerIdentityCache::load_all_from_persisted(blob, 100, 1000);
+        assert_eq!(
+            c.groups().copied().collect::<BTreeSet<_>>(),
+            BTreeSet::from([group(2)]),
+            "only the well-formed group id loads"
+        );
+    }
+
+    #[test]
+    fn all_peer_identity_pairs_spans_groups() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Admin, 100);
+        c.record(group(2), pk(2), peer(1), GroupMemberRole::Member, 100);
+
+        let pairs: BTreeSet<(PeerId, PublicKey)> =
+            c.all_peer_identity_pairs().into_iter().collect();
+        assert_eq!(
+            pairs,
+            BTreeSet::from([(peer(1), pk(1)), (peer(1), pk(2))]),
+            "hydration pairs cover every group"
+        );
     }
 }

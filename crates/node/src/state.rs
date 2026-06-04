@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use calimero_blobstore::BlobManager as BlobStore;
 use calimero_context_client::client::ContextClient;
@@ -14,11 +14,24 @@ use tracing::{debug, warn};
 
 use crate::constants;
 use crate::delta_store::DeltaStore;
+use crate::peer_identity_cache::{ObservedMembership, PeerIdentityCache};
 use crate::run::NodeMode;
 use crate::specialized_node_invite_state::{
     new_pending_specialized_node_invites, PendingSpecializedNodeInvites,
 };
 use crate::sync::SyncManager;
+
+/// Current wall-clock unix seconds, used to stamp `last_seen` on cached
+/// peer-identity observations. Wall-clock (not a monotonic `Instant`) so
+/// freshness survives a process restart — the whole point of the cache.
+/// A pre-epoch clock degrades to 0 (everything looks maximally old) rather
+/// than panicking.
+pub(crate) fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 /// Cached blob with access tracking for eviction
 #[derive(Debug, Clone)]
@@ -143,6 +156,16 @@ pub(crate) struct NodeState {
     /// `(peer_id, identity)` pairs observed, which is itself bounded by
     /// group member count.
     pub(crate) peer_identities: Arc<DashMap<PeerId, BTreeSet<PublicKey>>>,
+    /// Durable backing for `peer_identities`: the same authenticated
+    /// observations, structured per group with role + `last_seen`, so the
+    /// membership signal survives a restart instead of being rebuilt from
+    /// scratch by live traffic. `peer_identities` above stays the O(1) hot
+    /// read path for anchor-preferred selection; this is snapshotted to a
+    /// `Generic` datastore key on a tick and hydrated (into both itself and
+    /// `peer_identities`) on startup. Written only from the authenticated
+    /// `observe_peer_identity` gate, and never a trust gate — see that
+    /// field's trust-model docs.
+    pub(crate) peer_identity_cache: Arc<Mutex<PeerIdentityCache>>,
     /// Per-context reconcile-after-divergence attempt state. Used by the
     /// sync manager to apply exponential backoff between successive
     /// reconcile attempts for the same context, so a persistently
@@ -210,6 +233,7 @@ impl NodeState {
             sync_sessions: Arc::new(DashMap::new()),
             governance_pending: Arc::new(DashMap::new()),
             peer_identities: Arc::new(DashMap::new()),
+            peer_identity_cache: Arc::new(Mutex::new(PeerIdentityCache::default())),
             reconcile_attempts: Arc::new(DashMap::new()),
             sync_status: Arc::new(DashMap::new()),
         }
@@ -234,12 +258,46 @@ impl NodeState {
     /// authored by `identity`. Called from receive paths after the
     /// message verifies and applies — see field-level docs on
     /// `peer_identities` for the trust model. Idempotent.
-    pub(crate) fn observe_peer_identity(&self, peer_id: PeerId, identity: PublicKey) {
+    ///
+    /// `membership` carries the group + role the caller resolved at the
+    /// authenticated cut, when it has them cheaply (the state-delta path
+    /// does; the namespace-governance path passes `None`). When present,
+    /// the observation is also written through to the durable
+    /// `peer_identity_cache` so it survives a restart; when absent, only
+    /// the in-memory reverse view is updated (no regression — that view is
+    /// rebuilt from live traffic as before).
+    pub(crate) fn observe_peer_identity(
+        &self,
+        peer_id: PeerId,
+        identity: PublicKey,
+        membership: Option<ObservedMembership>,
+    ) {
         let _inserted = self
             .peer_identities
             .entry(peer_id)
             .or_default()
             .insert(identity);
+
+        if let Some(ObservedMembership { group_id, role }) = membership {
+            self.lock_peer_identity_cache().record(
+                group_id,
+                identity,
+                peer_id,
+                role,
+                now_unix_secs(),
+            );
+        }
+    }
+
+    /// Lock the durable peer-identity cache, recovering the guard even if
+    /// a prior holder panicked. The cache is a best-effort routing hint,
+    /// so a poisoned lock should degrade to "use what's there" rather than
+    /// propagate a panic into sync selection. The guard is only ever held
+    /// across synchronous work (no `.await` in scope).
+    pub(crate) fn lock_peer_identity_cache(&self) -> MutexGuard<'_, PeerIdentityCache> {
+        self.peer_identity_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Push a state delta into the governance-pending buffer. Called when

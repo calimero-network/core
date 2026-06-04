@@ -227,6 +227,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let _metrics_tick =
         crate::node_metrics::spawn_metrics_tick(node_metrics.clone(), node_state.clone());
 
+    // Hydrate the persistent peer-identity cache from disk and seed the
+    // in-memory reverse view, so anchor-preferred sync selection has a
+    // membership signal on a cold cache instead of waiting for live
+    // traffic to refill it. Then snapshot it back periodically.
+    crate::peer_identity_persist::hydrate(&node_state, &datastore);
+    let _peer_identity_tick =
+        crate::peer_identity_persist::spawn_snapshot_tick(node_state.clone(), datastore.clone());
+
     // Drain locally-applied delta notifications from the execute path
     // and register them into the in-memory DeltaStore. Replaces the
     // per-interval-sync `load_persisted_deltas` rescan that existed
