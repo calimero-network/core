@@ -6,7 +6,7 @@ use syn::{Item, ItemEnum, ItemImpl, ItemStruct, Type};
 
 use crate::normalize::{normalize_type, ResolvedLocal, TypeResolver};
 use crate::schema::{
-    Event, Field, Manifest, Method, Parameter, ScalarType, TypeDef, TypeRef, Variant,
+    Event, Field, Manifest, Method, MethodIntent, Parameter, ScalarType, TypeDef, TypeRef, Variant,
 };
 
 /// ABI emitter that processes Rust source code
@@ -287,6 +287,16 @@ fn has_app_state_attribute(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
+/// Returns `true` when the method carries `#[app::view]`, declaring it as
+/// read-only — i.e. the app author guarantees it never mutates state.
+fn has_app_view_attribute(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let path = attr.path();
+        let segments: Vec<_> = path.segments.iter().collect();
+        segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "view"
+    })
+}
+
 impl<'ast> Visit<'ast> for AbiEmitter {
     fn visit_item_struct(&mut self, item_struct: &'ast ItemStruct) {
         let struct_name = item_struct.ident.to_string();
@@ -490,6 +500,13 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         (Some(TypeRef::Scalar(ScalarType::Unit)), None)
                     };
 
+                    // Read/write intent from #[app::view]; default Unspecified.
+                    let intent = if has_app_view_attribute(&method.attrs) {
+                        MethodIntent::ReadOnly
+                    } else {
+                        MethodIntent::Unspecified
+                    };
+
                     // Create and store the method
                     let method = Method {
                         name: method_name,
@@ -497,6 +514,7 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         returns,
                         returns_nullable,
                         errors: Vec::new(),
+                        intent,
                     };
 
                     self.methods.push(method);
