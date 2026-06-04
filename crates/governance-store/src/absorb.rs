@@ -1,16 +1,12 @@
-//! Typed Repository over the [`Column::AbsorbBuffer`] CF (PR-6b straggler
-//! safety).
+//! Typed Repository over the [`Column::AbsorbBuffer`] CF.
 //!
 //! Persists [`AbsorbRecord`]s — the durable mirror of a stale-schema straggler
 //! delta — keyed by `prefix ‖ context_id ‖ producing_app_key ‖ delta_id`. The
 //! `delta_id` in the key makes [`save`](AbsorbRepository::save) idempotent: a
-//! re-delivered straggler delta overwrites its previous buffered copy rather
-//! than duplicating it.
-//!
-//! Mirrors [`UpgradesRepository`](crate::UpgradesRepository) in shape: a thin
-//! `{ store }` handle exposing save/load/delete plus a contiguous-range scan
-//! ([`enumerate_pending`](AbsorbRepository::enumerate_pending)) used by the
-//! drain-on-advance and crash-recovery paths.
+//! re-delivered straggler overwrites rather than duplicating. Mirrors
+//! [`UpgradesRepository`](crate::UpgradesRepository) in shape: save/load/delete
+//! plus a contiguous-range scan
+//! ([`enumerate_pending`](AbsorbRepository::enumerate_pending)).
 
 use borsh::BorshDeserialize;
 use calimero_primitives::context::ContextId;
@@ -27,8 +23,6 @@ use crate::AbsorbRecord;
 /// (save/load/delete) plus a per-context contiguous scan for the drain and
 /// crash-recovery paths. See [`UpgradesRepository`](crate::UpgradesRepository)
 /// for the Repository pattern's rationale — same shape.
-///
-/// PR-6b / issue #2539.
 pub struct AbsorbRepository<'a> {
     store: &'a Store,
 }

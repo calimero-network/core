@@ -129,15 +129,13 @@ pub struct ContextManagerConfig {
     /// gossipsub heartbeat reconciliation window.
     pub key_delivery_fallback_wait: Duration,
 
-    /// Master switch for the PR-6 hybrid zero-downtime migration framework.
+    /// Master switch for the hybrid zero-downtime migration framework.
     ///
-    /// Defaults to `true` now that both PR-6a (no-freeze) and PR-6b
-    /// (absorb-don't-drop straggler safety net) have landed: a
-    /// namespace-cascade migration no longer freezes writes group-wide; each
-    /// context migrates lazily/briefly and stragglers are absorbed rather than
-    /// dropped. Setting it back to `false` restores the legacy group-wide
-    /// `InProgress` write-freeze (see [`handlers::execute`]'s
-    /// `upgrade_blocks_write`) for operators that want the old behavior.
+    /// Defaults to `true`: a namespace-cascade migration no longer freezes
+    /// writes group-wide; each context migrates lazily and stragglers are
+    /// absorbed rather than dropped. Set to `false` to restore the legacy
+    /// group-wide `InProgress` write-freeze (see [`handlers::execute`]'s
+    /// `upgrade_blocks_write`).
     pub migration_v2: bool,
 }
 

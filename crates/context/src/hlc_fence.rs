@@ -1,24 +1,18 @@
-//! State-delta HLC fence (PR-3 / PR-6b O3): decide what to do with a delta
-//! produced under a different app schema than the receiver can currently read.
+//! State-delta HLC fence: decide what to do with a delta produced under a
+//! different app schema than the receiver can currently read.
 //!
-//! PR-3 keyed the fence on the replicated `GroupMeta.app_key` (the *target*
-//! schema the group is migrating toward) and silently *dropped* any
-//! after-boundary stale-schema delta. PR-6b reworks this on two axes:
-//!
-//! 1. **O3 — fence on the LOADED reader version, not `GroupMeta.app_key`.**
-//!    Under LazyOnAccess the governance `GroupMeta.app_key` advances to the new
-//!    schema for *all* members at cascade-apply, but each node's wasm binary
-//!    swaps lazily (on next execute). A node still on the v1 binary would see
-//!    `target == v2` and mis-fence. The decision must key on the schema the
-//!    receiver can *actually read right now* — its loaded `ApplicationMeta`
-//!    bytecode blob_id.
-//! 2. **Absorb-don't-drop.** A delta the receiver cannot read *yet* (because its
-//!    binary hasn't caught up) is `Buffer`ed for later verbatim replay, never
-//!    dropped. Dropping is reserved for genuinely unrecoverable cases.
+//! Two invariants:
+//! 1. Fence on the LOADED reader version, not `GroupMeta.app_key`. Under
+//!    LazyOnAccess the governance `GroupMeta.app_key` advances for all members
+//!    at cascade-apply, but each node's wasm binary swaps lazily. The decision
+//!    must key on the schema the receiver can actually read right now — its
+//!    loaded `ApplicationMeta` bytecode blob_id — not the migration target.
+//! 2. Absorb-don't-drop. A delta the receiver cannot read yet is `Buffer`ed for
+//!    later verbatim replay; dropping is reserved for unrecoverable cases.
 //!
 //! This module owns the pure decision rule ([`fence_decision`]) and the
 //! store-aware resolver ([`delta_fence_decision`]) that derives the loaded
-//! reader key. Persisting / replaying the buffered delta is Task 6b.4 / 6b.5.
+//! reader key.
 
 use calimero_governance_store::{get_group_for_context, MetaRepository, UpgradesRepository};
 use calimero_primitives::context::ContextId;
@@ -54,10 +48,9 @@ pub enum FenceDecision {
 ///   schema differs from the loaded reader — the receiver cannot read it yet,
 ///   so it is absorbed for later verbatim replay (never dropped).
 ///
-/// `target_app_key` (the replicated `GroupMeta.app_key`) is retained only to
-/// describe the migration target; it is *not* used to gate readability — that
-/// is what the O3 fix corrects. It is threaded here so the drain can later tell
-/// when the binary has caught up to the target.
+/// `target_app_key` (the replicated `GroupMeta.app_key`) describes the migration
+/// target only; it is NOT used to gate readability. It is threaded here so the
+/// drain can later tell when the binary has caught up to the target.
 #[must_use]
 pub fn fence_decision(
     incoming_app_key: [u8; 32],
@@ -86,15 +79,9 @@ pub fn fence_decision(
     FenceDecision::Buffer
 }
 
-/// Pure two-condition rule (PR-3 compatibility shim).
-///
-/// Retained for callers / tests that only need the boolean "is this delta
-/// fenced (i.e. not applied)?" answer with the legacy semantics where the
-/// loaded reader equals the context's current schema. Delegates to
-/// [`fence_decision`] with `loaded == target == ctx_app_key`.
-///
-/// Returns `true` iff the delta would NOT be applied (i.e. it is `Buffer` or
-/// `Drop`).
+/// Boolean wrapper for callers / tests that only need "is this delta fenced
+/// (not applied)?" with `loaded == target == ctx_app_key`. Delegates to
+/// [`fence_decision`]; returns `true` iff the delta is `Buffer` or `Drop`.
 #[must_use]
 pub fn should_fence(
     delta_app_key: [u8; 32],
@@ -117,10 +104,10 @@ pub fn should_fence(
 /// Resolve the **loaded reader** app_key for a context: the bytecode blob_id of
 /// the `ApplicationMeta` the context currently has installed locally.
 ///
-/// This is the schema-version discriminator the receiver can *actually read
-/// right now* — distinct from the replicated `GroupMeta.app_key` (the migration
-/// target) under LazyOnAccess, where the governance target advances ahead of the
-/// locally-loaded binary (O3).
+/// This is the schema-version discriminator the receiver can actually read
+/// right now — distinct from the replicated `GroupMeta.app_key` (the migration
+/// target) under LazyOnAccess, where the target advances ahead of the loaded
+/// binary.
 ///
 /// Resolution: `ContextMeta.application` (the loaded `ApplicationMeta` key) →
 /// load that row → `bytecode.blob_id()`. This is the same blob_id
@@ -177,10 +164,8 @@ pub fn target_reader_app_key(
 
 /// Store-aware decision: resolves the receiver's loaded reader key + the
 /// migration target (`GroupMeta.app_key`) + the cascade boundary, then applies
-/// [`fence_decision`]. Non-group contexts / missing meta ⇒ `Apply`.
-///
-/// This is the O3-corrected replacement for [`delta_is_fenced`]: it keys the
-/// readability check on the *loaded* reader, not the replicated target.
+/// [`fence_decision`]. Non-group contexts / missing meta ⇒ `Apply`. Keys the
+/// readability check on the loaded reader, not the replicated target.
 pub fn delta_fence_decision(
     store: &Store,
     context_id: &ContextId,
@@ -210,14 +195,10 @@ pub fn delta_fence_decision(
     ))
 }
 
-/// Store-aware boolean wrapper (PR-3 compatibility shim): `true` iff the delta
-/// would not be applied. Delegates to [`delta_fence_decision`].
-///
-/// Behavior is identical to PR-3 when the loaded reader equals the context's
-/// current schema (no migration in flight / no loaded-reader mismatch). The
-/// absorb path (Task 6b.4) switches the gossip-fence call site over to
-/// [`delta_fence_decision`] to act on the `Buffer` decision; until then this
-/// shim preserves the existing call sites.
+/// Store-aware boolean wrapper: `true` iff the delta would not be applied.
+/// Delegates to [`delta_fence_decision`]; retained for callers that only need
+/// the boolean (the gossip-fence call site uses `delta_fence_decision` directly
+/// to act on the `Buffer` decision).
 pub fn delta_is_fenced(
     store: &Store,
     context_id: &ContextId,

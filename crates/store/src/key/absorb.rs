@@ -11,7 +11,7 @@ use crate::db::Column;
 use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 
-/// Prefix byte for the absorb buffer (PR-6b straggler safety).
+/// Prefix byte for the absorb buffer.
 ///
 /// Lives in its own [`Column::AbsorbBuffer`] CF, so the byte only has to be
 /// distinct within that CF — `0x4A` is kept for grep-ability (the `Group` CF

@@ -1,16 +1,12 @@
-//! Borsh-serializable mirror of [`BufferedDelta`] for durable absorb storage
-//! (PR-6b straggler safety).
+//! Borsh-serializable mirror of [`BufferedDelta`] for durable absorb storage.
 //!
 //! [`BufferedDelta`] is deliberately NOT Borsh-derivable — it carries a
-//! `libp2p::PeerId` (no clean Borsh derive) alongside every replay field. To
-//! persist an absorbed straggler delta durably we hand-write this mirror, which
-//! holds every field in a Borsh-friendly shape (`source_peer` as the raw
+//! `libp2p::PeerId` (no clean Borsh derive). This hand-written mirror holds
+//! every field in a Borsh-friendly shape (`source_peer` as the raw
 //! `PeerId::to_bytes()` vector). `from_buffered` / `into_buffered` convert
-//! losslessly; the `PeerId` parse on the way back can fail, so `into_buffered`
-//! returns a `Result`.
-//!
-//! Do NOT add `#[derive(Borsh)]` to `BufferedDelta` itself — keep the
-//! serialization concern isolated in this mirror.
+//! losslessly; the `PeerId` parse back can fail, so `into_buffered` returns a
+//! `Result`. Keep the serialization concern isolated here rather than deriving
+//! Borsh on `BufferedDelta` itself.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_context_config::types::GovernancePosition;
@@ -59,51 +55,28 @@ pub struct AbsorbRecord {
     pub governance_drain_attempts: u8,
     /// App-schema key the sender stamped onto the state-delta wire.
     pub producing_app_key: Option<[u8; 32]>,
-    /// Set when this record holds a buffered **sync-repair leaf** (PR-6b Task
-    /// 6b.7) rather than a full straggler delta. The sync-repair paths
-    /// (HashComparison / LevelSync / snapshot) bypass the gossip state-delta
-    /// fence, so a receiver on an older reader buffers a future-schema leaf
-    /// here instead of LWW-storing unreadable bytes.
-    ///
-    /// `None` for the delta-absorb path (the gossip fence). The leaf-vs-delta
-    /// drain branches on this tag: a delta replays verbatim through
-    /// `__calimero_sync_next`; a leaf re-applies through
-    /// `apply_leaf_with_crdt_merge` once the reader advances.
-    ///
-    /// Backward-compatible trailing field — see the borsh note on
-    /// [`AbsorbedLeaf`].
+    /// Set when this record holds a buffered sync-repair leaf rather than a
+    /// straggler delta. The sync-repair paths bypass the gossip state-delta
+    /// fence, so a receiver on an older reader buffers a future-schema leaf here
+    /// instead of LWW-storing unreadable bytes. `None` for the delta-absorb
+    /// path; the drain branches on this tag (a delta replays verbatim, a leaf
+    /// re-applies through `apply_leaf_with_crdt_merge`).
     pub leaf: Option<AbsorbedLeaf>,
-    /// Set when this record holds a buffered **snapshot entity** (PR-6b Task
-    /// 6b.7) rather than a delta or a HashComparison/LevelSync leaf.
-    ///
-    /// The snapshot apply path decodes its own `SnapshotRecord::Entity` wire
-    /// type and persists each verified entity via a raw `handle.put` (it does
-    /// NOT route through `apply_leaf_with_crdt_merge`, so it has no
-    /// `TreeLeafData` to buffer). A receiver on an older reader buffers the raw
-    /// `entry` + `index` blobs here instead of storing unreadable bytes; the
-    /// drain re-verifies + `handle.put`s them once the loaded reader advances.
-    ///
-    /// `None` for the delta-absorb and HashComparison/LevelSync-leaf paths. The
-    /// drain branches on this tag (it is mutually exclusive with `leaf`).
-    ///
-    /// Backward-compatible trailing field — see the borsh note on
-    /// [`AbsorbedLeaf`].
+    /// Set when this record holds a buffered snapshot entity rather than a delta
+    /// or a leaf. The snapshot apply path persists each verified entity via a
+    /// raw `handle.put` (no `TreeLeafData`), so a receiver on an older reader
+    /// buffers the raw `entry` + `index` blobs here; the drain re-verifies +
+    /// persists them once the reader advances. Mutually exclusive with `leaf`.
     pub entity: Option<AbsorbedEntity>,
 }
 
-/// A buffered sync-repair leaf (PR-6b Task 6b.7).
+/// A buffered sync-repair leaf.
 ///
 /// Holds the original `TreeLeafData` borsh bytes (re-applied verbatim once the
 /// reader advances — never translated) plus the `schema_app_key` it was
 /// authored under, so the drain only re-applies it when the loaded reader has
-/// caught up to that schema.
-///
-/// Borsh round-trips directly (both fields derive). Because `AbsorbRecord.leaf`
-/// is a trailing `Option`, the derived `BorshDeserialize` would normally fail
-/// on the pre-#2539 record layout; in practice the `AbsorbBuffer` column is new
-/// in this train (PR-6b) so no legacy records exist on disk, and every record
-/// is written by this binary. We still keep the field trailing for forward
-/// hygiene.
+/// caught up to that schema. The `AbsorbBuffer` column is new, so no legacy
+/// records exist on disk; the field is kept trailing for forward hygiene.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct AbsorbedLeaf {
     /// Borsh-serialized `TreeLeafData` — replayed verbatim on drain.
@@ -112,17 +85,13 @@ pub struct AbsorbedLeaf {
     pub schema_app_key: [u8; 32],
 }
 
-/// A buffered future-schema **snapshot entity** (PR-6b Task 6b.7).
+/// A buffered future-schema snapshot entity.
 ///
 /// The snapshot wire ships an entity as its raw persisted blobs — the `entry`
 /// (data) and the borsh-encoded `EntityIndex` (metadata) — verified together
 /// and written via `handle.put`. When the receiver's loaded reader can't read
-/// the sender's `schema_app_key`, those blobs are held here verbatim (never
-/// translated) and re-verified + persisted on drain once the reader advances.
-///
-/// Trailing-`Option` borsh hygiene is identical to [`AbsorbedLeaf`]: the
-/// `AbsorbBuffer` column is new in this train, so no legacy on-disk records
-/// exist and every record is written by this binary.
+/// the sender's `schema_app_key`, those blobs are held here verbatim and
+/// re-verified + persisted on drain once the reader advances.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct AbsorbedEntity {
     /// The entity's 32-byte id.
@@ -159,15 +128,12 @@ impl AbsorbRecord {
         }
     }
 
-    /// Build a leaf-shaped absorb record (PR-6b Task 6b.7). The buffered leaf is
-    /// re-applied verbatim through `apply_leaf_with_crdt_merge` once the loaded
-    /// reader advances to `schema_app_key`; it is NOT a replayable delta, so the
-    /// delta-only fields are left empty / defaulted and the leaf-vs-delta drain
-    /// branches on `self.leaf.is_some()`.
-    ///
-    /// `id` is the leaf's entity key (the absorb-buffer key's `delta_id`
-    /// component), giving the same idempotent-overwrite-on-redelivery property
-    /// the delta path gets from the real `delta_id`.
+    /// Build a leaf-shaped absorb record. The buffered leaf is re-applied
+    /// verbatim through `apply_leaf_with_crdt_merge` once the loaded reader
+    /// advances to `schema_app_key`; it is NOT a replayable delta, so the
+    /// delta-only fields are defaulted and the drain branches on
+    /// `self.leaf.is_some()`. `id` is the leaf's entity key (the buffer key's
+    /// `delta_id`), giving idempotent overwrite on re-delivery.
     #[must_use]
     pub fn from_leaf(leaf_key: [u8; 32], leaf_bytes: Vec<u8>, schema_app_key: [u8; 32]) -> Self {
         Self {
@@ -193,15 +159,12 @@ impl AbsorbRecord {
         }
     }
 
-    /// Build a snapshot-entity-shaped absorb record (PR-6b Task 6b.7). The
-    /// buffered entity is re-verified + persisted via `handle.put` once the
-    /// loaded reader advances to `schema_app_key`; it is neither a replayable
-    /// delta nor a `TreeLeafData`, so the delta/leaf fields are left
-    /// empty/defaulted and the drain branches on `self.entity.is_some()`.
-    ///
-    /// `id` is the entity's key (the absorb-buffer key's `delta_id` component),
-    /// giving the same idempotent-overwrite-on-redelivery property the delta
-    /// path gets from the real `delta_id`.
+    /// Build a snapshot-entity-shaped absorb record. The buffered entity is
+    /// re-verified + persisted via `handle.put` once the loaded reader advances
+    /// to `schema_app_key`; it is neither a delta nor a `TreeLeafData`, so those
+    /// fields are defaulted and the drain branches on `self.entity.is_some()`.
+    /// `id` is the entity's key (the buffer key's `delta_id`), giving idempotent
+    /// overwrite on re-delivery.
     #[must_use]
     pub fn from_snapshot_entity(
         id: [u8; 32],
