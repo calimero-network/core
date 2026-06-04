@@ -48,11 +48,6 @@
 //! `PeerAddrCache`: pure data + TTL here, with the snapshot tick and
 //! startup hydration wired by the node layer.
 
-// The type lands on its own for reviewability; population, persistence,
-// and selection wiring follow in subsequent PRs, so its API is unused
-// (dead-code) in the meantime.
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_context_config::types::ContextGroupId;
@@ -176,10 +171,16 @@ impl PeerIdentityCache {
     }
 
     /// Identities observed on `peer` across **all** groups — the reverse
-    /// direction `partition_peers_anchor_first` uses to flag whether a
-    /// discovered peer hosts an anchor identity. No freshness filter: the
-    /// caller intersects this with an authoritative anchor set, so a
-    /// slightly stale identity can only fail to match, never mis-match.
+    /// direction a future selection refinement can use to flag whether a
+    /// discovered peer hosts an anchor identity, straight from the durable
+    /// cache. No freshness filter: the caller intersects this with an
+    /// authoritative anchor set, so a slightly stale identity can only
+    /// fail to match, never mis-match.
+    ///
+    /// Not yet wired — selection currently reads the in-memory
+    /// `peer_identities` reverse view for this; retained (and tested) as
+    /// the cache-backed counterpart for when that path moves to the cache.
+    #[allow(dead_code)]
     pub(crate) fn identities_for_peer(&self, peer: &PeerId) -> BTreeSet<PublicKey> {
         let mut out = BTreeSet::new();
         for g in self.groups.values() {
@@ -316,8 +317,7 @@ impl PeerIdentityCache {
         ttl_secs: u64,
     ) -> PersistedPeerIdentityCache {
         let groups = self
-            .groups
-            .keys()
+            .groups()
             .filter_map(|group| {
                 let entries = self.to_persisted(group, now_secs, ttl_secs);
                 (!entries.is_empty()).then(|| PersistedGroup {
@@ -347,6 +347,29 @@ impl PeerIdentityCache {
             cache.load_group_from_persisted(group, g.entries, now_secs, ttl_secs);
         }
         cache
+    }
+
+    /// Drop a member from a group's bucket — invoked when governance
+    /// emits `MemberRemoved`, so the removed identity stops being
+    /// preferred for sync (and stops being re-persisted) without waiting
+    /// for TTL. If the group's bucket empties, the group is removed.
+    ///
+    /// Only the cache's per-group *membership* view is touched; the
+    /// `peer_identities` reverse view is left intact, because the peer
+    /// still controls that identity — removal changes group membership,
+    /// not key ownership, and anchor status is re-derived from the
+    /// now-updated governance `trusted_anchors`.
+    pub(crate) fn remove_member(&mut self, group: &ContextGroupId, identity: &PublicKey) {
+        let now_empty = match self.groups.get_mut(group) {
+            Some(g) => {
+                let _ = g.members.remove(identity);
+                g.members.is_empty()
+            }
+            None => false,
+        };
+        if now_empty {
+            let _ = self.groups.remove(group);
+        }
     }
 
     /// All `(peer, identity)` pairs currently held, across every group —
@@ -683,6 +706,29 @@ mod tests {
             BTreeSet::from([group(2)]),
             "only the well-formed group id loads"
         );
+    }
+
+    #[test]
+    fn remove_member_drops_identity_and_empties_group() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Admin, 100);
+        c.record(group(1), pk(2), peer(2), GroupMemberRole::Member, 100);
+
+        c.remove_member(&group(1), &pk(1));
+        let members = c.members_for_group(&group(1), 100, 1000);
+        assert_eq!(members.len(), 1);
+        assert_eq!(
+            members[0].identity,
+            pk(2),
+            "only the removed member is gone"
+        );
+
+        // Removing the last member drops the group bucket entirely.
+        c.remove_member(&group(1), &pk(2));
+        assert_eq!(c.groups().count(), 0, "emptied group is removed");
+
+        // Removing from an absent group is a no-op.
+        c.remove_member(&group(2), &pk(9));
     }
 
     #[test]

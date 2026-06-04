@@ -8,11 +8,13 @@
 //! signal survives a restart so anchor-preferred sync selection works on
 //! a cold cache instead of falling back to random topic subscribers.
 
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_store::key::Generic as GenericKey;
 use calimero_store::slice::Slice;
 use calimero_store::types::GenericData;
 use calimero_store::Store;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::peer_identity_cache::{PeerIdentityCache, PEER_IDENTITY_TTL_SECS};
 use crate::state::{now_unix_secs, NodeState};
@@ -118,6 +120,49 @@ pub(crate) fn spawn_snapshot_tick(state: NodeState, store: Store) -> tokio::task
     })
 }
 
+/// Apply one op-apply event to the cache. Currently only `MemberRemoved`
+/// is actionable: it drops the removed member from its group's bucket so
+/// a removed member stops being preferred for sync (and stops being
+/// re-persisted) promptly, rather than after the 24h TTL. Other events
+/// are ignored. Kept separate from the async loop so it's unit-testable.
+fn apply_invalidation_event(state: &NodeState, event: &OpEvent) {
+    if let OpEvent::MemberRemoved { group_id, member } = event {
+        state
+            .lock_peer_identity_cache()
+            .remove_member(&ContextGroupId::from(*group_id), member);
+        debug!(
+            group_id = %hex::encode(group_id),
+            %member,
+            "dropped removed member from peer-identity cache"
+        );
+    }
+}
+
+/// Spawn the cache-invalidation task: subscribe to governance op-apply
+/// events and drop removed members from the cache. The first node-side
+/// `op_events` subscriber. A dropped (lagged) event is harmless — the
+/// missed member ages out via TTL and is re-derived from the DAG on
+/// restart — so the loop just logs and continues. Holds a strong
+/// `NodeState` for the runtime's lifetime, like the snapshot tick.
+pub(crate) fn spawn_invalidation_task(state: NodeState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut rx = op_events::subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(event) => apply_invalidation_event(&state, &event),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(
+                        skipped,
+                        "peer-identity invalidation subscriber lagged; missed MemberRemoved \
+                         events age out via TTL and are re-derived on restart"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -177,6 +222,36 @@ mod tests {
         assert_eq!(members[0].identity, identity);
         assert_eq!(members[0].role, GroupMemberRole::Admin);
         assert_eq!(members[0].peers, vec![peer]);
+    }
+
+    #[test]
+    fn member_removed_event_drops_cached_member() {
+        let state = NodeState::new(false, NodeMode::Standard);
+        let group = ContextGroupId::from([7u8; 32]);
+        let member = PublicKey::from([9u8; 32]);
+        state.observe_peer_identity(
+            PeerId::random(),
+            member,
+            Some(ObservedMembership {
+                group_id: group,
+                role: GroupMemberRole::Admin,
+            }),
+        );
+        let present = |s: &NodeState| {
+            !s.lock_peer_identity_cache()
+                .members_for_group(&group, now_unix_secs(), PEER_IDENTITY_TTL_SECS)
+                .is_empty()
+        };
+        assert!(present(&state), "seeded");
+
+        apply_invalidation_event(
+            &state,
+            &OpEvent::MemberRemoved {
+                group_id: [7u8; 32],
+                member,
+            },
+        );
+        assert!(!present(&state), "MemberRemoved dropped the cached member");
     }
 
     #[test]
