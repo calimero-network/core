@@ -26,7 +26,7 @@ use calimero_storage::Interface;
 use calimero_store::{key, types};
 use calimero_utils_actix::global_runtime;
 use eyre::bail;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::handlers::execute::storage::ContextStorage;
 use crate::ContextManager;
@@ -114,6 +114,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                 let context_client = context_client.clone();
                 let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
                 let application = act.applications.get(&application_id).cloned();
+                let migration_v2 = act.config.migration_v2;
 
                 async move {
                     update_application_with_migration(
@@ -127,6 +128,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                         public_key,
                         Some(migration_params),
                         module,
+                        migration_v2,
                     )
                     .await
                 }
@@ -410,6 +412,7 @@ pub(crate) async fn update_application_with_migration(
     public_key: PublicKey,
     migration: Option<MigrationParams>,
     module: calimero_runtime::Module,
+    migration_v2: bool,
 ) -> eyre::Result<(Application, Context)> {
     let (mut context, application) = resolve_context_and_application(
         &context_client,
@@ -432,6 +435,12 @@ pub(crate) async fn update_application_with_migration(
             "Executing migration"
         );
 
+        // Clone the (Arc-backed, cheap) module before `execute_migration`
+        // moves its copy into `spawn_blocking`, so the pre-commit
+        // `migration_check` below can run a second `module.run` on the same
+        // already-compiled v2 artifact without re-loading it.
+        let check_module = module.clone();
+
         // Execute migration function via module.run()
         let (new_state_bytes, migration_events, migration_logs) = execute_migration(
             &datastore,
@@ -448,24 +457,55 @@ pub(crate) async fn update_application_with_migration(
             info!(%context_id, migration_log = %log_line, "Migration log");
         }
 
-        // Write returned state bytes to root storage key
-        // This uses the storage layer to properly update both Entry and Index
-        let full_hash = write_migration_state(&datastore, &context, &new_state_bytes, public_key)?;
+        // ── Pre-commit migration_check + LOGICAL ABORT (PR-6d, migration_v2) ──
+        //
+        // Run the app's `__calimero_migration_check` export over the produced
+        // v2 root (`new_state_bytes`) while the old v1 root is still readable
+        // from the store via `read_raw()`. This happens AFTER `execute_migration`
+        // produced the v2 bytes but BEFORE `write_migration_state` — the first
+        // (and only) mutation of the v1 root — and before
+        // `finalize_application_update`.
+        //
+        // A failing (or trapping) check makes `commit_or_abort_migration`
+        // return `Err(MigrationCheckFailed)` below. That early return IS the
+        // logical abort: it skips BOTH `write_migration_state` AND
+        // `finalize_application_update`, so the committed context (root_hash,
+        // dag_heads, application_id) stays on v1. There is NO byte snapshot and
+        // NO restore — the v1 root is intact simply because it was never
+        // mutated. (An app with no `migration_check` export ⇒ `Ok(true)` ⇒
+        // commits, backwards-compatible.)
+        let check_passed = if migration_v2 {
+            let passed = run_migration_check(
+                &datastore,
+                node_client.clone(),
+                &context,
+                check_module,
+                &new_state_bytes,
+                public_key,
+            )
+            .await?;
 
-        // Update root_hash after migration: full_hash is already the Merkle tree hash from
-        // the storage layer; wrap the bytes directly (same as create_context/execute).
-        let new_root_hash = Hash::from(full_hash);
-        context.root_hash = new_root_hash;
+            if passed {
+                info!(%context_id, "migration_check passed");
+            } else {
+                warn!(%context_id, "migration_check failed: logical abort");
+            }
+            passed
+        } else {
+            // Flag off ⇒ no check ⇒ commit (backwards-compatible).
+            true
+        };
 
-        // Align DAG heads with the new state. Migration does not create a causal delta,
-        // so use root_hash as dag_head fallback (same as execute flow when init() creates
-        // state without actions). This keeps sync protocol consistent and avoids divergence.
-        context.dag_heads = vec![*context.root_hash.as_bytes()];
-        debug!(
-            %context_id,
-            new_root_hash = %new_root_hash,
-            "Updated dag_heads to new root after migration"
-        );
+        // Commit the produced v2 root, or logically abort. On a failed check
+        // this returns `Err(MigrationCheckFailed)` BEFORE the v1 root is ever
+        // written, propagating out and skipping `finalize_application_update`.
+        let new_root_hash = commit_or_abort_migration(
+            &datastore,
+            &mut context,
+            &new_state_bytes,
+            public_key,
+            check_passed,
+        )?;
 
         // Emit migration events to WebSocket clients
         if !migration_events.is_empty() {
@@ -503,6 +543,67 @@ pub(crate) async fn update_application_with_migration(
     .await?;
 
     Ok((application, context))
+}
+
+/// Commit the produced v2 migration root, or perform a **logical abort**.
+///
+/// This is the single seam every post-`execute_migration` commit/abort decision
+/// funnels through:
+///
+/// - `check_passed == false` ⇒ return `Err(MigrationCheckFailed { context_id })`
+///   **without touching the v1 root**. Because the caller propagates this error
+///   *before* `write_migration_state` runs and *before*
+///   `finalize_application_update`, the committed context (root_hash, dag_heads,
+///   application_id) stays entirely on v1. This early return IS the logical
+///   abort — there is NO byte snapshot and NO restore; the v1 root is intact
+///   simply because it was never mutated (the clean-rollback property
+///   characterized in 6d.0). The deterministic v2-shaped child entries
+///   `execute_migration` already committed remain as idempotent residue under
+///   the still-v1 root; they are deliberately NOT deleted (deleting them would
+///   be the byte-restore we explicitly do not do).
+///
+/// - `check_passed == true` ⇒ write the produced `new_state_bytes` through
+///   `write_migration_state` (the sole root writer), advance
+///   `context.root_hash`/`context.dag_heads` to the new v2 root, and return the
+///   new Merkle root hash so the caller can emit events against it.
+fn commit_or_abort_migration(
+    datastore: &calimero_store::Store,
+    context: &mut Context,
+    new_state_bytes: &[u8],
+    executor_identity: PublicKey,
+    check_passed: bool,
+) -> eyre::Result<Hash> {
+    let context_id = context.id;
+
+    if !check_passed {
+        // LOGICAL ABORT: do not write the root, do not finalize. The v1 root is
+        // left intact because it was never mutated — no byte restore is needed
+        // (and none exists). The caller's `?` propagates this out of
+        // `update_application_with_migration`, skipping both
+        // `write_migration_state` and `finalize_application_update`.
+        return Err(MigrationCheckFailed { context_id }.into());
+    }
+
+    // Write returned state bytes to root storage key
+    // This uses the storage layer to properly update both Entry and Index
+    let full_hash = write_migration_state(datastore, context, new_state_bytes, executor_identity)?;
+
+    // Update root_hash after migration: full_hash is already the Merkle tree hash from
+    // the storage layer; wrap the bytes directly (same as create_context/execute).
+    let new_root_hash = Hash::from(full_hash);
+    context.root_hash = new_root_hash;
+
+    // Align DAG heads with the new state. Migration does not create a causal delta,
+    // so use root_hash as dag_head fallback (same as execute flow when init() creates
+    // state without actions). This keeps sync protocol consistent and avoids divergence.
+    context.dag_heads = vec![*context.root_hash.as_bytes()];
+    debug!(
+        %context_id,
+        new_root_hash = %new_root_hash,
+        "Updated dag_heads to new root after migration"
+    );
+
+    Ok(new_root_hash)
 }
 
 /// Execute the migration function in the new WASM module.
@@ -614,6 +715,140 @@ async fn execute_migration(
     );
 
     Ok((new_state_bytes, outcome.events, outcome.logs))
+}
+
+/// Error surfaced when a pre-commit `migration_check` rejects (or could not
+/// run on) the produced v2 root.
+///
+/// Surfacing this error from `update_application_with_migration` IS the logical
+/// abort: the early return happens *before* `write_migration_state` (the first
+/// and only mutation of the v1 root) and *before* `finalize_application_update`,
+/// so the committed context — root_hash, dag_heads and application_id — stays
+/// entirely on v1. There is NO byte snapshot and NO restore: the v1 root is
+/// intact simply because it was never mutated (the clean-rollback property
+/// characterized in 6d.0).
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "migration_check failed for context '{context_id}': logical abort — the produced v2 root was \
+     discarded and the still-v1 root left intact (no byte restore; v1 was never mutated)"
+)]
+pub(crate) struct MigrationCheckFailed {
+    pub(crate) context_id: ContextId,
+}
+
+/// Decode the verdict of a `__calimero_migration_check` invocation from its
+/// `outcome.returns`.
+///
+/// Decision matrix:
+/// - **Missing export** (`MethodNotFound`) ⇒ `Ok(true)`: an app that defines no
+///   check is never blocked. This keeps the flow backwards-compatible.
+/// - **Any other execution error** (a WASM trap, host error, …) ⇒ `Ok(false)`:
+///   fail-closed. A check that could not complete must not be treated as a pass.
+/// - **`Ok(Some(bytes))`** ⇒ `borsh::from_slice::<bool>(&bytes)`. The verdict
+///   bytes are RAW `borsh(bool)` — the macro hands the runtime `borsh(bool)` via
+///   `value_return`'s `Ok` branch, mirroring `#[app::migrate]`'s
+///   raw-new-state-bytes contract (see `migration.rs`). It is NOT a borsh
+///   `Result<bool, Vec<u8>>` envelope, so it must NOT be decoded as one.
+/// - **`Ok(None)`** ⇒ a defined check that returned nothing is a contract
+///   violation; fail-closed (`Ok(false)`).
+///
+/// Returns `Err` only when a present check returned bytes that are not a valid
+/// borsh `bool` (a genuine, unexpected ABI breakage worth surfacing).
+fn decode_migration_check_verdict(
+    returns: calimero_runtime::logic::VMLogicResult<
+        Option<Vec<u8>>,
+        calimero_runtime::errors::FunctionCallError,
+    >,
+) -> eyre::Result<bool> {
+    use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
+
+    match returns {
+        // No `__calimero_migration_check` export ⇒ no check defined ⇒ never
+        // block (backwards compatible).
+        Err(FunctionCallError::MethodResolutionError(MethodResolutionError::MethodNotFound {
+            ..
+        })) => Ok(true),
+        // The export exists but trapped / errored. Fail closed: a check that
+        // could not run must not pass.
+        Err(e) => {
+            warn!(error = ?e, "migration_check trapped or errored; failing closed (logical abort)");
+            Ok(false)
+        }
+        Ok(Some(bytes)) => borsh::from_slice::<bool>(&bytes).map_err(|e| {
+            eyre::eyre!(
+                "migration_check returned undecodable verdict bytes (expected borsh bool): {e}"
+            )
+        }),
+        // A present check must return a verdict; nothing returned is a contract
+        // violation. Fail closed.
+        Ok(None) => {
+            warn!("migration_check returned no verdict; failing closed (logical abort)");
+            Ok(false)
+        }
+    }
+}
+
+/// Run the app's `__calimero_migration_check` export over the produced v2 root,
+/// returning its verdict (or `Ok(true)` when no check is defined).
+///
+/// The check is a read-only predicate: it reads the still-v1 old root via
+/// `read_raw()` and receives the produced `new_state_bytes` (the same bytes
+/// `write_migration_state` would persist) as its `env::input()`. It is run on a
+/// throwaway [`ContextStorage`] view that is **never committed**, so any writes
+/// it might make are discarded; the lingering pending delta is cleared so it
+/// cannot contaminate later operations on the same runtime thread (mirroring
+/// `write_migration_state`).
+///
+/// `module` is a cheap clone (the compiled artifact is `Arc`-backed, see
+/// `calimero_runtime::Module`), so this second `module.run` shares the
+/// already-compiled module with `execute_migration` rather than re-loading it.
+async fn run_migration_check(
+    datastore: &calimero_store::Store,
+    node_client: NodeClient,
+    context: &Context,
+    module: calimero_runtime::Module,
+    new_state_bytes: &[u8],
+    executor_identity: PublicKey,
+) -> eyre::Result<bool> {
+    let context_id = context.id;
+    let storage = ContextStorage::from(datastore.clone(), context_id);
+    let input = new_state_bytes.to_vec();
+
+    let outcome = global_runtime()
+        .spawn_blocking(move || {
+            let mut storage = storage;
+            let outcome = module.run(
+                context_id,
+                executor_identity,
+                "__calimero_migration_check",
+                &input,
+                &mut storage,
+                None,
+                Some(node_client),
+            );
+            // The check is read-only and runs on a throwaway storage view; any
+            // pending sync delta it accidentally pushed into the thread-local
+            // DELTA_CONTEXT must be discarded so it cannot leak into later
+            // operations on this runtime thread. `storage` is dropped
+            // uncommitted here — its buffered writes never reach the store.
+            clear_pending_delta();
+            outcome
+        })
+        .await
+        .map_err(|e| eyre::eyre!("migration_check task failed: {}", e))?;
+
+    // A host-level runtime error (instantiation / link failure, resource limit)
+    // is distinct from `outcome.returns` and must also fail closed: a check that
+    // could not even start running is not a pass.
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            warn!(%context_id, error = ?e, "migration_check host runtime error; failing closed (logical abort)");
+            return Ok(false);
+        }
+    };
+
+    decode_migration_check_verdict(outcome.returns)
 }
 
 /// Storage callback closures used by the `calimero-storage` runtime environment.
@@ -1687,6 +1922,244 @@ mod tests {
             write_call > writer_fn,
             "the sole `write_pre_merged_root_state` call must sit inside \
              `write_migration_state` (the seam a logical abort skips)"
+        );
+    }
+
+    /// A missing `__calimero_migration_check` export must be treated as a pass
+    /// (`Ok(true)`) so apps that do not define a check are never blocked — the
+    /// backwards-compatible default.
+    #[test]
+    fn migration_check_verdict_missing_export_passes() {
+        use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
+
+        let returns: Result<Option<Vec<u8>>, FunctionCallError> = Err(
+            FunctionCallError::MethodResolutionError(MethodResolutionError::MethodNotFound {
+                name: "__calimero_migration_check".to_owned(),
+            }),
+        );
+
+        let verdict =
+            super::decode_migration_check_verdict(returns).expect("missing export must not error");
+        assert!(
+            verdict,
+            "a missing migration_check export must pass (Ok(true)) for backwards compatibility"
+        );
+    }
+
+    /// A present check that returns `borsh(true)` passes; `borsh(false)` fails.
+    /// The verdict bytes are raw `borsh(bool)` (mirroring `#[app::migrate]`'s
+    /// raw-new-state-bytes contract), NOT a borsh `Result<bool, _>` envelope.
+    #[test]
+    fn migration_check_verdict_decodes_raw_borsh_bool() {
+        use calimero_runtime::errors::FunctionCallError;
+
+        let pass_bytes = borsh::to_vec(&true).expect("serialize true");
+        let pass: Result<Option<Vec<u8>>, FunctionCallError> = Ok(Some(pass_bytes));
+        assert!(
+            super::decode_migration_check_verdict(pass).expect("decode true"),
+            "borsh(true) verdict must decode to a passing check"
+        );
+
+        let fail_bytes = borsh::to_vec(&false).expect("serialize false");
+        let fail: Result<Option<Vec<u8>>, FunctionCallError> = Ok(Some(fail_bytes));
+        assert!(
+            !super::decode_migration_check_verdict(fail).expect("decode false"),
+            "borsh(false) verdict must decode to a failing check"
+        );
+    }
+
+    /// A WASM trap (non-`MethodNotFound` error) fails closed: the verdict is
+    /// `false` so the migration is logically aborted rather than committed on a
+    /// check that could not run.
+    #[test]
+    fn migration_check_verdict_trap_fails_closed() {
+        use calimero_runtime::errors::{FunctionCallError, WasmTrap};
+
+        let returns: Result<Option<Vec<u8>>, FunctionCallError> =
+            Err(FunctionCallError::WasmTrap(WasmTrap::Unreachable));
+
+        let verdict = super::decode_migration_check_verdict(returns)
+            .expect("a trap must be reported as a failing verdict, not a hard error");
+        assert!(
+            !verdict,
+            "a trapping migration_check must fail closed (verdict false ⇒ logical abort)"
+        );
+    }
+
+    /// The `MigrationCheckFailed` error carries the context id and surfaces a
+    /// recognisable "logical abort" message so callers (and the e2e log
+    /// assertions in 6d.6) can detect the abort.
+    #[test]
+    fn migration_check_error_is_recognisable() {
+        let context_id = ContextId::from([7u8; 32]);
+        let err = super::MigrationCheckFailed { context_id };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("migration_check failed"),
+            "error message must announce the failed check: {msg}"
+        );
+        assert!(
+            msg.contains("logical abort"),
+            "error message must announce the logical abort: {msg}"
+        );
+    }
+
+    /// Reads the committed root entry's Merkle `full_hash` straight from the
+    /// store, the same hash `write_migration_state` derives for
+    /// `Context::root_hash`. Returns `None` before any root has been written.
+    fn root_full_hash(store: &Store, context_id: ContextId) -> Option<[u8; 32]> {
+        use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
+        use calimero_storage::address::Id;
+        use calimero_storage::index::Index;
+        use calimero_storage::store::{Key, MainStorage};
+
+        let read = {
+            let handle = store.handle();
+            move |key: &Key| -> Option<Vec<u8>> {
+                let state_key = key::ContextState::new(context_id, key.to_bytes());
+                handle
+                    .get(&state_key)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.value.into_boxed().into_vec())
+            }
+        };
+        let noop_write = |_: Key, _: &[u8]| true;
+        let noop_remove = |_: &Key| true;
+
+        let env = calimero_storage::env::RuntimeEnv::new(
+            std::rc::Rc::new(read),
+            std::rc::Rc::new(noop_write),
+            std::rc::Rc::new(noop_remove),
+            *context_id.as_ref(),
+            [0u8; 32],
+        );
+        let _ = ROOT_STORAGE_ENTRY_ID;
+        calimero_storage::env::with_runtime_env(env, || {
+            Index::<MainStorage>::get_hashes_for(Id::root())
+                .ok()
+                .flatten()
+                .map(|(full_hash, _)| full_hash)
+        })
+    }
+
+    /// Headline PR-6d invariant: a failed `migration_check` drives a **logical
+    /// abort** through the real commit/abort seam — no v1 byte is mutated.
+    ///
+    /// This exercises `commit_or_abort_migration` (the seam the flow funnels its
+    /// post-`execute_migration` decision through) with `check_passed = false`,
+    /// which is what `update_application_with_migration` produces when the v2
+    /// app's `__calimero_migration_check` returns `false`. It asserts:
+    ///   (a) the seam returns `Err(MigrationCheckFailed { context_id })`;
+    ///   (b) the committed root entry's `full_hash` is **identical** to the
+    ///       pre-migration v1 hash (clean rollback — v1 root never overwritten);
+    ///   (c) the in-flight `Context` (application_id, root_hash, dag_heads) is
+    ///       left untouched, so a later `finalize_application_update` would never
+    ///       publish the v2 application_id;
+    ///   (d) the documented idempotent residue shape: v2-shaped child entries may
+    ///       sit under the still-v1 root (we plant one here), but the v1 root
+    ///       still points only at v1 entries — residue, not corruption.
+    #[tokio::test]
+    async fn failed_migration_check_logically_aborts() {
+        let store = create_test_store();
+
+        let context_id = ContextId::from([3u8; 32]);
+        let app_id_v1 = ApplicationId::from([10u8; 32]);
+        let mut context = create_test_context(context_id, app_id_v1);
+
+        let executor = calimero_primitives::identity::PublicKey::from([5u8; 32]);
+
+        // Install a real v1 root entry through the same storage seam the migrate
+        // flow uses, so it has a genuine Merkle Index + full_hash to compare
+        // against. `write_migration_state` is the sole root writer in this file.
+        let v1_bytes = borsh::to_vec(&("v1-state".to_owned())).expect("serialize v1 state");
+        let full_hash_v1 = super::write_migration_state(&store, &context, &v1_bytes, executor)
+            .expect("install v1 root");
+        context.root_hash = Hash::from(full_hash_v1);
+        context.dag_heads = vec![full_hash_v1];
+
+        let dag_heads_v1 = context.dag_heads.clone();
+
+        assert_eq!(
+            root_full_hash(&store, context_id),
+            Some(full_hash_v1),
+            "sanity: the v1 root full_hash must be readable before the abort"
+        );
+
+        // Plant a v2-shaped child entry under the still-v1 root to model the
+        // documented idempotent residue (deterministic merge-mode child writes
+        // committed by `execute_migration` before the root write). The abort
+        // path does NOT delete it; the v1 root still references only v1 entries.
+        let residue_key = key::ContextState::new(context_id, [0xABu8; 32]);
+        store
+            .handle()
+            .put(
+                &residue_key,
+                &types::ContextState::from(calimero_store::slice::Slice::from(
+                    b"v2-child-residue".to_vec(),
+                )),
+            )
+            .expect("plant v2 child residue");
+
+        // Drive the seam with a FAILED check (what migration_v2 produces when
+        // the app's migration_check returns false).
+        let v2_bytes = borsh::to_vec(&("v2-state-much-longer".to_owned())).expect("serialize v2");
+        let result =
+            super::commit_or_abort_migration(&store, &mut context, &v2_bytes, executor, false);
+
+        // (a) the seam returns the abort error.
+        let err = result.expect_err("a failed migration_check must abort with an error");
+        let downcast = err.downcast_ref::<super::MigrationCheckFailed>();
+        assert!(
+            matches!(downcast, Some(super::MigrationCheckFailed { context_id: cid }) if *cid == context_id),
+            "abort error must be MigrationCheckFailed carrying the context id: {err}"
+        );
+
+        // (b) the committed root entry is byte-for-byte the pre-migration v1 hash.
+        assert_eq!(
+            root_full_hash(&store, context_id),
+            Some(full_hash_v1),
+            "v1 root full_hash must be unchanged after a logical abort (no byte mutation)"
+        );
+
+        // (c) the in-flight context still points entirely at v1: a finalize would
+        // never publish the v2 application_id / root / dag_heads.
+        assert_eq!(
+            context.application_id, app_id_v1,
+            "application_id must NOT be finalized after a logical abort"
+        );
+        assert_eq!(
+            context.root_hash,
+            Hash::from(full_hash_v1),
+            "context.root_hash must stay on v1 after a logical abort"
+        );
+        assert_eq!(
+            context.dag_heads, dag_heads_v1,
+            "context.dag_heads must stay on v1 after a logical abort"
+        );
+
+        // (d) the residue child entry is still present (not cleaned up) and the
+        // v1 root still resolves to its own v1 bytes — residue, not corruption.
+        let residue_handle = store.handle();
+        let residue: Option<types::ContextState> =
+            residue_handle.get(&residue_key).expect("read residue");
+        assert!(
+            residue.is_some(),
+            "the idempotent v2-child residue is intentionally NOT deleted by the abort"
+        );
+
+        // A passing check, by contrast, commits: the root full_hash changes.
+        super::commit_or_abort_migration(&store, &mut context, &v2_bytes, executor, true)
+            .expect("a passing check must commit");
+        assert_ne!(
+            root_full_hash(&store, context_id),
+            Some(full_hash_v1),
+            "a passing check must overwrite the v1 root with the produced v2 bytes"
+        );
+        assert_eq!(
+            context.root_hash,
+            root_full_hash(&store, context_id).map(Hash::from).unwrap(),
+            "a passing check must advance context.root_hash to the new v2 root"
         );
     }
 }

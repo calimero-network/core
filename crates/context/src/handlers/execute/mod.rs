@@ -508,6 +508,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 let context_meta =
                                     act.contexts.get(&cid).map(|c| c.meta.clone());
                                 let application = act.applications.get(&target_app).cloned();
+                                let migration_v2 = act.config.migration_v2;
                                 async move {
                                     match module_result {
                                         Ok(module) => {
@@ -522,6 +523,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                                 executor,
                                                 Some(migration_params),
                                                 module,
+                                                migration_v2,
                                             )
                                             .await
                                             {
