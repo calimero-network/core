@@ -237,6 +237,29 @@ pub fn should_emit_on_change(last: Option<MigrationFacts>, current: MigrationFac
     }
 }
 
+/// Fold a freshly-computed `facts` for `namespace_id` into the per-namespace
+/// `last_emitted` carry-forward map and report whether this is an *edge* that
+/// warrants an immediate (out-of-cycle) emit.
+///
+/// Pure (no store / network): the actor handler calls this AFTER overlaying the
+/// real `synced_up_to_hlc` (`refresh_hlc`) and BEFORE publishing. It always
+/// records the latest facts — seeding the namespace into `last_emitted` on
+/// first sight — so the periodic keep-alive tick has a non-empty working set
+/// once the node has signalled at least one namespace (the seam that makes the
+/// emitter live in production; before this the map could only ever stay empty).
+/// The returned bool is the [`should_emit_on_change`] edge decision computed
+/// against the *prior* recorded facts.
+pub fn record_facts_update(
+    last_emitted: &mut HashMap<[u8; 32], MigrationFacts>,
+    namespace_id: [u8; 32],
+    facts: MigrationFacts,
+) -> bool {
+    let prior = last_emitted.get(&namespace_id).copied();
+    let emit = should_emit_on_change(prior, facts);
+    let _ = last_emitted.insert(namespace_id, facts);
+    emit
+}
+
 /// Build and sign a [`SignedMigrationHeartbeat`] for `namespace_id` over the
 /// canonical `MIGRATION_HEARTBEAT_SIGN_DOMAIN || borsh(body)` payload.
 ///
@@ -515,17 +538,25 @@ mod tests {
     }
 
     #[test]
-    fn tampered_heartbeat_fails_verification() {
-        // Field-substitution: zero `residue_identity` after signing to fake
-        // a completed migration. The caller's verify gate (which the cache
-        // relies on) must reject it before any `insert`.
+    fn wire_verify_signature_rejects_field_substitution() {
+        // Documents the WIRE-TYPE contract `insert`'s verification-precondition
+        // depends on: `SignedMigrationHeartbeat::verify_signature` covers every
+        // signed field, so flipping `residue_identity` after signing breaks it.
+        //
+        // NOTE: this is NOT the ingest gate. The actual receiver gate is
+        // `calimero_context::governance_broadcast::verify_migration_heartbeat`
+        // (signature + cohort membership), exercised end-to-end in that crate's
+        // `verify_migration_heartbeat_rejects_bad_signature` test — it needs a
+        // `&Store` and namespace member-set, neither of which this pure cache
+        // unit owns. Here we only pin that the wire type's own signature check
+        // (the primitive the gate is built on) catches a mutated field.
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let mut hb = signed_hb(&sk, NS, 2, 0, 5, 0);
         assert!(hb.verify_signature().is_ok());
-        hb.residue_identity = 0; // tampered
+        hb.residue_identity = 0; // tampered after signing
         assert!(
             hb.verify_signature().is_err(),
-            "verify must reject mutated residue_identity"
+            "verify_signature must reject a mutated residue_identity"
         );
     }
 
@@ -667,6 +698,53 @@ mod tests {
             !should_emit_on_change(Some(prev), advanced),
             "an HLC-only advance must not edge-trigger an emit"
         );
+    }
+
+    #[test]
+    fn record_facts_update_seeds_namespace_and_reports_edge() {
+        // The production sender (governance-apply path) feeds the emitter via
+        // `MigrationFactsUpdate`, whose handler calls `record_facts_update`.
+        // Before any update the carry-forward map is empty, so the periodic
+        // keep-alive tick has nothing to publish; the first update MUST seed it
+        // (and report an edge, since there is no prior) so the tick goes live.
+        let mut last_emitted: HashMap<[u8; 32], MigrationFacts> = HashMap::new();
+        let facts = MigrationFacts {
+            schema_version: 2,
+            residue_auto: 0,
+            residue_identity: 3,
+            synced_up_to_hlc: 10,
+        };
+
+        let emit = record_facts_update(&mut last_emitted, NS, facts);
+        assert!(emit, "first-ever facts for a namespace must edge-trigger");
+        assert_eq!(
+            last_emitted.get(&NS).copied(),
+            Some(facts),
+            "first update must seed last_emitted so the periodic tick has work \
+             (the dead-empty-map regression)"
+        );
+
+        // An HLC-only advance records the new value but does NOT edge-trigger;
+        // the periodic tick carries it.
+        let advanced = MigrationFacts {
+            synced_up_to_hlc: 99,
+            ..facts
+        };
+        let emit = record_facts_update(&mut last_emitted, NS, advanced);
+        assert!(!emit, "HLC-only advance must not edge-trigger");
+        assert_eq!(
+            last_emitted.get(&NS).copied(),
+            Some(advanced),
+            "carry-forward value must still update on a non-edge"
+        );
+
+        // A residue drop is an edge.
+        let drained = MigrationFacts {
+            residue_identity: 0,
+            ..advanced
+        };
+        let emit = record_facts_update(&mut last_emitted, NS, drained);
+        assert!(emit, "residue drop must edge-trigger");
     }
 
     #[test]
