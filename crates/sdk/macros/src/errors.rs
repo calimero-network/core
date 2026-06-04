@@ -122,6 +122,8 @@ pub enum ParseError<'a> {
         type_name: &'static str,
         explanation: &'static str,
     },
+    #[error("`#[app::view]` and `#[app::init]` are mutually exclusive — an initializer always writes state")]
+    ViewAndInitConflict,
 }
 
 impl AsRef<Self> for ParseError<'_> {

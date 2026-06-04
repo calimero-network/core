@@ -1,3 +1,4 @@
+use calimero_wasm_abi::schema::{Method, MethodIntent};
 use jsonschema::JSONSchema;
 use serde_json::Value;
 
@@ -21,6 +22,7 @@ fn test_schema_validation_basic() {
         returns: Some(calimero_wasm_abi::schema::TypeRef::u32()),
         returns_nullable: None,
         errors: vec![],
+        intent: MethodIntent::Unspecified,
     });
 
     // Serialize to JSON
@@ -65,6 +67,7 @@ fn test_schema_validation_shared_storage_crdt_type() {
         returns: Some(shared),
         returns_nullable: None,
         errors: vec![],
+        intent: MethodIntent::Unspecified,
     });
 
     let manifest_json = serde_json::to_value(&manifest).unwrap();
