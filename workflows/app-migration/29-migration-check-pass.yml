@@ -1,0 +1,204 @@
+name: 29 — migration_check PASSES → migration commits (PR-6d, node-log validated)
+description: >
+  Single-node lazy migration whose `#[app::migration_check]` ACCEPTS the
+  produced v2 root, so the migration COMMITS (PR-6d task 6d.6).
+
+  The v2 fixture (`scenario-migration-check-pass-v2`) exports a
+  `__calimero_migration_check` predicate built from the SDK helper
+  `entity_count_parity`. Its migrate carries every v1 item through 1:1, so the
+  pre-commit check sees equal item counts and returns `true`. The runtime then
+  proceeds past the check into `write_migration_state` + finalize: the context
+  reaches v2 with the v1 items preserved and a new `notes` field seeded.
+
+  Node-log validation (the explicit requirement for scenario 29):
+    - `assert_log_present "migration_check passed"` — the pre-commit check ran
+      on the produced v2 root and accepted it (PR-6d task 6d.3 emit).
+    - `assert_log_absent "migration_check failed: logical abort"` — the commit
+      path was taken, NOT the abort path. A passing check must never log a
+      logical abort.
+
+  Because migration_v2 defaults ON (PR-6b task 6b.8), the pre-commit check runs
+  natively — no merobox feature flag is needed.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-check-pass
+  base_port: 9850
+  base_rpc_port: 9950
+
+steps:
+  # Install v1 + v2 on the single node.
+  - name: Install scenario-migration-check-pass-v1
+    type: install_application
+    node: app-migration-check-pass-1
+    path: apps/migrations/scenario-migration-check-pass-v1/res/scenario_migration_check_pass_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-migration-check-pass-v2
+    type: install_application
+    node: app-migration-check-pass-1
+    path: apps/migrations/scenario-migration-check-pass-v2/res/scenario_migration_check_pass_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Namespace (anchors v1) + descendant subgroup + context, all local.
+  - name: Create namespace (anchors app_v1)
+    type: create_namespace
+    node: app-migration-check-pass-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-check-pass-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create descendant subgroup
+    type: create_group_in_namespace
+    node: app-migration-check-pass-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "check-pass-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-check-pass-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Seed three v1 items so the check has a non-trivial count to compare.
+  - name: Seed v1 item alpha
+    type: call
+    node: app-migration-check-pass-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "alpha"
+      value: "a"
+
+  - name: Seed v1 item bravo
+    type: call
+    node: app-migration-check-pass-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "bravo"
+      value: "b"
+
+  - name: Seed v1 item charlie
+    type: call
+    node: app-migration-check-pass-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "charlie"
+      value: "c"
+
+  - name: Sanity — v1 item_count is 3 before upgrade
+    type: call
+    node: app-migration-check-pass-1
+    context_id: "{{ctx_id}}"
+    method: item_count
+    outputs:
+      count_before: result
+
+  - name: Assert three v1 items pre-upgrade
+    type: json_assert
+    statements:
+      - 'json_equal({{count_before}}, {"output": 3})'
+
+  # LazyOnAccess: the context self-migrates on next access.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-check-pass-1
+    group_id: "{{namespace_id}}"
+    upgrade_policy: lazy_on_access
+
+  - name: Cascade namespace v1 → v2
+    type: upgrade_group
+    node: app-migration-check-pass-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+    cascade: true
+
+  - name: Wait for cascade op to gossip
+    type: wait
+    seconds: 5
+
+  # Access the context → triggers the lazy migration: execute_migration produces
+  # the v2 root, the pre-commit migration_check runs on it (and PASSES), then the
+  # commit proceeds.
+  - name: Read schema_info (triggers lazy migration + pre-commit check)
+    type: call
+    node: app-migration-check-pass-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert node reached v2 with every v1 item preserved
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "item_count": 3, "notes": "added in v2"}})'
+
+  # NODE-LOG VALIDATION — the explicit requirement for scenario 29.
+  - name: Assert the pre-commit migration_check passed (commit path taken)
+    type: assert_log_present
+    nodes:
+      - app-migration-check-pass-1
+    patterns:
+      - "migration_check passed"
+    min_matches: 1
+
+  - name: Assert NO logical abort was logged (a passing check never aborts)
+    type: assert_log_absent
+    nodes:
+      - app-migration-check-pass-1
+    patterns:
+      - "migration_check failed: logical abort"
+
+  # Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-check-pass-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-check-pass-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-check-pass-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-check-pass-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-check-pass-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

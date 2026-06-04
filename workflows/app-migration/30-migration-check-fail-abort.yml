@@ -1,0 +1,241 @@
+name: 30 — migration_check FAILS → logical abort, v1 still served (PR-6d, node-log validated)
+description: >
+  Single-node lazy migration whose `#[app::migration_check]` REJECTS the
+  produced v2 root, triggering a LOGICAL ABORT — the headline PR-6d task 6d.6
+  test.
+
+  The v2 fixture (`scenario-migration-check-fail-v2`) runs a deliberately
+  **lossy** migrate: it rebuilds the item map but drops the lexicographically
+  smallest key, so exactly one item is lost. Its `#[app::migration_check]`
+  predicate (built from the SDK helper `entity_count_parity`) sees the count
+  drop and returns `false`. The runtime then returns `Err(MigrationCheckFailed)`
+  BEFORE `write_migration_state` and BEFORE finalize — a logical abort: the
+  produced v2 root is discarded, the v1 root is never mutated.
+
+  Logical-abort discipline: there is NO byte snapshot and NO restore. v1 is
+  intact because it was never written. On the lazy path the failed migration is
+  swallowed and the access PROCEEDS on the current (v1) application, so the
+  triggering call SUCCEEDS serving pre-migration data.
+
+  Node-log validation (the explicit requirement for scenario 30):
+    - `assert_log_present "migration_check failed: logical abort"` — the
+      pre-commit check rejected the produced v2 root (PR-6d task 6d.3).
+    - `assert_log_present "lazy upgrade (migration) failed, proceeding with
+      current application"` — the lazy access fell back to v1 rather than
+      committing v2.
+    - `assert_log_absent "migration_check passed"` — the commit path was never
+      taken.
+  Plus a behavioural assertion: a post-abort read still returns v1 schema
+  (`1.0.0`) with ALL THREE original items — proving the app still serves v1.
+
+  Because migration_v2 defaults ON (PR-6b task 6b.8), the pre-commit check runs
+  natively — no merobox feature flag is needed.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-check-fail
+  base_port: 10050
+  base_rpc_port: 10150
+
+steps:
+  # Install v1 + v2 (the lossy v2) on the single node.
+  - name: Install scenario-migration-check-fail-v1
+    type: install_application
+    node: app-migration-check-fail-1
+    path: apps/migrations/scenario-migration-check-fail-v1/res/scenario_migration_check_fail_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-migration-check-fail-v2
+    type: install_application
+    node: app-migration-check-fail-1
+    path: apps/migrations/scenario-migration-check-fail-v2/res/scenario_migration_check_fail_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Namespace (anchors v1) + descendant subgroup + context, all local.
+  - name: Create namespace (anchors app_v1)
+    type: create_namespace
+    node: app-migration-check-fail-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-check-fail-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create descendant subgroup
+    type: create_group_in_namespace
+    node: app-migration-check-fail-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "check-fail-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-check-fail-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Seed three v1 items; the lossy migrate will drop one, which the check rejects.
+  - name: Seed v1 item alpha
+    type: call
+    node: app-migration-check-fail-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "alpha"
+      value: "a"
+
+  - name: Seed v1 item bravo
+    type: call
+    node: app-migration-check-fail-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "bravo"
+      value: "b"
+
+  - name: Seed v1 item charlie
+    type: call
+    node: app-migration-check-fail-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "charlie"
+      value: "c"
+
+  - name: Sanity — v1 item_count is 3 before upgrade
+    type: call
+    node: app-migration-check-fail-1
+    context_id: "{{ctx_id}}"
+    method: item_count
+    outputs:
+      count_before: result
+
+  - name: Assert three v1 items pre-upgrade
+    type: json_assert
+    statements:
+      - 'json_equal({{count_before}}, {"output": 3})'
+
+  # LazyOnAccess: the context attempts to self-migrate on next access.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-check-fail-1
+    group_id: "{{namespace_id}}"
+    upgrade_policy: lazy_on_access
+
+  - name: Cascade namespace v1 → v2 (lossy migrate)
+    type: upgrade_group
+    node: app-migration-check-fail-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+    cascade: true
+
+  - name: Wait for cascade op to gossip
+    type: wait
+    seconds: 5
+
+  # Access the context → triggers the lazy migration: execute_migration produces
+  # the lossy v2 root, the pre-commit migration_check runs on it and REJECTS it,
+  # so the migration logically aborts and the lazy path proceeds on v1. The call
+  # itself SUCCEEDS, serving v1 state.
+  - name: Read schema_info (triggers lazy migration → check fails → serves v1)
+    type: call
+    node: app-migration-check-fail-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    expected_failure: false
+    outputs:
+      schema_after: result
+
+  - name: Assert the app STILL SERVES v1 after the logical abort
+    type: json_assert
+    statements:
+      - 'json_subset({{schema_after}}, {"output": {"schema_version": "1.0.0", "item_count": 3}})'
+
+  # And every v1 item is intact (the v1 root was never mutated).
+  - name: Read v1 item alpha post-abort (the dropped-in-migrate key)
+    type: call
+    node: app-migration-check-fail-1
+    context_id: "{{ctx_id}}"
+    method: get_item
+    args:
+      key: "alpha"
+    outputs:
+      alpha_after: result
+
+  - name: Assert alpha survived the aborted migration (v1 root untouched)
+    type: json_assert
+    statements:
+      - 'json_equal({{alpha_after}}, {"output": "a"})'
+
+  # NODE-LOG VALIDATION — the explicit requirement for scenario 30.
+  - name: Assert the pre-commit migration_check failed → logical abort
+    type: assert_log_present
+    nodes:
+      - app-migration-check-fail-1
+    patterns:
+      - "migration_check failed: logical abort"
+    min_matches: 1
+
+  - name: Assert the lazy access fell back to v1 after the failed migration
+    type: assert_log_present
+    nodes:
+      - app-migration-check-fail-1
+    patterns:
+      - "lazy upgrade (migration) failed, proceeding with current application"
+    min_matches: 1
+
+  - name: Assert the commit path was NEVER taken (no passing check logged)
+    type: assert_log_absent
+    nodes:
+      - app-migration-check-fail-1
+    patterns:
+      - "migration_check passed"
+
+  # Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-check-fail-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-check-fail-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-check-fail-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-check-fail-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-check-fail-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
