@@ -1,0 +1,515 @@
+//! Persistent member-identity → peer cache, keyed per group.
+//!
+//! Lets a node dial the **actual members** of a context's group on a
+//! cold cache — immediately after restart, before any live signed
+//! traffic has had a chance to re-teach it who is whom — instead of
+//! falling back to dialing random topic subscribers.
+//!
+//! ## The gap this fills
+//!
+//! Dialing "members of context X" needs a three-link chain:
+//!
+//! ```text
+//! member identity (PublicKey) ──▶ member's node (PeerId) ──▶ address
+//! ```
+//!
+//! Links 1 (governance member rows / `trusted_anchors`) and 3
+//! (`PeerAddrCache`) are already persisted on disk. The **middle link**
+//! — "this `PeerId` is member-identity `X`" — lived only in an in-memory
+//! `peer_identities` map rebuilt from scratch every restart by
+//! re-observing signed traffic. Until it refilled, peer selection had no
+//! membership signal and degraded to random topic subscribers. This
+//! cache persists that middle link so the signal survives a restart.
+//!
+//! ## Authenticated, hint-only
+//!
+//! Entries are written **only** from the existing `observe_peer_identity`
+//! gate (signature verified + `MembershipStatus::Member` at the
+//! cross-DAG cut), so the cache never holds a self-asserted claim.
+//! Everything here is nonetheless a **routing hint, never authority**:
+//! actual sync re-verifies every governance op's signature at adoption,
+//! so a stale entry costs at most one wasted dial — never correctness.
+//! In particular `role` is the member's role *as last observed*;
+//! governance `trusted_anchors` remains the source of truth at selection
+//! time (and "owner" is a group `Meta` field, not a [`GroupMemberRole`],
+//! so it is derived at resolution rather than stored here).
+//!
+//! ## Keyed per group
+//!
+//! A member's role is per-group (an identity can be `Admin` of a
+//! subgroup but a plain `Member` at the namespace root), so the storage
+//! unit is **one bucket per [`ContextGroupId`]** — persisted under that
+//! group's own `Generic` datastore key by the node layer. Resolving the
+//! relevant set for a context walks the group tree (group → parent
+//! groups → namespace root) and unions the buckets, with each level's
+//! roles intact.
+//!
+//! Mirrors [`crate`](crate)'s sibling discipline in the network crate's
+//! `PeerAddrCache`: pure data + TTL here, with the snapshot tick and
+//! startup hydration wired by the node layer.
+
+// The type lands on its own for reviewability; population, persistence,
+// and selection wiring follow in subsequent PRs, so its API is unused
+// (dead-code) in the meantime.
+#![allow(dead_code)]
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::PublicKey;
+use libp2p::PeerId;
+use serde::{Deserialize, Serialize};
+use tracing::debug;
+
+/// Freshness window for cached observations (24h), matching
+/// `PeerAddrCache`. A member not seen within the window ages out of the
+/// snapshot so a long-dead mapping isn't dialed after a long downtime.
+pub(crate) const PEER_IDENTITY_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// On-disk form of one `(identity, peer)` observation within a group.
+///
+/// `identity`/`peer_id` are stored as strings (via [`PublicKey`]'s
+/// `Display`/`FromStr` and `PeerId`'s base58) so the blob is
+/// human-readable and free of libp2p's optional serde features;
+/// unparseable rows are skipped on load. One row per hosting peer — an
+/// identity hosted on several peers (TEE fleet, multi-device) yields
+/// several rows sharing the same `role`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PersistedIdentityPeer {
+    pub(crate) identity: String,
+    pub(crate) peer_id: String,
+    pub(crate) role: GroupMemberRole,
+    pub(crate) last_seen_secs: u64,
+}
+
+/// The peers hosting one member identity within a group, plus the role
+/// that identity holds there. `peers` is keyed by `PeerId` with its own
+/// `last_seen` stamp because one identity can re-home across nodes or be
+/// hosted on several at once.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MemberHosts {
+    pub(crate) role: GroupMemberRole,
+    /// `peer → last_seen_secs` (wall-clock unix seconds, so freshness
+    /// survives a restart).
+    pub(crate) peers: BTreeMap<PeerId, u64>,
+}
+
+/// All observed members of one group: `identity → {role, hosting peers}`.
+#[derive(Default, Clone, Debug)]
+pub(crate) struct GroupMembers {
+    members: BTreeMap<PublicKey, MemberHosts>,
+}
+
+/// A member resolved for dial selection: its identity, role in the
+/// group, and the fresh peers hosting it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResolvedMember {
+    pub(crate) identity: PublicKey,
+    pub(crate) role: GroupMemberRole,
+    pub(crate) peers: Vec<PeerId>,
+}
+
+/// In-memory member-identity cache: one bucket per group, snapshotted to
+/// disk per group by the node layer.
+#[derive(Default, Debug)]
+pub(crate) struct PeerIdentityCache {
+    groups: BTreeMap<ContextGroupId, GroupMembers>,
+}
+
+impl PeerIdentityCache {
+    /// Record an authenticated observation: `identity`, a member of
+    /// `group` with `role`, is hosted on `peer`. Refreshes that peer's
+    /// `last_seen` and updates the role **last-write-wins** — roles
+    /// change via governance (promote/demote), so the most recent
+    /// observation is the one to trust.
+    pub(crate) fn record(
+        &mut self,
+        group: ContextGroupId,
+        identity: PublicKey,
+        peer: PeerId,
+        role: GroupMemberRole,
+        now_secs: u64,
+    ) {
+        let member = self
+            .groups
+            .entry(group)
+            .or_default()
+            .members
+            .entry(identity)
+            .or_insert_with(|| MemberHosts {
+                role: role.clone(),
+                peers: BTreeMap::new(),
+            });
+        member.role = role;
+        let _ = member.peers.insert(peer, now_secs);
+    }
+
+    /// Fresh members of `group` for dial selection: each identity with
+    /// its role and the peers (seen within `ttl_secs`) hosting it. A
+    /// member whose every hosting peer has aged out is omitted entirely.
+    pub(crate) fn members_for_group(
+        &self,
+        group: &ContextGroupId,
+        now_secs: u64,
+        ttl_secs: u64,
+    ) -> Vec<ResolvedMember> {
+        let Some(g) = self.groups.get(group) else {
+            return Vec::new();
+        };
+        g.members
+            .iter()
+            .filter_map(|(identity, hosts)| {
+                let peers: Vec<PeerId> = hosts
+                    .peers
+                    .iter()
+                    .filter(|(_, &last_seen)| is_fresh(last_seen, now_secs, ttl_secs))
+                    .map(|(peer, _)| *peer)
+                    .collect();
+                (!peers.is_empty()).then(|| ResolvedMember {
+                    identity: *identity,
+                    role: hosts.role.clone(),
+                    peers,
+                })
+            })
+            .collect()
+    }
+
+    /// Identities observed on `peer` across **all** groups — the reverse
+    /// direction `partition_peers_anchor_first` uses to flag whether a
+    /// discovered peer hosts an anchor identity. No freshness filter: the
+    /// caller intersects this with an authoritative anchor set, so a
+    /// slightly stale identity can only fail to match, never mis-match.
+    pub(crate) fn identities_for_peer(&self, peer: &PeerId) -> BTreeSet<PublicKey> {
+        let mut out = BTreeSet::new();
+        for g in self.groups.values() {
+            for (identity, hosts) in &g.members {
+                if hosts.peers.contains_key(peer) {
+                    let _ = out.insert(*identity);
+                }
+            }
+        }
+        out
+    }
+
+    /// Serialize one group's still-fresh entries for persistence — the
+    /// RocksDB value stored under that group's key, one row per
+    /// `(identity, peer)` pair.
+    pub(crate) fn to_persisted(
+        &self,
+        group: &ContextGroupId,
+        now_secs: u64,
+        ttl_secs: u64,
+    ) -> Vec<PersistedIdentityPeer> {
+        let Some(g) = self.groups.get(group) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (identity, hosts) in &g.members {
+            for (peer, &last_seen) in &hosts.peers {
+                if is_fresh(last_seen, now_secs, ttl_secs) {
+                    out.push(PersistedIdentityPeer {
+                        identity: identity.to_string(),
+                        peer_id: peer.to_base58(),
+                        role: hosts.role.clone(),
+                        last_seen_secs: last_seen,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// The groups currently holding at least one entry — the set the node
+    /// layer iterates to snapshot per-group blobs.
+    pub(crate) fn groups(&self) -> impl Iterator<Item = &ContextGroupId> {
+        self.groups.keys()
+    }
+
+    /// Load one group's bucket from a persisted snapshot, parsing the
+    /// string ids and dropping any row that is malformed or past
+    /// `ttl_secs`. Replaces any existing bucket for `group`; if nothing
+    /// survives, the group is left absent rather than stored empty.
+    ///
+    /// A malformed row is logged at debug and skipped rather than failing
+    /// the whole load — one corrupt entry shouldn't lose the rest.
+    pub(crate) fn load_group_from_persisted(
+        &mut self,
+        group: ContextGroupId,
+        records: Vec<PersistedIdentityPeer>,
+        now_secs: u64,
+        ttl_secs: u64,
+    ) {
+        let mut members: BTreeMap<PublicKey, MemberHosts> = BTreeMap::new();
+        for r in records {
+            if !is_fresh(r.last_seen_secs, now_secs, ttl_secs) {
+                continue;
+            }
+            let identity = match r.identity.parse::<PublicKey>() {
+                Ok(identity) => identity,
+                Err(err) => {
+                    debug!(identity = %r.identity, ?err, "skipping unparseable cached member identity");
+                    continue;
+                }
+            };
+            let peer = match r.peer_id.parse::<PeerId>() {
+                Ok(peer) => peer,
+                Err(err) => {
+                    debug!(peer_id = %r.peer_id, ?err, "skipping unparseable cached peer id");
+                    continue;
+                }
+            };
+            let entry = members.entry(identity).or_insert_with(|| MemberHosts {
+                role: r.role.clone(),
+                peers: BTreeMap::new(),
+            });
+            // Last row for an identity wins the role, matching `record`'s
+            // last-write semantics for a re-observed role.
+            entry.role = r.role;
+            let _ = entry.peers.insert(peer, r.last_seen_secs);
+        }
+        if members.is_empty() {
+            let _ = self.groups.remove(&group);
+        } else {
+            let _ = self.groups.insert(group, GroupMembers { members });
+        }
+    }
+}
+
+/// `last_seen_secs` is within `ttl_secs` of `now_secs`. A backwards clock
+/// jump (`now < last_seen`) counts as fresh — better to keep a
+/// possibly-good entry than drop it on a clock glitch.
+fn is_fresh(last_seen_secs: u64, now_secs: u64, ttl_secs: u64) -> bool {
+    now_secs.saturating_sub(last_seen_secs) <= ttl_secs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn group(n: u8) -> ContextGroupId {
+        ContextGroupId::from([n; 32])
+    }
+
+    fn pk(n: u8) -> PublicKey {
+        PublicKey::from([n; 32])
+    }
+
+    fn peer(n: u8) -> PeerId {
+        let kp = libp2p::identity::Keypair::ed25519_from_bytes([n; 32]).expect("seed");
+        PeerId::from_public_key(&kp.public())
+    }
+
+    #[test]
+    fn record_inserts_and_refreshes_last_seen() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Member, 100);
+
+        let members = c.members_for_group(&group(1), 100, 1000);
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].identity, pk(1));
+        assert_eq!(members[0].peers, vec![peer(1)]);
+
+        // Re-record later bumps last_seen so the entry stays fresh past
+        // when the original stamp would have aged out.
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Member, 900);
+        assert_eq!(
+            c.members_for_group(&group(1), 1800, 1000).len(),
+            1,
+            "refreshed last_seen keeps the entry fresh"
+        );
+    }
+
+    #[test]
+    fn record_updates_role_last_write_wins() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Member, 100);
+        // Promotion observed later must overwrite the stale role.
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Admin, 200);
+
+        let members = c.members_for_group(&group(1), 200, 1000);
+        assert_eq!(members[0].role, GroupMemberRole::Admin);
+    }
+
+    #[test]
+    fn one_identity_hosted_on_multiple_peers() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::ReadOnlyTee, 100);
+        c.record(group(1), pk(1), peer(2), GroupMemberRole::ReadOnlyTee, 100);
+
+        let members = c.members_for_group(&group(1), 100, 1000);
+        assert_eq!(members.len(), 1, "still one identity");
+        // Order is by PeerId bytes (BTreeMap), not seed order — compare
+        // as a set.
+        assert_eq!(
+            members[0].peers.iter().copied().collect::<BTreeSet<_>>(),
+            BTreeSet::from([peer(1), peer(2)]),
+            "both hosting peers returned"
+        );
+    }
+
+    #[test]
+    fn one_peer_hosts_multiple_identities() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Admin, 100);
+        c.record(group(1), pk(2), peer(1), GroupMemberRole::Member, 100);
+
+        let ids = c.identities_for_peer(&peer(1));
+        assert_eq!(ids, BTreeSet::from([pk(1), pk(2)]));
+    }
+
+    #[test]
+    fn identities_for_peer_spans_groups() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Admin, 100);
+        c.record(group(2), pk(2), peer(1), GroupMemberRole::Member, 100);
+
+        // The reverse index is intentionally group-agnostic: a peer's
+        // anchor-ness is judged against an anchor set the caller supplies.
+        assert_eq!(
+            c.identities_for_peer(&peer(1)),
+            BTreeSet::from([pk(1), pk(2)])
+        );
+    }
+
+    #[test]
+    fn groups_are_independent() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Admin, 100);
+
+        assert_eq!(c.members_for_group(&group(1), 100, 1000).len(), 1);
+        assert!(
+            c.members_for_group(&group(2), 100, 1000).is_empty(),
+            "a record in one group must not leak into another"
+        );
+    }
+
+    #[test]
+    fn member_dropped_when_all_hosts_stale() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Member, 100);
+        // now=2000, ttl=1000 → 1900 > 1000 → the only host is stale.
+        assert!(
+            c.members_for_group(&group(1), 2000, 1000).is_empty(),
+            "member with no fresh host is omitted"
+        );
+        // within TTL → kept.
+        assert_eq!(c.members_for_group(&group(1), 900, 1000).len(), 1);
+    }
+
+    #[test]
+    fn members_for_group_drops_only_stale_hosts() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Member, 100);
+        c.record(group(1), pk(1), peer(2), GroupMemberRole::Member, 1900);
+
+        // now=2000, ttl=1000: peer(1)@100 is stale, peer(2)@1900 fresh.
+        let members = c.members_for_group(&group(1), 2000, 1000);
+        assert_eq!(members.len(), 1);
+        assert_eq!(
+            members[0].peers,
+            vec![peer(2)],
+            "only the fresh host survives"
+        );
+    }
+
+    #[test]
+    fn to_persisted_filters_stale_pairs() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Member, 100);
+        c.record(group(1), pk(1), peer(2), GroupMemberRole::Member, 1900);
+
+        let rows = c.to_persisted(&group(1), 2000, 1000);
+        assert_eq!(rows.len(), 1, "stale (identity, peer) pair excluded");
+        assert_eq!(rows[0].peer_id, peer(2).to_base58());
+    }
+
+    #[test]
+    fn persisted_round_trips_through_strings() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Admin, 100);
+        c.record(group(1), pk(1), peer(2), GroupMemberRole::Admin, 150);
+        c.record(group(1), pk(2), peer(3), GroupMemberRole::ReadOnlyTee, 150);
+
+        let rows = c.to_persisted(&group(1), 150, 1000);
+        // JSON serialize/deserialize as the node-side persistence would.
+        let json = serde_json::to_string(&rows).expect("serialize");
+        let back: Vec<PersistedIdentityPeer> = serde_json::from_str(&json).expect("deserialize");
+
+        let mut restored = PeerIdentityCache::default();
+        restored.load_group_from_persisted(group(1), back, 150, 1000);
+
+        let members = restored.members_for_group(&group(1), 150, 1000);
+        assert_eq!(members.len(), 2);
+        let admin = members.iter().find(|m| m.identity == pk(1)).expect("pk1");
+        assert_eq!(admin.role, GroupMemberRole::Admin);
+        assert_eq!(
+            admin.peers.iter().copied().collect::<BTreeSet<_>>(),
+            BTreeSet::from([peer(1), peer(2)]),
+            "both hosts survive the round trip"
+        );
+        let tee = members.iter().find(|m| m.identity == pk(2)).expect("pk2");
+        assert_eq!(tee.role, GroupMemberRole::ReadOnlyTee);
+    }
+
+    #[test]
+    fn load_group_skips_malformed_and_expired() {
+        let records = vec![
+            PersistedIdentityPeer {
+                identity: "not-a-public-key".to_owned(),
+                peer_id: peer(1).to_base58(),
+                role: GroupMemberRole::Member,
+                last_seen_secs: 100,
+            },
+            PersistedIdentityPeer {
+                identity: pk(2).to_string(),
+                peer_id: "not-a-peer-id".to_owned(),
+                role: GroupMemberRole::Member,
+                last_seen_secs: 100,
+            },
+            PersistedIdentityPeer {
+                identity: pk(3).to_string(),
+                peer_id: peer(3).to_base58(),
+                role: GroupMemberRole::Member,
+                last_seen_secs: 50, // now=2000, ttl=1000 → expired
+            },
+            PersistedIdentityPeer {
+                identity: pk(4).to_string(),
+                peer_id: peer(4).to_base58(),
+                role: GroupMemberRole::Admin,
+                last_seen_secs: 1900, // fresh
+            },
+        ];
+        let mut c = PeerIdentityCache::default();
+        c.load_group_from_persisted(group(1), records, 2000, 1000);
+
+        let members = c.members_for_group(&group(1), 2000, 1000);
+        assert_eq!(members.len(), 1, "only the well-formed, fresh row survives");
+        assert_eq!(members[0].identity, pk(4));
+        assert_eq!(members[0].role, GroupMemberRole::Admin);
+    }
+
+    #[test]
+    fn load_group_leaves_group_absent_when_nothing_survives() {
+        let records = vec![PersistedIdentityPeer {
+            identity: pk(1).to_string(),
+            peer_id: peer(1).to_base58(),
+            role: GroupMemberRole::Member,
+            last_seen_secs: 50, // expired at now=2000/ttl=1000
+        }];
+        let mut c = PeerIdentityCache::default();
+        c.load_group_from_persisted(group(1), records, 2000, 1000);
+
+        assert_eq!(c.groups().count(), 0, "empty load stores no group");
+    }
+
+    #[test]
+    fn groups_lists_seeded_groups() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Member, 100);
+        c.record(group(3), pk(2), peer(2), GroupMemberRole::Member, 100);
+
+        let listed: BTreeSet<ContextGroupId> = c.groups().copied().collect();
+        assert_eq!(listed, BTreeSet::from([group(1), group(3)]));
+    }
+}

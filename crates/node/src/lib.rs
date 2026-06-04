@@ -25,6 +25,7 @@ mod manager;
 pub mod network_event_channel;
 pub mod network_event_processor;
 mod node_metrics;
+mod peer_identity_cache;
 pub mod readiness;
 mod run;
 mod specialized_node_invite_state;
