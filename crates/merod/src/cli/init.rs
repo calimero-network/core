@@ -106,6 +106,15 @@ pub struct InitCommand {
     #[clap(overrides_with("no_mdns"))]
     pub advertise_address: bool,
 
+    /// Static external multiaddr(s) to advertise (e.g.
+    /// `/ip4/203.0.113.7/tcp/2428`). Seeded directly into the swarm's
+    /// external-address set at startup; requires `--advertise-address`.
+    /// AutoNAT v2 always additionally discovers and confirms reachable
+    /// addresses regardless of this flag. Non-routable values (loopback /
+    /// unspecified / link-local) are ignored.
+    #[clap(long = "external-address", value_name = "MULTIADDR")]
+    pub external_address: Vec<Multiaddr>,
+
     #[clap(
         long,
         default_value = "3",
@@ -270,6 +279,7 @@ impl InitCommand {
                 DiscoveryConfig::new(
                     mdns,
                     self.advertise_address,
+                    self.external_address.clone(),
                     RendezvousConfig::new(self.rendezvous_registrations_limit),
                     RelayConfig::new(self.relay_registrations_limit),
                     AutonatConfig::new(

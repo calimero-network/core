@@ -219,6 +219,17 @@ where
         response.json::<O>().await.map_err(Into::into)
     }
 
+    /// Resolve the bearer auth header for this connection (always treating auth
+    /// as required), if a node name and credentials are available.
+    ///
+    /// Public counterpart to [`Self::ensure_auth_header`] for callers outside
+    /// the HTTP request helpers — e.g. attaching auth to a WebSocket upgrade
+    /// handshake, where auth is validated once at connect rather than per call.
+    /// May trigger a browser-based authentication flow when no token is stored.
+    pub async fn auth_header(&self) -> Result<Option<String>> {
+        self.ensure_auth_header(true).await
+    }
+
     /// Ensure a valid auth header is available and return it.
     ///
     /// Returns `None` immediately if `requires_auth` is false or `node_name` is unset.

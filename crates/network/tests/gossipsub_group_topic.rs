@@ -27,6 +27,7 @@ fn network_config(keypair: Keypair, listen: Multiaddr) -> NetworkConfig {
         DiscoveryConfig::new(
             false,
             false,
+            Vec::new(),
             RendezvousConfig::default(),
             RelayConfig::default(),
             AutonatConfig::new(5, Duration::from_secs(10)),

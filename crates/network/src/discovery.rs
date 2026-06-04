@@ -1,6 +1,4 @@
-use core::net::Ipv4Addr;
-use core::time::Duration;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 use calimero_network_primitives::config::{AutonatConfig, RelayConfig, RendezvousConfig};
 use eyre::{bail, ContextCompat, Result as EyreResult, WrapErr as _};
@@ -55,7 +53,6 @@ pub struct Discovery {
     pub(crate) state: DiscoveryState,
     pub(crate) rendezvous_config: RendezvousConfig,
     pub(crate) relay_config: RelayConfig,
-    pub(crate) advertise: Option<AdvertiseState>,
     pub(crate) _autonat_config: AutonatConfig,
     /// Rotating offset into the under-connected rendezvous-key list, so
     /// successive `rendezvous_discover` calls cover different keys when
@@ -73,66 +70,21 @@ pub struct Discovery {
     pub(crate) reserved_topics: BTreeSet<String>,
 }
 
-#[derive(Debug)]
-pub struct AdvertiseState {
-    pub(crate) ip: Ipv4Addr,
-    pub(crate) ports: HashSet<u16>,
-}
-
 impl Discovery {
-    pub(crate) async fn new(
+    pub(crate) fn new(
         rendezvous_config: &RendezvousConfig,
         relay_config: &RelayConfig,
         autonat_config: &AutonatConfig,
-        listening_on: &[Multiaddr],
         reserved_topics: BTreeSet<String>,
-    ) -> EyreResult<Self> {
-        let advertise = if listening_on.is_empty() {
-            None
-        } else {
-            let ports = listening_on
-                .iter()
-                .filter_map(|addr| {
-                    addr.iter().find_map(|p| match p {
-                        Protocol::Tcp(port) | Protocol::Udp(port) => Some(port),
-                        _ => None,
-                    })
-                })
-                .collect();
-
-            Some(AdvertiseState {
-                ip: Self::get_public_ip().await?,
-                ports,
-            })
-        };
-
-        let this = Self {
+    ) -> Self {
+        Self {
             state: DiscoveryState::default(),
             rendezvous_config: rendezvous_config.clone(),
             relay_config: relay_config.clone(),
-            advertise,
             _autonat_config: autonat_config.clone(),
             rendezvous_discover_cursor: 0,
             reserved_topics,
-        };
-
-        Ok(this)
-    }
-
-    async fn get_public_ip() -> EyreResult<Ipv4Addr> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(3))
-            .build()?;
-
-        let ip_addr = client
-            .get("https://api.ipify.org")
-            .send()
-            .await?
-            .text()
-            .await?
-            .parse()?;
-
-        Ok(ip_addr)
+        }
     }
 }
 

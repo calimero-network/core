@@ -1394,7 +1394,6 @@ dependencies = [
  "owo-colors 3.5.0",
  "prometheus-client",
  "rand 0.8.5",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",

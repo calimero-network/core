@@ -27,6 +27,7 @@ use calimero_node_primitives::sync::{
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
+use calimero_primitives::hash::Hash;
 use calimero_storage::address::Id;
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::index::Index;
@@ -255,6 +256,35 @@ impl SyncManager {
                     requests_handled += 1;
 
                     info!(%context_id, applied, total, "Applied pushed tombstones (delete-wins)");
+                }
+
+                InitPayload::DagHeadsRequest { .. } => {
+                    // End-of-session convergence re-read for the initiator's
+                    // post-sync check. Re-read our root NOW — after applying
+                    // every leaf/tombstone pushed in this session — so the
+                    // initiator compares against our live post-merge state
+                    // instead of the root it captured at handshake (which goes
+                    // stale the moment either side moves, producing both the
+                    // forever-WARN false negative and the divergence-masking
+                    // false positive).
+                    let current_root = with_runtime_env(runtime_env.clone(), || {
+                        Index::<MainStorage>::get_hashes_for(Id::new(*context_id.as_ref()))
+                            .ok()
+                            .flatten()
+                            .map(|(full, _)| full)
+                            .unwrap_or([0; 32])
+                    });
+
+                    let msg = StreamMessage::Message {
+                        sequence_id: sqx.next(),
+                        payload: MessagePayload::DagHeadsResponse {
+                            dag_heads: Vec::new(),
+                            root_hash: Hash::from(current_root),
+                        },
+                        next_nonce: super::helpers::generate_nonce(),
+                    };
+                    transport.send(&msg).await?;
+                    requests_handled += 1;
                 }
 
                 _ => {

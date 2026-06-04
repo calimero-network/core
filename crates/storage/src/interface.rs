@@ -223,13 +223,17 @@ impl<S: StorageAdaptor> Interface<S> {
     /// `writers_at(anchor_log, delta.parents)`, passed in via
     /// `effective_writers`.
     ///
-    /// The rotation log's *latest* entry is this node's insertion order, which
-    /// can differ from causal order under concurrent rotations — so this
-    /// fallback is **not** causally exact. It is therefore reserved for the
+    /// Resolution uses [`rotation_log::resolve_local`](crate::rotation_log::resolve_local):
+    /// the live entry that is max by `(delta_hlc, signer)`, or the compaction
+    /// snapshot when there are no live entries. This is **not** a full causal
+    /// cut (it has no `happens_before`), so it is reserved for the
     /// **local-execution / settled-state** gate, where "current writers" is the
-    /// right answer (a local writer acts under the current set). The
-    /// **merge-path** security boundary is the causal `writers_at(anchor_log,
-    /// delta.parents)` set passed as `effective_writers`.
+    /// right answer. The **merge-path** security boundary is the causal
+    /// `writers_at(anchor_log, delta.parents)` set passed as `effective_writers`.
+    /// Because the HLC is causally monotonic since #2635, the `(delta_hlc,
+    /// signer)` max coincides with the causal latest for a well-formed log, and
+    /// — unlike the prior `entries.last()` — it is insertion-order invariant, so
+    /// it converges across nodes under concurrent rotations (core#2673).
     ///
     /// As of the DAG-causal rotation completion (P4), every node records the
     /// genesis writer set **and its own rotations** in the log (the originator
@@ -243,11 +247,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// state reset).
     fn resolve_anchor_writers(anchor: Id) -> BTreeSet<PublicKey> {
         if let Ok(Some(log)) = crate::rotation_log::load::<S>(anchor) {
-            if let Some(entry) = log.entries.last() {
-                return entry.new_writers.clone();
-            }
-            if let Some(snapshot) = log.snapshot {
-                return snapshot.writers;
+            if let Some(writers) = crate::rotation_log::resolve_local(&log) {
+                return writers;
             }
         }
         if let Ok(Some(metadata)) = <Index<S>>::get_metadata(anchor) {
@@ -2051,7 +2052,16 @@ impl<S: StorageAdaptor> Interface<S> {
                                 actions.1.push(Action::Add {
                                     id: *child_id,
                                     data: local_child,
-                                    ancestors: <Index<S>>::get_ancestors_of(id)?,
+                                    // Ancestors of the entity being added (the
+                                    // child), not its parent `id` — apply
+                                    // rebuilds the path down to `*child_id` and
+                                    // links it under `ancestors[0]` (its
+                                    // immediate parent). Using `id` here dropped
+                                    // the immediate parent from the chain,
+                                    // orphaning the child on the receiver (the
+                                    // "collection entirely missing" arm below
+                                    // already does this correctly).
+                                    ancestors: <Index<S>>::get_ancestors_of(*child_id)?,
                                     metadata,
                                 });
                             }
