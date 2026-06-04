@@ -433,7 +433,11 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                 );
                 crate::node_metrics::record_governance_drain_outcome("applied");
                 let reconstructed = state_delta_message_from_buffered(buffered, *context_id);
-                if let Err(err) = apply_authorized_state_delta(input.clone(), reconstructed).await {
+                // Governance-pending drain: NOT an absorb-drain — the delta may
+                // still be stale-schema, so it must keep going through the fence.
+                if let Err(err) =
+                    apply_authorized_state_delta(input.clone(), reconstructed, false).await
+                {
                     warn!(
                         %context_id,
                         %err,
@@ -550,11 +554,14 @@ pub(crate) async fn drain_all_governance_pending(input: &StateDeltaContext) {
 /// signature. A record whose schema is still behind the loaded reader is left
 /// in place for a future drain pass.
 ///
-/// **Re-entrancy.** After the binary advances,
-/// `producing_app_key == loaded_reader_app_key`, so the replayed delta's fence
-/// (`fence_and_maybe_absorb` inside [`apply_authorized_state_delta`]) returns
-/// [`FenceDecision::Apply`](calimero_context::hlc_fence::FenceDecision::Apply) —
-/// it is applied, **not** re-buffered. The drain therefore cannot loop.
+/// **Re-entrancy.** The drain re-feeds the buffered straggler through
+/// [`apply_authorized_state_delta`] with `bypass_fence == true`, so the fence
+/// (`fence_and_maybe_absorb`) is skipped entirely — the already-decided delta
+/// is applied, **not** re-evaluated. Without the bypass a STALE v1 straggler
+/// (`producing == v1 != loaded == v2`, `delta_hlc > cascade_hlc`) would
+/// re-fence to [`FenceDecision::Buffer`](calimero_context::hlc_fence::FenceDecision::Buffer)
+/// and be re-absorbed instead of applied, looping as an infinite no-op (the
+/// SECOND PR-6b drain bug). The bypass guarantees the drain converges.
 pub(crate) async fn drain_absorbed(input: &StateDeltaContext, context_id: &ContextId) {
     let store = input.node_clients.context.datastore();
     let drained = drain_absorbed_records(store, context_id, |buffered| {
@@ -562,7 +569,11 @@ pub(crate) async fn drain_absorbed(input: &StateDeltaContext, context_id: &Conte
         let context_id = *context_id;
         async move {
             let reconstructed = state_delta_message_from_buffered(buffered, context_id);
-            apply_authorized_state_delta(input, reconstructed).await?;
+            // Absorb-drain replay: bypass the fence. The drain already decided
+            // this buffered straggler is replayable (the node reached the
+            // migration target); re-running the fence would re-absorb a
+            // stale-schema straggler instead of applying it (infinite no-op).
+            apply_authorized_state_delta(input, reconstructed, true).await?;
             // `apply_authorized_state_delta` returns `Ok(())` for both an
             // applied delta and a soft-declined one (e.g. ReadOnly author).
             // Either way the delta is *consumed* — there is nothing left to
@@ -947,7 +958,10 @@ pub(crate) async fn recover_absorbed_on_startup(input: &StateDeltaContext) {
         let input = input.clone();
         async move {
             let reconstructed = state_delta_message_from_buffered(buffered, context_id);
-            apply_authorized_state_delta(input, reconstructed).await?;
+            // Absorb-recovery replay: bypass the fence (same rationale as the
+            // live drain) so a stale-schema straggler persisted before the
+            // restart applies on startup instead of bouncing off the fence.
+            apply_authorized_state_delta(input, reconstructed, true).await?;
             // `apply_authorized_state_delta` returns `Ok(())` for both an
             // applied delta and a soft-declined one — either way the delta is
             // consumed, so report success and let the record be deleted.
@@ -1033,6 +1047,7 @@ enum FenceOutcome {
 /// the delta's replay fields is paid only when an absorb actually happens.
 ///
 /// [`AbsorbBuffer`]: calimero_store::key::AbsorbBufferKey
+#[allow(clippy::too_many_arguments)]
 fn fence_and_maybe_absorb(
     store: &calimero_store::Store,
     context_id: &ContextId,
@@ -1040,10 +1055,25 @@ fn fence_and_maybe_absorb(
     delta_id: [u8; 32],
     author_id: PublicKey,
     delta_hlc: calimero_storage::logical_clock::HybridTimestamp,
+    bypass: bool,
     build_buffered: impl FnOnce() -> calimero_node_primitives::delta_buffer::BufferedDelta,
 ) -> Result<FenceOutcome> {
     use calimero_context::group_store::{AbsorbRecord, AbsorbRepository};
     use calimero_context::hlc_fence::{delta_fence_decision, FenceDecision};
+
+    // Drain-replay bypass: an absorb-drain re-feeds an *already-buffered,
+    // already-decided* straggler verbatim through the apply path once the node
+    // reached the migration target. The drain already established the delta is
+    // replayable (`loaded == target`), so the fence must NOT re-evaluate it —
+    // a stale-schema straggler (`producing == v1 != loaded == v2`,
+    // `delta_hlc > cascade_hlc`) would otherwise re-fence to `Buffer` and be
+    // re-absorbed instead of applied, never converging (the SECOND PR-6b drain
+    // bug). `bypass` short-circuits to `Fall` so the drain-replayed delta is
+    // applied unconditionally. The normal gossip-receive path passes
+    // `bypass == false` and keeps fencing — the fence is NEVER weakened there.
+    if bypass {
+        return Ok(FenceOutcome::Fall);
+    }
 
     match delta_fence_decision(store, context_id, producing_app_key, delta_hlc)? {
         FenceDecision::Apply => Ok(FenceOutcome::Fall),
@@ -1136,9 +1166,19 @@ pub(crate) struct ReplayBufferedDeltaInput {
 /// instead of recursing via `Box::pin(handle_state_delta(...))` — eliminates
 /// async recursion, makes the call graph linear, and avoids the per-recurse
 /// future allocation.
+///
+/// `bypass_fence` skips the HLC / absorb fence entirely. The absorb-drain
+/// ([`drain_absorbed`] / [`recover_absorbed_on_startup`]) sets it `true`: by
+/// the time the drain replays a buffered straggler verbatim, it has already
+/// established the delta is readable (the node reached the migration target),
+/// so re-running the fence would re-absorb a stale-schema straggler instead of
+/// applying it — an infinite no-op (the SECOND PR-6b drain bug). Every other
+/// caller (the gossip-receive path, the governance-pending drain) passes
+/// `false` and keeps fencing; the fence is never weakened on those paths.
 pub(crate) async fn apply_authorized_state_delta(
     input: StateDeltaContext,
     message: StateDeltaMessage,
+    bypass_fence: bool,
 ) -> Result<()> {
     let StateDeltaContext {
         node_clients,
@@ -1216,6 +1256,7 @@ pub(crate) async fn apply_authorized_state_delta(
             delta_id,
             author_id,
             hlc,
+            bypass_fence,
             || calimero_node_primitives::delta_buffer::BufferedDelta {
                 id: delta_id,
                 parents: parent_ids.clone(),
@@ -2058,6 +2099,8 @@ pub async fn handle_state_delta(
             // orthogonal to this field; it is not consumed there.
             producing_app_key,
         },
+        // Gossip-receive path: fence as normal — never bypass.
+        false,
     )
     .await
 }
@@ -2711,11 +2754,17 @@ mod tests {
             let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
             let bd = sample_buffered([3; 32], APP_V1);
 
-            let outcome =
-                fence_and_maybe_absorb(&store, &ctx, APP_V1, bd.id, bd.author_id, bd.hlc, || {
-                    bd.clone()
-                })
-                .unwrap();
+            let outcome = fence_and_maybe_absorb(
+                &store,
+                &ctx,
+                APP_V1,
+                bd.id,
+                bd.author_id,
+                bd.hlc,
+                false,
+                || bd.clone(),
+            )
+            .unwrap();
 
             assert!(matches!(outcome, FenceOutcome::Handled));
             let pending = AbsorbRepository::new(&store)
@@ -2729,6 +2778,83 @@ mod tests {
             assert_eq!((pending[0].1).id, [3; 32]);
         }
 
+        /// REGRESSION (the SECOND PR-6b drain bug — fence re-absorb): the absorb
+        /// drain re-feeds a buffered straggler through the real apply path
+        /// ([`apply_authorized_state_delta`]), whose fence step is exactly
+        /// [`fence_and_maybe_absorb`]. For a STALE v1 straggler that the drain
+        /// already selected for replay (`producing == v1`, node advanced to
+        /// `loaded == target == v2`, delta after the boundary), the *un-bypassed*
+        /// fence returns [`FenceOutcome::Handled`] and RE-ABSORBS the delta —
+        /// it bounces off the fence and never converges (infinite no-op /
+        /// silent drop). The drain-replay call must therefore BYPASS the fence:
+        /// with `bypass == true` the already-authorized, already-decided delta
+        /// falls through ([`FenceOutcome::Fall`]) and is applied, NOT re-buffered.
+        ///
+        /// Negative-verify in the same shape: with `bypass == false` (the normal
+        /// gossip-receive path) the identical stale straggler IS re-absorbed —
+        /// proving the bypass, not a weakened fence, is what makes it apply.
+        #[test]
+        fn drain_replay_bypasses_fence_for_stale_straggler() {
+            // loaded reader falls back to GroupMeta.app_key = APP_V2; the stale
+            // straggler was produced under APP_V1, after the cascade boundary.
+            // This is precisely the record the drain selected for verbatim replay.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let bd = sample_buffered([0xB2; 32], APP_V1);
+
+            // Un-bypassed (normal receive): the fence re-absorbs — the bug.
+            let outcome = fence_and_maybe_absorb(
+                &store,
+                &ctx,
+                APP_V1,
+                bd.id,
+                bd.author_id,
+                bd.hlc,
+                false,
+                || bd.clone(),
+            )
+            .unwrap();
+            assert!(
+                matches!(outcome, FenceOutcome::Handled),
+                "the un-bypassed fence re-absorbs the stale straggler (the bug)"
+            );
+            assert_eq!(
+                AbsorbRepository::new(&store)
+                    .enumerate_pending(&ctx)
+                    .unwrap()
+                    .len(),
+                1,
+                "un-bypassed: the straggler bounces off the fence and is re-buffered"
+            );
+
+            // Bypassed (drain replay): the fence is skipped — the delta falls
+            // through to be applied, and NOTHING new is written to the buffer.
+            // Use a fresh store so the un-bypassed half's re-absorb can't mask
+            // a bypassed write.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let outcome = fence_and_maybe_absorb(
+                &store,
+                &ctx,
+                APP_V1,
+                bd.id,
+                bd.author_id,
+                bd.hlc,
+                true,
+                || bd.clone(),
+            )
+            .unwrap();
+            assert!(
+                matches!(outcome, FenceOutcome::Fall),
+                "drain replay must bypass the fence and fall through to apply"
+            );
+            assert!(
+                AbsorbRepository::new(&store)
+                    .enumerate_pending(&ctx)
+                    .unwrap()
+                    .is_empty(),
+                "bypassed: the drain-replayed straggler is applied, not re-absorbed"
+            );
+        }
+
         /// An `Apply`-decision delta (schema matches the loaded reader) must
         /// fall through and must NOT land in the AbsorbBuffer.
         #[test]
@@ -2736,11 +2862,17 @@ mod tests {
             let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
             let bd = sample_buffered([4; 32], APP_V2);
 
-            let outcome =
-                fence_and_maybe_absorb(&store, &ctx, APP_V2, bd.id, bd.author_id, bd.hlc, || {
-                    bd.clone()
-                })
-                .unwrap();
+            let outcome = fence_and_maybe_absorb(
+                &store,
+                &ctx,
+                APP_V2,
+                bd.id,
+                bd.author_id,
+                bd.hlc,
+                false,
+                || bd.clone(),
+            )
+            .unwrap();
 
             assert!(matches!(outcome, FenceOutcome::Fall));
             let pending = AbsorbRepository::new(&store)
