@@ -1,32 +1,33 @@
 use std::ops::Deref;
 
 use calimero_primitives::context::ContextId;
-use tokio::sync::OwnedMutexGuard;
+use tokio::sync::OwnedRwLockWriteGuard;
 
 pub mod client;
 pub mod group;
 pub mod local_governance;
 pub mod messages;
 
-/// An owned, per-context lock guard held across a context operation.
+/// An owned, exclusive per-context lock guard held across a context operation.
 ///
-/// This is a newtype over `OwnedMutexGuard<ContextId>` rather than the raw
-/// guard so that the single notion of "holding a context" lives behind one
-/// type: the guard is acquired in the manager, threaded through the entire
-/// WASM execution outside the actor, and can be handed back in as
-/// [`ContextAtomic::Held`] for a multi-call atomic batch. Centralizing it here
-/// is what lets the read/write-intent split (parallel reads) be introduced
-/// later without touching every call site.
+/// The per-context lock is an `RwLock`, but every caller currently takes the
+/// exclusive *write* guard, so the lock behaves exactly like the prior mutex.
+/// Keeping the single notion of "holding a context" behind this one type —
+/// acquired in the manager, threaded through the entire WASM execution outside
+/// the actor, and handed back in as [`ContextAtomic::Held`] for a multi-call
+/// atomic batch — is what will let a shared read guard be introduced (parallel
+/// reads, gated on declared read-only method intent) without touching every
+/// call site.
 ///
 /// Derefs to the locked [`ContextId`] so existing read sites keep working.
 #[derive(Debug)]
-pub struct ContextGuard(OwnedMutexGuard<ContextId>);
+pub struct ContextGuard(OwnedRwLockWriteGuard<ContextId>);
 
 impl ContextGuard {
-    /// Wrap an owned mutex guard. The guard keeps the per-context lock held for
-    /// the lifetime of this value.
+    /// Wrap an exclusive write guard. Keeps the lock held exclusively for the
+    /// lifetime of this value.
     #[must_use]
-    pub fn new(guard: OwnedMutexGuard<ContextId>) -> Self {
+    pub fn new(guard: OwnedRwLockWriteGuard<ContextId>) -> Self {
         Self(guard)
     }
 }
