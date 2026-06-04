@@ -555,6 +555,18 @@ fn normalize_scalar_type(
             crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
             inner_type: None,
         }),
+        // `AccessControl` is a non-generic component backed by a writer-set-
+        // guarded `map<string, bool>` registry (role grants). Surface that shape
+        // with `crdt_type = SharedStorage` so the writer-ACL is visible, matching
+        // the other guarded wrappers.
+        "AccessControl" => Ok(TypeRef::Collection {
+            collection: CollectionType::Map {
+                key: Box::new(TypeRef::Scalar(ScalarType::String)),
+                value: Box::new(TypeRef::Scalar(ScalarType::Bool)),
+            },
+            crdt_type: Some(CrdtCollectionType::SharedStorage),
+            inner_type: None,
+        }),
         _ => {
             // Check if it's a local type
             resolver.resolve_local(&ident.to_string()).map_or_else(
