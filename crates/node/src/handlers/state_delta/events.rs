@@ -43,7 +43,8 @@ pub(super) struct CascadeOutcome {
 /// and log instead.
 pub(super) async fn execute_cascaded_events(
     cascaded_events: &[([u8; 32], Vec<u8>)],
-    node_clients: &crate::NodeClients,
+    node_client: &NodeClient,
+    context_client: &ContextClient,
     context_id: &ContextId,
     our_identity: &PublicKey,
     sync_timeout: std::time::Duration,
@@ -64,7 +65,15 @@ pub(super) async fn execute_cascaded_events(
 
     let mut outcome = CascadeOutcome::default();
 
-    // Check if current delta is in cascaded list (orthogonal to handler execution)
+    // `applied_current` tracks DAG-application state ONLY — whether the
+    // current delta was among the cascaded set — and is deliberately set
+    // before the app-availability check below. It does NOT imply handlers
+    // ran (that is `handlers_executed_for_current`). When the app is
+    // unavailable we return early with `applied_current = true` but
+    // `handlers_executed_for_current = false`, so the caller's
+    // `applied && !handlers_already_executed` guard still re-attempts
+    // handler execution once the app is available. Callers MUST consult the
+    // two flags separately; conflating them would skip handler replay.
     if let Some(current) = current_delta {
         if cascaded_events.iter().any(|(id, _)| *id == *current) {
             info!(
@@ -77,14 +86,10 @@ pub(super) async fn execute_cascaded_events(
         }
     }
 
-    let app_available = ensure_application_available(
-        &node_clients.node,
-        &node_clients.context,
-        context_id,
-        sync_timeout,
-    )
-    .await
-    .is_ok();
+    let app_available =
+        ensure_application_available(node_client, context_client, context_id, sync_timeout)
+            .await
+            .is_ok();
 
     if !app_available {
         warn!(
@@ -113,7 +118,7 @@ pub(super) async fn execute_cascaded_events(
                 // unprocessed. Treat a handler-execution error as "not all
                 // succeeded" so the events blob is kept for restart replay.
                 let all_succeeded = match execute_event_handlers_parsed(
-                    &node_clients.context,
+                    context_client,
                     context_id,
                     our_identity,
                     &cascaded_payload,
@@ -317,6 +322,12 @@ pub(super) fn emit_state_mutation_event_parsed(
 }
 
 // ---- parse_events_payload ----
+/// Decode a delta's optional events blob into `ExecutionEvent`s.
+///
+/// Returns `None` both when there is no blob (`events == None`) and when the
+/// blob is present but fails JSON deserialization (logged at `warn`). Callers
+/// that need to distinguish the two — e.g. to clear a corrupt blob — check
+/// `events.is_some()` alongside a `None` return.
 pub(super) fn parse_events_payload(
     events: &Option<Vec<u8>>,
     context_id: &ContextId,

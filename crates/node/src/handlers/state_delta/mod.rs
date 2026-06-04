@@ -729,7 +729,8 @@ pub(crate) async fn apply_authorized_state_delta(
         // failed handlers keep their events in the DB for replay on next init.
         let cascade_outcome = match execute_cascaded_events(
             &missing_result.cascaded_events,
-            &node_clients,
+            &node_clients.node,
+            &node_clients.context,
             &context_id,
             &our_identity,
             sync_timeout,
@@ -812,7 +813,8 @@ pub(crate) async fn apply_authorized_state_delta(
                         // and abort the request after the DAG is mutated.
                         let cascade_outcome = match execute_cascaded_events(
                             &peer_fetch_cascaded_events,
-                            &node_clients,
+                            &node_clients.node,
+                            &node_clients.context,
                             &context_id,
                             &our_identity,
                             sync_timeout,
@@ -953,7 +955,8 @@ pub(crate) async fn apply_authorized_state_delta(
     // handler after the main delta has already been applied and emitted.
     if let Err(e) = execute_cascaded_events(
         &add_result.cascaded_events,
-        &node_clients,
+        &node_clients.node,
+        &node_clients.context,
         &context_id,
         &our_identity,
         sync_timeout,
@@ -1406,7 +1409,8 @@ async fn init_delta_store(
 
             execute_cascaded_events(
                 &events_to_run,
-                node_clients,
+                &node_clients.node,
+                &node_clients.context,
                 &context_id,
                 &our_identity,
                 sync_timeout,
@@ -2605,10 +2609,6 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         }
     };
     if !pending_from_load.is_empty() {
-        let node_clients = crate::NodeClients {
-            context: context_client.clone(),
-            node: node_client.clone(),
-        };
         info!(
             %context_id,
             pending_count = pending_from_load.len(),
@@ -2616,7 +2616,8 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         );
         if let Err(e) = execute_cascaded_events(
             &pending_from_load,
-            &node_clients,
+            &node_client,
+            &context_client,
             &context_id,
             &our_identity,
             sync_timeout,
@@ -2760,18 +2761,14 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         );
     }
 
-    // Execute any cascaded handlers
-    let node_clients = crate::NodeClients {
-        context: context_client.clone(),
-        node: node_client.clone(),
-    };
-
+    // Execute any cascaded handlers.
     // Same log-and-continue policy: a cascade failure must not mask an
     // otherwise-applied buffered delta. Failed handlers keep their events in
     // the DB for replay on the next init.
     if let Err(e) = execute_cascaded_events(
         &add_result.cascaded_events,
-        &node_clients,
+        &node_client,
+        &context_client,
         &context_id,
         &our_identity,
         sync_timeout,
