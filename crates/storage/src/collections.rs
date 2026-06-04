@@ -61,6 +61,8 @@ pub mod user;
 pub use user::UserStorage;
 pub mod shared;
 pub use shared::SharedStorage;
+pub mod permissioned;
+pub use permissioned::{Authorizer, Op, Ownable, OwnerAcl, PermissionedStorage, WriterSetAcl};
 mod authored_common;
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
