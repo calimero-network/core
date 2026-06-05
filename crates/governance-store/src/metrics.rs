@@ -70,6 +70,31 @@ pub(crate) struct GovernanceHandlerDeliveryLabels {
     pub(crate) outcome: String,
 }
 
+/// Labels for self-purge failures (TEE self-eviction local-state cleanup).
+///
+/// `branch` is one of:
+///   - `"subgroup"`: a subgroup-only purge ([`purge_subgroup_for_self`]).
+///   - `"namespace"`: a namespace-root cascade ([`cascade_namespace_state`]).
+///
+/// `class` is the failure class:
+///   - `"signing_key"`: the security-critical `delete_group_local_rows`
+///     step failed, so private signing-key material may linger on disk.
+///     This is the load-bearing failure — it keeps the `NamespaceIdentity`
+///     anchor + gossipsub subscription alive for the planned reconcile
+///     sweep (#2721).
+///   - `"context_cleanup"`: a best-effort dead-pointer cleanup step
+///     (context-index unregister, parent-edge read, or tree-edge delete)
+///     failed. Non-security: the orphaned rows point at soon-to-be / now
+///     deleted groups. Namespace deletion + unsubscribe still proceed.
+///
+/// [`purge_subgroup_for_self`]: ../../calimero_context/self_purge/index.html
+/// [`cascade_namespace_state`]: ../../calimero_context/self_purge/index.html
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct SelfPurgeFailureLabels {
+    pub branch: String,
+    pub class: String,
+}
+
 #[derive(Clone, Debug)]
 struct GroupStoreMetricSink {
     namespace_retry_events: Family<NamespaceRetryLabels, Counter>,
@@ -78,6 +103,7 @@ struct GroupStoreMetricSink {
     governance_publish_mesh_peers: Family<GovernancePublishLabels, Histogram>,
     governance_handler_delivery_total: Family<GovernanceHandlerDeliveryLabels, Counter>,
     governance_handler_delivery_seconds: Family<GovernanceHandlerDeliveryLabels, Histogram>,
+    self_purge_failures: Family<SelfPurgeFailureLabels, Counter>,
 }
 
 static GROUP_STORE_METRICS: OnceLock<GroupStoreMetricSink> = OnceLock::new();
@@ -204,6 +230,22 @@ impl Metrics {
             governance_handler_delivery_seconds.clone(),
         );
 
+        // #2686: self-purge failures on TEE self-eviction, sliced by
+        // branch (subgroup / namespace) and failure-class (signing_key /
+        // context_cleanup). The `class="signing_key"` series is the
+        // security-relevant one — a nonzero rate means forward-secrecy
+        // residue lingered on a node's own disk pending the reconcile
+        // sweep (#2721). `class="context_cleanup"` is a best-effort
+        // dead-pointer leak and is informational only.
+        let self_purge_failures = Family::<SelfPurgeFailureLabels, Counter>::default();
+        group_store_registry.register(
+            "self_purge_failures_total",
+            "Self-purge (TEE self-eviction) local-state cleanup failures, \
+             sliced by branch (subgroup / namespace) and failure-class \
+             (signing_key / context_cleanup)",
+            self_purge_failures.clone(),
+        );
+
         let _ = GROUP_STORE_METRICS.set(GroupStoreMetricSink {
             namespace_retry_events: namespace_retry_events.clone(),
             namespace_decode_events: namespace_decode_events.clone(),
@@ -211,6 +253,7 @@ impl Metrics {
             governance_publish_mesh_peers: governance_publish_mesh_peers.clone(),
             governance_handler_delivery_total: governance_handler_delivery_total.clone(),
             governance_handler_delivery_seconds: governance_handler_delivery_seconds.clone(),
+            self_purge_failures: self_purge_failures.clone(),
         });
 
         Self {
@@ -317,6 +360,65 @@ pub fn record_governance_handler_delivery(
         .observe(elapsed_ms as f64 / 1000.0);
 }
 
+/// Which self-purge branch hit the failure. Stringly-typed labels are
+/// error-prone, so the call sites in `calimero-context`'s `self_purge`
+/// module pass these enums instead of raw `&str`.
+#[derive(Clone, Copy, Debug)]
+pub enum PurgeBranch {
+    /// A subgroup-only purge (`purge_subgroup_for_self`).
+    Subgroup,
+    /// A namespace-root cascade (`cascade_namespace_state`).
+    Namespace,
+}
+
+impl PurgeBranch {
+    fn as_label(self) -> &'static str {
+        match self {
+            PurgeBranch::Subgroup => "subgroup",
+            PurgeBranch::Namespace => "namespace",
+        }
+    }
+}
+
+/// The failure class for a self-purge step.
+#[derive(Clone, Copy, Debug)]
+pub enum PurgeFailureClass {
+    /// The security-critical `delete_group_local_rows` step failed —
+    /// private signing-key material may linger. Load-bearing.
+    SigningKey,
+    /// A best-effort dead-pointer cleanup step failed (context-index
+    /// unregister, parent-edge read, or tree-edge delete). Non-security.
+    ContextCleanup,
+}
+
+impl PurgeFailureClass {
+    fn as_label(self) -> &'static str {
+        match self {
+            PurgeFailureClass::SigningKey => "signing_key",
+            PurgeFailureClass::ContextCleanup => "context_cleanup",
+        }
+    }
+}
+
+/// Record a self-purge cleanup failure, labeled by branch and failure
+/// class. No-op until [`Metrics::new`] has installed the process-global
+/// sink (e.g. on a node started without a Prometheus registry).
+///
+/// Called from `calimero-context`'s `self_purge` module on the relevant
+/// failure paths (#2686).
+pub fn record_purge_failure(branch: PurgeBranch, class: PurgeFailureClass) {
+    let Some(metrics) = GROUP_STORE_METRICS.get() else {
+        return;
+    };
+    metrics
+        .self_purge_failures
+        .get_or_create(&SelfPurgeFailureLabels {
+            branch: branch.as_label().to_owned(),
+            class: class.as_label().to_owned(),
+        })
+        .inc();
+}
+
 #[cfg(test)]
 mod tests {
     use prometheus_client::encoding::text::encode;
@@ -357,5 +459,56 @@ mod tests {
             out.contains("context_cache_application_size 3"),
             "missing application size gauge:\n{out}"
         );
+    }
+
+    /// The `self_purge_failures_total` family registers against a fresh
+    /// registry and the recorded branch/class labels round-trip through the
+    /// text encoder.
+    ///
+    /// We build the family + registry locally instead of going through the
+    /// process-global `GROUP_STORE_METRICS` sink: that sink is a
+    /// `OnceLock` another test in the same binary may have already set, so
+    /// `record_purge_failure` is not guaranteed to target *this*
+    /// registry's `Family`. The label-building logic
+    /// (`PurgeBranch::as_label` / `PurgeFailureClass::as_label`) is what we
+    /// assert on; the no-op-without-sink behaviour of the public recorder
+    /// is covered by the early-return and exercised by the self_purge unit
+    /// tests in `calimero-context`.
+    #[test]
+    fn self_purge_failures_register_and_encode() {
+        let mut registry = Registry::default();
+        let family = Family::<SelfPurgeFailureLabels, Counter>::default();
+        registry.register(
+            "self_purge_failures",
+            "Self-purge cleanup failures by branch and class",
+            family.clone(),
+        );
+
+        for (branch, class) in [
+            (PurgeBranch::Namespace, PurgeFailureClass::SigningKey),
+            (PurgeBranch::Subgroup, PurgeFailureClass::ContextCleanup),
+        ] {
+            family
+                .get_or_create(&SelfPurgeFailureLabels {
+                    branch: branch.as_label().to_owned(),
+                    class: class.as_label().to_owned(),
+                })
+                .inc();
+        }
+
+        let mut out = String::new();
+        encode(&mut out, &registry).expect("encode registry");
+
+        assert!(
+            out.contains("branch=\"namespace\"") && out.contains("class=\"signing_key\""),
+            "missing signing_key/namespace labels:\n{out}"
+        );
+        assert!(
+            out.contains("branch=\"subgroup\"") && out.contains("class=\"context_cleanup\""),
+            "missing context_cleanup/subgroup labels:\n{out}"
+        );
+        // And the public recorder must not panic whether or not the global
+        // sink is installed.
+        record_purge_failure(PurgeBranch::Subgroup, PurgeFailureClass::SigningKey);
     }
 }
