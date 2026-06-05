@@ -15,7 +15,7 @@ use multiaddr::{Multiaddr, Protocol};
 use tracing::{debug, error, info, trace};
 
 use super::NetworkManager;
-use crate::discovery::peer_cache::{PeerAddrCache, PersistedPeer};
+use crate::discovery::peer_cache::{PeerAddrCache, PersistedPeer, MAX_PEER_CACHE_ENTRIES};
 use crate::discovery::state::{
     rendezvous_key_for_topic, under_connected_rendezvous_keys, DiscoveryState, ReachabilityActions,
     RelayReservationStatus, RendezvousRegistrationStatus,
@@ -208,6 +208,28 @@ impl NetworkManager {
         let mut handle = store.handle();
         if let Err(err) = handle.put(&key, &data) {
             debug!(?err, "failed to persist peer cache to store");
+        }
+    }
+
+    /// Bound the in-memory peer-address cache: TTL-prune stale entries and
+    /// cap the total to [`MAX_PEER_CACHE_ENTRIES`] (least-recently-seen
+    /// evicted). Called on the rendezvous tick alongside
+    /// [`Self::persist_peer_cache`]; without it the live map accumulated
+    /// one entry per `PeerId` ever connected to (security finding #39).
+    pub(crate) fn prune_peer_cache(&mut self) {
+        let before = self.peer_cache.len();
+        self.peer_cache.prune(
+            self.now_unix_secs(),
+            PEER_CACHE_TTL_SECS,
+            MAX_PEER_CACHE_ENTRIES,
+        );
+        let evicted = before.saturating_sub(self.peer_cache.len());
+        if evicted > 0 {
+            debug!(
+                evicted,
+                retained = self.peer_cache.len(),
+                "pruned peer cache"
+            );
         }
     }
 
