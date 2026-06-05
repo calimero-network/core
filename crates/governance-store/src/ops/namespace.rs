@@ -8,8 +8,7 @@
 //! moving the per-variant logic out of `NamespaceGovernance` into
 //! reviewable per-op files.
 //!
-//! Side effects that the outer `apply_signed_op` orchestrates
-//! (KeyDelivery's encrypted-key store + retry-replay, the
+//! Side effects that the outer `apply_signed_op` orchestrates (the
 //! `Group { encrypted, .. }` decrypt-and-apply flow) stay on
 //! `NamespaceGovernance` because they need access to crate-internal
 //! state the per-op handlers don't have a clean way to reach.
@@ -20,7 +19,6 @@ mod admin_changed;
 mod group_created;
 mod group_deleted;
 mod group_reparented;
-mod key_delivery;
 mod member_joined;
 mod member_joined_open;
 mod policy_updated;
@@ -66,7 +64,6 @@ pub(crate) fn dispatch_root_op(
         RootOp::MemberJoinedOpen { member, group_id } => {
             member_joined_open::apply(ctx, op, *member, *group_id)
         }
-        RootOp::KeyDelivery { .. } => key_delivery::apply(ctx),
         // `RootOp` is `#[non_exhaustive]` in `calimero-governance-types`,
         // so the wildcard is required at compile time. New variants land
         // here as `Ok(())` (silent no-op) until wired up explicitly —

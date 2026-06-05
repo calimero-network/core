@@ -466,9 +466,9 @@ pub enum RootOp {
     /// The **role** is inside `signed_invitation.invitation.invited_role`
     /// (covered by admin's signature, joiner cannot escalate).
     ///
-    /// After peers apply this, any existing member who holds the group key
-    /// publishes a [`KeyDelivery`](RootOp::KeyDelivery) wrapping the key
-    /// for the joiner via ECDH.
+    /// After peers apply this, the joiner obtains the group key by
+    /// requesting it directly from a sync peer that holds it (the
+    /// pull-based key-delivery path), not from any op on this DAG.
     MemberJoined {
         member: PublicKey,
         /// The full admin-signed invitation — carries the inviter's
@@ -476,12 +476,18 @@ pub enum RootOp {
         /// signature. Peers use this to verify the join was authorized.
         signed_invitation: SignedGroupOpenInvitation,
     },
-    /// Delivers the current group key to a specific member.
+    /// Delivers a group key to a specific member, ECDH-wrapped so only
+    /// the recipient can decrypt it.
     ///
-    /// Published by an existing member after seeing `MemberJoined` on the
-    /// DAG. The group key is ECDH-wrapped so only the recipient can
-    /// decrypt it. No P2P handshake or online requirement — the joiner
-    /// picks this up when it processes the DAG.
+    /// Published by an **admin-initiated** flow that adds a member to a
+    /// group it can't yet decrypt — `add_group_members` (Restricted
+    /// subgroup add) and TEE admission (`admit_tee_node`). The recipient
+    /// picks it up off the DAG/gossip and decrypts its buffered ops.
+    /// This is a **one-shot** publish per add (it is NOT re-published on
+    /// backfill rounds — that receiver-side re-publish, the #2319 source,
+    /// has been removed in favour of the joiner-side pull). The pull
+    /// (`recover_missing_group_keys`) is the durable retry that covers a
+    /// member who misses this delivery.
     KeyDelivery {
         group_id: [u8; 32],
         envelope: KeyEnvelope,
@@ -494,24 +500,16 @@ pub enum RootOp {
     /// **Cleartext.** The outer `SignedNamespaceOp` MUST be signed by
     /// the joining member (proves key ownership). On apply, peers
     /// verify the joiner has an Inherited membership path to
-    /// `group_id` via `check_group_membership_path`; if so, any peer
-    /// that holds the group key publishes a
-    /// [`KeyDelivery`](RootOp::KeyDelivery) wrapping it for the
-    /// joiner. The peer that locally holds the key is the one whose
-    /// `pending_deliveries` accumulates this delivery on apply.
+    /// `group_id` via `check_group_membership_path`. The joiner then
+    /// obtains the subgroup key via the pull-based key-delivery path
+    /// (it requests the key directly from a key-holding sync peer when
+    /// it next syncs the namespace and finds it lacks the key).
     ///
     /// This op closes the "self-join Open subgroup, can't decrypt
     /// state-DAG messages" gap — `join_context` previously inserted
     /// a `ContextIdentity` with `sender_key: None` for the inherited
     /// case and never asked any holder of the group key to deliver
     /// it. See `handlers/join_context.rs`.
-    ///
-    /// **Borsh ordering**: this variant is intentionally placed AFTER
-    /// `KeyDelivery` so that `KeyDelivery`'s discriminant is unchanged
-    /// from pre-fix releases — existing on-disk DAG ops continue to
-    /// deserialize correctly. Only the new `MemberJoinedOpen`
-    /// discriminant is added; older peers will fail to decode this
-    /// variant but won't mis-decode existing ones.
     MemberJoinedOpen {
         member: PublicKey,
         group_id: [u8; 32],

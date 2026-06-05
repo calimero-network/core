@@ -446,6 +446,19 @@ impl SyncManager {
         self.backfill_governance_for_pending_deltas(context_id)
             .await;
 
+        // #2613: group-key recovery is otherwise only edge-triggered (join /
+        // startup / readiness), so a member that missed its key at join time
+        // would never retry and stay locked out of group decryption. Drive it
+        // from the interval tick too — this is what makes the pull durable
+        // rather than one-shot. Cheap when nothing is awaiting a key (one
+        // namespace op-log scan, then return).
+        if let Some(namespace_id) = {
+            let store = self.context_client.datastore_handle().into_inner();
+            namespace_sync::resolve_namespace_id(&store, &context_id)
+        } {
+            self.recover_missing_group_keys(namespace_id, None).await;
+        }
+
         if let Some(peer_id) = peer_id {
             return self.initiate_sync(context_id, peer_id).await;
         }
@@ -2877,6 +2890,23 @@ impl SyncManager {
             return Ok(Some(()));
         }
 
+        if let InitPayload::GroupKeyRequest {
+            namespace_id,
+            group_id,
+            requester_public_key,
+        } = &payload
+        {
+            self.handle_group_key_request(
+                *namespace_id,
+                *group_id,
+                *requester_public_key,
+                stream,
+                nonce,
+            )
+            .await?;
+            return Ok(Some(()));
+        }
+
         let Some(context) = self
             .resolve_inbound_context(context_id, their_identity, stream)
             .await?
@@ -3095,6 +3125,9 @@ impl SyncManager {
                 unreachable!("handled by early return above")
             }
             InitPayload::OpenSubgroupJoinRequest { .. } => {
+                unreachable!("handled by early return above")
+            }
+            InitPayload::GroupKeyRequest { .. } => {
                 unreachable!("handled by early return above")
             }
         };

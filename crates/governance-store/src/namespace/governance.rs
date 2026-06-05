@@ -4,7 +4,7 @@ use crate::{
     MembershipRepository, MetaRepository, NamespaceError, NamespaceRepository,
 };
 use calimero_context_client::local_governance::{
-    hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, NamespaceOp, RootOp,
+    hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, KeyEnvelope, NamespaceOp, RootOp,
     SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
@@ -31,16 +31,7 @@ use super::membership::NamespaceMembershipService;
 use super::op_log::NamespaceOpLogService;
 use super::retry::NamespaceRetryService;
 
-/// Side effect returned by namespace-op application when an existing
-/// member should deliver the group key to a joiner.
-#[derive(Debug)]
-pub struct PendingKeyDelivery {
-    pub namespace_id: [u8; 32],
-    pub group_id: [u8; 32],
-    pub joiner_pk: PublicKey,
-}
-
-/// A key delivery or rotation unwrap failure that the caller should handle.
+/// A key rotation unwrap failure that the caller should handle.
 #[derive(Debug)]
 pub struct KeyUnwrapFailure {
     pub group_id: [u8; 32],
@@ -50,7 +41,6 @@ pub struct KeyUnwrapFailure {
 /// Result of applying a namespace governance op.
 #[derive(Debug, Default)]
 pub struct ApplyNamespaceOpResult {
-    pub pending_deliveries: Vec<PendingKeyDelivery>,
     pub key_unwrap_failures: Vec<KeyUnwrapFailure>,
     /// Post-apply hash divergence detected by the cross-DAG state-hash
     /// check inside a `MemberRemoved` / `MemberLeft` apply. The node
@@ -227,11 +217,11 @@ impl<'a> NamespaceGovernance<'a> {
         // peer then rejects all of this node's state deltas (#2327).
         //
         // The guard suppresses *all* of the apply work below — the per-op-kind
-        // side effects in the match arms included. Re-running them would either
-        // be redundant (they're written replay-safe) or actively wrong (a
-        // second `PendingKeyDelivery`); a maintainer adding a new side effect
-        // should keep it replay-safe rather than rely on this guard never
-        // firing. The encrypted-op *retry* path is unaffected: it re-applies
+        // side effects in the match arms included. Re-running them would be
+        // redundant (they're written replay-safe); a maintainer adding a new
+        // side effect should keep it replay-safe rather than rely on this
+        // guard never firing. The encrypted-op *retry* path is unaffected: it
+        // re-applies
         // via `decrypt_and_apply_group_op` → `apply_group_op_inner`, not
         // `apply_signed_op`, and is bounded by the per-signer nonce check there.
         if NamespaceOpLogService::new(self.store, self.namespace_id).contains_op(delta_id)? {
@@ -254,137 +244,20 @@ impl<'a> NamespaceGovernance<'a> {
                         group_id,
                         ref envelope,
                     } => {
-                        let ns_id = ContextGroupId::from(op.namespace_id);
-                        // Any error inside the KeyDelivery side-effect path below
-                        // is captured and logged, but NOT propagated. KeyDelivery
-                        // is an idempotent best-effort op — its side-effect (storing
-                        // a group key locally) is not part of governance consensus.
-                        // Failing to apply the side-effect must not block the DAG,
-                        // because every subsequent governance op for this namespace
-                        // would then be orphaned as an unreconcilable pending delta.
-                        // This was the root cause of the "Unexpected length of input"
-                        // stuck-sync observed when a KeyDelivery op's retry-apply
-                        // path hit a pre-existing stored op that failed to decode.
-                        // Each `?` site below tags the error with the failing
-                        // step so the warn log at line ~158 names the exact
-                        // call. Without this, "Unexpected length of input"
-                        // is ambiguous between the identity read, the key
-                        // store, or the retry walk.
-                        let mut apply_kd =
-                            || -> EyreResult<Option<super::super::DivergenceReport>> {
-                                if let Some(identity) = NamespaceRepository::new(self.store)
-                                    .identity_record(&ns_id)
-                                    .map_err(|e| {
-                                        eyre::eyre!("get_namespace_identity_record: {e}")
-                                    })?
-                                {
-                                    let recipient_sk = PrivateKey::from(identity.private_key);
-                                    if envelope.recipient == recipient_sk.public_key() {
-                                        match GroupKeyring::unwrap_for_recipient(
-                                            &recipient_sk,
-                                            envelope,
-                                        ) {
-                                            Ok(group_key) => {
-                                                let gid = ContextGroupId::from(*group_id);
-                                                let key_id = GroupKeyring::new(self.store, gid)
-                                                    .store_key(&group_key)
-                                                    .map_err(|e| {
-                                                        eyre::eyre!("store_group_key: {e}")
-                                                    })?;
-                                                tracing::info!(
-                                                    group_id = %hex::encode(group_id),
-                                                    key_id = %hex::encode(key_id),
-                                                    "received group key via KeyDelivery"
-                                                );
-                                                // Wake any `join_group` future
-                                                // waiting on the gossip-fallback
-                                                // path. The apply path already
-                                                // filtered by
-                                                // `envelope.recipient ==
-                                                // recipient_sk.public_key()`, so
-                                                // this only fires for our own
-                                                // identity. Emit *before*
-                                                // `retry_encrypted_ops_for_group`
-                                                // so the wake-up isn't blocked
-                                                // by a slow retry pass.
-                                                notify_op_event(OpEvent::GroupKeyDelivered {
-                                                    group_id: *group_id,
-                                                    recipient: recipient_sk.public_key(),
-                                                });
-                                                // Bootstrap the founding admin/owner
-                                                // for a node that joined WITHOUT an
-                                                // invitation (the TEE fleet-join
-                                                // path). The invited-join flow seeds
-                                                // this from the invitation's inviter
-                                                // identity (`handlers/join_group.rs`),
-                                                // but a TEE node has no invitation —
-                                                // so it would replay A's encrypted
-                                                // governance ops and reject every one
-                                                // ("verifier must be a group member",
-                                                // "only admin can register a
-                                                // context") because it never recorded
-                                                // who the namespace admin is. The
-                                                // KeyDelivery signer is precisely that
-                                                // trust anchor: only an existing
-                                                // key-holding member of THIS namespace
-                                                // can mint a KeyDelivery for us, and
-                                                // for the bootstrap case that member
-                                                // is the namespace owner that just
-                                                // admitted us. Seed only when (a) the
-                                                // delivery is for the namespace root
-                                                // group and (b) we have no group meta
-                                                // yet — so the invited-join path
-                                                // (which already wrote meta) is never
-                                                // touched, and a node already holding
-                                                // meta keeps its authoritative copy.
-                                                // The retry below then applies A's
-                                                // membership/context ops cleanly.
-                                                if let Err(e) = self.seed_bootstrap_admin_if_absent(
-                                                    *group_id, &op.signer,
-                                                ) {
-                                                    tracing::warn!(
-                                                        group_id = %hex::encode(group_id),
-                                                        error = %format!("{e:#}"),
-                                                        "failed to seed bootstrap admin from KeyDelivery \
-                                                         signer; encrypted-op retry may reject"
-                                                    );
-                                                }
-                                                let retry_divergence = self
-                                                    .retry_encrypted_ops_for_group(*group_id)
-                                                    .map_err(|e| {
-                                                        eyre::eyre!(
-                                                            "retry_encrypted_ops_for_group: {e}"
-                                                        )
-                                                    })?;
-                                                return Ok(retry_divergence);
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    ?e,
-                                                    "failed to unwrap KeyDelivery envelope"
-                                                );
-                                                result.key_unwrap_failures.push(KeyUnwrapFailure {
-                                                    group_id: *group_id,
-                                                    reason: format!(
-                                                        "KeyDelivery unwrap failed: {e}"
-                                                    ),
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                                Ok(None)
-                            };
-                        match apply_kd() {
+                        // Admin-initiated delivery (add_group_members /
+                        // admit_tee_node) of a group key to a member that
+                        // can't yet decrypt the group. Reuse the joiner-side
+                        // apply: unwrap for our identity, store, seed the
+                        // bootstrap admin from the op signer (the trust
+                        // anchor — only an existing key-holding member can
+                        // mint this), and replay buffered ops. Best-effort:
+                        // a failure here must not block the DAG (every later
+                        // op would orphan), so errors are logged, not
+                        // propagated.
+                        let envelope_bytes = borsh::to_vec(envelope).unwrap_or_default();
+                        match self.apply_received_group_key(*group_id, &envelope_bytes, op.signer) {
                             Ok(retry_divergence) => {
                                 if retry_divergence.is_some() {
-                                    // KeyDelivery itself never produces a
-                                    // post-apply divergence — only the
-                                    // retried encrypted ops can. Merge
-                                    // their LWW report into the same
-                                    // outbox slot the fresh-arrival path
-                                    // uses so the node handler routes it
-                                    // to `reconcile_after_divergence`.
                                     result.divergence = retry_divergence;
                                 }
                             }
@@ -401,42 +274,20 @@ impl<'a> NamespaceGovernance<'a> {
                             }
                         }
                     }
-                    RootOp::MemberJoined {
-                        member,
-                        ref signed_invitation,
-                    } => {
-                        let gid = signed_invitation.invitation.group_id;
-                        let group_id_typed = ContextGroupId::from(gid);
-                        if GroupKeyring::new(self.store, group_id_typed)
-                            .load_current_key_record()?
-                            .is_some()
-                        {
-                            result.pending_deliveries.push(PendingKeyDelivery {
-                                namespace_id: op.namespace_id,
-                                group_id: group_id_typed.to_bytes(),
-                                joiner_pk: *member,
-                            });
-                        }
+                    RootOp::MemberJoined { .. } => {
+                        // The joiner obtains the group key via the direct
+                        // join response and the joiner-side pull
+                        // (`recover_missing_group_keys`); no delivery is
+                        // triggered from this apply path.
                     }
                     RootOp::MemberJoinedOpen { member, group_id } => {
-                        // Same delivery-trigger semantics as `MemberJoined` —
-                        // any peer that holds the group key publishes a
-                        // `KeyDelivery` wrapped for the joiner. Authority
+                        // The joiner pulls the subgroup key directly from a
+                        // sync peer; no delivery is triggered here. Authority
                         // for this op is validated in `execute_member_joined_open`
                         // (we ran it via `apply_root_op` above before this
                         // match), so by the time we get here the path is
                         // confirmed Inherited.
                         let group_id_typed = ContextGroupId::from(*group_id);
-                        if GroupKeyring::new(self.store, group_id_typed)
-                            .load_current_key_record()?
-                            .is_some()
-                        {
-                            result.pending_deliveries.push(PendingKeyDelivery {
-                                namespace_id: op.namespace_id,
-                                group_id: group_id_typed.to_bytes(),
-                                joiner_pk: *member,
-                            });
-                        }
                         // Clear deny-list on EVERY peer, not just the
                         // local rejoiner. A prior `MemberLeft` (or
                         // `MemberRemoved` followed by inheritance rejoin)
@@ -1040,6 +891,164 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(())
     }
 
+    /// Responder side of direct key delivery — the counterpart to
+    /// [`apply_received_group_key`](Self::apply_received_group_key). Build
+    /// an ECDH-wrapped group key for `requester` when they are a current
+    /// member of `group_id` (which must belong to this namespace) and we
+    /// hold the key.
+    ///
+    /// Returns `(envelope_bytes, responder_identity)`. `envelope_bytes` is
+    /// **empty** for every non-deliverable case — `group_id` not in this
+    /// namespace (cross-namespace pin), `requester` not a member, key not
+    /// held locally, no namespace identity, or a wrap failure — so the
+    /// requester simply tries another peer; an empty reply leaks no
+    /// membership oracle. `responder_identity` is our namespace identity
+    /// (the wrap sender / bootstrap trust anchor) when we wrapped; for an
+    /// empty envelope it is irrelevant (the joiner ignores it).
+    pub(crate) fn build_group_key_delivery(
+        &self,
+        group_id: [u8; 32],
+        requester: PublicKey,
+    ) -> EyreResult<(Vec<u8>, PublicKey)> {
+        let group_gid = ContextGroupId::from(group_id);
+        let ns_gid = ContextGroupId::from(self.namespace_id);
+
+        // Cross-namespace pin: the requested group must belong to the
+        // namespace the requester named, otherwise an attacker on namespace
+        // A could elicit a key for a group of namespace B. Combined with the
+        // membership check, this is the full authorisation gate.
+        let group_in_namespace = matches!(
+            NamespaceRepository::new(self.store).resolve(&group_gid),
+            Ok(ns) if ns.to_bytes() == self.namespace_id
+        );
+        if !group_in_namespace
+            || !MembershipRepository::new(self.store).is_member(&group_gid, &requester)?
+        {
+            return Ok((Vec::new(), requester));
+        }
+
+        let Some((_key_id, group_key)) =
+            GroupKeyring::new(self.store, group_gid).load_current_key()?
+        else {
+            return Ok((Vec::new(), requester));
+        };
+        let Some(record) = NamespaceRepository::new(self.store).resolve_identity_record(&ns_gid)?
+        else {
+            tracing::warn!(
+                namespace_id = %hex::encode(self.namespace_id),
+                "no namespace identity, cannot wrap group key"
+            );
+            return Ok((Vec::new(), requester));
+        };
+        let sender_sk = PrivateKey::from(record.private_key);
+        let responder_identity = sender_sk.public_key();
+        match GroupKeyring::wrap_for_member(&sender_sk, &requester, &group_key) {
+            Ok(envelope) => Ok((
+                borsh::to_vec(&envelope).unwrap_or_default(),
+                responder_identity,
+            )),
+            Err(err) => {
+                tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id),
+                    group_id = %hex::encode(group_id),
+                    %err,
+                    "failed to wrap group key for requester"
+                );
+                Ok((Vec::new(), responder_identity))
+            }
+        }
+    }
+
+    /// Apply a group key received out-of-band via the direct
+    /// (pull-based) `GroupKeyRequest`/`GroupKeyResponse` sync exchange.
+    /// This is the durable replacement for the on-DAG `KeyDelivery` op's
+    /// side effect: unwrap the ECDH envelope for our namespace identity,
+    /// store the key, seed the bootstrap admin (for a keyless root-group
+    /// join), and replay any encrypted ops buffered awaiting the key.
+    ///
+    /// `responder_identity` is the peer that served the key — the trust
+    /// anchor used to seed the namespace admin when this node joined
+    /// without an invitation (the TEE fleet-join path). It plays the
+    /// role the old `KeyDelivery` op's signer did: only an existing
+    /// key-holding member of this namespace can mint a wrapped key for
+    /// us, so for the bootstrap case that member is the admitting owner.
+    ///
+    /// Returns any post-apply divergence surfaced by the replayed ops
+    /// (the caller routes it to reconcile-via-anchor), or `None`. An
+    /// envelope not addressed to us, or that fails to unwrap, is a benign
+    /// `Ok(None)` — the joiner simply tries another peer next round.
+    pub(crate) fn apply_received_group_key(
+        &self,
+        group_id: [u8; 32],
+        envelope_bytes: &[u8],
+        responder_identity: PublicKey,
+    ) -> EyreResult<Option<super::super::DivergenceReport>> {
+        let ns_id = ContextGroupId::from(self.namespace_id);
+
+        let envelope: KeyEnvelope = match borsh::from_slice(envelope_bytes) {
+            Ok(env) => env,
+            Err(e) => {
+                tracing::warn!(?e, "failed to decode GroupKeyResponse envelope");
+                return Ok(None);
+            }
+        };
+
+        let Some(identity) = NamespaceRepository::new(self.store).identity_record(&ns_id)? else {
+            return Ok(None);
+        };
+        let recipient_sk = PrivateKey::from(identity.private_key);
+        // Defensive: the responder wraps for the public key we asked
+        // with, but a misbehaving/stale peer could send an envelope for
+        // someone else. Storing a key we can't actually use would be
+        // harmless but pointless; reject it.
+        if envelope.recipient != recipient_sk.public_key() {
+            return Ok(None);
+        }
+
+        let group_key = match GroupKeyring::unwrap_for_recipient(&recipient_sk, &envelope) {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::warn!(?e, "failed to unwrap received group key envelope");
+                return Ok(None);
+            }
+        };
+
+        let gid = ContextGroupId::from(group_id);
+        let key_id = GroupKeyring::new(self.store, gid)
+            .store_key(&group_key)
+            .map_err(|e| eyre::eyre!("store_group_key: {e}"))?;
+        tracing::info!(
+            group_id = %hex::encode(group_id),
+            key_id = %hex::encode(key_id),
+            "received group key via direct delivery"
+        );
+
+        // Wake any `join_group` future waiting on the key. Emit before
+        // the (potentially slow) encrypted-op replay so the wake-up
+        // isn't blocked behind it.
+        notify_op_event(OpEvent::GroupKeyDelivered {
+            group_id,
+            recipient: recipient_sk.public_key(),
+        });
+
+        // Bootstrap the founding admin/owner for a node that joined
+        // WITHOUT an invitation (the TEE fleet-join path). Gated inside
+        // `seed_bootstrap_admin_if_absent` to the namespace root group
+        // and only when no group meta exists yet, so the invited-join
+        // path (which already wrote meta) is never touched.
+        if let Err(e) = self.seed_bootstrap_admin_if_absent(group_id, &responder_identity) {
+            tracing::warn!(
+                group_id = %hex::encode(group_id),
+                error = %format!("{e:#}"),
+                "failed to seed bootstrap admin from direct key delivery; \
+                 encrypted-op replay may reject"
+            );
+        }
+
+        self.retry_encrypted_ops_for_group(group_id)
+            .map_err(|e| eyre::eyre!("retry_encrypted_ops_for_group: {e}"))
+    }
+
     fn retry_encrypted_ops_for_group(
         &self,
         group_id: [u8; 32],
@@ -1472,6 +1481,48 @@ pub fn apply_signed_namespace_op(
     op: &SignedNamespaceOp,
 ) -> EyreResult<ApplyNamespaceOpResult> {
     NamespaceGovernance::new(store, op.namespace_id).apply_signed_op(op)
+}
+
+/// Build an ECDH-wrapped group key to deliver to `requester` in response
+/// to a `GroupKeyRequest`. See
+/// [`NamespaceGovernance::build_group_key_delivery`].
+pub fn build_group_key_delivery(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: [u8; 32],
+    requester: PublicKey,
+) -> EyreResult<(Vec<u8>, PublicKey)> {
+    NamespaceGovernance::new(store, namespace_id).build_group_key_delivery(group_id, requester)
+}
+
+/// Apply a group key delivered out-of-band via the direct
+/// `GroupKeyRequest`/`GroupKeyResponse` sync exchange. See
+/// [`NamespaceGovernance::apply_received_group_key`].
+pub fn apply_received_group_key(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: [u8; 32],
+    envelope_bytes: &[u8],
+    responder_identity: PublicKey,
+) -> EyreResult<Option<super::super::DivergenceReport>> {
+    NamespaceGovernance::new(store, namespace_id).apply_received_group_key(
+        group_id,
+        envelope_bytes,
+        responder_identity,
+    )
+}
+
+/// Distinct group ids in `namespace_id` that have at least one buffered
+/// encrypted group op the local node cannot yet decrypt because it holds
+/// no key for that group (nor the namespace key, which `Open` subgroups
+/// may have been encrypted under). This is the joiner-side recovery set
+/// for the direct key-delivery pull: each round of sync asks a peer for
+/// the keys to exactly these groups.
+pub fn namespace_groups_awaiting_key(
+    store: &Store,
+    namespace_id: [u8; 32],
+) -> EyreResult<Vec<[u8; 32]>> {
+    NamespaceRetryService::new(store, namespace_id).groups_awaiting_key()
 }
 
 pub async fn sign_apply_and_publish_namespace_op(
