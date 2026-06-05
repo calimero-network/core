@@ -259,10 +259,34 @@ explicitly so every node produces the same result.
 `AuthoredMap`/`AuthoredVector`/`SharedStorage` record ownership as the running
 node's `executor_id`. Re-inserting their entries during a migration would stamp
 each node as the owner and diverge. **Carry the whole collection through**
-(`entries: old.entries`); the v1 owner stamps are preserved.
+(`entries: old.entries`); the v1 owner stamps are preserved. Inside the
+`#[app::migrate]` body, carry-through is still the only rule — converting an
+entry to the new schema happens *after* the migration, owner-by-owner (below).
 
-Rewriting the *content* of identity-gated collections (owner-driven re-signing)
-is a separate, in-progress capability — carry-through is the rule today.
+### Identity-gated: converting entries to the new schema (owner-driven)
+
+Carry-through preserves the v1 entries, but each keeps its v1 `schema_version`
+(a Merkle-invisible tag) until its **owner** re-signs it — nobody can re-sign
+another identity's entry. Until then the entry is served at its v1 shape via
+dual-read. Two paths re-stamp an entry to the binary's target:
+
+- **Organically** — the owner's (or a current writer's) *next ordinary signed
+  write* of that entry stamps `schema_version = target` and re-signs on its
+  monotonic nonce, replicating as a normal `Action::Update`. A non-owner can
+  never drive it.
+- **One tap** — `#[app::state]` auto-generates a `migrate_my_entries()` method
+  (a wasm export) for any state with an `AuthoredMap`/`AuthoredVector` field.
+  One signed call sweeps every entry the caller owns that is still below target,
+  converting each through the path above; it returns `{converted, remaining}`
+  and is idempotent. Call it from the app/frontend ("migrate my data") after an
+  upgrade; `remaining == 0` means the caller's data is fully converted.
+
+For either path to fire, the new binary must declare its schema target with
+**`#[app::state(version = N)]`** — the value the convert compares each entry's
+tag against. It defaults to `0` (inert), so a v2 binary that omits it never
+converts its identity-gated data. `WriterSetCell`/`SharedStorage` (group
+writer-set data) converts only via the organic writer-write path, never the
+one-tap batch (it is group data, not single-owner "my data").
 
 ---
 
@@ -354,10 +378,17 @@ upgrade_group(
 )
 ```
 
-Each node self-migrates on its next context access (logged as `performing lazy
-upgrade before execution` → `Executing migration` → `Migrated state written
-successfully`). Picking `Automatic`/`Coordinated` for a migration is rejected at
-emit time — only `LazyOnAccess` runs the migrate function.
+Each node self-migrates on its next context access (logged as `Executing
+migration` → `Migrated state written successfully`; the extra `performing lazy
+upgrade before execution` line precedes them only on the *non-cascade*
+lazy-on-read path — under `cascade: true` the cascade propagator drives the
+migrate instead). Picking `Automatic`/`Coordinated` for a migration is rejected
+at emit time — only `LazyOnAccess` runs the migrate function.
+
+If the app has **identity-gated** state (`AuthoredMap`/`AuthoredVector`),
+declare the new binary's schema target with `#[app::state(version = N)]` so the
+post-migrate owner-driven convert (§5) has a target to compare against — see
+[§5](#5-the-three-data-categories).
 
 ---
 
