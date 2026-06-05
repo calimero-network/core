@@ -2725,6 +2725,90 @@ impl SyncManager {
         }
     }
 
+    /// Authorize the dialing peer as a sync-eligible member of `context_id` —
+    /// direct context/group membership, or inheritance-eligible parent
+    /// membership (`Open` subgroups). On an unknown member, refresh context
+    /// config and request a one-shot governance catch-up from the peer before
+    /// giving up. Returns `Ok(false)` (caller should close the stream) only if
+    /// the peer is still unauthorized afterward.
+    async fn verify_inbound_member(
+        &self,
+        context_id: ContextId,
+        their_identity: PublicKey,
+        peer_id: PeerId,
+    ) -> eyre::Result<bool> {
+        let mut _updated = None;
+
+        // Issue #2256: also accept inheritance-eligible parent members
+        // for sync auth. `has_member` only knows direct context-membership
+        // and direct group-membership; the parent-walk for `Open` subgroups
+        // lives in `calimero-context::group_store`, which we have access
+        // to here at the node layer.
+        let is_inherited_member = || -> eyre::Result<bool> {
+            let store = self.context_client.datastore();
+            let Some(group_id) =
+                calimero_context::group_store::get_group_for_context(store, &context_id)?
+            else {
+                return Ok(false);
+            };
+            MembershipRepository::new(store).is_member(&group_id, &their_identity)
+        };
+
+        if !self
+            .context_client
+            .has_member(&context_id, &their_identity)?
+            && !is_inherited_member()?
+        {
+            _updated = Some(
+                self.context_client
+                    .sync_context_config(context_id, None)
+                    .await?,
+            );
+
+            if !self
+                .context_client
+                .has_member(&context_id, &their_identity)?
+                && !is_inherited_member()?
+            {
+                // The peer may have just published MemberAdded for themselves
+                // (or their side of the governance DAG is ahead of ours) and
+                // gossipsub hasn't delivered it yet. Instead of waiting and
+                // hoping the gossip arrives, ask this peer directly for the
+                // current namespace governance state on a separate stream —
+                // it's the fastest path out of the "unknown member" state and
+                // avoids a 30 s stall waiting for `NamespaceStateHeartbeat`.
+                //
+                // Fire-and-forget governance propagation (issue #2237) is the
+                // underlying bug; this is a narrower mitigation in the
+                // responder path that converts the terminal close into an
+                // active catch-up request.
+                self.request_governance_catchup_from_peer(peer_id, &context_id, &their_identity)
+                    .await;
+
+                if !self
+                    .context_client
+                    .has_member(&context_id, &their_identity)?
+                    && !is_inherited_member()?
+                {
+                    // Catch-up didn't resolve it (peer returned nothing, peer
+                    // also doesn't know, or the op chain isn't valid locally).
+                    // Close gracefully — the initiator retries on their next
+                    // sync interval. Demoted from warn to debug because this
+                    // is expected during mesh formation and would otherwise
+                    // spam logs on every cold join.
+                    debug!(
+                        %context_id,
+                        %their_identity,
+                        "unknown context member after namespace backfill request, closing stream"
+                    );
+                    return Ok(false);
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
     async fn internal_handle_opened_stream(
         &self,
         peer_id: PeerId,
@@ -2800,73 +2884,11 @@ impl SyncManager {
             return Ok(None);
         };
 
-        let mut _updated = None;
-
-        // Issue #2256: also accept inheritance-eligible parent members
-        // for sync auth. `has_member` only knows direct context-membership
-        // and direct group-membership; the parent-walk for `Open` subgroups
-        // lives in `calimero-context::group_store`, which we have access
-        // to here at the node layer.
-        let is_inherited_member = || -> eyre::Result<bool> {
-            let store = self.context_client.datastore();
-            let Some(group_id) =
-                calimero_context::group_store::get_group_for_context(store, &context_id)?
-            else {
-                return Ok(false);
-            };
-            MembershipRepository::new(store).is_member(&group_id, &their_identity)
-        };
-
         if !self
-            .context_client
-            .has_member(&context_id, &their_identity)?
-            && !is_inherited_member()?
+            .verify_inbound_member(context_id, their_identity, peer_id)
+            .await?
         {
-            _updated = Some(
-                self.context_client
-                    .sync_context_config(context_id, None)
-                    .await?,
-            );
-
-            if !self
-                .context_client
-                .has_member(&context_id, &their_identity)?
-                && !is_inherited_member()?
-            {
-                // The peer may have just published MemberAdded for themselves
-                // (or their side of the governance DAG is ahead of ours) and
-                // gossipsub hasn't delivered it yet. Instead of waiting and
-                // hoping the gossip arrives, ask this peer directly for the
-                // current namespace governance state on a separate stream —
-                // it's the fastest path out of the "unknown member" state and
-                // avoids a 30 s stall waiting for `NamespaceStateHeartbeat`.
-                //
-                // Fire-and-forget governance propagation (issue #2237) is the
-                // underlying bug; this is a narrower mitigation in the
-                // responder path that converts the terminal close into an
-                // active catch-up request.
-                self.request_governance_catchup_from_peer(peer_id, &context_id, &their_identity)
-                    .await;
-
-                if !self
-                    .context_client
-                    .has_member(&context_id, &their_identity)?
-                    && !is_inherited_member()?
-                {
-                    // Catch-up didn't resolve it (peer returned nothing, peer
-                    // also doesn't know, or the op chain isn't valid locally).
-                    // Close gracefully — the initiator retries on their next
-                    // sync interval. Demoted from warn to debug because this
-                    // is expected during mesh formation and would otherwise
-                    // spam logs on every cold join.
-                    debug!(
-                        %context_id,
-                        %their_identity,
-                        "unknown context member after namespace backfill request, closing stream"
-                    );
-                    return Ok(Some(()));
-                }
-            }
+            return Ok(Some(()));
         }
 
         // Note: Concurrent syncs are already prevented by SyncState tracking
