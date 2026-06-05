@@ -90,6 +90,12 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             // Same reason for the compiled-module cache: every service
             // under this application_id is now potentially stale.
             self.modules.retain(|(id, _), _| *id != application_id);
+            // Evict read-only method sets alongside modules: the new WASM may
+            // have different #[app::view] annotations. Stale entries would
+            // cause the execute path to take a shared read lock for methods
+            // that no longer (or newly) declare read-only intent.
+            self.read_only_methods
+                .retain(|(id, _), _| *id != application_id);
 
             // Clone values needed for migration
             let datastore = self.datastore.clone();
@@ -135,6 +141,8 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                         debug!(%context_id, %application_id, "Invalidated cached application module after migration");
                     }
                     act.modules.retain(|(id, _), _| *id != application_id);
+                    act.read_only_methods
+                        .retain(|(id, _), _| *id != application_id);
 
                     if let Some(cached) = act.contexts.get_mut(&context_id) {
                         debug!(
