@@ -1,13 +1,13 @@
 //! Group-writable storage with an authenticated, mutable writer set.
 //!
-//! `SharedStorage<T>` wraps a single value writable by any signer in the
+//! `WriterSetCell<T>` wraps a single value writable by any signer in the
 //! current writer set. The writer set itself is rotatable by a current writer
 //! (unless `frozen`). Trust mirrors `UserStorage<T>`: the runtime signs each
 //! write, peers verify the signature against the writer set at merge time.
 //!
 //! # Why this is a handle, not an inline value
 //!
-//! `SharedStorage<T>` is modeled on [`Root<T>`](super::root::Root): it is a
+//! `WriterSetCell<T>` is modeled on [`Root<T>`](super::root::Root): it is a
 //! thin handle over a [`Collection`] that holds the value as a single,
 //! `Shared`-stamped child entry. Borsh-serializing the wrapper therefore emits
 //! **only its `Element`** (id + metadata) — a reference — exactly like any
@@ -81,13 +81,13 @@ const VALUE_KEY: &[u8] = b"__calimero_shared_value__";
 /// the value body never rides root state.
 ///
 /// When `T` is a **collection** (`UnorderedMap`, `UnorderedSet`, …), in-place
-/// edits MUST go through [`get_mut`](SharedStorage::get_mut): it re-establishes
+/// edits MUST go through [`get_mut`](WriterSetCell::get_mut): it re-establishes
 /// the `SharedMember{anchor}` domain on the collection element so every entry
 /// inserted through it is guarded at merge. Members carry no writer set — they
 /// resolve the anchor's writers — so rotating the anchor retroactively revokes
 /// the whole subtree without re-stamping any entry.
 #[derive(BorshSerialize, BorshDeserialize)]
-pub struct SharedStorage<
+pub struct WriterSetCell<
     T: BorshSerialize + BorshDeserialize + Mergeable,
     S: StorageAdaptor = MainStorage,
 > {
@@ -113,13 +113,13 @@ pub struct SharedStorage<
     _adaptor: core::marker::PhantomData<S>,
 }
 
-impl<T, S> core::fmt::Debug for SharedStorage<T, S>
+impl<T, S> core::fmt::Debug for WriterSetCell<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + core::fmt::Debug,
     S: StorageAdaptor,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SharedStorage")
+        f.debug_struct("WriterSetCell")
             .field("inner", &self.inner)
             .field("frozen", &self.frozen)
             .field("value", &self.value)
@@ -127,21 +127,21 @@ where
     }
 }
 
-impl<T> SharedStorage<T, MainStorage>
+impl<T> WriterSetCell<T, MainStorage>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default,
 {
-    /// Create a new SharedStorage with a random ID and the given initial
+    /// Create a new WriterSetCell with a random ID and the given initial
     /// writer set. Use this for nested fields; the `#[app::state]` macro
     /// canonicalises the id via [`reassign_deterministic_id`] after `init`.
     ///
-    /// [`reassign_deterministic_id`]: SharedStorage::reassign_deterministic_id
+    /// [`reassign_deterministic_id`]: WriterSetCell::reassign_deterministic_id
     pub fn new(writers: BTreeSet<PublicKey>, frozen: bool) -> Self {
         let inner = Collection::new_shared(None, None, CrdtType::SharedStorage, writers.clone());
         Self::from_inner(inner, writers, frozen)
     }
 
-    /// Create a new SharedStorage with a deterministic ID derived from
+    /// Create a new WriterSetCell with a deterministic ID derived from
     /// `field_name`. Use this for top-level state fields.
     pub fn new_with_field_name(
         field_name: &str,
@@ -194,7 +194,7 @@ where
                     signature_data: None,
                 },
             )
-            .expect("failed to write initial SharedStorage value");
+            .expect("failed to write initial WriterSetCell value");
         Self {
             inner,
             frozen,
@@ -228,7 +228,7 @@ where
         let carried_value: T = match self
             .inner
             .get(old_value_id)
-            .expect("read SharedStorage value during reassign")
+            .expect("read WriterSetCell value during reassign")
         {
             Some(value) => value,
             None => {
@@ -239,7 +239,7 @@ where
                 tracing::warn!(
                     target: "storage::shared",
                     old_value_id = %old_value_id,
-                    "SharedStorage value entry missing during reassign — \
+                    "WriterSetCell value entry missing during reassign — \
                      relocating a default (possible storage corruption)"
                 );
                 T::default()
@@ -256,7 +256,7 @@ where
             .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::SharedStorage);
         self.inner.element_mut().set_shared_domain(writers.clone());
         let _saved = <Interface<MainStorage>>::save(&mut self.inner)
-            .expect("failed to persist relocated SharedStorage wrapper");
+            .expect("failed to persist relocated WriterSetCell wrapper");
 
         // Re-write the value entry under the new wrapper id (always), stamped as
         // a member anchored to the new wrapper id.
@@ -272,12 +272,12 @@ where
                     signature_data: None,
                 },
             )
-            .expect("failed to relocate SharedStorage value");
+            .expect("failed to relocate WriterSetCell value");
         *self.value.borrow_mut() = Some(value);
     }
 }
 
-impl<T, S> SharedStorage<T, S>
+impl<T, S> WriterSetCell<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default,
     S: StorageAdaptor,
@@ -307,7 +307,7 @@ where
         let value = slot.get_or_insert_with(|| {
             self.inner
                 .get(self.value_id())
-                .expect("read SharedStorage value")
+                .expect("read WriterSetCell value")
                 .unwrap_or_default()
         });
         #[expect(unsafe_code, reason = "necessary for caching, mirrors Root::get")]
@@ -316,7 +316,7 @@ where
     }
 }
 
-impl<T, S> SharedStorage<T, S>
+impl<T, S> WriterSetCell<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default + Data,
     S: StorageAdaptor,
@@ -330,7 +330,7 @@ where
     /// reload. The entries carry no writer set; they resolve the anchor's
     /// writers at verify time, so a rotation revokes the whole subtree at once.
     /// Only collections (which implement [`Data`]) get this; a scalar value is
-    /// edited via [`insert`](SharedStorage::insert) instead.
+    /// edited via [`insert`](WriterSetCell::insert) instead.
     ///
     /// # Errors
     /// Currently infallible; the `Result` is preserved for forward compatibility.
@@ -352,7 +352,7 @@ where
     }
 }
 
-impl<T, S> SharedStorage<T, S>
+impl<T, S> WriterSetCell<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default,
     S: StorageAdaptor,
@@ -417,7 +417,7 @@ where
         tracing::warn!(
             target: "storage::shared",
             wrapper_id = %self.inner.id(),
-            "SharedStorage current_writers found no rotation log or Shared index \
+            "WriterSetCell current_writers found no rotation log or Shared index \
              entry — failing closed with an empty writer set (missing/corrupt \
              index, or wrapper not yet synced)"
         );
@@ -465,7 +465,7 @@ where
         let writers = self.current_writers();
         if !writers.contains(&executor) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
-                "Executor is not a writer of this SharedStorage".to_owned(),
+                "Executor is not a writer of this WriterSetCell".to_owned(),
             )));
         }
 
@@ -505,7 +505,7 @@ where
     pub fn rotate_writers(&mut self, new_writers: BTreeSet<PublicKey>) -> Result<(), StoreError> {
         if self.frozen {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
-                "Cannot rotate writers of frozen SharedStorage".to_owned(),
+                "Cannot rotate writers of frozen WriterSetCell".to_owned(),
             )));
         }
         if new_writers.is_empty() {
@@ -556,9 +556,9 @@ where
     }
 }
 
-// Implement Data so SharedStorage can be nested in #[app::state]; the wrapper
+// Implement Data so WriterSetCell can be nested in #[app::state]; the wrapper
 // entity is the inner collection's element.
-impl<T, S> Data for SharedStorage<T, S>
+impl<T, S> Data for WriterSetCell<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable,
     S: StorageAdaptor,
@@ -580,7 +580,7 @@ where
 // value is a separate entity (merged per-entity), the writer set converges via
 // the rotation log, and `frozen` is genesis-immutable and deliberately not
 // adopted from the peer (so a forged root-state delta can't freeze rotation).
-impl<T, S> Mergeable for SharedStorage<T, S>
+impl<T, S> Mergeable for WriterSetCell<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable,
     S: StorageAdaptor,
@@ -602,7 +602,7 @@ where
     }
 }
 
-impl<T, S> CrdtMeta for SharedStorage<T, S>
+impl<T, S> CrdtMeta for WriterSetCell<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable,
     S: StorageAdaptor,
@@ -626,7 +626,7 @@ mod tests {
     use calimero_primitives::identity::PublicKey;
     use serial_test::serial;
 
-    use super::SharedStorage;
+    use super::WriterSetCell;
     use crate::collections::crdt_meta::{MergeError, Mergeable};
     use crate::collections::Root;
     use crate::env;
@@ -670,9 +670,9 @@ mod tests {
         let _root: Root<TestVal> = Root::new(TestVal::default);
 
         let expected = compute_collection_id(None, "doc");
-        let a = SharedStorage::<TestVal>::new_with_field_name("doc", writers(&[ALICE]), false);
+        let a = WriterSetCell::<TestVal>::new_with_field_name("doc", writers(&[ALICE]), false);
         assert_eq!(a.element().id(), expected);
-        let b = SharedStorage::<TestVal>::new_with_field_name("doc", writers(&[ALICE]), false);
+        let b = WriterSetCell::<TestVal>::new_with_field_name("doc", writers(&[ALICE]), false);
         assert_eq!(
             b.element().id(),
             expected,
@@ -698,7 +698,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE]), false));
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE]), false));
         s.insert(TestVal(1)).unwrap();
 
         let wrapper_id = s.element().id();
@@ -754,7 +754,7 @@ mod tests {
         type Map = UnorderedMap<String, LwwRegister<String>>;
 
         let ws = writers(&[[7u8; 32]]);
-        let mut guarded = Root::new(|| SharedStorage::<Map>::new(ws.clone(), false));
+        let mut guarded = Root::new(|| WriterSetCell::<Map>::new(ws.clone(), false));
 
         // Edit the inner map in place through the guarded `get_mut`, which
         // re-establishes the writer domain on the map element first.
@@ -765,7 +765,7 @@ mod tests {
             .expect("insert");
 
         // The entry must be anchored to the wrapper — the whole subtree is
-        // guarded at merge, not just the SharedStorage wrapper entity. It
+        // guarded at merge, not just the WriterSetCell wrapper entity. It
         // carries no inline writer set: the anchor pointer is the domain, and
         // writers resolve from the anchor's rotation log.
         let wrapper_id = guarded.element().id();
@@ -779,7 +779,7 @@ mod tests {
         match entry.storage.metadata.storage_type {
             StorageType::SharedMember { anchor, .. } => assert_eq!(anchor, wrapper_id),
             other => panic!(
-                "SharedStorage<Map> entry must be a SharedMember anchored to the wrapper, \
+                "WriterSetCell<Map> entry must be a SharedMember anchored to the wrapper, \
                  got {other:?}"
             ),
         }
@@ -791,7 +791,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE, BOB]), false));
+        let s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         assert_eq!(s.get().unwrap(), &TestVal::default());
     }
 
@@ -801,7 +801,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE, BOB]), false));
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(42)).expect("alice (writer) inserts");
         assert_eq!(s.get().unwrap(), &TestVal(42));
     }
@@ -812,7 +812,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[BOB, CAROL]), false));
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[BOB, CAROL]), false));
         let err = s
             .insert(TestVal(42))
             .expect_err("alice (not writer) must be rejected");
@@ -829,7 +829,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE, BOB]), false));
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(1)).unwrap();
 
         s.rotate_writers(writers(&[BOB, CAROL]))
@@ -853,7 +853,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE]), false));
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE]), false));
         s.insert(TestVal(1)).unwrap();
 
         env::set_executor_id(BOB);
@@ -869,7 +869,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE, BOB]), false));
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(1)).unwrap();
 
         let err = s
@@ -891,7 +891,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE, BOB]), false));
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
 
         // Bootstrap-time writer set is observable.
         assert_eq!(s.writers(), writers(&[ALICE, BOB]));
@@ -909,7 +909,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE]), true));
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE]), true));
 
         assert!(s.is_frozen());
         assert_eq!(s.writers(), writers(&[ALICE]));
@@ -938,8 +938,8 @@ mod tests {
         env::set_executor_id(ALICE);
         // Establish ROOT so the wrapper's `add_child_to(ROOT)` succeeds.
         let _root: Root<TestVal> = Root::new(TestVal::default);
-        let mut a = SharedStorage::<TestVal>::new(writers(&[ALICE]), false);
-        let b = SharedStorage::<TestVal>::new(writers(&[ALICE]), true);
+        let mut a = WriterSetCell::<TestVal>::new(writers(&[ALICE]), false);
+        let b = WriterSetCell::<TestVal>::new(writers(&[ALICE]), true);
 
         Mergeable::merge(&mut a, &b).unwrap();
         assert!(
@@ -950,8 +950,8 @@ mod tests {
         // Reverse direction: a locally-frozen instance stays frozen (merge
         // doesn't clear it either — it just doesn't touch `frozen`).
         let _root2: Root<TestVal> = Root::new(TestVal::default);
-        let mut a2 = SharedStorage::<TestVal>::new(writers(&[ALICE]), true);
-        let b2 = SharedStorage::<TestVal>::new(writers(&[ALICE]), false);
+        let mut a2 = WriterSetCell::<TestVal>::new(writers(&[ALICE]), true);
+        let b2 = WriterSetCell::<TestVal>::new(writers(&[ALICE]), false);
         Mergeable::merge(&mut a2, &b2).unwrap();
         assert!(a2.frozen, "merge must not clear a locally-set frozen");
     }
@@ -962,7 +962,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE, BOB]), true));
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), true));
         s.insert(TestVal(1)).unwrap();
 
         let err = s

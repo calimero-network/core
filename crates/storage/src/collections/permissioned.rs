@@ -1,7 +1,7 @@
 //! Policy-parameterised access-controlled storage.
 //!
 //! [`PermissionedStorage<T, A>`] is a thin policy layer over
-//! [`SharedStorage<T>`](super::shared::SharedStorage): it reuses the proven
+//! [`WriterSetCell<T>`](super::shared::WriterSetCell): it reuses the proven
 //! writer-set storage primitive — value held in its own `SharedMember`-stamped
 //! entity, writes signed and **verified at merge** against the writer set — and
 //! adds an [`Authorizer`] `A` that decides, at the API surface, whether the
@@ -13,16 +13,17 @@
 //! [`Interface`](crate::interface::Interface) against the entity's writer set.
 //! A malicious peer that hand-crafts a delta around the WASM still has its write
 //! rejected at merge if the signer is not a writer — exactly as for a bare
-//! `SharedStorage`. The [`Authorizer`] is **fail-fast UX sugar**: it lets a
+//! `WriterSetCell`. The [`Authorizer`] is **fail-fast UX sugar**: it lets a
 //! method reject an unauthorised caller early with a clear error, using the same
 //! writer set the merge check resolves. It must therefore only express policies
 //! that reduce to what merge enforces (writer-set membership today); a policy
 //! merge cannot replay would be advisory only.
 //!
 //! Keeping the policy in the type parameter is what lets the components derive
-//! from one base: the group-writable form is
-//! `PermissionedStorage<T, WriterSetAcl>` (the default), and a single-owner cell
-//! is [`Ownable<T>`] = `PermissionedStorage<T, OwnerAcl>`.
+//! from one base: the group-writable form [`SharedStorage<T>`] is the default
+//! `PermissionedStorage<T, WriterSetAcl>`, and a single-owner cell is
+//! [`Ownable<T>`] = `PermissionedStorage<T, OwnerAcl>`. (`WriterSetCell` is the
+//! underlying storage mechanism these all wrap — not used directly by apps.)
 //!
 //! # Security model — what you MUST store inside the wrapper
 //!
@@ -42,7 +43,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::PublicKey;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
-use super::shared::SharedStorage;
+use super::shared::WriterSetCell;
 use super::StoreError;
 use crate::entities::{ChildInfo, Data, Element, SignatureData};
 use crate::env;
@@ -112,9 +113,9 @@ impl Authorizer for OwnerAcl {
     }
 }
 
-/// Access-controlled storage: a [`SharedStorage<T>`] plus an [`Authorizer`]
+/// Access-controlled storage: a [`WriterSetCell<T>`] plus an [`Authorizer`]
 /// policy `A`. The group-writable form (default `A = WriterSetAcl`) behaves like
-/// `SharedStorage`; specialised policies derive components such as [`Ownable`].
+/// `WriterSetCell`; specialised policies derive components such as [`Ownable`].
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct PermissionedStorage<T, A = WriterSetAcl>
 where
@@ -122,7 +123,7 @@ where
     A: Authorizer,
 {
     #[borsh(bound(serialize = "", deserialize = ""))]
-    inner: SharedStorage<T, MainStorage>,
+    inner: WriterSetCell<T, MainStorage>,
     /// Zero-sized policy marker; never serialised.
     #[borsh(skip)]
     _policy: PhantomData<A>,
@@ -151,7 +152,7 @@ where
     /// `init`.
     pub fn new(writers: BTreeSet<PublicKey>, frozen: bool) -> Self {
         Self {
-            inner: SharedStorage::new(writers, frozen),
+            inner: WriterSetCell::new(writers, frozen),
             _policy: PhantomData,
         }
     }
@@ -164,7 +165,7 @@ where
         frozen: bool,
     ) -> Self {
         Self {
-            inner: SharedStorage::new_with_field_name(field_name, writers, frozen),
+            inner: WriterSetCell::new_with_field_name(field_name, writers, frozen),
             _policy: PhantomData,
         }
     }
@@ -216,7 +217,7 @@ where
     pub fn insert(&mut self, value: T) -> Result<Option<T>, StoreError> {
         // Apply the policy at the API surface so a custom `Authorizer` that
         // restricts `Op::Write` more narrowly than plain membership is honoured
-        // — the whole point of the seam. `SharedStorage::insert` then performs
+        // — the whole point of the seam. `WriterSetCell::insert` then performs
         // the authoritative membership check that peers re-verify at merge.
         self.guard(Op::Write)?;
         self.inner.insert(value)
@@ -245,7 +246,7 @@ where
     /// executor is not a current writer.
     pub fn rotate_writers(&mut self, new_writers: BTreeSet<PublicKey>) -> Result<(), StoreError> {
         // Single API-surface policy gate (honours a custom `Authorizer`).
-        // `SharedStorage::rotate_writers` is authoritative: it re-checks
+        // `WriterSetCell::rotate_writers` is authoritative: it re-checks
         // membership and enforces the frozen / non-empty rules.
         self.guard(Op::Admin)?;
         self.inner.rotate_writers(new_writers)
@@ -270,7 +271,7 @@ where
 }
 
 // `Data` so a `PermissionedStorage` can be nested in `#[app::state]`; the
-// wrapper entity is the inner `SharedStorage`'s element.
+// wrapper entity is the inner `WriterSetCell`'s element.
 impl<T, A> Data for PermissionedStorage<T, A>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default,
@@ -289,7 +290,7 @@ where
     }
 }
 
-// Root-state merge is a no-op, exactly as for `SharedStorage`: the value is a
+// Root-state merge is a no-op, exactly as for `WriterSetCell`: the value is a
 // separate entity (merged per-entity) and the writer set converges via the
 // verified rotation log. Delegated so the semantics stay identical.
 impl<T, A> Mergeable for PermissionedStorage<T, A>
@@ -320,9 +321,16 @@ where
 
 /// A single-owner storage cell: [`PermissionedStorage`] under the [`OwnerAcl`]
 /// policy. Enforcement rides the same merge-time writer-set check as any
-/// `SharedStorage`; ownership is a one-key writer set, and **transfer is a
+/// `WriterSetCell`; ownership is a one-key writer set, and **transfer is a
 /// signed, authenticated rotation** — the capability `UserStorage` lacks.
 pub type Ownable<T> = PermissionedStorage<T, OwnerAcl>;
+
+/// Group-writable storage: any member of the writer set may read and write, the
+/// set is rotatable by a current writer, and every write is verified at merge
+/// against it. This is [`PermissionedStorage`] under the default [`WriterSetAcl`]
+/// policy — `SharedStorage<T>` and `PermissionedStorage<T, WriterSetAcl>` are the
+/// same type. The ergonomic name most apps use.
+pub type SharedStorage<T> = PermissionedStorage<T, WriterSetAcl>;
 
 impl<T> PermissionedStorage<T, OwnerAcl>
 where

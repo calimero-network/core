@@ -915,6 +915,11 @@ fn generate_assign_deterministic_ids_impl(
             // a substring of `SharedStorage`.
             || type_str.contains("PermissionedStorage")
             || type_str.contains("Ownable")
+            // `AccessControl` wraps a single guarded storage; its
+            // `reassign_deterministic_id` delegates to it. The macro does not
+            // recurse into nested structs, so without this its inner storage
+            // keeps a random id and diverges across nodes.
+            || type_str.contains("AccessControl")
             // `AuthoredVector` is already matched by the `"Vector"` substring above;
             // `AuthoredMap` is NOT a substring of any entry, so it must be listed
             // explicitly or its outer wrapper id stays `Id::random()` and a
