@@ -423,7 +423,13 @@ where
     /// if neither source has a writer set, fail closed with the empty set rather
     /// than trust unverified bytes.
     fn current_writers(&self) -> BTreeMap<PublicKey, OpMask> {
-        if let Ok(Some(log)) = rotation_log::load::<S>(self.inner.id()) {
+        // P3: prefer the hashed child entity (the synced source of truth); fall
+        // back to the legacy side store (`Key::RotationLog`) for wrappers whose
+        // child hasn't been written yet. Both hold the same order-invariant
+        // union, so `resolve_local` picks the same writer set.
+        let log = crate::interface::Interface::<S>::load_rotation_log_child(self.inner.id())
+            .or_else(|| rotation_log::load::<S>(self.inner.id()).ok().flatten());
+        if let Some(log) = log {
             if let Some(writers) = rotation_log::resolve_local(&log) {
                 return writers;
             }

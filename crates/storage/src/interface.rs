@@ -246,7 +246,14 @@ impl<S: StorageAdaptor> Interface<S> {
     /// and for legacy anchors whose log predates P4 (a vanishing set after a
     /// state reset).
     fn resolve_anchor_writers(anchor: Id) -> BTreeMap<PublicKey, OpMask> {
-        if let Ok(Some(log)) = crate::rotation_log::load::<S>(anchor) {
+        // P3: the rotation log's synced source of truth is the hashed child
+        // entity (`load_rotation_log_child`); prefer it. Fall back to the legacy
+        // side store (`Key::RotationLog`) for anchors whose child hasn't been
+        // written yet (pre-P3 data / mid-transition). Both hold the same
+        // order-invariant union, so `resolve_local` picks the same writer set.
+        let log = Self::load_rotation_log_child(anchor)
+            .or_else(|| crate::rotation_log::load::<S>(anchor).ok().flatten());
+        if let Some(log) = log {
             if let Some(writers) = crate::rotation_log::resolve_local(&log) {
                 return writers;
             }
@@ -2035,12 +2042,21 @@ impl<S: StorageAdaptor> Interface<S> {
                 // originator's (which created the child in
                 // `self_log_and_rehash_own_rotations`). Without this the child
                 // exists on the originator only, so the two roots diverge until
-                // an HC sweep reconciles it. The anchor was just written by
-                // `save_internal` above, so `add_child_to` can't synthesise a
-                // placeholder. No-op for non-Shared entities and for Shared
-                // value-writes that didn't touch the log.
+                // an HC sweep reconciles it.
+                //
+                // Use `rehash_shared_anchor`, NOT the bare child sync:
+                // `save_internal` above already folded `own_hash` from the
+                // resolved writer set, but with the resolver flipped to the
+                // child (P3) that fold read the PRE-rotation child (this apply's
+                // child write hadn't happened yet), so `own_hash` is stale.
+                // `rehash_shared_anchor` syncs the fresh child and then re-folds
+                // from it, so `own_hash` reflects THIS rotation — divergent
+                // writer sets surface as divergent roots, the property the test
+                // `rotation_log_reconciliation_converges_divergent_shared_logs`
+                // pins. The anchor exists (just written), so `add_child_to`
+                // can't synthesise a placeholder. No-op for non-Shared entities.
                 if matches!(metadata.storage_type, StorageType::Shared { .. }) {
-                    Self::sync_rotation_log_child_from_side_store(id)?;
+                    Self::rehash_shared_anchor(id)?;
                 }
 
                 // Owner-driven convert (PR-6c): persist the incoming

@@ -997,8 +997,37 @@ pub(crate) fn load_rotation_log_direct(
     context_id: ContextId,
     entity_id: Id,
 ) -> Result<Option<RotationLog>> {
-    let storage_key = StorageKey::RotationLog(entity_id).to_bytes();
-    let state_key = calimero_store::key::ContextState::new(context_id, storage_key);
+    // P3: the rotation log's synced source of truth is the hashed child entity
+    // (it rides HC/DeltaSync and folds into the anchor's root). Prefer it; fall
+    // back to the legacy side store (`Key::RotationLog`) for anchors whose child
+    // hasn't been written yet (pre-P3 data / mid-transition). The receiver
+    // writes the child during the rotation's own apply (see
+    // `Interface::sync_rotation_log_child_from_side_store`), so it is present at
+    // the causal point any dependent member write resolves against.
+    let child_id = calimero_storage::interface::Interface::<
+        calimero_storage::store::MainStorage,
+    >::rotation_log_child_id(entity_id);
+    if let Some(log) =
+        load_rotation_log_bytes_direct(context_client, context_id, StorageKey::Entry(child_id))?
+    {
+        return Ok(Some(log));
+    }
+    load_rotation_log_bytes_direct(
+        context_client,
+        context_id,
+        StorageKey::RotationLog(entity_id),
+    )
+}
+
+/// Read + Borsh-decode a `RotationLog` at an arbitrary `StorageKey` via a direct
+/// datastore lookup (no `RUNTIME_ENV`). Shared by the P3 child read and the
+/// legacy side-store read in [`load_rotation_log_direct`].
+fn load_rotation_log_bytes_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    key: StorageKey,
+) -> Result<Option<RotationLog>> {
+    let state_key = calimero_store::key::ContextState::new(context_id, key.to_bytes());
     let handle = context_client.datastore_handle();
     // Copy the bytes out before `handle` is dropped — `state.value` is a
     // `Slice<'_>` borrowed from the handle's read snapshot.
