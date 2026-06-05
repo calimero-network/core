@@ -270,25 +270,25 @@ steps:
     seconds: 15
 
   # Phase 7b: POSITIVE, REGRESSION-COUPLED SIGNAL for the owner-driven convert.
-  # The owner re-stamps its own entry inside the wasm GUEST, where `tracing`
-  # does not reach the node log. The node-observable signal is host-side on the
-  # RECEIVER: when a node applies the replicated converted delta it adopts the
-  # higher schema tag and logs it. Each node re-wrote its OWN slot, so each is
-  # the receiver of the OTHER's convert → the log must be present on both.
-  - name: Assert node 1 adopted the replicated convert (host-side apply)
+  # The owner re-stamps its own entry inside the wasm GUEST, where `tracing` does
+  # not reach the node log; it is surfaced via the guest→host log bridge (forwarded
+  # as WASM_LOG), so the convert is node-observable on the ORIGINATING node. Each
+  # owner re-wrote its OWN slot, so the signal must be present on both. Coupled to
+  # the convert: remove the 6c re-stamp branch and this never fires.
+  - name: Assert node 1's owner-driven convert is node-observable (originating node)
     type: assert_log_present
     nodes:
       - app-migration-owner-1
     patterns:
-      - "owner-driven convert: applied migrated identity-gated entry schema_version"
+      - "owner-driven convert: re-stamped identity-gated entry schema_version"
     min_matches: 1
 
-  - name: Assert node 2 adopted the replicated convert (host-side apply)
+  - name: Assert node 2's owner-driven convert is node-observable (originating node)
     type: assert_log_present
     nodes:
       - app-migration-owner-2
     patterns:
-      - "owner-driven convert: applied migrated identity-gated entry schema_version"
+      - "owner-driven convert: re-stamped identity-gated entry schema_version"
     min_matches: 1
 
   # Phase 8: NODE-LOG VALIDATION — the explicit requirement for scenario 26.

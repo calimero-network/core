@@ -383,26 +383,26 @@ steps:
     statements:
       - 'json_equal({{value_n1a_node2}}, {"output": "node1-a-v1"})'
 
-  # Phase 9c: NODE-LOG validation (host-observable). The owner's own re-stamp is
-  # guest-side (invisible in node logs); the node-observable proof is host-side on
-  # the RECEIVER, which adopts the higher schema tag when it applies the replicated
-  # convert delta. Each node owns different notes, so each receives + adopts the
-  # other's converts. Asserted last: the RPC convergence above is the primary
-  # proof; this is the corroborating node-log signal.
-  - name: Assert node 1 adopted node 2's replicated convert (host-side apply)
+  # Phase 9c: NODE-LOG validation. The owner's one-tap re-stamp runs in the wasm
+  # GUEST; it is surfaced to the node log via the guest→host log bridge (forwarded
+  # as WASM_LOG), so it is observable on the ORIGINATING node. Each node converted
+  # its OWN notes, so the signal is present on both. Asserted last: the RPC
+  # convergence above is the primary proof; this is the corroborating node-log
+  # signal (regression-coupled: remove the convert and it never fires).
+  - name: Assert node 1's one-tap convert is node-observable (originating node)
     type: assert_log_present
     nodes:
       - app-migration-ux-1
     patterns:
-      - "owner-driven convert: applied migrated identity-gated entry schema_version"
+      - "owner-driven convert: re-stamped identity-gated entry schema_version"
     min_matches: 1
 
-  - name: Assert node 2 adopted node 1's replicated converts (host-side apply)
+  - name: Assert node 2's one-tap convert is node-observable (originating node)
     type: assert_log_present
     nodes:
       - app-migration-ux-2
     patterns:
-      - "owner-driven convert: applied migrated identity-gated entry schema_version"
+      - "owner-driven convert: re-stamped identity-gated entry schema_version"
     min_matches: 1
 
   # Phase 9b: IDEMPOTENT — a second one-tap on node 1 converts nothing.

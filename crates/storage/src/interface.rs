@@ -1751,19 +1751,6 @@ impl<S: StorageAdaptor> Interface<S> {
                     .unwrap_or(0);
                 if incoming_schema > stored_schema {
                     <Index<S>>::set_schema_version(id, metadata.schema_version)?;
-                    // Host-side, node-log-observable signal for the owner-driven
-                    // convert. The originating owner's re-stamp happens inside the
-                    // wasm guest (its `save_raw`), where `tracing` does not reach the
-                    // node log; here on the RECEIVER `apply_action` runs host-side, so
-                    // this is where a replica's adoption of a converted entry is
-                    // observable. Regression-coupled: remove the convert and no entry
-                    // ever carries a higher tag, so this never fires.
-                    info!(
-                        %id,
-                        old_schema_version = stored_schema,
-                        new_schema_version = incoming_schema,
-                        "owner-driven convert: applied migrated identity-gated entry schema_version"
-                    );
                 }
 
                 // ALWAYS update parent with correct hash after save (handles merging)
@@ -3213,6 +3200,16 @@ impl<S: StorageAdaptor> Interface<S> {
                 new_schema_version = target,
                 "owner-driven convert: re-stamped identity-gated entry schema_version"
             );
+            // Surface host-side too: this runs inside the wasm GUEST, where the
+            // `tracing` debug above has no subscriber and never reaches the node
+            // log. `env::log` routes through the guest→host log syscall (the node
+            // forwards it as `WASM_LOG`), so the convert is node-observable on the
+            // ORIGINATING node — for both organic owner writes and the one-tap
+            // `migrate_my_entries`. This is the signal the e2e scenarios assert.
+            crate::env::log(&format!(
+                "owner-driven convert: re-stamped identity-gated entry schema_version \
+                 id={id} old_schema_version={prior_schema:?} new_schema_version={target}"
+            ));
         }
 
         let ancestors = <Index<S>>::get_ancestors_of(id)?;
