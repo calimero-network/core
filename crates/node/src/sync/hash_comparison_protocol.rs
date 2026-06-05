@@ -55,9 +55,11 @@ use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
+use calimero_storage::entities::StorageType;
 use calimero_storage::env::with_runtime_env;
 use calimero_storage::index::Index;
 use calimero_storage::interface::Interface;
+use calimero_storage::rotation_log::{self, RotationLog};
 use calimero_storage::store::MainStorage;
 use calimero_store::Store;
 use eyre::{bail, Result};
@@ -681,6 +683,18 @@ async fn run_initiator_impl<T: SyncTransport>(
     // answer — an older peer closes the stream on the unrecognized request,
     // and a transport error is non-fatal here — preserving prior behaviour
     // for mixed-version clusters.
+    // Reconcile per-Shared-entity rotation logs (core#2716/#2703) before the
+    // root re-query and the close. A writer-set rotation is hash-neutral, so it
+    // never flows through HC's hash-driven traversal; this end-of-session union
+    // is what converges writer sets across a branch reconciled via HC.
+    // Best-effort — an older peer or any transport hiccup must not fail the
+    // session.
+    if let Err(e) =
+        reconcile_rotation_logs_with_peer(transport, context_id, identity, &runtime_env).await
+    {
+        debug!(%context_id, error = %e, "rotation-log reconciliation skipped (best-effort)");
+    }
+
     let peer_current_root = match query_peer_current_root(transport, context_id, identity).await {
         Ok(Some(root)) => root,
         Ok(None) | Err(_) => remote_root_hash,
@@ -758,6 +772,149 @@ async fn query_peer_current_root<T: SyncTransport>(
         } => Ok(Some(*root_hash)),
         _ => Ok(None),
     }
+}
+
+/// Cap on the number of per-`Shared`-entity rotation logs exchanged in one
+/// reconciliation. A context has very few `Shared` anchors in practice; the cap
+/// just bounds a pathological case (logged + truncated, never silently capped).
+const MAX_ROTATION_LOGS_PER_SYNC: usize = 1024;
+
+/// Walk the entity tree from the context root and collect each `Shared`
+/// anchor's rotation log as `(entity_id, borsh(RotationLog))`.
+///
+/// Store keys are SHA-256 hashed (`Key::to_bytes`), so the rotation logs cannot
+/// be prefix-scanned; they must be reached via the entity index, exactly like
+/// [`collect_leaves_recursive`]. MUST run inside `with_runtime_env` so
+/// `Index`/`rotation_log` route through this context's store.
+fn collect_local_shared_rotation_logs(context_id: ContextId) -> Vec<([u8; 32], Vec<u8>)> {
+    let mut out = Vec::new();
+    collect_shared_rotation_logs_recursive(Id::new(*context_id.as_ref()), &mut out, 0);
+    out
+}
+
+fn collect_shared_rotation_logs_recursive(
+    entity_id: Id,
+    out: &mut Vec<([u8; 32], Vec<u8>)>,
+    depth: u32,
+) {
+    if depth >= MAX_COLLECT_DEPTH || out.len() >= MAX_ROTATION_LOGS_PER_SYNC {
+        if out.len() >= MAX_ROTATION_LOGS_PER_SYNC {
+            warn!(
+                count = out.len(),
+                "rotation-log sync: hit per-sync cap, truncating the set of \
+                 exchanged Shared rotation logs"
+            );
+        }
+        return;
+    }
+
+    let Ok(Some(index)) = Index::<MainStorage>::get_index(entity_id) else {
+        return;
+    };
+
+    // Only `Shared` anchors own a rotation log; members/others don't.
+    if matches!(index.metadata.storage_type, StorageType::Shared { .. }) {
+        if let Ok(Some(log)) = rotation_log::load::<MainStorage>(entity_id) {
+            if let Ok(bytes) = borsh::to_vec(&log) {
+                out.push((*entity_id.as_bytes(), bytes));
+            }
+        }
+    }
+
+    if let Some(children) = index.children() {
+        for child in children.iter() {
+            collect_shared_rotation_logs_recursive(Id::new(*child.id().as_bytes()), out, depth + 1);
+        }
+    }
+}
+
+/// Union peer-supplied rotation logs into the local store.
+///
+/// For each `(entity_id, borsh(RotationLog))`, append every entry the local log
+/// lacks via [`rotation_log::append`], which dedups by `delta_id`.
+/// `resolve_local`/`writers_at` are order-invariant (max-by `(delta_hlc,
+/// signer)`), so insertion order is irrelevant — the result is a set union.
+/// Best-effort: a per-entity decode failure or a per-entry append failure
+/// (e.g. a conflicting `delta_id`) is logged and skipped, never fatal. MUST run
+/// inside `with_runtime_env`. Returns the number of append calls that succeeded
+/// (includes idempotent no-ops).
+fn union_received_rotation_logs(logs: &[([u8; 32], Vec<u8>)]) -> usize {
+    let mut applied = 0_usize;
+    for (entity_bytes, bytes) in logs {
+        let entity_id = Id::new(*entity_bytes);
+        let remote: RotationLog = match borsh::from_slice(bytes) {
+            Ok(log) => log,
+            Err(e) => {
+                debug!(%entity_id, error = %e, "rotation-log sync: undecodable remote log, skipping");
+                continue;
+            }
+        };
+        for entry in remote.entries {
+            match rotation_log::append::<MainStorage>(entity_id, entry) {
+                Ok(()) => applied += 1,
+                Err(e) => {
+                    debug!(%entity_id, error = %e, "rotation-log sync: append skipped");
+                }
+            }
+        }
+    }
+    applied
+}
+
+/// Reconcile per-`Shared`-entity rotation logs with the peer at the end of a
+/// HashComparison session (core#2716/#2703).
+///
+/// HC reconciles entity *trees by hash* and prunes hash-equal subtrees, but a
+/// writer-set rotation is **hash-neutral** (writers are `#[borsh(skip)]` out of
+/// the Merkle hash), so a node that catches up to a peer's branch via HC never
+/// learns the rotation — HC carries no rotation log. This one round-trip ships
+/// each side's `Shared` rotation logs and unions the other's, so both converge
+/// on the same writer set regardless of how the data was reconciled.
+///
+/// Best-effort and mixed-version safe: an older peer that doesn't understand
+/// `RotationLogSyncRequest` errors/closes the stream, which surfaces here as an
+/// `Err`/`None` and is swallowed by the caller — the session is unaffected.
+async fn reconcile_rotation_logs_with_peer<T: SyncTransport>(
+    transport: &mut T,
+    context_id: ContextId,
+    identity: PublicKey,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+) -> Result<()> {
+    let local_logs = with_runtime_env(runtime_env.clone(), || {
+        collect_local_shared_rotation_logs(context_id)
+    });
+
+    let request = StreamMessage::Init {
+        context_id,
+        party_id: identity,
+        payload: InitPayload::RotationLogSyncRequest {
+            context_id,
+            logs: local_logs,
+        },
+        next_nonce: generate_nonce(),
+    };
+    transport.send(&request).await?;
+
+    let Some(response) = transport.recv().await? else {
+        return Ok(());
+    };
+
+    if let StreamMessage::Message {
+        payload: MessagePayload::RotationLogSyncResponse { logs },
+        ..
+    } = response
+    {
+        let applied = with_runtime_env(runtime_env.clone(), || union_received_rotation_logs(&logs));
+        if applied > 0 {
+            debug!(
+                %context_id,
+                applied,
+                "rotation-log reconciliation: unioned peer's Shared rotation logs"
+            );
+        }
+    }
+
+    Ok(())
 }
 
 // =============================================================================
@@ -1033,6 +1190,31 @@ async fn run_responder_impl<T: SyncTransport>(
                 transport.send(&msg).await?;
                 sequence_id += 1;
                 requests_handled += 1;
+            }
+
+            InitPayload::RotationLogSyncRequest { logs, .. } => {
+                // Union the initiator's Shared rotation logs into ours, then
+                // reply with our own so the initiator unions them too — one
+                // round-trip reconciles both directions (core#2716/#2703).
+                let applied =
+                    with_runtime_env(runtime_env.clone(), || union_received_rotation_logs(&logs));
+                let local_logs = with_runtime_env(runtime_env.clone(), || {
+                    collect_local_shared_rotation_logs(context_id)
+                });
+
+                let msg = StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::RotationLogSyncResponse { logs: local_logs },
+                    next_nonce: generate_nonce(),
+                };
+
+                transport.send(&msg).await?;
+                sequence_id += 1;
+                requests_handled += 1;
+
+                if applied > 0 {
+                    info!(%context_id, applied, "rotation-log sync: unioned initiator's Shared rotation logs");
+                }
             }
 
             _ => {
@@ -2113,6 +2295,167 @@ mod tests {
         assert!(
             stored.is_some(),
             "Ok(None) no-gate case must store the leaf"
+        );
+    }
+
+    /// core#2716/#2703: the rotation-log reconciliation helpers converge two
+    /// nodes whose `Shared` rotation logs diverged because one only learned a
+    /// hash-neutral rotation via HashComparison (which carries no rotation log).
+    /// `collect_local_shared_rotation_logs` walks the entity index to find the
+    /// `Shared` anchor and serialise its log; `union_received_rotation_logs`
+    /// appends the missing entries (dedup by `delta_id`) so `resolve_local`
+    /// converges on the same writer set.
+    #[test]
+    fn rotation_log_reconciliation_converges_divergent_shared_logs() {
+        use core::num::NonZeroU128;
+        use std::collections::BTreeSet;
+        use std::sync::Arc;
+
+        use calimero_storage::action::Action;
+        use calimero_storage::entities::{ChildInfo, Metadata};
+        use calimero_storage::interface::ApplyContext;
+        use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+        use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+        use ed25519_dalek::SigningKey;
+
+        fn hlc(ns: u64) -> HybridTimestamp {
+            HybridTimestamp::new(Timestamp::new(
+                NTP64(ns),
+                ID::from(NonZeroU128::new(1).unwrap()),
+            ))
+        }
+
+        let context_id = ContextId::from([0xC7; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let anchor_id = Id::new([0x77; 32]);
+
+        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
+        let alice = pubkey_of(&alice_sk);
+        let bob = pubkey_of(&SigningKey::from_bytes(&[0xB2; 32]));
+        let carol = pubkey_of(&SigningKey::from_bytes(&[0xC3; 32]));
+        let genesis: BTreeSet<PublicKey> = [alice, bob].into_iter().collect();
+
+        // Seed a node: a `Shared` anchor bootstrapped {Alice, Bob} as a child of
+        // the context root, optionally followed by a later {Alice, Carol}
+        // rotation (the hash-neutral grant a peer would only see if it applied
+        // the rotation as a delta).
+        let seed = |with_rotation: bool| -> Store {
+            let store = Store::new(Arc::new(InMemoryDB::owned()));
+            let env = create_runtime_env(&store, context_id, identity);
+            with_runtime_env(env, || {
+                let root_id = Id::new(*context_id.as_ref());
+                Interface::<MainStorage>::apply_action(
+                    Action::Update {
+                        id: root_id,
+                        data: vec![],
+                        ancestors: vec![],
+                        metadata: Metadata::default(),
+                    },
+                    &ApplyContext::empty(),
+                )
+                .expect("create root");
+                let root_hash = Index::<MainStorage>::get_hashes_for(root_id)
+                    .ok()
+                    .flatten()
+                    .map(|(full, _)| full)
+                    .unwrap_or([0; 32]);
+                let root_meta = Index::<MainStorage>::get_index(root_id)
+                    .ok()
+                    .flatten()
+                    .map(|idx| idx.metadata.clone())
+                    .unwrap_or_default();
+
+                let bootstrap = build_signed_shared_action(
+                    true,
+                    anchor_id,
+                    b"v0".to_vec(),
+                    genesis.clone(),
+                    10,
+                    &alice_sk,
+                    vec![ChildInfo::new(root_id, root_hash, root_meta)],
+                );
+                Interface::<MainStorage>::apply_action(
+                    bootstrap,
+                    &ApplyContext {
+                        effective_writers: Some(genesis.clone()),
+                        delta_id: Some([0xE0; 32]),
+                        delta_hlc: Some(hlc(10)),
+                    },
+                )
+                .expect("bootstrap shared anchor");
+
+                if with_rotation {
+                    let rotation = build_signed_shared_action(
+                        false,
+                        anchor_id,
+                        b"v0".to_vec(),
+                        [alice, carol].into_iter().collect(),
+                        30,
+                        &alice_sk,
+                        vec![],
+                    );
+                    Interface::<MainStorage>::apply_action(
+                        rotation,
+                        &ApplyContext {
+                            effective_writers: Some(genesis.clone()),
+                            delta_id: Some([0xE1; 32]),
+                            delta_hlc: Some(hlc(30)),
+                        },
+                    )
+                    .expect("rotation to {Alice, Carol}");
+                }
+            });
+            store
+        };
+
+        let full = seed(true);
+        let hc = seed(false);
+        let full_env = create_runtime_env(&full, context_id, identity);
+        let hc_env = create_runtime_env(&hc, context_id, identity);
+
+        let resolve = |env: &calimero_storage::env::RuntimeEnv| -> BTreeSet<PublicKey> {
+            with_runtime_env(env.clone(), || {
+                rotation_log::resolve_local(
+                    &rotation_log::load::<MainStorage>(anchor_id)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap()
+            })
+        };
+
+        // Precondition: the HC node has NOT learned Carol (it only has bootstrap).
+        let hc_before = resolve(&hc_env);
+        assert!(
+            !hc_before.contains(&carol),
+            "precondition: HC node lacks Carol; got {hc_before:?}"
+        );
+
+        // Collect the full node's Shared rotation logs (the wire payload) — the
+        // index walk must find the anchor.
+        let collected = with_runtime_env(full_env.clone(), || {
+            collect_local_shared_rotation_logs(context_id)
+        });
+        assert!(
+            collected.iter().any(|(id, _)| *id == *anchor_id.as_bytes()),
+            "collect_local_shared_rotation_logs must find the Shared anchor"
+        );
+
+        // Union into the HC node and assert it converges on {Alice, Carol}.
+        let applied = with_runtime_env(hc_env.clone(), || union_received_rotation_logs(&collected));
+        assert!(applied > 0, "union must append the missing rotation entry");
+
+        let hc_after = resolve(&hc_env);
+        let full_writers = resolve(&full_env);
+        assert_eq!(
+            hc_after, full_writers,
+            "after the union both nodes resolve the same writer set"
+        );
+        assert!(
+            hc_after.contains(&carol),
+            "HC node now recognises Carol as a writer; got {hc_after:?}"
         );
     }
 }

@@ -3040,6 +3040,15 @@ impl SyncManager {
                 // loop), never as a top-level stream init.
                 warn!("Received EntityDeletePush outside of HashComparison session, ignoring");
             }
+            InitPayload::RotationLogSyncRequest { .. } => {
+                // Rotation-log reconciliation (core#2716/#2703) only occurs as an
+                // end-of-session step inside an established HashComparison
+                // session (handled by the responder loop), never as a top-level
+                // stream init.
+                warn!(
+                    "Received RotationLogSyncRequest outside of HashComparison session, ignoring"
+                );
+            }
             InitPayload::NamespaceBackfillRequest { .. } => {
                 unreachable!("handled by early return above")
             }
