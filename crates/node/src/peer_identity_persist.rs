@@ -127,6 +127,16 @@ pub(crate) fn spawn_snapshot_tick(state: NodeState, store: Store) -> tokio::task
 /// are ignored. Kept separate from the async loop so it's unit-testable.
 fn apply_invalidation_event(state: &NodeState, event: &OpEvent) {
     if let OpEvent::MemberRemoved { group_id, member } = event {
+        // Only the durable cache's per-group membership view is dropped.
+        // The in-memory `peer_identities` reverse view is deliberately
+        // left intact: the peer still *controls* that identity (removal
+        // changes group membership, not key ownership), and that view is
+        // only ever intersected with the authoritative `trusted_anchors`
+        // set at selection time — which no longer lists the removed member
+        // — so a stale reverse entry can't make the peer an anchor. The
+        // `member_removed_event_drops_cached_member` test pins this
+        // (asserts the reverse view is untouched) so a future "cleanup"
+        // doesn't silently change it.
         state
             .lock_peer_identity_cache()
             .remove_member(&ContextGroupId::from(*group_id), member);
@@ -144,9 +154,20 @@ fn apply_invalidation_event(state: &NodeState, event: &OpEvent) {
 /// missed member ages out via TTL and is re-derived from the DAG on
 /// restart — so the loop just logs and continues. Holds a strong
 /// `NodeState` for the runtime's lifetime, like the snapshot tick.
+///
+/// `op_events::subscribe()` is called **synchronously here, before
+/// spawning**, so the receiver starts buffering immediately rather than
+/// at some later point when the task first gets scheduled — minimizing
+/// the startup window in which a `MemberRemoved` could be missed.
+///
+/// The returned handle may be dropped (the caller stores it as `_…`); the
+/// task then runs detached until the broadcast channel closes
+/// (`RecvError::Closed`), i.e. for the process lifetime. There is no
+/// graceful-shutdown path because a missed late event is harmless (TTL
+/// covers it); a caller that wanted one could `abort()` the handle.
 pub(crate) fn spawn_invalidation_task(state: NodeState) -> tokio::task::JoinHandle<()> {
+    let mut rx = op_events::subscribe();
     tokio::spawn(async move {
-        let mut rx = op_events::subscribe();
         loop {
             match rx.recv().await {
                 Ok(event) => apply_invalidation_event(&state, &event),
@@ -225,24 +246,31 @@ mod tests {
     }
 
     #[test]
+    // Exercises the handler directly (`apply_invalidation_event`) rather
+    // than via `spawn_invalidation_task` + `op_events::notify` — the
+    // `op_events` channel is a process-wide singleton shared across
+    // parallel tests, so driving the sync handler directly keeps this
+    // test isolated. Prefer this pattern for invalidation-logic tests.
+    #[test]
     fn member_removed_event_drops_cached_member() {
         let state = NodeState::new(false, NodeMode::Standard);
         let group = ContextGroupId::from([7u8; 32]);
         let member = PublicKey::from([9u8; 32]);
+        let peer = PeerId::random();
         state.observe_peer_identity(
-            PeerId::random(),
+            peer,
             member,
             Some(ObservedMembership {
                 group_id: group,
                 role: GroupMemberRole::Admin,
             }),
         );
-        let present = |s: &NodeState| {
+        let cached = |s: &NodeState| {
             !s.lock_peer_identity_cache()
                 .members_for_group(&group, now_unix_secs(), PEER_IDENTITY_TTL_SECS)
                 .is_empty()
         };
-        assert!(present(&state), "seeded");
+        assert!(cached(&state), "seeded");
 
         apply_invalidation_event(
             &state,
@@ -251,7 +279,19 @@ mod tests {
                 member,
             },
         );
-        assert!(!present(&state), "MemberRemoved dropped the cached member");
+        assert!(!cached(&state), "MemberRemoved dropped the cached member");
+
+        // Intentional: the in-memory reverse view is NOT cleared — the peer
+        // still controls the identity, and anchor status is re-derived from
+        // trusted_anchors at selection time (see apply_invalidation_event).
+        // Pinned here so a future "cleanup" doesn't silently change it.
+        assert!(
+            state
+                .peer_identities
+                .get(&peer)
+                .is_some_and(|ids| ids.contains(&member)),
+            "reverse view deliberately retained after MemberRemoved"
+        );
     }
 
     #[test]
