@@ -262,25 +262,14 @@ steps:
     args:
       value: "node2-note-v2"
 
+  # Give the converted deltas time to gossip + apply on the peer before the
+  # host-side adoption assertions (wait_for_sync can return instantly on a
+  # trivially-matching DAG-head check, racing the convert delta).
   - name: Wait for converted notes to replicate as normal signed deltas
-    type: wait_for_sync
-    context_id: "{{ctx_id}}"
-    nodes:
-      - app-migration-owner-1
-      - app-migration-owner-2
-    timeout: 90
-    trigger_sync: true
+    type: wait
+    seconds: 15
 
   # Phase 7b: POSITIVE, REGRESSION-COUPLED SIGNAL for the owner-driven convert.
-  # The per-entry re-stamp branch in `Interface::save_raw` (6c.3) emits exactly
-  # one debug log when an owner's own write re-stamps its identity-gated entry's
-  # `schema_version` to the binary's target. Each owner re-wrote its OWN slot in
-  # Phase 7, so this MUST be present on BOTH nodes. This is the only assertion in
-  # the scenario coupled to the 6c convert itself: if the owner-driven-convert
-  # code were removed, the entry would never be re-stamped and this log would
-  # never fire — so the assert would fail. (The `schema_info` checks below only
-  # observe which WASM is loaded, not the per-entry stamp; this log is the signal
-  # that the per-entry convert actually ran.)
   # The owner re-stamps its own entry inside the wasm GUEST, where `tracing`
   # does not reach the node log. The node-observable signal is host-side on the
   # RECEIVER: when a node applies the replicated converted delta it adopts the

@@ -273,37 +273,43 @@ steps:
     statements:
       - 'json_equal({{convert_node2}}, {"output": {"converted": 1, "remaining": 0}})'
 
-  - name: Wait for converted notes to replicate as normal signed deltas
-    type: wait_for_sync
+  # Phase 7a: RACE-FREE PERSISTENCE ORACLE. Each node reads its OWN note right
+  # after its OWN one-tap — no replication involved. This is the authoritative
+  # proof the convert actually PERSISTED the re-stamp on the originator (a
+  # `converted` count alone is computed before the guard save and would not
+  # catch an LWW-dropped write). If these are 2, the convert works.
+  - name: Read node 1's own note schema_version immediately after its convert
+    type: call
+    node: app-migration-ux-1
     context_id: "{{ctx_id}}"
-    nodes:
-      - app-migration-ux-1
-      - app-migration-ux-2
-    timeout: 90
-    trigger_sync: true
+    method: note_schema_version
+    args:
+      key: "n1-a"
+    outputs:
+      local_n1a: result
 
-  # Phase 7b: POSITIVE, REGRESSION-COUPLED, host-observable signal. The owner's
-  # one-tap re-stamps inside the wasm GUEST (not visible in node logs); the
-  # node-observable proof is host-side on the RECEIVER, which adopts the higher
-  # schema tag when it applies the replicated convert delta. Each node owns
-  # different notes, so each receives + adopts the other's converts → present
-  # on both. (Per-entry persistence is proved directly via note_schema_version
-  # in Phase 9 — the authoritative, RPC-observable, regression-coupled check.)
-  - name: Assert node 1 adopted node 2's replicated convert (host-side apply)
-    type: assert_log_present
-    nodes:
-      - app-migration-ux-1
-    patterns:
-      - "owner-driven convert: applied migrated identity-gated entry schema_version"
-    min_matches: 1
+  - name: Read node 2's own note schema_version immediately after its convert
+    type: call
+    node: app-migration-ux-2
+    context_id: "{{ctx_id}}"
+    method: note_schema_version
+    args:
+      key: "n2-a"
+    outputs:
+      local_n2a: result
 
-  - name: Assert node 2 adopted node 1's replicated converts (host-side apply)
-    type: assert_log_present
-    nodes:
-      - app-migration-ux-2
-    patterns:
-      - "owner-driven convert: applied migrated identity-gated entry schema_version"
-    min_matches: 1
+  - name: Assert each owner's own note persisted at schema 2 (convert landed)
+    type: json_assert
+    statements:
+      - 'json_equal({{local_n1a}}, {"output": 2})'
+      - 'json_equal({{local_n2a}}, {"output": 2})'
+
+  # Phase 7b: give the converted deltas time to gossip + apply on the peer.
+  # (wait_for_sync can return instantly on a trivially-matching DAG-head check,
+  # racing the convert delta, so wait explicitly before cross-node assertions.)
+  - name: Wait for converted notes to replicate as normal signed deltas
+    type: wait
+    seconds: 15
 
   # Phase 8: NEGATIVE node-log validation.
   - name: Assert the owner gate never tripped on either node
@@ -376,6 +382,28 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{value_n1a_node2}}, {"output": "node1-a-v1"})'
+
+  # Phase 9c: NODE-LOG validation (host-observable). The owner's own re-stamp is
+  # guest-side (invisible in node logs); the node-observable proof is host-side on
+  # the RECEIVER, which adopts the higher schema tag when it applies the replicated
+  # convert delta. Each node owns different notes, so each receives + adopts the
+  # other's converts. Asserted last: the RPC convergence above is the primary
+  # proof; this is the corroborating node-log signal.
+  - name: Assert node 1 adopted node 2's replicated convert (host-side apply)
+    type: assert_log_present
+    nodes:
+      - app-migration-ux-1
+    patterns:
+      - "owner-driven convert: applied migrated identity-gated entry schema_version"
+    min_matches: 1
+
+  - name: Assert node 2 adopted node 1's replicated converts (host-side apply)
+    type: assert_log_present
+    nodes:
+      - app-migration-ux-2
+    patterns:
+      - "owner-driven convert: applied migrated identity-gated entry schema_version"
+    min_matches: 1
 
   # Phase 9b: IDEMPOTENT — a second one-tap on node 1 converts nothing.
   - name: Node 1 calls migrate_my_entries again (idempotent)
