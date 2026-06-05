@@ -741,7 +741,7 @@ fn writer_set_diverges_when_rotation_reconciled_via_hc_until_log_union() {
             .into_iter()
             .map(|k| (k, calimero_storage::entities::OpMask::FULL))
             .collect::<std::collections::BTreeMap<_, _>>(),
-        "the node that applied both rotations resolves node-1's later-HLC {A,C}"
+        "the node that applied both rotations resolves node-1's later-HLC {{A,C}}"
     );
     assert!(
         both_writers.contains_key(&carol) && !hc_writers_before.contains_key(&carol),
