@@ -416,8 +416,16 @@ pub fn compute_namespace_migration_facts(
     }
 
     // No resolvable loaded context ⇒ fall back to the target (the no-loaded-state
-    // path; the no-record baseline already resolves the target to `0`).
-    let schema_version = min_loaded.unwrap_or(target_version);
+    // path; the no-record baseline already resolves the target to `0`). But never
+    // advertise the unparseable-target sentinel (`u32::MAX`) as a LOADED reader
+    // version — it is an all_migrated-gate marker ("no real version satisfies an
+    // unparseable target"), not a version this node loaded. Report the honest
+    // unknown `0` instead; the gate stays conservative (0 < MAX ⇒ not migrated).
+    let schema_version = match min_loaded {
+        Some(loaded) => loaded,
+        None if target_version == u32::MAX => 0,
+        None => target_version,
+    };
 
     // Invoke the 6c.6 residue scan over the iterable adaptor bound at this seam.
     // The production binding is `CommittedStateScan` — an honest empty-keyspace

@@ -823,7 +823,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE, BOB]), false));
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(42)).expect("writer inserts");
 
         // A writer's insert stamps the value at the binary's target schema version.
