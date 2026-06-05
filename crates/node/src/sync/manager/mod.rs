@@ -2589,6 +2589,142 @@ impl SyncManager {
         }
     }
 
+    /// Resolve the context for an inbound sync stream, waiting out the
+    /// join/registration race window if the context isn't materialised
+    /// locally yet.
+    ///
+    /// Returns `Ok(Some(ctx))` once resolved. Returns `Ok(None)` — after
+    /// sending `OpaqueError` (unknown context / unverified dialer) or
+    /// `NotMaterialized` (verified member, context not yet materialised) on
+    /// `stream` — when the caller should stop and close the stream. See the
+    /// race-window rationale inline below.
+    async fn resolve_inbound_context(
+        &self,
+        context_id: ContextId,
+        their_identity: PublicKey,
+        stream: &mut Stream,
+    ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
+        if let Some(ctx) = self.context_client.get_context(&context_id)? {
+            return Ok(Some(ctx));
+        }
+
+        // Race window: the dialer can trigger context-level sync as
+        // a cascade of namespace-topic subscription
+        // (`subscriptions.rs::handle_subscribed` → `sync_group` /
+        // `broadcast_group_local_state`) before this node's local
+        // state has caught up. Two distinct sub-races can leave
+        // `get_context` returning `None` for a legitimate inbound:
+        //
+        //   (1) Namespace governance op `ContextRegistered` has
+        //       not yet been processed locally —
+        //       `get_group_for_context` returns `None`. This is
+        //       the cold-start gossipsub-mesh case (#2122/#2236
+        //       residuals tracked in #2356): the namespace topic
+        //       takes one or more heartbeats to form a mesh, so
+        //       the governance op landing on `peer A` can lag the
+        //       context-level sync stream from `peer A` reaching
+        //       us by several seconds.
+        //   (2) `ContextRegistered` is applied — group binding
+        //       exists, dialer is a verified namespace member —
+        //       but `join_context` has not yet materialised the
+        //       context entry. The original race shape covered
+        //       by this branch.
+        //
+        // Both resolve once the namespace governance DAG settles
+        // and `join_context` runs to completion locally. Poll
+        // for both in a single shared-deadline loop instead of
+        // short-circuiting on (1).
+        let store = self.context_client.datastore();
+
+        // Poll cadence matches `FALLBACK_POLL` in
+        // `handlers/join_context.rs`. The 10 s budget covers
+        // both the (~5 s) `join_context` materialisation gap
+        // observed in the `bdc61af` smoke-regression artefact
+        // and the additional (~5 s) cold-start namespace-mesh
+        // `ContextRegistered` propagation gap observed in
+        // mero-drive E2E run 25882151397 (logged in #2356).
+        // Streams that don't resolve within the window fall
+        // through to the same OpaqueError as before — the
+        // dialer retries on its next sync interval.
+        const MATERIALIZATION_WINDOW: time::Duration = time::Duration::from_secs(10);
+        const MATERIALIZATION_POLL: time::Duration = time::Duration::from_millis(200);
+
+        let deadline = Instant::now() + MATERIALIZATION_WINDOW;
+        let mut dialer_verified = false;
+        let mut materialised: Option<_> = None;
+
+        loop {
+            if !dialer_verified {
+                if let Some(group_id) =
+                    calimero_context::group_store::get_group_for_context(store, &context_id)?
+                {
+                    if MembershipRepository::new(store).is_member(&group_id, &their_identity)? {
+                        dialer_verified = true;
+                    }
+                }
+            }
+
+            if dialer_verified {
+                if let Some(ctx) = self.context_client.get_context(&context_id)? {
+                    materialised = Some(ctx);
+                    break;
+                }
+            }
+
+            if Instant::now() >= deadline {
+                break;
+            }
+            time::sleep(MATERIALIZATION_POLL).await;
+        }
+
+        if !dialer_verified {
+            // Genuinely unknown context (or cross-namespace stream
+            // leak per #2198), or namespace governance op never
+            // landed within the window. Close cleanly so unrelated
+            // sync activity is unaffected.
+            warn!(
+                %context_id,
+                ?their_identity,
+                "inbound stream for unknown context, closing cleanly"
+            );
+
+            if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
+                error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+            }
+
+            return Ok(None);
+        }
+
+        match materialised {
+            Some(ctx) => {
+                debug!(
+                    %context_id,
+                    ?their_identity,
+                    "context materialised during join race window, proceeding with inbound sync"
+                );
+                Ok(Some(ctx))
+            }
+            None => {
+                debug!(
+                    %context_id,
+                    ?their_identity,
+                    "context not materialised within join race window — sending NotMaterialized"
+                );
+                if let Err(err) = self
+                    .send(stream, &StreamMessage::NotMaterialized, None)
+                    .await
+                {
+                    error!(
+                        %err,
+                        %context_id,
+                        "failed to send NotMaterialized for non-materialised context"
+                    );
+                }
+                Ok(None)
+            }
+        }
+    }
+
     async fn internal_handle_opened_stream(
         &self,
         peer_id: PeerId,
@@ -2657,142 +2793,11 @@ impl SyncManager {
             return Ok(Some(()));
         }
 
-        let context = match self.context_client.get_context(&context_id)? {
-            Some(ctx) => ctx,
-            None => {
-                // Race window: the dialer can trigger context-level sync as
-                // a cascade of namespace-topic subscription
-                // (`subscriptions.rs::handle_subscribed` → `sync_group` /
-                // `broadcast_group_local_state`) before this node's local
-                // state has caught up. Two distinct sub-races can leave
-                // `get_context` returning `None` for a legitimate inbound:
-                //
-                //   (1) Namespace governance op `ContextRegistered` has
-                //       not yet been processed locally —
-                //       `get_group_for_context` returns `None`. This is
-                //       the cold-start gossipsub-mesh case (#2122/#2236
-                //       residuals tracked in #2356): the namespace topic
-                //       takes one or more heartbeats to form a mesh, so
-                //       the governance op landing on `peer A` can lag the
-                //       context-level sync stream from `peer A` reaching
-                //       us by several seconds.
-                //   (2) `ContextRegistered` is applied — group binding
-                //       exists, dialer is a verified namespace member —
-                //       but `join_context` has not yet materialised the
-                //       context entry. The original race shape covered
-                //       by this branch.
-                //
-                // Both resolve once the namespace governance DAG settles
-                // and `join_context` runs to completion locally. Poll
-                // for both in a single shared-deadline loop instead of
-                // short-circuiting on (1).
-                let store = self.context_client.datastore();
-
-                // Poll cadence matches `FALLBACK_POLL` in
-                // `handlers/join_context.rs`. The 10 s budget covers
-                // both the (~5 s) `join_context` materialisation gap
-                // observed in the `bdc61af` smoke-regression artefact
-                // and the additional (~5 s) cold-start namespace-mesh
-                // `ContextRegistered` propagation gap observed in
-                // mero-drive E2E run 25882151397 (logged in #2356).
-                // Streams that don't resolve within the window fall
-                // through to the same OpaqueError as before — the
-                // dialer retries on its next sync interval.
-                const MATERIALIZATION_WINDOW: time::Duration = time::Duration::from_secs(10);
-                const MATERIALIZATION_POLL: time::Duration = time::Duration::from_millis(200);
-
-                let deadline = Instant::now() + MATERIALIZATION_WINDOW;
-                let mut dialer_verified = false;
-                let mut materialised: Option<_> = None;
-
-                loop {
-                    if !dialer_verified {
-                        if let Some(group_id) =
-                            calimero_context::group_store::get_group_for_context(
-                                store,
-                                &context_id,
-                            )?
-                        {
-                            if MembershipRepository::new(store)
-                                .is_member(&group_id, &their_identity)?
-                            {
-                                dialer_verified = true;
-                            }
-                        }
-                    }
-
-                    if dialer_verified {
-                        if let Some(ctx) = self.context_client.get_context(&context_id)? {
-                            materialised = Some(ctx);
-                            break;
-                        }
-                    }
-
-                    if Instant::now() >= deadline {
-                        break;
-                    }
-                    time::sleep(MATERIALIZATION_POLL).await;
-                }
-
-                if !dialer_verified {
-                    // Genuinely unknown context (or cross-namespace stream
-                    // leak per #2198), or namespace governance op never
-                    // landed within the window. Close cleanly so unrelated
-                    // sync activity is unaffected.
-                    warn!(
-                        %context_id,
-                        ?their_identity,
-                        "inbound stream for unknown context, closing cleanly"
-                    );
-
-                    if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
-                        error!(%err, %context_id, "failed to send OpaqueError for unknown context");
-                    }
-
-                    return Ok(None);
-                }
-
-                match materialised {
-                    Some(ctx) => {
-                        debug!(
-                            %context_id,
-                            ?their_identity,
-                            "context materialised during join race window, proceeding with inbound sync"
-                        );
-                        ctx
-                    }
-                    None => {
-                        // #2422 Option 4: send the typed
-                        // `NotMaterialized` instead of a bare
-                        // `OpaqueError`. The dialer was a verified
-                        // group member, just hasn't materialised
-                        // this context locally (auto-follow opt-out,
-                        // pending JoinContext, etc.). The initiator
-                        // classifies `NotMaterialized` as benign in
-                        // `manager/mod.rs::run_interval_sync_once`
-                        // and skips the `on_failure()` /
-                        // exponential-backoff path. Keeps long-lived
-                        // sync state healthy even when peer
-                        // selection picks a non-following peer.
-                        debug!(
-                            %context_id,
-                            ?their_identity,
-                            "context not materialised within join race window — sending NotMaterialized"
-                        );
-                        if let Err(err) = self
-                            .send(stream, &StreamMessage::NotMaterialized, None)
-                            .await
-                        {
-                            error!(
-                                %err,
-                                %context_id,
-                                "failed to send NotMaterialized for non-materialised context"
-                            );
-                        }
-                        return Ok(None);
-                    }
-                }
-            }
+        let Some(context) = self
+            .resolve_inbound_context(context_id, their_identity, stream)
+            .await?
+        else {
+            return Ok(None);
         };
 
         let mut _updated = None;
