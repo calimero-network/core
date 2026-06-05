@@ -113,7 +113,7 @@ impl AccessControl {
         // encoded size is the relevant bound.
         if role.len() > MAX_ROLE_NAME_LEN {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
-                "Role name exceeds the maximum length".to_owned(),
+                format!("Role name exceeds the maximum length ({MAX_ROLE_NAME_LEN} bytes)"),
             )));
         }
         Ok(())
@@ -162,6 +162,11 @@ impl AccessControl {
     /// path (where no rotation runs). Never both — matching the one-gate rule.
     /// (Unlike `grant`/`revoke`, whose collection-insert path is not locally
     /// gated and so always need the explicit fail-fast.)
+    ///
+    /// Concurrent `grant_admin` calls from two admins are last-rotation-wins per
+    /// the writer-set rotation merge (ADR 0001): both rotate from the same base
+    /// set, so only one added admin may survive the merge. Re-run if a specific
+    /// admin must end up in the set.
     ///
     /// # Errors
     /// `ActionNotAllowed` if the executor is not a current admin.
