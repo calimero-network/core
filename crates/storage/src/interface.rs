@@ -317,9 +317,36 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(());
         };
 
+        // P3: keep the hashed rotation-log child in step with the side store on
+        // every path that settles a Shared anchor's ACL (both originator
+        // self-log legs and the receiver stale-skip leg route through here).
+        // Sync BEFORE the fold/`update_hash_for` so the child's hash is already
+        // a child of the anchor when its `full_hash` is recomputed below. The
+        // anchor entity exists here (we just read it), so `add_child_to` can't
+        // create a placeholder anchor — the bootstrap-ordering hazard that keeps
+        // this out of `maybe_append_rotation_log`.
+        Self::sync_rotation_log_child_from_side_store(id)?;
+
         let base: [u8; 32] = Sha256::digest(&data).into();
         let folded = Self::fold_shared_acl(id, base);
         let _full_hash = <Index<S>>::update_hash_for(id, folded, None)?;
+        Ok(())
+    }
+
+    /// Mirror an anchor's side-store rotation log (`Key::RotationLog`) into its
+    /// hashed child entity so the log rides ordinary sync (HC/DeltaSync) and
+    /// folds into the anchor's `full_hash` (P3 of core#2716). Idempotent: the
+    /// child's always-union merge absorbs a re-push without changing its hash.
+    /// No-op when the anchor has no rotation log yet. Callers MUST ensure the
+    /// anchor entity already exists (else `save_rotation_log_child` →
+    /// `add_child_to` would synthesise a placeholder anchor).
+    ///
+    /// # Errors
+    /// Propagates rotation-log read / child-write failures.
+    fn sync_rotation_log_child_from_side_store(id: Id) -> Result<(), StorageError> {
+        if let Some(log) = crate::rotation_log::load::<S>(id)? {
+            Self::save_rotation_log_child(id, &log)?;
+        }
         Ok(())
     }
 
@@ -393,6 +420,9 @@ impl<S: StorageAdaptor> Interface<S> {
                 writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
             });
             crate::rotation_log::save::<S>(id, &log)?;
+            // `rehash_shared_anchor` mirrors the side-store log into the hashed
+            // child (P3) before folding, so the originator's own rotation rides
+            // ordinary sync.
             Self::rehash_shared_anchor(id)?;
             changed = true;
         }
@@ -404,13 +434,13 @@ impl<S: StorageAdaptor> Interface<S> {
     pub(crate) const ROTATION_LOG_CHILD_KEY: &'static [u8] = b"__calimero_rotation_log__";
 
     /// Id of the rotation-log child entity for `anchor` (P3 hashed location).
-    pub(crate) fn rotation_log_child_id(anchor: Id) -> Id {
+    pub fn rotation_log_child_id(anchor: Id) -> Id {
         crate::collections::compute_id(anchor, Self::ROTATION_LOG_CHILD_KEY)
     }
 
     /// Read the rotation log from its hashed child entity (P3). `None` if no
     /// rotation has been recorded for this anchor yet.
-    pub(crate) fn load_rotation_log_child(anchor: Id) -> Option<crate::rotation_log::RotationLog> {
+    pub fn load_rotation_log_child(anchor: Id) -> Option<crate::rotation_log::RotationLog> {
         let id = Self::rotation_log_child_id(anchor);
         S::storage_read(Key::Entry(id)).and_then(|bytes| from_slice(&bytes).ok())
     }
@@ -423,7 +453,7 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// # Errors
     /// Propagates serialization / storage failures.
-    pub(crate) fn save_rotation_log_child(
+    pub fn save_rotation_log_child(
         anchor: Id,
         log: &crate::rotation_log::RotationLog,
     ) -> Result<(), StorageError> {
@@ -1999,6 +2029,20 @@ impl<S: StorageAdaptor> Interface<S> {
                     "Applied Add/Update action to storage"
                 );
 
+                // P3: the receiver's non-stale Shared apply just settled this
+                // anchor's writer set; mirror its side-store rotation log into
+                // the hashed child so the receiver's tree matches the
+                // originator's (which created the child in
+                // `self_log_and_rehash_own_rotations`). Without this the child
+                // exists on the originator only, so the two roots diverge until
+                // an HC sweep reconciles it. The anchor was just written by
+                // `save_internal` above, so `add_child_to` can't synthesise a
+                // placeholder. No-op for non-Shared entities and for Shared
+                // value-writes that didn't touch the log.
+                if matches!(metadata.storage_type, StorageType::Shared { .. }) {
+                    Self::sync_rotation_log_child_from_side_store(id)?;
+                }
+
                 // Owner-driven convert (PR-6c): persist the incoming
                 // `schema_version` to the stored index entry. A replicated
                 // convert lands here as an ordinary signed `Action::Update`
@@ -2162,6 +2206,21 @@ impl<S: StorageAdaptor> Interface<S> {
                 writers_nonce: nonce,
             },
         )?;
+
+        // P3 NOTE: the receive path deliberately does NOT mirror into the
+        // hashed rotation-log child here. This hook fires BEFORE the anchor's
+        // own `save_internal`, so on a bootstrap apply the anchor entity does
+        // not yet exist — calling `save_rotation_log_child` (→ `add_child_to`)
+        // would create a placeholder anchor index entry with a default
+        // `storage_type` that `update_hash_for` never corrects, corrupting the
+        // anchor (it stops being `Shared`). The child is populated only on the
+        // ORIGINATOR (where the anchor is already settled — see
+        // `self_log_and_rehash_own_rotations` / `self_log_rotations_direct`) and
+        // reaches receivers as an ordinary synced tree entity (HC/DeltaSync).
+        // The side store (`Key::RotationLog`) maintained above remains the
+        // receiver's authorization source until S2.2d flips resolve onto the
+        // child.
+
         debug!(
             target: "storage::p3_write_hook",
             %id,

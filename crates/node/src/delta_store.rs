@@ -1170,6 +1170,9 @@ fn self_log_rotations_direct(
         let env = calimero_node_primitives::sync::create_runtime_env(&store, context_id, identity);
         calimero_storage::env::with_runtime_env(env, || {
             for entity_id in &appended {
+                // `rehash_shared_anchor` mirrors the side-store log into the
+                // hashed child (P3) before folding, so the originator's own
+                // rotation rides ordinary sync and folds into the anchor's root.
                 if let Err(e) = calimero_storage::interface::Interface::<
                     calimero_storage::store::MainStorage,
                 >::rehash_shared_anchor(*entity_id)
