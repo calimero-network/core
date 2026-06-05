@@ -102,7 +102,6 @@ pub(super) fn handle_namespace_governance_delta(
     let sync_timeout = this.managers.sync.sync_config.timeout;
     let pull_budget_max_peers = this.managers.sync.sync_config.parent_pull_additional_peers;
     let pull_budget_duration = this.managers.sync.sync_config.parent_pull_budget;
-    let op_for_delivery = op.clone();
     let readiness_addr = this.readiness_addr.clone();
 
     let op_for_ack = op.clone();
@@ -204,6 +203,26 @@ pub(super) fn handle_namespace_governance_delta(
                         sm.reconcile_after_divergence(report).await;
                     }));
                 }
+
+                // Prompt key recovery on receipt (#2613). A gossiped Group
+                // op we couldn't decrypt is now buffered awaiting its key.
+                // Trigger a direct key pull immediately rather than waiting
+                // for a sync tick — crucially, this is the ONLY recovery
+                // trigger for a namespace/subgroup member that holds no
+                // local context (e.g. a Restricted-subgroup member just
+                // added via `add_group_members`): the per-context interval
+                // recovery never runs for it, and without a prompt pull it
+                // never decrypts the subgroup's ops (membership,
+                // `ContextRegistered`) and so can't see or join the
+                // subgroup. Cheap when nothing is awaiting (one op-log
+                // scan); tries multiple peers. Detached for the same
+                // non-`Send` reason as the reconcile above.
+                {
+                    let sm = sync_manager.clone();
+                    drop(actix::spawn(async move {
+                        sm.recover_missing_group_keys(namespace_id, None).await;
+                    }));
+                }
             }
 
             // Phase 4: emit a `SignedAck` on the same topic when we've
@@ -267,22 +286,12 @@ pub(super) fn handle_namespace_governance_delta(
                 .await;
             }
 
-            // KeyDelivery is a reaction to a *new* member joining, so
-            // only fire it when we actually applied a new op. On
-            // `Duplicate` (extremely common — every mesh peer
-            // rebroadcasts each gossip, and a backfill round re-sends
-            // the whole DAG) re-publishing a fresh `KeyDelivery` each
-            // time grows the namespace governance DAG without bound
-            // until it hits the backfill cap and never converges again
-            // (#2319). `Pending` likewise has nothing to deliver yet.
-            if matches!(outcome, NamespaceApplyOutcome::Applied { .. }) {
-                crate::key_delivery::maybe_publish_key_delivery(
-                    &context_client,
-                    &node_client,
-                    &op_for_delivery,
-                )
-                .await;
-            }
+            // Group-key delivery to a new joiner is no longer pushed from
+            // here onto the namespace governance DAG. The joiner pulls the
+            // key directly from a sync peer when it next syncs the
+            // namespace and finds it lacks the key (see
+            // `SyncManager::recover_missing_group_keys`), which gives it a
+            // durable retry instead of the old single fire-and-forget shot.
         }
         .into_actor(this),
     );

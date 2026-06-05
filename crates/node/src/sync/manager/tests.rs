@@ -322,3 +322,93 @@ mod governance_backfill_trigger {
         assert_eq!(resolved, None);
     }
 }
+
+// =========================================================================
+// Tests for the #2613 group-key recovery trigger
+//
+// Direct (pull-based) key delivery folded the pull into
+// `sync_namespace_from_peer`, which only runs on an edge trigger (join /
+// startup / readiness) or when `should_backfill_governance` fires
+// (governance-pending > 0). A member that is caught up on governance but
+// missing only a group key has an EMPTY pending buffer and no pending edge
+// — so the pull never re-fired and it stayed permanently locked out of
+// group decryption (the exact #2613 failure mode, relocated to the pull
+// side). The fix drives key recovery from the interval tick too, gated on
+// "do I lack a key for a group I hold buffered ops for" — INDEPENDENT of
+// the governance-pending buffer. These tests pin that decoupling so a
+// future refactor can't silently re-gate key recovery behind
+// governance-pending.
+// =========================================================================
+
+mod key_recovery_trigger {
+    use std::sync::Arc;
+
+    use calimero_context::group_store::{
+        namespace_groups_awaiting_key, GroupKeyring, NamespaceOpLogService,
+    };
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::super::should_backfill_governance;
+
+    fn fresh_store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    #[test]
+    fn keyless_member_awaits_key_even_with_empty_governance_pending() {
+        let store = fresh_store();
+        let mut rng = rand::rngs::OsRng;
+        let signer_sk = PrivateKey::random(&mut rng);
+
+        let namespace_id = [0xE7u8; 32];
+        let group_id = [0xE8u8; 32];
+        let group_gid = ContextGroupId::from(group_id);
+
+        // Buffer an encrypted group op we can't decrypt (no key held) — the
+        // steady state of a member that joined but never got its key.
+        let op = SignedNamespaceOp::sign(
+            &signer_sk,
+            namespace_id,
+            vec![],
+            [0u8; 32],
+            1,
+            NamespaceOp::Group {
+                group_id,
+                key_id: GroupKeyring::key_id_for(&[0xAA; 32]),
+                encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
+                key_rotation: None,
+            },
+        )
+        .unwrap();
+        NamespaceOpLogService::new(&store, namespace_id)
+            .store_signed_operation(&op)
+            .unwrap();
+
+        // The governance-pending buffer is empty, so the #2625 backfill gate
+        // would NOT fire. This is exactly the lockout state — and the reason
+        // key recovery must NOT depend on this gate.
+        assert!(!should_backfill_governance(0));
+
+        // Key recovery still has work to do: the group is awaiting a key.
+        // The interval tick drives `recover_missing_group_keys` on this
+        // signal, decoupled from the gate above.
+        let awaiting = namespace_groups_awaiting_key(&store, namespace_id).unwrap();
+        assert_eq!(
+            awaiting,
+            vec![group_id],
+            "a keyless member must surface an awaiting group regardless of the empty governance-pending buffer"
+        );
+
+        // Once the key arrives, the recovery trigger condition clears.
+        GroupKeyring::new(&store, group_gid)
+            .store_key(&[0xAA; 32])
+            .unwrap();
+        assert!(namespace_groups_awaiting_key(&store, namespace_id)
+            .unwrap()
+            .is_empty());
+    }
+}

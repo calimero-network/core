@@ -290,6 +290,31 @@ pub enum InitPayload {
         /// sender holds locally.
         logs: Vec<([u8; 32], Vec<u8>)>,
     },
+
+    /// Pull-based recovery request for a group key the requester is
+    /// already an admitted member of but does not yet hold locally.
+    ///
+    /// This is the durable replacement for the old on-DAG `KeyDelivery`
+    /// governance op: instead of an existing member *pushing* the key
+    /// once (and only once) when it first applies the join, the joiner
+    /// — which is online and syncing — *pulls* the key from its sync
+    /// peer every sync round until it has it. The responder validates
+    /// that `requester_public_key` is a current member of `group_id`,
+    /// then ECDH-wraps the group key and replies with
+    /// [`GroupKeyResponse`](MessagePayload::GroupKeyResponse). A
+    /// responder that doesn't hold the key replies with an empty
+    /// envelope and the joiner tries another peer next round.
+    ///
+    /// **Borsh ordering**: appended at the tail of `InitPayload` (after
+    /// `RotationLogSyncRequest`) so all existing variant discriminants are
+    /// unchanged.
+    GroupKeyRequest {
+        namespace_id: [u8; 32],
+        group_id: [u8; 32],
+        /// The requester's namespace identity public key, used both for
+        /// the membership check and as the ECDH wrap recipient.
+        requester_public_key: PublicKey,
+    },
 }
 
 // =============================================================================
@@ -501,6 +526,27 @@ pub enum MessagePayload<'a> {
         /// `(entity_id, borsh(RotationLog))` for each `Shared` anchor the
         /// responder holds locally.
         logs: Vec<([u8; 32], Vec<u8>)>,
+    },
+
+    /// Response to [`GroupKeyRequest`](InitPayload::GroupKeyRequest).
+    /// Carries the ECDH-wrapped group-key envelope; empty if the
+    /// responder doesn't hold the key or the requester isn't a member
+    /// (the joiner should try another peer on its next sync round).
+    ///
+    /// `responder_identity` is the responder's namespace identity — the
+    /// trust anchor a keyless bootstrap joiner uses to seed the
+    /// namespace admin when it receives the root-group key without an
+    /// invitation (replaces the old KeyDelivery-signer trust anchor).
+    ///
+    /// **Borsh ordering**: appended at the tail of `MessagePayload` (after
+    /// `RotationLogSyncResponse`) so all existing variant discriminants are
+    /// unchanged.
+    GroupKeyResponse {
+        /// ECDH-wrapped group-key envelope (borsh-serialized
+        /// `KeyEnvelope`). Empty ⇒ no key delivered.
+        key_envelope_bytes: Vec<u8>,
+        /// Responder's namespace identity public key (the wrap sender).
+        responder_identity: PublicKey,
     },
 }
 

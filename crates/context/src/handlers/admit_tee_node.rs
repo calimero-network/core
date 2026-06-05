@@ -19,13 +19,13 @@ use calimero_governance_store::{
 /// Publish a `RootOp::KeyDelivery` wrapping the namespace group key for
 /// `member`, signed with the verifier's namespace identity (`signer_sk`).
 ///
-/// Mirrors `key_delivery::maybe_publish_key_delivery` (node crate), which is
-/// the receiver-side reaction for `MemberJoined` / `MemberJoinedOpen`. The
-/// TEE-attestation join op is an encrypted `NamespaceOp::Group` that only the
-/// verifier can apply, so that reaction never fires for it and the delivery
-/// must be issued directly here. Idempotent on the recipient side: a duplicate
-/// `KeyDelivery` for a key the node already holds is a no-op (`store_group_key`
-/// keys by content).
+/// The TEE-attestation join op is an encrypted `NamespaceOp::Group` that
+/// only the verifier can apply, so the admitted node can't decrypt its own
+/// membership until it holds the key. The verifier (which holds the key)
+/// proactively delivers it here — one-shot, admin-initiated. The joiner-side
+/// pull (`recover_missing_group_keys`) is the durable fallback. Idempotent
+/// on the recipient: a duplicate `KeyDelivery` for a key already held is a
+/// no-op (`store_key` keys by content).
 async fn deliver_group_key_to_member(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
@@ -51,10 +51,10 @@ async fn deliver_group_key_to_member(
         envelope,
     });
 
-    // Target only the admitted member's ack for delivery confirmation, matching
-    // `maybe_publish_key_delivery`. Best-effort: an unformed mesh downgrades
-    // readiness rather than failing, and the announcer re-announces (re-admit)
-    // to retry.
+    // Target only the admitted member's ack for delivery confirmation.
+    // Best-effort: an unformed mesh downgrades readiness rather than failing,
+    // and the announcer re-announces (re-admit) to retry; the pull also
+    // recovers it.
     let report = calimero_governance_store::sign_and_publish_namespace_op(
         store,
         node_client,
@@ -222,26 +222,15 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
 
                 info!(%member, ?group_id, "TEE node admitted via attestation");
 
-                // Deliver the namespace group key to the freshly-admitted TEE
-                // node. Unlike the invited-member path (`RootOp::MemberJoined`)
-                // and the Open-subgroup self-join path
-                // (`RootOp::MemberJoinedOpen`) — both of which trigger
-                // `key_delivery::maybe_publish_key_delivery` on every peer that
-                // applies the join op — a `MemberJoinedViaTeeAttestation` op is
-                // an encrypted `NamespaceOp::Group`. No other peer can decrypt
-                // (and therefore apply) it, so the receiver-side key-delivery
-                // reaction never fires and the admitted node would never receive
-                // the group key. Without the key it can never decrypt its own
-                // membership op, never see itself as a member, and never learn
-                // about the namespace's contexts — HA admission would be inert.
-                //
-                // The verifier (this node) holds the group key and signs with
-                // its namespace identity (`sk`), so it is the right party to
-                // publish the `KeyDelivery`. The envelope is ECDH-wrapped for
-                // `member` only; the bare-announcer node picks it up when it
-                // pulls the namespace governance DAG (it subscribed to the
-                // `ns/` topic at fleet-join time and the self-confirm loop in
-                // `fleet_join.rs` actively triggers `sync_namespace`).
+                // Deliver the namespace group key to the freshly-admitted
+                // TEE node. A `MemberJoinedViaTeeAttestation` op is an
+                // encrypted `NamespaceOp::Group` only the verifier can apply,
+                // so the node can't decrypt its own membership until it holds
+                // the key. The verifier holds it and signs with its namespace
+                // identity, so it publishes the `KeyDelivery` directly (the
+                // node picks it up off the DAG/gossip when it pulls the
+                // namespace governance DAG after fleet-join). Best-effort —
+                // the joiner-side pull recovers it if this delivery is missed.
                 if let Err(err) = deliver_group_key_to_member(
                     &datastore,
                     &node_client,
@@ -257,8 +246,8 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                         ?group_id,
                         ?err,
                         "TEE admission succeeded but KeyDelivery to the admitted node \
-                         failed — it will not bootstrap until the key is delivered. \
-                         Re-admission (the announcer re-announces) retries this."
+                         failed — the node recovers it via the joiner-side pull, or on \
+                         re-admission."
                     );
                 }
 

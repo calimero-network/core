@@ -26,9 +26,10 @@ pub use self::core::{
 };
 pub use self::dag::{NamespaceDagService, NamespaceHead};
 pub use self::governance::{
-    apply_signed_namespace_op, collect_skeleton_delta_ids_for_group, sign_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, KeyUnwrapFailure,
-    NamespaceGovernance, PendingKeyDelivery,
+    apply_received_group_key, apply_signed_namespace_op, build_group_key_delivery,
+    collect_skeleton_delta_ids_for_group, namespace_groups_awaiting_key,
+    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult,
+    KeyUnwrapFailure, NamespaceGovernance,
 };
 pub(crate) use self::governance::{classify_report_readiness, min_acks_after_local_mutation};
 pub use self::membership::NamespaceMembershipService;
