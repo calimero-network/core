@@ -599,3 +599,165 @@ fn long_partition_reconciliation_converges() {
         "R1 (HLC 25) wins HLC tiebreak vs L1 (HLC 20)"
     );
 }
+
+// =============================================================================
+// Scenario 5: writer-set convergence when a hash-neutral rotation is reconciled
+// via HashComparison rather than applied as a delta (core#2716 / #2703)
+// =============================================================================
+
+/// A writer-set rotation is **hash-neutral**: the writers live in `Metadata`,
+/// which is `#[borsh(skip)]` out of the Merkle hash, so rotating does NOT change
+/// the wrapper's hash. HashComparison reconciles entity *trees* by hash, so when
+/// a node catches up to a peer's branch via HC (not by applying the rotation as
+/// a forward/merge delta) it sees the wrapper as hash-equal, skips it, and never
+/// learns the rotation — its rotation log stays stale and `resolve_local`
+/// (`SharedStorage::writers()`, the local gate) returns the wrong set. HC does
+/// not carry rotation logs at all.
+///
+/// This is the gap the real-partition e2e (`shared-storage-concurrent-rotation-
+/// converge`) exposes once #2716's batch-abort brick is fixed: the data
+/// converges but `shared_is_writer(C)` disagrees across nodes (the author of the
+/// `{A,C}` rotation says C is a writer; the node that only HC-reconciled says it
+/// is not).
+///
+/// This test reproduces that divergence deterministically, then shows the fix's
+/// core convergence property: **unioning the peer's rotation-log entries into
+/// the local log** (dedup by `delta_id`, which `rotation_log::append` does)
+/// makes `resolve_local` converge — independent of the Merkle hash. The
+/// node-sync layer performs this union when it reconciles a peer (the
+/// production wiring); here we drive the union directly to assert the property.
+#[test]
+fn writer_set_diverges_when_rotation_reconciled_via_hc_until_log_union() {
+    let _nonce_off = disable_nonce_check_for_testing();
+    // "Converged" node that applied BOTH concurrent rotations as deltas.
+    type Both = MockedStorage<5540>;
+    // "HC node" that reconciled the peer's branch via HashComparison and so
+    // never applied the peer's (hash-neutral) rotation as a delta.
+    type Hc = MockedStorage<5541>;
+    let both_root = setup_root::<Both>();
+    let hc_root = setup_root::<Hc>();
+
+    let alice_sk = make_signing_key(0xA5);
+    let bob_sk = make_signing_key(0xB5);
+    let alice = pubkey_of(&alice_sk);
+    let bob = pubkey_of(&bob_sk);
+    // Carol is the writer node-1 adds; she holds no node here — we only assert
+    // on whether C is in the resolved writer set.
+    let carol = pubkey_of(&make_signing_key(0xC5));
+    let id = Id::new([0x55; 32]);
+
+    let mut dag = Dag::new();
+
+    // Bootstrap {Alice, Bob} on both nodes.
+    let g0 = [0x50; 32];
+    let mk_bootstrap = |root: ChildInfo| Delta {
+        id: g0,
+        parents: vec![],
+        hlc_ns: one_sec(10),
+        action: build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            [alice, bob].into_iter().collect(),
+            one_sec(10),
+            &alice_sk,
+            vec![root],
+        ),
+    };
+    dag.record(g0, vec![]);
+    deliver::<Both>(&mk_bootstrap(both_root.clone()), &dag).unwrap();
+    deliver::<Hc>(&mk_bootstrap(hc_root.clone()), &dag).unwrap();
+
+    // node-1 (Alice) rotates -> {Alice, Carol}. LATER HLC, so it wins the
+    // concurrent tiebreak (mirrors the e2e: node-1's window-2 rotation wins).
+    let d_add_c = [0x51; 32];
+    let rot_add_c = Delta {
+        id: d_add_c,
+        parents: vec![g0],
+        hlc_ns: one_sec(30),
+        action: build_signed_shared_action(
+            false,
+            id,
+            b"v0".to_vec(),
+            [alice, carol].into_iter().collect(),
+            one_sec(30),
+            &alice_sk,
+            vec![],
+        ),
+    };
+    dag.record(d_add_c, vec![g0]);
+
+    // node-2 (Bob) concurrently rotates -> {Alice} (drops itself). EARLIER HLC.
+    let d_drop_b = [0x52; 32];
+    let rot_drop_b = Delta {
+        id: d_drop_b,
+        parents: vec![g0],
+        hlc_ns: one_sec(20),
+        action: build_signed_shared_action(
+            false,
+            id,
+            b"v0".to_vec(),
+            [alice].into_iter().collect(),
+            one_sec(20),
+            &bob_sk,
+            vec![],
+        ),
+    };
+    dag.record(d_drop_b, vec![g0]);
+
+    // The "Both" node applies BOTH rotations as deltas (forward/merge path):
+    // its log gets both entries.
+    deliver::<Both>(&rot_add_c, &dag).unwrap();
+    deliver::<Both>(&rot_drop_b, &dag).unwrap();
+
+    // The "HC node" only ever applies node-2's {Alice} rotation as a delta; it
+    // reconciled node-1's branch via HashComparison, which (rotation being
+    // hash-neutral) never delivered node-1's {Alice, Carol} rotation. So its log
+    // is missing that entry.
+    deliver::<Hc>(&rot_drop_b, &dag).unwrap();
+
+    // resolve_local (the SharedStorage::writers() local gate) on each node.
+    let both_writers =
+        rotation_log::resolve_local(&rotation_log::load::<Both>(id).unwrap().unwrap())
+            .expect("Both must resolve a writer set");
+    let hc_writers_before =
+        rotation_log::resolve_local(&rotation_log::load::<Hc>(id).unwrap().unwrap())
+            .expect("Hc must resolve a writer set");
+
+    // THE BUG: the two nodes disagree on the resolved writer set — specifically
+    // on Carol. "Both" resolves {Alice, Carol} (node-1's later-HLC rotation
+    // wins); the HC node, missing that rotation, resolves {Alice}.
+    assert_eq!(
+        both_writers,
+        [alice, carol].into_iter().collect(),
+        "the node that applied both rotations resolves node-1's later-HLC {{A,C}}"
+    );
+    assert!(
+        both_writers.contains(&carol) && !hc_writers_before.contains(&carol),
+        "repro of the #2703 divergence: HC node lacks Carol because it never \
+         received node-1's hash-neutral rotation (HC carries no rotation log); \
+         both={both_writers:?} hc={hc_writers_before:?}"
+    );
+
+    // THE FIX (core property): union the peer's rotation-log entries into the
+    // HC node's log. `rotation_log::append` dedups by delta_id, so this is a
+    // safe set-union — exactly what the node-sync reconciliation must do.
+    let both_log = rotation_log::load::<Both>(id).unwrap().unwrap();
+    let hc_log = rotation_log::load::<Hc>(id).unwrap().unwrap();
+    let hc_seen: std::collections::BTreeSet<[u8; 32]> =
+        hc_log.entries.iter().map(|e| e.delta_id).collect();
+    for entry in &both_log.entries {
+        if !hc_seen.contains(&entry.delta_id) {
+            rotation_log::append::<Hc>(id, entry.clone()).unwrap();
+        }
+    }
+
+    // After the union the HC node resolves the SAME writer set — convergence.
+    let hc_writers_after =
+        rotation_log::resolve_local(&rotation_log::load::<Hc>(id).unwrap().unwrap()).unwrap();
+    assert_eq!(
+        hc_writers_after, both_writers,
+        "after unioning the peer's rotation log, the HC node converges on the \
+         same writer set (Carol is now a writer everywhere)"
+    );
+}
