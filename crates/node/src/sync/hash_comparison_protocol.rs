@@ -2523,4 +2523,150 @@ mod tests {
             "after the union the HC node's anchor own_hash must match the full node's"
         );
     }
+
+    /// Phase 2 leg 4 (core#2716): the originator records its OWN rotation via
+    /// `self_log_and_rehash_own_rotations` (the execute pipeline's post-delta
+    /// step), the receiver via `apply_action`. Both must land the *same* anchor
+    /// `own_hash` — otherwise the author of a rotation never converges with the
+    /// peers it ships the rotation to.
+    #[test]
+    fn originator_self_log_and_rehash_matches_receiver_apply_action() {
+        use core::num::NonZeroU128;
+        use std::collections::BTreeSet;
+        use std::sync::Arc;
+
+        use calimero_storage::action::Action;
+        use calimero_storage::entities::{full_mask, ChildInfo, Metadata};
+        use calimero_storage::interface::ApplyContext;
+        use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+        use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+        use ed25519_dalek::SigningKey;
+
+        fn hlc(ns: u64) -> HybridTimestamp {
+            HybridTimestamp::new(Timestamp::new(
+                NTP64(ns),
+                ID::from(NonZeroU128::new(1).unwrap()),
+            ))
+        }
+
+        let context_id = ContextId::from([0xC8; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let anchor_id = Id::new([0x88; 32]);
+        let rotation_delta_id = [0xE1; 32];
+
+        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
+        let alice = pubkey_of(&alice_sk);
+        let bob = pubkey_of(&SigningKey::from_bytes(&[0xB2; 32]));
+        let carol = pubkey_of(&SigningKey::from_bytes(&[0xC3; 32]));
+        let genesis: BTreeSet<PublicKey> = [alice, bob].into_iter().collect();
+        let rotated: BTreeSet<PublicKey> = [alice, carol].into_iter().collect();
+
+        // Bootstrap a `Shared` anchor {Alice,Bob} under the context root.
+        let bootstrap = |store: &Store| {
+            let env = create_runtime_env(store, context_id, identity);
+            with_runtime_env(env, || {
+                let root_id = Id::new(*context_id.as_ref());
+                Interface::<MainStorage>::apply_action(
+                    Action::Update {
+                        id: root_id,
+                        data: vec![],
+                        ancestors: vec![],
+                        metadata: Metadata::default(),
+                    },
+                    &ApplyContext::empty(),
+                )
+                .expect("create root");
+                let (root_hash, _) = Index::<MainStorage>::get_hashes_for(root_id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(([0; 32], [0; 32]));
+                let root_meta = Index::<MainStorage>::get_index(root_id)
+                    .ok()
+                    .flatten()
+                    .map(|idx| idx.metadata.clone())
+                    .unwrap_or_default();
+                Interface::<MainStorage>::apply_action(
+                    build_signed_shared_action(
+                        true,
+                        anchor_id,
+                        b"v0".to_vec(),
+                        genesis.clone(),
+                        10,
+                        &alice_sk,
+                        vec![ChildInfo::new(root_id, root_hash, root_meta)],
+                    ),
+                    &ApplyContext {
+                        effective_writers: Some(full_mask(genesis.clone())),
+                        delta_id: Some([0xE0; 32]),
+                        delta_hlc: Some(hlc(10)),
+                    },
+                )
+                .expect("bootstrap shared anchor");
+            });
+        };
+
+        let own_hash = |store: &Store| -> [u8; 32] {
+            let env = create_runtime_env(store, context_id, identity);
+            with_runtime_env(env, || {
+                Index::<MainStorage>::get_hashes_for(anchor_id)
+                    .unwrap()
+                    .unwrap()
+                    .1
+            })
+        };
+
+        // The rotation {Alice,Bob} -> {Alice,Carol}, identical on both sides.
+        let rotation = || {
+            build_signed_shared_action(
+                false,
+                anchor_id,
+                b"v0".to_vec(),
+                rotated.clone(),
+                30,
+                &alice_sk,
+                vec![],
+            )
+        };
+
+        // Receiver: applies the rotation as a delta (maybe_append + fold).
+        let receiver = Store::new(Arc::new(InMemoryDB::owned()));
+        bootstrap(&receiver);
+        with_runtime_env(create_runtime_env(&receiver, context_id, identity), || {
+            Interface::<MainStorage>::apply_action(
+                rotation(),
+                &ApplyContext {
+                    effective_writers: Some(full_mask(genesis.clone())),
+                    delta_id: Some(rotation_delta_id),
+                    delta_hlc: Some(hlc(30)),
+                },
+            )
+            .expect("receiver applies rotation");
+        });
+
+        // Originator: records the SAME rotation via the leg-4 primitive (the
+        // local write left the anchor's own_hash folding the pre-rotation set).
+        let originator = Store::new(Arc::new(InMemoryDB::owned()));
+        bootstrap(&originator);
+        with_runtime_env(
+            create_runtime_env(&originator, context_id, identity),
+            || {
+                let changed = Interface::<MainStorage>::self_log_and_rehash_own_rotations(
+                    &[rotation()],
+                    rotation_delta_id,
+                    hlc(30),
+                )
+                .expect("originator self-log + rehash");
+                assert!(changed, "leg 4 must register the originator's own rotation");
+            },
+        );
+
+        assert_eq!(
+            own_hash(&originator),
+            own_hash(&receiver),
+            "originator (self_log_and_rehash) and receiver (apply_action) must land \
+             the same folded anchor own_hash"
+        );
+    }
 }
