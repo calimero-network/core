@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,7 +18,9 @@ use tracing::{debug, warn};
 
 use crate::constants;
 use crate::delta_store::DeltaStore;
-use crate::peer_identity_cache::{ObservedMembership, PeerIdentityCache, PEER_IDENTITY_TTL_SECS};
+use crate::peer_identity_cache::{
+    ObservedMembership, PeerIdentityCache, PeerScoreTier, PEER_IDENTITY_TTL_SECS,
+};
 use crate::run::NodeMode;
 use crate::specialized_node_invite_state::{
     new_pending_specialized_node_invites, PendingSpecializedNodeInvites,
@@ -170,6 +172,12 @@ pub(crate) struct NodeState {
     /// `observe_peer_identity` gate, and never a trust gate — see that
     /// field's trust-model docs.
     pub(crate) peer_identity_cache: Arc<Mutex<PeerIdentityCache>>,
+    /// Last gossipsub app-specific score tier pushed to the network layer
+    /// per peer (#2513). The reconciler on the snapshot tick diffs the
+    /// desired tiers (derived from `peer_identity_cache`) against this and
+    /// pushes only the changes, so a peer's score is updated on a
+    /// membership *transition* rather than on every observed op.
+    pub(crate) peer_scores: Arc<Mutex<BTreeMap<PeerId, PeerScoreTier>>>,
     /// Per-context reconcile-after-divergence attempt state. Used by the
     /// sync manager to apply exponential backoff between successive
     /// reconcile attempts for the same context, so a persistently
@@ -238,6 +246,7 @@ impl NodeState {
             governance_pending: Arc::new(DashMap::new()),
             peer_identities: Arc::new(DashMap::new()),
             peer_identity_cache: Arc::new(Mutex::new(PeerIdentityCache::default())),
+            peer_scores: Arc::new(Mutex::new(BTreeMap::new())),
             reconcile_attempts: Arc::new(DashMap::new()),
             sync_status: Arc::new(DashMap::new()),
         }
@@ -299,6 +308,15 @@ impl NodeState {
     /// across synchronous work (no `.await` in scope).
     pub(crate) fn lock_peer_identity_cache(&self) -> MutexGuard<'_, PeerIdentityCache> {
         self.peer_identity_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Lock the per-peer score-tier tracker, recovering a poisoned guard
+    /// (same rationale as `lock_peer_identity_cache`). Held only across
+    /// synchronous work in the score reconciler.
+    pub(crate) fn lock_peer_scores(&self) -> MutexGuard<'_, BTreeMap<PeerId, PeerScoreTier>> {
+        self.peer_scores
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }

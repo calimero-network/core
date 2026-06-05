@@ -232,8 +232,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // membership signal on a cold cache instead of waiting for live
     // traffic to refill it. Then snapshot it back periodically.
     crate::peer_identity_persist::hydrate(&node_state, &datastore);
-    let _peer_identity_tick =
-        crate::peer_identity_persist::spawn_snapshot_tick(node_state.clone(), datastore.clone());
+    let _peer_identity_tick = crate::peer_identity_persist::spawn_snapshot_tick(
+        node_state.clone(),
+        datastore.clone(),
+        network_client.clone(),
+    );
     // Drop removed members from the cache promptly on `MemberRemoved`,
     // rather than waiting for their entries to age out via TTL.
     let _peer_identity_invalidation =
