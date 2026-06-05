@@ -624,10 +624,24 @@ where
     let mut total = 0usize;
     for context_id in context_ids {
         let replay = replay.clone();
-        total += drain_absorbed_records(store, &context_id, move |buffered| {
+        // Warn-and-continue rather than `?`: one context's drain failure (a
+        // corrupt store entry, an apply error) must not strand every *other*
+        // context's stragglers for this boot. Mirrors the live
+        // `drain_all_absorbed` path, which calls the infallible `drain_absorbed`
+        // per context. The AbsorbBuffer is durable, so a skipped context is
+        // retried on the next binary-advance hook or restart.
+        match drain_absorbed_records(store, &context_id, move |buffered| {
             replay(context_id, buffered)
         })
-        .await?;
+        .await
+        {
+            Ok(n) => total += n,
+            Err(err) => warn!(
+                %context_id,
+                %err,
+                "absorb recovery: drain failed for context; skipping (durable buffer will retry)"
+            ),
+        }
     }
     Ok(total)
 }
