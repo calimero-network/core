@@ -1094,6 +1094,7 @@ fn self_log_rotations_direct(
     delta_hlc: calimero_storage::logical_clock::HybridTimestamp,
     actions: &[Action],
 ) {
+    let mut appended: Vec<Id> = Vec::new();
     for action in actions {
         let (entity_id, metadata) = match action {
             Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
@@ -1141,7 +1142,39 @@ fn self_log_rotations_direct(
         if let Err(e) = save_rotation_log_direct(context_client, context_id, entity_id, &log) {
             warn!(?e, %context_id, %entity_id,
                 "self-log: failed to write rotation log — leaving for restore retry");
+            continue;
         }
+        appended.push(entity_id);
+    }
+
+    // Phase 2 of core#2716: self-logging just changed these anchors' resolved
+    // writer sets WITHOUT an entity write, so their folded `own_hash` (which now
+    // commits to the ACL) is stale — the originator would otherwise keep a root
+    // that reflects the pre-rotation set and never converge with peers that
+    // applied the rotation as a delta. Recompute + propagate, mirroring the
+    // `union_received_rotation_logs` rehash on the receive path.
+    //
+    // NOTE: this corrects the originator's LOCAL root. The delta's
+    // `expected_root_hash` was already computed at `commit_root` (before this
+    // self-log), so it still reflects the stale fold; making the *gossiped*
+    // expected root correct requires running self-log + rehash before
+    // `commit_root` in the execute pipeline (tracked follow-up — see
+    // docs/design/unified-causal-log.md).
+    if !appended.is_empty() {
+        let store = context_client.datastore_handle().into_inner();
+        let identity = calimero_primitives::identity::PublicKey::from([0u8; 32]);
+        let env = calimero_node_primitives::sync::create_runtime_env(&store, context_id, identity);
+        calimero_storage::env::with_runtime_env(env, || {
+            for entity_id in &appended {
+                if let Err(e) = calimero_storage::interface::Interface::<
+                    calimero_storage::store::MainStorage,
+                >::rehash_shared_anchor(*entity_id)
+                {
+                    warn!(?e, %context_id, %entity_id,
+                        "self-log: rehash_shared_anchor failed — root may lag until next sync");
+                }
+            }
+        });
     }
 }
 
