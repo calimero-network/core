@@ -61,18 +61,22 @@ impl ComponentsDemo {
         Ok(self.roles.has_role(&role, &who)?)
     }
 
-    /// e2e-support method (not for production). Attempt to grant a role,
-    /// returning whether the local admin guard accepted it (`true`) or refused
-    /// it (`false`) instead of trapping — so the adversarial workflow can assert
-    /// a non-admin is refused without failing the RPC call itself. A real app
-    /// should propagate the error (use `grant_role`). The authoritative
-    /// rejection of a *forged grant delta* that bypasses this gate happens at
-    /// merge (same writer-set-guarded mechanism the settings adversarial proves).
+    /// e2e-support method (not for production). Reports whether the caller is
+    /// allowed to grant (i.e. is an admin) as a bool instead of trapping, so the
+    /// adversarial workflow can assert a non-admin is refused without failing the
+    /// RPC call. A real app should just call `grant_role` and propagate the
+    /// error. Authorization is checked explicitly here (rather than swallowing
+    /// the error from `grant`) so a genuine storage error still propagates rather
+    /// than masquerading as a refusal. The authoritative rejection of a *forged
+    /// grant delta* that bypasses this gate happens at merge (the same
+    /// writer-set-guarded mechanism the settings adversarial step proves).
     pub fn try_grant_role(&mut self, role: String, who: PublicKey) -> app::Result<bool> {
-        match self.roles.grant(&role, who) {
-            Ok(()) => Ok(true),
-            Err(_) => Ok(false),
+        let me: PublicKey = env::executor_id().into();
+        if !self.roles.is_admin(&me) {
+            return Ok(false);
         }
+        self.roles.grant(&role, who)?;
+        Ok(true)
     }
 
     /// Owner-only write. The guard fails fast; the boundary is that `config` is

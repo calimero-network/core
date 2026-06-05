@@ -43,6 +43,11 @@ use crate::interface::StorageError;
 /// key is unambiguous without escaping.
 const ROLE_MEMBER_SEP: char = '\0';
 
+/// Upper bound on a role name's length. Role names are admin-supplied and become
+/// part of a storage key; a bound keeps key sizes sane and caps how much a
+/// (compromised) admin can inflate the registry per entry.
+const MAX_ROLE_NAME_LEN: usize = 128;
+
 /// The registry value type: a last-writer-wins boolean. `true` = the member
 /// currently holds the role; `false` = revoked. Storing a flag (rather than
 /// removing the entry) keeps membership a plain LWW merge with no tombstone.
@@ -91,14 +96,22 @@ impl AccessControl {
         self.grants.reassign_deterministic_id(field_name);
     }
 
-    /// Reject role names containing the separator byte. Without this a role
-    /// name like `"editor\0<hex>"` could craft a key that collides with a
-    /// different `(role, member)` pair — a privilege-confusion vector. Called by
-    /// every role method before a key is built.
+    /// Validate a role name. Rejects names containing the separator byte
+    /// (`ROLE_MEMBER_SEP`) — without this a name like `"editor\0<hex>"` could
+    /// craft a key that collides with a different `(role, member)` pair, a
+    /// privilege-confusion vector — and names longer than [`MAX_ROLE_NAME_LEN`].
+    /// The separator check references the same constant the key uses, so it
+    /// stays correct if the separator is ever changed. Called by every role
+    /// method before a key is built.
     fn check_role(role: &str) -> Result<(), StoreError> {
         if role.contains(ROLE_MEMBER_SEP) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "Role name must not contain a NUL byte".to_owned(),
+            )));
+        }
+        if role.len() > MAX_ROLE_NAME_LEN {
+            return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
+                "Role name exceeds the maximum length".to_owned(),
             )));
         }
         Ok(())
@@ -181,8 +194,11 @@ impl AccessControl {
             return self.only_admin();
         }
         // `rotate_writers` also rejects an empty set, but bail early with a
-        // clearer message before attempting the rotation.
+        // clearer message before attempting the rotation. Authorize first so a
+        // non-admin gets "not an admin" rather than learning the set is down to
+        // its last member.
         if admins.is_empty() {
+            self.only_admin()?;
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "Cannot revoke the last admin".to_owned(),
             )));
@@ -423,5 +439,19 @@ mod tests {
         assert!(ac.grant("editor\0evil", BOB.into()).is_err());
         assert!(ac.revoke("editor\0evil", &BOB.into()).is_err());
         assert!(ac.has_role("editor\0evil", &BOB.into()).is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn over_long_role_name_is_rejected() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        let mut ac = Root::new(AccessControl::new_admin_caller);
+
+        let long = "r".repeat(super::MAX_ROLE_NAME_LEN + 1);
+        assert!(ac.grant(&long, BOB.into()).is_err());
+        // A name at the limit is fine.
+        let ok = "r".repeat(super::MAX_ROLE_NAME_LEN);
+        assert!(ac.grant(&ok, BOB.into()).is_ok());
     }
 }
