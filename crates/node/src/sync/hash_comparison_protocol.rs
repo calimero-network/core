@@ -876,7 +876,11 @@ pub(crate) fn union_received_rotation_logs(logs: &[([u8; 32], Vec<u8>)]) -> usiz
 /// Best-effort and mixed-version safe: an older peer that doesn't understand
 /// `RotationLogSyncRequest` errors/closes the stream, which surfaces here as an
 /// `Err`/`None` and is swallowed by the caller — the session is unaffected.
-async fn reconcile_rotation_logs_with_peer<T: SyncTransport>(
+///
+/// Also driven standalone (on a fresh stream) by `SyncManager` from the
+/// protocol-selection `None` path, where the Merkle roots already match but
+/// hash-neutral rotations may still diverge (core#2716).
+pub(crate) async fn reconcile_rotation_logs_with_peer<T: SyncTransport>(
     transport: &mut T,
     context_id: ContextId,
     identity: PublicKey,
