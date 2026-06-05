@@ -1202,12 +1202,16 @@ impl ContextManager {
                             // victim first when at capacity.
                             let cache_key = (application_id, svc_name);
                             let _ = act.modules.insert(cache_key.clone(), module.clone());
-                            // Populate the read-only method set alongside the module
-                            // cache so lock selection at execute time is O(1).
-                            let _ = act.read_only_methods.insert(
-                                cache_key,
-                                read_only_set.unwrap_or_else(|| Arc::new(HashSet::new())),
-                            );
+                            // Populate the read-only method set only when we
+                            // successfully parsed the embedded ABI (fresh-compile
+                            // path). When `read_only_set` is None (precompiled
+                            // path where raw bytecode is not re-fetched), skip the
+                            // insert so a subsequent fresh compile can populate it
+                            // correctly. An absent entry in `read_only_methods`
+                            // falls back to the write lock (fail-safe).
+                            if let Some(set) = read_only_set {
+                                let _ = act.read_only_methods.insert(cache_key, set);
+                            }
                         } else {
                             debug!(
                                 %application_id,

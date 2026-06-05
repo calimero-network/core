@@ -409,25 +409,31 @@ impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
         self.0.index_last(lo, hi)
     }
 
-    // Write methods return their "nothing written" values — a read-only execution
-    // should produce an empty artifact; the post-exec assertion catches violations.
+    // Write methods are suppressed — a read-only execution must not mutate state.
+    // A debug trace makes misbehaving #[app::view] methods observable; the post-exec
+    // assertion in `internal_execute` catches any that still produce a root_hash.
     fn set(&mut self, _key: Key, _value: Value) -> Option<Value> {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (set)");
         None
     }
 
     fn remove(&mut self, _key: &Key) -> Option<Value> {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (remove)");
         None
     }
 
     fn index_set(&mut self, _key: &[u8], _value: &[u8]) -> bool {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_set)");
         false
     }
 
     fn index_del(&mut self, _key: &[u8]) -> bool {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_del)");
         false
     }
 
     fn index_del_prefix(&mut self, _prefix: &[u8]) -> bool {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_del_prefix)");
         false
     }
 }
