@@ -323,6 +323,78 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(())
     }
 
+    /// Originator-side companion to the receive path's
+    /// `maybe_append_rotation_log` + fold: for each `Shared` rotation in this
+    /// delta's `actions`, append it to the anchor's rotation log (idempotent on
+    /// `delta_id`, and only when the writer set actually changed) and recompute
+    /// the folded `own_hash`. Returns `true` if any anchor changed, so the
+    /// caller can recompute the context root.
+    ///
+    /// The local write path computes a Shared anchor's `own_hash` *during* WASM
+    /// execution — before the delta (hence `delta_id`) exists — so the
+    /// originator's own rotation isn't in its log yet and the fold uses the
+    /// pre-rotation set. The execute pipeline calls this once the delta is built
+    /// (and signed) to make the originator's root reflect its OWN rotation, so
+    /// it converges with peers that apply the rotation as a delta. Mirrors the
+    /// node-side `self_log_rotations_direct`, but in-crate so the context
+    /// execute handler can call it before committing the root.
+    ///
+    /// # Errors
+    /// Propagates rotation-log / index read/write failures.
+    pub fn self_log_and_rehash_own_rotations(
+        actions: &[crate::action::Action],
+        delta_id: [u8; 32],
+        delta_hlc: crate::logical_clock::HybridTimestamp,
+    ) -> Result<bool, StorageError> {
+        use crate::action::Action;
+
+        let mut changed = false;
+        for action in actions {
+            let (id, metadata) = match action {
+                Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
+                    (*id, metadata)
+                }
+                Action::DeleteRef { .. } | Action::Compare { .. } => continue,
+            };
+            let StorageType::Shared {
+                writers,
+                signature_data,
+            } = &metadata.storage_type
+            else {
+                continue;
+            };
+
+            let mut log = crate::rotation_log::load::<S>(id)?
+                .unwrap_or_else(crate::rotation_log::RotationLog::empty);
+            // Append only on an actual rotation (writers changed); dedup on
+            // delta_id. Mirrors `maybe_append_rotation_log` /
+            // `self_log_rotations_direct`.
+            let prior = log
+                .entries
+                .last()
+                .map(|e| &e.new_writers)
+                .or_else(|| log.snapshot.as_ref().map(|s| &s.writers));
+            if prior.is_some_and(|p| p == writers) {
+                continue;
+            }
+            if log.entries.iter().any(|e| e.delta_id == delta_id) {
+                continue;
+            }
+
+            log.entries.push(crate::rotation_log::RotationLogEntry {
+                delta_id,
+                delta_hlc,
+                signer: signature_data.as_ref().and_then(|s| s.signer),
+                new_writers: writers.clone(),
+                writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
+            });
+            crate::rotation_log::save::<S>(id, &log)?;
+            Self::rehash_shared_anchor(id)?;
+            changed = true;
+        }
+        Ok(changed)
+    }
+
     /// The [`OpMask`] an action requires of its signer to be authorized.
     /// `Add`/`Update` are a single `WRITE` capability for now (INSERT vs UPDATE
     /// is not split — see the OpMask design); `DeleteRef` requires `DELETE`.

@@ -26,8 +26,10 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_runtime::logic::Outcome;
 use calimero_storage::{
+    address::Id,
     delta::{CausalDelta, StorageDelta},
     env::{with_runtime_env, RuntimeEnv},
+    index::Index,
     interface::Interface,
     store::MainStorage,
 };
@@ -46,7 +48,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::update_application::{
-    update_application_id, update_application_with_migration,
+    create_storage_callbacks, update_application_id, update_application_with_migration,
 };
 use crate::ContextManager;
 use calimero_governance_store::metrics::ExecutionLabels;
@@ -1596,13 +1598,55 @@ async fn internal_execute(
             let hlc = calimero_storage::env::hlc_timestamp();
             let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
-            let delta = CausalDelta {
+            let mut delta = CausalDelta {
                 id: delta_id,
                 parents,
                 actions,
                 hlc,
                 expected_root_hash: root_hash,
             };
+
+            // Leg 4 of the ACL-in-root fold (core#2716): the local write path
+            // computed each `Shared` anchor's `own_hash` DURING WASM execution —
+            // before this `delta_id` existed — so the originator's own rotation
+            // isn't in its rotation log yet and the fold used the pre-rotation
+            // writer set. Now that the (signed) delta is built, self-log its
+            // rotations + rehash the affected anchors, then recompute the
+            // context root so BOTH `context.root_hash` and the delta's
+            // `expected_root_hash` reflect the new writer set. Peers fold the
+            // same resolved set when they apply the rotation, so every node
+            // converges. No-op unless this delta rotates a `Shared` writer set.
+            {
+                let callbacks = create_storage_callbacks(&store, context.id);
+                let env = RuntimeEnv::new(
+                    callbacks.read,
+                    callbacks.write,
+                    callbacks.remove,
+                    *context.id.as_ref(),
+                    *identity_private_key.public_key().as_ref(),
+                );
+                let recomputed_root =
+                    with_runtime_env(env, || -> eyre::Result<Option<[u8; 32]>> {
+                        let changed = Interface::<MainStorage>::self_log_and_rehash_own_rotations(
+                            &delta.actions,
+                            delta.id,
+                            delta.hlc,
+                        )?;
+                        if !changed {
+                            return Ok(None);
+                        }
+                        let root_id = Id::new(*context.id.as_ref());
+                        let (full_hash, _) = Index::<MainStorage>::get_hashes_for(root_id)?
+                            .ok_or_else(|| {
+                                eyre::eyre!("root index missing after rotation rehash")
+                            })?;
+                        Ok(Some(full_hash))
+                    })?;
+                if let Some(full_hash) = recomputed_root {
+                    context.root_hash = full_hash.into();
+                    delta.expected_root_hash = full_hash;
+                }
+            }
 
             // Update context's DAG heads to this new delta
             context.dag_heads = vec![delta.id];
