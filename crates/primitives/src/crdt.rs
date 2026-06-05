@@ -147,6 +147,17 @@ pub enum CrdtType {
     /// Merge: Latest update per writer based on nonce/timestamp.
     SharedStorage,
 
+    /// Rotation log (P3 of core#2716).
+    ///
+    /// A per-`Shared`-anchor child holding the writer-set rotation history,
+    /// stored as `borsh(RotationLog)`. Its merge is an **unconditional union**
+    /// of entries by `delta_id` (add-wins, order-invariant) — exactly the
+    /// append+dedup the old side store did, but now first-class hashed state
+    /// that rides ordinary sync. Entries are authenticated at **resolve time**
+    /// (each carries its signature + signed payload), not at merge time, so the
+    /// merge itself trusts nothing.
+    RotationLog,
+
     /// Custom CRDT with app-defined merge.
     ///
     /// For types annotated with `#[derive(CrdtState)]` that define custom merge logic.
