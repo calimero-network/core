@@ -560,10 +560,22 @@ fn merge_vector(_existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError
 fn merge_rotation_log(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     use crate::rotation_log::RotationLog;
 
-    let mut merged: RotationLog =
-        borsh::from_slice(existing).map_err(|e| MergeError::SerializationError(e.to_string()))?;
-    let incoming_log: RotationLog =
-        borsh::from_slice(incoming).map_err(|e| MergeError::SerializationError(e.to_string()))?;
+    // Empty bytes = an empty log, NOT a parse error. The first write to a
+    // rotation-log child registers the child in the index (so the merge path
+    // fires) before the value bytes exist, so the stored side is `&[]` on that
+    // first merge; treating it as empty lets the union absorb the incoming log
+    // instead of falling back to LWW (which could pick the empty side and wipe
+    // the entries).
+    let parse = |bytes: &[u8]| -> Result<RotationLog, MergeError> {
+        if bytes.is_empty() {
+            Ok(RotationLog::empty())
+        } else {
+            borsh::from_slice(bytes).map_err(|e| MergeError::SerializationError(e.to_string()))
+        }
+    };
+
+    let mut merged: RotationLog = parse(existing)?;
+    let incoming_log: RotationLog = parse(incoming)?;
 
     let mut seen: std::collections::BTreeSet<[u8; 32]> =
         merged.entries.iter().map(|e| e.delta_id).collect();

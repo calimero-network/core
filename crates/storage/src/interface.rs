@@ -399,6 +399,56 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(changed)
     }
 
+    /// Field key for the rotation-log child entity under a `Shared` anchor (P3
+    /// of core#2716 — the relocation of the rotation log into hashed state).
+    pub(crate) const ROTATION_LOG_CHILD_KEY: &'static [u8] = b"__calimero_rotation_log__";
+
+    /// Id of the rotation-log child entity for `anchor` (P3 hashed location).
+    pub(crate) fn rotation_log_child_id(anchor: Id) -> Id {
+        crate::collections::compute_id(anchor, Self::ROTATION_LOG_CHILD_KEY)
+    }
+
+    /// Read the rotation log from its hashed child entity (P3). `None` if no
+    /// rotation has been recorded for this anchor yet.
+    pub(crate) fn load_rotation_log_child(anchor: Id) -> Option<crate::rotation_log::RotationLog> {
+        let id = Self::rotation_log_child_id(anchor);
+        S::storage_read(Key::Entry(id)).and_then(|bytes| from_slice(&bytes).ok())
+    }
+
+    /// Write the rotation log to its hashed child entity under `anchor` so it
+    /// rides ordinary sync (P3). Stamped `crdt_type: RotationLog` (union merge
+    /// via `merge_rotation_log`); linked under the anchor so its hash rolls into
+    /// the anchor's `full_hash` and HC/DeltaSync walk it. Entries are
+    /// authenticated at resolve time (`writers_at`), not here.
+    ///
+    /// # Errors
+    /// Propagates serialization / storage failures.
+    pub(crate) fn save_rotation_log_child(
+        anchor: Id,
+        log: &crate::rotation_log::RotationLog,
+    ) -> Result<(), StorageError> {
+        use crate::collections::crdt_meta::CrdtType;
+
+        let id = Self::rotation_log_child_id(anchor);
+        let bytes = to_vec(log).map_err(|e| StorageError::SerializationError(e.into()))?;
+        // `updated_at` is irrelevant to merge (always-union for RotationLog) and
+        // to hashes (not part of own_hash/full_hash); use the entry count so it
+        // advances monotonically and is deterministic across nodes.
+        let ts = log.entries.len() as u64;
+        let metadata = Metadata::with_crdt_type(ts, ts, CrdtType::RotationLog);
+
+        // Link the child under the anchor BEFORE writing it, or `save_raw`
+        // rejects an unparented entity (`CannotCreateOrphan`). Only on first
+        // creation; a placeholder hash is fine because `save_raw` →
+        // `update_hash_for` recomputes the real own_hash and propagates it into
+        // the anchor's `full_hash` immediately after.
+        if S::storage_read(Key::Entry(id)).is_none() {
+            <Index<S>>::add_child_to(anchor, ChildInfo::new(id, [0u8; 32], metadata.clone()))?;
+        }
+        let _ = Self::save_raw(id, bytes, metadata)?;
+        Ok(())
+    }
+
     /// The [`OpMask`] an action requires of its signer to be authorized.
     /// `Add`/`Update` are a single `WRITE` capability for now (INSERT vs UPDATE
     /// is not split — see the OpMask design); `DeleteRef` requires `DELETE`.
