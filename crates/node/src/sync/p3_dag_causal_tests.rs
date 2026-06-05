@@ -211,6 +211,7 @@ fn verifier_with_dag_context_uses_rotation_log() {
             delta_id: d1,
             delta_hlc: hlc(hlc_at(0)),
             signer: Some(alice),
+            signature: None,
             new_writers: [alice]
                 .into_iter()
                 .map(|k| (k, calimero_storage::entities::OpMask::FULL))
@@ -271,6 +272,7 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
             delta_id: d1,
             delta_hlc: hlc(hlc_at(0)),
             signer: Some(alice),
+            signature: None,
             new_writers: [alice]
                 .into_iter()
                 .map(|k| (k, calimero_storage::entities::OpMask::FULL))

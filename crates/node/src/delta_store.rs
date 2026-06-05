@@ -1136,6 +1136,7 @@ fn self_log_rotations_direct(
             delta_id,
             delta_hlc,
             signer: signature_data.as_ref().and_then(|s| s.signer),
+            signature: signature_data.as_ref().map(|s| s.signature),
             new_writers: writers.clone(),
             writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
         });

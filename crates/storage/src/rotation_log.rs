@@ -74,6 +74,18 @@ pub struct RotationLogEntry {
     /// treated as "larger than any").
     pub signer: Option<PublicKey>,
 
+    /// Ed25519 signature over the rotation action's `payload_for_signing`,
+    /// produced by `signer`. `None` for legacy / unsigned-bootstrap entries.
+    ///
+    /// P3 (core#2716): once the rotation log rides ordinary sync as hashed
+    /// state (a child of the anchor rather than a side store), its entries are
+    /// untrusted in transit — a peer can ship any bytes. So each entry carries
+    /// its signature and is verified at **resolve time** (`writers_at`) against
+    /// the writer set in effect at its causal parents, instead of only at
+    /// append time on the apply path. This moves the authentication gate from
+    /// "trust what we appended" to "verify what we resolve".
+    pub signature: Option<[u8; 64]>,
+
     /// Resolved writer set after this rotation, each writer with its
     /// [`OpMask`]. `BTreeMap` so the on-wire representation is canonical
     /// (sorted by key), matching the rest of the `Shared` storage path.
@@ -295,6 +307,7 @@ mod tests {
             delta_id: [delta_id; 32],
             delta_hlc: HybridTimestamp::new(ts),
             signer: Some(pk(signer)),
+            signature: None,
             new_writers: writers
                 .iter()
                 .copied()
@@ -425,6 +438,7 @@ mod tests {
                 delta_id: [delta_id; 32],
                 delta_hlc: HybridTimestamp::new(ts),
                 signer: Some(pk(signer)),
+                signature: None,
                 new_writers: writers
                     .iter()
                     .copied()

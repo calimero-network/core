@@ -385,6 +385,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 delta_id,
                 delta_hlc,
                 signer: signature_data.as_ref().and_then(|s| s.signer),
+                signature: signature_data.as_ref().map(|s| s.signature),
                 new_writers: writers.clone(),
                 writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
             });
@@ -2092,6 +2093,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let signer = signature_data.as_ref().and_then(|s| s.signer);
         let nonce = signature_data.as_ref().map(|s| s.nonce).unwrap_or(0);
+        let signature = signature_data.as_ref().map(|s| s.signature);
 
         crate::rotation_log::append::<S>(
             id,
@@ -2099,6 +2101,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 delta_id,
                 delta_hlc,
                 signer,
+                signature,
                 new_writers: writers.clone(),
                 writers_nonce: nonce,
             },
