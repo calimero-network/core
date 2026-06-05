@@ -18,6 +18,11 @@ pub enum LogicMethod<'a> {
 
 pub enum Modifer {
     Init,
+    /// `#[app::view]` — app author declares the method read-only. Stored in
+    /// the compiled ABI so the node can take a shared read lock instead of an
+    /// exclusive write lock. Mutually exclusive with `Init` (an initializer
+    /// always writes state).
+    View,
 }
 
 pub struct PublicLogicMethod<'a> {
@@ -353,13 +358,26 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         let mut is_init = false;
 
         for attr in &input.item.attrs {
-            if attr.path().segments.len() == 2
-                && attr.path().segments[0].ident == "app"
-                && attr.path().segments[1].ident == "init"
-            {
-                modifiers.push(Modifer::Init);
-                is_init = true;
+            if attr.path().segments.len() == 2 && attr.path().segments[0].ident == "app" {
+                match attr.path().segments[1].ident.to_string().as_str() {
+                    "init" => {
+                        modifiers.push(Modifer::Init);
+                        is_init = true;
+                    }
+                    "view" => {
+                        modifiers.push(Modifer::View);
+                    }
+                    _ => {}
+                }
             }
+        }
+
+        let is_view = modifiers.iter().any(|m| matches!(m, Modifer::View));
+        if is_init && is_view {
+            errors.subsume(SynError::new_spanned(
+                input.item,
+                ParseError::ViewAndInitConflict,
+            ));
         }
 
         match (&input.item.vis, is_init) {

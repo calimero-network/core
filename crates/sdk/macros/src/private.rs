@@ -41,9 +41,10 @@ use sha2::{Digest, Sha256};
 ///   `PNCounter`, `ReplicatedGrowableArray`) — CRDTs exist for
 ///   multi-writer conflict resolution; in single-writer private
 ///   storage their merge semantics are unused complexity.
-/// - Access-control collections (`SharedStorage`, `UserStorage`,
-///   `FrozenStorage`) — cross-writer mutability, per-user
-///   separation, and immutability all assume the synced tree.
+/// - Access-control collections (`SharedStorage`, `PermissionedStorage`,
+///   `Ownable`, `AccessControl`, `UserStorage`, `FrozenStorage`) —
+///   cross-writer mutability, per-user separation, and immutability
+///   all assume the synced tree.
 /// - Authored collections (`AuthoredMap`, `AuthoredVector`) —
 ///   carry per-entry authorship which is a sync-side concern.
 ///
@@ -109,6 +110,22 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
     (
         "SharedStorage",
         "models single-signature shared/causal reconciliation; pointless with one writer.",
+    ),
+    (
+        // `PermissionedStorage<T, A>` is the base `SharedStorage` is now an alias
+        // of; `Ownable` is its single-owner alias. Both wrap a syncing,
+        // writer-set-guarded entity, so they have no place in node-local private
+        // storage (their data would still enter the synced tree).
+        "PermissionedStorage",
+        "is writer-set-guarded shared storage; its data syncs, so it cannot live in a private namespace.",
+    ),
+    (
+        "Ownable",
+        "is single-owner shared storage (a SharedStorage alias); its data syncs, so it cannot live in a private namespace.",
+    ),
+    (
+        "AccessControl",
+        "is a writer-set-guarded role registry backed by shared storage; its data syncs, so it cannot live in a private namespace.",
     ),
     (
         "UserStorage",
@@ -632,6 +649,9 @@ mod tests {
 
     const EXCLUDED_ACCESS_CONTROL_TYPES: &[&str] = &[
         "SharedStorage<String>",
+        "PermissionedStorage<String>",
+        "Ownable<String>",
+        "AccessControl",
         "UserStorage<String>",
         "FrozenStorage<String>",
         "AuthoredMap<String, String>",

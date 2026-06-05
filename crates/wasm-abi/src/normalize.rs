@@ -441,11 +441,17 @@ fn normalize_generic_type(
         // single-value shape) so the writer-ACL is visible to the schema and the
         // migration identity-downgrade diff. Previously this unwrapped to bare T,
         // making a `SharedStorage -> UnorderedMap` downgrade invisible.
-        "SharedStorage" => {
+        // `PermissionedStorage<T, A>` is the policy-parameterised base; `Ownable`
+        // is its single-owner alias. Both are a `SharedStorage` underneath (the
+        // policy `A` is a zero-sized marker, not data), so they share its ABI
+        // shape: a Collection carrying `crdt_type = SharedStorage` + the inner T
+        // (the first type argument). Surfacing the writer-set ACL keeps the
+        // schema and the identity-downgrade diff meaningful.
+        "SharedStorage" | "PermissionedStorage" | "Ownable" => {
             if args.args.is_empty() {
-                return Err(NormalizeError::TypePathError(
-                    "invalid SharedStorage type - expected 1 type argument".to_owned(),
-                ));
+                return Err(NormalizeError::TypePathError(format!(
+                    "invalid {ident} type - expected at least 1 type argument"
+                )));
             }
             let arg = &args.args[0];
             let GenericArgument::Type(ty) = arg else {
@@ -547,6 +553,18 @@ fn normalize_scalar_type(
                 fields: vec![], // Placeholder
             },
             crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
+            inner_type: None,
+        }),
+        // `AccessControl` is a non-generic component backed by a writer-set-
+        // guarded `map<string, bool>` registry (role grants). Surface that shape
+        // with `crdt_type = SharedStorage` so the writer-ACL is visible, matching
+        // the other guarded wrappers.
+        "AccessControl" => Ok(TypeRef::Collection {
+            collection: CollectionType::Map {
+                key: Box::new(TypeRef::Scalar(ScalarType::String)),
+                value: Box::new(TypeRef::Scalar(ScalarType::Bool)),
+            },
+            crdt_type: Some(CrdtCollectionType::SharedStorage),
             inner_type: None,
         }),
         _ => {

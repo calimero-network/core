@@ -42,6 +42,11 @@ pub(crate) enum PeerSource {
     /// namespace topic mesh as a fallback (namespace meshes are
     /// established earlier during join with a grace period).
     NamespaceFallback,
+    /// Both topic meshes were empty, but the durable peer-identity cache
+    /// held members of this context's group to dial directly — the
+    /// cold-start fallback that lets a freshly-restarted node target real
+    /// members before any gossipsub mesh has formed.
+    PersistentCache,
 }
 
 /// Outcome of the discovery loop: the peer list plus diagnostics
@@ -293,12 +298,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn discovery_returns_context_mesh_on_first_attempt() {
         let mock = MockSyncNetwork::default();
+        let context_id = ctx(0xAA);
+        let context_topic = TopicHash::from_raw(context_id);
         let peer = dummy_peer(1);
-        mock.push_mesh_peers(vec![peer]);
+        mock.push_subscribed_peers_for(context_topic, vec![peer]);
 
         let outcome = discover_mesh_peers_with_namespace_fallback(
             &mock,
-            ctx(0xAA),
+            context_id,
             3,
             Duration::from_millis(50),
             || None,
@@ -317,7 +324,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn discovery_errs_when_context_empty_and_no_namespace_fallback() {
         let mock = MockSyncNetwork::default();
-        // No `push_mesh_peers` → mock returns empty.
+        // Nothing seeded → mock returns empty for every topic.
 
         let result = discover_mesh_peers_with_namespace_fallback(
             &mock,
@@ -338,12 +345,8 @@ mod tests {
     /// Both meshes empty (context topic exhausted retries AND the
     /// namespace fallback also returned no peers) → Err. Distinct
     /// from `discovery_errs_when_context_empty_and_no_namespace_fallback`,
-    /// which exercises the no-resolver branch.
-    ///
-    /// The positive `NamespaceFallback` case (context empty, namespace
-    /// returns peers) is tracked in #2426 — `MockSyncNetwork` today
-    /// ignores its topic argument, so per-topic responses aren't
-    /// expressible. That test will land with the mock change.
+    /// which exercises the no-resolver branch. Neither topic is seeded,
+    /// so both fall through to the (empty) shared queue.
     #[tokio::test(start_paused = true)]
     async fn discovery_errs_when_both_meshes_empty() {
         let mock = MockSyncNetwork::default();
@@ -364,42 +367,39 @@ mod tests {
         );
     }
 
-    /// #2422 Options 3/4 intersection filter: the namespace-fallback
-    /// arm now intersects ns_peers with the context-topic mesh, so a
-    /// namespace member who DIDN'T subscribe to the context (auto-follow
-    /// opted out, JoinContext in flight, etc.) is filtered out and not
-    /// dialed.
+    /// The namespace-fallback arm intersects the namespace peer set
+    /// with the context-topic subscribers, so a namespace member who
+    /// DIDN'T subscribe to the context (auto-follow opted out,
+    /// JoinContext in flight, etc.) is filtered out and not dialed.
     ///
-    /// `MockSyncNetwork` ignores its topic argument and returns queued
-    /// responses in order, so we set up the queue to mirror the three
-    /// calls the production code makes:
-    ///   1. Context-topic retry loop — returns empty (sticky-last on
-    ///      empty queue), exhausts the retry budget.
-    ///   2. ns_topic mesh_peers call — returns the namespace peer set.
-    ///   3. context-topic mesh_peers call (the new intersection lookup)
-    ///      — returns the subset that actually subscribes.
-    /// The intersection should equal step (2) ∩ step (3).
+    /// Per-topic queues let each topic be scripted independently:
+    ///   - context topic: empty for both retry attempts, then the
+    ///     subscriber subset for the post-fallback intersection lookup
+    ///     (three reads of the same topic across phases → a three-entry
+    ///     sticky-last sequence);
+    ///   - namespace topic: the full namespace peer set.
+    /// The result should be namespace_peers ∩ context_subscribers.
     #[tokio::test(start_paused = true)]
     async fn discovery_filters_namespace_peers_by_context_subscription() {
         let mock = MockSyncNetwork::default();
         let follower = dummy_peer(1);
         let opted_out = dummy_peer(2);
 
-        // The retry loop runs `max_retries` times. Each call pops
-        // one queued response (sticky-last). Seed the queue:
-        //   [empty, empty, ns_peers=[follower, opted_out], ctx_subs=[follower]]
-        // The first two satisfy the retry-loop's empty results; the
-        // third satisfies the ns_peers query; the fourth satisfies
-        // the new context-topic intersection query.
-        mock.push_mesh_peers(vec![])
-            .push_mesh_peers(vec![])
-            .push_mesh_peers(vec![follower, opted_out])
-            .push_mesh_peers(vec![follower]);
-
+        let context_id = ctx(0xAA);
+        let context_topic = TopicHash::from_raw(context_id);
         let ns_topic = TopicHash::from_raw("ns/fake");
+
+        // Context topic: two empty reads exhaust the retry budget, then
+        // the intersection lookup sees only `follower` subscribed.
+        mock.push_subscribed_peers_for(context_topic.clone(), vec![])
+            .push_subscribed_peers_for(context_topic.clone(), vec![])
+            .push_subscribed_peers_for(context_topic, vec![follower])
+            // Namespace topic: both candidates are namespace members.
+            .push_subscribed_peers_for(ns_topic.clone(), vec![follower, opted_out]);
+
         let outcome = discover_mesh_peers_with_namespace_fallback(
             &mock,
-            ctx(0xAA),
+            context_id,
             2,
             Duration::from_millis(10),
             || Some(ns_topic),
@@ -425,16 +425,19 @@ mod tests {
         let opted_out_a = dummy_peer(1);
         let opted_out_b = dummy_peer(2);
 
-        // Retry loop: empty, empty. Then ns_peers = [a, b]; ctx_subs = [].
-        mock.push_mesh_peers(vec![])
-            .push_mesh_peers(vec![])
-            .push_mesh_peers(vec![opted_out_a, opted_out_b])
-            .push_mesh_peers(vec![]);
-
+        let context_id = ctx(0xAA);
+        let context_topic = TopicHash::from_raw(context_id);
         let ns_topic = TopicHash::from_raw("ns/fake");
+
+        // Context topic empty throughout (retries AND the intersection
+        // lookup → no context subscribers); namespace topic has two
+        // peers, both of which fail the intersection.
+        mock.push_subscribed_peers_for(context_topic, vec![])
+            .push_subscribed_peers_for(ns_topic.clone(), vec![opted_out_a, opted_out_b]);
+
         let result = discover_mesh_peers_with_namespace_fallback(
             &mock,
-            ctx(0xAA),
+            context_id,
             2,
             Duration::from_millis(10),
             || Some(ns_topic),

@@ -1,4 +1,6 @@
-use calimero_wasm_abi::schema::{Error, Event, Manifest, Method, TypeDef, TypeRef, Variant};
+use calimero_wasm_abi::schema::{
+    Error, Event, Manifest, Method, MethodIntent, TypeDef, TypeRef, Variant,
+};
 use calimero_wasm_abi::validate::validate_manifest;
 
 #[test]
@@ -62,6 +64,7 @@ fn test_invariant_error_payload_structure() {
             code: "TEST_ERROR".to_string(),
             payload: Some(TypeRef::string()),
         }],
+        intent: MethodIntent::Unspecified,
     });
 
     // This should pass validation
@@ -88,6 +91,7 @@ fn test_invariant_variable_bytes_no_size() {
         )),
         returns_nullable: None,
         errors: vec![],
+        intent: MethodIntent::Unspecified,
     });
 
     // This should pass validation
@@ -118,6 +122,7 @@ fn test_invariant_map_string_key() {
         }),
         returns_nullable: None,
         errors: vec![],
+        intent: MethodIntent::Unspecified,
     });
 
     // This should pass validation
@@ -146,6 +151,7 @@ fn test_invariant_no_dangling_refs() {
         }),
         returns_nullable: None,
         errors: vec![],
+        intent: MethodIntent::Unspecified,
     });
 
     // This should pass validation
@@ -169,6 +175,7 @@ fn test_invariant_detects_dangling_refs() {
         }),
         returns_nullable: None,
         errors: vec![],
+        intent: MethodIntent::Unspecified,
     });
 
     // This should fail validation
@@ -205,6 +212,7 @@ fn test_invariant_detects_dangling_refs_in_inner_type() {
         }),
         returns_nullable: None,
         errors: vec![],
+        intent: MethodIntent::Unspecified,
     });
 
     // This should fail validation because NonExistentType is referenced in inner_type
@@ -234,6 +242,7 @@ fn test_invariant_deterministic_ordering() {
         returns: None,
         returns_nullable: None,
         errors: vec![],
+        intent: MethodIntent::Unspecified,
     });
     manifest.methods.push(Method {
         name: "a_method".to_string(),
@@ -241,6 +250,7 @@ fn test_invariant_deterministic_ordering() {
         returns: None,
         returns_nullable: None,
         errors: vec![],
+        intent: MethodIntent::Unspecified,
     });
 
     // This should fail validation because methods are not sorted

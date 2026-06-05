@@ -303,6 +303,11 @@
           "items": {
             "$ref": "#/definitions/Error"
           }
+        },
+        "intent": {
+          "type": "string",
+          "enum": ["read_only", "mutating", "unspecified"],
+          "description": "Read/write intent declared by the app author. Absent on modules compiled before this field existed; treated as write intent by the node."
         }
       }
     },

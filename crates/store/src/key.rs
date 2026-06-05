@@ -12,6 +12,7 @@ use generic_array::{GenericArray, IntoArrayLength};
 use crate::db::Column;
 use crate::slice::Slice;
 
+mod absorb;
 mod alias;
 mod application;
 mod blobs;
@@ -20,6 +21,7 @@ mod context;
 mod generic;
 mod group;
 
+pub use absorb::{AbsorbBufferKey, ABSORB_BUFFER_PREFIX};
 pub use alias::{Alias, Aliasable, StoreScopeCompat};
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;

@@ -329,7 +329,15 @@ impl TreeLeafData {
 ///
 /// When receiving entities, implementations should map this to/from the
 /// storage layer's `Metadata` type.
-#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+///
+/// A hand-written [`BorshDeserialize`] (not the derive) keeps the trailing
+/// `schema_app_key` field backward-compatible: a peer running the pre-#2539
+/// binary serialises every field up to and including `authorization` and then
+/// stops, so the reader must tolerate a clean EOF at that boundary and decode
+/// `schema_app_key` as `None`. This mirrors the
+/// `GroupUpgradeValue.cascade_hlc` backward-compatible-trailing-field
+/// precedent (`crates/store/src/key/group/mod.rs`).
+#[derive(Clone, Debug, PartialEq, BorshSerialize)]
 pub struct LeafMetadata {
     /// CRDT type for proper merge semantics.
     pub crdt_type: CrdtType,
@@ -407,6 +415,90 @@ pub struct LeafMetadata {
     /// that entity (let the delta-path repair instead) rather than
     /// trying to construct an action without authorization data.
     pub authorization: Option<calimero_storage::entities::StorageType>,
+
+    /// App-schema (loaded-reader) key the **sender** was running when it built
+    /// this leaf — `blob_id(loaded bytecode)`, the same discriminator the
+    /// state-delta fence keys on (`loaded_reader_app_key`).
+    ///
+    /// PR-6b / #2539 sync-repair coverage. The HashComparison / LevelSync /
+    /// snapshot repair paths bypass the gossip state-delta fence entirely, so
+    /// without this a receiver still on an older reader would LWW-store
+    /// unreadable future-schema bytes (the "v1-binary-fed-v2-bytes" corruption
+    /// hazard). With it, `apply_leaf_with_crdt_merge_gated` declines + buffers
+    /// any leaf whose `schema_app_key` differs from the receiver's **loaded**
+    /// reader, into the absorb buffer, rather than storing it.
+    ///
+    /// **Merkle-invisible:** transport metadata only — never folded into any
+    /// `own_hash` (`own_hash = Sha256(value bytes)`), so stamping it cannot
+    /// diverge the tree.
+    ///
+    /// `None` for legacy peers (pre-#2539 binary) — treated as "no newer
+    /// schema" → Apply. Defaulted via the hand-written backward-compatible
+    /// `BorshDeserialize`.
+    pub schema_app_key: Option<[u8; 32]>,
+}
+
+impl BorshDeserialize for LeafMetadata {
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        let crdt_type = CrdtType::deserialize_reader(reader)?;
+        let hlc_timestamp = u64::deserialize_reader(reader)?;
+        let created_at = u64::deserialize_reader(reader)?;
+        let version = u64::deserialize_reader(reader)?;
+        let collection_id = <[u8; 32]>::deserialize_reader(reader)?;
+        let parent_id = Option::<[u8; 32]>::deserialize_reader(reader)?;
+        let ancestors = Vec::<calimero_storage::entities::ChildInfo>::deserialize_reader(reader)?;
+        let authorization =
+            Option::<calimero_storage::entities::StorageType>::deserialize_reader(reader)?;
+        // Backward-compatible trailing field (#2539): legacy peers stop after
+        // `authorization`, so a clean EOF here means `schema_app_key = None`.
+        // The byte present at this position (if any) is the `Option`
+        // discriminant: 0 = None, 1 = Some([u8; 32]). Same scheme as
+        // `GroupUpgradeValue.cascade_hlc`.
+        let mut first = [0u8; 1];
+        let schema_app_key = match read_option_tag(reader, &mut first)? {
+            None => None,
+            Some(0) => None,
+            Some(1) => Some(<[u8; 32]>::deserialize_reader(reader)?),
+            Some(tag) => {
+                return Err(borsh::io::Error::new(
+                    borsh::io::ErrorKind::InvalidData,
+                    format!("invalid Option tag {tag} for LeafMetadata.schema_app_key"),
+                ))
+            }
+        };
+        Ok(Self {
+            crdt_type,
+            hlc_timestamp,
+            created_at,
+            version,
+            collection_id,
+            parent_id,
+            ancestors,
+            authorization,
+            schema_app_key,
+        })
+    }
+}
+
+/// Read the next byte as an `Option` discriminant, tolerating a clean EOF.
+/// Returns `Ok(None)` on EOF (legacy wire with no trailing field), `Ok(Some(b))`
+/// otherwise. Mirrors `read_byte` in `crates/store/src/key/group/mod.rs`.
+///
+/// Shared with [`super::snapshot::SnapshotRecord`]'s hand-written
+/// `BorshDeserialize`, which carries the same backward-compatible trailing
+/// `schema_app_key` field.
+pub(crate) fn read_option_tag<R: borsh::io::Read>(
+    reader: &mut R,
+    buf: &mut [u8; 1],
+) -> borsh::io::Result<Option<u8>> {
+    loop {
+        match reader.read(buf) {
+            Ok(0) => return Ok(None),
+            Ok(_) => return Ok(Some(buf[0])),
+            Err(e) if e.kind() == borsh::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 impl LeafMetadata {
@@ -426,6 +518,7 @@ impl LeafMetadata {
             parent_id: None,
             ancestors: Vec::new(),
             authorization: None,
+            schema_app_key: None,
         }
     }
 
@@ -503,6 +596,17 @@ impl LeafMetadata {
     #[must_use]
     pub fn with_ancestors(mut self, ancestors: Vec<calimero_storage::entities::ChildInfo>) -> Self {
         self.ancestors = ancestors;
+        self
+    }
+
+    /// Stamp the sender's loaded-reader app-schema key (`blob_id(loaded
+    /// bytecode)`) onto the leaf so a receiver on an older reader can
+    /// decline+buffer a future-schema leaf rather than store unreadable bytes.
+    /// See the field doc on [`schema_app_key`](LeafMetadata::schema_app_key).
+    /// Merkle-invisible — never enters any `own_hash`.
+    #[must_use]
+    pub fn with_schema_app_key(mut self, schema_app_key: [u8; 32]) -> Self {
+        self.schema_app_key = Some(schema_app_key);
         self
     }
 }
@@ -800,6 +904,59 @@ mod tests {
         assert_eq!(metadata.hlc_timestamp, 500);
         assert_eq!(metadata.version, 10);
         assert_eq!(metadata.parent_id, Some([2; 32]));
+    }
+
+    #[test]
+    fn test_leaf_metadata_schema_app_key_defaults_none_and_round_trips() {
+        // PR-6b (#2539): `schema_app_key` lets a sender stamp the leaf with the
+        // app-schema (loaded-reader) key it was authored under, so a receiver
+        // still on an older reader can decline+buffer a future-schema leaf
+        // instead of LWW-storing unreadable bytes (sync-repair coverage).
+        //
+        // Defaults to `None` (legacy peers don't ship it) and survives a borsh
+        // round-trip when set.
+        let bare = LeafMetadata::new(CrdtType::PnCounter, 500, [1; 32]);
+        assert_eq!(
+            bare.schema_app_key, None,
+            "must default None for legacy peers"
+        );
+
+        let stamped =
+            LeafMetadata::new(CrdtType::PnCounter, 500, [1; 32]).with_schema_app_key([7; 32]);
+        assert_eq!(stamped.schema_app_key, Some([7; 32]));
+
+        let leaf = TreeLeafData::new([3; 32], vec![1, 2, 3], stamped);
+        let bytes = borsh::to_vec(&leaf).expect("serialize");
+        let back: TreeLeafData = borsh::from_slice(&bytes).expect("deserialize");
+        assert_eq!(back.metadata.schema_app_key, Some([7; 32]));
+    }
+
+    #[test]
+    fn test_leaf_metadata_schema_app_key_legacy_bytes_decode_as_none() {
+        // Backward compatibility: a peer running the pre-#2539 binary serialises
+        // `LeafMetadata` WITHOUT the trailing `schema_app_key` Option. The
+        // hand-written `BorshDeserialize` must treat a clean EOF after the
+        // `authorization` field as `schema_app_key = None` (treat as "no newer
+        // schema" → Apply), mirroring the `GroupUpgradeValue.cascade_hlc`
+        // backward-compatible-trailing-field precedent.
+        //
+        // We synthesise the legacy wire bytes by serialising every field up to
+        // and including `authorization`, then omitting the trailing Option.
+        let md = LeafMetadata::new(CrdtType::PnCounter, 500, [1; 32]).with_version(10);
+        let mut legacy = Vec::new();
+        borsh::to_writer(&mut legacy, &md.crdt_type).unwrap();
+        borsh::to_writer(&mut legacy, &md.hlc_timestamp).unwrap();
+        borsh::to_writer(&mut legacy, &md.created_at).unwrap();
+        borsh::to_writer(&mut legacy, &md.version).unwrap();
+        borsh::to_writer(&mut legacy, &md.collection_id).unwrap();
+        borsh::to_writer(&mut legacy, &md.parent_id).unwrap();
+        borsh::to_writer(&mut legacy, &md.ancestors).unwrap();
+        borsh::to_writer(&mut legacy, &md.authorization).unwrap();
+        // No trailing schema_app_key bytes — legacy wire ends here.
+
+        let decoded = LeafMetadata::try_from_slice(&legacy).expect("legacy decode");
+        assert_eq!(decoded.schema_app_key, None);
+        assert_eq!(decoded.version, 10);
     }
 
     #[test]

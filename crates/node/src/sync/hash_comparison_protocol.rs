@@ -39,9 +39,9 @@
 //! ```
 
 use crate::sync::helpers::{
-    apply_leaf_with_crdt_merge, apply_under_context_lock, generate_nonce,
-    get_local_root_hash_for_context, handle_entity_push, is_leaf_currently_authorized,
-    MAX_ENTITIES_PER_PUSH,
+    apply_leaf_with_crdt_merge, apply_leaf_with_crdt_merge_gated, apply_under_context_lock,
+    generate_nonce, get_local_root_hash_for_context, handle_entity_push,
+    is_leaf_currently_authorized, LeafOutcome, MAX_ENTITIES_PER_PUSH,
 };
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
@@ -221,6 +221,13 @@ async fn run_initiator_impl<T: SyncTransport>(
     // Set up storage bridge
     let runtime_env = create_runtime_env(store, context_id, identity);
 
+    // PR-6b Task 6b.7: the sender's loaded-reader schema, stamped onto every
+    // leaf we emit so a peer on an older reader can decline+buffer a
+    // future-schema leaf. `None` when unresolvable (no group / missing meta).
+    let schema_app_key = calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id)
+        .ok()
+        .flatten();
+
     // Stack for DFS traversal
     let mut to_compare: Vec<([u8; 32], bool)> = vec![(remote_root_hash, true)];
 
@@ -389,13 +396,46 @@ async fn run_initiator_impl<T: SyncTransport>(
                         continue;
                     }
 
+                    // PR-6b Task 6b.7: gate on the loaded reader. The HC repair
+                    // path bypasses the gossip state-delta fence, so a leaf
+                    // authored under a newer schema than this node's loaded
+                    // reader must be declined+buffered (into the absorb buffer)
+                    // rather than LWW-stored as unreadable bytes — the
+                    // v1-binary-fed-v2-bytes corruption hazard.
+                    //
+                    // Keep the FULL `Result` (no `.ok().flatten()`): a STORE
+                    // ERROR must not silently disable the gate. `apply_hc_leaf_gated`
+                    // distinguishes `Err` (fail closed: skip the leaf, re-pushed
+                    // next sync) from `Ok(None)` (legitimately no group ⇒ apply
+                    // ungated as today) — see `apply_entity_push_batch`.
+                    let loaded_app_key =
+                        calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id);
+
                     // Under the per-context execution lock: this leaf merge is a
                     // read-modify-write up to the root and must not interleave
                     // with a concurrent delta merge (torn-root split-brain).
-                    apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                        apply_leaf_with_crdt_merge(context_id, leaf_data)
-                    })
-                    .await?;
+                    let outcome =
+                        apply_under_context_lock(context_client, context_id, &runtime_env, || {
+                            apply_hc_leaf_gated(store, context_id, leaf_data, loaded_app_key)
+                        })
+                        .await?;
+                    match outcome {
+                        HcLeafGateOutcome::Buffered => {
+                            // Declined: the leaf is buffered, not applied. Don't
+                            // count it as merged and skip the bidirectional
+                            // push-back — there's nothing newer to reconcile until
+                            // this node advances its reader and the drain replays it.
+                            continue;
+                        }
+                        HcLeafGateOutcome::SkippedStoreError => {
+                            // Fail-closed: a store error prevented resolving the
+                            // loaded reader, so we declined to apply (rather than
+                            // applying ungated). The leaf is re-pushed next sync;
+                            // skip the bidirectional push-back too.
+                            continue;
+                        }
+                        HcLeafGateOutcome::Applied => {}
+                    }
                     stats.entities_merged += 1;
 
                     // #2407 bidirectional leaf reconciliation: a parent's
@@ -419,7 +459,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // divergence is N entities over O(N/batch) round-
                     // trips, not N round-trips inline.
                     let local_node = with_runtime_env(runtime_env.clone(), || {
-                        get_local_tree_node(context_id, &remote_node.id, false)
+                        get_local_tree_node(context_id, &remote_node.id, false, schema_app_key)
                     })?;
                     if let Some(local) = local_node {
                         if local.is_leaf() && local.hash != remote_node.hash {
@@ -475,7 +515,12 @@ async fn run_initiator_impl<T: SyncTransport>(
                 }
 
                 let local_version = with_runtime_env(runtime_env.clone(), || {
-                    get_local_tree_node(context_id, &remote_node.id, is_this_node_root)
+                    get_local_tree_node(
+                        context_id,
+                        &remote_node.id,
+                        is_this_node_root,
+                        schema_app_key,
+                    )
                 })?;
 
                 match compare_tree_nodes(local_version.as_ref(), Some(&remote_node)) {
@@ -533,6 +578,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                                 identity,
                                 &local_only_children,
                                 &mut stats,
+                                schema_app_key,
                             )
                             .await?;
                             debug!(
@@ -548,7 +594,12 @@ async fn run_initiator_impl<T: SyncTransport>(
                         // but the remote doesn't. Push all leaf data.
                         if let Some(ref local_node) = local_version {
                             let leaves = with_runtime_env(runtime_env.clone(), || {
-                                collect_local_leaves(context_id, &local_node.id, is_this_node_root)
+                                collect_local_leaves(
+                                    context_id,
+                                    &local_node.id,
+                                    is_this_node_root,
+                                    schema_app_key,
+                                )
                             })?;
                             if !leaves.is_empty() {
                                 push_entities(transport, context_id, identity, &leaves, &mut stats)
@@ -742,6 +793,12 @@ async fn run_responder_impl<T: SyncTransport>(
     // Set up storage bridge (reused across all requests)
     let runtime_env = create_runtime_env(store, context_id, identity);
 
+    // PR-6b Task 6b.7: the sender's loaded-reader schema, stamped onto every
+    // leaf we emit (see `run_initiator_impl`).
+    let schema_app_key = calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id)
+        .ok()
+        .flatten();
+
     // Get our root hash to determine root requests
     let local_root_hash = with_runtime_env(runtime_env.clone(), || {
         Index::<MainStorage>::get_hashes_for(Id::new(*context_id.as_ref()))
@@ -760,11 +817,16 @@ async fn run_responder_impl<T: SyncTransport>(
         let is_root_request = first_node_id == local_root_hash;
 
         let local_node = with_runtime_env(runtime_env.clone(), || {
-            get_local_tree_node(context_id, &first_node_id, is_root_request)
+            get_local_tree_node(context_id, &first_node_id, is_root_request, schema_app_key)
         })?;
 
-        let response =
-            build_tree_node_response_internal(context_id, local_node, clamped_depth, &runtime_env)?;
+        let response = build_tree_node_response_internal(
+            context_id,
+            local_node,
+            clamped_depth,
+            &runtime_env,
+            schema_app_key,
+        )?;
 
         let msg = StreamMessage::Message {
             sequence_id,
@@ -822,7 +884,7 @@ async fn run_responder_impl<T: SyncTransport>(
 
                 // Get the requested node
                 let local_node = with_runtime_env(runtime_env.clone(), || {
-                    get_local_tree_node(context_id, &node_id, is_root_request)
+                    get_local_tree_node(context_id, &node_id, is_root_request, schema_app_key)
                 })?;
 
                 let response = build_tree_node_response_internal(
@@ -830,6 +892,7 @@ async fn run_responder_impl<T: SyncTransport>(
                     local_node,
                     clamped_depth,
                     &runtime_env,
+                    schema_app_key,
                 )?;
 
                 // Send response
@@ -990,6 +1053,7 @@ fn build_tree_node_response_internal(
     local_node: Option<TreeNode>,
     clamped_depth: Option<u8>,
     runtime_env: &calimero_storage::env::RuntimeEnv,
+    schema_app_key: Option<[u8; 32]>,
 ) -> Result<TreeNodeResponse> {
     let response = if let Some(node) = local_node {
         let mut nodes = vec![node.clone()];
@@ -999,7 +1063,7 @@ fn build_tree_node_response_internal(
         if depth > 0 && node.is_internal() {
             for child_id in &node.children {
                 if let Some(child) = with_runtime_env(runtime_env.clone(), || {
-                    get_local_tree_node(context_id, child_id, false)
+                    get_local_tree_node(context_id, child_id, false, schema_app_key)
                 })? {
                     nodes.push(child);
                     if nodes.len() >= MAX_NODES_PER_RESPONSE {
@@ -1045,19 +1109,24 @@ fn collect_local_leaves(
     context_id: ContextId,
     node_id: &[u8; 32],
     is_root: bool,
+    schema_app_key: Option<[u8; 32]>,
 ) -> Result<Vec<TreeLeafData>> {
     let mut leaves = Vec::new();
-    collect_leaves_recursive(context_id, node_id, is_root, &mut leaves, 0)?;
+    collect_leaves_recursive(context_id, node_id, is_root, &mut leaves, 0, schema_app_key)?;
     Ok(leaves)
 }
 
 /// Recursively collect leaf data from a subtree.
+///
+/// `schema_app_key` (PR-6b Task 6b.7): stamped onto each emitted leaf — see
+/// [`get_local_tree_node`].
 fn collect_leaves_recursive(
     context_id: ContextId,
     node_id: &[u8; 32],
     is_root: bool,
     leaves: &mut Vec<TreeLeafData>,
     depth: u32,
+    schema_app_key: Option<[u8; 32]>,
 ) -> Result<()> {
     if depth >= MAX_COLLECT_DEPTH {
         warn!(
@@ -1140,6 +1209,11 @@ fn collect_leaves_recursive(
             if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
                 metadata = metadata.with_authorization(auth);
             }
+            // PR-6b Task 6b.7: stamp the sender's loaded-reader schema — see
+            // `get_local_tree_node`.
+            if let Some(schema) = schema_app_key {
+                metadata = metadata.with_schema_app_key(schema);
+            }
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
             if leaf_data.value.len() > MAX_LEAF_VALUE_SIZE {
                 warn!(
@@ -1157,7 +1231,14 @@ fn collect_leaves_recursive(
         // can rebuild the tree structure without needing this internal
         // node's bytes.
         for child_id in &children_ids {
-            collect_leaves_recursive(context_id, child_id, false, leaves, depth + 1)?;
+            collect_leaves_recursive(
+                context_id,
+                child_id,
+                false,
+                leaves,
+                depth + 1,
+                schema_app_key,
+            )?;
         }
     }
 
@@ -1175,13 +1256,14 @@ async fn push_local_subtrees<T: SyncTransport>(
     identity: PublicKey,
     local_only_children: &[[u8; 32]],
     stats: &mut HashComparisonStats,
+    schema_app_key: Option<[u8; 32]>,
 ) -> Result<u64> {
     let mut total = 0u64;
 
     // Flush per-subtree to avoid accumulating all leaves in memory
     for child_id in local_only_children {
         let leaves = with_runtime_env(runtime_env.clone(), || {
-            collect_local_leaves(context_id, child_id, false)
+            collect_local_leaves(context_id, child_id, false, schema_app_key)
         })?;
         if !leaves.is_empty() {
             total += push_entities(transport, context_id, identity, &leaves, stats).await?;
@@ -1299,10 +1381,16 @@ async fn push_deletions<T: SyncTransport>(
 // =============================================================================
 
 /// Get a tree node from the local Merkle tree Index.
+///
+/// `schema_app_key` (PR-6b Task 6b.7): the sender's loaded-reader app-schema
+/// key, stamped onto each emitted leaf so a receiver on an older reader can
+/// decline+buffer a future-schema leaf. `None` when the sender can't resolve
+/// its loaded reader (parity with the receiver's no-gate fallback).
 fn get_local_tree_node(
     context_id: ContextId,
     node_id: &[u8; 32],
     is_root_request: bool,
+    schema_app_key: Option<[u8; 32]>,
 ) -> Result<Option<TreeNode>> {
     let entity_id = if is_root_request {
         Id::new(*context_id.as_ref())
@@ -1367,6 +1455,11 @@ fn get_local_tree_node(
         if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
             metadata = metadata.with_authorization(auth);
         }
+        // PR-6b Task 6b.7: stamp the sender's loaded-reader schema so a receiver
+        // on an older reader can decline+buffer this leaf if it's future-schema.
+        if let Some(schema) = schema_app_key {
+            metadata = metadata.with_schema_app_key(schema);
+        }
         let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
         Ok(Some(TreeNode::leaf(
             *entity_id.as_bytes(),
@@ -1427,6 +1520,72 @@ pub(crate) fn collect_deleted_children_wire(
             })
         })
         .collect()
+}
+
+/// Outcome of gating a single HashComparison sync-repair leaf against the
+/// receiver's loaded reader (PR-6b Task 6b.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HcLeafGateOutcome {
+    /// The leaf was applied to storage.
+    Applied,
+    /// The leaf was declined + buffered (its schema is newer than the loaded
+    /// reader); the DFS skips it until the drain replays it.
+    Buffered,
+    /// The loaded reader could not be resolved (store error). Fail CLOSED: the
+    /// leaf was NOT applied; the DFS skips it and it is re-pushed next cycle.
+    SkippedStoreError,
+}
+
+/// Apply (or decline+buffer) a single HC sync-repair leaf, gating on the
+/// receiver's loaded-reader schema.
+///
+/// `loaded_app_key` is the resolution of the receiver's loaded reader schema —
+/// the FULL `Result`, not collapsed with `.ok().flatten()`, so the three gate
+/// states stay distinct:
+/// * `Ok(Some(k))` — gate active; a future-schema leaf is declined+buffered.
+/// * `Ok(None)` — legitimately no group / unresolvable meta ⇒ no gate, apply as
+///   today.
+/// * `Err(_)` — a STORE ERROR; readability cannot be determined. Fail CLOSED:
+///   warn and SKIP the leaf ([`HcLeafGateOutcome::SkippedStoreError`]) rather
+///   than applying ungated, which would let a future-schema leaf the node can't
+///   read get LWW-stored (the v1-binary-fed-v2-bytes corruption this gate
+///   prevents). HC repair leaves are non-destructive and are re-pushed on the
+///   next sync cycle, so skipping here is safe.
+///
+/// Must be called inside the per-context execution lock + `with_runtime_env`
+/// scope (it delegates to the apply helpers).
+fn apply_hc_leaf_gated(
+    store: &Store,
+    context_id: ContextId,
+    leaf: &TreeLeafData,
+    loaded_app_key: Result<Option<[u8; 32]>>,
+) -> Result<HcLeafGateOutcome> {
+    let loaded_app_key = match loaded_app_key {
+        Ok(key) => key,
+        Err(e) => {
+            warn!(
+                %context_id,
+                error = %e,
+                key = %hex::encode(leaf.key),
+                "HC merge: could not resolve loaded reader schema (store error); \
+                 skipping leaf fail-closed — it will be re-pushed next sync"
+            );
+            return Ok(HcLeafGateOutcome::SkippedStoreError);
+        }
+    };
+
+    match loaded_app_key {
+        Some(loaded) => Ok(
+            match apply_leaf_with_crdt_merge_gated(store, context_id, leaf, loaded)? {
+                LeafOutcome::Applied => HcLeafGateOutcome::Applied,
+                LeafOutcome::Buffered => HcLeafGateOutcome::Buffered,
+            },
+        ),
+        None => {
+            apply_leaf_with_crdt_merge(context_id, leaf)?;
+            Ok(HcLeafGateOutcome::Applied)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1517,7 +1676,7 @@ mod tests {
                 "seeded entity must have crdt_type == None"
             );
 
-            let node = get_local_tree_node(context_id, opaque_id.as_bytes(), false)
+            let node = get_local_tree_node(context_id, opaque_id.as_bytes(), false, None)
                 .expect("get_local_tree_node should not error")
                 .expect("node should exist");
 
@@ -1859,5 +2018,101 @@ mod tests {
                  root hash diverges from a peer that applied the delete"
             );
         });
+    }
+
+    // ---- PR-6b fail-closed (cursor): the HC DFS leaf-merge gate must NOT be
+    //      disabled by a store error resolving the loaded reader. The old
+    //      `.ok().flatten()` collapsed `Err` into `None` (ungated apply). ----
+
+    use calimero_node_primitives::sync::hash_comparison::{LeafMetadata, TreeLeafData};
+    use calimero_primitives::crdt::CrdtType;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use std::sync::Arc;
+
+    fn hc_opaque_leaf(key: [u8; 32], schema: Option<[u8; 32]>) -> TreeLeafData {
+        let mut md = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        if let Some(k) = schema {
+            md = md.with_schema_app_key(k);
+        }
+        TreeLeafData::new(key, b"v2-bytes".to_vec(), md)
+    }
+
+    #[test]
+    fn hc_store_error_resolving_gate_skips_leaf_not_applies() {
+        // A transient store error while resolving the loaded reader on the HC
+        // DFS apply path must fail CLOSED: the leaf is skipped (re-pushed next
+        // sync), NOT applied ungated. The old `.ok().flatten()` collapsed `Err`
+        // into `None` and would have LWW-stored the (possibly future-schema)
+        // leaf — the v1-binary-fed-v2-bytes corruption hazard.
+        let context_id = ContextId::from([0xCD; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(&store, context_id, identity);
+
+        let leaf_key = [0x45u8; 32];
+        // No schema marker — under `Ok(None)` (no gate) this WOULD apply, so the
+        // only thing keeping it out of storage is the fail-closed skip.
+        let leaf = hc_opaque_leaf(leaf_key, None);
+
+        let outcome = with_runtime_env(runtime_env.clone(), || {
+            apply_hc_leaf_gated(
+                &store,
+                context_id,
+                &leaf,
+                Err(eyre::eyre!("simulated transient store error")),
+            )
+        })
+        .expect("gate must not propagate the store error");
+
+        assert_eq!(
+            outcome,
+            HcLeafGateOutcome::SkippedStoreError,
+            "fail-closed: a store error must skip the leaf, not apply it"
+        );
+
+        let stored = with_runtime_env(runtime_env.clone(), || {
+            Index::<MainStorage>::get_index(Id::new(leaf_key))
+                .ok()
+                .flatten()
+        });
+        assert!(
+            stored.is_none(),
+            "store error must NOT result in an ungated apply/store"
+        );
+    }
+
+    #[test]
+    fn hc_no_gate_ok_none_still_applies_leaf() {
+        // Distinct from the `Err` case: `Ok(None)` is the legitimate "no group /
+        // unresolvable meta" case and MUST still apply as today.
+        let context_id = ContextId::from([0xCE; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(&store, context_id, identity);
+
+        let leaf_key = [0x46u8; 32];
+        let leaf = hc_opaque_leaf(leaf_key, None);
+
+        let outcome = with_runtime_env(runtime_env.clone(), || {
+            apply_hc_leaf_gated(&store, context_id, &leaf, Ok(None))
+        })
+        .expect("gate must apply the leaf");
+
+        assert_eq!(
+            outcome,
+            HcLeafGateOutcome::Applied,
+            "Ok(None) legitimate-no-gate case must apply the leaf"
+        );
+
+        let stored = with_runtime_env(runtime_env.clone(), || {
+            Index::<MainStorage>::get_index(Id::new(leaf_key))
+                .ok()
+                .flatten()
+        });
+        assert!(
+            stored.is_some(),
+            "Ok(None) no-gate case must store the leaf"
+        );
     }
 }

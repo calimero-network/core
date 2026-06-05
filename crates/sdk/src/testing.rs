@@ -98,6 +98,13 @@ pub trait TestState: Sized {
     /// comparing it across two migrate runs detects divergence *inside* carried
     /// or seeded collections — not only in the top-level root struct.
     fn __test_root_hash() -> Option<[u8; 32]>;
+
+    /// Loads the committed state, runs `f` against `&mut Self`, then commits —
+    /// the way the WASM `__calimero_sync_next` path applies an inbound delta:
+    /// under storage **merge mode**, so `LwwRegister`/`Element` stamps are
+    /// zeroed and the result is byte-identical across nodes. This is the
+    /// in-process analogue of replaying an absorbed delta's verbatim actions.
+    fn __test_with_mut_merged(f: &mut dyn FnMut(&mut Self));
 }
 
 thread_local! {
@@ -235,6 +242,20 @@ where
             out = Some((f.take().expect("view closure invoked once"))(state));
         });
         out.expect("state was loaded and the closure ran")
+    }
+
+    /// Returns the committed merkle root hash of the current state, or `None`
+    /// if nothing has been committed yet.
+    ///
+    /// The root folds in every child-collection entry, so comparing two hosts'
+    /// roots is the convergence check the migration model rests on: two nodes
+    /// that reach the same logical state — whatever the path — must report the
+    /// same root. Used to assert the PR-6b O2 property that an absorbed v1 delta
+    /// replayed verbatim *after* a migration lands on the same root as one
+    /// applied *before* the migration.
+    #[must_use]
+    pub fn root_hash(&self) -> Option<[u8; 32]> {
+        S::__test_root_hash()
     }
 
     /// Runs a mutating method as a specific executor identity, then restores the
@@ -472,5 +493,117 @@ pub fn assert_migrate_converges<V1, V2>(
         a, b,
         "migration is non-deterministic: nodes {node_a:?} and {node_b:?} produced \
          different v2 root hashes",
+    );
+}
+
+/// Asserts the PR-6b **O2** property: an absorbed v1 straggler delta replayed
+/// **verbatim** *after* a migration lands on the same v2 root as the same delta
+/// applied *before* the migration. This is what makes "absorb-don't-drop" safe —
+/// a node offline across the migration window can replay the straggler's
+/// original signed bytes once its binary advances and still converge with nodes
+/// that saw the delta in real time.
+///
+/// Two orderings, identical deterministic `install_v1` baseline, same `migrate`:
+/// - **received-before** (`node_b`): install v1 → apply `straggler_v1` (on the
+///   v1 state, the way the v1 author authored it) → migrate.
+/// - **absorb-then-replay** (`node_a`): install v1 → migrate → replay
+///   `straggler_v2` (the *same* verbatim action, now reinterpreted by the v2
+///   reader, re-fed under merge mode the way `__calimero_sync_next` applies a
+///   delta).
+///
+/// The straggler is the CRDT mutation the v1 author signed. The in-process
+/// bridge is statically typed, so the single verbatim action is supplied twice
+/// — once as a `V1` mutation (`straggler_v1`, what the v1 author ran) and once
+/// as the byte-identical `V2` mutation (`straggler_v2`, what the v2 reader runs
+/// when re-fed the original bytes). For a field carried unchanged across the
+/// migration these are the same operation on the same CRDT type; the duplication
+/// is purely a static-typing artifact, **not** a translation (the bytes/actions
+/// are identical).
+///
+/// Both orderings run under merge mode, so a converging migration produces a
+/// byte-identical root regardless of when the straggler lands. A migration whose
+/// derived state depends on *which* entries were present at migrate time (e.g.
+/// seeding a collection from the entry set) is **order-sensitive** and must use
+/// the whole-root rebuild path instead — such a `migrate` fails here, by design.
+///
+/// Shares [`assert_migrate_converges`]'s in-process limitations (one mock store;
+/// catches identity/value divergence, not local iteration-order divergence).
+pub fn assert_absorb_replay_converges<V1, V2>(
+    install_v1: impl Fn() -> V1,
+    straggler_v1: impl Fn(&mut V1),
+    straggler_v2: impl Fn(&mut V2),
+    migrate_fn: impl Fn() -> V2 + Copy,
+) where
+    V1: TestState + AppState,
+    for<'a> V1::Event<'a>: AppEventExt,
+    V2: TestState + AppState,
+    for<'a> V2::Event<'a>: AppEventExt,
+{
+    assert!(
+        !HARNESS_LIVE.with(Cell::get),
+        "assert_absorb_replay_converges resets the mock store; drop any live \
+         TestHost on this thread before calling it."
+    );
+
+    // Reset to a byte-identical pre-migration v1 baseline (merge mode → zeroed
+    // stamps, modelling the synced state every node shares).
+    fn install_v1_baseline<V1, V2>(install_v1: &impl Fn() -> V1)
+    where
+        V1: TestState + AppState,
+        for<'a> V1::Event<'a>: AppEventExt,
+        V2: TestState + AppState,
+        for<'a> V2::Event<'a>: AppEventExt,
+    {
+        host::reset();
+        V1::__test_reset();
+        event::register::<V1>();
+        V1::__test_install_migrated(&mut || install_v1());
+        V1::__test_mirror_root();
+        // Register V2's emitter so an `app::emit!` in the migrate body resolves.
+        event::register::<V2>();
+    }
+
+    // The verbatim straggler action, applied under merge mode the way
+    // `__calimero_sync_next` applies an inbound delta. Generic over the state
+    // type so the *same* helper drives both the v1-form (received-before) and
+    // the v2-form (absorb-then-replay).
+    fn apply_straggler<V>(straggler: &impl Fn(&mut V))
+    where
+        V: TestState + AppState,
+        for<'a> V::Event<'a>: AppEventExt,
+    {
+        let mut s = Some(straggler);
+        V::__test_with_mut_merged(&mut |state| (s.take().expect("straggler applied once"))(state));
+    }
+
+    fn run_migrate<V2>(migrate_fn: impl Fn() -> V2)
+    where
+        V2: TestState + AppState,
+        for<'a> V2::Event<'a>: AppEventExt,
+    {
+        let mut mbuild = Some(migrate_fn);
+        V2::__test_install_migrated(&mut || (mbuild.take().expect("migrate fn invoked once"))());
+    }
+
+    // received-before: install v1 → apply the v1 straggler → migrate.
+    install_v1_baseline::<V1, V2>(&install_v1);
+    apply_straggler::<V1>(&straggler_v1);
+    // Re-mirror so the migrate body's `read_raw()` observes the post-straggler
+    // v1 state (the straggler committed but did not mirror).
+    V1::__test_mirror_root();
+    run_migrate::<V2>(migrate_fn);
+    let received_before = V2::__test_root_hash().expect("migrated root was committed");
+
+    // absorb-then-replay: install v1 → migrate → replay the (verbatim) straggler.
+    install_v1_baseline::<V1, V2>(&install_v1);
+    run_migrate::<V2>(migrate_fn);
+    apply_straggler::<V2>(&straggler_v2);
+    let absorb_then_replay = V2::__test_root_hash().expect("replayed root was committed");
+
+    assert_eq!(
+        absorb_then_replay, received_before,
+        "absorb-replay diverges: an absorbed v1 delta replayed verbatim after the \
+         migration produced a different v2 root than the same delta applied before \
+         the migration",
     );
 }

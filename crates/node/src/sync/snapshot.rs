@@ -39,9 +39,50 @@ pub const DEFAULT_PAGE_BYTE_LIMIT: u32 = 64 * 1024;
 /// Maximum pages to send in a single burst.
 pub const DEFAULT_PAGE_LIMIT: u16 = 16;
 
+/// Leading byte of a **v2** (PR-6b / #2539) snapshot page: records are
+/// length-framed (`u32 LE len ‖ record_bytes`) so the receiver bounds each
+/// record's decode to its own sub-slice. This makes the backward-compatible
+/// trailing `SnapshotRecord::Entity.schema_app_key` (decoded EOF-tolerantly)
+/// sound for NON-terminal records too — a clean EOF is observed at the
+/// sub-slice boundary instead of bleeding into the next record's bytes.
+///
+/// The value `0xFF` can never be the first byte of a LEGACY (pre-#2539)
+/// unframed page: a legacy page starts with the first record's `SnapshotRecord`
+/// variant discriminant, which is `0` (`Entity`) or `1` (`Auxiliary`). So the
+/// receiver tells the two formats apart by this single sentinel — no wire
+/// `SnapshotPage` message change needed (which would itself have the same
+/// trailing-field hazard one level up).
+const SNAPSHOT_PAGE_FORMAT_V2: u8 = 0xFF;
+
 /// Scope for sync-in-progress markers in the Generic column.
 /// Exactly 16 bytes to match SCOPE_SIZE.
 const SYNC_IN_PROGRESS_SCOPE: [u8; SCOPE_SIZE] = *b"sync-in-progres\0";
+
+/// Whether a snapshot `Entity` whose sender stamped `schema_app_key` is readable
+/// by a receiver whose loaded reader is `loaded_app_key` (PR-6b Task 6b.7).
+///
+/// The snapshot apply path writes each verified entity via a raw `handle.put` —
+/// it deliberately does NOT route through `apply_leaf_with_crdt_merge_gated`, so
+/// the same readability check the HashComparison / LevelSync leaf paths get from
+/// that wrapper has to be applied explicitly here. A receiver still on an older
+/// reader must DECLINE + BUFFER a future-schema entity rather than persist
+/// unreadable bytes (the "v1-binary-fed-v2-bytes" corruption hazard the
+/// snapshot path otherwise side-steps entirely).
+///
+/// Returns `true` (apply) when the schema is absent (legacy sender), when no
+/// loaded reader could be resolved (no gate — parity with the leaf path), or
+/// when the stamped schema matches the loaded reader; `false` (decline+buffer)
+/// only when both are known and differ.
+fn snapshot_entity_is_readable(
+    schema_app_key: Option<[u8; 32]>,
+    loaded_app_key: Option<[u8; 32]>,
+) -> bool {
+    match (schema_app_key, loaded_app_key) {
+        (Some(schema), Some(loaded)) => schema == loaded,
+        // Legacy sender (no marker) or unresolvable loaded reader ⇒ no gate.
+        _ => true,
+    }
+}
 
 impl SyncManager {
     /// Handle incoming snapshot boundary request from a peer.
@@ -149,12 +190,24 @@ impl SyncManager {
         stream: &mut Stream,
     ) -> Result<()> {
         let handle = self.context_client.datastore_handle();
+        // PR-6b Task 6b.7: stamp every emitted `Entity` with the sender's loaded
+        // reader so a receiver still on an older binary can decline+buffer a
+        // future-schema entity instead of persisting unreadable bytes. `None`
+        // (non-group context / unresolvable meta) leaves the marker absent —
+        // legacy semantics; the receiver then applies as today.
+        let schema_app_key = calimero_context::hlc_fence::loaded_reader_app_key(
+            self.context_client.datastore(),
+            &context_id,
+        )
+        .ok()
+        .flatten();
         let (pages, next_cursor, total_entries) = generate_snapshot_pages(
             &handle,
             context_id,
             start_cursor.as_ref(),
             page_limit,
             byte_limit,
+            schema_app_key,
         )?;
 
         // Post-iteration recheck: verify root hash hasn't changed during page generation.
@@ -478,6 +531,18 @@ impl SyncManager {
         let mut total_applied = 0;
         let mut resume_cursor: Option<Vec<u8>> = None;
 
+        // PR-6b Task 6b.7: the schema this node can read *right now* (its loaded
+        // reader). A snapshot `Entity` whose sender stamped a newer
+        // `schema_app_key` is declined+buffered rather than `handle.put`-stored.
+        // `None` (non-group context / unresolvable meta) ⇒ no gate — apply as
+        // today (parity with the leaf path's `handle_entity_push`).
+        let loaded_app_key = calimero_context::hlc_fence::loaded_reader_app_key(
+            self.context_client.datastore(),
+            &context_id,
+        )
+        .ok()
+        .flatten();
+
         // `SharedMember` entities are verified in a SECOND pass, after every
         // page has been applied. A member carries no inline writer set — its
         // writers live at its anchor (a `Shared` wrapper) — and the snapshot
@@ -563,7 +628,45 @@ impl SyncManager {
                         // `apply_leaf_with_crdt_merge` provides.
                         for record in &records {
                             match record {
-                                SnapshotRecord::Entity { id, entry, index } => {
+                                SnapshotRecord::Entity {
+                                    id,
+                                    entry,
+                                    index,
+                                    schema_app_key,
+                                } => {
+                                    // PR-6b Task 6b.7: the snapshot apply path
+                                    // writes verified entities via a raw
+                                    // `handle.put`, bypassing the gossip
+                                    // state-delta fence AND
+                                    // `apply_leaf_with_crdt_merge_gated`. So the
+                                    // readability check has to live here: if the
+                                    // sender stamped a `schema_app_key` newer
+                                    // than this node's loaded reader, DECLINE +
+                                    // BUFFER the raw entity into the absorb
+                                    // buffer instead of persisting unreadable
+                                    // bytes. The buffered entity is re-applied
+                                    // (re-verified + `handle.put`) once the
+                                    // loaded reader advances to that schema.
+                                    if !snapshot_entity_is_readable(*schema_app_key, loaded_app_key)
+                                    {
+                                        if let Err(e) = self.buffer_future_schema_snapshot_entity(
+                                            context_id,
+                                            *id,
+                                            entry,
+                                            index,
+                                            schema_app_key.expect("gate only declines when Some"),
+                                        ) {
+                                            warn!(
+                                                %context_id,
+                                                id = ?id,
+                                                error = ?e,
+                                                "snapshot Entity record: failed to buffer \
+                                                 future-schema entity into the absorb buffer"
+                                            );
+                                        }
+                                        rejected += 1;
+                                        continue;
+                                    }
                                     // Per-entity signature verification
                                     // (closes the peer-trust gap from
                                     // issue #2387). Parse the index
@@ -1013,6 +1116,127 @@ impl SyncManager {
             None => Ok(None),
         }
     }
+
+    /// Buffer a future-schema snapshot `Entity` into the absorb buffer instead
+    /// of `handle.put`-storing unreadable bytes (PR-6b Task 6b.7).
+    ///
+    /// Keyed by the entity id (idempotent overwrite on re-delivery), under the
+    /// *sender's* schema so the drain only re-verifies + persists it once this
+    /// node advances to that reader. Caller has already confirmed
+    /// `!snapshot_entity_is_readable(Some(schema), loaded)`.
+    fn buffer_future_schema_snapshot_entity(
+        &self,
+        context_id: ContextId,
+        id: [u8; 32],
+        entry: &[u8],
+        index: &[u8],
+        schema: [u8; 32],
+    ) -> Result<()> {
+        let record = calimero_context::group_store::AbsorbRecord::from_snapshot_entity(
+            id,
+            entry.to_vec(),
+            index.to_vec(),
+            schema,
+        );
+        calimero_context::group_store::AbsorbRepository::new(self.context_client.datastore())
+            .save(&context_id, schema, &record)?;
+        crate::node_metrics::record_delta_outcome("absorbed_snapshot_entity_future_schema");
+        warn!(
+            %context_id,
+            id = ?id,
+            ?schema,
+            "snapshot entity authored under a newer schema than the loaded reader \
+             — buffered into the absorb buffer instead of storing unreadable bytes \
+             (will re-verify + persist once the reader advances)"
+        );
+        Ok(())
+    }
+}
+
+/// Outcome of draining a buffered snapshot entity (PR-6b Task 6b.7).
+///
+/// Distinguishes "this buffer record is finished — delete it" from "a transient
+/// verify/parse failure — keep it for a later pass". The critical case is
+/// [`SnapshotEntityDrainOutcome::RedrivenElsewhere`]: a `SharedMember` entity is
+/// re-applied through the snapshot pass-2 anchor-authenticated path on the next
+/// snapshot re-drive, NOT by this standalone drain. Once the loaded reader
+/// matches its schema, leaving the buffer record pending would leak it forever
+/// (the `drain_absorbed_leaves` early-exit keys on `entity.is_some()`, so every
+/// later state-delta apply would rebuild a runtime env for the orphan). So that
+/// case must be deleted too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnapshotEntityDrainOutcome {
+    /// Entry + Index blobs were re-verified and persisted — delete the record.
+    Persisted,
+    /// The entity is handled by the snapshot pass-2 re-drive (currently
+    /// `SharedMember`, which needs anchor-writer authentication this standalone
+    /// drain can't perform). The reader has advanced to its schema, so it WILL
+    /// be re-applied through the full snapshot path — delete the orphaned buffer
+    /// record so it stops blocking the drain early-exit.
+    RedrivenElsewhere,
+    /// A transient parse/verify failure — keep the record for a later pass.
+    Pending,
+}
+
+/// Re-verify and persist a buffered future-schema snapshot entity (PR-6b Task
+/// 6b.7), mirroring the inline persist in `request_and_apply_snapshot_pages`'s
+/// `Entity` arm: parse the `index` blob as an `EntityIndex`, re-run
+/// `verify_snapshot_entity_signature`, then `handle.put` the `entry` + `index`
+/// blobs under their hashed storage keys. Returns
+/// [`SnapshotEntityDrainOutcome::Pending`] on a malformed index or signature
+/// failure; [`SnapshotEntityDrainOutcome::Persisted`] once persisted.
+///
+/// `SharedMember` entities — which the apply path defers to a second pass that
+/// authenticates against anchor writer sets — are not re-derivable in this
+/// standalone drain. The caller has already gated on the loaded reader matching
+/// this entity's schema, so the member IS re-applied through the snapshot
+/// pass-2 re-drive; we return [`SnapshotEntityDrainOutcome::RedrivenElsewhere`]
+/// so the caller deletes the now-orphaned buffer record rather than leaking it.
+pub(crate) fn persist_buffered_snapshot_entity(
+    handle: &mut calimero_store::Handle<calimero_store::Store>,
+    context_id: ContextId,
+    id: [u8; 32],
+    entry: &[u8],
+    index: &[u8],
+) -> Result<SnapshotEntityDrainOutcome> {
+    let index_entity: calimero_storage::index::EntityIndex = match borsh::from_slice(index) {
+        Ok(idx) => idx,
+        Err(e) => {
+            warn!(%context_id, id = ?id, error = ?e,
+                "absorb entity drain: index blob failed to deserialize — leaving pending");
+            return Ok(SnapshotEntityDrainOutcome::Pending);
+        }
+    };
+    let id_obj = Id::new(id);
+
+    if matches!(
+        index_entity.metadata.storage_type,
+        calimero_storage::entities::StorageType::SharedMember { .. }
+    ) {
+        warn!(%context_id, id = ?id,
+            "absorb entity drain: SharedMember is re-applied by the snapshot pass-2 \
+             re-drive (anchor-writer authentication) — deleting the orphaned buffer \
+             record now the reader has advanced to its schema");
+        return Ok(SnapshotEntityDrainOutcome::RedrivenElsewhere);
+    }
+
+    if let Err(e) = Interface::<MainStorage>::verify_snapshot_entity_signature(
+        id_obj,
+        entry,
+        &index_entity.metadata,
+    ) {
+        warn!(%context_id, id = ?id, error = ?e,
+            "absorb entity drain: signature verification failed — leaving pending");
+        return Ok(SnapshotEntityDrainOutcome::Pending);
+    }
+
+    let entry_key = ContextStateKey::new(context_id, StorageKey::Entry(id_obj).to_bytes());
+    let index_key = ContextStateKey::new(context_id, StorageKey::Index(id_obj).to_bytes());
+    let entry_slice: Slice<'_> = entry.to_vec().into();
+    let index_slice: Slice<'_> = index.to_vec().into();
+    handle.put(&entry_key, &ContextStateValue::from(entry_slice))?;
+    handle.put(&index_key, &ContextStateValue::from(index_slice))?;
+    Ok(SnapshotEntityDrainOutcome::Persisted)
 }
 
 /// Result of a successful snapshot sync.
@@ -1083,6 +1307,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     start_cursor: Option<&SnapshotCursor>,
     page_limit: u16,
     byte_limit: u32,
+    schema_app_key: Option<[u8; 32]>,
 ) -> Result<(Vec<Vec<u8>>, Option<SnapshotCursor>, u64)> {
     // Pass 1 — single snapshot scan, memory bounded to keys + ids.
     //
@@ -1410,10 +1635,18 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         };
         let entry = entry.value.to_vec();
 
-        let record_bytes = borsh::to_vec(&SnapshotRecord::Entity {
+        // V2 page format (PR-6b): each record is length-framed
+        // (`u32 LE len ‖ record_bytes`) so the receiver bounds each
+        // record's decode to its own sub-slice. Without framing, the
+        // backward-compatible trailing `Entity.schema_app_key` (decoded
+        // EOF-tolerantly) would, on a record that is NOT the last in the
+        // page, read the next record's leading bytes instead of seeing a
+        // clean EOF — desyncing the whole page.
+        let record_bytes = encode_framed_snapshot_record(&SnapshotRecord::Entity {
             id: id_bytes,
             entry,
             index,
+            schema_app_key,
         })?;
 
         // Page-break BEFORE adding this record if it would exceed
@@ -1433,6 +1666,12 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             }
         }
 
+        // First record on a fresh page: stamp the v2 page-format sentinel
+        // so the receiver decodes it framed (and a legacy peer's unframed
+        // page is told apart by its missing sentinel).
+        if current_page.is_empty() {
+            current_page.push(SNAPSHOT_PAGE_FORMAT_V2);
+        }
         current_page.extend(record_bytes);
         last_id = Some(id_bytes);
     }
@@ -1442,6 +1681,21 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     }
 
     Ok((pages, None, total_entries))
+}
+
+/// Encode one [`SnapshotRecord`] with a `u32` little-endian length prefix for
+/// the v2 page format. The length frames the borsh-encoded record so the
+/// receiver can bound its decode to exactly this record's bytes — making the
+/// EOF-tolerant trailing `Entity.schema_app_key` sound even for a non-terminal
+/// record.
+fn encode_framed_snapshot_record(record: &SnapshotRecord) -> Result<Vec<u8>> {
+    let body = borsh::to_vec(record)?;
+    let len = u32::try_from(body.len())
+        .map_err(|_| eyre::eyre!("snapshot record exceeds u32 length frame"))?;
+    let mut framed = Vec::with_capacity(4 + body.len());
+    framed.extend_from_slice(&len.to_le_bytes());
+    framed.extend(body);
+    Ok(framed)
 }
 
 /// Derive `(percent, eta_secs)` for a snapshot in progress.
@@ -1541,15 +1795,63 @@ fn decompress_snapshot_page(payload: &[u8], uncompressed_len: u32) -> Result<Vec
 
 /// Decode snapshot records from a (decompressed) page payload.
 ///
-/// Mirrors the encoding in [`generate_snapshot_pages`]: borsh-encoded
-/// [`SnapshotRecord`]s concatenated end-to-end. Used by both the
-/// receiver and the snapshot test fixtures.
+/// Two on-the-wire page formats are accepted:
+///
+/// * **v2** (PR-6b / #2539) — the page begins with the
+///   [`SNAPSHOT_PAGE_FORMAT_V2`] sentinel, followed by length-framed records
+///   (`u32 LE len ‖ borsh(record)`). Each record decodes inside its own
+///   sub-slice, so the EOF-tolerant trailing `Entity.schema_app_key` reads a
+///   clean EOF at the sub-slice boundary instead of bleeding into the next
+///   record — correct even for a non-terminal record.
+/// * **legacy** (pre-#2539) — the page is a back-to-back concatenation of
+///   borsh-encoded records with NO framing and NO trailing `schema_app_key`
+///   byte. Such a page can never start with `0xFF` (a record starts with its
+///   variant discriminant, `0`/`1`), so the absence of the sentinel selects
+///   this path. Records are decoded with [`decode_legacy_record`], which stops
+///   after `Entity {id, entry, index}` (schema absent) rather than peeking for
+///   a trailing byte that belongs to the NEXT record.
 fn decode_snapshot_records(payload: &[u8]) -> Result<Vec<SnapshotRecord>> {
+    if payload.first() == Some(&SNAPSHOT_PAGE_FORMAT_V2) {
+        return decode_framed_snapshot_records(&payload[1..]);
+    }
+    decode_legacy_snapshot_records(payload)
+}
+
+/// Decode a **v2** length-framed page body (sentinel already stripped).
+fn decode_framed_snapshot_records(mut remaining: &[u8]) -> Result<Vec<SnapshotRecord>> {
+    let mut records = Vec::new();
+    while !remaining.is_empty() {
+        if remaining.len() < 4 {
+            eyre::bail!("snapshot page truncated: dangling record length frame");
+        }
+        let len =
+            u32::from_le_bytes([remaining[0], remaining[1], remaining[2], remaining[3]]) as usize;
+        let body_start = 4usize;
+        let body_end = body_start
+            .checked_add(len)
+            .filter(|end| *end <= remaining.len())
+            .ok_or_else(|| eyre::eyre!("snapshot record length frame overruns page"))?;
+        let body = &remaining[body_start..body_end];
+        // Decode inside the exact record sub-slice: a clean EOF at `body`'s
+        // end is what makes the EOF-tolerant trailing `schema_app_key` sound.
+        let record = borsh::from_slice::<SnapshotRecord>(body)?;
+        records.push(record);
+        remaining = &remaining[body_end..];
+    }
+    Ok(records)
+}
+
+/// Decode a **legacy** (pre-#2539) unframed page: records concatenated
+/// end-to-end with no trailing `schema_app_key`. Each record is self-delimiting
+/// (borsh `Vec` fields carry their own length), so we decode sequentially —
+/// but we must NOT peek for the trailing `Entity.schema_app_key` byte, because
+/// in a legacy page that byte is the NEXT record's leading byte.
+fn decode_legacy_snapshot_records(payload: &[u8]) -> Result<Vec<SnapshotRecord>> {
     let mut records = Vec::new();
     let mut remaining = payload;
     while !remaining.is_empty() {
         let mut cursor = remaining;
-        let record = SnapshotRecord::deserialize(&mut cursor)?;
+        let record = decode_legacy_record(&mut cursor)?;
         let consumed = remaining.len() - cursor.len();
         if consumed == 0 {
             eyre::bail!("snapshot record deserialization made no progress");
@@ -1557,8 +1859,36 @@ fn decode_snapshot_records(payload: &[u8]) -> Result<Vec<SnapshotRecord>> {
         remaining = cursor;
         records.push(record);
     }
-
     Ok(records)
+}
+
+/// Decode a single LEGACY-format `SnapshotRecord` from `reader`, treating an
+/// `Entity` as the pre-#2539 three-field `{id, entry, index}` (schema absent).
+/// Unlike the hand-written [`SnapshotRecord::deserialize`], this NEVER reads a
+/// trailing `Option` byte, so it cannot consume the next record's bytes in an
+/// unframed page.
+fn decode_legacy_record<R: borsh::io::Read>(reader: &mut R) -> Result<SnapshotRecord> {
+    let variant = u8::deserialize_reader(reader)?;
+    match variant {
+        0 => {
+            let id = <[u8; 32]>::deserialize_reader(reader)?;
+            let entry = Vec::<u8>::deserialize_reader(reader)?;
+            let index = Vec::<u8>::deserialize_reader(reader)?;
+            Ok(SnapshotRecord::Entity {
+                id,
+                entry,
+                index,
+                schema_app_key: None,
+            })
+        }
+        1 => {
+            let kind = u8::deserialize_reader(reader)?;
+            let id = <[u8; 32]>::deserialize_reader(reader)?;
+            let value = Vec::<u8>::deserialize_reader(reader)?;
+            Ok(SnapshotRecord::Auxiliary { kind, id, value })
+        }
+        other => eyre::bail!("invalid legacy SnapshotRecord variant discriminant {other}"),
+    }
 }
 
 /// Check if a context has any state keys (efficient early-exit check).
@@ -1699,9 +2029,15 @@ mod tests {
         // clear message instead of masquerading as a dropped entity.
         let mut completed = false;
         for _ in 0..10_000 {
-            let (pages, next, total) =
-                generate_snapshot_pages(&handle, ctx, cursor.as_ref(), page_limit, byte_limit)
-                    .unwrap();
+            let (pages, next, total) = generate_snapshot_pages(
+                &handle,
+                ctx,
+                cursor.as_ref(),
+                page_limit,
+                byte_limit,
+                None,
+            )
+            .unwrap();
             totals.push(total);
             for page in &pages {
                 for record in decode_snapshot_records(page).unwrap() {
@@ -1738,6 +2074,7 @@ mod tests {
             None,
             DEFAULT_PAGE_LIMIT,
             DEFAULT_PAGE_BYTE_LIMIT,
+            None,
         )
         .unwrap();
         assert!(pages.is_empty());
@@ -1759,9 +2096,15 @@ mod tests {
             .collect();
 
         // One generous page — everything fits, cursor signals done.
-        let (pages, cursor, total) =
-            generate_snapshot_pages(&store.handle(), ctx, None, DEFAULT_PAGE_LIMIT, 1 << 20)
-                .unwrap();
+        let (pages, cursor, total) = generate_snapshot_pages(
+            &store.handle(),
+            ctx,
+            None,
+            DEFAULT_PAGE_LIMIT,
+            1 << 20,
+            None,
+        )
+        .unwrap();
         assert!(cursor.is_none(), "single page should not request a resume");
         assert_eq!(pages.len(), 1, "20 small entities should fit on one page");
         assert_eq!(total, 20);
@@ -1892,6 +2235,66 @@ mod tests {
     }
 
     #[test]
+    fn test_snapshot_entity_future_schema_is_declined_not_stored() {
+        // Matching schema, legacy (None) schema, and unresolvable loaded reader
+        // all apply; only a known-and-different schema declines (decline =
+        // buffer instead of `handle.put`).
+        let v1 = [1u8; 32];
+        let v2 = [2u8; 32];
+
+        // Future-schema entity vs a v1 loaded reader: DECLINE.
+        assert!(
+            !snapshot_entity_is_readable(Some(v2), Some(v1)),
+            "a v2-authored snapshot entity must be declined by a v1 reader \
+             (else its bytes are stored unreadable)"
+        );
+
+        // Matching schema: apply.
+        assert!(snapshot_entity_is_readable(Some(v1), Some(v1)));
+        // Legacy sender (no marker): apply (back-compat).
+        assert!(snapshot_entity_is_readable(None, Some(v1)));
+        // Unresolvable loaded reader (non-group / missing meta): no gate, apply.
+        assert!(snapshot_entity_is_readable(Some(v2), None));
+        assert!(snapshot_entity_is_readable(None, None));
+    }
+
+    /// Regression (PR-6b Task 6b.7 review): once the loaded reader matches a
+    /// buffered `SharedMember` entity's schema, the standalone drain can't
+    /// re-apply it (it needs snapshot pass-2 anchor-writer authentication) — but
+    /// the member IS re-applied by the snapshot re-drive. So the drain must
+    /// signal `RedrivenElsewhere` (delete the orphaned buffer record) rather
+    /// than `Pending` (leak it forever, blocking the drain early-exit).
+    #[test]
+    fn test_persist_buffered_snapshot_entity_sharedmember_is_redriven_not_pending() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut handle = store.handle();
+        let ctx = ContextId::from([5u8; 32]);
+        let id = [6u8; 32];
+
+        // Build a SharedMember index blob.
+        let mut index = EntityIndex::minimal_for_test(Id::new(id));
+        index.metadata.storage_type = calimero_storage::entities::StorageType::SharedMember {
+            anchor: Id::new([7u8; 32]),
+            signature_data: None,
+        };
+        let index_bytes = borsh::to_vec(&index).unwrap();
+
+        let outcome =
+            persist_buffered_snapshot_entity(&mut handle, ctx, id, &[1, 2, 3], &index_bytes)
+                .unwrap();
+        assert_eq!(
+            outcome,
+            SnapshotEntityDrainOutcome::RedrivenElsewhere,
+            "a matching-schema SharedMember must be marked redriven (delete), not left pending"
+        );
+
+        // A malformed index blob is still a transient Pending (kept for retry).
+        let pending =
+            persist_buffered_snapshot_entity(&mut handle, ctx, id, &[1], &[0xFF, 0xFF]).unwrap();
+        assert_eq!(pending, SnapshotEntityDrainOutcome::Pending);
+    }
+
+    #[test]
     fn test_decode_snapshot_records_empty() {
         let records = decode_snapshot_records(&[]).unwrap();
         assert!(records.is_empty());
@@ -1903,19 +2306,120 @@ mod tests {
             id: [1u8; 32],
             entry: vec![10, 20, 30],
             index: vec![40, 50, 60],
+            schema_app_key: None,
         };
-        let encoded = borsh::to_vec(&record).unwrap();
+        let encoded = build_snapshot_page_v2(std::slice::from_ref(&record));
 
         let records = decode_snapshot_records(&encoded).unwrap();
         assert_eq!(records.len(), 1);
         match &records[0] {
-            SnapshotRecord::Entity { id, entry, index } => {
+            SnapshotRecord::Entity {
+                id, entry, index, ..
+            } => {
                 assert_eq!(*id, [1u8; 32]);
                 assert_eq!(entry, &vec![10, 20, 30]);
                 assert_eq!(index, &vec![40, 50, 60]);
             }
             _ => panic!("expected Entity record"),
         }
+    }
+
+    /// Regression (PR-6b Task 6b.7 review): a LEGACY (pre-#2539 / v1) page
+    /// packs multiple `Entity` records back-to-back with NO trailing
+    /// `schema_app_key` byte and NO per-record length framing. A v2 reader
+    /// must decode every such record with `schema_app_key == None` and consume
+    /// the whole page — never letting one record's missing trailing byte eat
+    /// the next record's leading bytes (which previously desynced the stream
+    /// at the second record).
+    /// Build a v2-framed page (sentinel ‖ length-framed records) the way
+    /// `generate_snapshot_pages` does, for decode round-trip tests.
+    fn build_snapshot_page_v2(records: &[SnapshotRecord]) -> Vec<u8> {
+        let mut page = vec![SNAPSHOT_PAGE_FORMAT_V2];
+        for record in records {
+            page.extend(encode_framed_snapshot_record(record).unwrap());
+        }
+        page
+    }
+
+    #[test]
+    fn test_decode_legacy_multi_record_page_no_desync() {
+        // Two legacy Entity records, exactly as a v1 sender would emit them:
+        // {variant=0, id, entry, index} with no trailing Option byte, packed
+        // end-to-end into one page buffer.
+        fn legacy_entity_bytes(id: [u8; 32], entry: Vec<u8>, index: Vec<u8>) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.push(0u8); // Entity variant discriminant
+            bytes.extend_from_slice(&id);
+            bytes.extend_from_slice(&borsh::to_vec(&entry).unwrap());
+            bytes.extend_from_slice(&borsh::to_vec(&index).unwrap());
+            bytes
+        }
+
+        let mut page = legacy_entity_bytes([1u8; 32], vec![10, 20, 30], vec![40, 50]);
+        page.extend(legacy_entity_bytes([2u8; 32], vec![60], vec![70, 80, 90]));
+
+        let records = decode_snapshot_records(&page).expect("legacy multi-record page decodes");
+        assert_eq!(records.len(), 2, "both legacy records must decode");
+        assert_eq!(
+            records[0],
+            SnapshotRecord::Entity {
+                id: [1u8; 32],
+                entry: vec![10, 20, 30],
+                index: vec![40, 50],
+                schema_app_key: None,
+            }
+        );
+        assert_eq!(
+            records[1],
+            SnapshotRecord::Entity {
+                id: [2u8; 32],
+                entry: vec![60],
+                index: vec![70, 80, 90],
+                schema_app_key: None,
+            }
+        );
+    }
+
+    /// Round-trip: a v2 page (framed, schema-stamped) emitted by
+    /// `generate_snapshot_pages` decodes back to the stamped records, and a
+    /// hand-built legacy page decodes alongside the same decoder.
+    #[test]
+    fn test_decode_v2_framed_page_round_trips_schema() {
+        let mut page = build_snapshot_page_v2(&[
+            SnapshotRecord::Entity {
+                id: [3u8; 32],
+                entry: vec![1, 2],
+                index: vec![3, 4],
+                schema_app_key: Some([7u8; 32]),
+            },
+            SnapshotRecord::Auxiliary {
+                kind: snapshot_record_kind::ROTATION_LOG,
+                id: [4u8; 32],
+                value: vec![5, 6, 7],
+            },
+        ]);
+        // Decode in place.
+        let records = decode_snapshot_records(&page).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[0],
+            SnapshotRecord::Entity {
+                id: [3u8; 32],
+                entry: vec![1, 2],
+                index: vec![3, 4],
+                schema_app_key: Some([7u8; 32]),
+            }
+        );
+        assert!(matches!(
+            &records[1],
+            SnapshotRecord::Auxiliary { kind, id, value }
+                if *kind == snapshot_record_kind::ROTATION_LOG
+                    && *id == [4u8; 32]
+                    && value == &vec![5, 6, 7]
+        ));
+        // A trailing zero byte would have desynced a naive sequential decoder;
+        // confirm the framed page is fully consumed (no leftover).
+        page.clear();
     }
 
     #[test]
@@ -1926,6 +2430,7 @@ mod tests {
             id: [1u8; 32],
             entry: vec![10],
             index: vec![20],
+            schema_app_key: None,
         };
         let aux = SnapshotRecord::Auxiliary {
             kind: snapshot_record_kind::ROTATION_LOG,
@@ -1933,8 +2438,7 @@ mod tests {
             value: vec![30, 31],
         };
 
-        let mut encoded = borsh::to_vec(&entity).unwrap();
-        encoded.extend(borsh::to_vec(&aux).unwrap());
+        let encoded = build_snapshot_page_v2(&[entity, aux]);
 
         let records = decode_snapshot_records(&encoded).unwrap();
         assert_eq!(records.len(), 2);

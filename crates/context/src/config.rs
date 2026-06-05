@@ -11,11 +11,19 @@ pub struct ContextConfig {
 
     /// Master switch for the PR-6 hybrid zero-downtime migration framework,
     /// threaded into [`crate::ContextManagerConfig::migration_v2`] at node
-    /// startup. Absent (`#[serde(default)]` → `false`) in every existing
-    /// `config.toml`, so master behavior — the namespace-cascade write-freeze
-    /// — is preserved until an operator sets `[context] migration_v2 = true`.
-    #[serde(default)]
+    /// startup. Now that PR-6a (no-freeze) and PR-6b (absorb-don't-drop) have
+    /// landed, this defaults ON: absent (`#[serde(default = ...)]` → `true`)
+    /// in every existing `config.toml`, so the non-freezing migration is the
+    /// node's native behavior. An operator can pin `[context] migration_v2 =
+    /// false` to restore the legacy namespace-cascade write-freeze.
+    #[serde(default = "default_migration_v2")]
     pub migration_v2: bool,
+}
+
+/// Serde default for [`ContextConfig::migration_v2`]: ON, matching
+/// [`crate::ContextManagerConfig::default`].
+fn default_migration_v2() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -24,20 +32,37 @@ mod tests {
 
     /// The on-disk `[context]` section that ships in every existing
     /// `config.toml` (only the client signer). It must still deserialize, and
-    /// the absent `migration_v2` must default to `false` so master behavior —
-    /// the namespace-cascade write-freeze — is preserved (backward-compat).
+    /// the absent `migration_v2` must default to `true` now that PR-6a
+    /// (no-freeze) and PR-6b (absorb-don't-drop) have landed — the
+    /// non-freezing migration is the node's native behavior.
     const LEGACY_CONTEXT_SECTION: &str = r#"{
         "config": { "signer": { "self": {} } }
     }"#;
 
     #[test]
-    fn migration_v2_defaults_off_when_absent() {
+    fn migration_v2_defaults_on_when_absent() {
         let cfg: ContextConfig = serde_json::from_str(LEGACY_CONTEXT_SECTION)
             .expect("legacy [context] section must still deserialize");
 
         assert!(
+            cfg.migration_v2,
+            "absent migration_v2 must default on now that 6a + 6b have landed"
+        );
+    }
+
+    #[test]
+    fn migration_v2_can_be_pinned_off() {
+        let cfg: ContextConfig = serde_json::from_str(
+            r#"{
+                "config": { "signer": { "self": {} } },
+                "migration_v2": false
+            }"#,
+        )
+        .expect("[context] section with migration_v2 = false must deserialize");
+
+        assert!(
             !cfg.migration_v2,
-            "absent migration_v2 must default off so existing configs are unchanged"
+            "migration_v2 = false must thread through to restore the legacy freeze"
         );
     }
 

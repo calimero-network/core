@@ -74,6 +74,19 @@ fn ctx(delta_id: [u8; 32], delta_hlc_ns: u64) -> ApplyContext {
     }
 }
 
+/// Apply context carrying the pre-resolved causal writer set (what the node
+/// sync layer passes from `writers_at(delta.parents)`), so a rotation's
+/// signature verifies against the set authorized at its causal point rather
+/// than the locally-stored set. Needed when a concurrent rotation is signed by
+/// a writer who has since been rotated out of the local stored set.
+fn ctx_ew(delta_id: [u8; 32], delta_hlc_ns: u64, effective: BTreeSet<PublicKey>) -> ApplyContext {
+    ApplyContext {
+        effective_writers: Some(effective),
+        delta_id: Some(delta_id),
+        delta_hlc: Some(hlc(delta_hlc_ns)),
+    }
+}
+
 /// Documents a known design fragility: `maybe_append_rotation_log` decides
 /// whether to append by comparing the action's claimed `writers` against the
 /// currently-stored writers. But `Index::update_hash_for` only touches
@@ -267,5 +280,143 @@ fn shared_equal_nonce_different_writers_converge_regardless_of_order() {
         "two writers at the same nonce must converge to the SAME value \
          regardless of apply order (shared-storage post-rotation split-brain): \
          A-then-B gave {x:?}, B-then-A gave {y:?}"
+    );
+}
+
+/// Apply a bootstrap then two CONCURRENT rotations to DIFFERENT writer sets in
+/// the given order, returning the resulting rotation log's `new_writers` sets.
+///
+/// - R1 rotates `{Alice, Bob}` → `{Bob}` at nonce 200.
+/// - R2 rotates `{Alice, Bob}` → `{Bob, Dave}` at nonce 150 (lower nonce; a
+///   concurrent sibling, not a descendant of R1).
+///
+/// Both are signed by Alice and carry `effective_writers = {Alice, Bob}` (the
+/// set authorized at the shared causal point before either rotation), so both
+/// signatures verify regardless of the local stored set at apply time.
+fn apply_concurrent_rotations_in_order<const SCOPE: usize>(
+    r1_first: bool,
+) -> Vec<BTreeSet<PublicKey>> {
+    crate::env::reset_for_testing();
+    let root = setup_root::<S<SCOPE>>();
+
+    let alice_sk = make_signing_key(0xA1);
+    let alice = pubkey_of(&alice_sk);
+    let bob = pubkey_of(&make_signing_key(0xB2));
+    let dave = pubkey_of(&make_signing_key(0xD4));
+    let id = entity_id(0x71);
+
+    let genesis: BTreeSet<PublicKey> = [alice, bob].into_iter().collect();
+
+    // Bootstrap {Alice, Bob}.
+    let bootstrap = build_signed_shared_action(
+        true,
+        id,
+        b"v0".to_vec(),
+        genesis.clone(),
+        100,
+        &alice_sk,
+        vec![root.clone()],
+    );
+    Interface::<S<SCOPE>>::apply_action(bootstrap, &ctx_ew([0xE0; 32], 100, genesis.clone()))
+        .unwrap();
+
+    // R1 → {Bob} (nonce 200), R2 → {Bob, Dave} (nonce 150). Rotation is
+    // hash-neutral, so the value bytes stay "v0".
+    let mk_r1 = || {
+        build_signed_shared_action(
+            false,
+            id,
+            b"v0".to_vec(),
+            [bob].into_iter().collect(),
+            200,
+            &alice_sk,
+            vec![],
+        )
+    };
+    let mk_r2 = || {
+        build_signed_shared_action(
+            false,
+            id,
+            b"v0".to_vec(),
+            [bob, dave].into_iter().collect(),
+            150,
+            &alice_sk,
+            vec![],
+        )
+    };
+
+    if r1_first {
+        // R2 arrives with a nonce BELOW the stored nonce → strictly stale.
+        Interface::<S<SCOPE>>::apply_action(mk_r1(), &ctx_ew([0xE1; 32], 200, genesis.clone()))
+            .unwrap();
+        Interface::<S<SCOPE>>::apply_action(mk_r2(), &ctx_ew([0xE2; 32], 150, genesis.clone()))
+            .unwrap();
+    } else {
+        Interface::<S<SCOPE>>::apply_action(mk_r2(), &ctx_ew([0xE2; 32], 150, genesis.clone()))
+            .unwrap();
+        Interface::<S<SCOPE>>::apply_action(mk_r1(), &ctx_ew([0xE1; 32], 200, genesis.clone()))
+            .unwrap();
+    }
+
+    rotation_log::load::<S<SCOPE>>(id)
+        .unwrap()
+        .unwrap()
+        .entries
+        .iter()
+        .map(|e| e.new_writers.clone())
+        .collect()
+}
+
+/// #2716 regression: two nodes that apply the SAME pair of concurrent
+/// rotations to DIFFERENT writer sets, in opposite orders, must end with the
+/// SAME rotation log — so `writers_at`/`resolve_local` resolve the same writer
+/// set on both, and the writer that one branch granted (`Dave`) is recognized
+/// everywhere.
+///
+/// The bug: the `Shared`-upsert apply path ran the strictly-stale-nonce
+/// silent-skip BEFORE `maybe_append_rotation_log`. A node that applied the
+/// higher-nonce rotation first then saw the lower-nonce CONCURRENT rotation
+/// `return`ed at the skip and never logged it — its premise ("a stale rotation
+/// is a superseded replay") is false for sibling branches. That node's log
+/// lost the `{Bob, Dave}` set, so `writers_at` could never grant `Dave`,
+/// `Dave`'s subsequent writes failed `InvalidSignature`, and HashComparison
+/// skipped the affected entities forever (permanent split-brain).
+///
+/// The fix records every signature-verified rotation as a causal fact before
+/// the stale-nonce skip (which now gates only the data write), so both apply
+/// orders converge on the same log.
+#[test]
+fn concurrent_rotations_converge_in_log_regardless_of_apply_order() {
+    let alice = pubkey_of(&make_signing_key(0xA1));
+    let bob = pubkey_of(&make_signing_key(0xB2));
+    let dave = pubkey_of(&make_signing_key(0xD4));
+    let with_dave: BTreeSet<PublicKey> = [bob, dave].into_iter().collect();
+
+    // Node X applies R1 (higher nonce) first, then R2 (lower nonce → stale).
+    let x = apply_concurrent_rotations_in_order::<411>(true);
+    // Node Y applies them in the opposite order.
+    let y = apply_concurrent_rotations_in_order::<412>(false);
+
+    // Both logs must contain the {Bob, Dave} rotation — the node that applied
+    // it as a stale-nonce sibling must still have recorded it.
+    assert!(
+        x.contains(&with_dave),
+        "X dropped the concurrent {{Bob, Dave}} rotation (stale nonce applied \
+         after the silent-skip) — `writers_at` can never grant Dave (#2716); \
+         log = {x:?}"
+    );
+    assert!(
+        y.contains(&with_dave),
+        "Y must contain {{Bob, Dave}}; log = {y:?}"
+    );
+
+    // And both must agree as a set of rotations (insertion-order invariant), so
+    // the local writer-set resolution converges.
+    let xs: BTreeSet<_> = x.iter().cloned().collect();
+    let ys: BTreeSet<_> = y.iter().cloned().collect();
+    assert_eq!(
+        xs, ys,
+        "the two apply orders must converge on the same rotation set \
+         (X={x:?}, Y={y:?})"
     );
 }

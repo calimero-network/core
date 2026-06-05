@@ -14,8 +14,9 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::time::Duration;
 
+use calimero_context_config::types::ContextGroupId;
 use calimero_node_primitives::delta_buffer::BufferedDelta;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use libp2p::PeerId;
 use parking_lot::Mutex;
@@ -36,6 +37,7 @@ pub(crate) enum SyncStateAccessCall {
     EndSyncSession(ContextId),
     CancelSyncSession(ContextId),
     PeerIdentities(PeerId),
+    CachedMemberPeersForGroup(ContextGroupId),
     ReconcileRemainingCooldown(ContextId),
     RecordReconcileSuccess(ContextId),
     RecordReconcileFailure(ContextId),
@@ -49,6 +51,7 @@ pub(crate) enum SyncStateAccessCall {
 pub(crate) struct MockSyncStateAccess {
     delta_stores: Mutex<HashMap<ContextId, DeltaStore>>,
     peer_identities: Mutex<HashMap<PeerId, BTreeSet<PublicKey>>>,
+    member_peers: Mutex<HashMap<ContextGroupId, Vec<(PeerId, GroupMemberRole)>>>,
     end_sync_session_responses: Mutex<HashMap<ContextId, VecDeque<Option<Vec<BufferedDelta>>>>>,
     reconcile_cooldowns: Mutex<HashMap<ContextId, (Duration, u32)>>,
     failure_counts: Mutex<HashMap<ContextId, u32>>,
@@ -61,6 +64,15 @@ impl MockSyncStateAccess {
     /// reports `created=false`.
     pub(crate) fn insert_delta_store(&self, context_id: ContextId, store: DeltaStore) {
         let _replaced = self.delta_stores.lock().insert(context_id, store);
+    }
+
+    /// Inject a `cached_member_peers_for_group` response for `group`.
+    pub(crate) fn insert_member_peers(
+        &self,
+        group: ContextGroupId,
+        peers: Vec<(PeerId, GroupMemberRole)>,
+    ) {
+        let _replaced = self.member_peers.lock().insert(group, peers);
     }
 
     /// Inject a `peer_identities` response for `peer`.
@@ -182,6 +194,20 @@ impl SyncStateAccess for MockSyncStateAccess {
         self.peer_identities.lock().get(peer_id).cloned()
     }
 
+    fn cached_member_peers_for_group(
+        &self,
+        group: &ContextGroupId,
+    ) -> Vec<(PeerId, GroupMemberRole)> {
+        self.calls
+            .lock()
+            .push(SyncStateAccessCall::CachedMemberPeersForGroup(*group));
+        self.member_peers
+            .lock()
+            .get(group)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     fn reconcile_remaining_cooldown(&self, context_id: &ContextId) -> Option<(Duration, u32)> {
         self.calls
             .lock()
@@ -228,6 +254,27 @@ mod tests {
 
     fn ctx(byte: u8) -> ContextId {
         ContextId::from([byte; 32])
+    }
+
+    #[test]
+    fn cached_member_peers_returns_injected_and_records_call() {
+        let mock = MockSyncStateAccess::default();
+        let group = ContextGroupId::from([1u8; 32]);
+        let peer = PeerId::random();
+        mock.insert_member_peers(group, vec![(peer, GroupMemberRole::Admin)]);
+
+        assert_eq!(
+            mock.cached_member_peers_for_group(&group),
+            vec![(peer, GroupMemberRole::Admin)]
+        );
+        // Unseeded group → empty.
+        assert!(mock
+            .cached_member_peers_for_group(&ContextGroupId::from([2u8; 32]))
+            .is_empty());
+        assert!(mock
+            .calls()
+            .iter()
+            .any(|c| matches!(c, SyncStateAccessCall::CachedMemberPeersForGroup(_))));
     }
 
     #[test]

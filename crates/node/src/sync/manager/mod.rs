@@ -5,6 +5,7 @@
 use calimero_context::group_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
 };
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use calimero_context_client::client::ContextClient;
@@ -15,7 +16,7 @@ use calimero_node_primitives::client::{NamespaceJoinParams, NodeClient, OpenSubg
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::common::DIGEST_SIZE;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use eyre::WrapErr;
@@ -491,6 +492,25 @@ impl SyncManager {
             self.sync_config.interval,
         );
 
+        // PR-6b Task 6b.6: the AbsorbBuffer is durable (its own RocksDB column
+        // family), so a node that went down mid-migration-window may have
+        // persisted straggler deltas it could not yet read. Before the sync
+        // driver starts, re-consider those for drain — records the now-loaded
+        // reader can read are replayed verbatim and deleted; still-behind
+        // records are left in place for the live binary-advance drain hooks.
+        // Mirrors the `enumerate_in_progress` in-progress-upgrade crash
+        // recovery; a no-op when nothing is buffered.
+        let recovery_input = crate::handlers::state_delta::StateDeltaContext {
+            node_clients: crate::state::NodeClients {
+                context: self.context_client.clone(),
+                node: self.node_client.clone(),
+            },
+            node_state: self.node_state.clone(),
+            network_client: self.network_client.clone(),
+            sync_timeout: self.sync_config.timeout,
+        };
+        crate::handlers::state_delta::recover_absorbed_on_startup(&recovery_input).await;
+
         driver.run(&self).await;
     }
 
@@ -592,17 +612,55 @@ impl SyncManager {
             )))
         };
 
-        let outcome = super::peers::discover_mesh_peers_with_namespace_fallback(
+        // Durably-cached member peers for this context's group — the
+        // cold-start signal that survives a restart. Empty when nothing
+        // is cached, in which case topic discovery below carries the
+        // selection exactly as before.
+        let cached_members: Vec<libp2p::PeerId> = self
+            .member_peers_for_context(&context_id)
+            .into_iter()
+            .map(|(peer, _role)| peer)
+            .collect();
+
+        let discovery = super::peers::discover_mesh_peers_with_namespace_fallback(
             &*self.sync_network,
             context_id,
             max_retries,
             std::time::Duration::from_millis(retry_delay_ms),
             resolve_namespace_topic,
         )
-        .await?;
-        let peers = outcome.peers;
-        let final_attempt = outcome.attempts;
-        let mesh_elapsed = outcome.elapsed;
+        .await;
+
+        let (peers, final_attempt, mesh_elapsed, source) = match discovery {
+            Ok(outcome) => {
+                // Members first, then topic-discovered peers not already
+                // present. `partition_peers_anchor_first` below still
+                // orders anchors within the merged set, so this only
+                // changes which non-anchor peers we reach for first.
+                let peers = Self::merge_members_first(cached_members, outcome.peers);
+                (peers, outcome.attempts, outcome.elapsed, outcome.source)
+            }
+            Err(err) => {
+                // Topic discovery came up empty. If the durable cache has
+                // members, dial them directly — they're real members and
+                // reachable via the address cache / DHT even before a mesh
+                // forms. Otherwise preserve the benign "no peers" outcome.
+                if cached_members.is_empty() {
+                    return Err(err);
+                }
+                debug!(
+                    %context_id,
+                    count = cached_members.len(),
+                    "mesh discovery empty; falling back to durably-cached member peers"
+                );
+                (
+                    cached_members,
+                    0,
+                    std::time::Duration::ZERO,
+                    super::peers::PeerSource::PersistentCache,
+                )
+            }
+        };
 
         info!(
             %context_id,
@@ -610,8 +668,8 @@ impl SyncManager {
             attempts = final_attempt,
             ?mesh_elapsed,
             is_uninitialized,
-            source = ?outcome.source,
-            "Mesh peer discovery succeeded"
+            source = ?source,
+            "Peer discovery yielded candidates"
         );
 
         if is_uninitialized {
@@ -681,6 +739,18 @@ impl SyncManager {
             if let Ok(result) = self.initiate_sync(context_id, *peer_id).await {
                 return Ok(result);
             }
+        }
+
+        // On the cold-start cache fallback (topic meshes were empty; we
+        // dialed durably-cached members directly), a total failure means
+        // "no reachable peer right now", not "sync failed against live
+        // peers". Surface the benign `NoPeersAvailable` so the caller
+        // doesn't apply exponential backoff — we want prompt retry while
+        // the mesh forms, matching the pre-fix empty-mesh behaviour. The
+        // normal path (had live mesh peers, all failed) still bails so a
+        // genuine sync failure backs off.
+        if source == super::peers::PeerSource::PersistentCache {
+            return Err(eyre::Error::new(NoPeersAvailable { context_id }));
         }
 
         bail!("Failed to sync with any peer for context {}", context_id)
@@ -777,6 +847,85 @@ impl SyncManager {
         MembershipRepository::new(&store)
             .trusted_anchors(group_id)
             .unwrap_or_default()
+    }
+
+    /// Resolve the cached member peers for the group that owns
+    /// `context_id`: peers we've durably observed hosting members of
+    /// that group, deduped to one entry per peer carrying its strongest
+    /// observed role. Drives cold-start member-preferred dialing before
+    /// live traffic has refilled the in-memory reverse view.
+    ///
+    /// Empty when the context isn't registered to a group, the store
+    /// read fails, or the durable cache holds nothing for the group —
+    /// callers fall back to topic-subscriber discovery. A routing hint:
+    /// `anchor_identities_for_context` (governance `trusted_anchors`,
+    /// which includes the owner) stays authoritative for anchor status.
+    pub(crate) fn member_peers_for_context(
+        &self,
+        context_id: &ContextId,
+    ) -> Vec<(PeerId, GroupMemberRole)> {
+        let store = self.context_client.datastore_handle().into_inner();
+        let Ok(Some(group_id)) =
+            calimero_context::group_store::get_group_for_context(&store, context_id)
+        else {
+            return Vec::new();
+        };
+        Self::dedup_peers_by_strongest_role(
+            self.state_access.cached_member_peers_for_group(&group_id),
+        )
+    }
+
+    /// Anchor-preference ordering of a cached role: higher binds the
+    /// peer more strongly to the trusted-anchor set. The table mirrors
+    /// `MembershipRepository::trusted_anchors` (Owner ∪ Admins ∪
+    /// ReadOnlyTee) — `Admin` and `ReadOnlyTee` are anchors and rank above
+    /// the non-anchor `ReadOnly`/`Member`; keep it in sync if that set
+    /// changes. Owner isn't a [`GroupMemberRole`] (it's a group `Meta`
+    /// field) so it doesn't appear here — owner preference is applied via
+    /// the authoritative `trusted_anchors` set at selection time, not from
+    /// this hint.
+    fn role_rank(role: &GroupMemberRole) -> u8 {
+        match role {
+            GroupMemberRole::Admin => 3,
+            GroupMemberRole::ReadOnlyTee => 2,
+            GroupMemberRole::ReadOnly => 1,
+            GroupMemberRole::Member => 0,
+        }
+    }
+
+    /// Collapse `(peer, role)` pairs to one entry per peer, keeping the
+    /// strongest role (a peer hosting several member identities is
+    /// returned once, tagged with its most-anchor role). Output is
+    /// sorted by `PeerId` for determinism.
+    fn dedup_peers_by_strongest_role(
+        pairs: Vec<(PeerId, GroupMemberRole)>,
+    ) -> Vec<(PeerId, GroupMemberRole)> {
+        let mut best: BTreeMap<PeerId, GroupMemberRole> = BTreeMap::new();
+        for (peer, role) in pairs {
+            best.entry(peer)
+                .and_modify(|existing| {
+                    if Self::role_rank(&role) > Self::role_rank(existing) {
+                        *existing = role.clone();
+                    }
+                })
+                .or_insert(role);
+        }
+        best.into_iter().collect()
+    }
+
+    /// Merge cached member peers ahead of topic-discovered peers: the
+    /// members come first (cold-start preference for real members), then
+    /// any discovered peer not already in the list, preserving discovery
+    /// order. Deduplicates so a peer that's both a cached member and a
+    /// current subscriber appears once, up front.
+    fn merge_members_first(members: Vec<PeerId>, discovered: Vec<PeerId>) -> Vec<PeerId> {
+        let mut merged = members;
+        for peer in discovered {
+            if !merged.contains(&peer) {
+                merged.push(peer);
+            }
+        }
+        merged
     }
 
     /// Find a peer that has state (non-zero root_hash and non-empty DAG heads)
@@ -3500,6 +3649,12 @@ impl SyncManager {
             sync_timeout: self.sync_config.timeout,
         };
         crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
+        // PR-6b Task 6b.5: a node offline across a migration window reconnects,
+        // syncs, and lazily advances its binary on first execute. Sync settle
+        // is the node-side observation point for that advance — drain any
+        // absorbed straggler deltas whose schema the now-loaded reader can read,
+        // replaying their original signed bytes verbatim.
+        crate::handlers::state_delta::drain_all_absorbed(&drain_input).await;
     }
 
     /// #2625: when `context_id` has state deltas parked in the

@@ -64,6 +64,10 @@ pub mod group_store {
         sign_and_publish_namespace_op,
         sign_apply_and_publish,
         sign_apply_and_publish_namespace_op,
+        // Absorb buffer (PR-6b straggler safety).
+        AbsorbRecord,
+        AbsorbRepository,
+        AbsorbedEntity,
         // Typed errors (#2305). Bundled because external callers that
         // downcast on `eyre::Report` need access to the error types; only
         // adding the ones currently imported would surface the same
@@ -112,7 +116,7 @@ use calimero_context_client::local_governance::AckRouter;
 /// tooling can override them without source patches, plus behavioral
 /// feature flags (e.g. [`Self::migration_v2`]) that gate in-progress
 /// framework work. Timing defaults match the values that shipped with
-/// #2237 Phase 12; feature flags default off.
+/// #2237 Phase 12.
 #[derive(Clone, Copy, Debug)]
 pub struct ContextManagerConfig {
     /// How long `join_group` will wait for a `KeyDelivery` op to arrive
@@ -125,15 +129,13 @@ pub struct ContextManagerConfig {
     /// gossipsub heartbeat reconciliation window.
     pub key_delivery_fallback_wait: Duration,
 
-    /// Master switch for the PR-6 hybrid zero-downtime migration framework.
+    /// Master switch for the hybrid zero-downtime migration framework.
     ///
-    /// Defaults to `false` so master behavior is completely unchanged: with the
-    /// flag off, a namespace-cascade migration keeps the group-wide
-    /// `InProgress` write-freeze (see [`handlers::execute`]'s
-    /// `upgrade_blocks_write`). When flipped on — only legal in a deployment
-    /// once PR-6a *and* PR-6b have landed — the cascade no longer freezes
-    /// writes group-wide; each context migrates lazily/briefly and stragglers
-    /// are absorbed rather than dropped.
+    /// Defaults to `true`: a namespace-cascade migration no longer freezes
+    /// writes group-wide; each context migrates lazily and stragglers are
+    /// absorbed rather than dropped. Set to `false` to restore the legacy
+    /// group-wide `InProgress` write-freeze (see [`handlers::execute`]'s
+    /// `upgrade_blocks_write`).
     pub migration_v2: bool,
 }
 
@@ -141,7 +143,7 @@ impl Default for ContextManagerConfig {
     fn default() -> Self {
         Self {
             key_delivery_fallback_wait: Duration::from_secs(5),
-            migration_v2: false,
+            migration_v2: true,
         }
     }
 }

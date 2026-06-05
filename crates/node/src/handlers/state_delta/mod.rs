@@ -8,9 +8,7 @@ use calimero_context_config::types::GovernancePosition;
 use calimero_crypto::Nonce;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::events::{
-    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
-};
+use calimero_primitives::events::ExecutionEvent;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
@@ -19,12 +17,31 @@ use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use crate::delta_store::DeltaStore;
+use crate::peer_identity_cache::ObservedMembership;
 use crate::utils::choose_stream;
 
+mod buffering;
 mod crypto;
+mod events;
+mod store_setup;
 mod verify;
 
+pub(crate) use buffering::{
+    drain_all_absorbed, drain_all_governance_pending, recover_absorbed_on_startup,
+};
+use buffering::{drain_governance_pending, fence_and_maybe_absorb, FenceOutcome};
+// Used only by the in-module test suite (the live drain/recover entry points
+// reach these internally within `buffering`).
+#[cfg(test)]
+use buffering::{drain_absorbed_records, recover_absorbed_records};
 use crypto::{decrypt_delta_actions, lookup_group_key_with_wait, STATE_DELTA_KEY_LOOKUP_WAIT};
+use events::{
+    emit_state_mutation_event_parsed, execute_cascaded_events, execute_event_handlers_parsed,
+    parse_events_payload, CascadeOutcome,
+};
+// `choose_owned_identity` is also reached by the sibling `buffering` module via
+// `super::` (re-exported through this import).
+use store_setup::{choose_owned_identity, init_delta_store, DeltaStoreSetup};
 pub(crate) use verify::{verify_position_group_id_matches_context, GroupIdCheck};
 
 pub(crate) struct StateDeltaMessage {
@@ -43,7 +60,7 @@ pub(crate) struct StateDeltaMessage {
     pub(crate) delta_signature: Option<[u8; 64]>,
     /// The `GroupMeta.app_key` the sender was executing under. `None` for
     /// non-group contexts or when the sender could not resolve the meta row.
-    /// Receivers use this to fence stale-schema deltas (later tasks).
+    /// Receivers use this to fence stale-schema deltas.
     pub(crate) producing_app_key: Option<[u8; 32]>,
 }
 
@@ -53,270 +70,6 @@ pub(crate) struct StateDeltaContext {
     pub(crate) node_state: crate::NodeState,
     pub(crate) network_client: calimero_network_primitives::client::NetworkClient,
     pub(crate) sync_timeout: std::time::Duration,
-}
-
-/// Drain the governance-pending buffer for `context_id`, re-evaluating each
-/// delta's authorization status against current local governance state and
-/// dispatching by outcome.
-///
-/// Outcomes per drained delta:
-/// * `Member` — the referenced governance heads are now known and the author
-///   is authorized. The buffered delta is reconstructed into a
-///   [`StateDeltaMessage`] and applied directly via
-///   [`apply_authorized_state_delta`]. Gossipsub does *not* auto-rebroadcast
-///   already-delivered messages, so dropping here would lose the delta
-///   permanently — recovery would only happen via hash-heartbeat divergence
-///   detection triggering snapshot sync.
-/// * `Removed` / `NeverMember` / `Err` — author is permanently not
-///   authorized at this position; drop with a warn log.
-/// * `Unknown { needed }` — governance still hasn't caught up; push the
-///   delta back into the pending buffer.
-///
-/// Calls `apply_authorized_state_delta` directly (not `handle_state_delta`)
-/// so the call graph stays linear — no async recursion, no per-recurse
-/// future allocation. The cross-DAG check we just performed via
-/// `membership_status_at` is the same check `handle_state_delta` would have
-/// performed; skipping back through the entry handler would also re-drain
-/// the (now-empty) pending buffer, wasted work.
-async fn drain_governance_pending(input: &StateDeltaContext, context_id: &ContextId) {
-    // Pop-then-process pattern: drain one delta at a time so that if
-    // `apply_authorized_state_delta` panics or the actor task is killed
-    // mid-iteration, the rest of the queue stays in the buffer and the
-    // next drain pass picks them up. Bulk-drain-then-process would lose
-    // every still-unprocessed delta on panic.
-    //
-    // Iteration is capped at the snapshot length we observe at entry —
-    // a delta re-buffered as still-Unknown during this drain pass must
-    // not be re-evaluated until the *next* drain pass (a fresh trigger
-    // signal), otherwise drain could loop forever on a permanently
-    // unresolvable delta. The per-delta `governance_drain_attempts`
-    // counter is the deeper guard; this snapshot cap is the cheap
-    // pre-check.
-    let snapshot_len = input.node_state.governance_pending_len(context_id);
-    if snapshot_len == 0 {
-        return;
-    }
-    debug!(
-        %context_id,
-        count = snapshot_len,
-        "governance-pending drain: draining governance-pending buffer"
-    );
-    for _ in 0..snapshot_len {
-        let Some(buffered) = input.node_state.pop_governance_pending(context_id) else {
-            break;
-        };
-        let Some(pos) = buffered.governance_position.as_ref() else {
-            warn!(
-                %context_id,
-                delta_id = ?buffered.id,
-                "governance-pending drain: pending delta has no governance_position; dropping"
-            );
-            crate::node_metrics::record_governance_drain_outcome("no_governance_position");
-            continue;
-        };
-        let datastore = input.node_clients.context.datastore();
-        // Anti-bypass: see `GroupIdCheck` for the bypasses this match
-        // closes. The drain path only sees `Some` positions (the
-        // governance-pending buffer wouldn't accept `None`), so the
-        // `NonGroupOk` / `GroupContextNoPosition` variants are
-        // unreachable here; we still spell them out for exhaustive-
-        // match safety against future buffer shape changes.
-        //
-        // INVARIANT: `ContextManager` serializes governance ops, so
-        // no concurrent group reassignment can interleave between
-        // this check and the `membership_status_at` call below — see
-        // the TOCTOU note on `verify_position_group_id_matches_context`.
-        match verify_position_group_id_matches_context(datastore, context_id, Some(pos.group_id)) {
-            GroupIdCheck::Match => {}
-            // `NonGroupOk` and `GroupContextNoPosition` both require
-            // `claimed_group_id == None` per the helper's match table.
-            // The drain always passes `Some(pos.group_id)` here (we
-            // bound `pos` via let-else above), so both variants are
-            // structurally unreachable from this call site.
-            //
-            // `debug_assert!` catches a future refactor that breaks
-            // the call-site contract (e.g. swapping to pass `None`)
-            // in test/dev builds. Release builds fall through to a
-            // defensive `continue` rather than panic — a single
-            // anomalous delta shouldn't crash the actor; the metric
-            // counter is the operator signal.
-            GroupIdCheck::NonGroupOk | GroupIdCheck::GroupContextNoPosition { .. } => {
-                debug_assert!(
-                    false,
-                    "GroupIdCheck::{{NonGroupOk, GroupContextNoPosition}} require \
-                     claimed_group_id=None, but drain always passes Some(pos.group_id) — \
-                     the call-site contract has been broken"
-                );
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    author = %buffered.author_id,
-                    "governance-pending drain: dropping pending delta — \
-                     verify_position_group_id_matches_context returned an outcome that \
-                     requires claimed_group_id=None despite drain passing Some \
-                     (call-site contract violated; investigate)"
-                );
-                crate::node_metrics::record_governance_drain_outcome("helper_contract_violation");
-                continue;
-            }
-            GroupIdCheck::Mismatch { owning, claimed } => {
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    author = %buffered.author_id,
-                    owning_group = ?owning,
-                    claimed_group = ?claimed,
-                    "governance-pending drain: rejecting pending delta — governance_position \
-                     references a different group than the context's owning group"
-                );
-                crate::node_metrics::record_governance_drain_outcome("group_mismatch");
-                continue;
-            }
-            GroupIdCheck::NonGroupContextWithPosition { claimed } => {
-                // The context was in a group when this delta was
-                // accepted into the buffer, but is no longer — either
-                // it was detached, or a store inconsistency caused a
-                // transient `Ok(None)` here. Distinct metric label
-                // from `group_mismatch` so operators can tell the two
-                // cases apart in dashboards.
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    author = %buffered.author_id,
-                    claimed_group = ?claimed,
-                    "governance-pending drain: rejecting pending delta — governance_position \
-                     present but context is not part of any group (group disappeared since buffering?)"
-                );
-                crate::node_metrics::record_governance_drain_outcome("group_disappeared");
-                continue;
-            }
-            GroupIdCheck::LookupError(err) => {
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    author = %buffered.author_id,
-                    %err,
-                    "governance-pending drain: get_group_for_context failed; dropping delta to avoid silent bypass"
-                );
-                crate::node_metrics::record_governance_drain_outcome("group_lookup_failed");
-                continue;
-            }
-        }
-        // Forward-only invariant — see the gossip-receive site in
-        // `apply_authorized_state_delta` for the full contract. The
-        // governance-pending drain MUST use the buffered delta's
-        // signed `governance_position`, not the receiver's current
-        // state — the whole point of buffering was that the author
-        // signed against a cut the receiver wasn't caught up to. By
-        // the time we drain, the receiver's local DAG may have
-        // advanced past the signed cut (including a `MemberRemoved`
-        // for this author); forward-only resolves pre-removal writes
-        // to `Member` so the deferred apply is correct.
-        let status = membership_status_at(datastore, &buffered.author_id, pos);
-        match status {
-            Ok(MembershipStatus::Member(_)) => {
-                debug!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    author = %buffered.author_id,
-                    "governance-pending drain: pending delta now authorized; re-applying"
-                );
-                crate::node_metrics::record_governance_drain_outcome("applied");
-                let reconstructed = state_delta_message_from_buffered(buffered, *context_id);
-                if let Err(err) = apply_authorized_state_delta(input.clone(), reconstructed).await {
-                    warn!(
-                        %context_id,
-                        %err,
-                        "governance-pending drain: re-apply of authorized buffered delta failed"
-                    );
-                }
-            }
-            Ok(MembershipStatus::Removed { last_role }) => {
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    author = %buffered.author_id,
-                    last_role = ?last_role,
-                    "governance-pending drain: pending delta from removed author; dropping"
-                );
-                crate::node_metrics::record_governance_drain_outcome("removed");
-            }
-            Ok(MembershipStatus::NeverMember) => {
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    author = %buffered.author_id,
-                    "governance-pending drain: pending delta from non-member; dropping"
-                );
-                crate::node_metrics::record_governance_drain_outcome("never_member");
-            }
-            Ok(MembershipStatus::Unknown { needed }) => {
-                let mut buffered = buffered;
-                buffered.governance_drain_attempts =
-                    buffered.governance_drain_attempts.saturating_add(1);
-                if buffered.governance_drain_attempts
-                    >= calimero_node_primitives::delta_buffer::MAX_GOVERNANCE_DRAIN_ATTEMPTS
-                {
-                    warn!(
-                        %context_id,
-                        delta_id = ?buffered.id,
-                        attempts = buffered.governance_drain_attempts,
-                        "governance-pending drain: dropping pending delta after exhausting drain attempts \
-                         (governance heads still unknown — likely permanently missing)"
-                    );
-                    crate::node_metrics::record_governance_drain_outcome("dropped_max_attempts");
-                } else {
-                    debug!(
-                        %context_id,
-                        delta_id = ?buffered.id,
-                        needed_count = needed.len(),
-                        attempts = buffered.governance_drain_attempts,
-                        "governance-pending drain: still pending governance catchup; re-buffering"
-                    );
-                    crate::node_metrics::record_governance_drain_outcome("rebuffered");
-                    input
-                        .node_state
-                        .buffer_governance_pending(*context_id, buffered);
-                }
-            }
-            Err(err) => {
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    %err,
-                    "governance-pending drain: membership lookup failed for pending delta; dropping"
-                );
-                crate::node_metrics::record_governance_drain_outcome("lookup_error");
-            }
-        }
-    }
-}
-
-/// Drain governance-pending buffers for **every** context that currently
-/// holds at least one entry. Called from the namespace-governance apply
-/// path on `Applied` outcome — a governance op that just applied may
-/// unblock state deltas previously buffered as `Unknown`. Without this
-/// hook, the lazy on-state-delta drain alone deadlocks when the only
-/// state delta in flight is the one waiting for that very governance op
-/// (the e2e 3-node test reproduced this: node-1 broadcasts a single state
-/// delta, node-2 buffers it for missing governance heads, no further
-/// state delta arrives to trigger drain, never converges).
-///
-/// Per-context drain still happens lazily on incoming state-deltas; this
-/// hook is the *active* path that converges in the absence of fresh
-/// state-delta traffic.
-pub(crate) async fn drain_all_governance_pending(input: &StateDeltaContext) {
-    let context_ids = input.node_state.governance_pending_context_ids();
-    if context_ids.is_empty() {
-        return;
-    }
-    debug!(
-        count = context_ids.len(),
-        "governance-pending drain: governance-apply hook draining pending buffers across contexts"
-    );
-    for context_id in context_ids {
-        drain_governance_pending(input, &context_id).await;
-    }
 }
 
 /// Reconstruct a [`StateDeltaMessage`] from a [`BufferedDelta`] for re-apply
@@ -342,9 +95,8 @@ fn state_delta_message_from_buffered(
         governance_position: buffered.governance_position,
         key_id: buffered.key_id,
         delta_signature: buffered.delta_signature,
-        // Carry the stamped producing_app_key through the drain-path re-apply
-        // so the HLC fence (Tasks 8/9) can still drop a buffered stale-schema
-        // delta. `None` only for legacy deltas that never carried the field.
+        // Carry the stamped producing_app_key through so the HLC fence can still
+        // act on a buffered stale-schema delta. `None` only for legacy deltas.
         producing_app_key: buffered.producing_app_key,
     }
 }
@@ -382,9 +134,16 @@ pub(crate) struct ReplayBufferedDeltaInput {
 /// instead of recursing via `Box::pin(handle_state_delta(...))` — eliminates
 /// async recursion, makes the call graph linear, and avoids the per-recurse
 /// future allocation.
+///
+/// `bypass_fence` skips the HLC / absorb fence entirely. The absorb-drain
+/// ([`buffering::drain_absorbed`] / [`recover_absorbed_on_startup`]) sets it `true`: it
+/// has already established the delta is readable, so re-running the fence would
+/// re-absorb a stale straggler instead of applying it (infinite no-op). Every
+/// other caller passes `false` and keeps fencing.
 pub(crate) async fn apply_authorized_state_delta(
     input: StateDeltaContext,
     message: StateDeltaMessage,
+    bypass_fence: bool,
 ) -> Result<()> {
     let StateDeltaContext {
         node_clients,
@@ -441,28 +200,39 @@ pub(crate) async fn apply_authorized_state_delta(
         }
     }
 
-    // HLC fence (PR-3): drop a delta produced under a different app schema
-    // than the context now targets AND newer than the recorded cascade
-    // boundary. This is the common chokepoint for both direct delivery and
-    // the governance-pending drain re-apply (which reconstructs the message
-    // via `state_delta_message_from_buffered`, now carrying the buffered
-    // `producing_app_key`). A `None` producing_app_key is unfenceable and
-    // falls through (legacy deltas / non-group contexts / sender soft-fault).
+    // HLC fence: fences a delta produced under a schema the receiver's loaded
+    // reader can't read AND newer than the cascade boundary. The common
+    // chokepoint for direct delivery and the governance-pending drain re-apply.
+    // A `None` producing_app_key is unfenceable and falls through. The migration
+    // case (`Buffer`) absorbs the original bytes for later verbatim replay;
+    // non-migration fences (`Drop`) drop.
     if let Some(producing_app_key) = producing_app_key {
-        if calimero_context::hlc_fence::delta_is_fenced(
+        let outcome = fence_and_maybe_absorb(
             node_clients.context.datastore(),
             &context_id,
             producing_app_key,
+            delta_id,
+            author_id,
             hlc,
-        )? {
-            warn!(
-                %context_id,
-                %author_id,
-                delta_id = ?delta_id,
-                producing_app_key = %hex::encode(producing_app_key),
-                "Dropping state delta — HLC fence: stale schema after cascade migration"
-            );
-            crate::node_metrics::record_delta_outcome("fenced_stale_schema");
+            bypass_fence,
+            || calimero_node_primitives::delta_buffer::BufferedDelta {
+                id: delta_id,
+                parents: parent_ids.clone(),
+                hlc,
+                payload: artifact.clone(),
+                nonce,
+                author_id,
+                root_hash,
+                events: events.clone(),
+                source_peer: source,
+                key_id,
+                governance_position: governance_position.clone(),
+                delta_signature,
+                governance_drain_attempts: 0,
+                producing_app_key: Some(producing_app_key),
+            },
+        )?;
+        if matches!(outcome, FenceOutcome::Handled) {
             return Ok(());
         }
     }
@@ -653,7 +423,7 @@ pub(crate) async fn apply_authorized_state_delta(
         // Still emit events to WebSocket clients for consistency
         let events_payload = parse_events_payload(&events, &context_id);
         if let Some(payload) = events_payload {
-            emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
+            emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload);
         }
         return Ok(());
     }
@@ -726,7 +496,8 @@ pub(crate) async fn apply_authorized_state_delta(
         // failed handlers keep their events in the DB for replay on next init.
         let cascade_outcome = match execute_cascaded_events(
             &missing_result.cascaded_events,
-            &node_clients,
+            &node_clients.node,
+            &node_clients.context,
             &context_id,
             &our_identity,
             sync_timeout,
@@ -809,7 +580,8 @@ pub(crate) async fn apply_authorized_state_delta(
                         // and abort the request after the DAG is mutated.
                         let cascade_outcome = match execute_cascaded_events(
                             &peer_fetch_cascaded_events,
-                            &node_clients,
+                            &node_clients.node,
+                            &node_clients.context,
                             &context_id,
                             &our_identity,
                             sync_timeout,
@@ -867,6 +639,21 @@ pub(crate) async fn apply_authorized_state_delta(
     }
 
     let events_payload = parse_events_payload(&events, &context_id);
+
+    // A present-but-undeserializable events blob will never parse on any
+    // future restart. Clear it once the delta is applied so
+    // `load_persisted_deltas` doesn't resurface it on every boot in a
+    // permanent warn-and-skip loop — mirrors the deserialization-error
+    // path in `execute_cascaded_events`. (`events == None` is the normal
+    // "no events" case and is left untouched.)
+    if applied && events.is_some() && events_payload.is_none() {
+        warn!(
+            %context_id,
+            delta_id = ?delta_id,
+            "Events blob failed to deserialize; clearing to prevent a permanent restart replay loop"
+        );
+        delta_store_ref.mark_events_executed(&delta_id);
+    }
 
     if applied && !handlers_already_executed {
         if let Some(ref payload) = events_payload {
@@ -928,14 +715,15 @@ pub(crate) async fn apply_authorized_state_delta(
     }
 
     if let Some(payload) = events_payload {
-        emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
+        emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload);
     }
 
     // Same log-and-continue policy: a cascade failure here must not abort the
     // handler after the main delta has already been applied and emitted.
     if let Err(e) = execute_cascaded_events(
         &add_result.cascaded_events,
-        &node_clients,
+        &node_clients.node,
+        &node_clients.context,
         &context_id,
         &our_identity,
         sync_timeout,
@@ -1195,7 +983,17 @@ pub async fn handle_state_delta(
                 // signature verified AND the author is an authorized
                 // member at the named cut. Consumed by anchor-preferred
                 // sync peer selection. See `NodeState::peer_identities`.
-                node_state.observe_peer_identity(source, author_id);
+                //
+                // This path has the group + role at the cut, so it also
+                // writes through to the durable `peer_identity_cache`.
+                node_state.observe_peer_identity(
+                    source,
+                    author_id,
+                    Some(ObservedMembership {
+                        group_id: pos.group_id,
+                        role,
+                    }),
+                );
             }
             Ok(MembershipStatus::Removed { last_role }) => {
                 warn!(
@@ -1282,305 +1080,14 @@ pub async fn handle_state_delta(
             governance_position,
             key_id,
             delta_signature,
-            // Carry the stamped producing_app_key through to the apply path
-            // so Tasks 8/9 can read it there. The cross-DAG check above is
-            // orthogonal to this field; it is not consumed there.
+            // Carry the stamped producing_app_key through to the apply path,
+            // where the fence reads it. Orthogonal to the cross-DAG check above.
             producing_app_key,
         },
+        // Gossip-receive path: fence as normal — never bypass.
+        false,
     )
     .await
-}
-
-#[derive(Default)]
-struct CascadeOutcome {
-    applied_current: bool,
-    handlers_executed_for_current: bool,
-}
-
-struct DeltaStoreSetup {
-    store: DeltaStore,
-    is_uninitialized: bool,
-}
-
-async fn choose_owned_identity(
-    context_client: &ContextClient,
-    context_id: &ContextId,
-) -> Result<PublicKey> {
-    let identities = context_client.get_context_members(context_id, Some(true));
-    let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
-        .await
-        .transpose()?
-    else {
-        bail!("no owned identities found for context: {}", context_id);
-    };
-
-    Ok(our_identity)
-}
-
-async fn init_delta_store(
-    node_state: &crate::NodeState,
-    node_clients: &crate::NodeClients,
-    context_id: ContextId,
-    our_identity: PublicKey,
-    root_hash: Hash,
-    sync_timeout: std::time::Duration,
-) -> Result<DeltaStoreSetup> {
-    let is_uninitialized = root_hash == Hash::default();
-
-    let (delta_store_ref, is_new_store) = {
-        let mut is_new = false;
-        let delta_store = node_state
-            .delta_stores
-            .entry(context_id)
-            .or_insert_with(|| {
-                is_new = true;
-                DeltaStore::new(
-                    [0u8; 32],
-                    node_clients.context.clone(),
-                    context_id,
-                    our_identity,
-                )
-            });
-
-        (delta_store.clone(), is_new)
-    };
-
-    if is_new_store {
-        let init_result = async {
-            // `load_persisted_deltas` surfaces any records with
-            // `applied: true, events: Some(..)` — crash-leftovers
-            // whose handlers never completed. Merged with the normal
-            // cascade events below so a single handler pass covers both
-            // (#2185). Share the DB scan with the DAG restore to avoid
-            // a second full-table iteration (#2194 review).
-            let pending_handler_events = match delta_store_ref.load_persisted_deltas().await {
-                Ok(result) => {
-                    if !result.pending_handler_events.is_empty() {
-                        info!(
-                            %context_id,
-                            pending_count = result.pending_handler_events.len(),
-                            "Replaying handlers interrupted by crash before events were cleared"
-                        );
-                    }
-                    result.pending_handler_events
-                }
-                Err(e) => {
-                    warn!(
-                        ?e,
-                        %context_id,
-                        "Failed to load persisted deltas, starting with empty DAG"
-                    );
-                    Vec::new()
-                }
-            };
-
-            let missing_result = delta_store_ref.get_missing_parents().await;
-            if !missing_result.missing_ids.is_empty() {
-                warn!(
-                    %context_id,
-                    missing_count = missing_result.missing_ids.len(),
-                    "Missing parents after loading persisted deltas - will request from network"
-                );
-            }
-
-            // The two sources are disjoint by construction:
-            // `pending_handler_events` are records that were `applied:
-            // true` on disk before this init ran, so they're restored
-            // into the DAG as already-applied by `load_persisted_deltas`
-            // and can't show up in `get_missing_parents`'s
-            // pending→applied diff. Concat directly.
-            let mut events_to_run = missing_result.cascaded_events;
-            events_to_run.extend(pending_handler_events);
-
-            execute_cascaded_events(
-                &events_to_run,
-                node_clients,
-                &context_id,
-                &our_identity,
-                sync_timeout,
-                "initial load",
-                None,
-                &delta_store_ref,
-            )
-            .await
-        }
-        .await;
-
-        if let Err(err) = init_result {
-            warn!(
-                %context_id,
-                ?err,
-                "Initial delta store setup failed - removing store to retry on next delta"
-            );
-            // Remove the store so the next delta triggers a fresh init with retry
-            node_state.delta_stores.remove(&context_id);
-            return Err(err);
-        }
-    }
-
-    Ok(DeltaStoreSetup {
-        store: delta_store_ref,
-        is_uninitialized,
-    })
-}
-
-/// Run the event handlers for a batch of cascaded deltas.
-///
-/// Error contract: every internal failure mode is deliberately downgraded to a
-/// `warn!` and folded into `Ok(..)` — an unavailable application skips and
-/// preserves the events for the next init, an undeserializable blob clears
-/// itself to avoid a permanent replay loop, and a handler that errors leaves
-/// its events in the DB (`mark_events_executed` is skipped) so the next restart
-/// replays it at-least-once. The handler-failure policy is log-and-continue;
-/// failures never unwind the caller. This function therefore returns `Ok` on
-/// every path today. The `Result` is retained so a genuinely fatal future error
-/// has somewhere to go, but callers must NOT use `?` to propagate it: doing so
-/// would abort delta handling *after* the DAG has already been mutated. Match
-/// and log instead.
-async fn execute_cascaded_events(
-    cascaded_events: &[([u8; 32], Vec<u8>)],
-    node_clients: &crate::NodeClients,
-    context_id: &ContextId,
-    our_identity: &PublicKey,
-    sync_timeout: std::time::Duration,
-    phase: &str,
-    current_delta: Option<&[u8; 32]>,
-    delta_store: &DeltaStore,
-) -> Result<CascadeOutcome> {
-    if cascaded_events.is_empty() {
-        return Ok(CascadeOutcome::default());
-    }
-
-    info!(
-        %context_id,
-        cascaded_count = cascaded_events.len(),
-        phase = phase,
-        "Executing event handlers for cascaded deltas"
-    );
-
-    let mut outcome = CascadeOutcome::default();
-
-    // Check if current delta is in cascaded list (orthogonal to handler execution)
-    if let Some(current) = current_delta {
-        if cascaded_events.iter().any(|(id, _)| *id == *current) {
-            info!(
-                %context_id,
-                delta_id = ?current,
-                phase = phase,
-                "Current delta cascaded - marking as applied"
-            );
-            outcome.applied_current = true;
-        }
-    }
-
-    let app_available = ensure_application_available(
-        &node_clients.node,
-        &node_clients.context,
-        context_id,
-        sync_timeout,
-    )
-    .await
-    .is_ok();
-
-    if !app_available {
-        warn!(
-            %context_id,
-            cascaded_count = cascaded_events.len(),
-            phase = phase,
-            "Application not available - skipping cascaded handler execution. Events are preserved in DB (applied: true, events: Some(..)) and will replay on next init once the application becomes available."
-        );
-        return Ok(outcome);
-    }
-
-    for (cascaded_id, events_data) in cascaded_events {
-        match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
-            Ok(cascaded_payload) => {
-                info!(
-                    %context_id,
-                    delta_id = ?cascaded_id,
-                    events_count = cascaded_payload.len(),
-                    phase = phase,
-                    "Executing handlers for cascaded delta"
-                );
-                let all_succeeded = execute_event_handlers_parsed(
-                    &node_clients.context,
-                    context_id,
-                    our_identity,
-                    &cascaded_payload,
-                )
-                .await?;
-
-                // Clear the DB's `events` blob only when every handler
-                // in the payload succeeded (#2185, #2194 review). On a
-                // partial failure, leave `events: Some(..)` so the next
-                // restart replays via `load_persisted_deltas`. Each
-                // retry is at-least-once — handler idempotency concern
-                // is tracked separately.
-                if all_succeeded {
-                    delta_store.mark_events_executed(cascaded_id);
-                } else {
-                    warn!(
-                        %context_id,
-                        delta_id = ?cascaded_id,
-                        phase = phase,
-                        "One or more handlers failed; keeping events in DB for restart replay"
-                    );
-                }
-
-                if current_delta == Some(cascaded_id) {
-                    // Handlers for the current delta were *attempted* —
-                    // set this to `true` regardless of `all_succeeded`
-                    // so `handle_state_delta`'s outer flow doesn't
-                    // re-run them in the same request (which would
-                    // duplicate the succeeded handlers). On partial
-                    // failure, `mark_events_executed` above is skipped,
-                    // so `events: Some(..)` stays in the DB and a
-                    // restart replays — that is the retry path, not
-                    // in-request re-execution.
-                    outcome.handlers_executed_for_current = true;
-                }
-            }
-            Err(e) => {
-                warn!(
-                    %context_id,
-                    delta_id = ?cascaded_id,
-                    error = %e,
-                    phase = phase,
-                    "Failed to deserialize cascaded events — clearing blob to prevent permanent replay loop"
-                );
-                // `serde_json::from_slice` failures on this blob are
-                // structural, not transient: a blob that fails to
-                // deserialize now will fail every restart. Without the
-                // clear, `collect_pending_handler_events` would surface
-                // this record on every init and we'd burn through the
-                // same warn-and-skip cycle forever (#2194 review).
-                delta_store.mark_events_executed(cascaded_id);
-            }
-        }
-    }
-
-    Ok(outcome)
-}
-
-fn parse_events_payload(
-    events: &Option<Vec<u8>>,
-    context_id: &ContextId,
-) -> Option<Vec<ExecutionEvent>> {
-    let Some(events_data) = events else {
-        return None;
-    };
-
-    match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
-        Ok(payload) => Some(payload),
-        Err(e) => {
-            warn!(
-                %context_id,
-                error = %e,
-                "Failed to deserialize events, skipping handler execution and WebSocket emission"
-            );
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1849,134 +1356,539 @@ mod tests {
             let (store, ctx) = cascaded_store(None);
             assert!(!delta_is_fenced(&store, &ctx, APP_V1, hlc_after_zero()).unwrap());
         }
-    }
-}
 
-/// Execute event handlers for received events (from already-parsed payload)
-///
-/// # Handler Execution Model
-///
-/// **IMPORTANTMenuHandlers currently execute **sequentially** in the order they appear
-/// in the events array. Future optimization may execute handlers in **parallel**.
-///
-/// ## Requirements for Application Handlers
-///
-/// Event handlers **MUST** satisfy these properties to be correct:
-///
-/// 1. **CommutativeMenuHandler order must not affect final state
-///    - ✅ SAFE: CRDT operations (Counter::increment, UnorderedMap::insert)
-///    - ❌ UNSAFE: Dependent operations (create → update → delete chains)
-///
-/// 2. **Independent**: Handlers must not share mutable state
-///    - ✅ SAFE: Each handler modifies different CRDT keys
-///    - ❌ UNSAFE: Multiple handlers modifying same entity
-///
-/// 3. **Idempotent**: Re-execution must be safe
-///    - ✅ SAFE: CRDT operations (naturally idempotent)
-///    - ❌ UNSAFE: External API calls (charge_payment, send_email)
-///
-/// 4. **No side effectsMenuHandlers should only modify CRDT state
-///    - ✅ SAFE: Pure state updates
-///    - ❌ UNSAFE: HTTP requests, file I/O, blockchain transactions
-///
-/// ## Current Handler Implementations (Audited 2025-10-27)
-///
-/// All handlers in the codebase are **CRDT-only** operations:
-/// - `kv-store-with-handlers`: All handlers just call `Counter::increment()`
-/// - Other apps: No handlers defined
-///
-/// **VerdictMenuCurrent handlers are **100% safe** for parallel execution.
-///
-/// ## Future Developers
-///
-/// If you're adding handlers that violate these assumptions:
-/// 1. Document why parallelization is unsafe
-/// 2. Consider refactoring to use CRDTs
-/// 3. Or disable parallelization if absolutely necessary
-/// Returns `Ok(true)` if every handler in the payload ran successfully,
-/// `Ok(false)` if at least one handler errored (individual errors are
-/// logged but swallowed so later handlers in the list still run). Callers
-/// use the bool to decide whether it's safe to clear the persisted events
-/// blob via `mark_events_executed` — clearing after a partial failure
-/// would prevent restart-replay of the failed handlers (#2194 review).
-async fn execute_event_handlers_parsed(
-    context_client: &ContextClient,
-    context_id: &ContextId,
-    our_identity: &PublicKey,
-    events_payload: &[ExecutionEvent],
-) -> Result<bool> {
-    let mut all_succeeded = true;
-    for event in events_payload {
-        if let Some(handler_name) = &event.handler {
-            debug!(
-                %context_id,
-                event_kind = %event.kind,
-                handler_name = %handler_name,
-                "Executing handler for event"
-            );
+        // ---- PR-6b Task 6b.4: absorb-don't-drop at the gossip fence ----
 
-            match context_client
-                .execute(
-                    context_id,
-                    our_identity,
-                    handler_name.clone(),
-                    event.data.clone(),
-                    vec![],
-                    None,
-                )
-                .await
-            {
-                Ok(_handler_response) => {
-                    debug!(
-                        handler_name = %handler_name,
-                        "Handler executed successfully"
-                    );
-                }
-                Err(err) => {
-                    warn!(
-                        handler_name = %handler_name,
-                        error = %err,
-                        "Handler execution failed"
-                    );
-                    all_succeeded = false;
-                }
+        use calimero_context::group_store::{AbsorbRecord, AbsorbRepository};
+        use calimero_node_primitives::delta_buffer::BufferedDelta;
+        use calimero_primitives::hash::Hash;
+
+        use super::super::{fence_and_maybe_absorb, FenceOutcome};
+
+        /// A minimal `BufferedDelta` carrying the replay fields the absorb path
+        /// persists. `producing_app_key` is the schema discriminator the fence
+        /// keys on.
+        fn sample_buffered(delta_id: [u8; 32], producing_app_key: [u8; 32]) -> BufferedDelta {
+            BufferedDelta {
+                id: delta_id,
+                parents: vec![],
+                hlc: hlc_after_zero(),
+                payload: vec![1, 2, 3],
+                nonce: [0; 12],
+                author_id: PublicKey::from([0xAB; 32]),
+                root_hash: Hash::default(),
+                events: None,
+                source_peer: libp2p::PeerId::random(),
+                key_id: [0; 32],
+                governance_position: None,
+                delta_signature: Some([7; 64]),
+                governance_drain_attempts: 0,
+                producing_app_key: Some(producing_app_key),
             }
         }
+
+        /// A `Buffer`-decision delta (schema ≠ the loaded reader, after the
+        /// cascade boundary) must be persisted into the AbsorbBuffer, not
+        /// dropped — and the call reports `Handled` so the caller returns early.
+        #[test]
+        fn buffer_decision_persists_absorb_record_not_drop() {
+            // Loaded reader falls back to GroupMeta.app_key = APP_V2 here, so an
+            // APP_V1 delta after the boundary is unreadable now ⇒ Buffer.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let bd = sample_buffered([3; 32], APP_V1);
+
+            let outcome = fence_and_maybe_absorb(
+                &store,
+                &ctx,
+                APP_V1,
+                bd.id,
+                bd.author_id,
+                bd.hlc,
+                false,
+                || bd.clone(),
+            )
+            .unwrap();
+
+            assert!(matches!(outcome, FenceOutcome::Handled));
+            let pending = AbsorbRepository::new(&store)
+                .enumerate_pending(&ctx)
+                .unwrap();
+            assert_eq!(
+                pending.len(),
+                1,
+                "a stale-schema delta to a behind-reader node must be absorbed, not dropped"
+            );
+            assert_eq!((pending[0].1).id, [3; 32]);
+        }
+
+        /// REGRESSION (the SECOND PR-6b drain bug — fence re-absorb): the absorb
+        /// drain re-feeds a buffered straggler through the real apply path
+        /// ([`apply_authorized_state_delta`]), whose fence step is exactly
+        /// [`fence_and_maybe_absorb`]. For a STALE v1 straggler that the drain
+        /// already selected for replay (`producing == v1`, node advanced to
+        /// `loaded == target == v2`, delta after the boundary), the *un-bypassed*
+        /// fence returns [`FenceOutcome::Handled`] and RE-ABSORBS the delta —
+        /// it bounces off the fence and never converges (infinite no-op /
+        /// silent drop). The drain-replay call must therefore BYPASS the fence:
+        /// with `bypass == true` the already-authorized, already-decided delta
+        /// falls through ([`FenceOutcome::Fall`]) and is applied, NOT re-buffered.
+        ///
+        /// Negative-verify in the same shape: with `bypass == false` (the normal
+        /// gossip-receive path) the identical stale straggler IS re-absorbed —
+        /// proving the bypass, not a weakened fence, is what makes it apply.
+        #[test]
+        fn drain_replay_bypasses_fence_for_stale_straggler() {
+            // loaded reader falls back to GroupMeta.app_key = APP_V2; the stale
+            // straggler was produced under APP_V1, after the cascade boundary.
+            // This is precisely the record the drain selected for verbatim replay.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let bd = sample_buffered([0xB2; 32], APP_V1);
+
+            // Un-bypassed (normal receive): the fence re-absorbs — the bug.
+            let outcome = fence_and_maybe_absorb(
+                &store,
+                &ctx,
+                APP_V1,
+                bd.id,
+                bd.author_id,
+                bd.hlc,
+                false,
+                || bd.clone(),
+            )
+            .unwrap();
+            assert!(
+                matches!(outcome, FenceOutcome::Handled),
+                "the un-bypassed fence re-absorbs the stale straggler (the bug)"
+            );
+            assert_eq!(
+                AbsorbRepository::new(&store)
+                    .enumerate_pending(&ctx)
+                    .unwrap()
+                    .len(),
+                1,
+                "un-bypassed: the straggler bounces off the fence and is re-buffered"
+            );
+
+            // Bypassed (drain replay): the fence is skipped — the delta falls
+            // through to be applied, and NOTHING new is written to the buffer.
+            // Use a fresh store so the un-bypassed half's re-absorb can't mask
+            // a bypassed write.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let outcome = fence_and_maybe_absorb(
+                &store,
+                &ctx,
+                APP_V1,
+                bd.id,
+                bd.author_id,
+                bd.hlc,
+                true,
+                || bd.clone(),
+            )
+            .unwrap();
+            assert!(
+                matches!(outcome, FenceOutcome::Fall),
+                "drain replay must bypass the fence and fall through to apply"
+            );
+            assert!(
+                AbsorbRepository::new(&store)
+                    .enumerate_pending(&ctx)
+                    .unwrap()
+                    .is_empty(),
+                "bypassed: the drain-replayed straggler is applied, not re-absorbed"
+            );
+        }
+
+        /// An `Apply`-decision delta (schema matches the loaded reader) must
+        /// fall through and must NOT land in the AbsorbBuffer.
+        #[test]
+        fn apply_decision_does_not_persist_absorb_record() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let bd = sample_buffered([4; 32], APP_V2);
+
+            let outcome = fence_and_maybe_absorb(
+                &store,
+                &ctx,
+                APP_V2,
+                bd.id,
+                bd.author_id,
+                bd.hlc,
+                false,
+                || bd.clone(),
+            )
+            .unwrap();
+
+            assert!(matches!(outcome, FenceOutcome::Fall));
+            let pending = AbsorbRepository::new(&store)
+                .enumerate_pending(&ctx)
+                .unwrap();
+            assert!(
+                pending.is_empty(),
+                "a readable delta must apply normally, not be absorbed"
+            );
+        }
+
+        // ---- PR-6b Task 6b.5: drain-on-advance (verbatim replay) ----
+
+        use super::super::drain_absorbed_records;
+
+        /// Build a durable `AbsorbRecord` mirroring a buffered straggler delta.
+        fn sample_record(delta_id: [u8; 32], producing_app_key: [u8; 32]) -> AbsorbRecord {
+            AbsorbRecord::from_buffered(&sample_buffered(delta_id, producing_app_key))
+        }
+
+        /// Install a loaded reader for `context_id` resolving to `blob`, so
+        /// [`loaded_reader_app_key`] returns `blob` (instead of falling back to
+        /// `GroupMeta.app_key`). Lets a test model `loaded != target`.
+        fn install_loaded_reader(store: &Store, context_id: &ContextId, blob: [u8; 32]) {
+            use calimero_primitives::application::ApplicationId;
+            use calimero_primitives::blobs::BlobId;
+            use calimero_store::key;
+            use calimero_store::types::{ApplicationMeta, ContextMeta};
+
+            let app_key = key::ApplicationMeta::new(ApplicationId::from([0xCC; 32]));
+            let app_meta = ApplicationMeta::new(
+                key::BlobMeta::new(BlobId::from(blob)),
+                0,
+                "".into(),
+                Box::default(),
+                key::BlobMeta::new(BlobId::from([0; 32])),
+                "".into(),
+                "".into(),
+                "".into(),
+            );
+            let ctx_meta = ContextMeta::new(app_key, [0; 32], vec![], None);
+
+            let mut handle = store.handle();
+            handle
+                .put(&key::ContextMeta::new(*context_id), &ctx_meta)
+                .expect("put ContextMeta");
+            handle
+                .put(&app_key, &app_meta)
+                .expect("put ApplicationMeta");
+        }
+
+        /// REGRESSION (the PR-6b drain bug): a STALE v1 straggler delta —
+        /// `producing_app_key == v1`, the node already advanced to
+        /// `loaded == target == v2` — must be REPLAYED (verbatim) and deleted,
+        /// NOT skipped forever. The drain-ready signal is "the node reached the
+        /// migration target", not "producing == loaded". This test FAILS against
+        /// the old `producing_app_key != Some(loaded)` skip (the stale record was
+        /// dropped, losing the offline write).
+        #[tokio::test]
+        async fn drain_replays_stale_straggler_when_node_reached_target() {
+            // Loaded reader falls back to GroupMeta.app_key = APP_V2, and the
+            // migration target is also APP_V2 ⇒ loaded == target.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+
+            // The stale v1 straggler buffered while this node was on v1; the node
+            // has since advanced to v2 (loaded == target == v2). It is now behind
+            // the loaded reader yet replayable through the current wasm.
+            repo.save(&ctx, APP_V1, &sample_record([0xB2; 32], APP_V1))
+                .unwrap();
+
+            let replayed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<[u8; 32]>::new()));
+            let replayed_capture = replayed.clone();
+
+            let drained = drain_absorbed_records(&store, &ctx, move |buffered| {
+                let replayed = replayed_capture.clone();
+                async move {
+                    // Verbatim: the replay sees the original payload bytes,
+                    // never a translated re-encoding.
+                    assert_eq!(buffered.payload, vec![1, 2, 3]);
+                    replayed.lock().unwrap().push(buffered.id);
+                    Ok::<bool, eyre::Report>(true)
+                }
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(
+                drained, 1,
+                "a stale straggler must drain once the node reached the target"
+            );
+            assert_eq!(
+                *replayed.lock().unwrap(),
+                vec![[0xB2; 32]],
+                "the stale v1 straggler is replayed verbatim, not dropped"
+            );
+            assert!(
+                repo.enumerate_pending(&ctx).unwrap().is_empty(),
+                "the replayed straggler must be deleted, not left to leak"
+            );
+        }
+
+        /// A FUTURE-schema delta — `producing == v2` (the target), node still
+        /// behind on `loaded == v1 < target` — must be SKIPPED (the binary can't
+        /// read it yet, never translate). Once the node advances so
+        /// `loaded == target == v2`, the same record drains.
+        #[tokio::test]
+        async fn drain_skips_future_delta_until_node_advances() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            // Node behind: loaded reader = v1, target (GroupMeta.app_key) = v2.
+            install_loaded_reader(&store, &ctx, APP_V1);
+            let repo = AbsorbRepository::new(&store);
+
+            // Future delta: produced under the target schema v2.
+            repo.save(&ctx, APP_V2, &sample_record([0xC3; 32], APP_V2))
+                .unwrap();
+
+            let noop = |_buffered: BufferedDelta| async move { Ok::<bool, eyre::Report>(true) };
+
+            // While behind (loaded == v1 != target == v2, producing == v2 !=
+            // loaded), the future delta must NOT be replayed.
+            let drained = drain_absorbed_records(&store, &ctx, noop).await.unwrap();
+            assert_eq!(drained, 0, "a future-schema delta is skipped while behind");
+            let pending = repo.enumerate_pending(&ctx).unwrap();
+            assert_eq!(pending.len(), 1, "the future delta stays pending");
+            assert_eq!((pending[0].1).id, [0xC3; 32]);
+
+            // The node advances to the target → loaded == target == v2 → drains.
+            install_loaded_reader(&store, &ctx, APP_V2);
+            let drained = drain_absorbed_records(&store, &ctx, noop).await.unwrap();
+            assert_eq!(drained, 1, "the future delta drains once the node advances");
+            assert!(repo.enumerate_pending(&ctx).unwrap().is_empty());
+        }
+
+        /// Leaf- and entity-shaped sync-repair records are NOT replayable deltas
+        /// and must be SKIPPED by the delta drain (they are drained by the
+        /// leaf/entity-replay path), even when the node has reached the target.
+        #[tokio::test]
+        async fn delta_drain_skips_leaf_and_entity_records() {
+            // loaded == target == v2.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+
+            // A sync-repair leaf and a snapshot entity, both stamped v2 (the
+            // target) — the delta drain must still leave them untouched.
+            repo.save(
+                &ctx,
+                APP_V2,
+                &AbsorbRecord::from_leaf([0xD4; 32], vec![1, 2, 3], APP_V2),
+            )
+            .unwrap();
+            repo.save(
+                &ctx,
+                APP_V2,
+                &AbsorbRecord::from_snapshot_entity([0xE5; 32], vec![1], vec![2], APP_V2),
+            )
+            .unwrap();
+
+            let replayed = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+            let replayed_capture = replayed.clone();
+            let drained = drain_absorbed_records(&store, &ctx, move |_buffered| {
+                let replayed = replayed_capture.clone();
+                async move {
+                    *replayed.lock().unwrap() += 1;
+                    Ok::<bool, eyre::Report>(true)
+                }
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(drained, 0, "the delta drain replays no leaf/entity records");
+            assert_eq!(
+                *replayed.lock().unwrap(),
+                0,
+                "leaf/entity records are never fed to the delta replay path"
+            );
+            assert_eq!(
+                repo.enumerate_pending(&ctx).unwrap().len(),
+                2,
+                "leaf/entity records are left for the leaf/entity drain path"
+            );
+        }
+
+        /// Re-running the drain after a successful pass is a no-op (idempotent
+        /// via delta_id key): the deleted record does not re-replay.
+        #[tokio::test]
+        async fn drain_is_idempotent_after_success() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+            repo.save(&ctx, APP_V2, &sample_record([0xA1; 32], APP_V2))
+                .unwrap();
+
+            let noop = |_buffered: BufferedDelta| async move { Ok::<bool, eyre::Report>(true) };
+
+            let first = drain_absorbed_records(&store, &ctx, noop).await.unwrap();
+            assert_eq!(first, 1);
+            let second = drain_absorbed_records(&store, &ctx, noop).await.unwrap();
+            assert_eq!(second, 0, "no records survive a successful drain");
+            assert!(repo.enumerate_pending(&ctx).unwrap().is_empty());
+        }
+
+        /// A record whose replay fails is NOT deleted — it survives for the
+        /// next drain pass (delete-after-success only).
+        #[tokio::test]
+        async fn failed_replay_leaves_record_pending() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+            repo.save(&ctx, APP_V2, &sample_record([0xA1; 32], APP_V2))
+                .unwrap();
+
+            let drained = drain_absorbed_records(&store, &ctx, |_buffered| async move {
+                Err::<bool, eyre::Report>(eyre::eyre!("replay failed"))
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(drained, 0, "a failed replay drains nothing");
+            let pending = repo.enumerate_pending(&ctx).unwrap();
+            assert_eq!(pending.len(), 1, "a failed-replay record must survive");
+            assert_eq!((pending[0].1).id, [0xA1; 32]);
+        }
+
+        // ---- PR-6b Task 6b.6: startup recovery scan ----
+
+        use super::super::recover_absorbed_records;
+
+        /// On node startup the AbsorbBuffer is durable (RocksDB CF), so any
+        /// straggler delta persisted before a restart must be re-considered for
+        /// drain. With the loaded reader at the migration target, both a
+        /// target-schema record and a STALE v1 straggler (behind the loaded
+        /// reader) are now replayable and must drain — a restart mid-window must
+        /// not lose buffered deltas. A genuinely future record (target not yet
+        /// reached) is left behind; that path is exercised below.
+        #[tokio::test]
+        async fn startup_recovery_drains_records_once_target_reached() {
+            // The store's loaded reader falls back to GroupMeta.app_key = APP_V2,
+            // and the target is APP_V2 ⇒ loaded == target.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+
+            // Persisted-before-restart, target-schema: must drain on startup.
+            repo.save(&ctx, APP_V2, &sample_record([0xA1; 32], APP_V2))
+                .unwrap();
+            // Persisted-before-restart, stale v1 straggler (behind the loaded
+            // reader but the node reached the target): must ALSO drain — the
+            // current wasm verbatim-replays it.
+            repo.save(&ctx, APP_V1, &sample_record([0xB2; 32], APP_V1))
+                .unwrap();
+
+            let replayed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<[u8; 32]>::new()));
+            let replayed_capture = replayed.clone();
+
+            let drained = recover_absorbed_records(&store, move |context_id, buffered| {
+                let replayed = replayed_capture.clone();
+                async move {
+                    // The recovery threads the right context to the replay.
+                    assert_eq!(context_id, ctx);
+                    // Verbatim: the recovery replay sees the original bytes.
+                    assert_eq!(buffered.payload, vec![1, 2, 3]);
+                    replayed.lock().unwrap().push(buffered.id);
+                    Ok::<bool, eyre::Report>(true)
+                }
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(
+                drained, 2,
+                "both the target-schema and the stale straggler drain on startup"
+            );
+            let mut seen = replayed.lock().unwrap().clone();
+            seen.sort_unstable();
+            assert_eq!(
+                seen,
+                vec![[0xA1; 32], [0xB2; 32]],
+                "both records are replayed verbatim once the node reached the target"
+            );
+
+            assert!(
+                repo.enumerate_pending(&ctx).unwrap().is_empty(),
+                "no record is left stranded once the node reached the target"
+            );
+        }
+
+        /// A node restarting *still behind* the target (loaded reader < target)
+        /// leaves the unreadable future record pending across the startup scan.
+        #[tokio::test]
+        async fn startup_recovery_keeps_future_record_while_behind() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            // Node behind: loaded reader = v1, target (GroupMeta.app_key) = v2.
+            install_loaded_reader(&store, &ctx, APP_V1);
+            let repo = AbsorbRepository::new(&store);
+
+            // Future delta (target schema) the behind-reader node can't read yet.
+            repo.save(&ctx, APP_V2, &sample_record([0xC3; 32], APP_V2))
+                .unwrap();
+
+            let noop = |_ctx: ContextId, _buffered: BufferedDelta| async move {
+                Ok::<bool, eyre::Report>(true)
+            };
+            let drained = recover_absorbed_records(&store, noop).await.unwrap();
+
+            assert_eq!(
+                drained, 0,
+                "a behind node drains no future record on startup"
+            );
+            let pending = repo.enumerate_pending(&ctx).unwrap();
+            assert_eq!(
+                pending.len(),
+                1,
+                "the future record survives the startup scan"
+            );
+            assert_eq!((pending[0].1).id, [0xC3; 32]);
+        }
+
+        /// The startup scan is idempotent across two recovery calls (e.g. a
+        /// double-init or a quick restart): an already-drained record does not
+        /// re-replay, and a record the node is still too far behind to read
+        /// stays put.
+        #[tokio::test]
+        async fn startup_recovery_is_idempotent_across_two_calls() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            // Node behind: loaded == v1 < target == v2, so the future record is
+            // a stable survivor across both scans.
+            install_loaded_reader(&store, &ctx, APP_V1);
+            let repo = AbsorbRepository::new(&store);
+            // Readable now (matches the loaded reader v1): drains on the 1st scan.
+            repo.save(&ctx, APP_V1, &sample_record([0xA1; 32], APP_V1))
+                .unwrap();
+            // Future (target schema v2): the behind node leaves it pending.
+            repo.save(&ctx, APP_V2, &sample_record([0xB2; 32], APP_V2))
+                .unwrap();
+
+            let noop = |_ctx: ContextId, _buffered: BufferedDelta| async move {
+                Ok::<bool, eyre::Report>(true)
+            };
+
+            let first = recover_absorbed_records(&store, noop).await.unwrap();
+            assert_eq!(first, 1);
+            let second = recover_absorbed_records(&store, noop).await.unwrap();
+            assert_eq!(second, 0, "a second startup scan re-drains nothing");
+
+            let pending = repo.enumerate_pending(&ctx).unwrap();
+            assert_eq!(pending.len(), 1, "the future record persists");
+            assert_eq!((pending[0].1).id, [0xB2; 32]);
+        }
+
+        // NOTE: startup drain of buffered snapshot-**entity** records is not
+        // unit-tested via a standalone recovery function any more. The entity
+        // arm of `drain_absorbed_leaves` (the live startup hook runs it over
+        // every context with a pending absorb) already drains both leaf- and
+        // entity-shaped records with the identical `schema_app_key == loaded`
+        // gate and the same `persist_buffered_snapshot_entity` path; the entity
+        // persist/redrive/pending logic is covered directly by
+        // `sync::snapshot::tests::test_persist_buffered_snapshot_entity_*`, and
+        // `delta_drain_skips_leaf_and_entity_records` pins that the delta drain
+        // leaves entity records for that path.
+
+        /// With nothing buffered (the common case) the startup scan is a cheap
+        /// no-op and never panics.
+        #[tokio::test]
+        async fn startup_recovery_is_noop_when_nothing_buffered() {
+            let (store, _ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let noop = |_ctx: ContextId, _buffered: BufferedDelta| async move {
+                Ok::<bool, eyre::Report>(true)
+            };
+            let drained = recover_absorbed_records(&store, noop).await.unwrap();
+            assert_eq!(
+                drained, 0,
+                "no contexts with pending absorbs ⇒ nothing drains"
+            );
+        }
     }
-
-    Ok(all_succeeded)
-}
-
-/// Emit state mutation event to WebSocket clients (frontends)
-///
-/// Note: This is separate from node-to-node DAG synchronization.
-/// - DAG broadcast (BroadcastMessage::StateDelta) = node-to-node sync
-/// - WebSocket events (NodeEvent::Context) = node-to-frontend updates
-///
-/// Takes already-parsed events to avoid redundant deserialization
-fn emit_state_mutation_event_parsed(
-    node_client: &NodeClient,
-    context_id: &ContextId,
-    root_hash: Hash,
-    events_payload: Vec<ExecutionEvent>,
-) -> Result<()> {
-    let state_mutation = ContextEvent {
-        context_id: *context_id,
-        payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(
-            root_hash,
-            events_payload,
-        )),
-    };
-
-    if let Err(e) = node_client.send_event(NodeEvent::Context(state_mutation)) {
-        warn!(
-            %context_id,
-            error = %e,
-            "Failed to emit state mutation event to WebSocket clients"
-        );
-    }
-
-    Ok(())
 }
 
 /// Requests missing parent deltas from a peer
@@ -2879,10 +2791,6 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         }
     };
     if !pending_from_load.is_empty() {
-        let node_clients = crate::NodeClients {
-            context: context_client.clone(),
-            node: node_client.clone(),
-        };
         info!(
             %context_id,
             pending_count = pending_from_load.len(),
@@ -2890,7 +2798,8 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         );
         if let Err(e) = execute_cascaded_events(
             &pending_from_load,
-            &node_clients,
+            &node_client,
+            &context_client,
             &context_id,
             &our_identity,
             sync_timeout,
@@ -3022,7 +2931,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     &context_id,
                     buffered.root_hash,
                     events,
-                )?;
+                );
             }
         }
     } else {
@@ -3034,18 +2943,14 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         );
     }
 
-    // Execute any cascaded handlers
-    let node_clients = crate::NodeClients {
-        context: context_client.clone(),
-        node: node_client.clone(),
-    };
-
+    // Execute any cascaded handlers.
     // Same log-and-continue policy: a cascade failure must not mask an
     // otherwise-applied buffered delta. Failed handlers keep their events in
     // the DB for replay on the next init.
     if let Err(e) = execute_cascaded_events(
         &add_result.cascaded_events,
-        &node_clients,
+        &node_client,
+        &context_client,
         &context_id,
         &our_identity,
         sync_timeout,

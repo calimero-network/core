@@ -39,6 +39,14 @@ pub enum Column {
     /// byte order = key order), values are the entry's 32-byte id. Enables
     /// `O(log n + k)` range/prefix/pagination over `SortedMap` (core#2559).
     SortedIndex,
+    /// Node-local durable buffer for absorbed straggler deltas (PR-6b). Holds
+    /// the original signed bytes of a state delta that arrived under a schema
+    /// the locally-loaded binary cannot yet read, so it is replayed verbatim
+    /// once the binary advances rather than silently dropped. NOT synchronized
+    /// across nodes. Auto-created from `Column::iter()` at `open_cf` (no DB
+    /// migration). Keys are `prefix(1) ‖ context(32) ‖ producing_app_key(32) ‖
+    /// delta_id(32)`; values are borsh'd `AbsorbRecord`s.
+    AbsorbBuffer,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {

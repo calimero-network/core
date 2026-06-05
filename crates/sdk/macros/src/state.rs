@@ -852,6 +852,19 @@ fn generate_test_state_impl(
                 // not just in the top-level root struct.
                 ::calimero_storage::env::root_hash()
             }
+
+            fn __test_with_mut_merged(f: &mut dyn ::core::ops::FnMut(&mut Self)) {
+                // Like `__test_with_mut`, but under storage *merge mode* — the
+                // way `__calimero_sync_next` applies an inbound delta. Stamps are
+                // zeroed so the mutation is byte-identical across nodes, modelling
+                // an absorbed delta's verbatim replay.
+                ::calimero_storage::env::with_merge_mode(|| {
+                    let mut app = ::calimero_storage::collections::Root::<#ident #ty_generics>::fetch()
+                        .expect("TestHost: app state has not been initialized");
+                    f(&mut *app);
+                    app.commit();
+                });
+            }
         }
     }
 }
@@ -894,6 +907,19 @@ fn generate_assign_deterministic_ids_impl(
             || type_str.contains("UserStorage")
             || type_str.contains("FrozenStorage")
             || type_str.contains("SharedStorage")
+            // `PermissionedStorage` and its `Ownable` alias wrap a
+            // `SharedStorage`; their `reassign_deterministic_id` delegates to it,
+            // so the inner wrapper gets the field-derived id and converges. Both
+            // must be listed: a field written as `Ownable<_>` shows the `Ownable`
+            // token (alias is not resolved here), and `PermissionedStorage` is not
+            // a substring of `SharedStorage`.
+            || type_str.contains("PermissionedStorage")
+            || type_str.contains("Ownable")
+            // `AccessControl` wraps a single guarded storage; its
+            // `reassign_deterministic_id` delegates to it. The macro does not
+            // recurse into nested structs, so without this its inner storage
+            // keeps a random id and diverges across nodes.
+            || type_str.contains("AccessControl")
             // `AuthoredVector` is already matched by the `"Vector"` substring above;
             // `AuthoredMap` is NOT a substring of any entry, so it must be listed
             // explicitly or its outer wrapper id stays `Id::random()` and a

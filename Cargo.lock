@@ -1439,6 +1439,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-crypto",
  "calimero-dag",
+ "calimero-governance-store",
  "calimero-network",
  "calimero-network-primitives",
  "calimero-node-primitives",
@@ -2098,6 +2099,16 @@ dependencies = [
  "crossterm",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "components-demo"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
 ]
 
 [[package]]

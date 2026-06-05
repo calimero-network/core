@@ -211,7 +211,9 @@ impl DocV2Upper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calimero_sdk::testing::{assert_migrate_converges, TestHost};
+    use calimero_sdk::testing::{
+        assert_absorb_replay_converges, assert_migrate_converges, TestHost,
+    };
 
     /// Builds a v1 doc with two entries and a *distinctive* title (not the init
     /// default), deterministically — used as the shared starting point for the
@@ -365,6 +367,66 @@ mod tests {
             derived_migrate,
             [1u8; 32],
             [2u8; 32],
+        );
+    }
+
+    // ---- PR-6b O2: absorb-replay convergence ----
+
+    /// The straggler delta a v1 author signed while offline across the
+    /// migration window: a single `entries` insert. The `entries` map is the
+    /// same CRDT type before and after the migration (carried unchanged), so
+    /// the v1-form and v2-form below are the *same* verbatim action — supplied
+    /// twice only because the in-process bridge is statically typed.
+    fn straggler_inserts_c_v1(s: &mut DocV1) {
+        s.entries
+            .insert("c".to_owned(), "3".to_owned().into())
+            .unwrap();
+    }
+    fn straggler_inserts_c_v2(s: &mut DocV2Derived) {
+        s.entries
+            .insert("c".to_owned(), "3".to_owned().into())
+            .unwrap();
+    }
+
+    #[test]
+    fn absorbed_v1_delta_refolds_into_v2_root_deterministically() {
+        // O2: a node that migrates first and *then* replays the absorbed
+        // straggler's verbatim bytes lands on the same v2 root as a node that
+        // received the straggler before migrating. `derived_migrate` carries
+        // `entries`/`title` and seeds a constant `note`, so it is
+        // order-insensitive — the property absorb-don't-drop relies on.
+        assert_absorb_replay_converges::<DocV1, DocV2Derived>(
+            install_v1_with_entries,
+            straggler_inserts_c_v1,
+            straggler_inserts_c_v2,
+            derived_migrate,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "absorb-replay diverges")]
+    fn order_sensitive_migrate_fails_absorb_replay() {
+        // A migration that *derives* state from the entry set present at
+        // migrate time (here: seeding `tags` from the sorted keys) is
+        // order-sensitive — replaying a straggler entry *after* the migrate
+        // does not re-seed `tags`, so the roots diverge. The harness must
+        // catch this, signalling such a migration needs the whole-root rebuild
+        // path rather than post-migrate replay.
+        fn straggler_v1(s: &mut DocV1) {
+            s.entries
+                .insert("c".to_owned(), "3".to_owned().into())
+                .unwrap();
+        }
+        fn straggler_v2(s: &mut DocV2) {
+            s.entries
+                .insert("c".to_owned(), "3".to_owned().into())
+                .unwrap();
+        }
+        assert_absorb_replay_converges::<DocV1, DocV2>(
+            install_v1_with_entries,
+            straggler_v1,
+            straggler_v2,
+            migrate_v1_to_v2,
         );
     }
 
