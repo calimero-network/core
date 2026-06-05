@@ -439,7 +439,10 @@ mod metadata__needs_owner_convert {
     fn shared_meta(schema: Option<u32>) -> Metadata {
         let mut m = Metadata::new(1, 1);
         m.storage_type = StorageType::Shared {
-            writers: [key(0xBB)].into_iter().collect(),
+            writers: [key(0xBB)]
+                .into_iter()
+                .map(|k| (k, crate::entities::OpMask::FULL))
+                .collect(),
             signature_data: None,
         };
         m.schema_version = schema;
