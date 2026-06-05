@@ -4,7 +4,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     GroupChildIndex, GroupParentRef, NamespaceIdentity, NamespaceIdentityValue,
-    GROUP_CHILD_INDEX_PREFIX,
+    GROUP_CHILD_INDEX_PREFIX, NAMESPACE_IDENTITY_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -487,6 +487,44 @@ impl<'a> NamespaceRepository<'a> {
         }
     }
 
+    /// Enumerate EVERY locally-stored namespace identity, returning
+    /// `(namespace_id, record)` pairs.
+    ///
+    /// Range-scans the `NamespaceIdentity` column family the same way
+    /// [`Self::list_children`] scans `GroupChildIndex`: seek to the prefix
+    /// and walk while the leading prefix byte holds. Each key carries the
+    /// 32-byte `namespace_id`; the value is fetched with a follow-up point
+    /// lookup via [`Self::identity_record`] (mirrors the
+    /// `list_children` → re-resolve pattern already used in this module).
+    ///
+    /// This is the enumeration primitive the self-purge **reconcile sweep**
+    /// (`calimero-context`'s `self_purge`, #2721) walks at startup to find
+    /// evicted-but-not-purged residue: a `NamespaceIdentity` row that lingers
+    /// because a `TeeMemberRemoved` event was dropped (broadcast lag) or a
+    /// signing-key purge previously failed and left the identity as a retry
+    /// anchor. A full scan subsumes any per-row "pending-purge marker": it
+    /// catches ALL residue, not just rows that happened to be marked.
+    pub fn iter_identities(&self) -> EyreResult<Vec<(ContextGroupId, NamespaceIdentityRecord)>> {
+        let keys = collect_keys_with_prefix(
+            self.store,
+            NamespaceIdentity::new([0u8; 32]),
+            NAMESPACE_IDENTITY_PREFIX,
+            |_k| true,
+        )?;
+
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            let ns_id = ContextGroupId::from(key.namespace_id());
+            // The key just came out of the same column family, so the value
+            // must be present; if a concurrent delete raced it out, skip
+            // rather than fail the whole sweep.
+            if let Some(record) = self.identity_record(&ns_id)? {
+                out.push((ns_id, record));
+            }
+        }
+        Ok(out)
+    }
+
     pub fn store_identity(
         &self,
         namespace_id: &ContextGroupId,
@@ -672,5 +710,85 @@ mod tests {
         assert_eq!(loaded_pk, pk);
         assert_eq!(loaded_sk, sk);
         assert_eq!(loaded_sender, sender);
+    }
+
+    #[test]
+    fn iter_identities_returns_empty_on_fresh_store() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+        assert!(repo.iter_identities().unwrap().is_empty());
+    }
+
+    #[test]
+    fn iter_identities_returns_all_seeded_identities() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+
+        // Seed three distinct namespace identities.
+        let seeds = [
+            (
+                gid(0x11),
+                PublicKey::from([0x11; 32]),
+                [0xA1; 32],
+                [0xB1; 32],
+            ),
+            (
+                gid(0x22),
+                PublicKey::from([0x22; 32]),
+                [0xA2; 32],
+                [0xB2; 32],
+            ),
+            (
+                gid(0x33),
+                PublicKey::from([0x33; 32]),
+                [0xA3; 32],
+                [0xB3; 32],
+            ),
+        ];
+        for (ns, pk, sk, sender) in &seeds {
+            repo.store_identity(ns, pk, sk, sender).unwrap();
+        }
+
+        let got = repo.iter_identities().unwrap();
+        assert_eq!(got.len(), 3, "all three seeded identities must enumerate");
+
+        // Every seeded (ns_id, pk, sk, sender) round-trips through the scan.
+        for (ns, pk, sk, sender) in &seeds {
+            let found = got
+                .iter()
+                .find(|(g, _)| g == ns)
+                .unwrap_or_else(|| panic!("namespace {ns:?} missing from iter_identities"));
+            assert_eq!(found.1.public_key, *pk);
+            assert_eq!(found.1.private_key, *sk);
+            assert_eq!(found.1.sender_key, *sender);
+        }
+    }
+
+    #[test]
+    fn iter_identities_excludes_unrelated_column_families() {
+        // The scan must stop at the NamespaceIdentity prefix boundary and
+        // not bleed into adjacent column families (e.g. tree-edge rows that
+        // share the `GroupPrefix` namespace but a different prefix byte).
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+
+        repo.store_identity(
+            &gid(0x44),
+            &PublicKey::from([0x44; 32]),
+            &[0xA4; 32],
+            &[0xB4; 32],
+        )
+        .unwrap();
+        // A child-index edge lives under GROUP_CHILD_INDEX_PREFIX (0x35),
+        // immediately before NAMESPACE_IDENTITY_PREFIX (0x36).
+        repo.nest(&gid(0x44), &gid(0x55)).unwrap();
+
+        let got = repo.iter_identities().unwrap();
+        assert_eq!(
+            got.len(),
+            1,
+            "only the single NamespaceIdentity row must be returned, got {got:?}"
+        );
+        assert_eq!(got[0].0, gid(0x44));
     }
 }
