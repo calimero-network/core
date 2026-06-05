@@ -45,7 +45,7 @@ use calimero_primitives::identity::PublicKey;
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
 use super::shared::WriterSetCell;
 use super::StoreError;
-use crate::entities::{ChildInfo, Data, Element, SignatureData};
+use crate::entities::{ChildInfo, Data, Element, OpMask, SignatureData};
 use crate::env;
 use crate::interface::StorageError;
 use crate::store::MainStorage;
@@ -71,6 +71,20 @@ pub enum Op {
     Admin,
 }
 
+impl Op {
+    /// The [`OpMask`] bit this op requires of a writer, or `None` for `Read`
+    /// (reads are not merge-enforceable in a replicated store).
+    #[must_use]
+    pub const fn required_mask(self) -> Option<OpMask> {
+        match self {
+            Op::Read => None,
+            Op::Write => Some(OpMask::WRITE),
+            Op::Delete => Some(OpMask::DELETE),
+            Op::Admin => Some(OpMask::ADMIN),
+        }
+    }
+}
+
 /// Decides whether a principal may perform an [`Op`], given the resource's
 /// current writer set.
 ///
@@ -81,8 +95,9 @@ pub enum Op {
 /// that cannot be reduced to the writer set (and, later, an op mask) merge can
 /// replay is advisory only and must be documented as such.
 pub trait Authorizer {
-    /// Is `who` permitted to perform `op` on a resource guarded by `writers`?
-    fn authorize(who: &PublicKey, op: Op, writers: &BTreeSet<PublicKey>) -> bool;
+    /// Is `who` permitted to perform `op`, given the resource's current
+    /// capability map (each writer with its [`OpMask`])? Pure: no I/O.
+    fn authorize(who: &PublicKey, op: Op, caps: &BTreeMap<PublicKey, OpMask>) -> bool;
 }
 
 /// Membership policy: any writer may perform any op. This is exactly what the
@@ -92,8 +107,9 @@ pub trait Authorizer {
 pub struct WriterSetAcl;
 
 impl Authorizer for WriterSetAcl {
-    fn authorize(who: &PublicKey, _op: Op, writers: &BTreeSet<PublicKey>) -> bool {
-        writers.contains(who)
+    fn authorize(who: &PublicKey, _op: Op, caps: &BTreeMap<PublicKey, OpMask>) -> bool {
+        // Membership only — any writer may perform any op (today's default).
+        caps.contains_key(who)
     }
 }
 
@@ -105,11 +121,27 @@ impl Authorizer for WriterSetAcl {
 pub struct OwnerAcl;
 
 impl Authorizer for OwnerAcl {
-    fn authorize(who: &PublicKey, op: Op, writers: &BTreeSet<PublicKey>) -> bool {
+    fn authorize(who: &PublicKey, op: Op, caps: &BTreeMap<PublicKey, OpMask>) -> bool {
         // Same predicate as `WriterSetAcl` (membership); delegate so the two
         // cannot drift if the rule ever changes. The single-owner distinction is
         // an API-surface + constructor invariant, not a different merge rule.
-        WriterSetAcl::authorize(who, op, writers)
+        WriterSetAcl::authorize(who, op, caps)
+    }
+}
+
+/// Operation-granular policy: a writer is authorised for `op` only if its
+/// [`OpMask`] grants the matching capability — the API-side mirror of the
+/// merge-time op-gate, so a `WRITE`-only writer is refused a delete here too
+/// (and at merge). Reads are always allowed (not merge-enforceable).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProtocolAuthorizer;
+
+impl Authorizer for ProtocolAuthorizer {
+    fn authorize(who: &PublicKey, op: Op, caps: &BTreeMap<PublicKey, OpMask>) -> bool {
+        match op.required_mask() {
+            None => true, // Read — anyone may read a replicated value.
+            Some(required) => caps.get(who).is_some_and(|m| m.contains(required)),
+        }
     }
 }
 
@@ -180,7 +212,7 @@ where
     /// Whether `who` may perform `op` under policy `A`, against the current
     /// writer set. Pure; no side effects.
     pub fn can(&self, who: &PublicKey, op: Op) -> bool {
-        A::authorize(who, op, &self.inner.writers())
+        A::authorize(who, op, &self.inner.capabilities())
     }
 
     /// Fail-fast guard: `Ok(())` if the current executor may perform `op`,
@@ -250,6 +282,38 @@ where
         // membership and enforces the frozen / non-empty rules.
         self.guard(Op::Admin)?;
         self.inner.rotate_writers(new_writers)
+    }
+
+    /// The current writers with their [`OpMask`]s.
+    pub fn capabilities(&self) -> BTreeMap<PublicKey, OpMask> {
+        self.inner.capabilities()
+    }
+
+    /// Grant `who` the capability `mask` (adding them to the writer set if
+    /// absent), as an authenticated rotation. Admin-gated at the API; the masks
+    /// are signed and enforced at merge by [`ProtocolAuthorizer`].
+    ///
+    /// # Errors
+    /// `ActionNotAllowed` if frozen or the executor is not authorised for
+    /// `Op::Admin`.
+    pub fn grant_capability(&mut self, who: PublicKey, mask: OpMask) -> Result<(), StoreError> {
+        self.guard(Op::Admin)?;
+        let mut caps = self.inner.capabilities();
+        let _prev = caps.insert(who, mask);
+        self.inner.rotate_writers_scoped(caps)
+    }
+
+    /// Remove `who` from the writer set entirely (revoke all capability), as an
+    /// authenticated rotation. The set may not become empty.
+    ///
+    /// # Errors
+    /// `ActionNotAllowed` if frozen, not authorised for `Op::Admin`, or if
+    /// removing `who` would empty the writer set.
+    pub fn revoke_capability(&mut self, who: &PublicKey) -> Result<(), StoreError> {
+        self.guard(Op::Admin)?;
+        let mut caps = self.inner.capabilities();
+        let _removed = caps.remove(who);
+        self.inner.rotate_writers_scoped(caps)
     }
 }
 
@@ -391,10 +455,10 @@ mod tests {
     use calimero_primitives::identity::PublicKey;
     use serial_test::serial;
 
-    use super::{Op, Ownable, PermissionedStorage};
+    use super::{Op, Ownable, PermissionedStorage, ProtocolAuthorizer};
     use crate::collections::crdt_meta::{MergeError, Mergeable};
     use crate::collections::Root;
-    use crate::entities::Data;
+    use crate::entities::{Data, OpMask};
     use crate::{collections::compute_collection_id, env};
 
     const ALICE: [u8; 32] = [0x11; 32];
@@ -498,5 +562,35 @@ mod tests {
         p.insert(TestVal(2)).unwrap();
         env::set_executor_id(ALICE);
         assert!(p.insert(TestVal(3)).is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn protocol_authorizer_enforces_op_masks() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        // Alice starts with FULL (the `new` default).
+        let mut p = Root::new(|| {
+            PermissionedStorage::<TestVal, ProtocolAuthorizer>::new(writers(&[ALICE]), false)
+        });
+
+        // Admin (Alice) grants Bob WRITE only (no DELETE, no ADMIN).
+        p.grant_capability(pk(BOB), OpMask::WRITE).unwrap();
+
+        // The API gate mirrors what merge enforces:
+        assert!(p.can(&pk(BOB), Op::Write), "Bob may write");
+        assert!(!p.can(&pk(BOB), Op::Delete), "Bob may NOT delete");
+        assert!(!p.can(&pk(BOB), Op::Admin), "Bob is not an admin");
+        assert!(p.can(&pk(ALICE), Op::Delete), "Alice (FULL) may delete");
+        assert!(p.can(&pk(BOB), Op::Read), "anyone may read");
+
+        // Bob (WRITE-only) cannot grant — Admin gate refuses him.
+        env::set_executor_id(BOB);
+        assert!(p.grant_capability(pk(ALICE), OpMask::FULL).is_err());
+
+        // Alice can revoke Bob.
+        env::set_executor_id(ALICE);
+        p.revoke_capability(&pk(BOB)).unwrap();
+        assert!(!p.can(&pk(BOB), Op::Write), "revoked Bob may not write");
     }
 }
