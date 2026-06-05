@@ -59,6 +59,18 @@ pub(crate) struct PersistedPeer {
 /// IP change (old + new both present briefly) without unbounded growth.
 const MAX_ADDRS_PER_PEER: usize = 4;
 
+/// Hard cap on the number of peer entries retained in the live map after
+/// TTL pruning. The per-peer address list is already bounded by
+/// [`MAX_ADDRS_PER_PEER`], but the *entry count* was not — a node on the
+/// global rendezvous namespace can briefly connect to many transient (or
+/// adversarial) peers, and without a cap the map grew one entry per
+/// distinct `PeerId` ever seen for the process lifetime. The cap is
+/// generous (a node rarely collaborates with this many distinct
+/// co-members); eviction is least-recently-seen, so actively-connected
+/// co-members — refreshed on every (re)connect — are kept, transients
+/// drop out.
+pub(crate) const MAX_PEER_CACHE_ENTRIES: usize = 4096;
+
 /// One cached peer: its stable id, the addresses we last connected to it
 /// on (most-recent-first, direct and/or relayed), and the wall-clock unix
 /// second we last saw it. Wall-clock (not a monotonic `Instant`) so the
@@ -194,6 +206,43 @@ impl PeerAddrCache {
             .collect();
         out.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
         out
+    }
+
+    /// Bound the live map: first drop entries older than `ttl_secs`, then,
+    /// if more than `max_entries` remain, evict the least-recently-seen
+    /// down to the cap. Until now TTL/relevance were applied only at
+    /// read time (snapshot/dial/load), never to the resident map, so it
+    /// accumulated one entry per `PeerId` ever connected to — slow
+    /// growth / a churn-driven DoS vector. Called on the rendezvous tick
+    /// (~15s) so the map stays proportional to recently-active peers.
+    ///
+    /// LRU eviction keeps actively-connected co-members (their
+    /// `last_seen` is refreshed on every (re)connect) and sheds
+    /// transient/attacker peers, so reconnect-on-restart for real
+    /// co-members is unaffected.
+    pub(crate) fn prune(&mut self, now_secs: u64, ttl_secs: u64, max_entries: usize) {
+        self.peers
+            .retain(|_, p| is_fresh(p.last_seen_secs, now_secs, ttl_secs));
+        if self.peers.len() <= max_entries {
+            return;
+        }
+        // Still over the cap after TTL pruning: keep the `max_entries`
+        // most-recently-seen entries, evict the rest. Tie-break by PeerId
+        // so eviction is deterministic.
+        let mut by_recency: Vec<(PeerId, u64)> = self
+            .peers
+            .iter()
+            .map(|(id, p)| (*id, p.last_seen_secs))
+            .collect();
+        by_recency.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        for (id, _) in by_recency.into_iter().skip(max_entries) {
+            let _ = self.peers.remove(&id);
+        }
+    }
+
+    /// Number of resident entries — for the prune metric / tests.
+    pub(crate) fn len(&self) -> usize {
+        self.peers.len()
     }
 }
 
@@ -365,5 +414,49 @@ mod tests {
         let got = c.dial_candidates(150, 1000);
         assert_eq!(got.len(), 1, "only the well-formed entry survives");
         assert_eq!(got[0].peer_id, peer(3));
+    }
+
+    #[test]
+    fn prune_drops_past_ttl_entries_from_the_live_map() {
+        let mut c = PeerAddrCache::default();
+        c.record(peer(1), addr("/ip4/1.1.1.1/tcp/1"), 100); // stale at now=2000
+        c.record(peer(2), addr("/ip4/2.2.2.2/tcp/1"), 1900); // fresh
+        assert_eq!(c.len(), 2);
+
+        // now=2000, ttl=1000 → peer(1)@100 is 1900s old → evicted.
+        c.prune(2000, 1000, 100);
+        assert_eq!(c.len(), 1, "stale entry removed from the resident map");
+        assert_eq!(c.dial_candidates(2000, 1000)[0].peer_id, peer(2));
+    }
+
+    #[test]
+    fn prune_caps_total_evicting_least_recently_seen() {
+        let mut c = PeerAddrCache::default();
+        // Five fresh peers, distinct last_seen.
+        for (i, n) in [(110u64, 1u8), (120, 2), (130, 3), (140, 4), (150, 5)] {
+            c.record(peer(n), addr(&format!("/ip4/1.2.3.{n}/tcp/1")), i);
+        }
+        assert_eq!(c.len(), 5);
+
+        // All fresh, but cap to 3 → keep the 3 most-recently-seen (3,4,5),
+        // evict the 2 oldest (1,2).
+        c.prune(200, 1000, 3);
+        let kept: std::collections::BTreeSet<PeerId> = c
+            .dial_candidates(200, 1000)
+            .into_iter()
+            .map(|p| p.peer_id)
+            .collect();
+        assert_eq!(
+            kept,
+            std::collections::BTreeSet::from([peer(3), peer(4), peer(5)])
+        );
+    }
+
+    #[test]
+    fn prune_is_a_noop_under_the_cap() {
+        let mut c = PeerAddrCache::default();
+        c.record(peer(1), addr("/ip4/1.1.1.1/tcp/1"), 100);
+        c.prune(100, 1000, MAX_PEER_CACHE_ENTRIES);
+        assert_eq!(c.len(), 1);
     }
 }
