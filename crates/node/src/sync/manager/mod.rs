@@ -3067,14 +3067,26 @@ impl SyncManager {
                 // loop), never as a top-level stream init.
                 warn!("Received EntityDeletePush outside of HashComparison session, ignoring");
             }
-            InitPayload::RotationLogSyncRequest { .. } => {
-                // Rotation-log reconciliation (core#2716/#2703) only occurs as an
-                // end-of-session step inside an established HashComparison
-                // session (handled by the responder loop), never as a top-level
-                // stream init.
-                warn!(
-                    "Received RotationLogSyncRequest outside of HashComparison session, ignoring"
-                );
+            InitPayload::RotationLogSyncRequest {
+                context_id: req_context_id,
+                logs,
+            } => {
+                // Standalone rotation-log reconciliation (core#2716): a peer
+                // whose Merkle root already matches ours took the `None` sync
+                // path, so the in-HashComparison reconciliation never ran. It
+                // opens a fresh stream with this request to converge the
+                // hash-neutral writer/capability rotations. Mirror the
+                // end-of-HashComparison handler: union theirs, reply with ours.
+                if let Err(e) = self
+                    .handle_rotation_log_sync_request(req_context_id, logs, our_identity, stream)
+                    .await
+                {
+                    warn!(
+                        %req_context_id,
+                        error = %e,
+                        "standalone rotation-log sync responder failed"
+                    );
+                }
             }
             InitPayload::NamespaceBackfillRequest { .. } => {
                 unreachable!("handled by early return above")
@@ -3136,6 +3148,43 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
             .open_stream(peer)
             .await
             .wrap_err("open stream")
+    }
+
+    async fn reconcile_shared_rotation_logs(
+        &self,
+        context_id: ContextId,
+        peer: PeerId,
+        our_identity: PublicKey,
+    ) -> eyre::Result<()> {
+        use calimero_node_primitives::sync::create_runtime_env;
+        use calimero_storage::env::with_runtime_env;
+
+        let store = self.context_client.datastore_handle().into_inner();
+        let runtime_env = create_runtime_env(&store, context_id, our_identity);
+
+        // Common-case fast path: a context with no `Shared` anchors has
+        // nothing to reconcile, so don't even open a stream — non-shared
+        // syncs pay nothing for this.
+        let local_logs = with_runtime_env(runtime_env.clone(), || {
+            super::hash_comparison_protocol::collect_local_shared_rotation_logs(context_id)
+        });
+        if local_logs.is_empty() {
+            return Ok(());
+        }
+
+        let mut stream = self
+            .sync_network
+            .open_stream(peer)
+            .await
+            .wrap_err("open stream for rotation-log reconcile")?;
+        let mut transport = super::stream::StreamTransport::new(&mut stream);
+        super::hash_comparison_protocol::reconcile_rotation_logs_with_peer(
+            &mut transport,
+            context_id,
+            our_identity,
+            &runtime_env,
+        )
+        .await
     }
 
     async fn request_dag_heads_and_sync(
