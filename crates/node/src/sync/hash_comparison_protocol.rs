@@ -786,7 +786,9 @@ const MAX_ROTATION_LOGS_PER_SYNC: usize = 1024;
 /// be prefix-scanned; they must be reached via the entity index, exactly like
 /// [`collect_leaves_recursive`]. MUST run inside `with_runtime_env` so
 /// `Index`/`rotation_log` route through this context's store.
-fn collect_local_shared_rotation_logs(context_id: ContextId) -> Vec<([u8; 32], Vec<u8>)> {
+pub(crate) fn collect_local_shared_rotation_logs(
+    context_id: ContextId,
+) -> Vec<([u8; 32], Vec<u8>)> {
     let mut out = Vec::new();
     collect_shared_rotation_logs_recursive(Id::new(*context_id.as_ref()), &mut out, 0);
     out
@@ -838,7 +840,7 @@ fn collect_shared_rotation_logs_recursive(
 /// (e.g. a conflicting `delta_id`) is logged and skipped, never fatal. MUST run
 /// inside `with_runtime_env`. Returns the number of append calls that succeeded
 /// (includes idempotent no-ops).
-fn union_received_rotation_logs(logs: &[([u8; 32], Vec<u8>)]) -> usize {
+pub(crate) fn union_received_rotation_logs(logs: &[([u8; 32], Vec<u8>)]) -> usize {
     let mut applied = 0_usize;
     for (entity_bytes, bytes) in logs {
         let entity_id = Id::new(*entity_bytes);
