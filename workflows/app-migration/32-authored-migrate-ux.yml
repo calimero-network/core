@@ -282,22 +282,27 @@ steps:
     timeout: 90
     trigger_sync: true
 
-  # Phase 7b: POSITIVE, REGRESSION-COUPLED — the 6c per-entry re-stamp branch
-  # fired on both nodes (each owner converted its own notes via the one-tap).
-  - name: Assert the per-entry convert fired on node 1
+  # Phase 7b: POSITIVE, REGRESSION-COUPLED, host-observable signal. The owner's
+  # one-tap re-stamps inside the wasm GUEST (not visible in node logs); the
+  # node-observable proof is host-side on the RECEIVER, which adopts the higher
+  # schema tag when it applies the replicated convert delta. Each node owns
+  # different notes, so each receives + adopts the other's converts → present
+  # on both. (Per-entry persistence is proved directly via note_schema_version
+  # in Phase 9 — the authoritative, RPC-observable, regression-coupled check.)
+  - name: Assert node 1 adopted node 2's replicated convert (host-side apply)
     type: assert_log_present
     nodes:
       - app-migration-ux-1
     patterns:
-      - "owner-driven convert: re-stamped identity-gated entry schema_version"
+      - "owner-driven convert: applied migrated identity-gated entry schema_version"
     min_matches: 1
 
-  - name: Assert the per-entry convert fired on node 2
+  - name: Assert node 2 adopted node 1's replicated converts (host-side apply)
     type: assert_log_present
     nodes:
       - app-migration-ux-2
     patterns:
-      - "owner-driven convert: re-stamped identity-gated entry schema_version"
+      - "owner-driven convert: applied migrated identity-gated entry schema_version"
     min_matches: 1
 
   # Phase 8: NEGATIVE node-log validation.

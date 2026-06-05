@@ -1751,6 +1751,19 @@ impl<S: StorageAdaptor> Interface<S> {
                     .unwrap_or(0);
                 if incoming_schema > stored_schema {
                     <Index<S>>::set_schema_version(id, metadata.schema_version)?;
+                    // Host-side, node-log-observable signal for the owner-driven
+                    // convert. The originating owner's re-stamp happens inside the
+                    // wasm guest (its `save_raw`), where `tracing` does not reach the
+                    // node log; here on the RECEIVER `apply_action` runs host-side, so
+                    // this is where a replica's adoption of a converted entry is
+                    // observable. Regression-coupled: remove the convert and no entry
+                    // ever carries a higher tag, so this never fires.
+                    info!(
+                        %id,
+                        old_schema_version = stored_schema,
+                        new_schema_version = incoming_schema,
+                        "owner-driven convert: applied migrated identity-gated entry schema_version"
+                    );
                 }
 
                 // ALWAYS update parent with correct hash after save (handles merging)
@@ -3187,8 +3200,11 @@ impl<S: StorageAdaptor> Interface<S> {
             // Read the prior stored stamp before overwriting so the log shows
             // the actual old -> new transition (the convert only "lands" when
             // these differ — a no-op re-write of an already-current entry keeps
-            // the same value). This single emit is the node-log-observable signal
-            // for the owner-driven convert; scenario 26 `assert_log_present`s it.
+            // the same value). NOTE: an owner's own write runs inside the wasm
+            // GUEST, where `tracing` does not reach the node log — so this debug
+            // is for guest-side diagnosis only. The node-log-observable signal is
+            // emitted host-side on the RECEIVER in `apply_action` when it adopts
+            // the replicated converted tag ("applied migrated ... schema_version").
             let prior_schema = <Index<S>>::get_metadata(id)?.and_then(|m| m.schema_version);
             <Index<S>>::set_schema_version(id, Some(target))?;
             debug!(

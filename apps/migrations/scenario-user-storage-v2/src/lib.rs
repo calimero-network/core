@@ -14,7 +14,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// every user's data under each node's OWN id, diverging the map. Carrying
 /// the collection preserves the v1 slot keys byte-for-byte, so every node
 /// converges.
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(version = 2, emits = for<'a> Event<'a>)]
 #[derive(app::Migrate)]
 #[migrate(
     from = ScenarioUserStorageV1,

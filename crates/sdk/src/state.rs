@@ -35,22 +35,6 @@ pub trait AppStateInit: Sized {
     type Return: Identity<Self>;
 }
 
-/// Reads the raw bytes of the application's root state from storage.
-///
-/// This function directly reads the serialized state bytes without deserializing them.
-/// It is primarily used during state migrations to access the old state format
-/// before transforming it to a new schema.
-///
-/// The storage layer wraps user data in an `Entry<T>` envelope that appends a
-/// 32-byte `Element.id` suffix after the Borsh-serialized user struct. This
-/// function strips that suffix so callers receive only the user data portion,
-/// matching the layout of the user's `#[app::state]` struct.
-///
-/// # Returns
-///
-/// * `Some(Vec<u8>)` - The raw serialized state bytes (user data only) if state exists
-/// * `None` - If no state has been stored yet
-
 /// Result of a [`migrate_my_entries`] batch convert.
 ///
 /// `converted` = the caller's identity-gated entries re-written to the target
@@ -60,8 +44,16 @@ pub trait AppStateInit: Sized {
 /// sums these across every declared identity-gated collection.
 ///
 /// [`migrate_my_entries`]: the `#[app::state]`-generated method
-#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq, Eq)]
-#[derive(crate::serde::Serialize, crate::serde::Deserialize)]
+#[derive(
+    BorshSerialize,
+    BorshDeserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    crate::serde::Serialize,
+    crate::serde::Deserialize,
+)]
 #[serde(crate = "crate::serde")]
 pub struct MigrateMyEntriesSummary {
     /// Entries re-written to the target schema version this call.

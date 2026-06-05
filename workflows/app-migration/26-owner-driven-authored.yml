@@ -281,20 +281,25 @@ steps:
   # never fire — so the assert would fail. (The `schema_info` checks below only
   # observe which WASM is loaded, not the per-entry stamp; this log is the signal
   # that the per-entry convert actually ran.)
-  - name: Assert the owner-driven per-entry convert fired on node 1
+  # The owner re-stamps its own entry inside the wasm GUEST, where `tracing`
+  # does not reach the node log. The node-observable signal is host-side on the
+  # RECEIVER: when a node applies the replicated converted delta it adopts the
+  # higher schema tag and logs it. Each node re-wrote its OWN slot, so each is
+  # the receiver of the OTHER's convert → the log must be present on both.
+  - name: Assert node 1 adopted the replicated convert (host-side apply)
     type: assert_log_present
     nodes:
       - app-migration-owner-1
     patterns:
-      - "owner-driven convert: re-stamped identity-gated entry schema_version"
+      - "owner-driven convert: applied migrated identity-gated entry schema_version"
     min_matches: 1
 
-  - name: Assert the owner-driven per-entry convert fired on node 2
+  - name: Assert node 2 adopted the replicated convert (host-side apply)
     type: assert_log_present
     nodes:
       - app-migration-owner-2
     patterns:
-      - "owner-driven convert: re-stamped identity-gated entry schema_version"
+      - "owner-driven convert: applied migrated identity-gated entry schema_version"
     min_matches: 1
 
   # Phase 8: NODE-LOG VALIDATION — the explicit requirement for scenario 26.
