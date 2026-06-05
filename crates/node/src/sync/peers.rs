@@ -42,6 +42,11 @@ pub(crate) enum PeerSource {
     /// namespace topic mesh as a fallback (namespace meshes are
     /// established earlier during join with a grace period).
     NamespaceFallback,
+    /// Both topic meshes were empty, but the durable peer-identity cache
+    /// held members of this context's group to dial directly — the
+    /// cold-start fallback that lets a freshly-restarted node target real
+    /// members before any gossipsub mesh has formed.
+    PersistentCache,
 }
 
 /// Outcome of the discovery loop: the peer list plus diagnostics
