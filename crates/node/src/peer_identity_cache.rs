@@ -264,8 +264,10 @@ impl PeerIdentityCache {
                 role: r.role.clone(),
                 peers: BTreeMap::new(),
             });
-            // Last row for an identity wins the role, matching `record`'s
-            // last-write semantics for a re-observed role.
+            // Every row written for a given identity carries that
+            // identity's single role (see `to_persisted`), so this
+            // assignment is value-stable regardless of row order — it
+            // isn't a meaningful last-write race.
             entry.role = r.role;
             let _ = entry.peers.insert(peer, r.last_seen_secs);
         }
