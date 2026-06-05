@@ -211,7 +211,10 @@ fn verifier_with_dag_context_uses_rotation_log() {
             delta_id: d1,
             delta_hlc: hlc(hlc_at(0)),
             signer: Some(alice),
-            new_writers: [alice].into_iter().collect(),
+            new_writers: [alice]
+                .into_iter()
+                .map(|k| (k, calimero_storage::entities::OpMask::FULL))
+                .collect(),
             writers_nonce: 1,
         },
     )
@@ -268,7 +271,10 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
             delta_id: d1,
             delta_hlc: hlc(hlc_at(0)),
             signer: Some(alice),
-            new_writers: [alice].into_iter().collect(),
+            new_writers: [alice]
+                .into_iter()
+                .map(|k| (k, calimero_storage::entities::OpMask::FULL))
+                .collect(),
             writers_nonce: 1,
         },
     )
@@ -324,7 +330,13 @@ fn write_hook_appends_on_bootstrap_with_ctx() {
     assert_eq!(log.entries.len(), 1);
     assert_eq!(log.entries[0].delta_id, [0xAA; 32]);
     assert_eq!(log.entries[0].signer, Some(alice));
-    assert_eq!(log.entries[0].new_writers, [alice].into_iter().collect());
+    assert_eq!(
+        log.entries[0].new_writers,
+        [alice]
+            .into_iter()
+            .map(|k| (k, calimero_storage::entities::OpMask::FULL))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    );
 }
 
 /// Same bootstrap but with empty ctx (no delta_id) — the log stays empty.
@@ -462,7 +474,10 @@ fn write_hook_appends_on_writer_set_change() {
     assert_eq!(log.entries[1].delta_id, d1);
     assert_eq!(
         log.entries[1].new_writers,
-        [alice, bob].into_iter().collect()
+        [alice, bob]
+            .into_iter()
+            .map(|k| (k, calimero_storage::entities::OpMask::FULL))
+            .collect::<std::collections::BTreeMap<_, _>>()
     );
 }
 

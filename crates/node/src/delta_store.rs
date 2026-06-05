@@ -25,7 +25,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::delta::StorageDelta;
-use calimero_storage::entities::StorageType;
+use calimero_storage::entities::{OpMask, StorageType};
 use calimero_storage::rotation_log::{RotationLog, RotationLogEntry, RotationSnapshot};
 use calimero_storage::store::Key as StorageKey;
 use eyre::Result;
@@ -820,7 +820,7 @@ impl ContextStorageApplier {
     async fn resolve_effective_writers_for_delta(
         &self,
         delta: &CausalDelta<Vec<Action>>,
-    ) -> Result<BTreeMap<Id, BTreeSet<PublicKey>>> {
+    ) -> Result<BTreeMap<Id, BTreeMap<PublicKey, OpMask>>> {
         let mut shared_entities: BTreeSet<Id> = BTreeSet::new();
         // (member entity id, its anchor id). A `SharedMember` carries no writer
         // set of its own; it resolves the ANCHOR's writers and the result is
@@ -845,7 +845,7 @@ impl ContextStorageApplier {
             }
         }
 
-        let mut out: BTreeMap<Id, BTreeSet<PublicKey>> = BTreeMap::new();
+        let mut out: BTreeMap<Id, BTreeMap<PublicKey, OpMask>> = BTreeMap::new();
         if shared_entities.is_empty() && members.is_empty() {
             return Ok(out);
         }
@@ -891,7 +891,7 @@ impl ContextStorageApplier {
         // has rotated. When the anchor is absent entirely, the fallback yields
         // the empty set and verification fails closed (the member is retried
         // once the anchor syncs).
-        let mut anchor_cache: BTreeMap<Id, Option<BTreeSet<PublicKey>>> = BTreeMap::new();
+        let mut anchor_cache: BTreeMap<Id, Option<BTreeMap<PublicKey, OpMask>>> = BTreeMap::new();
         for (member_id, anchor) in members {
             let resolved = match anchor_cache.get(&anchor) {
                 Some(cached) => cached.clone(),
@@ -1054,7 +1054,7 @@ pub(crate) fn seed_rotation_log_genesis_direct(
     context_client: &ContextClient,
     context_id: ContextId,
     entity_id: Id,
-    writers: BTreeSet<PublicKey>,
+    writers: BTreeMap<PublicKey, OpMask>,
 ) -> Result<()> {
     if load_rotation_log_direct(context_client, context_id, entity_id)?.is_some() {
         return Ok(());

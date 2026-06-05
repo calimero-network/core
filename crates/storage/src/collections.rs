@@ -63,7 +63,8 @@ pub mod shared;
 pub use shared::WriterSetCell;
 pub mod permissioned;
 pub use permissioned::{
-    Authorizer, Op, Ownable, OwnerAcl, PermissionedStorage, SharedStorage, WriterSetAcl,
+    Authorizer, Op, Ownable, OwnerAcl, PermissionedStorage, ProtocolAuthorizer, SharedStorage,
+    WriterSetAcl,
 };
 pub mod access_control;
 pub use access_control::AccessControl;

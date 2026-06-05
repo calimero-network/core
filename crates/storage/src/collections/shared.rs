@@ -60,7 +60,7 @@ use calimero_primitives::identity::PublicKey;
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{compute_collection_id, compute_id, Collection, StoreError};
 use crate::address::Id;
-use crate::entities::{ChildInfo, Data, Element, SignatureData, StorageType};
+use crate::entities::{ChildInfo, Data, Element, OpMask, SignatureData, StorageType};
 use crate::env;
 use crate::index::Index;
 use crate::interface::{Interface, StorageError};
@@ -254,7 +254,9 @@ where
         // explicit) and persist.
         self.inner
             .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::SharedStorage);
-        self.inner.element_mut().set_shared_domain(writers.clone());
+        self.inner
+            .element_mut()
+            .set_shared_domain_scoped(writers.clone());
         let _saved = <Interface<MainStorage>>::save(&mut self.inner)
             .expect("failed to persist relocated WriterSetCell wrapper");
 
@@ -420,7 +422,7 @@ where
     /// act on has an index entry (construction and sync-apply both write one);
     /// if neither source has a writer set, fail closed with the empty set rather
     /// than trust unverified bytes.
-    fn current_writers(&self) -> BTreeSet<PublicKey> {
+    fn current_writers(&self) -> BTreeMap<PublicKey, OpMask> {
         if let Ok(Some(log)) = rotation_log::load::<S>(self.inner.id()) {
             if let Some(writers) = rotation_log::resolve_local(&log) {
                 return writers;
@@ -443,12 +445,19 @@ where
              entry — failing closed with an empty writer set (missing/corrupt \
              index, or wrapper not yet synced)"
         );
-        BTreeSet::new()
+        BTreeMap::new()
     }
 
-    /// Read the current writer set. Public so callers can present a
-    /// "members with edit rights" UI and compute incremental rotations.
+    /// Read the current writer set (membership only). Public so callers can
+    /// present a "members with edit rights" UI and compute incremental
+    /// rotations. Use [`capabilities`](Self::capabilities) for the per-writer
+    /// [`OpMask`]s.
     pub fn writers(&self) -> BTreeSet<PublicKey> {
+        self.current_writers().into_keys().collect()
+    }
+
+    /// The current writers with their [`OpMask`]s.
+    pub fn capabilities(&self) -> BTreeMap<PublicKey, OpMask> {
         self.current_writers()
     }
 
@@ -485,7 +494,7 @@ where
     pub fn insert(&mut self, value: T) -> Result<Option<T>, StoreError> {
         let executor: PublicKey = env::executor_id().into();
         let writers = self.current_writers();
-        if !writers.contains(&executor) {
+        if !writers.contains_key(&executor) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "Executor is not a writer of this WriterSetCell".to_owned(),
             )));
@@ -525,6 +534,21 @@ where
     /// Returns `ActionNotAllowed` if `frozen`, if `new_writers` is empty, or if
     /// the executor is not currently in the writer set.
     pub fn rotate_writers(&mut self, new_writers: BTreeSet<PublicKey>) -> Result<(), StoreError> {
+        // Convenience: every writer gets `OpMask::FULL` (today's behaviour).
+        self.rotate_writers_scoped(new_writers.into_iter().map(|w| (w, OpMask::FULL)).collect())
+    }
+
+    /// Rotate the writer set with explicit per-writer [`OpMask`]s. Same rules and
+    /// merge semantics as [`rotate_writers`](Self::rotate_writers); the masks are
+    /// committed into the signed rotation and enforced at merge.
+    ///
+    /// # Errors
+    /// Returns `ActionNotAllowed` if `frozen`, if `new_writers` is empty, or if
+    /// the executor is not currently in the writer set.
+    pub fn rotate_writers_scoped(
+        &mut self,
+        new_writers: BTreeMap<PublicKey, OpMask>,
+    ) -> Result<(), StoreError> {
         if self.frozen {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "Cannot rotate writers of frozen WriterSetCell".to_owned(),
@@ -537,7 +561,7 @@ where
         }
         let executor: PublicKey = env::executor_id().into();
         let writers = self.current_writers();
-        if !writers.contains(&executor) {
+        if !writers.contains_key(&executor) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "Executor is not a current writer".to_owned(),
             )));
@@ -555,7 +579,7 @@ where
         // point) and appends the new set to the wrapper's rotation log.
         self.inner
             .element_mut()
-            .set_shared_domain(new_writers.clone());
+            .set_shared_domain_scoped(new_writers);
         let _saved = <Interface<S>>::save(&mut self.inner)?;
 
         // Members are NOT re-stamped. The value entry and every collection
@@ -744,7 +768,7 @@ mod tests {
         assert_member_of(storage_type_of(value_id));
         assert_eq!(
             anchor_writers(storage_type_of(wrapper_id)),
-            writers(&[ALICE])
+            crate::entities::full_mask(writers(&[ALICE]))
         );
 
         // Rotation updates the anchor only; the value entry is byte-untouched.
@@ -752,7 +776,7 @@ mod tests {
         assert_member_of(storage_type_of(value_id));
         assert_eq!(
             anchor_writers(storage_type_of(wrapper_id)),
-            writers(&[ALICE, BOB])
+            crate::entities::full_mask(writers(&[ALICE, BOB]))
         );
 
         // The newly-added writer can write — authorization resolves from the

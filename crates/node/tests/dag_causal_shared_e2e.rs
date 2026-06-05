@@ -158,7 +158,7 @@ impl SharedRotationApplier {
     async fn resolve_effective_writers(
         &self,
         delta: &CausalDelta<Vec<Action>>,
-    ) -> BTreeMap<Id, BTreeSet<PublicKey>> {
+    ) -> BTreeMap<Id, BTreeMap<PublicKey, calimero_storage::entities::OpMask>> {
         // Collect Shared-entity ids touched by this delta.
         let mut shared_entities: BTreeSet<Id> = BTreeSet::new();
         for action in &delta.payload {
@@ -173,7 +173,8 @@ impl SharedRotationApplier {
             }
         }
 
-        let mut out: BTreeMap<Id, BTreeSet<PublicKey>> = BTreeMap::new();
+        let mut out: BTreeMap<Id, BTreeMap<PublicKey, calimero_storage::entities::OpMask>> =
+            BTreeMap::new();
         if shared_entities.is_empty() {
             return out;
         }

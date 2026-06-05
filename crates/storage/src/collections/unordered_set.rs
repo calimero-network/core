@@ -581,7 +581,9 @@ mod tests {
                 .expect("load member entry")
                 .expect("member entry exists");
         match entry.storage.metadata.storage_type {
-            StorageType::Shared { writers: w, .. } => assert_eq!(w, writers),
+            StorageType::Shared { writers: w, .. } => {
+                assert_eq!(w, crate::entities::full_mask(writers.clone()))
+            }
             other => panic!("set member must inherit Shared, got {other:?}"),
         }
     }

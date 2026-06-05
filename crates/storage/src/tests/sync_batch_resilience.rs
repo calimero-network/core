@@ -32,7 +32,7 @@ use crate::action::Action;
 use crate::address::Id;
 use crate::collections::Root;
 use crate::delta::StorageDelta;
-use crate::entities::{ChildInfo, Metadata, StorageType};
+use crate::entities::{ChildInfo, Metadata, OpMask, StorageType};
 use crate::index::Index;
 use crate::interface::{ApplyContext, Interface};
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
@@ -86,7 +86,7 @@ fn unsigned_shared_add(
             created_at: hlc_ns,
             updated_at: hlc_ns.into(),
             storage_type: StorageType::Shared {
-                writers,
+                writers: crate::entities::full_mask(writers.clone()),
                 signature_data: None, // <- the bug trigger
             },
             crdt_type: None,
@@ -127,8 +127,8 @@ fn unsigned_shared_action_does_not_abort_the_sync_batch() {
     // The receiver's per-action `effective_writers` map (#2266). The good
     // action verifies against {Alice}; the bad one is rejected before any
     // writer check, so its entry is irrelevant.
-    let mut effective_writers: BTreeMap<Id, BTreeSet<PublicKey>> = BTreeMap::new();
-    let _ = effective_writers.insert(good_id, writers.clone());
+    let mut effective_writers: BTreeMap<Id, BTreeMap<PublicKey, OpMask>> = BTreeMap::new();
+    let _ = effective_writers.insert(good_id, crate::entities::full_mask(writers.clone()));
 
     let payload = to_vec(&StorageDelta::CausalActions {
         actions: vec![bad, good],
