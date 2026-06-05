@@ -1,34 +1,56 @@
 use std::ops::Deref;
 
 use calimero_primitives::context::ContextId;
-use tokio::sync::OwnedRwLockWriteGuard;
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard};
 
 pub mod client;
 pub mod group;
 pub mod local_governance;
 pub mod messages;
 
-/// An owned, exclusive per-context lock guard held across a context operation.
+/// An owned, per-context lock guard held across a context operation.
 ///
-/// The per-context lock is an `RwLock`, but every caller currently takes the
-/// exclusive *write* guard, so the lock behaves exactly like the prior mutex.
-/// Keeping the single notion of "holding a context" behind this one type —
-/// acquired in the manager, threaded through the entire WASM execution outside
-/// the actor, and handed back in as [`ContextAtomic::Held`] for a multi-call
-/// atomic batch — is what will let a shared read guard be introduced (parallel
-/// reads, gated on declared read-only method intent) without touching every
-/// call site.
+/// The per-context lock is an `RwLock`. A guard is either:
+/// - [`ContextGuard::Write`] — exclusive, blocks all other access; the default
+///   for any call whose read/write intent is not known to be read-only.
+/// - [`ContextGuard::Read`] — shared, coexists with other read guards on the
+///   same context; only handed out for methods explicitly declared read-only
+///   via `#[app::view]` in the module ABI.
 ///
-/// Derefs to the locked [`ContextId`] so existing read sites keep working.
+/// The single notion of "holding a context" living behind this one type is what
+/// keeps every call site (the execute path, the sync handler, and the
+/// `ContextAtomic::Held` atomic-batch path) working without knowing which
+/// variant they hold.
+///
+/// Derefs to the locked [`ContextId`] (identical for both variants) so existing
+/// read sites keep working.
 #[derive(Debug)]
-pub struct ContextGuard(OwnedRwLockWriteGuard<ContextId>);
+pub enum ContextGuard {
+    /// Exclusive guard — blocks all other access. The default for any call
+    /// whose read/write intent is not known to be read-only.
+    Write(OwnedRwLockWriteGuard<ContextId>),
+    /// Shared guard — coexists with other read guards on the same context.
+    /// Only minted for methods declared read-only in the module ABI.
+    Read(OwnedRwLockReadGuard<ContextId>),
+}
 
 impl ContextGuard {
-    /// Wrap an exclusive write guard. Keeps the lock held exclusively for the
-    /// lifetime of this value.
+    /// Wrap an exclusive write guard.
     #[must_use]
-    pub fn new(guard: OwnedRwLockWriteGuard<ContextId>) -> Self {
-        Self(guard)
+    pub fn write(guard: OwnedRwLockWriteGuard<ContextId>) -> Self {
+        Self::Write(guard)
+    }
+
+    /// Wrap a shared read guard.
+    #[must_use]
+    pub fn read(guard: OwnedRwLockReadGuard<ContextId>) -> Self {
+        Self::Read(guard)
+    }
+
+    /// Returns `true` if this is an exclusive write guard.
+    #[must_use]
+    pub fn is_write(&self) -> bool {
+        matches!(self, Self::Write(_))
     }
 }
 
@@ -36,7 +58,10 @@ impl Deref for ContextGuard {
     type Target = ContextId;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        match self {
+            Self::Write(g) => g,
+            Self::Read(g) => g,
+        }
     }
 }
 

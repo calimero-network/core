@@ -73,6 +73,26 @@ pub enum OpEvent {
         group_id: [u8; 32],
         member: PublicKey,
     },
+    /// A `GroupMemberRole::ReadOnlyTee` member was removed from a group.
+    ///
+    /// Fires IN ADDITION to `MemberRemoved` whenever the removed member
+    /// held the `ReadOnlyTee` role at the time of removal. The two events
+    /// are emitted as a pair (always `MemberRemoved` first, then
+    /// `TeeMemberRemoved`) so existing subscribers that key off
+    /// `MemberRemoved` (notably auto-follow) continue to fire on every
+    /// removal, while TEE-specific hygiene handlers (notably
+    /// `calimero_context::self_purge`) can scope themselves to TEE
+    /// evictions only.
+    ///
+    /// The role is captured by reading the membership row BEFORE the
+    /// `remove_member` mutation in the apply path; see the
+    /// `GroupOp::MemberRemoved` and `GroupOp::MemberLeft` apply arms.
+    /// For cascading namespace-leave the role is captured per descendant
+    /// group where the leaver had a direct row.
+    TeeMemberRemoved {
+        group_id: [u8; 32],
+        member: PublicKey,
+    },
     /// `GroupOp::MemberSetAutoFollow` — auto-follow flags were updated
     /// for a member. Fires for every application of the op, including
     /// when flags don't change, so handlers should dedupe if they care.

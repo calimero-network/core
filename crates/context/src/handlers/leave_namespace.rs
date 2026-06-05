@@ -9,10 +9,26 @@
 //! upfront, then row-removal cascade.
 //!
 //! No key rotation. Same forward-secrecy caveat as `leave_group`.
-//! See architecture doc § 6 for the soft-vs-hard local-cleanup choice
-//! (left as a follow-up — current behavior is "soft": no purge,
-//! membership rows removed but encrypted blobs and keys remain on the
-//! local node).
+//!
+//! Local cleanup: the local apply of `MemberLeft` always emits
+//! `OpEvent::MemberRemoved` (per descendant group where the leaver had
+//! a direct row, plus once at the namespace root). It additionally
+//! emits `OpEvent::TeeMemberRemoved` for each of those, gated
+//! per-group on whether the leaver's stored role in THAT group was
+//! `ReadOnlyTee`. The [`crate::self_purge`] listener only reacts to
+//! the latter, so for a regular `Admin`/`Member`/`Observer`
+//! self-leave the listener stays dormant and the local rows
+//! (namespace identity + signing keys) are preserved as soft-leave
+//! residue — leave-then-rejoin-via-inheritance and similar workflows
+//! depend on this. For a `ReadOnlyTee` self-leave the listener
+//! cascade-purges every group's local rows (signing keys included)
+//! and drops namespace-level state. The
+//! `node_client.unsubscribe_namespace` call below is still issued
+//! synchronously by this handler so the unsubscribe is ordered with
+//! the user-visible handler response; the listener also issues an
+//! unsubscribe (idempotent) as part of its TEE-eviction cleanup. See
+//! ADR 0002 (`docs/adr/0002-fleet-tee-leave-protocol.md`).
+
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};

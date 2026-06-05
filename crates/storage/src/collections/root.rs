@@ -341,7 +341,7 @@ where
                             updated_at = metadata.updated_at(),
                             "SYNC CHILD: Applying Action::Add for child entity"
                         );
-                        <Interface<S>>::apply_action(
+                        apply_child_action_lenient::<S>(
                             Action::Add {
                                 id,
                                 data,
@@ -367,7 +367,7 @@ where
                             updated_at = metadata.updated_at(),
                             "SYNC CHILD: Applying Action::Update for child entity"
                         );
-                        <Interface<S>>::apply_action(
+                        apply_child_action_lenient::<S>(
                             Action::Update {
                                 id,
                                 data,
@@ -379,7 +379,7 @@ where
                     }
                 }
                 Action::DeleteRef { .. } => {
-                    <Interface<S>>::apply_action(action, &action_ctx)?;
+                    apply_child_action_lenient::<S>(action, &action_ctx)?;
                 }
             };
         }
@@ -400,6 +400,71 @@ where
 
         Ok(())
     }
+}
+
+/// Apply one child action from a sync-merge batch, treating a per-action
+/// **verification rejection** as a skip rather than aborting the whole batch.
+///
+/// [`Root::sync`] runs inside the app's `__calimero_sync_next` export, whose
+/// host-side caller does `.expect("fatal: sync failed")` — so ANY `Err`
+/// returned from here becomes a fatal guest panic that aborts the ENTIRE delta.
+/// Every sibling action in the batch is lost and the node re-attempts the same
+/// delta forever. That is the #2716 split-brain: a single `Shared` action that
+/// arrived **unsigned** (`signature_data: None`) during a concurrent-rotation
+/// window made `apply_action` return `InvalidData`, which panic-looped every
+/// receiver — they never applied the peer's branch and never converged, while
+/// the branch's author (which had the signed original) sat at a divergent root.
+///
+/// A verification rejection means THIS action is unverifiable, unauthorized, or
+/// stale — it is not authoritative and must be dropped. Dropping it is the
+/// correct and secure outcome; the legitimately-signed copies and HashComparison
+/// reconcile the rest of the batch. Crucially it must NOT brick the merge. So
+/// we drop the rejected action (logged) and let the batch continue.
+///
+/// Structural / storage errors (deserialization, tree-state mismatch, store
+/// faults) are deliberately NOT skipped — those signal a malformed batch or a
+/// real storage fault, not a single bad action, and must still surface to the
+/// caller.
+fn apply_child_action_lenient<S: StorageAdaptor>(
+    action: Action,
+    ctx: &crate::interface::ApplyContext,
+) -> Result<(), StorageError> {
+    let id = action.id();
+    match <Interface<S>>::apply_action(action, ctx) {
+        Ok(()) => Ok(()),
+        Err(e) if is_skippable_apply_rejection(&e) => {
+            tracing::warn!(
+                target: "storage::root",
+                %id,
+                error = %e,
+                "sync-merge: dropping a rejected action (unverifiable / unauthorized \
+                 / stale — never authoritative) and continuing the batch; a hard \
+                 error here would abort the whole __calimero_sync_next merge and \
+                 brick convergence (#2716)"
+            );
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether a [`StorageError`] from `apply_action` is a per-action **verification
+/// rejection** that may be skipped without aborting the sync-merge batch (see
+/// [`apply_child_action_lenient`]).
+///
+/// These are policy decisions about a single action — the action is
+/// unverifiable, unauthorized, stale, or carries an invalid timestamp — so the
+/// action is dropped. Everything else (corruption, deserialization, tree
+/// mismatch, store faults) is a system/structural failure and still propagates.
+fn is_skippable_apply_rejection(e: &StorageError) -> bool {
+    matches!(
+        e,
+        StorageError::InvalidData(_)
+            | StorageError::InvalidSignature
+            | StorageError::NonceReplay(_)
+            | StorageError::ActionNotAllowed(_)
+            | StorageError::InvalidTimestamp(_, _)
+    )
 }
 
 impl<T, S> Deref for Root<T, S>

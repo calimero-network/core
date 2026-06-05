@@ -8,7 +8,7 @@ use crate::{
     MembershipRepository, MetaRepository, NamespaceRepository,
 };
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
 
@@ -33,14 +33,16 @@ pub(crate) fn apply(
     // (Open subgroup with no stored row), there's nothing to delete
     // here — they have to leave whichever ancestor anchors their
     // membership instead.
-    if MembershipRepository::new(store)
-        .role_of(group_id, member)?
-        .is_none()
-    {
-        bail!(MembershipError::MemberNotDirect(hex::encode(
+    //
+    // Captured here (not re-read after the mutation) so we can use the
+    // role to gate the role-scoped `TeeMemberRemoved` follow-up event
+    // emitted alongside `MemberRemoved` at the bottom of this function.
+    let leaver_role = match MembershipRepository::new(store).role_of(group_id, member)? {
+        Some(role) => role,
+        None => bail!(MembershipError::MemberNotDirect(hex::encode(
             group_id.to_bytes()
-        )));
-    }
+        ))),
+    };
 
     // Owner cannot self-leave. Must TransferOwnership first.
     if let Some(meta) = MetaRepository::new(store).load(group_id)? {
@@ -69,12 +71,15 @@ pub(crate) fn apply(
         // offending scope to the user with no half-applied cleanup.
         let descendants = NamespaceRepository::new(store).collect_descendants(group_id)?;
 
-        let mut direct_descendants: Vec<ContextGroupId> = Vec::new();
+        // Capture (descendant, role) per-direct-row so the role-scoped
+        // `TeeMemberRemoved` follow-up event below can be gated
+        // per-group. A leaver might be `Admin` at the namespace root
+        // and `ReadOnlyTee` in some subgroup (or vice versa); only the
+        // subgroups where the row was `ReadOnlyTee` should fire the
+        // TEE event.
+        let mut direct_descendants: Vec<(ContextGroupId, GroupMemberRole)> = Vec::new();
         for sub in &descendants {
-            if MembershipRepository::new(store)
-                .role_of(sub, member)?
-                .is_some()
-            {
+            if let Some(role) = MembershipRepository::new(store).role_of(sub, member)? {
                 if let Some(sub_meta) = MetaRepository::new(store).load(sub)? {
                     if sub_meta.owner_identity == *member {
                         bail!(MembershipError::OwnerOwnsSubgroup(hex::encode(
@@ -84,11 +89,11 @@ pub(crate) fn apply(
                 }
                 let sub_policy = MembershipPolicy::new(store, *sub);
                 sub_policy.ensure_not_last_admin_removal(member)?;
-                direct_descendants.push(*sub);
+                direct_descendants.push((*sub, role));
             }
         }
 
-        for sub in &direct_descendants {
+        for (sub, role) in &direct_descendants {
             cascade_remove_member_from_group_tree(store, sub, member)?;
             MembershipRepository::new(store).remove_member(sub, member)?;
             // Self-leave cascade: deny-list every descendant
@@ -100,6 +105,12 @@ pub(crate) fn apply(
                 group_id: sub.to_bytes(),
                 member: *member,
             });
+            if *role == GroupMemberRole::ReadOnlyTee {
+                crate::op_events::notify(crate::op_events::OpEvent::TeeMemberRemoved {
+                    group_id: sub.to_bytes(),
+                    member: *member,
+                });
+            }
         }
     }
 
@@ -149,5 +160,13 @@ pub(crate) fn apply(
         group_id: group_id.to_bytes(),
         member: *member,
     });
+    // Role-scoped follow-up for the root-group removal. See the
+    // matching block in `member_removed.rs` for rationale.
+    if leaver_role == GroupMemberRole::ReadOnlyTee {
+        crate::op_events::notify(crate::op_events::OpEvent::TeeMemberRemoved {
+            group_id: group_id.to_bytes(),
+            member: *member,
+        });
+    }
     Ok(())
 }

@@ -22,8 +22,9 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+use calimero_context_config::types::ContextGroupId;
 use calimero_node_primitives::delta_buffer::BufferedDelta;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use libp2p::PeerId;
 
@@ -82,6 +83,21 @@ pub(crate) trait SyncStateAccess: Send + Sync {
     /// returned set is a clone — callers iterate it without holding
     /// the underlying `DashMap` shard lock.
     fn peer_identities(&self, peer_id: &PeerId) -> Option<BTreeSet<PublicKey>>;
+
+    /// Member peers cached for `group`, each paired with the role its
+    /// hosted identity holds there — the durable, restart-surviving
+    /// cold-start signal that lets sync prefer real members before live
+    /// traffic has rebuilt the in-memory reverse view.
+    ///
+    /// Empty when nothing is cached for the group (the caller falls back
+    /// to topic-subscriber discovery). A peer may appear more than once
+    /// if it hosts several member identities; callers dedup by strongest
+    /// role. This is a routing hint — governance `trusted_anchors`
+    /// remains authoritative for who is actually an anchor.
+    fn cached_member_peers_for_group(
+        &self,
+        group: &ContextGroupId,
+    ) -> Vec<(PeerId, GroupMemberRole)>;
 
     /// Remaining cooldown for the reconcile-after-divergence path on
     /// `context_id`, plus the current `consecutive_failures` count.

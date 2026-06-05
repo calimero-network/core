@@ -26,6 +26,7 @@ use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, RwLock};
 
 use calimero_governance_store::metrics::Metrics;
+use calimero_wasm_abi::schema::MethodIntent;
 
 pub mod auto_follow;
 mod cache;
@@ -35,6 +36,7 @@ pub mod governance_dag;
 pub mod handlers;
 pub mod hlc_fence;
 mod lifecycle;
+pub mod self_purge;
 
 pub(crate) use cache::{BoundedCache, Evictable};
 
@@ -245,15 +247,14 @@ impl ContextCacheStats {
 /// This wraps the `Arc<RwLock<ContextId>>` so that the entire lifecycle of the
 /// lock — how it is acquired, the owned guard it hands out, and the
 /// reference-count rule that decides when its owning cache entry may be evicted
-/// — lives behind one type. Concentrating it here is the seam through which the
-/// idle/TTL eviction policy and the read/write-intent split (parallel reads)
-/// are introduced without disturbing every call site.
+/// — lives behind one type.
 ///
-/// The lock is an `RwLock`, but [`lock`](Self::lock) currently only ever takes
-/// the *write* (exclusive) guard, so it behaves exactly like the prior
-/// `Mutex` — every caller serializes. Shared read guards are introduced
-/// separately, gated on declared read-only method intent; until then there is
-/// no behavior change.
+/// Two acquisition modes:
+/// - [`lock`](Self::lock) — exclusive write guard; the default for any call
+///   whose read/write intent is unknown. Every call serializes on this path.
+/// - [`lock_read`](Self::lock_read) — shared read guard; only handed out for
+///   methods explicitly declared read-only in the module ABI (`MethodIntent::ReadOnly`).
+///   Multiple read-guard holders may run concurrently on the same context.
 #[derive(Clone, Debug)]
 struct ContextLock {
     lock: Arc<RwLock<ContextId>>,
@@ -267,27 +268,44 @@ impl ContextLock {
         }
     }
 
-    /// Acquire the lock for this context in *exclusive* (write) mode.
+    /// Acquire the lock in *exclusive* (write) mode.
     ///
-    /// This is the default acquisition for any call whose read/write intent is
-    /// not known to be read-only — i.e. every call today. It is a
-    /// performance-optimized strategy: it first attempts an optimistic,
-    /// non-blocking `try_write_owned()`, which is very fast when uncontended.
+    /// Default for any call whose read/write intent is not known to be read-only.
+    /// Uses `try_write_owned()` (non-blocking fast path) then `write_owned()`.
     ///
-    /// # Returns
-    ///
-    /// An `Either` containing one of two possibilities:
-    /// - `Either::Left(ContextGuard)`: the lock was acquired immediately.
-    /// - `Either::Right(impl Future)`: the lock was contended; the future
-    ///   resolves to a [`ContextGuard`] once it becomes available and must be
-    ///   awaited by the caller.
-    fn lock(&self) -> Either<ContextGuard, impl Future<Output = ContextGuard>> {
+    /// The `Right` branch returns a boxed future so both `lock()` and
+    /// `lock_read()` have the same `Either` type and can be mixed in a single
+    /// match arm without opaque-type inference conflicts.
+    fn lock(
+        &self,
+    ) -> Either<ContextGuard, std::pin::Pin<Box<dyn Future<Output = ContextGuard> + Send>>> {
         let Ok(guard) = self.lock.clone().try_write_owned() else {
             let lock = self.lock.clone();
-            return Either::Right(async move { ContextGuard::new(lock.write_owned().await) });
+            return Either::Right(Box::pin(async move {
+                ContextGuard::write(lock.write_owned().await)
+            }));
         };
 
-        Either::Left(ContextGuard::new(guard))
+        Either::Left(ContextGuard::write(guard))
+    }
+
+    /// Acquire the lock in *shared* (read) mode.
+    ///
+    /// Only used for methods declared read-only in the module ABI. Multiple
+    /// concurrent read-guard holders on the same context are safe as long as
+    /// the method cannot write (enforced by the `ReadOnlyContextStorage` wrapper
+    /// passed to the runtime in place of the normal mutable storage).
+    fn lock_read(
+        &self,
+    ) -> Either<ContextGuard, std::pin::Pin<Box<dyn Future<Output = ContextGuard> + Send>>> {
+        let Ok(guard) = self.lock.clone().try_read_owned() else {
+            let lock = self.lock.clone();
+            return Either::Right(Box::pin(async move {
+                ContextGuard::read(lock.read_owned().await)
+            }));
+        };
+
+        Either::Left(ContextGuard::read(guard))
     }
 
     /// Whether the owning cache entry may be evicted: true only while no
@@ -344,6 +362,11 @@ impl Evictable for Application {}
 /// A compiled module is an `Arc`-backed clone with no exclusive handle held by
 /// the cache, so it is always safe to evict (the default).
 impl Evictable for calimero_runtime::Module {}
+
+/// A read-only method set is a plain `Arc<HashSet>` with no live handle; always
+/// safe to evict (the default). The execute path re-derives it from the
+/// embedded ABI manifest on the next compile cycle.
+impl Evictable for Arc<HashSet<String>> {}
 
 /// A per-namespace governance DAG is lock-gated exactly like [`ContextMeta`]:
 /// an in-flight op holds the `Arc<Mutex<DagStore>>`, so the DAG is evictable
@@ -413,6 +436,19 @@ pub struct ContextManager {
     /// TODO above.
     modules: BoundedCache<(ApplicationId, Option<String>), calimero_runtime::Module>,
 
+    /// Per-application set of method names declared read-only via `#[app::view]`
+    /// in the module ABI. Used by the execute handler to select a shared read
+    /// lock instead of an exclusive write lock for qualifying calls.
+    ///
+    /// Keyed by `(ApplicationId, Option<String>)` — the same key as `modules` so
+    /// both caches stay in sync. An absent entry means the app's manifest was not
+    /// parsed yet (cold cache) or the app has no `#[app::view]` methods; in both
+    /// cases the execute path defaults to the write lock (fail-safe). Populated
+    /// alongside the module cache in `get_module`.
+    ///
+    /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
+    read_only_methods: BoundedCache<(ApplicationId, Option<String>), Arc<HashSet<String>>>,
+
     /// Cumulative hit/miss counters for the `contexts` hot cache, driving the
     /// periodic effectiveness log (see [`ContextCacheStats`] and
     /// [`Self::log_cache_stats`]). Independent of `metrics` so the log line
@@ -479,6 +515,7 @@ impl ContextManager {
             contexts: BoundedCache::new(MAX_CACHED_CONTEXTS, "contexts"),
             applications: BoundedCache::new(MAX_CACHED_APPLICATIONS, "applications"),
             modules: BoundedCache::new(MAX_CACHED_MODULES, "modules"),
+            read_only_methods: BoundedCache::new(MAX_CACHED_MODULES, "read_only_methods"),
             cache_stats: ContextCacheStats::default(),
 
             metrics: prometheus_registry.map(Metrics::new),
@@ -691,6 +728,17 @@ impl Actor for ContextManager {
         // op-apply events and emits JoinContext on behalf of members
         // with `auto_follow.contexts = true`.
         auto_follow::spawn(self.datastore.clone(), self.context_client.clone());
+        // Self-purge handler (see docs/adr/0002-fleet-tee-leave-protocol.md) — reacts
+        // to `OpEvent::TeeMemberRemoved` (paired follow-up emitted ONLY when the
+        // removed member's prior role was `ReadOnlyTee`) for our own identity and
+        // drops the local rows (signing keys, gov ops, namespace identity,
+        // membership-side metadata) that the apply layer leaves behind after TEE
+        // eviction. The listener intentionally does NOT react to plain
+        // `OpEvent::MemberRemoved` — non-TEE removals (admin kicks, voluntary
+        // leave, leave-and-rejoin via inheritance) keep soft-leave semantics so
+        // existing rejoin codepaths can re-establish state. Mirrors
+        // auto_follow's listener pattern. Idempotent across restarts.
+        self_purge::spawn(self.datastore.clone(), self.node_client.clone());
     }
 }
 
@@ -698,9 +746,18 @@ impl Actor for ContextManager {
 // are in lifecycle.rs
 
 impl ContextMeta {
-    /// Acquire this context's lock; see [`ContextLock::lock`].
-    fn lock(&self) -> Either<ContextGuard, impl Future<Output = ContextGuard>> {
+    /// Acquire this context's lock in exclusive (write) mode; see [`ContextLock::lock`].
+    fn lock(
+        &self,
+    ) -> Either<ContextGuard, std::pin::Pin<Box<dyn Future<Output = ContextGuard> + Send>>> {
         self.lock.lock()
+    }
+
+    /// Acquire this context's lock in shared (read) mode; see [`ContextLock::lock_read`].
+    fn lock_read(
+        &self,
+    ) -> Either<ContextGuard, std::pin::Pin<Box<dyn Future<Output = ContextGuard> + Send>>> {
+        self.lock.lock_read()
     }
 }
 

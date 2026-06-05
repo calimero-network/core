@@ -26,6 +26,8 @@ pub mod migration_status;
 pub mod network_event_channel;
 pub mod network_event_processor;
 mod node_metrics;
+mod peer_identity_cache;
+mod peer_identity_persist;
 pub mod readiness;
 mod run;
 mod specialized_node_invite_state;

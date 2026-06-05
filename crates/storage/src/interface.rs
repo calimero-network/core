@@ -1121,15 +1121,55 @@ impl<S: StorageAdaptor> Interface<S> {
                             return Err(StorageError::InvalidSignature);
                         }
 
+                        // P3 of #2233: rotation-log write hook.
+                        //
+                        // Fires right after signature verification and BEFORE
+                        // the stale-nonce skip below — so the log captures
+                        // every signature-verified Shared rotation as a causal
+                        // FACT, independent of whether the data write later
+                        // wins LWW.
+                        //
+                        // This ordering is load-bearing (#2716). A rotation
+                        // whose nonce is behind our stored nonce is NOT
+                        // necessarily a superseded replay: under concurrent
+                        // rotation it can be a sibling branch that rotated to a
+                        // DIFFERENT writer set. If we ran the stale-nonce skip
+                        // first (the old order), such a rotation returned `Ok`
+                        // before reaching this hook and its writer set never
+                        // entered the log — so this node's `writers_at` could
+                        // never grant the writer that branch added, rejected
+                        // that writer's later writes as `InvalidSignature`, and
+                        // split-brained (HashComparison skipped the affected
+                        // entities forever). Recording it here lets
+                        // `writers_at` resolve the correct set at that branch's
+                        // causal point on every node, so the cluster converges.
+                        //
+                        // Idempotent: `rotation_log::append` dedups on
+                        // `delta_id`, so a replayed delta produces no extra
+                        // entry. The `is_rotation` guard inside the hook means
+                        // plain value-writes (writers unchanged) still don't
+                        // log, so this is strictly additive for rotations.
+                        Self::maybe_append_rotation_log(
+                            *id,
+                            metadata,
+                            ctx,
+                            stored_writers.clone(),
+                        )?;
+
                         if !skip_nonce && new_nonce < last_nonce {
                             // Strictly stale: signature verified, but our
                             // local state is already AHEAD of this nonce.
-                            // Drop silently — an authentic but older write
-                            // whose newer twin already landed (HashComparison
-                            // re-delivery / DAG-catchup out-of-order). A hard
-                            // NonceReplay here would propagate through
-                            // `Root::sync().expect()` and abort the sync
-                            // batch, blocking convergence.
+                            // Drop the DATA write silently — an authentic but
+                            // older write whose newer twin already landed
+                            // (HashComparison re-delivery / DAG-catchup
+                            // out-of-order). A hard NonceReplay here would
+                            // propagate through `Root::sync().expect()` and
+                            // abort the sync batch, blocking convergence.
+                            //
+                            // The rotation's writer set was already recorded in
+                            // the log above (#2716), so dropping the data write
+                            // here never loses the writer-set fact — only the
+                            // (stale, no-op) value bytes.
                             //
                             // NOTE: the `==` (equal-nonce) case is
                             // deliberately NOT skipped here. Two distinct
@@ -1157,33 +1197,6 @@ impl<S: StorageAdaptor> Interface<S> {
                             );
                             return Ok(());
                         }
-
-                        // P3 of #2233: rotation-log write hook.
-                        //
-                        // Fires here — right after signature verification AND
-                        // after the stale-nonce silent-skip guard above — so
-                        // the log captures every fresh signature-verified
-                        // Shared rotation that will reach the apply branch.
-                        // Stale-but-authentic actions short-circuit before
-                        // this point (silent-skip Ok), so they do NOT append
-                        // a rotation entry — that's the right call: the log
-                        // tracks rotations that influence storage state, and
-                        // a stale rotation is a no-op (its newer counterpart
-                        // already landed and was logged on its own apply).
-                        //
-                        // Cross-node convergence (P5) still works because
-                        // peers see the same set of *causally-newer*
-                        // rotations, just possibly in different orders.
-                        //
-                        // Idempotent: `rotation_log::append` dedups on
-                        // `delta_id`, so a replayed delta produces no extra
-                        // entry.
-                        Self::maybe_append_rotation_log(
-                            *id,
-                            metadata,
-                            ctx,
-                            stored_writers.clone(),
-                        )?;
                     }
                     StorageType::SharedMember {
                         anchor,
@@ -1828,16 +1841,20 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// # Log may diverge from stored state
     ///
-    /// This hook fires right after signature verification but BEFORE the
-    /// `save_internal` apply branch, so it records every signature-verified
-    /// rotation regardless of whether `save_internal` later drops the data
-    /// write under v2's LWW-by-HLC. This is intentional — cross-node
-    /// convergence (P5) requires the rotation log to reflect *received
-    /// causal facts*, not the local node's storage-merge decisions. The
-    /// consequence is that `RotationLog::entries` may contain rotations
-    /// whose data write was dropped; downstream readers (`writers_at`,
-    /// future P6 compaction, audit tools) must treat the log as the
-    /// authoritative writer-set history independent of stored data.
+    /// This hook fires right after signature verification but BEFORE both the
+    /// stale-nonce skip AND the `save_internal` apply branch, so it records
+    /// every signature-verified rotation regardless of whether the data write
+    /// is later dropped — whether as strictly stale by nonce (#2716) or as a
+    /// v2 LWW-by-HLC loser. This is intentional — cross-node convergence (P5)
+    /// requires the rotation log to reflect *received causal facts*, not the
+    /// local node's storage-merge decisions. A rotation that loses the data
+    /// write can still be the sole carrier of a concurrent branch's writer set
+    /// that `writers_at` needs at that branch's causal point; dropping it
+    /// before this hook permanently split-brains the affected entities. The
+    /// consequence is that `RotationLog::entries` may contain rotations whose
+    /// data write was dropped; downstream readers (`writers_at`, future P6
+    /// compaction, audit tools) must treat the log as the authoritative
+    /// writer-set history independent of stored data.
     fn maybe_append_rotation_log(
         id: Id,
         metadata: &Metadata,

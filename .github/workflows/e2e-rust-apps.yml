@@ -16,6 +16,7 @@ on:
       - "apps/scaffolding-e2e/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
+      - "apps/components-demo/**"
       - ".github/workflows/e2e-rust-apps.yml"
 
   pull_request:
@@ -25,6 +26,7 @@ on:
       - "apps/scaffolding-e2e/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
+      - "apps/components-demo/**"
       - ".github/workflows/e2e-rust-apps.yml"
 
   workflow_dispatch:
@@ -112,6 +114,11 @@ jobs:
           cd apps/kv-store-with-shared-storage
           ./build.sh
 
+      - name: Build components-demo app
+        run: |
+          cd apps/components-demo
+          ./build.sh
+
       - name: Upload app artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -126,6 +133,9 @@ jobs:
             apps/kv-store-with-shared-storage/res/*.wasm
             apps/kv-store-with-shared-storage/res/abi.json
             apps/kv-store-with-shared-storage/res/state-schema.json
+            apps/components-demo/res/*.wasm
+            apps/components-demo/res/abi.json
+            apps/components-demo/res/state-schema.json
           retention-days: 1
 
   # ── Test phase: run each workflow in parallel ──
@@ -267,6 +277,9 @@ jobs:
           - workflow: shared-storage
             file: workflows/test_shared_storage.yml
             app: kv-store-with-shared-storage
+          - workflow: components-demo
+            file: workflows/components-demo.yml
+            app: components-demo
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e

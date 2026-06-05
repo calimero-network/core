@@ -64,6 +64,39 @@ pub struct Variant {
     pub payload: Option<TypeRef>,
 }
 
+/// Whether a method is guaranteed to only read state or may write it.
+///
+/// Used by the node to select a *shared* read lock (allowing parallel reads on
+/// one context) vs the default *exclusive* write lock. The fail-safe is
+/// [`Unspecified`](MethodIntent::Unspecified): unknown intent → write lock →
+/// exactly today's serialized behaviour; nothing breaks if a module predates
+/// this field.
+///
+/// Declare a method read-only with `#[app::view]` in the SDK. A `ReadOnly`
+/// method that nonetheless produces a non-empty state artifact is rejected
+/// post-execution as defence-in-depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MethodIntent {
+    /// App explicitly declared this method as read-only (`#[app::view]`).
+    ReadOnly,
+    /// App explicitly declared this method as mutating (default for unannotated
+    /// methods; reserved for future `#[app::mutate]` if the opt-out is needed).
+    Mutating,
+    /// No declaration present (every pre-#2684 module, and unannotated methods
+    /// in annotated modules). The node treats this as write intent — fail-safe.
+    #[default]
+    Unspecified,
+}
+
+impl MethodIntent {
+    /// Returns `true` for the default value so `serde` skips the field on old
+    /// manifests, keeping them round-trip identical.
+    fn is_unspecified(&self) -> bool {
+        matches!(self, Self::Unspecified)
+    }
+}
+
 /// Method definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Method {
@@ -75,6 +108,11 @@ pub struct Method {
     pub returns_nullable: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub errors: Vec<Error>,
+    /// Read/write intent declared by the app author. Absent on modules compiled
+    /// before this field existed; treated as [`MethodIntent::Unspecified`]
+    /// (write lock) by the node.
+    #[serde(skip_serializing_if = "MethodIntent::is_unspecified", default)]
+    pub intent: MethodIntent,
 }
 
 /// Parameter in a method
@@ -640,6 +678,7 @@ mod tests {
             returns: Some(TypeRef::i32()),
             returns_nullable: None,
             errors: Vec::new(),
+            intent: MethodIntent::Unspecified,
         });
 
         // Serialize and deserialize
@@ -667,11 +706,66 @@ mod tests {
             returns: Some(TypeRef::string()),
             returns_nullable: None,
             errors: Vec::new(),
+            intent: MethodIntent::Unspecified,
         });
 
         assert_eq!(manifest.schema_version, "wasm-abi/1");
         assert_eq!(manifest.methods.len(), 1);
         assert_eq!(manifest.methods[0].name, "test_method");
         assert!(manifest.state_root.is_none());
+    }
+
+    #[test]
+    fn method_intent_round_trips_and_old_manifests_deserialize_as_unspecified() {
+        // ReadOnly serialises as "read_only" and round-trips.
+        let m = Method {
+            name: "query".to_owned(),
+            params: vec![],
+            returns: None,
+            returns_nullable: None,
+            errors: vec![],
+            intent: MethodIntent::ReadOnly,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("read_only"), "expected 'read_only' in {json}");
+        let back: Method = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.intent, MethodIntent::ReadOnly);
+
+        // Mutating serialises as "mutating" and round-trips.
+        let m_mut = Method {
+            name: "mutate".to_owned(),
+            params: vec![],
+            returns: None,
+            returns_nullable: None,
+            errors: vec![],
+            intent: MethodIntent::Mutating,
+        };
+        let json_mut = serde_json::to_string(&m_mut).unwrap();
+        assert!(
+            json_mut.contains("mutating"),
+            "expected 'mutating' in {json_mut}"
+        );
+        let back_mut: Method = serde_json::from_str(&json_mut).unwrap();
+        assert_eq!(back_mut.intent, MethodIntent::Mutating);
+
+        // Unspecified is omitted from JSON (backward-compatible wire format).
+        let m2 = Method {
+            name: "unspecified".to_owned(),
+            params: vec![],
+            returns: None,
+            returns_nullable: None,
+            errors: vec![],
+            intent: MethodIntent::Unspecified,
+        };
+        let json2 = serde_json::to_string(&m2).unwrap();
+        assert!(
+            !json2.contains("intent"),
+            "Unspecified must be omitted: {json2}"
+        );
+
+        // Old JSON without the intent field deserialises as Unspecified.
+        let old_json = r#"{"name":"old","params":[]}"#;
+        let old: Method = serde_json::from_str(old_json).unwrap();
+        assert_eq!(old.intent, MethodIntent::Unspecified);
     }
 }
