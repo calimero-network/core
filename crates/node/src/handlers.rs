@@ -3,6 +3,7 @@
 //! **Purpose**: Handles incoming events from network layer and processes node-level requests.
 //! **Structure**: Each event type has its own focused file (SRP).
 
+use crate::migration_status::DEFAULT_HEARTBEAT_TTL;
 use crate::specialized_node_invite_state::{
     PendingSpecializedNodeInvite, SpecializedNodeInviteAction,
 };
@@ -66,6 +67,21 @@ impl Handler<NodeMessage> for NodeManager {
                 let snapshot = self.state.sync_status_snapshot(&context_id);
                 let _ = outcome.send(snapshot);
             }
+            NodeMessage::GetMigrationStatusReports {
+                namespace_id,
+                outcome,
+            } => {
+                // Synchronous snapshot of the in-memory migration-heartbeat TTL
+                // cache (Task 6c.8) for the admin `get_migration_status` route
+                // (Task 6c.10). Pure observability read — a dropped receiver is
+                // fine to ignore. Stale entries are filtered by the cache's
+                // per-call TTL; a member with no fresh entry is simply absent,
+                // which the rollup resolves to `unknown`.
+                let reports = self
+                    .migration_status_cache
+                    .migration_status_reports(namespace_id, DEFAULT_HEARTBEAT_TTL);
+                let _ = outcome.send(reports);
+            }
             NodeMessage::ForwardNamespaceOpApplied { namespace_id } => {
                 // Forward the publisher-side signal to the readiness FSM.
                 // Mirrors `addr.do_send(NamespaceOpApplied { namespace_id })`
@@ -88,6 +104,13 @@ impl Handler<NodeMessage> for NodeManager {
                          dropping (FSM will reconcile via next op or peer beacon)"
                     );
                 }
+                // PR-6c Task 6c.8: the same local-progress signal drives the
+                // migration-heartbeat emitter. A governance apply may have
+                // advanced the group's target schema or drained residue, so
+                // recompute and post the node's facts — this both edge-triggers
+                // an on-change heartbeat and seeds the namespace into the
+                // emitter so its periodic keep-alive tick goes live.
+                self.notify_migration_facts(namespace_id);
             }
         }
     }

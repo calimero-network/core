@@ -576,6 +576,79 @@ async fn verify_readiness_beacon_rejects_bad_signature() {
     assert!(!verify_readiness_beacon(&store, &beacon));
 }
 
+// ---------------------------------------------------------------------------
+// verify_migration_heartbeat (PR-6c Task 6c.8)
+// ---------------------------------------------------------------------------
+
+/// Build a properly-signed migration heartbeat for `namespace_id`, signed
+/// by `sk`. Mirrors `signed_beacon` — the signed body is the canonical
+/// `MIGRATION_HEARTBEAT_SIGN_DOMAIN || borsh(SignableMigrationHeartbeat)`
+/// payload from `wire.rs`.
+fn signed_heartbeat(
+    sk: &PrivateKey,
+    namespace_id: [u8; 32],
+    schema_version: u32,
+    residue_identity: u64,
+) -> SignedMigrationHeartbeat {
+    let mut hb = SignedMigrationHeartbeat {
+        namespace_id,
+        peer_pubkey: sk.public_key(),
+        schema_version,
+        residue_auto: 0,
+        residue_identity,
+        synced_up_to_hlc: 42,
+        ts_millis: 1_700_000_000_000,
+        signature: [0u8; 64],
+    };
+    hb.signature = sk
+        .sign(&hb.signable_bytes().expect("signable_bytes"))
+        .expect("sign")
+        .to_bytes();
+    hb
+}
+
+#[tokio::test]
+async fn verify_migration_heartbeat_accepts_signed_member_heartbeat() {
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ns_id = [42u8; 32];
+    plant_namespace_member(&store, ns_id, &sk.public_key());
+
+    let hb = signed_heartbeat(&sk, ns_id, 2, 0);
+    assert!(
+        verify_migration_heartbeat(&store, &hb),
+        "signed heartbeat from a member must verify"
+    );
+}
+
+#[tokio::test]
+async fn verify_migration_heartbeat_rejects_non_member_signer() {
+    // Properly-signed heartbeat, but the signer has no membership row in
+    // the namespace — must be dropped so unverified peers never populate
+    // another node's MigrationStatusCache (and thus never enter a rollup).
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ns_id = [42u8; 32];
+    // No plant_namespace_member call.
+    let hb = signed_heartbeat(&sk, ns_id, 2, 0);
+    assert!(!verify_migration_heartbeat(&store, &hb));
+}
+
+#[tokio::test]
+async fn verify_migration_heartbeat_rejects_bad_signature() {
+    // Short-circuit on signature failure before consulting membership: a
+    // tampered heartbeat (e.g. residue_identity zeroed to fake completion)
+    // must never be cached even from a known member.
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ns_id = [42u8; 32];
+    plant_namespace_member(&store, ns_id, &sk.public_key());
+
+    let mut hb = signed_heartbeat(&sk, ns_id, 2, 5);
+    hb.residue_identity = 0; // tamper after signing — sig no longer covers body
+    assert!(!verify_migration_heartbeat(&store, &hb));
+}
+
 // ---------------------------------------------------------------------
 // classify_publish_readiness
 // ---------------------------------------------------------------------

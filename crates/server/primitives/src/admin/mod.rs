@@ -1945,6 +1945,67 @@ pub struct GetCascadeStatusApiResponse {
     pub data: Vec<CascadeStatusApiEntry>,
 }
 
+/// The freshest reported facts for a pinned-cohort member, surfaced by
+/// `get_migration_status` (Task 6c.10). `null` for a member with no fresh
+/// heartbeat (its `state` is then `"unknown"`).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberMigrationReportApiData {
+    pub schema_version: u32,
+    pub residue_auto: u64,
+    pub residue_identity: u64,
+    pub synced_up_to_hlc: u64,
+    pub reported_at: u64,
+}
+
+/// One per-member row in the migration-status rollup: a pinned-cohort member,
+/// its reported facts (if any), and the derived migration state.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberMigrationStatusApiEntry {
+    /// The cohort member.
+    pub peer: PublicKey,
+    /// The member's freshest reported facts, or `null` when it has no fresh
+    /// heartbeat (in which case `state == "unknown"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<MemberMigrationReportApiData>,
+    /// Derived state discriminant: `"migrated"`, `"in_progress"`, or `"unknown"`.
+    pub state: String,
+}
+
+/// Rollup counters across the pinned cohort (observability only — never a gate).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationStatusRollupApiData {
+    pub migrated: usize,
+    pub in_progress: usize,
+    pub unknown: usize,
+    pub total: usize,
+    /// `true` iff every pinned-cohort member reported a converged schema with
+    /// zero residue. Any `unknown` (or in-progress) member keeps this `false`.
+    pub all_migrated: bool,
+}
+
+/// Migration-status answer returned by `GET .../groups/:namespace_id/migration-status`.
+///
+/// The operator-facing "have all peers migrated?" rollup (Task 6c.10): the
+/// pinned-cohort size, the per-member rows, and the `all_migrated` flag.
+/// Observability only — this endpoint never gates a write or apply.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetMigrationStatusApiResponse {
+    pub target_version: u32,
+    /// Size of the pinned cohort (the inherited-membership closure, minus any
+    /// member excluded by the expand-entry HLC pin).
+    pub expected_members: usize,
+    /// The governance HLC the cohort was pinned at, as an opaque display string;
+    /// `null` when there is no migration record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cohort_pinned_at_hlc: Option<String>,
+    pub rollup: MigrationStatusRollupApiData,
+    pub members: Vec<MemberMigrationStatusApiEntry>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupUpgradeStatusApiData {
@@ -2818,6 +2879,86 @@ mod tests {
         let resp: CreateContextResponseData = serde_json::from_value(json).unwrap();
         assert!(resp.group_id.is_none());
         assert!(!resp.group_created);
+    }
+
+    #[test]
+    fn migration_status_response_serializes_rollup_and_members() {
+        // The `get_migration_status` admin route (Task 6c.10) returns this
+        // shape. Pin the JSON contract: camelCase keys, the per-member `state`
+        // discriminant, the `allMigrated` rollup flag, and a `null`-report
+        // member surfacing as `unknown` with its `report` field omitted.
+        let migrated_peer = PublicKey::from([0x11; 32]);
+        let unknown_peer = PublicKey::from([0x22; 32]);
+
+        let resp = GetMigrationStatusApiResponse {
+            target_version: 2,
+            expected_members: 2,
+            cohort_pinned_at_hlc: Some("hlc-abc".into()),
+            rollup: MigrationStatusRollupApiData {
+                migrated: 1,
+                in_progress: 0,
+                unknown: 1,
+                total: 2,
+                all_migrated: false,
+            },
+            members: vec![
+                MemberMigrationStatusApiEntry {
+                    peer: migrated_peer,
+                    report: Some(MemberMigrationReportApiData {
+                        schema_version: 2,
+                        residue_auto: 0,
+                        residue_identity: 0,
+                        synced_up_to_hlc: 7,
+                        reported_at: 1_700_000_000,
+                    }),
+                    state: "migrated".into(),
+                },
+                MemberMigrationStatusApiEntry {
+                    peer: unknown_peer,
+                    report: None,
+                    state: "unknown".into(),
+                },
+            ],
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["targetVersion"], 2);
+        assert_eq!(json["expectedMembers"], 2);
+        assert_eq!(json["cohortPinnedAtHlc"], "hlc-abc");
+        assert_eq!(json["rollup"]["allMigrated"], false);
+        assert_eq!(json["rollup"]["migrated"], 1);
+        assert_eq!(json["rollup"]["unknown"], 1);
+
+        let members = json["members"].as_array().unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0]["state"], "migrated");
+        assert_eq!(members[0]["report"]["schemaVersion"], 2);
+        assert_eq!(members[0]["report"]["syncedUpToHlc"], 7);
+        // The unknown member has no fresh report — `report` is omitted.
+        assert_eq!(members[1]["state"], "unknown");
+        assert!(members[1].get("report").is_none());
+    }
+
+    #[test]
+    fn migration_status_response_omits_hlc_when_absent() {
+        // No migration record → `cohortPinnedAtHlc` is omitted.
+        let resp = GetMigrationStatusApiResponse {
+            target_version: 0,
+            expected_members: 0,
+            cohort_pinned_at_hlc: None,
+            rollup: MigrationStatusRollupApiData {
+                migrated: 0,
+                in_progress: 0,
+                unknown: 0,
+                total: 0,
+                all_migrated: false,
+            },
+            members: vec![],
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json.get("cohortPinnedAtHlc").is_none());
+        assert_eq!(json["rollup"]["allMigrated"], false);
     }
 
     fn ownership_req(nonce: &str) -> IssueOwnershipProofApiRequest {

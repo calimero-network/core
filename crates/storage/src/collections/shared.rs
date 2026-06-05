@@ -365,6 +365,28 @@ where
         Ok(self.load_value())
     }
 
+    /// Returns the value entry's stamped `schema_version`, or `None` if no value
+    /// has been written or it was never stamped (legacy). Reads the
+    /// Merkle-invisible `Metadata.schema_version`; used to skip an
+    /// already-migrated shared value.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn value_schema_version(&self) -> Result<Option<u32>, StoreError> {
+        let metadata =
+            <Index<S>>::get_metadata(self.value_id()).map_err(StoreError::StorageError)?;
+        Ok(metadata.and_then(|m| m.schema_version))
+    }
+
+    /// Returns whether the current executor is in the authoritative writer set.
+    /// Gates whether `migrate_my_entries()` may re-write the shared value (a
+    /// writer-signed update, not single-owner). Resolves via the same
+    /// rotation-log-aware path as the write gate.
+    pub fn writable_by_me(&self) -> bool {
+        let executor: PublicKey = env::executor_id().into();
+        self.current_writers().contains(&executor)
+    }
+
     /// The current writer set, resolved only from **verified** local sources.
     ///
     /// Resolution order:
@@ -793,6 +815,29 @@ mod tests {
 
         let s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         assert_eq!(s.get().unwrap(), &TestVal::default());
+    }
+
+    #[test]
+    #[serial]
+    fn value_schema_version_and_writability_reflect_stored_metadata() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
+        s.insert(TestVal(42)).expect("writer inserts");
+
+        // A writer's insert stamps the value at the binary's target schema version.
+        assert_eq!(
+            s.value_schema_version().unwrap(),
+            Some(calimero_sdk::app::schema_version()),
+        );
+
+        // Writability tracks the writer set, not single ownership.
+        assert!(s.writable_by_me()); // ALICE
+        env::set_executor_id(BOB);
+        assert!(s.writable_by_me()); // BOB
+        env::set_executor_id(CAROL);
+        assert!(!s.writable_by_me()); // CAROL is not a writer
     }
 
     #[test]

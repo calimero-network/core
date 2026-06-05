@@ -1743,6 +1743,29 @@ impl<S: StorageAdaptor> Interface<S> {
                     "Applied Add/Update action to storage"
                 );
 
+                // Owner-driven convert (PR-6c): persist the incoming
+                // `schema_version` to the stored index entry. A replicated
+                // convert lands here as an ordinary signed `Action::Update`
+                // whose metadata carries the new schema tag; but for an existing
+                // entry neither `save_internal` (→ `update_hash_for`, hashes +
+                // `updated_at` only) nor `add_child_to` (sets stored metadata
+                // only on first creation) rewrites it. Stamp it explicitly so a
+                // receiving replica observes the converted tag — exactly as the
+                // owner's local `save_raw` does on the originating node.
+                // Merkle-invisible, so it cannot diverge the root hash.
+                //
+                // Monotonic only: advance the stored tag, never regress it
+                // (`None` == version 0). A legacy/older delta that carries no (or
+                // a lower) schema tag must not downgrade an already-converted
+                // entry — the no-silent-downgrade rail.
+                let incoming_schema = metadata.schema_version.unwrap_or(0);
+                let stored_schema = <Index<S>>::get_metadata(id)?
+                    .and_then(|m| m.schema_version)
+                    .unwrap_or(0);
+                if incoming_schema > stored_schema {
+                    <Index<S>>::set_schema_version(id, metadata.schema_version)?;
+                }
+
                 // ALWAYS update parent with correct hash after save (handles merging)
                 // save_internal calls update_hash_for which updates child_index.own_hash
                 if let Some(parent) = parent {
@@ -3016,6 +3039,16 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         let mut metadata = metadata.clone();
+        // Whether THIS call is a local owner/writer write — i.e. one of the
+        // three stamp branches below fired. When it does, the owner-driven
+        // convert (PR-6c) re-stamps the entry's `schema_version` to the binary's
+        // current target so a stale identity-gated entry migrates as the owner's
+        // next ordinary signed delta. The stamp must also be persisted to the
+        // stored index entry, because a re-write of an existing entry flows
+        // through `update_hash_for`, which deliberately does NOT rewrite stored
+        // metadata — so we persist it explicitly via `Index::set_schema_version`
+        // after `save_internal` succeeds.
+        let mut local_owner_schema_stamp: Option<u32> = None;
         // For a local User write, ALWAYS overwrite the incoming
         // signature_data with a fresh placeholder tied to this call's
         // nonce. We can't trust the WASM-provided value: a re-write
@@ -3040,6 +3073,22 @@ impl<S: StorageAdaptor> Interface<S> {
                         signer: None, // owner is already known for User
                     }),
                 };
+                // Owner-driven convert (PR-6c): the owner's own write re-stamps
+                // the entry at the binary's current target schema version, so a
+                // stale identity-gated entry migrates as the owner's next
+                // ordinary signed delta. This is exactly the local-owner stamp
+                // site, so it advances on the same monotonic nonce. It MUST NOT
+                // fire under merge mode: merge mode bypasses the replay-nonce
+                // check (see the `skip_nonce` site above), so converting there
+                // would re-shape the identity-gated entry on the idempotent
+                // merge re-apply path instead of as a fresh, owner-signed,
+                // monotonic delta (O4). The signature placeholder above still
+                // stamps (that is about authenticity, not the convert).
+                if !crate::env::in_merge_mode() {
+                    let target = calimero_sdk::app::schema_version();
+                    metadata.schema_version = Some(target);
+                    local_owner_schema_stamp = Some(target);
+                }
             }
         }
 
@@ -3089,6 +3138,16 @@ impl<S: StorageAdaptor> Interface<S> {
                     signer: Some(signer), // O(1) verifier lookup
                 }),
             };
+            // Owner-driven convert (PR-6c): same as the User arm — a current
+            // writer's own write re-stamps the target schema version on the
+            // monotonic-nonce path, and is likewise suppressed under merge mode
+            // (which bypasses the replay-nonce check — see the `skip_nonce`
+            // site above), so the convert only lands as a fresh signed delta.
+            if !crate::env::in_merge_mode() {
+                let target = calimero_sdk::app::schema_version();
+                metadata.schema_version = Some(target);
+                local_owner_schema_stamp = Some(target);
+            }
         }
 
         // Member upsert: a member carries no writer set, so there is no
@@ -3116,11 +3175,59 @@ impl<S: StorageAdaptor> Interface<S> {
                     signer: Some(signer), // O(1) verifier lookup
                 }),
             };
+            // Owner-driven convert (PR-6c): same as the User/Shared arms — a
+            // member write by a resolved anchor writer re-stamps the target
+            // schema version on the monotonic-nonce path, and is likewise
+            // suppressed under merge mode (which bypasses the replay-nonce
+            // check — see the `skip_nonce` site above), so the convert only
+            // lands as a fresh signed delta.
+            if !crate::env::in_merge_mode() {
+                let target = calimero_sdk::app::schema_version();
+                metadata.schema_version = Some(target);
+                local_owner_schema_stamp = Some(target);
+            }
         }
 
         let Some((is_new, full_hash)) = Self::save_internal(id, &data, metadata.clone())? else {
             return Ok(None);
         };
+
+        // Owner-driven convert (PR-6c): persist the re-stamped `schema_version`
+        // to the stored index entry. `save_internal` → `update_hash_for` only
+        // touches the entity hashes + `updated_at` (it deliberately does NOT
+        // rewrite stored metadata), so an existing entry's schema tag would
+        // otherwise stay frozen at its add-time value. Only fires for a local
+        // owner/writer write (one of the stamp branches above), so a non-owner
+        // can never drive the convert. Merkle-invisible, so it cannot diverge
+        // the root hash.
+        if let Some(target) = local_owner_schema_stamp {
+            // Read the prior stored stamp before overwriting so the log shows
+            // the actual old -> new transition (the convert only "lands" when
+            // these differ — a no-op re-write of an already-current entry keeps
+            // the same value). NOTE: an owner's own write runs inside the wasm
+            // GUEST, where `tracing` does not reach the node log — so this debug
+            // is for guest-side diagnosis only. The node-log-observable signal is
+            // emitted host-side on the RECEIVER in `apply_action` when it adopts
+            // the replicated converted tag ("applied migrated ... schema_version").
+            let prior_schema = <Index<S>>::get_metadata(id)?.and_then(|m| m.schema_version);
+            <Index<S>>::set_schema_version(id, Some(target))?;
+            debug!(
+                %id,
+                old_schema_version = ?prior_schema,
+                new_schema_version = target,
+                "owner-driven convert: re-stamped identity-gated entry schema_version"
+            );
+            // Surface host-side too: this runs inside the wasm GUEST, where the
+            // `tracing` debug above has no subscriber and never reaches the node
+            // log. `env::log` routes through the guest→host log syscall (the node
+            // forwards it as `WASM_LOG`), so the convert is node-observable on the
+            // ORIGINATING node — for both organic owner writes and the one-tap
+            // `migrate_my_entries`. This is the signal the e2e scenarios assert.
+            crate::env::log(&format!(
+                "owner-driven convert: re-stamped identity-gated entry schema_version \
+                 id={id} old_schema_version={prior_schema:?} new_schema_version={target}"
+            ));
+        }
 
         let ancestors = <Index<S>>::get_ancestors_of(id)?;
 

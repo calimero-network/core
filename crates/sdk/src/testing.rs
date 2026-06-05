@@ -203,6 +203,7 @@ where
         host::reset();
         S::__test_reset();
         event::register::<S>();
+        crate::app::register_schema_version::<S>();
 
         let mut build = Some(build);
         S::__test_install(&mut || (build.take().expect("state builder called more than once"))());
@@ -380,6 +381,10 @@ where
         // Register V2's event emitter so an `app::emit!` in the migrate body
         // (e.g. a `Migrated` event) resolves the new state's emitter.
         event::register::<V2>();
+        // Advance the surfaced schema version to V2's target so an
+        // identity-gated write in (or after) the migrate body stamps the new
+        // version.
+        crate::app::register_schema_version::<V2>();
 
         let prior = host::executor_id();
         host::set_executor_id(executor);

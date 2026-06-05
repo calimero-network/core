@@ -27,7 +27,8 @@ use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use tokio::sync::oneshot;
 
 use crate::messages::{
-    NodeMessage, RegisterPendingSpecializedNodeInvite, RemovePendingSpecializedNodeInvite,
+    MigrationStatusReport, NodeMessage, RegisterPendingSpecializedNodeInvite,
+    RemovePendingSpecializedNodeInvite,
 };
 use crate::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use crate::TopicManager;
@@ -802,6 +803,30 @@ impl NodeClient {
             .map_err(|_| eyre::eyre!("node manager mailbox dropped"))?;
         rx.await
             .map_err(|_| eyre::eyre!("sync status response channel dropped"))
+    }
+
+    /// Snapshot the node-side migration-heartbeat TTL cache (Task 6c.8) for a
+    /// namespace into the per-member [`MigrationStatusReport`] DTO map.
+    ///
+    /// Round-trips through `NodeManager`, which owns the cache. The admin
+    /// `get_migration_status` route (Task 6c.10) calls this, maps the DTOs into
+    /// `calimero-context-client`'s `MemberMigrationReport`, and threads them into
+    /// the rollup. Observability only — a member absent from the returned map
+    /// resolves to `unknown` in the rollup, never a false green.
+    pub async fn migration_status_reports(
+        &self,
+        namespace_id: [u8; 32],
+    ) -> eyre::Result<std::collections::BTreeMap<PublicKey, MigrationStatusReport>> {
+        let (tx, rx) = oneshot::channel();
+        self.node_manager
+            .send(NodeMessage::GetMigrationStatusReports {
+                namespace_id,
+                outcome: tx,
+            })
+            .await
+            .map_err(|_| eyre::eyre!("node manager mailbox dropped"))?;
+        rx.await
+            .map_err(|_| eyre::eyre!("migration status reports response channel dropped"))
     }
 
     pub async fn sync(

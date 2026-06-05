@@ -21,7 +21,8 @@ use syn::{ItemFn, ReturnType};
 /// This function transforms a user-defined migration function into:
 /// - A WASM export (for `wasm32` target) that:
 ///   - Sets up the panic hook for better error messages
-///   - Registers the event emitter for the new state type (so `app::emit!` works)
+///   - Registers the event emitter and the new state's schema version for the
+///     new state type (so `app::emit!` and `app::schema_version()` work)
 ///   - Executes the user's migration logic
 ///   - Serializes the result with borsh
 ///   - Returns the bytes via `value_return`
@@ -56,6 +57,12 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let event_registration = match return_type {
         ReturnType::Type(_, ty) => quote! {
             ::calimero_sdk::event::register::<#ty>();
+            // PR-6c: surface the new state's SCHEMA_VERSION so the type-erased
+            // `app::schema_version()` (read at the identity-gated storage stamp
+            // site) reflects the migrated target on a real node. Without this
+            // the migrate entrypoint would leave it at the unversioned 0,
+            // mis-stamping every converted entry.
+            ::calimero_sdk::app::register_schema_version::<#ty>();
         },
         ReturnType::Default => quote! {},
     };
@@ -70,9 +77,11 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         pub extern "C" fn #fn_name() {
             ::calimero_sdk::env::setup_panic_hook();
 
-            // Register the event emitter for the new state type so app::emit! works
-            // during migration. The return type is the new state struct which implements
-            // AppState and defines the associated Event type.
+            // Register the event emitter and the new state's schema version for
+            // the new state type so app::emit! and app::schema_version() work
+            // during and after migration. The return type is the new state
+            // struct which implements AppState, defines the associated Event
+            // type, and declares SCHEMA_VERSION.
             #event_registration
 
             // Define the inner migration logic with the original signature
@@ -176,6 +185,13 @@ mod tests {
         assert!(
             expanded.contains("event :: register"),
             "expected event::register call in expansion: {}",
+            expanded
+        );
+        assert!(
+            expanded.contains("register_schema_version"),
+            "expected app::register_schema_version call in expansion (PR-6c: migrate must \
+             register the new state's SCHEMA_VERSION so app::schema_version() reflects the \
+             migrated target on a real node, not the unversioned 0): {}",
             expanded
         );
         assert!(

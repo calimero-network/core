@@ -91,6 +91,7 @@ fn unsigned_shared_add(
             },
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         },
     }
 }

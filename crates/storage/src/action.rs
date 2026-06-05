@@ -356,6 +356,7 @@ mod tests {
             storage_type: StorageType::Public,
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         }
     }
 
@@ -373,6 +374,7 @@ mod tests {
             },
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         }
     }
 
@@ -390,6 +392,7 @@ mod tests {
             },
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         }
     }
 
