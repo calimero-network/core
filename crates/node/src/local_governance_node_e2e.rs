@@ -779,38 +779,63 @@ async fn member_peers_for_context_resolves_cached_members_end_to_end() {
     let (sync_manager, store, node_state, _tmp) = build_standalone_sync_manager().await;
 
     let group_id = ContextGroupId::from([0x11; 32]);
+    let other_group = ContextGroupId::from([0xAA; 32]);
     let context_id = calimero_primitives::context::ContextId::from([0x22; 32]);
     calimero_context::group_store::register_context_in_group(&store, &group_id, &context_id)
         .expect("register context -> group");
 
+    // Real (random) member identities, matching the convention of the
+    // other tests in this file.
+    let admin_id = PrivateKey::random(&mut OsRng).public_key();
+    let member_id = PrivateKey::random(&mut OsRng).public_key();
+    let admin_second_id = PrivateKey::random(&mut OsRng).public_key();
+    let other_id = PrivateKey::random(&mut OsRng).public_key();
     let admin_peer = libp2p::PeerId::random();
     let member_peer = libp2p::PeerId::random();
+    let other_peer = libp2p::PeerId::random();
+
     // Seed the shared cache through the same gate the production receive
     // paths use (group + role at the cross-DAG cut).
-    node_state.observe_peer_identity(
+    let observe = |peer, identity, group, role| {
+        node_state.observe_peer_identity(
+            peer,
+            identity,
+            Some(ObservedMembership {
+                group_id: group,
+                role,
+            }),
+        );
+    };
+    observe(admin_peer, admin_id, group_id, GroupMemberRole::Admin);
+    observe(member_peer, member_id, group_id, GroupMemberRole::Member);
+    // Same peer observed again under a second identity at a weaker role —
+    // the dedup must keep the strongest role (Admin) for admin_peer,
+    // exercising dedup_peers_by_strongest_role through the full resolver.
+    observe(
         admin_peer,
-        PublicKey::from([0x33; 32]),
-        Some(ObservedMembership {
-            group_id,
-            role: GroupMemberRole::Admin,
-        }),
+        admin_second_id,
+        group_id,
+        GroupMemberRole::Member,
     );
-    node_state.observe_peer_identity(
-        member_peer,
-        PublicKey::from([0x44; 32]),
-        Some(ObservedMembership {
-            group_id,
-            role: GroupMemberRole::Member,
-        }),
-    );
+    // A member of a DIFFERENT group must not leak into this context's
+    // result (guards group-scoping of cached_member_peers_for_group).
+    observe(other_peer, other_id, other_group, GroupMemberRole::Admin);
 
     let resolved: std::collections::BTreeMap<_, _> = sync_manager
         .member_peers_for_context(&context_id)
         .into_iter()
         .collect();
-    assert_eq!(resolved.len(), 2, "both cached members resolved");
-    assert_eq!(resolved.get(&admin_peer), Some(&GroupMemberRole::Admin));
+    assert_eq!(resolved.len(), 2, "only this group's members resolve");
+    assert_eq!(
+        resolved.get(&admin_peer),
+        Some(&GroupMemberRole::Admin),
+        "dedup keeps the strongest role for a peer seen at two roles"
+    );
     assert_eq!(resolved.get(&member_peer), Some(&GroupMemberRole::Member));
+    assert!(
+        !resolved.contains_key(&other_peer),
+        "a member cached under a different group is excluded"
+    );
 
     // A context with no group mapping resolves to nothing (caller then
     // falls back to topic discovery).
