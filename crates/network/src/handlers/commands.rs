@@ -19,6 +19,7 @@ mod query_blob;
 mod request_blob;
 mod send_specialized_node_invitation_response;
 mod send_specialized_node_verification_request;
+mod set_peer_score;
 mod subscribe;
 mod subscribed_peers;
 mod unsubscribe;
@@ -38,6 +39,9 @@ impl Handler<NetworkMessage> for NetworkManager {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::Subscribe { request, outcome } => {
+                self.forward_handler(ctx, request, outcome);
+            }
+            NetworkMessage::SetPeerScore { request, outcome } => {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::Unsubscribe { request, outcome } => {
