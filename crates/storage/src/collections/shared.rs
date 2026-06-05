@@ -386,7 +386,7 @@ where
     /// rotation-log-aware path as the write gate.
     pub fn writable_by_me(&self) -> bool {
         let executor: PublicKey = env::executor_id().into();
-        self.current_writers().contains(&executor)
+        self.current_writers().contains_key(&executor)
     }
 
     /// The current writer set, resolved only from **verified** local sources.

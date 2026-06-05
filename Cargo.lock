@@ -8829,6 +8829,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "scenario-authored-migrate-ux-v1"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "scenario-authored-migrate-ux-v2"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
 name = "scenario-authored-vector-v1"
 version = "0.0.0"
 dependencies = [
