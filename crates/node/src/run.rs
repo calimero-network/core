@@ -232,6 +232,9 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // membership signal on a cold cache instead of waiting for live
     // traffic to refill it. Then snapshot it back periodically.
     crate::peer_identity_persist::hydrate(&node_state, &datastore);
+    // Apply gossipsub scores for the just-hydrated members immediately,
+    // rather than waiting for the first snapshot tick (~30s).
+    crate::peer_identity_persist::reconcile_peer_scores(&node_state, &network_client, true);
     let _peer_identity_tick = crate::peer_identity_persist::spawn_snapshot_tick(
         node_state.clone(),
         datastore.clone(),

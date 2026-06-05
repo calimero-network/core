@@ -487,6 +487,18 @@ mod tests {
     }
 
     #[test]
+    fn peer_score_tier_ranks_anchor_above_member() {
+        // The reconciler picks a peer's strongest tier via `Ord`/`max`, so
+        // pin the ordering (the derive relies on declaration order).
+        assert!(PeerScoreTier::Anchor > PeerScoreTier::Member);
+        assert_eq!(
+            PeerScoreTier::Member.max(PeerScoreTier::Anchor),
+            PeerScoreTier::Anchor
+        );
+        assert!(PeerScoreTier::Anchor.score() > PeerScoreTier::Member.score());
+    }
+
+    #[test]
     fn record_inserts_and_refreshes_last_seen() {
         let mut c = PeerIdentityCache::default();
         c.record(group(1), pk(1), peer(1), GroupMemberRole::Member, 100);
