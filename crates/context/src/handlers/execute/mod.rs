@@ -1385,24 +1385,6 @@ async fn internal_execute(
         }
     }
 
-    let mut causal_delta = None;
-    // Populated when we sign the locally-produced delta envelope so the
-    // outer `execute` task can carry the same signature bytes into the
-    // gossip broadcast. Stays `None` when no delta was produced (e.g.,
-    // empty artifact) or signing wasn't applicable.
-    let mut delta_signature_for_broadcast: Option<[u8; 64]> = None;
-    // Captured alongside the signature: the EXACT
-    // `governance_position` the signature was computed against. The
-    // outer broadcast site MUST reuse this value rather than
-    // recomputing from a fresh store snapshot — between the persist
-    // and broadcast points the local governance state can advance
-    // (a member is added/removed, a namespace op lands), and
-    // recomputing would produce a different position that no longer
-    // matches the signed payload, so receivers would reject the
-    // delta on signature mismatch. This single source of truth
-    // collapses that race window.
-    let mut governance_position_for_broadcast: Option<GovernancePosition> = None;
-
     if executor_is_read_only && outcome.root_hash.is_some() {
         info!(
             context_id = %context.id,
@@ -1466,274 +1448,21 @@ async fn internal_execute(
     // Always update root_hash if present (even if storage is empty)
     // This is critical for state_ops like __calimero_sync_next where actions
     // are applied inside WASM but storage appears empty
-    if let Some(root_hash) = outcome.root_hash {
-        debug!(
-            context_id = %context.id,
-            old_root = ?context.root_hash,
-            new_root = ?Hash::from(root_hash),
-            is_state_op,
-            storage_empty = storage.is_empty(),
-            "Updating context root_hash after execution"
-        );
-        context.root_hash = root_hash.into();
-
-        // Commit storage and persist metadata
-        let store = storage.commit()?;
-        // Commit private storage (node-local, NOT synchronized)
-        // Private storage changes are not included in sync deltas
-        let _private_store = private_storage.commit()?;
-
-        // Create causal delta for non-state ops with non-empty artifacts
-        if !is_state_op && !outcome.artifact.is_empty() {
-            // Extract actions from artifact for DAG persistence
-            let mut actions = match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
-                Ok(StorageDelta::Actions(actions)) => actions,
-                Ok(_) => {
-                    warn!("Unexpected StorageDelta variant, using empty actions");
-                    vec![]
-                }
-                Err(e) => {
-                    warn!(
-                        ?e,
-                        "Failed to deserialize artifact for DAG, using empty actions"
-                    );
-                    vec![]
-                }
-            };
-
-            // The artifact was `StorageDelta::Actions`.
-            if actions.len() != 0 {
-                info!(
-                    context_id = %context.id,
-                    actions_count = actions.len(),
-                    "Received several actions. Verify if there any user actions..."
-                );
-                sign_authorized_actions(&mut actions, identity_private_key)
-                    .wrap_err("Failed to sign user actions")?;
-
-                // Persist the signed `signature_data` back to local
-                // storage for each upsert action. `save_raw` runs
-                // inside the WASM host call and has no access to the
-                // identity private key, so it stamps the metadata
-                // with a placeholder signature (`[0; 64]`) and the
-                // locally stored entity retains it. Without this
-                // step, HashComparison sync would ship the
-                // placeholder to peers and signature verification on
-                // receivers would fail — exactly the cascade that
-                // broke the e2e on this branch when the wire format
-                // started carrying authorization verbatim.
-                //
-                // We construct a temporary `RuntimeEnv` over the
-                // calimero-store handle so `Interface::<MainStorage>`
-                // can read/write the index entries directly. Only the
-                // `signature_data` portion of an existing entity's
-                // `storage_type` is updated;
-                // `update_signature_in_place` rejects any structural
-                // change (variant flip, writer-set or owner change),
-                // so the merkle hash and the entity's
-                // access-control triple stay invariant.
-                persist_signed_signatures(&store, &context, identity_private_key, &actions)
-                    .wrap_err("Failed to persist signed signature_data after execute")?;
-
-                // Re-serialize the *signed* actions into a new artifact
-                let new_artifact = borsh::to_vec(&StorageDelta::Actions(actions.clone()))?;
-                outcome.artifact = new_artifact;
-            }
-
-            // Refresh the DAG heads from the authoritative store before
-            // choosing this write's parents. `context` (hence `dag_heads`) was
-            // snapshotted in `get_or_fetch_context` BEFORE this handler took
-            // the per-context lock, so an inbound delta that committed new
-            // heads while we waited for the lock would be missed here.
-            // Authoring on the stale head forks the DAG: the new delta's
-            // parents exclude an already-applied ancestor — e.g. a writer-set
-            // rotation the executor has locally applied — and every peer then
-            // rejects it (`writers_at(parents)` resolves the pre-rotation set),
-            // a permanent split-brain. The inbound apply now holds this same
-            // lock across its `dag_heads` commit (see
-            // `DeltaStore::add_delta_internal`), so once we hold the guard the
-            // persisted heads are current.
-            if let Ok(Some(meta)) = store.handle().get(&key::ContextMeta::new(context.id)) {
-                if context.dag_heads != meta.dag_heads {
-                    context.dag_heads = meta.dag_heads;
-                }
-            }
-
-            // Use current DAG heads as parents, verifying they exist in RocksDB
-            let parents = if context.dag_heads.is_empty() {
-                // Genesis case: parent is the zero hash
-                vec![[0u8; 32]]
-            } else {
-                // Filter out parents that aren't persisted yet (cascaded deltas)
-                let mut verified_parents = Vec::new();
-                for head in &context.dag_heads {
-                    if *head == [0u8; 32] {
-                        verified_parents.push(*head);
-                        continue;
-                    }
-
-                    // Check if this parent is actually in RocksDB
-                    let db_key = key::ContextDagDelta::new(context.id, *head);
-                    if store.handle().get(&db_key).is_ok_and(|v| v.is_some()) {
-                        verified_parents.push(*head);
-                    } else {
-                        warn!(
-                            context_id = %context.id,
-                            parent_id = ?head,
-                            "DAG head not in RocksDB - skipping as parent (likely cascaded delta not yet persisted)"
-                        );
-                    }
-                }
-
-                // If NO parents verified, use genesis
-                if verified_parents.is_empty() {
-                    warn!(
-                        context_id = %context.id,
-                        "No DAG heads in RocksDB - using genesis as parent"
-                    );
-                    vec![[0u8; 32]]
-                } else {
-                    verified_parents
-                }
-            };
-
-            let hlc = calimero_storage::env::hlc_timestamp();
-            let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
-
-            let delta = CausalDelta {
-                id: delta_id,
-                parents,
-                actions,
-                hlc,
-                expected_root_hash: root_hash,
-            };
-
-            // Update context's DAG heads to this new delta
-            context.dag_heads = vec![delta.id];
-
-            causal_delta = Some(delta);
-        } else if !is_state_op {
-            // No delta created (empty artifact), but state changed
-            // Use root_hash as dag_head fallback to enable sync
-            // This happens when init() creates state but doesn't generate actions
-            if context.dag_heads.is_empty() {
-                warn!(
-                    context_id = %context.id,
-                    root_hash = ?root_hash,
-                    artifact_empty = outcome.artifact.is_empty(),
-                    "State changed but no delta created - using root_hash as dag_head fallback"
-                );
-                context.dag_heads = vec![root_hash];
-            }
-        }
-
-        // Persist context metadata when root_hash changes
-        let mut handle = store.handle();
-
-        debug!(
-            context_id = %context.id,
-            root_hash = ?context.root_hash,
-            dag_heads_count = context.dag_heads.len(),
-            is_state_op,
-            "Persisting context metadata to database"
-        );
-
-        handle.put(
-            &key::ContextMeta::new(context.id),
-            &types::ContextMeta::new(
-                key::ApplicationMeta::new(context.application_id),
-                *context.root_hash,
-                context.dag_heads.clone(),
-                context.service_name.as_deref().map(Box::from),
-            ),
-        )?;
-
-        // Also persist the delta itself for serving to peers who request it
-        if let Some(ref delta) = causal_delta {
-            let serialized_actions = borsh::to_vec(&delta.actions)?;
-
-            // Compute the governance position for the cross-DAG check
-            // that DAG-catchup responders advertise on the wire. Mirrors
-            // the position computed for the broadcast envelope above so
-            // peers that pull this delta via `request_dag_heads_and_sync`
-            // can run the same `membership_status_at` check the gossip
-            // path runs.
-            let governance_position = compute_governance_position_for_context(&store, &context.id);
-            let governance_position_blob = governance_position
-                .as_ref()
-                .and_then(|gp| borsh::to_vec(gp).ok());
-
-            // Sign the canonical envelope payload with the author's
-            // identity key. Signature binds `(context_id, delta_id,
-            // author_id, governance_position)` together so a current
-            // group-key holder can't relabel a foreign delta as their
-            // own (or vice versa) on the wire — receivers reject any
-            // mismatch via `verify_delta_signature`. The same signature
-            // is persisted on the row and passed back to the broadcast
-            // site so the gossip and DAG-catchup paths advertise the
-            // same bytes.
-            let signature_payload =
-                calimero_node_primitives::sync::delta_auth::delta_signature_payload(
-                    context.id,
-                    delta.id,
-                    executor,
-                    governance_position.as_ref(),
-                )?;
-            let delta_signature = Some(identity_private_key.sign(&signature_payload)?.to_bytes());
-            delta_signature_for_broadcast = delta_signature;
-            // Pin the exact position the signature was bound to so
-            // the broadcast site can advertise it verbatim instead of
-            // recomputing (see `governance_position_for_broadcast`'s
-            // declaration for why recomputation is unsafe).
-            governance_position_for_broadcast = governance_position.clone();
-
-            handle.put(
-                &key::ContextDagDelta::new(context.id, delta.id),
-                &types::ContextDagDelta {
-                    delta_id: delta.id,
-                    parents: delta.parents.clone(),
-                    actions: serialized_actions,
-                    hlc: delta.hlc,
-                    applied: true,
-                    expected_root_hash: delta.expected_root_hash,
-                    events: None, // No events stored for locally created deltas
-                    author_id: Some(executor),
-                    governance_position_blob,
-                    delta_signature,
-                },
-            )?;
-
-            debug!(
-                context_id = %context.id,
-                delta_id = ?delta.id,
-                "Persisted delta to database for future requests"
-            );
-
-            // Keep the in-memory DeltaStore in sync with the write we
-            // just made. Without this the sync path would have to
-            // rescan the DB every ~2s to pick up locally-created
-            // deltas; instead the DAG is updated at write time and
-            // `load_persisted_deltas` only runs on startup.
-            node_client.notify_local_applied_delta(
-                calimero_node_primitives::client::LocalAppliedDelta {
-                    context_id: context.id,
-                    delta_id: delta.id,
-                    parents: delta.parents.clone(),
-                    hlc: delta.hlc,
-                    expected_root_hash: delta.expected_root_hash,
-                    actions: delta.actions.clone(),
-                },
-            );
-        }
-
-        debug!(
-            context_id = %context.id,
-            root_hash = ?context.root_hash,
-            dag_heads_count = context.dag_heads.len(),
-            is_state_op,
-            "Context metadata persisted successfully"
-        );
-    }
+    let (causal_delta, delta_signature_for_broadcast, governance_position_for_broadcast) =
+        match outcome.root_hash {
+            Some(root_hash) => commit_and_build_delta(
+                &mut outcome,
+                context,
+                storage,
+                private_storage,
+                node_client,
+                executor,
+                identity_private_key,
+                is_state_op,
+                root_hash,
+            )?,
+            None => (None, None, None),
+        };
 
     // Emit state mutation to WebSocket clients (frontends) if there are events or state changes
     // Note: This is separate from node-to-node DAG broadcast (lines 408-419)
@@ -1769,6 +1498,313 @@ async fn internal_execute(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn commit_and_build_delta(
+    outcome: &mut Outcome,
+    context: &mut Context,
+    storage: ContextStorage,
+    private_storage: ContextPrivateStorage,
+    node_client: &NodeClient,
+    executor: PublicKey,
+    identity_private_key: &PrivateKey,
+    is_state_op: bool,
+    root_hash: [u8; 32],
+) -> eyre::Result<(
+    Option<CausalDelta>,
+    Option<[u8; 64]>,
+    Option<GovernancePosition>,
+)> {
+    let mut causal_delta = None;
+    // Populated when we sign the locally-produced delta envelope so the
+    // outer `execute` task can carry the same signature bytes into the
+    // gossip broadcast. Stays `None` when no delta was produced (e.g.,
+    // empty artifact) or signing wasn't applicable.
+    let mut delta_signature_for_broadcast: Option<[u8; 64]> = None;
+    // Captured alongside the signature: the EXACT
+    // `governance_position` the signature was computed against. The
+    // outer broadcast site MUST reuse this value rather than
+    // recomputing from a fresh store snapshot — between the persist
+    // and broadcast points the local governance state can advance
+    // (a member is added/removed, a namespace op lands), and
+    // recomputing would produce a different position that no longer
+    // matches the signed payload, so receivers would reject the
+    // delta on signature mismatch. This single source of truth
+    // collapses that race window.
+    let mut governance_position_for_broadcast: Option<GovernancePosition> = None;
+
+    debug!(
+        context_id = %context.id,
+        old_root = ?context.root_hash,
+        new_root = ?Hash::from(root_hash),
+        is_state_op,
+        storage_empty = storage.is_empty(),
+        "Updating context root_hash after execution"
+    );
+    context.root_hash = root_hash.into();
+
+    // Commit storage and persist metadata
+    let store = storage.commit()?;
+    // Commit private storage (node-local, NOT synchronized)
+    // Private storage changes are not included in sync deltas
+    let _private_store = private_storage.commit()?;
+
+    // Create causal delta for non-state ops with non-empty artifacts
+    if !is_state_op && !outcome.artifact.is_empty() {
+        // Extract actions from artifact for DAG persistence
+        let mut actions = match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
+            Ok(StorageDelta::Actions(actions)) => actions,
+            Ok(_) => {
+                warn!("Unexpected StorageDelta variant, using empty actions");
+                vec![]
+            }
+            Err(e) => {
+                warn!(
+                    ?e,
+                    "Failed to deserialize artifact for DAG, using empty actions"
+                );
+                vec![]
+            }
+        };
+
+        // The artifact was `StorageDelta::Actions`.
+        if actions.len() != 0 {
+            info!(
+                context_id = %context.id,
+                actions_count = actions.len(),
+                "Received several actions. Verify if there any user actions..."
+            );
+            sign_authorized_actions(&mut actions, identity_private_key)
+                .wrap_err("Failed to sign user actions")?;
+
+            // Persist the signed `signature_data` back to local
+            // storage for each upsert action. `save_raw` runs
+            // inside the WASM host call and has no access to the
+            // identity private key, so it stamps the metadata
+            // with a placeholder signature (`[0; 64]`) and the
+            // locally stored entity retains it. Without this
+            // step, HashComparison sync would ship the
+            // placeholder to peers and signature verification on
+            // receivers would fail — exactly the cascade that
+            // broke the e2e on this branch when the wire format
+            // started carrying authorization verbatim.
+            //
+            // We construct a temporary `RuntimeEnv` over the
+            // calimero-store handle so `Interface::<MainStorage>`
+            // can read/write the index entries directly. Only the
+            // `signature_data` portion of an existing entity's
+            // `storage_type` is updated;
+            // `update_signature_in_place` rejects any structural
+            // change (variant flip, writer-set or owner change),
+            // so the merkle hash and the entity's
+            // access-control triple stay invariant.
+            persist_signed_signatures(&store, &context, identity_private_key, &actions)
+                .wrap_err("Failed to persist signed signature_data after execute")?;
+
+            // Re-serialize the *signed* actions into a new artifact
+            let new_artifact = borsh::to_vec(&StorageDelta::Actions(actions.clone()))?;
+            outcome.artifact = new_artifact;
+        }
+
+        // Refresh the DAG heads from the authoritative store before
+        // choosing this write's parents. `context` (hence `dag_heads`) was
+        // snapshotted in `get_or_fetch_context` BEFORE this handler took
+        // the per-context lock, so an inbound delta that committed new
+        // heads while we waited for the lock would be missed here.
+        // Authoring on the stale head forks the DAG: the new delta's
+        // parents exclude an already-applied ancestor — e.g. a writer-set
+        // rotation the executor has locally applied — and every peer then
+        // rejects it (`writers_at(parents)` resolves the pre-rotation set),
+        // a permanent split-brain. The inbound apply now holds this same
+        // lock across its `dag_heads` commit (see
+        // `DeltaStore::add_delta_internal`), so once we hold the guard the
+        // persisted heads are current.
+        if let Ok(Some(meta)) = store.handle().get(&key::ContextMeta::new(context.id)) {
+            if context.dag_heads != meta.dag_heads {
+                context.dag_heads = meta.dag_heads;
+            }
+        }
+
+        // Use current DAG heads as parents, verifying they exist in RocksDB
+        let parents = if context.dag_heads.is_empty() {
+            // Genesis case: parent is the zero hash
+            vec![[0u8; 32]]
+        } else {
+            // Filter out parents that aren't persisted yet (cascaded deltas)
+            let mut verified_parents = Vec::new();
+            for head in &context.dag_heads {
+                if *head == [0u8; 32] {
+                    verified_parents.push(*head);
+                    continue;
+                }
+
+                // Check if this parent is actually in RocksDB
+                let db_key = key::ContextDagDelta::new(context.id, *head);
+                if store.handle().get(&db_key).is_ok_and(|v| v.is_some()) {
+                    verified_parents.push(*head);
+                } else {
+                    warn!(
+                        context_id = %context.id,
+                        parent_id = ?head,
+                        "DAG head not in RocksDB - skipping as parent (likely cascaded delta not yet persisted)"
+                    );
+                }
+            }
+
+            // If NO parents verified, use genesis
+            if verified_parents.is_empty() {
+                warn!(
+                    context_id = %context.id,
+                    "No DAG heads in RocksDB - using genesis as parent"
+                );
+                vec![[0u8; 32]]
+            } else {
+                verified_parents
+            }
+        };
+
+        let hlc = calimero_storage::env::hlc_timestamp();
+        let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+
+        let delta = CausalDelta {
+            id: delta_id,
+            parents,
+            actions,
+            hlc,
+            expected_root_hash: root_hash,
+        };
+
+        // Update context's DAG heads to this new delta
+        context.dag_heads = vec![delta.id];
+
+        causal_delta = Some(delta);
+    } else if !is_state_op {
+        // No delta created (empty artifact), but state changed
+        // Use root_hash as dag_head fallback to enable sync
+        // This happens when init() creates state but doesn't generate actions
+        if context.dag_heads.is_empty() {
+            warn!(
+                context_id = %context.id,
+                root_hash = ?root_hash,
+                artifact_empty = outcome.artifact.is_empty(),
+                "State changed but no delta created - using root_hash as dag_head fallback"
+            );
+            context.dag_heads = vec![root_hash];
+        }
+    }
+
+    // Persist context metadata when root_hash changes
+    let mut handle = store.handle();
+
+    debug!(
+        context_id = %context.id,
+        root_hash = ?context.root_hash,
+        dag_heads_count = context.dag_heads.len(),
+        is_state_op,
+        "Persisting context metadata to database"
+    );
+
+    handle.put(
+        &key::ContextMeta::new(context.id),
+        &types::ContextMeta::new(
+            key::ApplicationMeta::new(context.application_id),
+            *context.root_hash,
+            context.dag_heads.clone(),
+            context.service_name.as_deref().map(Box::from),
+        ),
+    )?;
+
+    // Also persist the delta itself for serving to peers who request it
+    if let Some(ref delta) = causal_delta {
+        let serialized_actions = borsh::to_vec(&delta.actions)?;
+
+        // Compute the governance position for the cross-DAG check
+        // that DAG-catchup responders advertise on the wire. Mirrors
+        // the position computed for the broadcast envelope above so
+        // peers that pull this delta via `request_dag_heads_and_sync`
+        // can run the same `membership_status_at` check the gossip
+        // path runs.
+        let governance_position = compute_governance_position_for_context(&store, &context.id);
+        let governance_position_blob = governance_position
+            .as_ref()
+            .and_then(|gp| borsh::to_vec(gp).ok());
+
+        // Sign the canonical envelope payload with the author's
+        // identity key. Signature binds `(context_id, delta_id,
+        // author_id, governance_position)` together so a current
+        // group-key holder can't relabel a foreign delta as their
+        // own (or vice versa) on the wire — receivers reject any
+        // mismatch via `verify_delta_signature`. The same signature
+        // is persisted on the row and passed back to the broadcast
+        // site so the gossip and DAG-catchup paths advertise the
+        // same bytes.
+        let signature_payload =
+            calimero_node_primitives::sync::delta_auth::delta_signature_payload(
+                context.id,
+                delta.id,
+                executor,
+                governance_position.as_ref(),
+            )?;
+        let delta_signature = Some(identity_private_key.sign(&signature_payload)?.to_bytes());
+        delta_signature_for_broadcast = delta_signature;
+        // Pin the exact position the signature was bound to so
+        // the broadcast site can advertise it verbatim instead of
+        // recomputing (see `governance_position_for_broadcast`'s
+        // declaration for why recomputation is unsafe).
+        governance_position_for_broadcast = governance_position.clone();
+
+        handle.put(
+            &key::ContextDagDelta::new(context.id, delta.id),
+            &types::ContextDagDelta {
+                delta_id: delta.id,
+                parents: delta.parents.clone(),
+                actions: serialized_actions,
+                hlc: delta.hlc,
+                applied: true,
+                expected_root_hash: delta.expected_root_hash,
+                events: None, // No events stored for locally created deltas
+                author_id: Some(executor),
+                governance_position_blob,
+                delta_signature,
+            },
+        )?;
+
+        debug!(
+            context_id = %context.id,
+            delta_id = ?delta.id,
+            "Persisted delta to database for future requests"
+        );
+
+        // Keep the in-memory DeltaStore in sync with the write we
+        // just made. Without this the sync path would have to
+        // rescan the DB every ~2s to pick up locally-created
+        // deltas; instead the DAG is updated at write time and
+        // `load_persisted_deltas` only runs on startup.
+        node_client.notify_local_applied_delta(
+            calimero_node_primitives::client::LocalAppliedDelta {
+                context_id: context.id,
+                delta_id: delta.id,
+                parents: delta.parents.clone(),
+                hlc: delta.hlc,
+                expected_root_hash: delta.expected_root_hash,
+                actions: delta.actions.clone(),
+            },
+        );
+    }
+
+    debug!(
+        context_id = %context.id,
+        root_hash = ?context.root_hash,
+        dag_heads_count = context.dag_heads.len(),
+        is_state_op,
+        "Context metadata persisted successfully"
+    );
+
+    Ok((
+        causal_delta,
+        delta_signature_for_broadcast,
+        governance_position_for_broadcast,
+    ))
+}
 pub async fn execute(
     context: &ContextGuard,
     module: calimero_runtime::Module,
