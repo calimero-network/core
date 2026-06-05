@@ -2459,13 +2459,17 @@ mod tests {
             })
         };
 
-        // Read the anchor's stored own_hash (Phase 2 folds the resolved ACL in).
-        let anchor_own_hash = |env: &calimero_storage::env::RuntimeEnv| -> [u8; 32] {
+        // Read the anchor's stored FULL hash (P3: the rotation log lives in a
+        // hashed child entity, so a divergent writer set surfaces in the
+        // anchor's `full_hash` — which rolls the child's hash in — not in
+        // `own_hash`, which is now just `Sha256(data)`). `get_hashes_for`
+        // returns `(full_hash, own_hash)`, so take `.0`.
+        let anchor_full_hash = |env: &calimero_storage::env::RuntimeEnv| -> [u8; 32] {
             with_runtime_env(env.clone(), || {
                 Index::<MainStorage>::get_hashes_for(anchor_id)
                     .unwrap()
                     .unwrap()
-                    .1
+                    .0
             })
         };
 
@@ -2476,15 +2480,16 @@ mod tests {
             "precondition: HC node lacks Carol; got {hc_before:?}"
         );
 
-        // Phase 2 (core#2716): the ACL is folded into the anchor's own_hash, so
-        // the divergent writer sets MUST surface as divergent anchor hashes
-        // BEFORE reconcile — otherwise a matching root would hide the ACL
-        // divergence (the hash-neutral split-brain this fold retires).
-        let full_own_before = anchor_own_hash(&full_env);
-        let hc_own_before = anchor_own_hash(&hc_env);
+        // P3 (core#2716): the rotation-log child is a real tree entity, so the
+        // divergent writer sets MUST surface as divergent anchor `full_hash`
+        // BEFORE reconcile — otherwise a matching root would hide the divergence
+        // (the hash-neutral split-brain the child retires). The full node holds
+        // {genesis, rotation} in its child; the HC node only {genesis}.
+        let full_hash_before = anchor_full_hash(&full_env);
+        let hc_hash_before = anchor_full_hash(&hc_env);
         assert_ne!(
-            full_own_before, hc_own_before,
-            "Phase 2: divergent writer sets must produce divergent anchor own_hash"
+            full_hash_before, hc_hash_before,
+            "P3: divergent writer sets must produce divergent anchor full_hash"
         );
 
         // Collect the full node's Shared rotation logs (the wire payload) — the
@@ -2512,15 +2517,16 @@ mod tests {
             "HC node now recognises Carol as a writer; got {hc_after:?}"
         );
 
-        // Phase 2 (core#2716): `union_received_rotation_logs` re-hashes the
-        // anchor (`rehash_shared_anchor`), so the folded own_hash must now match
-        // the full node's — the context root reconverges and there is no
-        // stable-but-different-root split-brain (the dual bug the fold could
-        // otherwise introduce on the union path).
-        let hc_own_after = anchor_own_hash(&hc_env);
+        // P3 (core#2716): `union_received_rotation_logs` unions the side store
+        // and (via `rehash_shared_anchor`) mirrors the new entries into the
+        // hashed child, whose changed hash rolls into the anchor's `full_hash`.
+        // So after the union the HC node's anchor `full_hash` matches the full
+        // node's — the context root reconverges, no stable-but-different-root
+        // split-brain.
+        let hc_hash_after = anchor_full_hash(&hc_env);
         assert_eq!(
-            hc_own_after, full_own_before,
-            "after the union the HC node's anchor own_hash must match the full node's"
+            hc_hash_after, full_hash_before,
+            "after the union the HC node's anchor full_hash must match the full node's"
         );
     }
 
