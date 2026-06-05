@@ -122,23 +122,23 @@ async fn run(store: Store, node_client: NodeClient) {
         let event = match rx.recv().await {
             Ok(e) => e,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                // Missed events: when this happens, a future eviction event
-                // (or a process restart that re-runs `run`) will pick up the
-                // skipped state — but for the immediate event that was
-                // skipped, the evicted membership row is already gone from
-                // the local store (apply committed before notify) while the
-                // signing-key + gov-op rows linger. The next eviction event
-                // that DOES land for this identity will sweep them
-                // incidentally because the purge helpers are idempotent and
-                // namespace-scoped. We accept this as the documented
-                // "soft-leave residue" failure mode rather than adding a
-                // startup reconcile loop; see ADR 0002 § "Failure modes we
-                // accept".
+                // Missed events: the evicted membership row is already gone
+                // from the local store (apply committed before notify) while
+                // the signing-key + gov-op rows linger. There is no incidental
+                // recovery — an already-evicted identity receives no further
+                // removal events (a re-admitted TEE node derives a fresh
+                // attestation pubkey), and a process restart re-subscribes
+                // without replaying past events. So a dropped event leaves
+                // residue on disk until the reconcile sweep tracked in #2721
+                // is added. Bounded, not a forward-secrecy hole: FS on future
+                // writes comes from key rotation, not this purge (see module
+                // docstring §"Forward-secrecy invariant"); the residue is stale
+                // already-orphaned key material on this node's own disk.
                 warn!(
                     skipped,
                     "self-purge subscriber lagged; some events were dropped — \
-                     residual local state may persist until the next eviction \
-                     or process restart"
+                     residual local state will persist with no automatic recovery \
+                     until the reconcile sweep (#2721) is added"
                 );
                 continue;
             }
@@ -553,21 +553,34 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
 
     // Only drop namespace-level state if every per-group purge succeeded.
     // Otherwise we'd delete `NamespaceIdentity` while leaving stranded
-    // `GroupSigningKey` material — and future `MemberRemoved` events for
-    // the same identity would hit `decide_purge_action`, fail to find the
-    // identity (because we just deleted it), return `PurgeAction::None`,
-    // and never sweep the residue. Keeping the identity around on partial
-    // failure preserves the next-event retry path, at the cost of leaving
-    // the namespace gov-op log and the identity row in place. The retry
-    // is idempotent — succeeding next time then clears everything.
-    // mdma#106 review (cursor).
+    // `GroupSigningKey` material — keep the identity row (and gov-op log)
+    // so a future reconcile can resolve it and finish the sweep.
+    //
+    // IMPORTANT — there is currently NO automatic retry of a partial
+    // failure. An earlier version of this comment claimed "the next
+    // MemberRemoved event retries"; that is false on two counts: the
+    // listener dispatches only on `TeeMemberRemoved` (not `MemberRemoved`),
+    // and an already-evicted identity receives no further removal events
+    // anyway (a re-admitted TEE node derives a fresh attestation pubkey, so
+    // the old identity never gets a matching event). So on partial failure
+    // the `NamespaceIdentity` + signing-key residue persists until an
+    // explicit reconcile sweep is added — tracked in #2721.
+    //
+    // This is bounded and NOT a forward-secrecy hole: FS on the namespace's
+    // future writes is provided by the key-rotation pipeline (which re-keys
+    // excluding the removed member), independent of this purge — see the
+    // module docstring §"Forward-secrecy invariant". The residue is stale,
+    // already-orphaned key material on this node's own disk, and only
+    // arises on a store-level error during a per-group delete. mdma#106
+    // review (cursor); #2721.
     let mut all_succeeded = !any_group_failed;
     if any_group_failed {
         warn!(
             namespace = %ns_hex,
             purged_groups,
-            "self-purge: per-group cascade had failures — leaving NamespaceIdentity in \
-             place so the next MemberRemoved event can resolve our identity and retry"
+            "self-purge: per-group cascade had failures — NamespaceIdentity + signing-key \
+             residue left on disk with no automatic retry (FS still held by key rotation); \
+             cleanup needs the reconcile sweep tracked in #2721"
         );
     } else if let Err(e) = calimero_governance_store::delete_namespace_local_state(store, &ns_id) {
         warn!(
@@ -588,12 +601,13 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
 /// then unsubscribes from the namespace gossipsub topic.
 ///
 /// The unsubscribe is **gated on `all_succeeded`** — on partial failure
-/// the cascade deliberately keeps `NamespaceIdentity` around so that a
-/// future `MemberRemoved` event can resolve our identity and retry. But
-/// that future event must reach us, and namespace governance events
-/// arrive via the namespace gossipsub topic; unsubscribing here would
-/// silently break the retry path. mdma#106 v4 review (cursor "Unsubscribe
-/// after failed purge").
+/// the cascade keeps `NamespaceIdentity` (and we keep the gossipsub
+/// subscription) so a future reconcile sweep can resolve our identity and
+/// finish the purge. Note there is no event-driven retry today (see the
+/// `cascade_namespace_state` comment and #2721); retaining the
+/// subscription is for that planned reconcile, not a working retry path.
+/// Whether to instead unsubscribe immediately on partial failure is part
+/// of #2721. mdma#106 v4 review (cursor "Unsubscribe after failed purge").
 async fn purge_namespace_for_self(store: &Store, node_client: &NodeClient, ns_id: ContextGroupId) {
     let ns_hex = hex::encode(ns_id.to_bytes());
     let result = cascade_namespace_state(store, ns_id);
@@ -618,7 +632,7 @@ async fn purge_namespace_for_self(store: &Store, node_client: &NodeClient, ns_id
             namespace = %ns_hex,
             purged_groups = result.purged_groups,
             "self-purge: namespace cascade had failures — keeping gossipsub subscription \
-             so the next MemberRemoved event can drive a retry"
+             for the planned reconcile sweep (#2721); no automatic retry today"
         );
     }
 }
