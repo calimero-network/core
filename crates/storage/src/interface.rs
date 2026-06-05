@@ -38,7 +38,7 @@ mod tests;
 
 use core::fmt::Debug;
 use core::marker::PhantomData;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use borsh::{from_slice, to_vec};
 use calimero_primitives::identity::PublicKey;
@@ -48,7 +48,7 @@ use tracing::{debug, info, warn};
 
 use crate::address::Id;
 use crate::constants;
-use crate::entities::{ChildInfo, Data, Metadata, SignatureData, StorageType};
+use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
@@ -88,7 +88,7 @@ pub struct ApplyContext {
     /// `Some`, the verifier validates the signature against this set and
     /// skips the v2 stored-writers fallback. Resolved by the node sync
     /// layer per #2266.
-    pub effective_writers: Option<BTreeSet<PublicKey>>,
+    pub effective_writers: Option<BTreeMap<PublicKey, OpMask>>,
 
     /// Hash of the `CausalDelta` containing the action being applied. Used
     /// by the rotation-log write hook to record the originating delta on
@@ -245,7 +245,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// anchors created post-P4. It remains for local execution (correct there)
     /// and for legacy anchors whose log predates P4 (a vanishing set after a
     /// state reset).
-    fn resolve_anchor_writers(anchor: Id) -> BTreeSet<PublicKey> {
+    fn resolve_anchor_writers(anchor: Id) -> BTreeMap<PublicKey, OpMask> {
         if let Ok(Some(log)) = crate::rotation_log::load::<S>(anchor) {
             if let Some(writers) = crate::rotation_log::resolve_local(&log) {
                 return writers;
@@ -256,7 +256,38 @@ impl<S: StorageAdaptor> Interface<S> {
                 return writers;
             }
         }
-        BTreeSet::new()
+        BTreeMap::new()
+    }
+
+    /// The [`OpMask`] an action requires of its signer to be authorized.
+    /// `Add`/`Update` are a single `WRITE` capability for now (INSERT vs UPDATE
+    /// is not split — see the OpMask design); `DeleteRef` requires `DELETE`.
+    fn required_op_mask(action: &crate::action::Action) -> OpMask {
+        use crate::action::Action;
+        match action {
+            Action::Add { .. } | Action::Update { .. } => OpMask::WRITE,
+            Action::DeleteRef { .. } => OpMask::DELETE,
+            Action::Compare { .. } => OpMask::NONE,
+        }
+    }
+
+    /// Enforce that the verified `signer` holds `required` in the resolved
+    /// capability map. Runs **after** signature verification, so the signer is
+    /// known to be a current writer; this is the operation-granularity gate. An
+    /// absent signer (shouldn't happen post-verify) fails closed.
+    fn enforce_op_mask(
+        signer: &PublicKey,
+        required: OpMask,
+        writers: &BTreeMap<PublicKey, OpMask>,
+    ) -> Result<(), StorageError> {
+        let granted = writers.get(signer).copied().unwrap_or(OpMask::NONE);
+        if granted.contains(required) {
+            Ok(())
+        } else {
+            Err(StorageError::ActionNotAllowed(
+                "Signer is a writer but lacks the required operation capability".to_owned(),
+            ))
+        }
     }
 
     /// Verify the writer's signature on a snapshot-supplied entity
@@ -363,10 +394,10 @@ impl<S: StorageAdaptor> Interface<S> {
                 // Fast path: signer hint + verify once. Slow path:
                 // linear scan over writers. Mirrors `apply_action`.
                 let verified = match sig_data.signer {
-                    Some(hint) if writers.contains(&hint) => {
+                    Some(hint) if writers.contains_key(&hint) => {
                         crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
                     }
-                    _ => writers.iter().any(|w| {
+                    _ => writers.keys().any(|w| {
                         crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
                     }),
                 };
@@ -393,10 +424,10 @@ impl<S: StorageAdaptor> Interface<S> {
                 // fail closed rather than accept an unverifiable member.
                 let writers = Self::resolve_anchor_writers(*anchor);
                 let verified = match sig_data.signer {
-                    Some(hint) if writers.contains(&hint) => {
+                    Some(hint) if writers.contains_key(&hint) => {
                         crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
                     }
-                    _ => writers.iter().any(|w| {
+                    _ => writers.keys().any(|w| {
                         crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
                     }),
                 };
@@ -438,7 +469,7 @@ impl<S: StorageAdaptor> Interface<S> {
         id: crate::address::Id,
         data: &[u8],
         metadata: &crate::entities::Metadata,
-        writers: &BTreeSet<PublicKey>,
+        writers: &BTreeMap<PublicKey, OpMask>,
     ) -> Result<(), StorageError> {
         use crate::action::Action;
         use crate::entities::StorageType;
@@ -462,11 +493,11 @@ impl<S: StorageAdaptor> Interface<S> {
         };
         let payload = action.payload_for_signing();
         let verified = match sig_data.signer {
-            Some(hint) if writers.contains(&hint) => {
+            Some(hint) if writers.contains_key(&hint) => {
                 crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
             }
             _ => writers
-                .iter()
+                .keys()
                 .any(|w| crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)),
         };
         if verified {
@@ -1101,15 +1132,16 @@ impl<S: StorageAdaptor> Interface<S> {
                         // `authoritative_writers` is now the
                         // DAG-causal answer when available.
                         let payload = action.payload_for_signing();
-                        let verified = match sig_data.signer {
-                            Some(hint) if authoritative_writers.contains(&hint) => {
+                        let signer = match sig_data.signer {
+                            Some(hint) if authoritative_writers.contains_key(&hint) => {
                                 crate::env::ed25519_verify(
                                     &sig_data.signature,
                                     hint.digest(),
                                     &payload,
                                 )
+                                .then_some(hint)
                             }
-                            _ => authoritative_writers.iter().any(|w| {
+                            _ => authoritative_writers.keys().copied().find(|w| {
                                 crate::env::ed25519_verify(
                                     &sig_data.signature,
                                     w.digest(),
@@ -1117,9 +1149,16 @@ impl<S: StorageAdaptor> Interface<S> {
                                 )
                             }),
                         };
-                        if !verified {
+                        let Some(signer) = signer else {
                             return Err(StorageError::InvalidSignature);
-                        }
+                        };
+                        // Operation-granularity gate: the signer is a current
+                        // writer, but must also hold the capability for THIS op.
+                        Self::enforce_op_mask(
+                            &signer,
+                            Self::required_op_mask(&action),
+                            &authoritative_writers,
+                        )?;
 
                         // P3 of #2233: rotation-log write hook.
                         //
@@ -1245,15 +1284,16 @@ impl<S: StorageAdaptor> Interface<S> {
                         // Verify signature first (same hint-fast-path / scan as
                         // Shared), against the anchor-resolved set.
                         let payload = action.payload_for_signing();
-                        let verified = match sig_data.signer {
-                            Some(hint) if authoritative_writers.contains(&hint) => {
+                        let signer = match sig_data.signer {
+                            Some(hint) if authoritative_writers.contains_key(&hint) => {
                                 crate::env::ed25519_verify(
                                     &sig_data.signature,
                                     hint.digest(),
                                     &payload,
                                 )
+                                .then_some(hint)
                             }
-                            _ => authoritative_writers.iter().any(|w| {
+                            _ => authoritative_writers.keys().copied().find(|w| {
                                 crate::env::ed25519_verify(
                                     &sig_data.signature,
                                     w.digest(),
@@ -1261,9 +1301,15 @@ impl<S: StorageAdaptor> Interface<S> {
                                 )
                             }),
                         };
-                        if !verified {
+                        let Some(signer) = signer else {
                             return Err(StorageError::InvalidSignature);
-                        }
+                        };
+                        // Operation-granularity gate (member resolves the anchor's masks).
+                        Self::enforce_op_mask(
+                            &signer,
+                            Self::required_op_mask(&action),
+                            &authoritative_writers,
+                        )?;
 
                         if !skip_nonce && new_nonce < last_nonce {
                             tracing::warn!(
@@ -1437,7 +1483,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // Slow path (no hint): linear scan (matches Add/Update arm).
                                 let payload = action.payload_for_signing();
                                 let signer = match sig_data.signer {
-                                    Some(hint) if existing_writers.contains(&hint) => {
+                                    Some(hint) if existing_writers.contains_key(&hint) => {
                                         if crate::env::ed25519_verify(
                                             &sig_data.signature,
                                             hint.digest(),
@@ -1448,7 +1494,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                             None
                                         }
                                     }
-                                    _ => existing_writers.iter().copied().find(|w| {
+                                    _ => existing_writers.keys().copied().find(|w| {
                                         crate::env::ed25519_verify(
                                             &sig_data.signature,
                                             w.digest(),
@@ -1456,9 +1502,12 @@ impl<S: StorageAdaptor> Interface<S> {
                                         )
                                     }),
                                 };
-                                if signer.is_none() {
-                                    return Err(StorageError::InvalidSignature);
-                                }
+                                let signer = match signer {
+                                    Some(s) => s,
+                                    None => return Err(StorageError::InvalidSignature),
+                                };
+                                // Operation-granularity gate: deletes need DELETE.
+                                Self::enforce_op_mask(&signer, OpMask::DELETE, &existing_writers)?;
 
                                 // Replay protection (per-entity monotonic nonce).
                                 //
@@ -1476,7 +1525,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                 let last_nonce = *existing_metadata.updated_at;
                                 if new_nonce <= last_nonce {
                                     let placeholder = existing_writers
-                                        .iter()
+                                        .keys()
                                         .copied()
                                         .next()
                                         .unwrap_or_else(|| [0u8; 32].into());
@@ -1530,7 +1579,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
                                 let payload = action.payload_for_signing();
                                 let signer = match sig_data.signer {
-                                    Some(hint) if existing_writers.contains(&hint) => {
+                                    Some(hint) if existing_writers.contains_key(&hint) => {
                                         if crate::env::ed25519_verify(
                                             &sig_data.signature,
                                             hint.digest(),
@@ -1541,7 +1590,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                             None
                                         }
                                     }
-                                    _ => existing_writers.iter().copied().find(|w| {
+                                    _ => existing_writers.keys().copied().find(|w| {
                                         crate::env::ed25519_verify(
                                             &sig_data.signature,
                                             w.digest(),
@@ -1549,16 +1598,19 @@ impl<S: StorageAdaptor> Interface<S> {
                                         )
                                     }),
                                 };
-                                if signer.is_none() {
-                                    return Err(StorageError::InvalidSignature);
-                                }
+                                let signer = match signer {
+                                    Some(s) => s,
+                                    None => return Err(StorageError::InvalidSignature),
+                                };
+                                // Operation-granularity gate: deletes need DELETE.
+                                Self::enforce_op_mask(&signer, OpMask::DELETE, &existing_writers)?;
 
                                 // Replay protection (strict `<=` Err, as Shared).
                                 let new_nonce = sig_data.nonce;
                                 let last_nonce = *existing_metadata.updated_at;
                                 if new_nonce <= last_nonce {
                                     let placeholder = existing_writers
-                                        .iter()
+                                        .keys()
                                         .copied()
                                         .next()
                                         .unwrap_or_else(|| [0u8; 32].into());
@@ -1859,7 +1911,7 @@ impl<S: StorageAdaptor> Interface<S> {
         id: Id,
         metadata: &Metadata,
         ctx: &ApplyContext,
-        pre_apply_writers: Option<BTreeSet<PublicKey>>,
+        pre_apply_writers: Option<BTreeMap<PublicKey, OpMask>>,
     ) -> Result<(), StorageError> {
         // Only Shared entities have a rotation log.
         let StorageType::Shared {
@@ -2334,7 +2386,7 @@ impl<S: StorageAdaptor> Interface<S> {
         {
             let executor: calimero_primitives::identity::PublicKey =
                 crate::env::executor_id().into();
-            if stored.contains(&executor) {
+            if stored.contains_key(&executor) {
                 Some((stored.clone(), executor))
             } else {
                 None
@@ -2361,7 +2413,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 let executor: calimero_primitives::identity::PublicKey =
                     crate::env::executor_id().into();
                 let writers = Self::resolve_anchor_writers(*anchor);
-                if writers.contains(&executor) {
+                if writers.contains_key(&executor) {
                     Some((*anchor, executor))
                 } else {
                     None
@@ -3115,11 +3167,11 @@ impl<S: StorageAdaptor> Interface<S> {
             let stored_has_executor = <Index<S>>::get_metadata(id)?
                 .as_ref()
                 .map(|m| match &m.storage_type {
-                    StorageType::Shared { writers, .. } => writers.contains(&executor),
+                    StorageType::Shared { writers, .. } => writers.contains_key(&executor),
                     _ => false,
                 })
                 .unwrap_or(false);
-            let claimed_has_executor = claimed_writers.contains(&executor);
+            let claimed_has_executor = claimed_writers.contains_key(&executor);
             if stored_has_executor || claimed_has_executor {
                 Some((claimed_writers.clone(), executor))
             } else {
@@ -3157,7 +3209,7 @@ impl<S: StorageAdaptor> Interface<S> {
             if let StorageType::SharedMember { anchor, .. } = &metadata.storage_type {
                 let executor: calimero_primitives::identity::PublicKey =
                     crate::env::executor_id().into();
-                if Self::resolve_anchor_writers(*anchor).contains(&executor) {
+                if Self::resolve_anchor_writers(*anchor).contains_key(&executor) {
                     Some((*anchor, executor))
                 } else {
                     None

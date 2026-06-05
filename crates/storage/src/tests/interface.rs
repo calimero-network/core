@@ -1464,7 +1464,7 @@ mod shared_storage_rotation_authentication {
             vec![],
         );
         let ctx = ApplyContext {
-            effective_writers: Some(writers.clone()),
+            effective_writers: Some(crate::entities::full_mask(writers.clone())),
             delta_id: None,
             delta_hlc: None,
         };
@@ -1480,7 +1480,8 @@ mod shared_storage_rotation_authentication {
         match stored.storage_type {
             StorageType::Shared { writers: w, .. } => {
                 assert_eq!(
-                    w, writers,
+                    w,
+                    crate::entities::full_mask(writers.clone()),
                     "writer set must be unchanged after forged rotation"
                 );
             }
@@ -1537,7 +1538,9 @@ mod shared_storage_rotation_authentication {
 
         let stored = <Index<MainStorage>>::get_metadata(id).unwrap().unwrap();
         match stored.storage_type {
-            StorageType::Shared { writers: w, .. } => assert_eq!(w, writers),
+            StorageType::Shared { writers: w, .. } => {
+                assert_eq!(w, crate::entities::full_mask(writers.clone()))
+            }
             other => panic!("expected Shared storage_type, got {other:?}"),
         }
     }
@@ -1590,7 +1593,7 @@ mod shared_storage_rotation_authentication {
             ID::from(core::num::NonZeroU128::new(1).unwrap()),
         ));
         let ctx = ApplyContext {
-            effective_writers: Some(writers),
+            effective_writers: Some(crate::entities::full_mask(writers.clone())),
             delta_id: Some([0xD1; 32]),
             delta_hlc: Some(delta_hlc),
         };
@@ -1604,7 +1607,7 @@ mod shared_storage_rotation_authentication {
             .expect("rotation log must exist after an accepted rotation");
         assert_eq!(
             log.entries.last().expect("a rotation entry").new_writers,
-            new_writers,
+            crate::entities::full_mask(new_writers.clone()),
             "accepted rotation must record the new writer set in the rotation log"
         );
     }
@@ -1649,12 +1652,12 @@ mod shared_storage_rotation_authentication {
         MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
 
         let pre_ctx = || ApplyContext {
-            effective_writers: Some(pre.clone()),
+            effective_writers: Some(crate::entities::full_mask(pre.clone())),
             delta_id: None,
             delta_hlc: None,
         };
         let post_ctx = || ApplyContext {
-            effective_writers: Some(post.clone()),
+            effective_writers: Some(crate::entities::full_mask(post.clone())),
             delta_id: None,
             delta_hlc: None,
         };
@@ -1767,6 +1770,83 @@ mod shared_storage_rotation_authentication {
         let ok_delete = build_signed_member_delete(member, anchor, &alice_sk, n0 + 3_000_000);
         MainInterface::apply_action(ok_delete, &ApplyContext::empty())
             .expect("a writer's member delete must be accepted");
+    }
+
+    /// OpMask gate: a writer holding `WRITE` but not `DELETE` may update a
+    /// member entry, but a (validly-signed) delete from that same writer is
+    /// rejected at merge — "write but not delete", enforced at apply time.
+    #[test]
+    fn member_write_capability_allows_update_but_not_delete() {
+        use crate::entities::OpMask;
+
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = pubkey_of(&alice_sk);
+        let anchor = Id::new([0xA0; 32]);
+        let member = Id::new([0x3E; 32]);
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let n0 = env::time_now();
+
+        // Bootstrap anchor {alice} + a member written by alice.
+        let bootstrap = build_signed_shared_action(
+            true,
+            anchor,
+            b"anchor".to_vec(),
+            writers.clone(),
+            n0,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+        let member_add = build_signed_member_action(
+            true,
+            member,
+            anchor,
+            b"v".to_vec(),
+            n0 + 1_000_000,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(member_add, &ApplyContext::empty()).unwrap();
+
+        // Alice's resolved capability is WRITE-only (no DELETE).
+        let write_only = |id, hlc| crate::interface::ApplyContext {
+            effective_writers: Some([(alice, OpMask::WRITE)].into_iter().collect()),
+            delta_id: id,
+            delta_hlc: hlc,
+        };
+
+        // An update is permitted (WRITE ⊇ WRITE).
+        let member_update = build_signed_member_action(
+            false,
+            member,
+            anchor,
+            b"v2".to_vec(),
+            n0 + 2_000_000,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(member_update, &write_only(None, None))
+            .expect("a WRITE-capable writer's update must be accepted");
+
+        // The same writer's (validly-signed) delete is refused at the op-gate.
+        let del = build_signed_member_delete(member, anchor, &alice_sk, n0 + 3_000_000);
+        let result = MainInterface::apply_action(del, &write_only(None, None));
+        assert!(
+            matches!(result, Err(StorageError::ActionNotAllowed(_))),
+            "a writer lacking DELETE must be refused at the op-gate, got {result:?}"
+        );
+
+        // With FULL capability, the delete is accepted.
+        let full = crate::interface::ApplyContext {
+            effective_writers: Some([(alice, OpMask::FULL)].into_iter().collect()),
+            delta_id: None,
+            delta_hlc: None,
+        };
+        let del2 = build_signed_member_delete(member, anchor, &alice_sk, n0 + 4_000_000);
+        MainInterface::apply_action(del2, &full).expect("FULL writer's delete must be accepted");
     }
 
     /// Snapshot verification of a member resolves the anchor's writers (the

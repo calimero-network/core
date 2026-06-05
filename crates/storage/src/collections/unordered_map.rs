@@ -1418,7 +1418,9 @@ mod tests {
             .expect("insert into guarded map");
         let guarded_id = <UnorderedMap<String, String> as Data>::id(&guarded);
         match child_storage_type(guarded_id, "k") {
-            StorageType::Shared { writers: w, .. } => assert_eq!(w, writers),
+            StorageType::Shared { writers: w, .. } => {
+                assert_eq!(w, crate::entities::full_mask(writers.clone()))
+            }
             other => panic!("guarded map entry must inherit Shared, got {other:?}"),
         }
     }
@@ -1465,7 +1467,9 @@ mod tests {
 
         let guarded_id = <UnorderedMap<String, String> as Data>::id(&guarded);
         match child_storage_type(guarded_id, "k") {
-            StorageType::Shared { writers: w, .. } => assert_eq!(w, writers),
+            StorageType::Shared { writers: w, .. } => {
+                assert_eq!(w, crate::entities::full_mask(writers.clone()))
+            }
             other => panic!("entry/or_default entry must inherit Shared, got {other:?}"),
         }
     }

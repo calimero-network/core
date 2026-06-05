@@ -334,7 +334,7 @@ pub fn build_signed_shared_action(
         created_at: hlc_ns,
         updated_at: hlc_ns.into(),
         storage_type: StorageType::Shared {
-            writers,
+            writers: crate::entities::full_mask(writers),
             signature_data: Some(SignatureData {
                 signature: [0; 64],
                 nonce: hlc_ns,

@@ -83,7 +83,7 @@ fn ctx(delta_id: [u8; 32], delta_hlc_ns: u64) -> ApplyContext {
 /// rotated out of the locally-stored set between authoring and delivery.
 fn ctx_ew(delta_id: [u8; 32], delta_hlc_ns: u64, effective: BTreeSet<PublicKey>) -> ApplyContext {
     ApplyContext {
-        effective_writers: Some(effective),
+        effective_writers: Some(crate::entities::full_mask(effective)),
         delta_id: Some(delta_id),
         delta_hlc: Some(hlc(delta_hlc_ns)),
     }
@@ -297,7 +297,7 @@ fn shared_equal_nonce_different_writers_converge_regardless_of_order() {
 /// signatures verify regardless of the local stored set at apply time.
 fn apply_concurrent_rotations_in_order<const SCOPE: usize>(
     r1_first: bool,
-) -> Vec<BTreeSet<PublicKey>> {
+) -> Vec<std::collections::BTreeMap<PublicKey, crate::entities::OpMask>> {
     crate::env::reset_for_testing();
     let root = setup_root::<S<SCOPE>>();
 
@@ -392,7 +392,7 @@ fn concurrent_rotations_converge_in_log_regardless_of_apply_order() {
     let alice = pubkey_of(&make_signing_key(0xA1));
     let bob = pubkey_of(&make_signing_key(0xB2));
     let dave = pubkey_of(&make_signing_key(0xD4));
-    let with_dave: BTreeSet<PublicKey> = [bob, dave].into_iter().collect();
+    let with_dave = crate::entities::full_mask([bob, dave].into_iter().collect());
 
     // Node X applies R1 (higher nonce) first, then R2 (lower nonce → stale).
     let x = apply_concurrent_rotations_in_order::<411>(true);

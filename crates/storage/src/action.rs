@@ -282,10 +282,13 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
                                   // already an outlier; we never need 2^32 writers).
             let writers_count = u32::try_from(writers.len()).unwrap_or(u32::MAX);
             hasher.update(writers_count.to_le_bytes());
-            // Writers serialized deterministically: BTreeSet iteration
-            // is sorted, so this is stable across signer / verifier.
-            for writer in writers {
+            // Writers serialized deterministically: BTreeMap iteration is sorted
+            // by key, so this is stable across signer / verifier. Each writer's
+            // OpMask is committed with its key, so a peer cannot forge or
+            // escalate a mask — the masks are part of the signed authorization.
+            for (writer, mask) in writers {
                 hasher.update(writer.as_ref() as &[u8; 32]);
+                hasher.update([mask.bits()]);
             }
             // sig-data presence tag — see "Domain separation" in the
             // function doc.
@@ -383,7 +386,7 @@ mod tests {
             created_at: 100,
             updated_at: nonce.into(),
             storage_type: StorageType::Shared {
-                writers,
+                writers: crate::entities::full_mask(writers),
                 signature_data: Some(SignatureData {
                     nonce,
                     signature: [0; 64],

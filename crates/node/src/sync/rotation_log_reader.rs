@@ -12,9 +12,10 @@
 //! `&RotationLog` in. The DAG-ancestry closure is supplied by the caller
 //! (typically wrapping the node's `CoreDagStore::happens_before`).
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use calimero_primitives::identity::PublicKey;
+use calimero_storage::entities::OpMask;
 use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 
 /// Returns the writer set from the most recently *appended* entry in
@@ -27,7 +28,7 @@ use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 ///
 /// Returns `None` if the log has no entries and no snapshot.
 #[must_use]
-pub fn latest_writers(log: &RotationLog) -> Option<BTreeSet<PublicKey>> {
+pub fn latest_writers(log: &RotationLog) -> Option<BTreeMap<PublicKey, OpMask>> {
     if let Some(entry) = log.entries.last() {
         return Some(entry.new_writers.clone());
     }
@@ -65,7 +66,7 @@ pub fn writers_at<F>(
     log: &RotationLog,
     causal_parents: &[[u8; 32]],
     happens_before: F,
-) -> Option<BTreeSet<PublicKey>>
+) -> Option<BTreeMap<PublicKey, OpMask>>
 where
     F: Fn(&[u8; 32], &[u8; 32]) -> bool,
 {
@@ -122,6 +123,7 @@ where
 mod tests {
     use core::num::NonZeroU128;
 
+    use calimero_storage::entities::OpMask;
     use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
     use calimero_storage::rotation_log::{RotationLog, RotationLogEntry, RotationSnapshot};
 
@@ -147,7 +149,11 @@ mod tests {
             delta_id: [delta_id; 32],
             delta_hlc: HybridTimestamp::new(ts),
             signer: Some(pk(signer)),
-            new_writers: writers.iter().copied().map(pk).collect(),
+            new_writers: writers
+                .iter()
+                .copied()
+                .map(|b| (pk(b), OpMask::FULL))
+                .collect(),
             writers_nonce: nonce,
         }
     }
@@ -174,7 +180,7 @@ mod tests {
         ]);
         assert_eq!(
             latest_writers(&log),
-            Some([0xBB].into_iter().map(pk).collect())
+            Some([0xBB].into_iter().map(|b| (pk(b), OpMask::FULL)).collect())
         );
     }
 
@@ -187,7 +193,7 @@ mod tests {
         ]);
         assert_eq!(
             writers_at(&log, &[], |_, _| false),
-            Some([0xBB].into_iter().map(pk).collect())
+            Some([0xBB].into_iter().map(|b| (pk(b), OpMask::FULL)).collect())
         );
     }
 
@@ -204,10 +210,26 @@ mod tests {
         let happens_before = |a: &[u8; 32], b: &[u8; 32]| a == &[1; 32] && b == &[2; 32];
 
         let writers = writers_at(&log, &[[1; 32]], happens_before);
-        assert_eq!(writers, Some([0xAA, 0xBB].into_iter().map(pk).collect()));
+        assert_eq!(
+            writers,
+            Some(
+                [0xAA, 0xBB]
+                    .into_iter()
+                    .map(|b| (pk(b), OpMask::FULL))
+                    .collect()
+            )
+        );
 
         let writers = writers_at(&log, &[[2; 32]], happens_before);
-        assert_eq!(writers, Some([0xBB, 0xCC].into_iter().map(pk).collect()));
+        assert_eq!(
+            writers,
+            Some(
+                [0xBB, 0xCC]
+                    .into_iter()
+                    .map(|b| (pk(b), OpMask::FULL))
+                    .collect()
+            )
+        );
     }
 
     #[test]
@@ -221,7 +243,10 @@ mod tests {
 
         let none_precede = |_: &[u8; 32], _: &[u8; 32]| false;
         let writers = writers_at(&log, &[[1; 32], [2; 32]], none_precede);
-        assert_eq!(writers, Some([0xBB].into_iter().map(pk).collect()));
+        assert_eq!(
+            writers,
+            Some([0xBB].into_iter().map(|b| (pk(b), OpMask::FULL)).collect())
+        );
     }
 
     #[test]
@@ -236,7 +261,11 @@ mod tests {
             delta_id: [delta_id; 32],
             delta_hlc: identical_ts,
             signer: Some(pk(signer)),
-            new_writers: writers.iter().copied().map(pk).collect(),
+            new_writers: writers
+                .iter()
+                .copied()
+                .map(|b| (pk(b), OpMask::FULL))
+                .collect(),
             writers_nonce: 10,
         };
         let log = log_of(vec![mk(1, 0xAA, &[0xAA, 0xCC]), mk(2, 0xBB, &[0xBB, 0xDD])]);
@@ -244,7 +273,15 @@ mod tests {
         let none_precede = |_: &[u8; 32], _: &[u8; 32]| false;
         let writers = writers_at(&log, &[[1; 32], [2; 32]], none_precede);
         // 0xAA is smaller → wins.
-        assert_eq!(writers, Some([0xAA, 0xCC].into_iter().map(pk).collect()));
+        assert_eq!(
+            writers,
+            Some(
+                [0xAA, 0xCC]
+                    .into_iter()
+                    .map(|b| (pk(b), OpMask::FULL))
+                    .collect()
+            )
+        );
     }
 
     #[test]
@@ -258,7 +295,10 @@ mod tests {
 
         let happens_before = |a: &[u8; 32], b: &[u8; 32]| a == &[1; 32] && b == &[2; 32];
         let writers = writers_at(&log, &[[2; 32]], happens_before);
-        assert_eq!(writers, Some([0xBB].into_iter().map(pk).collect()));
+        assert_eq!(
+            writers,
+            Some([0xBB].into_iter().map(|b| (pk(b), OpMask::FULL)).collect())
+        );
     }
 
     #[test]
@@ -273,7 +313,8 @@ mod tests {
     #[test]
     fn writers_at_falls_back_to_snapshot_when_entries_unreachable() {
         // P6 compaction wrote a snapshot but no live entries reach the query.
-        let snap_writers: BTreeSet<PublicKey> = [0xEE].into_iter().map(pk).collect();
+        let snap_writers: BTreeMap<PublicKey, OpMask> =
+            [0xEE].into_iter().map(|b| (pk(b), OpMask::FULL)).collect();
         let log = RotationLog {
             snapshot: Some(RotationSnapshot {
                 writers: snap_writers.clone(),
@@ -326,10 +367,18 @@ mod tests {
         // this is what makes them converge.
         assert_eq!(from_node1, from_node2);
         // ...and it is the HLC winner R2 = {B, C}.
-        assert_eq!(from_node1, Some([0xBB, 0xCC].into_iter().map(pk).collect()));
+        assert_eq!(
+            from_node1,
+            Some(
+                [0xBB, 0xCC]
+                    .into_iter()
+                    .map(|b| (pk(b), OpMask::FULL))
+                    .collect()
+            )
+        );
         // C is in both concurrent sets, so it survives whichever wins — the
         // property the e2e relies on to pick a guaranteed-authorized settler.
-        assert!(from_node1.unwrap().contains(&pk(0xCC)));
+        assert!(from_node1.unwrap().contains_key(&pk(0xCC)));
     }
 
     #[test]
@@ -358,11 +407,17 @@ mod tests {
         // Deterministic convergence to the settled set on every node...
         assert_eq!(from_node1, from_node2);
         let resolved = from_node1.expect("settled writer set");
-        assert_eq!(resolved, [0xAA, 0xCC].into_iter().map(pk).collect());
+        assert_eq!(
+            resolved,
+            [0xAA, 0xCC]
+                .into_iter()
+                .map(|b| (pk(b), OpMask::FULL))
+                .collect()
+        );
         // ...and B is retroactively revoked everywhere (the bonus the e2e
         // asserts by rejecting B's post-settle write).
-        assert!(!resolved.contains(&pk(0xBB)));
-        assert!(resolved.contains(&pk(0xAA)));
-        assert!(resolved.contains(&pk(0xCC)));
+        assert!(!resolved.contains_key(&pk(0xBB)));
+        assert!(resolved.contains_key(&pk(0xAA)));
+        assert!(resolved.contains_key(&pk(0xCC)));
     }
 }
