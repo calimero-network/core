@@ -115,14 +115,17 @@ steps:
   # attempt is refused at the API surface (the call errors).
   # ============================================
 
+  # Grantee is node 2's own key (the only pubkey template merobox exposes); the
+  # point is that node 2 is a non-admin, so the grant is refused regardless of
+  # who the grantee is.
   - name: Node 2 (non-admin) attempts to grant a role
     type: call
     node: new-calimero-node-2
     context_id: '{{context_id}}'
     method: try_grant_role
     args:
-      role: "editor"
-      who: "{{public_key_new-calimero-node-1}}"
+      role: "viewer"
+      who: "{{public_key_new-calimero-node-2}}"
     outputs:
       node2_grant_accepted: result
 
