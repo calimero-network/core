@@ -139,7 +139,14 @@ pub(super) fn handle_namespace_governance_delta(
                 // signature verified, the nonce was monotonic, and the
                 // op applied successfully. Consumed by anchor-preferred
                 // sync peer selection. See `NodeState::peer_identities`.
-                node_state.observe_peer_identity(source, signer);
+                //
+                // `None`: this path doesn't carry the signer's group +
+                // role cheaply, so the observation updates only the
+                // in-memory reverse view. The durable cache is populated
+                // from the state-delta path (which has both) — the deltas
+                // that follow a member's governance op re-observe them
+                // there, so cold-start coverage is unaffected.
+                node_state.observe_peer_identity(source, signer, None);
 
                 // Governance-pending active drain: a governance op that just applied may
                 // unblock state deltas previously buffered as `Unknown`.

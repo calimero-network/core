@@ -19,6 +19,7 @@ use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use crate::delta_store::DeltaStore;
+use crate::peer_identity_cache::ObservedMembership;
 use crate::utils::choose_stream;
 
 mod crypto;
@@ -1708,7 +1709,17 @@ pub async fn handle_state_delta(
                 // signature verified AND the author is an authorized
                 // member at the named cut. Consumed by anchor-preferred
                 // sync peer selection. See `NodeState::peer_identities`.
-                node_state.observe_peer_identity(source, author_id);
+                //
+                // This path has the group + role at the cut, so it also
+                // writes through to the durable `peer_identity_cache`.
+                node_state.observe_peer_identity(
+                    source,
+                    author_id,
+                    Some(ObservedMembership {
+                        group_id: pos.group_id,
+                        role,
+                    }),
+                );
             }
             Ok(MembershipStatus::Removed { last_role }) => {
                 warn!(
