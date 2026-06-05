@@ -33,8 +33,12 @@ use calimero_storage::{
     interface::Interface,
     store::MainStorage,
 };
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use calimero_store::{key, types, Store};
 use calimero_utils_actix::global_runtime;
+use calimero_wasm_abi::schema::MethodIntent;
 use either::Either;
 use eyre::{bail, WrapErr};
 use futures_util::future::TryFutureExt;
@@ -51,7 +55,7 @@ use calimero_governance_store::metrics::ExecutionLabels;
 
 pub mod storage;
 
-use storage::{ContextPrivateStorage, ContextStorage};
+use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
 
 impl Handler<ExecuteRequest> for ContextManager {
     type Result = ActorResponse<Self, <ExecuteRequest as Message>::Result>;
@@ -87,6 +91,35 @@ impl Handler<ExecuteRequest> for ContextManager {
             "Execution request details"
         );
 
+        // --- Read-only intent lookup (before the context borrow) ---
+        // Query the read-only method set now, while we still have an unambiguous
+        // &mut self. After `get_or_fetch_context` the borrow-checker treats self
+        // as mutably borrowed through `context`, and won't allow a second
+        // (immutable) field access. We clone the result so the borrow is fully
+        // released before context is fetched.
+        //
+        // This is safe: `read_only_methods` is a BoundedCache<key, Arc<HashSet>>
+        // populated alongside the module cache; a cold miss (None) silently
+        // defaults to the write lock.
+        let is_state_op = "__calimero_sync_next" == method;
+        let is_read_only_call = 'ro: {
+            if is_state_op || matches!(atomic, Some(ContextAtomic::Held(_))) {
+                break 'ro false;
+            }
+            // We don't yet have `context`, so we can't form the full cache key
+            // yet. Peek at `contexts` to get the application_id + service_name,
+            // then look up read_only_methods.  Both are reads with no structural
+            // changes, so this is safe even though contexts is &mut below.
+            let Some(cm) = self.contexts.get(&context_id) else {
+                break 'ro false; // not cached yet — conservative write lock
+            };
+            let key = (cm.meta.application_id, cm.meta.service_name.clone());
+            let Some(set) = self.read_only_methods.get(&key).cloned() else {
+                break 'ro false;
+            };
+            set.contains(method.as_str())
+        };
+
         let context = match self.get_or_fetch_context(&context_id) {
             Ok(Some(context)) => context,
             Ok(None) => return ActorResponse::reply(Err(ExecuteError::ContextNotFound)),
@@ -99,14 +132,19 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let current_application_id = context.meta.application_id;
 
-        let is_state_op = "__calimero_sync_next" == method;
-
         if !is_state_op && *context.meta.root_hash == [0; 32] {
             return ActorResponse::reply(Err(ExecuteError::Uninitialized));
         }
 
         let (guard, is_atomic) = match atomic {
-            None => (context.lock(), false),
+            None => {
+                let g = if is_read_only_call {
+                    context.lock_read()
+                } else {
+                    context.lock()
+                };
+                (g, false)
+            }
             Some(ContextAtomic::Lock) => (context.lock(), true),
             Some(ContextAtomic::Held(ContextAtomicKey(guard))) => (Either::Left(guard), true),
         };
@@ -590,6 +628,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         method.clone().into(),
                         payload.into(),
                         is_state_op,
+                        is_read_only_call,
                         block_writes_for_group,
                         &private_key,
                     )
@@ -1017,7 +1056,7 @@ impl ContextManager {
                         Ok(module) => {
                             return Ok((
                                 module,
-                                Some((blob, service_name_for_bytes, original_blob_id)),
+                                Some((blob, service_name_for_bytes, original_blob_id, None)),
                             ))
                         }
                         Err(err) => {
@@ -1046,6 +1085,12 @@ impl ContextManager {
                     bail!(ExecuteError::ApplicationNotInstalled { application_id });
                 };
 
+                // Extract the read-only method set from the embedded ABI manifest
+                // before moving `bytecode` into the blocking compile task.
+                // A missing/unparseable manifest is not an error — the execute
+                // path defaults to the write lock (fail-safe).
+                let read_only_set = extract_read_only_set(&bytecode);
+
                 // Compile WASM in a blocking task to avoid blocking the async executor.
                 // Note: panics during compilation will surface as JoinError.
                 let module = global_runtime()
@@ -1070,7 +1115,12 @@ impl ContextManager {
 
                 Ok((
                     module,
-                    Some((blob, service_name_for_bytes, original_blob_id)),
+                    Some((
+                        blob,
+                        service_name_for_bytes,
+                        original_blob_id,
+                        read_only_set,
+                    )),
                 ))
             }
             .into_actor(act)
@@ -1078,7 +1128,7 @@ impl ContextManager {
 
         module_task
             .map_ok(move |(module, blob_info), act, _ctx| {
-                if let Some((blob, svc_name, original_blob_id)) = blob_info {
+                if let Some((blob, svc_name, original_blob_id, read_only_set)) = blob_info {
                     // The `applications` map is the source of truth for
                     // whether this app is still live. Tie both the blob
                     // writeback and the module cache update to the same
@@ -1150,9 +1200,18 @@ impl ContextManager {
                             // already-cached (recompiled) key overwrites in
                             // place, while a new key evicts a by-key-order
                             // victim first when at capacity.
-                            let _ = act
-                                .modules
-                                .insert((application_id, svc_name), module.clone());
+                            let cache_key = (application_id, svc_name);
+                            let _ = act.modules.insert(cache_key.clone(), module.clone());
+                            // Populate the read-only method set only when we
+                            // successfully parsed the embedded ABI (fresh-compile
+                            // path). When `read_only_set` is None (precompiled
+                            // path where raw bytecode is not re-fetched), skip the
+                            // insert so a subsequent fresh compile can populate it
+                            // correctly. An absent entry in `read_only_methods`
+                            // falls back to the write lock (fail-safe).
+                            if let Some(set) = read_only_set {
+                                let _ = act.read_only_methods.insert(cache_key, set);
+                            }
                         } else {
                             debug!(
                                 %application_id,
@@ -1324,6 +1383,12 @@ async fn internal_execute(
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     is_state_op: bool,
+    // Whether the caller holds a shared read guard (not an exclusive write guard).
+    // When true, a `ReadOnlyContextStorage` wrapper is passed to the runtime so
+    // that write host-calls are silenced — a read-lock execution must not mutate
+    // shared state. A non-empty artifact post-execution indicates a misbehaving
+    // or mis-declared method and is treated as an error.
+    is_read_only_call: bool,
     // `Some(group_id)` while the owning group's upgrade is `InProgress`; the
     // post-exec gate then serves reads but refuses writes (see `handle()`).
     block_writes_for_group: Option<ContextGroupId>,
@@ -1388,6 +1453,7 @@ async fn internal_execute(
         storage,
         private_storage,
         node_client.clone(),
+        is_read_only_call,
     )
     .await?;
 
@@ -1455,6 +1521,23 @@ async fn internal_execute(
             %executor,
             method = %method,
             "ReadOnly member attempted state mutation — discarding changes"
+        );
+        outcome.root_hash = None;
+        outcome.artifact.clear();
+        outcome.xcalls.clear();
+        return Ok((outcome, None, None, None));
+    }
+
+    // Defence-in-depth: a method declared read-only in the ABI should never
+    // produce a state mutation (the ReadOnlyContextStorage wrapper silences
+    // writes at the host-call boundary). If the artifact is non-empty here,
+    // the declaration is wrong or the wrapper leaked — reject rather than commit.
+    if is_read_only_call && outcome.root_hash.is_some() {
+        warn!(
+            context_id = %context.id,
+            %executor,
+            method = %method,
+            "method declared #[app::view] produced a state mutation — discarding (ABI mismatch)"
         );
         outcome.root_hash = None;
         outcome.artifact.clear();
@@ -1813,24 +1896,59 @@ pub async fn execute(
     mut storage: ContextStorage,
     mut private_storage: ContextPrivateStorage,
     node_client: NodeClient,
+    is_read_only_call: bool,
 ) -> eyre::Result<(Outcome, ContextStorage, ContextPrivateStorage)> {
     let context_id = **context;
 
     global_runtime()
         .spawn_blocking(move || {
-            let outcome = module.run(
-                context_id,
-                executor,
-                &method,
-                &input,
-                &mut storage,
-                Some(&mut private_storage),
-                Some(node_client),
-            )?;
+            let outcome = if is_read_only_call {
+                // Wrap storage in a read-only view: write host calls are silenced
+                // so a method holding a shared read guard cannot mutate shared
+                // state. The post-exec assertion on outcome.root_hash / artifact
+                // catches any method that nonetheless produced a mutation.
+                let mut ro_storage = ReadOnlyContextStorage::new(&mut storage);
+                let mut ro_private = ReadOnlyContextStorage::new(&mut private_storage);
+                module.run(
+                    context_id,
+                    executor,
+                    &method,
+                    &input,
+                    &mut ro_storage,
+                    Some(&mut ro_private),
+                    Some(node_client),
+                )?
+            } else {
+                module.run(
+                    context_id,
+                    executor,
+                    &method,
+                    &input,
+                    &mut storage,
+                    Some(&mut private_storage),
+                    Some(node_client),
+                )?
+            };
             Ok((outcome, storage, private_storage))
         })
         .await
         .wrap_err("failed to receive execution response")?
+}
+
+/// Extract the set of read-only method names from a WASM module's embedded ABI.
+///
+/// Returns `None` on any parse failure so callers default to the write lock.
+/// Methods are declared read-only by the app author via `#[app::view]`; the ABI
+/// emitter stores `MethodIntent::ReadOnly` in the embedded manifest section.
+fn extract_read_only_set(bytecode: &[u8]) -> Option<Arc<HashSet<String>>> {
+    let manifest = calimero_wasm_abi::embed::read_embedded_state_schema(bytecode)?;
+    let set: HashSet<String> = manifest
+        .methods
+        .into_iter()
+        .filter(|m| m.intent == MethodIntent::ReadOnly)
+        .map(|m| m.name)
+        .collect();
+    Some(Arc::new(set))
 }
 
 fn substitute_aliases_in_payload(
