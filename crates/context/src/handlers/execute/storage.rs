@@ -368,3 +368,72 @@ impl Storage for ContextPrivateStorage {
         self.borrow_inner().has(key).unwrap_or_default()
     }
 }
+
+/// A read-only view over a [`ContextStorage`] or [`ContextPrivateStorage`].
+///
+/// Passed to [`calimero_runtime::Module::run`] in place of the normal mutable
+/// storage when the executing method holds a *shared* read guard on the
+/// per-context `RwLock`. The write methods (`set`, `remove`, `index_set`,
+/// `index_del`, `index_del_prefix`) return their "nothing happened" values so
+/// that storage-level WASM host calls fail gracefully rather than panicking.
+/// A post-execution assertion on `outcome.artifact` / `outcome.root_hash`
+/// catches any method that nonetheless tried to write and treats it as an error.
+pub struct ReadOnlyContextStorage<'a, S>(&'a mut S);
+
+impl<'a, S: Storage> ReadOnlyContextStorage<'a, S> {
+    pub fn new(inner: &'a mut S) -> Self {
+        Self(inner)
+    }
+}
+
+impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
+    fn get(&self, key: &Key) -> Option<Value> {
+        self.0.get(key)
+    }
+
+    fn has(&self, key: &Key) -> bool {
+        self.0.has(key)
+    }
+
+    fn index_scan(
+        &self,
+        lo: &[u8],
+        hi: &[u8],
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.0.index_scan(lo, hi, offset, limit)
+    }
+
+    fn index_last(&self, lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+        self.0.index_last(lo, hi)
+    }
+
+    // Write methods are suppressed — a read-only execution must not mutate state.
+    // A debug trace makes misbehaving #[app::view] methods observable; the post-exec
+    // assertion in `internal_execute` catches any that still produce a root_hash.
+    fn set(&mut self, _key: Key, _value: Value) -> Option<Value> {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (set)");
+        None
+    }
+
+    fn remove(&mut self, _key: &Key) -> Option<Value> {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (remove)");
+        None
+    }
+
+    fn index_set(&mut self, _key: &[u8], _value: &[u8]) -> bool {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_set)");
+        false
+    }
+
+    fn index_del(&mut self, _key: &[u8]) -> bool {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_del)");
+        false
+    }
+
+    fn index_del_prefix(&mut self, _prefix: &[u8]) -> bool {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_del_prefix)");
+        false
+    }
+}

@@ -8,15 +8,19 @@
 //! signal survives a restart so anchor-preferred sync selection works on
 //! a cold cache instead of falling back to random topic subscribers.
 
+use std::collections::BTreeMap;
+
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
+use calimero_network_primitives::client::NetworkClient;
 use calimero_store::key::Generic as GenericKey;
 use calimero_store::slice::Slice;
 use calimero_store::types::GenericData;
 use calimero_store::Store;
+use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
-use crate::peer_identity_cache::{PeerIdentityCache, PEER_IDENTITY_TTL_SECS};
+use crate::peer_identity_cache::{PeerIdentityCache, PeerScoreTier, PEER_IDENTITY_TTL_SECS};
 use crate::state::{now_unix_secs, NodeState};
 
 /// How often the snapshot tick writes the cache to disk. Matches the
@@ -119,7 +123,11 @@ pub(crate) fn hydrate(state: &NodeState, store: &Store) {
 /// dropping it does not cancel the task (tokio detaches it), which runs
 /// until the runtime is dropped. A future graceful shutdown could
 /// `abort()` it.
-pub(crate) fn spawn_snapshot_tick(state: NodeState, store: Store) -> tokio::task::JoinHandle<()> {
+pub(crate) fn spawn_snapshot_tick(
+    state: NodeState,
+    store: Store,
+    network: NetworkClient,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SNAPSHOT_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -128,11 +136,112 @@ pub(crate) fn spawn_snapshot_tick(state: NodeState, store: Store) -> tokio::task
         // yet at startup, and `persist` would just no-op on the empty
         // cache anyway).
         let _ = interval.tick().await;
+        let mut ticks: u64 = 0;
         loop {
             let _ = interval.tick().await;
             persist(&state, &store);
+            // Transition-guarded diff most ticks; a full re-push every
+            // `SCORE_FULL_RESYNC_TICKS` to re-converge gossipsub's
+            // connection-scoped scores (see `reconcile_peer_scores`).
+            ticks = ticks.wrapping_add(1);
+            let force_full = ticks % SCORE_FULL_RESYNC_TICKS == 0;
+            reconcile_peer_scores(&state, &network, force_full);
         }
     })
+}
+
+/// Re-push every desired peer score (not just transitions) once every N
+/// snapshot ticks, to recover any drift from gossipsub's
+/// connection-scoped scores. At a 30s tick, 20 ≈ every 10 minutes —
+/// cheap (a handful of `do_send`s) and well off the hot path.
+const SCORE_FULL_RESYNC_TICKS: u64 = 20;
+
+/// Desired gossipsub score tier per peer, derived from current cached
+/// membership: each peer's tier is the strongest across every group /
+/// member identity it hosts.
+fn desired_score_tiers(
+    cache: &PeerIdentityCache,
+    now_secs: u64,
+    ttl_secs: u64,
+) -> BTreeMap<PeerId, PeerScoreTier> {
+    let mut desired: BTreeMap<PeerId, PeerScoreTier> = BTreeMap::new();
+    for group in cache.groups() {
+        for member in cache.members_for_group(group, now_secs, ttl_secs) {
+            let tier = PeerScoreTier::from_role(&member.role);
+            for peer in member.peers {
+                let entry = desired.entry(peer).or_insert(tier);
+                *entry = (*entry).max(tier);
+            }
+        }
+    }
+    desired
+}
+
+/// Diff `desired` against the last-pushed `tracker`. Returns the peers to
+/// (re)push (with their tier) and the peers to clear to 0 (tracked but no
+/// longer desired). Pure. With `force_full`, every desired peer is
+/// re-pushed regardless of the tracker — the periodic self-heal (see
+/// `reconcile_peer_scores`).
+fn compute_score_updates(
+    desired: &BTreeMap<PeerId, PeerScoreTier>,
+    tracker: &BTreeMap<PeerId, PeerScoreTier>,
+    force_full: bool,
+) -> (Vec<(PeerId, PeerScoreTier)>, Vec<PeerId>) {
+    let pushes = desired
+        .iter()
+        .filter(|(peer, tier)| force_full || tracker.get(peer) != Some(tier))
+        .map(|(peer, tier)| (*peer, *tier))
+        .collect();
+    let clears = tracker
+        .keys()
+        .filter(|peer| !desired.contains_key(peer))
+        .copied()
+        .collect();
+    (pushes, clears)
+}
+
+/// Reconcile gossipsub peer scores against current cached membership and
+/// push the deltas to the network layer (#2513). New/upgraded members get
+/// a positive score; members that left the cache (removed via
+/// `MemberRemoved` or TTL-aged) are cleared to 0.
+///
+/// `force_full` re-pushes every desired score regardless of the tracker.
+/// gossipsub's app score is connection-scoped (dropped when a peer
+/// disconnects) and `set_application_score` is a fire-and-forget
+/// `do_send` we can't observe the result of, so the tracker can drift
+/// from what gossipsub actually holds (a member that reconnected, or a
+/// push applied before the peer was in the score book). The snapshot tick
+/// runs the cheap transition-guarded diff most ticks and a periodic
+/// `force_full` to re-converge — scores are best-effort hints, so this
+/// eventual consistency is sufficient.
+///
+/// Locking: the cache and tracker are each locked only for synchronous
+/// computation/mutation; the network pushes happen with no lock held.
+pub(crate) fn reconcile_peer_scores(state: &NodeState, network: &NetworkClient, force_full: bool) {
+    let now = now_unix_secs();
+    let desired = {
+        let cache = state.lock_peer_identity_cache();
+        desired_score_tiers(&cache, now, PEER_IDENTITY_TTL_SECS)
+    };
+    // Diff and update the tracker to the new desired state under one lock
+    // pass (no gap, no network I/O held across the lock).
+    let (pushes, clears) = {
+        let mut tracker = state.lock_peer_scores();
+        let (pushes, clears) = compute_score_updates(&desired, &tracker, force_full);
+        for peer in &clears {
+            let _ = tracker.remove(peer);
+        }
+        for (peer, tier) in &pushes {
+            let _ = tracker.insert(*peer, *tier);
+        }
+        (pushes, clears)
+    };
+    for (peer, tier) in pushes {
+        network.set_peer_score(peer, tier.score());
+    }
+    for peer in clears {
+        network.set_peer_score(peer, 0.0);
+    }
 }
 
 /// Apply one op-apply event to the cache. Currently only `MemberRemoved`
@@ -215,6 +324,59 @@ mod tests {
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    #[test]
+    fn compute_score_updates_diffs_desired_against_tracker() {
+        let mut cache = PeerIdentityCache::default();
+        let group = ContextGroupId::from([1u8; 32]);
+        let admin_peer = PeerId::random();
+        let member_peer = PeerId::random();
+        cache.record(
+            group,
+            PublicKey::from([1u8; 32]),
+            admin_peer,
+            GroupMemberRole::Admin,
+            100,
+        );
+        cache.record(
+            group,
+            PublicKey::from([2u8; 32]),
+            member_peer,
+            GroupMemberRole::Member,
+            100,
+        );
+
+        let desired = desired_score_tiers(&cache, 100, 1000);
+
+        // Empty tracker → both peers are fresh pushes at their tiers.
+        let empty = BTreeMap::new();
+        let (pushes, clears) = compute_score_updates(&desired, &empty, false);
+        let pushed: BTreeMap<_, _> = pushes.into_iter().collect();
+        assert_eq!(pushed.get(&admin_peer), Some(&PeerScoreTier::Anchor));
+        assert_eq!(pushed.get(&member_peer), Some(&PeerScoreTier::Member));
+        assert!(clears.is_empty());
+
+        // Tracker already matches → no pushes (transition guard).
+        let matched = BTreeMap::from([
+            (admin_peer, PeerScoreTier::Anchor),
+            (member_peer, PeerScoreTier::Member),
+        ]);
+        let (pushes, clears) = compute_score_updates(&desired, &matched, false);
+        assert!(pushes.is_empty(), "unchanged tiers produce no push");
+        assert!(clears.is_empty());
+
+        // force_full re-pushes everything regardless of the tracker.
+        let (pushes, _) = compute_score_updates(&desired, &matched, true);
+        assert_eq!(pushes.len(), 2, "force_full re-pushes all desired peers");
+
+        // A peer the tracker scored but the cache no longer holds → clear.
+        let stranger = PeerId::random();
+        let mut stale = matched.clone();
+        let _ = stale.insert(stranger, PeerScoreTier::Member);
+        let (pushes, clears) = compute_score_updates(&desired, &stale, false);
+        assert!(pushes.is_empty());
+        assert_eq!(clears, vec![stranger], "dropped peer is cleared");
     }
 
     #[test]

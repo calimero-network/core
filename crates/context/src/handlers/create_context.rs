@@ -328,6 +328,7 @@ async fn create_context(
         storage,
         private_storage,
         node_client.clone(),
+        false, // init always writes state
     )
     .await?;
 
