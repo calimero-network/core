@@ -161,6 +161,10 @@ pub mod tests {
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;
+    /// Sync-merge batch resilience: a single rejected action (e.g. an unsigned
+    /// `Shared` action) must not abort the whole `Root::sync` batch (core#2716).
+    #[cfg(test)]
+    pub mod sync_batch_resilience;
     /// Storage-internal regression: the rotation-write hook depends on the
     /// stored-writers field staying frozen at bootstrap (see #2266 step 5).
     #[cfg(test)]
