@@ -560,6 +560,24 @@ impl<S: StorageAdaptor> Interface<S> {
         use crate::action::Action;
         use crate::entities::StorageType;
 
+        // P3 (core#2716): the hashed rotation-log child is internal book-keeping
+        // stamped `crdt_type: RotationLog`, written via `save_raw` with the
+        // anchor's *default* (User) storage type and NO entity-level signature —
+        // so the User arm below would reject it and a cold-joiner would never
+        // receive it (the broad root-bootstrap-converge / cold-sync divergence).
+        // By design these entries are UNTRUSTED IN TRANSIT and authenticated at
+        // RESOLVE time: each `RotationLogEntry` carries its own signature, and
+        // `writers_at`/`resolve_local` verify it against the writer set at its
+        // causal cut. So the child entity itself is transit-exempt here; its
+        // security comes from per-entry resolve-time verification, not a
+        // signature on the aggregate child blob.
+        if matches!(
+            metadata.crdt_type,
+            Some(crate::collections::crdt_meta::CrdtType::RotationLog)
+        ) {
+            return Ok(());
+        }
+
         // Public / Frozen don't require signature verification.
         match &metadata.storage_type {
             StorageType::Public | StorageType::Frozen => return Ok(()),

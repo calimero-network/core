@@ -574,18 +574,51 @@ fn merge_rotation_log(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, Merge
         }
     };
 
-    let mut merged: RotationLog = parse(existing)?;
+    let existing_log: RotationLog = parse(existing)?;
     let incoming_log: RotationLog = parse(incoming)?;
 
-    let mut seen: std::collections::BTreeSet<[u8; 32]> =
-        merged.entries.iter().map(|e| e.delta_id).collect();
-    for entry in incoming_log.entries {
-        if seen.insert(entry.delta_id) {
-            merged.entries.push(entry);
+    // Union by `delta_id` with a DETERMINISTIC, node-independent tiebreak on
+    // collision. The old "keep first-seen" dedup was NOT convergent: if two
+    // nodes held the same `delta_id` with even slightly different entry bytes
+    // (e.g. one carrying a signature the other built without), each kept its own
+    // and `full_hash` never matched — a permanent HashComparison sticky loop
+    // (observed in root-bootstrap-converge: the same RotationLog child re-merged
+    // every round, `applied=1`, roots never converging). Resolving a collision
+    // by larger serialized bytes makes the merge a true join: commutative,
+    // idempotent, and identical on every replica regardless of apply order, so
+    // the child's hash converges. (delta_hlc/signer/writers are equal for a real
+    // delta; the tiebreak only disambiguates incidental byte differences.)
+    let mut by_id: std::collections::BTreeMap<[u8; 32], crate::rotation_log::RotationLogEntry> =
+        std::collections::BTreeMap::new();
+    for entry in existing_log
+        .entries
+        .into_iter()
+        .chain(incoming_log.entries.into_iter())
+    {
+        match by_id.entry(entry.delta_id) {
+            std::collections::btree_map::Entry::Vacant(v) => {
+                let _ = v.insert(entry);
+            }
+            std::collections::btree_map::Entry::Occupied(mut o) => {
+                let cur = borsh::to_vec(o.get())
+                    .map_err(|e| MergeError::SerializationError(e.to_string()))?;
+                let new = borsh::to_vec(&entry)
+                    .map_err(|e| MergeError::SerializationError(e.to_string()))?;
+                if new > cur {
+                    let _ = o.insert(entry);
+                }
+            }
         }
     }
-    merged.entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
+    // `BTreeMap` iterates in `delta_id` order, so the entry vector is canonical
+    // (the previous explicit sort is subsumed).
+    let mut merged = RotationLog {
+        snapshot: existing_log.snapshot,
+        entries: by_id.into_values().collect(),
+    };
 
+    // Compaction snapshot: adopt the incoming one when it advances the cutoff
+    // (symmetric — the node lacking it adopts, the node holding the larger keeps).
     if let Some(inc) = incoming_log.snapshot {
         let take = match &merged.snapshot {
             Some(cur) => inc.cutoff_index > cur.cutoff_index,
