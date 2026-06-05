@@ -315,6 +315,21 @@ where
         let _removed = caps.remove(who);
         self.inner.rotate_writers_scoped(caps)
     }
+
+    /// Replace the entire capability map in one authenticated rotation. Admin-
+    /// gated. Used by role projection ([`AccessControl::project_onto`]) to set a
+    /// collection's per-writer masks from role memberships in a single step.
+    ///
+    /// # Errors
+    /// `ActionNotAllowed` if frozen, not authorised for `Op::Admin`, or if `caps`
+    /// is empty.
+    pub fn set_capabilities(
+        &mut self,
+        caps: BTreeMap<PublicKey, OpMask>,
+    ) -> Result<(), StoreError> {
+        self.guard(Op::Admin)?;
+        self.inner.rotate_writers_scoped(caps)
+    }
 }
 
 impl<T, A> PermissionedStorage<T, A>
