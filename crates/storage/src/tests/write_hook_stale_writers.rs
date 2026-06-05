@@ -74,11 +74,13 @@ fn ctx(delta_id: [u8; 32], delta_hlc_ns: u64) -> ApplyContext {
     }
 }
 
-/// Apply context carrying the pre-resolved causal writer set (what the node
-/// sync layer passes from `writers_at(delta.parents)`), so a rotation's
-/// signature verifies against the set authorized at its causal point rather
-/// than the locally-stored set. Needed when a concurrent rotation is signed by
-/// a writer who has since been rotated out of the local stored set.
+/// Apply context carrying the pre-resolved causal writer set. In production
+/// this is populated by the node sync layer via `writers_at(delta.parents,
+/// happens_before)` (see `DeltaStore::resolve_effective_writers_for_delta`),
+/// so a rotation's signature verifies against the set authorized at its causal
+/// point rather than the locally-stored set. Use `ctx_ew` in tests that
+/// exercise concurrent-rotation scenarios where the signer may have been
+/// rotated out of the locally-stored set between authoring and delivery.
 fn ctx_ew(delta_id: [u8; 32], delta_hlc_ns: u64, effective: BTreeSet<PublicKey>) -> ApplyContext {
     ApplyContext {
         effective_writers: Some(effective),
