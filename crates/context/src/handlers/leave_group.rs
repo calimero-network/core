@@ -11,6 +11,21 @@
 //! forward-secrecy rationale (briefly: the leaver cannot generate the
 //! new key without retaining it; proper two-phase rotation is a
 //! deferred follow-up).
+//!
+//! Local cleanup: the local apply of `MemberLeft` always emits
+//! `OpEvent::MemberRemoved`, AND additionally emits
+//! `OpEvent::TeeMemberRemoved` if the leaver's stored role was
+//! `ReadOnlyTee`. The [`crate::self_purge`] listener only reacts to
+//! the latter — so for a regular `Admin`/`Member`/`Observer` self-leave
+//! the listener stays dormant and the subgroup's local rows are
+//! preserved as soft-leave residue (the rejoin / re-add / re-keyshare
+//! pathways depend on this). For a `ReadOnlyTee` self-leave the
+//! listener drops the subgroup's local rows (signing keys included).
+//! The listener deliberately does NOT unsubscribe from the namespace
+//! gossipsub topic for a subgroup-only leave — other memberships
+//! under the same namespace still need it. See ADR 0002
+//! (`docs/adr/0002-fleet-tee-leave-protocol.md`).
+
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
