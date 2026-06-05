@@ -1082,6 +1082,18 @@ impl<S: StorageAdaptor> Interface<S> {
         // to prevent LWW Time Drift attacks.
         verify_action_timestamp(&action)?;
 
+        // P3 (core#2716): a `Shared` rotation is recorded in the anchor's hashed
+        // rotation-log child, but only AFTER the anchor's own `save_internal`
+        // runs in the apply pass below (the child links under an EXISTING anchor
+        // — appending before the anchor exists would synthesise a placeholder).
+        // The verification pass is where the entry's inputs are in scope (the
+        // pre-apply writer set, the signed payload), so it builds the entry and
+        // stashes it here; the apply pass drains it once the anchor is written.
+        // The stale-nonce path returns inside verification (it never reaches the
+        // apply pass), so it appends its own entry directly — the anchor already
+        // exists there.
+        let mut pending_rotation: Option<crate::rotation_log::RotationLogEntry> = None;
+
         // TODO: refactor to a separate function.
         // Run verification logic before applying
         match &action {
@@ -1423,6 +1435,18 @@ impl<S: StorageAdaptor> Interface<S> {
                             Some(payload),
                         )?;
 
+                        // P3: build the rotation-log entry from THIS delta's
+                        // metadata (identical on every node, so the child's
+                        // order-invariant union converges). It is appended to the
+                        // hashed child either here (stale path, anchor present) or
+                        // by the apply pass after `save_internal` (non-stale).
+                        let rotation_entry = Self::build_rotation_entry(
+                            metadata,
+                            ctx,
+                            stored_writers.as_ref(),
+                            Some(payload),
+                        );
+
                         if !skip_nonce && new_nonce < last_nonce {
                             // Strictly stale: signature verified, but our
                             // local state is already AHEAD of this nonce.
@@ -1474,9 +1498,23 @@ impl<S: StorageAdaptor> Interface<S> {
                             // without this the originator of the higher-nonce
                             // rotation never converges. Recompute the folded
                             // own_hash from the updated log and propagate.
+                            //
+                            // P3: append this rotation to the hashed child too
+                            // (the anchor exists — stale means it was already
+                            // present), so the child reflects the rotation even
+                            // when the data write is dropped. `rehash` then
+                            // re-folds from the updated child.
+                            if let Some(entry) = &rotation_entry {
+                                Self::append_rotation_to_child(*id, entry)?;
+                            }
                             Self::rehash_shared_anchor(*id)?;
                             return Ok(());
                         }
+
+                        // Non-stale rotation: the anchor write happens in the
+                        // apply pass below; stash the entry for it to append once
+                        // the anchor exists.
+                        pending_rotation = rotation_entry;
                     }
                     StorageType::SharedMember {
                         anchor,
@@ -2036,26 +2074,21 @@ impl<S: StorageAdaptor> Interface<S> {
                     "Applied Add/Update action to storage"
                 );
 
-                // P3: the receiver's non-stale Shared apply just settled this
-                // anchor's writer set; mirror its side-store rotation log into
-                // the hashed child so the receiver's tree matches the
-                // originator's (which created the child in
-                // `self_log_and_rehash_own_rotations`). Without this the child
-                // exists on the originator only, so the two roots diverge until
-                // an HC sweep reconciles it.
+                // P3: a non-stale Shared rotation stashed its entry during the
+                // verification pass; now that `save_internal` has written the
+                // anchor, append it to the hashed child (the anchor exists, so
+                // `add_child_to` can't synthesise a placeholder) and re-fold.
                 //
-                // Use `rehash_shared_anchor`, NOT the bare child sync:
                 // `save_internal` above already folded `own_hash` from the
-                // resolved writer set, but with the resolver flipped to the
-                // child (P3) that fold read the PRE-rotation child (this apply's
-                // child write hadn't happened yet), so `own_hash` is stale.
-                // `rehash_shared_anchor` syncs the fresh child and then re-folds
-                // from it, so `own_hash` reflects THIS rotation — divergent
-                // writer sets surface as divergent roots, the property the test
-                // `rotation_log_reconciliation_converges_divergent_shared_logs`
-                // pins. The anchor exists (just written), so `add_child_to`
-                // can't synthesise a placeholder. No-op for non-Shared entities.
-                if matches!(metadata.storage_type, StorageType::Shared { .. }) {
+                // resolved writer set, but with the resolver reading the child
+                // (P3) that fold saw the PRE-rotation child (this apply's child
+                // write hadn't happened yet), so `own_hash` is stale until the
+                // re-fold. `rehash_shared_anchor` re-folds from the fresh child,
+                // so `own_hash` reflects THIS rotation — divergent writer sets
+                // surface as divergent roots
+                // (`rotation_log_reconciliation_converges_divergent_shared_logs`).
+                if let Some(entry) = pending_rotation.take() {
+                    Self::append_rotation_to_child(id, &entry)?;
                     Self::rehash_shared_anchor(id)?;
                 }
 
@@ -2244,6 +2277,87 @@ impl<S: StorageAdaptor> Interface<S> {
             "Rotation log entry appended"
         );
         Ok(())
+    }
+
+    /// Build the [`RotationLogEntry`](crate::rotation_log::RotationLogEntry) for
+    /// a `Shared` apply, or `None` if this write isn't a loggable rotation.
+    ///
+    /// Returns `None` when: the entity isn't `Shared`; the writer set is
+    /// unchanged from `pre_apply_writers` (a plain value-write — `None` prior
+    /// means bootstrap, which always logs); or the apply carries no causal
+    /// identity (`ctx.delta_id`/`delta_hlc` absent — snapshot leaf push / local
+    /// apply / non-causal `StorageDelta::Actions`).
+    ///
+    /// This is the single source of the rotation entry, shared by the receive
+    /// path and (via [`Self::append_rotation_to_child`]) every originator leg,
+    /// so the entry every node records for a given rotation delta is identical —
+    /// the precondition for the child's order-invariant union to converge.
+    pub fn build_rotation_entry(
+        metadata: &Metadata,
+        ctx: &ApplyContext,
+        pre_apply_writers: Option<&BTreeMap<PublicKey, OpMask>>,
+        signed_payload: Option<[u8; 32]>,
+    ) -> Option<crate::rotation_log::RotationLogEntry> {
+        let StorageType::Shared {
+            writers,
+            signature_data,
+        } = &metadata.storage_type
+        else {
+            return None;
+        };
+        let is_rotation = pre_apply_writers.map_or(true, |stored| stored != writers);
+        if !is_rotation {
+            return None;
+        }
+        let (delta_id, delta_hlc) = (ctx.delta_id?, ctx.delta_hlc?);
+        let signer = signature_data.as_ref().and_then(|s| s.signer);
+        let nonce = signature_data.as_ref().map(|s| s.nonce).unwrap_or(0);
+        let signature = signature_data.as_ref().map(|s| s.signature);
+        Some(crate::rotation_log::RotationLogEntry {
+            delta_id,
+            delta_hlc,
+            signer,
+            signature,
+            signed_payload: signature.and(signed_payload),
+            new_writers: writers.clone(),
+            writers_nonce: nonce,
+        })
+    }
+
+    /// Append `entry` to the anchor's hashed rotation-log child (P3), the synced
+    /// source of truth for its writer-set history. Idempotent on `delta_id`: a
+    /// replayed delta produces no second entry; a second entry for the same
+    /// `delta_id` with *different* contents is the unsupported "two rotations of
+    /// one entity in one delta" case and returns
+    /// [`StorageError::DuplicateRotationInDelta`] (mirrors
+    /// [`rotation_log::append`](crate::rotation_log::append)). The child's
+    /// always-union merge then makes the write itself commutative across nodes.
+    ///
+    /// The anchor MUST already exist (callers append only after the anchor's own
+    /// `save_internal`, or on the stale-skip path where it was present), so
+    /// `save_rotation_log_child` → `add_child_to` can't synthesise a placeholder.
+    ///
+    /// # Errors
+    /// `DuplicateRotationInDelta`; propagates child read/write failures.
+    pub fn append_rotation_to_child(
+        anchor: Id,
+        entry: &crate::rotation_log::RotationLogEntry,
+    ) -> Result<(), StorageError> {
+        let mut log = Self::load_rotation_log_child(anchor)
+            .unwrap_or_else(crate::rotation_log::RotationLog::empty);
+        if let Some(existing) = log.entries.iter().find(|e| e.delta_id == entry.delta_id) {
+            if (
+                &existing.new_writers,
+                existing.signer,
+                existing.writers_nonce,
+            ) != (&entry.new_writers, entry.signer, entry.writers_nonce)
+            {
+                return Err(StorageError::DuplicateRotationInDelta(entry.delta_id));
+            }
+            return Ok(());
+        }
+        log.entries.push(entry.clone());
+        Self::save_rotation_log_child(anchor, &log)
     }
 
     /// 2. Exists locally - compare timestamps (LWW)
