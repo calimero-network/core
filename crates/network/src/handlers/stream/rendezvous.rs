@@ -75,6 +75,11 @@ impl StreamHandler<RendezvousTick> for NetworkManager {
         // dial them immediately. Piggybacks the discovery tick (~15s);
         // best-effort and skipped when we have no relevant peers.
         self.persist_peer_cache();
+
+        // Bound the in-memory cache on the same tick: TTL-prune stale
+        // entries and cap the total, so connection churn from many
+        // distinct peers can't grow it without bound (finding #39).
+        self.prune_peer_cache();
     }
 
     fn finished(&mut self, _ctx: &mut Self::Context) {
