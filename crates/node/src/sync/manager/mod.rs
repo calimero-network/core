@@ -668,7 +668,7 @@ impl SyncManager {
             ?mesh_elapsed,
             is_uninitialized,
             source = ?source,
-            "Mesh peer discovery succeeded"
+            "Peer discovery yielded candidates"
         );
 
         if is_uninitialized {
@@ -738,6 +738,18 @@ impl SyncManager {
             if let Ok(result) = self.initiate_sync(context_id, *peer_id).await {
                 return Ok(result);
             }
+        }
+
+        // On the cold-start cache fallback (topic meshes were empty; we
+        // dialed durably-cached members directly), a total failure means
+        // "no reachable peer right now", not "sync failed against live
+        // peers". Surface the benign `NoPeersAvailable` so the caller
+        // doesn't apply exponential backoff — we want prompt retry while
+        // the mesh forms, matching the pre-fix empty-mesh behaviour. The
+        // normal path (had live mesh peers, all failed) still bails so a
+        // genuine sync failure backs off.
+        if source == super::peers::PeerSource::PersistentCache {
+            return Err(eyre::Error::new(NoPeersAvailable { context_id }));
         }
 
         bail!("Failed to sync with any peer for context {}", context_id)
