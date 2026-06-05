@@ -56,6 +56,7 @@ fn dummy_entry() -> RotationLogEntry {
         delta_hlc: HybridTimestamp::new(ts),
         signer: Some(pk(0xAA)),
         signature: None,
+        signed_payload: None,
         new_writers: [pk(0xAA), pk(0xBB)]
             .into_iter()
             .map(|k| (k, calimero_storage::entities::OpMask::FULL))

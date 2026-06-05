@@ -386,6 +386,9 @@ impl<S: StorageAdaptor> Interface<S> {
                 delta_hlc,
                 signer: signature_data.as_ref().and_then(|s| s.signer),
                 signature: signature_data.as_ref().map(|s| s.signature),
+                signed_payload: signature_data
+                    .as_ref()
+                    .map(|_| action.payload_for_signing()),
                 new_writers: writers.clone(),
                 writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
             });
@@ -1330,6 +1333,7 @@ impl<S: StorageAdaptor> Interface<S> {
                             metadata,
                             ctx,
                             stored_writers.clone(),
+                            Some(payload),
                         )?;
 
                         if !skip_nonce && new_nonce < last_nonce {
@@ -2062,6 +2066,7 @@ impl<S: StorageAdaptor> Interface<S> {
         metadata: &Metadata,
         ctx: &ApplyContext,
         pre_apply_writers: Option<BTreeMap<PublicKey, OpMask>>,
+        signed_payload: Option<[u8; 32]>,
     ) -> Result<(), StorageError> {
         // Only Shared entities have a rotation log.
         let StorageType::Shared {
@@ -2102,6 +2107,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 delta_hlc,
                 signer,
                 signature,
+                signed_payload: signature.and(signed_payload),
                 new_writers: writers.clone(),
                 writers_nonce: nonce,
             },

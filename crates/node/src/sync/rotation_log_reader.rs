@@ -150,6 +150,7 @@ mod tests {
             delta_hlc: HybridTimestamp::new(ts),
             signer: Some(pk(signer)),
             signature: None,
+            signed_payload: None,
             new_writers: writers
                 .iter()
                 .copied()
@@ -263,6 +264,7 @@ mod tests {
             delta_hlc: identical_ts,
             signer: Some(pk(signer)),
             signature: None,
+            signed_payload: None,
             new_writers: writers
                 .iter()
                 .copied()
