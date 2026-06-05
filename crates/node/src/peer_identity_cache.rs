@@ -38,11 +38,11 @@
 //!
 //! A member's role is per-group (an identity can be `Admin` of a
 //! subgroup but a plain `Member` at the namespace root), so the storage
-//! unit is **one bucket per [`ContextGroupId`]** — persisted under that
-//! group's own `Generic` datastore key by the node layer. Resolving the
-//! relevant set for a context walks the group tree (group → parent
-//! groups → namespace root) and unions the buckets, with each level's
-//! roles intact.
+//! unit is **one bucket per [`ContextGroupId`]**. Resolution today reads
+//! the bucket of the context's own group; the per-group keying is what
+//! lets a future refinement walk the group tree (group → parent groups →
+//! namespace root) and union the buckets with each level's roles intact,
+//! without restructuring storage.
 //!
 //! Mirrors [`crate`](crate)'s sibling discipline in the network crate's
 //! `PeerAddrCache`: pure data + TTL here, with the snapshot tick and
