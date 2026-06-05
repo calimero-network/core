@@ -283,13 +283,12 @@ impl NodeState {
             .insert(identity);
 
         if let Some(ObservedMembership { group_id, role }) = membership {
-            self.lock_peer_identity_cache().record(
-                group_id,
-                identity,
-                peer_id,
-                role,
-                now_unix_secs(),
-            );
+            // Read the clock before taking the lock so the guard isn't
+            // held across the `SystemTime::now()` syscall (keeps the
+            // critical section to the in-memory `record`).
+            let now = now_unix_secs();
+            self.lock_peer_identity_cache()
+                .record(group_id, identity, peer_id, role, now);
         }
     }
 

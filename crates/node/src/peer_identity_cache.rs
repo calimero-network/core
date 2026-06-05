@@ -297,13 +297,30 @@ pub(crate) struct PersistedGroup {
     pub(crate) entries: Vec<PersistedIdentityPeer>,
 }
 
+/// Current on-disk schema version. Bump on any incompatible change to
+/// the persisted format; `load_all_from_persisted` discards a blob whose
+/// version it doesn't recognise (rather than deserializing garbage),
+/// leaving the cache to refill from live traffic.
+pub(crate) const PERSIST_SCHEMA_VERSION: u32 = 1;
+
+fn current_schema_version() -> u32 {
+    PERSIST_SCHEMA_VERSION
+}
+
 /// Whole-cache on-disk form: every non-empty group bucket. Stored as a
 /// single blob under one `Generic` key (like `PeerAddrCache`) — the
 /// per-group structure lives *inside* the blob, which keeps load/snapshot
 /// to one get/put and avoids per-group key enumeration and stale-key
-/// pruning. A struct (not a bare `Vec`) leaves room to version the format.
+/// pruning.
+///
+/// `version` guards forward/backward compatibility: a blob written by an
+/// incompatible future schema is detected and dropped on load. Blobs
+/// written before this field existed deserialize with `version = 1` (the
+/// current format), so existing caches load unchanged.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct PersistedPeerIdentityCache {
+    #[serde(default = "current_schema_version")]
+    pub(crate) version: u32,
     pub(crate) groups: Vec<PersistedGroup>,
 }
 
@@ -326,7 +343,10 @@ impl PeerIdentityCache {
                 })
             })
             .collect();
-        PersistedPeerIdentityCache { groups }
+        PersistedPeerIdentityCache {
+            version: PERSIST_SCHEMA_VERSION,
+            groups,
+        }
     }
 
     /// Rebuild a cache from the single-blob form, dropping groups whose id
@@ -338,6 +358,14 @@ impl PeerIdentityCache {
         now_secs: u64,
         ttl_secs: u64,
     ) -> Self {
+        if blob.version != PERSIST_SCHEMA_VERSION {
+            debug!(
+                found = blob.version,
+                expected = PERSIST_SCHEMA_VERSION,
+                "peer-identity cache blob has an unrecognised schema version; ignoring it"
+            );
+            return Self::default();
+        }
         let mut cache = Self::default();
         for g in blob.groups {
             let Some(group) = parse_group_id(&g.group_id) else {
@@ -378,15 +406,19 @@ impl PeerIdentityCache {
     /// rows, and the reverse view is intersected with an authoritative
     /// anchor set downstream.
     pub(crate) fn all_peer_identity_pairs(&self) -> Vec<(PeerId, PublicKey)> {
-        let mut out = Vec::new();
+        // De-duplicate: the same `(peer, identity)` can be recorded in
+        // several groups (an identity that's a member of both a namespace
+        // root and a subgroup), and the caller would otherwise redo the
+        // insert and over-count the hydration log.
+        let mut out = BTreeSet::new();
         for g in self.groups.values() {
             for (identity, hosts) in &g.members {
                 for peer in hosts.peers.keys() {
-                    out.push((*peer, *identity));
+                    let _ = out.insert((*peer, *identity));
                 }
             }
         }
-        out
+        out.into_iter().collect()
     }
 }
 
@@ -679,6 +711,7 @@ mod tests {
     #[test]
     fn load_all_skips_unparseable_group_id() {
         let blob = PersistedPeerIdentityCache {
+            version: PERSIST_SCHEMA_VERSION,
             groups: vec![
                 PersistedGroup {
                     group_id: "not-hex".to_owned(),
@@ -706,6 +739,34 @@ mod tests {
             BTreeSet::from([group(2)]),
             "only the well-formed group id loads"
         );
+    }
+
+    #[test]
+    fn load_all_discards_blob_with_unrecognised_version() {
+        let mut c = PeerIdentityCache::default();
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Admin, 100);
+        let mut blob = c.to_persisted_all(100, 1000);
+        assert_eq!(blob.version, PERSIST_SCHEMA_VERSION);
+        // Simulate a future, incompatible schema.
+        blob.version = PERSIST_SCHEMA_VERSION + 1;
+
+        let restored = PeerIdentityCache::load_all_from_persisted(blob, 100, 1000);
+        assert_eq!(
+            restored.groups().count(),
+            0,
+            "a blob with an unrecognised version is discarded, not misread"
+        );
+    }
+
+    #[test]
+    fn all_peer_identity_pairs_dedupes_same_identity_across_groups() {
+        let mut c = PeerIdentityCache::default();
+        // Same (peer, identity) recorded in two groups — must appear once.
+        c.record(group(1), pk(1), peer(1), GroupMemberRole::Admin, 100);
+        c.record(group(2), pk(1), peer(1), GroupMemberRole::Member, 100);
+
+        let pairs = c.all_peer_identity_pairs();
+        assert_eq!(pairs, vec![(peer(1), pk(1))], "duplicate pair collapsed");
     }
 
     #[test]

@@ -68,7 +68,11 @@ pub(crate) fn hydrate(state: &NodeState, store: &Store) {
         Ok(Some(data)) => match serde_json::from_slice(data.as_ref()) {
             Ok(blob) => blob,
             Err(err) => {
-                debug!(?err, "ignoring corrupt peer-identity cache blob in store");
+                // warn (not debug): a corrupt/partial blob silently loses
+                // every cold-start hint, which an operator should be able
+                // to see. Still best-effort — carry on with an empty cache
+                // that refills from live traffic.
+                warn!(?err, "ignoring corrupt peer-identity cache blob in store");
                 return;
             }
         },
@@ -82,7 +86,16 @@ pub(crate) fn hydrate(state: &NodeState, store: &Store) {
     let cache = PeerIdentityCache::load_all_from_persisted(blob, now, PEER_IDENTITY_TTL_SECS);
     let pairs = cache.all_peer_identity_pairs();
     let pair_count = pairs.len();
-    // Seed the in-memory reverse view consumed by `partition_peers_anchor_first`.
+
+    // Publish the durable cache FIRST, then seed the reverse view. Order
+    // matters for the (startup-only) case where an `observe_peer_identity`
+    // could run concurrently: once the cache is the new one, a concurrent
+    // observe records into it and isn't lost. We deliberately do NOT hold
+    // the cache lock across the `peer_identities` (DashMap) seeding — that
+    // would invert the lock order `observe_peer_identity` uses (DashMap
+    // then cache) and risk a deadlock. In practice hydrate runs at startup
+    // before the event loop dispatches ops, so no observer races it.
+    *state.lock_peer_identity_cache() = cache;
     for (peer, identity) in pairs {
         let _ = state
             .peer_identities
@@ -90,7 +103,6 @@ pub(crate) fn hydrate(state: &NodeState, store: &Store) {
             .or_default()
             .insert(identity);
     }
-    *state.lock_peer_identity_cache() = cache;
 
     if pair_count > 0 {
         info!(
@@ -103,7 +115,10 @@ pub(crate) fn hydrate(state: &NodeState, store: &Store) {
 /// Spawn the periodic snapshot task. Holds a strong `NodeState`/`Store`
 /// reference for the runtime's lifetime — a missed snapshot during
 /// shutdown is harmless, so no shutdown plumbing (same rationale as the
-/// metrics tick).
+/// metrics tick). The returned handle is stored as `_…` by the caller;
+/// dropping it does not cancel the task (tokio detaches it), which runs
+/// until the runtime is dropped. A future graceful shutdown could
+/// `abort()` it.
 pub(crate) fn spawn_snapshot_tick(state: NodeState, store: Store) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SNAPSHOT_INTERVAL);
