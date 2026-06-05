@@ -2739,7 +2739,28 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let last_metadata = <Index<S>>::get_metadata(id)?;
         let final_data = if let Some(last_metadata) = &last_metadata {
-            if last_metadata.updated_at > metadata.updated_at {
+            if matches!(
+                metadata.crdt_type,
+                Some(crate::collections::crdt_meta::CrdtType::RotationLog)
+            ) {
+                // Commutative/idempotent union CRDT — the rotation log (P3 of
+                // core#2716). Merge with the existing value REGARDLESS of
+                // timestamp ordering: the LWW branches below would drop entries
+                // (taking `incoming` on a newer write loses local-only entries;
+                // the stale-skip above would lose an older peer's entries).
+                // `try_merge_non_root` routes `RotationLog` to the
+                // order-invariant union in `merge_rotation_log`, which is
+                // commutative + idempotent, so always-merging is correct.
+                let existing_data = S::storage_read(Key::Entry(id)).unwrap_or_default();
+                Self::try_merge_non_root(
+                    id,
+                    &existing_data,
+                    data,
+                    &metadata,
+                    *last_metadata.updated_at,
+                    *metadata.updated_at,
+                )?
+            } else if last_metadata.updated_at > metadata.updated_at {
                 return Ok(None);
             } else if crate::collections::is_app_root_entry(id) {
                 // App root state — either the canonical `ROOT_ID` or the
