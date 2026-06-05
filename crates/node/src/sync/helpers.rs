@@ -975,7 +975,10 @@ mod tests {
     fn extract_author_shared_with_signer_hint_returns_signer() {
         let signer = PublicKey::from([9u8; 32]);
         let st = StorageType::Shared {
-            writers: BTreeSet::from([signer]),
+            writers: std::collections::BTreeMap::from([(
+                signer,
+                calimero_storage::entities::OpMask::FULL,
+            )]),
             signature_data: Some(SignatureData {
                 signer: Some(signer),
                 signature: [0u8; 64],
@@ -993,7 +996,10 @@ mod tests {
         // Older actions can omit the signer hint — caller treats `None`
         // as "defer to per-action signature verification inside apply_action."
         let st = StorageType::Shared {
-            writers: BTreeSet::from([PublicKey::from([1u8; 32])]),
+            writers: std::collections::BTreeMap::from([(
+                PublicKey::from([1u8; 32]),
+                calimero_storage::entities::OpMask::FULL,
+            )]),
             signature_data: Some(SignatureData {
                 signer: None,
                 signature: [0u8; 64],

@@ -195,7 +195,7 @@ async fn add_local_applied_delta_self_logs_own_rotations() {
         .expect("add genesis");
     assert_eq!(
         log_entries(),
-        vec![writers(&[alice])],
+        vec![calimero_storage::entities::full_mask(writers(&[alice]))],
         "genesis Add must self-log a bootstrap entry"
     );
 
@@ -208,7 +208,10 @@ async fn add_local_applied_delta_self_logs_own_rotations() {
         .expect("add rotation");
     assert_eq!(
         log_entries(),
-        vec![writers(&[alice]), writers(&[alice, bob])],
+        vec![
+            calimero_storage::entities::full_mask(writers(&[alice])),
+            calimero_storage::entities::full_mask(writers(&[alice, bob]))
+        ],
         "writer-set change must self-log a rotation entry"
     );
 
@@ -221,7 +224,10 @@ async fn add_local_applied_delta_self_logs_own_rotations() {
         .expect("add value-write");
     assert_eq!(
         log_entries(),
-        vec![writers(&[alice]), writers(&[alice, bob])],
+        vec![
+            calimero_storage::entities::full_mask(writers(&[alice])),
+            calimero_storage::entities::full_mask(writers(&[alice, bob]))
+        ],
         "a value-write that doesn't change writers must NOT append a rotation entry"
     );
 }

@@ -1379,7 +1379,7 @@ mod verify_snapshot_entity_signature_tests {
             created_at: 0,
             updated_at: 0.into(),
             storage_type: StorageType::Shared {
-                writers,
+                writers: crate::entities::full_mask(writers.clone()),
                 signature_data: None,
             },
             crdt_type: None,
@@ -1393,7 +1393,7 @@ mod verify_snapshot_entity_signature_tests {
             created_at: 0,
             updated_at: 0.into(),
             storage_type: StorageType::Shared {
-                writers,
+                writers: crate::entities::full_mask(writers.clone()),
                 signature_data: Some(SignatureData {
                     signature: [0u8; 64],
                     nonce: 42,
@@ -1489,7 +1489,7 @@ mod update_signature_in_place_tests {
 
     fn shared_signed(writers: BTreeSet<PublicKey>, sig: [u8; 64]) -> StorageType {
         StorageType::Shared {
-            writers,
+            writers: crate::entities::full_mask(writers),
             signature_data: Some(SignatureData {
                 signature: sig,
                 nonce: 1,
@@ -1511,7 +1511,7 @@ mod update_signature_in_place_tests {
 
     fn shared_unsigned(writers: BTreeSet<PublicKey>) -> StorageType {
         StorageType::Shared {
-            writers,
+            writers: crate::entities::full_mask(writers),
             signature_data: None,
         }
     }

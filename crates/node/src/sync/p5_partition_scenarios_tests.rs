@@ -55,7 +55,9 @@ fn hlc(ns: u64) -> HybridTimestamp {
 /// `ApplyContext`, then `Interface::apply_action`.
 fn deliver<S: StorageAdaptor>(delta: &Delta, dag: &Dag) -> Result<(), StorageError> {
     let entity_id = delta.action.id();
-    let effective_writers: Option<BTreeSet<PublicKey>> = match rotation_log::load::<S>(entity_id)? {
+    let effective_writers: Option<
+        std::collections::BTreeMap<PublicKey, calimero_storage::entities::OpMask>,
+    > = match rotation_log::load::<S>(entity_id)? {
         Some(log) => {
             rotation_log_reader::writers_at(&log, &delta.parents, |a, b| dag.happens_before(a, b))
         }
@@ -92,7 +94,7 @@ fn writers_at_frontier<S: StorageAdaptor, F>(
     id: Id,
     frontier: &[[u8; 32]],
     happens_before: F,
-) -> Option<BTreeSet<PublicKey>>
+) -> Option<std::collections::BTreeMap<PublicKey, calimero_storage::entities::OpMask>>
 where
     F: Fn(&[u8; 32], &[u8; 32]) -> bool,
 {
@@ -432,7 +434,10 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
     assert_eq!(carol_writers, dave_writers, "deterministic convergence");
     assert_eq!(
         carol_writers,
-        [bob].into_iter().collect(),
+        [bob]
+            .into_iter()
+            .map(|k| (k, calimero_storage::entities::OpMask::FULL))
+            .collect::<std::collections::BTreeMap<_, _>>(),
         "D2 (HLC 21) wins over D1 (HLC 20)"
     );
 }
@@ -595,7 +600,10 @@ fn long_partition_reconciliation_converges() {
     // other (siblings of g0). HLC tiebreak picks R1 — winner is {Bob, Dave}.
     assert_eq!(
         left_writers,
-        [bob, dave].into_iter().collect(),
+        [bob, dave]
+            .into_iter()
+            .map(|k| (k, calimero_storage::entities::OpMask::FULL))
+            .collect::<std::collections::BTreeMap<_, _>>(),
         "R1 (HLC 25) wins HLC tiebreak vs L1 (HLC 20)"
     );
 }

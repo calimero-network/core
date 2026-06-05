@@ -362,8 +362,21 @@ impl Element {
         self.update(); // Mark as dirty
     }
 
-    /// Helper to set the storage domain to `Shared` (an anchor entity).
+    /// Helper to set the storage domain to `Shared` (an anchor entity). Every
+    /// writer gets [`OpMask::FULL`] — the default group-writable behaviour. Use
+    /// [`set_shared_domain_scoped`](Self::set_shared_domain_scoped) to grant
+    /// restricted masks.
     pub fn set_shared_domain(&mut self, writers: BTreeSet<PublicKey>) {
+        self.metadata.storage_type = StorageType::Shared {
+            writers: full_mask(writers),
+            signature_data: None, // Will be signed later
+        };
+        self.update(); // Mark as dirty
+    }
+
+    /// Like [`set_shared_domain`](Self::set_shared_domain) but with explicit
+    /// per-writer [`OpMask`]s.
+    pub fn set_shared_domain_scoped(&mut self, writers: BTreeMap<PublicKey, OpMask>) {
         self.metadata.storage_type = StorageType::Shared {
             writers,
             signature_data: None, // Will be signed later
@@ -427,6 +440,72 @@ pub struct SignatureData {
     pub signer: Option<PublicKey>,
 }
 
+/// A per-principal **operation mask** for writer-set-guarded storage: which
+/// classes of mutation a given writer may perform, enforced at merge.
+///
+/// A `u8` bitset of three independent bits. The named combos ([`WRITE`],
+/// [`FULL`]) are just unions of those bits — the merge check only ever tests
+/// individual bits via [`contains`](OpMask::contains).
+///
+/// `INSERT` and `UPDATE` are deliberately *not* split yet: distinguishing them
+/// requires resolving entity existence at the causal cut (a convergence concern,
+/// not a compatibility one), so a single [`WRITE`] bit covers all upserts until
+/// that lands.
+///
+/// [`WRITE`]: OpMask::WRITE
+/// [`FULL`]: OpMask::FULL
+/// [`contains`]: OpMask::contains
+#[derive(
+    BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
+)]
+pub struct OpMask(u8);
+
+impl OpMask {
+    /// Add or edit a value / collection entry (`Add`/`Update`).
+    pub const WRITE: Self = Self(0b0000_0001);
+    /// Remove a value / collection entry (`DeleteRef`).
+    pub const DELETE: Self = Self(0b0000_0010);
+    /// Rotate the writer set / grant / revoke.
+    pub const ADMIN: Self = Self(0b0000_0100);
+
+    /// No permissions.
+    pub const NONE: Self = Self(0);
+    /// Every permission. The default a writer gets when granted without an
+    /// explicit mask, so plain group-writable storage behaves as before.
+    pub const FULL: Self = Self(0b0000_0111);
+
+    /// Whether `self` grants every bit in `needed`.
+    #[must_use]
+    pub const fn contains(self, needed: Self) -> bool {
+        (self.0 & needed.0) == needed.0
+    }
+
+    /// Union of two masks.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// The raw bits — for committing the mask into a signed payload.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+}
+
+/// Build a writer map granting every key [`OpMask::FULL`] — the default
+/// group-writable behaviour (every writer may do anything).
+#[must_use]
+pub fn full_mask(keys: BTreeSet<PublicKey>) -> BTreeMap<PublicKey, OpMask> {
+    keys.into_iter().map(|k| (k, OpMask::FULL)).collect()
+}
+
+impl Default for OpMask {
+    fn default() -> Self {
+        Self::FULL
+    }
+}
+
 /// Defines the type of storage and its associated authorization rules.
 /// Enum to define the storage domain and its associated data.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -454,8 +533,12 @@ pub enum StorageType {
     /// O(1) and retroactively revokes access for the entire subtree without
     /// changing any member's bytes (no per-entity churn → no split-brain).
     Shared {
-        /// The set of public keys authorized to write or rotate.
-        writers: BTreeSet<PublicKey>,
+        /// The public keys authorized to write or rotate, each with its
+        /// [`OpMask`] (which operations it may perform). The map keys are the
+        /// writer set (membership); a key's mask defaults to [`OpMask::FULL`]
+        /// when granted without restriction, so plain group-writable storage is
+        /// unchanged.
+        writers: BTreeMap<PublicKey, OpMask>,
         /// A signature and nonce. The signature must be from a key in `writers`
         /// (the *currently stored* set, not the action's claimed set).
         signature_data: Option<SignatureData>,
