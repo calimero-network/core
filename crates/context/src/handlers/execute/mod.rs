@@ -1250,6 +1250,16 @@ enum CachedOrBlob {
     Blob(calimero_primitives::application::ApplicationBlob),
 }
 
+/// Drop any state mutation an execution produced — clears the committed root
+/// hash, the sync artifact, and queued cross-context calls. Used by the
+/// post-execution authorization guards (ReadOnly member, `#[app::view]` ABI
+/// mismatch, non-member state op) before returning an empty outcome.
+fn discard_state_mutation(outcome: &mut Outcome) {
+    outcome.root_hash = None;
+    outcome.artifact.clear();
+    outcome.xcalls.clear();
+}
+
 async fn internal_execute(
     datastore: Store,
     node_client: &NodeClient,
@@ -1400,9 +1410,7 @@ async fn internal_execute(
             method = %method,
             "ReadOnly member attempted state mutation — discarding changes"
         );
-        outcome.root_hash = None;
-        outcome.artifact.clear();
-        outcome.xcalls.clear();
+        discard_state_mutation(&mut outcome);
         return Ok((outcome, None, None, None));
     }
 
@@ -1417,9 +1425,7 @@ async fn internal_execute(
             method = %method,
             "method declared #[app::view] produced a state mutation — discarding (ABI mismatch)"
         );
-        outcome.root_hash = None;
-        outcome.artifact.clear();
-        outcome.xcalls.clear();
+        discard_state_mutation(&mut outcome);
         return Ok((outcome, None, None, None));
     }
 
@@ -1430,9 +1436,7 @@ async fn internal_execute(
             method = %method,
             "Non-member attempted state mutation — discarding changes (B3 user-storage extension)"
         );
-        outcome.root_hash = None;
-        outcome.artifact.clear();
-        outcome.xcalls.clear();
+        discard_state_mutation(&mut outcome);
         return Ok((outcome, None, None, None));
     }
 
