@@ -109,6 +109,8 @@ impl AccessControl {
                 "Role name must not contain a NUL byte".to_owned(),
             )));
         }
+        // Byte length (not char count) — role names become storage keys, so the
+        // encoded size is the relevant bound.
         if role.len() > MAX_ROLE_NAME_LEN {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "Role name exceeds the maximum length".to_owned(),
@@ -248,9 +250,11 @@ impl AccessControl {
     /// Grant `role` to `who`. Only an admin may; enforced at merge (the registry
     /// entry inherits the admin writer set).
     ///
+    /// Idempotent in effect (holding the role after any number of grants) but
+    /// not in storage: each call writes a fresh `LwwRegister` and emits a delta.
     /// Concurrent `grant`/`revoke` of the same `(role, member)` from different
     /// admins resolve last-writer-wins by the `LwwRegister` timestamp — there is
-    /// no semantic tie-break.
+    /// no semantic tie-break, and a re-grant refreshes that timestamp.
     ///
     /// # Errors
     /// `ActionNotAllowed` if the executor is not an admin or `role` contains the
