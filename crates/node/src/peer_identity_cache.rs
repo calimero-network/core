@@ -105,6 +105,37 @@ pub(crate) struct ResolvedMember {
     pub(crate) peers: Vec<PeerId>,
 }
 
+/// How strongly to bias the gossipsub mesh toward a peer (#2513),
+/// derived from the verified role of a member identity it hosts. `Ord`
+/// ranks `Anchor` above `Member`, so a peer hosting several members is
+/// scored at its strongest tier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum PeerScoreTier {
+    Member,
+    Anchor,
+}
+
+impl PeerScoreTier {
+    /// Tier for a member's observed role: `Admin`/`ReadOnlyTee` are the
+    /// trusted-anchor roles, `Member`/`ReadOnly` are plain members.
+    pub(crate) fn from_role(role: &GroupMemberRole) -> Self {
+        match role {
+            GroupMemberRole::Admin | GroupMemberRole::ReadOnlyTee => Self::Anchor,
+            GroupMemberRole::Member | GroupMemberRole::ReadOnly => Self::Member,
+        }
+    }
+
+    /// The gossipsub application-specific score for this tier. Both are
+    /// positive (above every gating threshold); anchors score higher so
+    /// mesh maintenance prefers them for slots.
+    pub(crate) fn score(self) -> f64 {
+        match self {
+            Self::Anchor => 20.0,
+            Self::Member => 10.0,
+        }
+    }
+}
+
 /// In-memory member-identity cache: one bucket per group, snapshotted to
 /// disk per group by the node layer.
 #[derive(Default, Debug)]
@@ -453,6 +484,18 @@ mod tests {
     fn peer(n: u8) -> PeerId {
         let kp = libp2p::identity::Keypair::ed25519_from_bytes([n; 32]).expect("seed");
         PeerId::from_public_key(&kp.public())
+    }
+
+    #[test]
+    fn peer_score_tier_ranks_anchor_above_member() {
+        // The reconciler picks a peer's strongest tier via `Ord`/`max`, so
+        // pin the ordering (the derive relies on declaration order).
+        assert!(PeerScoreTier::Anchor > PeerScoreTier::Member);
+        assert_eq!(
+            PeerScoreTier::Member.max(PeerScoreTier::Anchor),
+            PeerScoreTier::Anchor
+        );
+        assert!(PeerScoreTier::Anchor.score() > PeerScoreTier::Member.score());
     }
 
     #[test]
