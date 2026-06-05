@@ -1,18 +1,22 @@
 //! Example app for the access-control components.
 //!
-//! Demonstrates two of the `calimero_storage` components:
+//! Demonstrates three `calimero_storage` components:
 //! - [`Ownable`] — a single-owner config cell with transferable ownership.
 //! - [`PermissionedStorage`] — a group-writable settings map.
+//! - [`AccessControl`] — an admin-managed role registry.
 //!
-//! The guards in the methods (`only_owner`) are fail-fast UX. The real
-//! authorization boundary is at merge: the components store data inside
-//! writer-set-guarded entities, so a peer that hand-crafts a delta around this
-//! WASM still has an unauthorized write rejected when honest nodes apply it.
+//! The guards in the methods (`only_owner`, the admin checks inside
+//! `AccessControl`) are fail-fast UX. The real authorization boundary is at
+//! merge: the components store data inside writer-set-guarded entities, so a
+//! peer that hand-crafts a delta around this WASM still has an unauthorized
+//! write rejected when honest nodes apply it.
 
 use std::collections::BTreeSet;
 
 use calimero_sdk::{app, env, PublicKey};
-use calimero_storage::collections::{LwwRegister, Ownable, PermissionedStorage, UnorderedMap};
+use calimero_storage::collections::{
+    AccessControl, LwwRegister, Ownable, PermissionedStorage, UnorderedMap,
+};
 
 #[app::state]
 pub struct ComponentsDemo {
@@ -22,18 +26,57 @@ pub struct ComponentsDemo {
     /// Group-writable settings. Every entry inherits the writer domain, so a
     /// non-writer's forged entry is rejected at merge — not just the wrapper.
     settings: PermissionedStorage<UnorderedMap<String, LwwRegister<String>>>,
+    /// Role registry. The installer is the sole initial admin; admins grant /
+    /// revoke roles, and a non-admin's forged grant is rejected at merge.
+    roles: AccessControl,
 }
 
 #[app::logic]
 impl ComponentsDemo {
-    /// The installer becomes the config owner and the sole settings writer.
+    /// The installer becomes the config owner, sole settings writer, and admin.
     #[app::init]
     pub fn init() -> ComponentsDemo {
         let me: PublicKey = env::executor_id().into();
         ComponentsDemo {
             config: Ownable::new_owned_by(me),
             settings: PermissionedStorage::new(BTreeSet::from([me]), false),
+            roles: AccessControl::new(me),
         }
+    }
+
+    /// Grant a role to a member. Admin-only (fail-fast here, enforced at merge).
+    pub fn grant_role(&mut self, role: String, who: PublicKey) -> app::Result<()> {
+        self.roles.grant(&role, who)?;
+        Ok(())
+    }
+
+    /// Revoke a role from a member. Admin-only.
+    pub fn revoke_role(&mut self, role: String, who: PublicKey) -> app::Result<()> {
+        self.roles.revoke(&role, &who)?;
+        Ok(())
+    }
+
+    /// Whether a member holds a role (anyone may query).
+    pub fn has_role(&self, role: String, who: PublicKey) -> app::Result<bool> {
+        Ok(self.roles.has_role(&role, &who)?)
+    }
+
+    /// e2e-support method (not for production). Reports whether the caller is
+    /// allowed to grant (i.e. is an admin) as a bool instead of trapping, so the
+    /// adversarial workflow can assert a non-admin is refused without failing the
+    /// RPC call. A real app should just call `grant_role` and propagate the
+    /// error. Authorization is checked explicitly here (rather than swallowing
+    /// the error from `grant`) so a genuine storage error still propagates rather
+    /// than masquerading as a refusal. The authoritative rejection of a *forged
+    /// grant delta* that bypasses this gate happens at merge (the same
+    /// writer-set-guarded mechanism the settings adversarial step proves).
+    pub fn try_grant_role(&mut self, role: String, who: PublicKey) -> app::Result<bool> {
+        let me: PublicKey = env::executor_id().into();
+        if !self.roles.is_admin(&me) {
+            return Ok(false);
+        }
+        self.roles.grant(&role, who)?;
+        Ok(true)
     }
 
     /// Owner-only write. The guard fails fast; the boundary is that `config` is
@@ -117,6 +160,32 @@ mod tests {
             .unwrap();
         assert_eq!(app.view(|s| s.get_config()).unwrap(), "by-other");
         assert!(app.call(|s| s.set_config("nope".to_owned())).is_err());
+    }
+
+    #[test]
+    fn admin_grants_role_non_admin_cannot() {
+        let mut app = TestHost::new(ComponentsDemo::init);
+        let other: PublicKey = OTHER.into();
+
+        // Admin (the installer) grants a role.
+        app.call(|s| s.grant_role("editor".to_owned(), other))
+            .unwrap();
+        assert!(app
+            .view(|s| s.has_role("editor".to_owned(), other))
+            .unwrap());
+
+        // A non-admin's grant is rejected by the fail-fast guard (and would be
+        // at merge). Merge-time enforcement needs a 2-node e2e (design §6.3).
+        let third: PublicKey = [0x33; 32].into();
+        let denied = app.call_as(OTHER, |s| s.grant_role("editor".to_owned(), third));
+        assert!(denied.is_err());
+
+        // Admin can revoke.
+        app.call(|s| s.revoke_role("editor".to_owned(), other))
+            .unwrap();
+        assert!(!app
+            .view(|s| s.has_role("editor".to_owned(), other))
+            .unwrap());
     }
 
     #[test]
