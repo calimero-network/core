@@ -119,6 +119,99 @@ where
     log.snapshot.as_ref().map(|s| s.writers.clone())
 }
 
+/// Resolve the writer set at `causal_parents` with **per-entry authentication**
+/// — the P3 security boundary (core#2716 S2).
+///
+/// The rotation-log child rides ordinary sync, so any peer can inject entries
+/// (untrusted in transit). This fold makes each rotation earn its place: walking
+/// the reachable entries in causal order, a rotation is applied only when its
+/// `signer` held [`OpMask::ADMIN`] in the writer set resolved *just before* it
+/// AND `verify(entry)` confirms the signature. An unauthorized or forged entry
+/// is skipped (the prior set carries forward), so a fabricated child cannot
+/// grant writer rights. The genesis entry — the one with no reachable causal
+/// ancestor in the log — is self-authorizing: its signature establishes the
+/// initial set (the context creator bootstraps the writers).
+///
+/// `verify` is injected (rather than calling `ed25519_verify` directly) so the
+/// fold is pure and unit-testable, and so the caller owns the
+/// commitment-binding policy (the entry's signature must commit to its
+/// `new_writers`/nonce — see the wiring site). It receives each candidate entry
+/// and returns whether the signature is cryptographically valid.
+///
+/// Returns `None` only when there is neither a reachable entry nor a snapshot.
+pub fn writers_at_authenticated<H, V>(
+    log: &RotationLog,
+    causal_parents: &[[u8; 32]],
+    happens_before: H,
+    verify: V,
+) -> Option<BTreeMap<PublicKey, OpMask>>
+where
+    H: Fn(&[u8; 32], &[u8; 32]) -> bool,
+    V: Fn(&RotationLogEntry) -> bool,
+{
+    let mut reachable: Vec<&RotationLogEntry> = if causal_parents.is_empty() {
+        log.entries.iter().collect()
+    } else {
+        log.entries
+            .iter()
+            .filter(|e| {
+                causal_parents
+                    .iter()
+                    .any(|p| e.delta_id == *p || happens_before(&e.delta_id, p))
+            })
+            .collect()
+    };
+
+    // Ascending causal order: causal precedence first, then HLC, then signer.
+    // (The mirror of `writers_at`'s `max_by`, applied as a total sort so the
+    // fold visits ancestors before descendants.)
+    reachable.sort_by(|a, b| {
+        if happens_before(&a.delta_id, &b.delta_id) {
+            return std::cmp::Ordering::Less;
+        }
+        if happens_before(&b.delta_id, &a.delta_id) {
+            return std::cmp::Ordering::Greater;
+        }
+        match a.delta_hlc.cmp(&b.delta_hlc) {
+            std::cmp::Ordering::Equal => {}
+            non_eq => return non_eq,
+        }
+        // Smaller signer bytes sort first; `None` (unsigned) sorts last.
+        match (&a.signer, &b.signer) {
+            (Some(sa), Some(sb)) => sa.digest().cmp(sb.digest()),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    });
+
+    let mut current: Option<BTreeMap<PublicKey, OpMask>> =
+        log.snapshot.as_ref().map(|s| s.writers.clone());
+
+    for entry in reachable {
+        let authorized = match &current {
+            // Genesis: self-authorizing — the bootstrap establishes the set.
+            None => verify(entry),
+            // Rotation: signer must have held ADMIN in the prior set, and the
+            // signature must verify. Otherwise the entry is forged/unauthorized
+            // and the prior set carries forward.
+            Some(prior) => {
+                entry
+                    .signer
+                    .as_ref()
+                    .and_then(|s| prior.get(s))
+                    .is_some_and(|mask| mask.contains(OpMask::ADMIN))
+                    && verify(entry)
+            }
+        };
+        if authorized {
+            current = Some(entry.new_writers.clone());
+        }
+    }
+
+    current
+}
+
 #[cfg(test)]
 mod tests {
     use core::num::NonZeroU128;
@@ -167,11 +260,76 @@ mod tests {
         }
     }
 
+    fn sorted_keys(writers: &BTreeMap<PublicKey, OpMask>) -> Vec<PublicKey> {
+        let mut k: Vec<PublicKey> = writers.keys().copied().collect();
+        k.sort();
+        k
+    }
+
+    fn expect(bytes: &[u8]) -> Vec<PublicKey> {
+        let mut v: Vec<PublicKey> = bytes.iter().copied().map(pk).collect();
+        v.sort();
+        v
+    }
+
     #[test]
     fn empty_log_returns_none() {
         let log = RotationLog::empty();
         assert_eq!(latest_writers(&log), None);
         assert_eq!(writers_at(&log, &[[0; 32]], |_, _| false), None);
+    }
+
+    /// P3 S2 security boundary: a rotation authored by a non-writer (here Carol,
+    /// who was never granted ADMIN) must be REJECTED by the authenticated fold,
+    /// even when its signature is cryptographically valid — authorization is
+    /// against the writer set resolved just before the entry.
+    #[test]
+    fn authenticated_fold_rejects_unauthorized_rotation() {
+        let hb = |a: &[u8; 32], b: &[u8; 32]| a[0] < b[0];
+        let log = log_of(vec![
+            entry(1, 100, 0xAA, &[0xAA], 1), // genesis: Alice establishes {Alice}
+            entry(2, 200, 0xAA, &[0xAA, 0xBB], 2), // Alice (ADMIN) adds Bob — OK
+            entry(3, 300, 0xCC, &[0xCC], 3), // Carol (NOT a writer) forges a rotation
+        ]);
+        // All signatures "valid"; the fold still rejects Carol's rotation.
+        let writers = writers_at_authenticated(&log, &[], hb, |_| true).unwrap();
+        assert_eq!(
+            sorted_keys(&writers),
+            expect(&[0xAA, 0xBB]),
+            "Carol's unauthorized rotation must be excluded"
+        );
+    }
+
+    /// A rotation whose signature does NOT verify (forged / replayed) is rejected
+    /// even though its claimed signer IS an authorized writer.
+    #[test]
+    fn authenticated_fold_rejects_bad_signature() {
+        let hb = |a: &[u8; 32], b: &[u8; 32]| a[0] < b[0];
+        let log = log_of(vec![
+            entry(1, 100, 0xAA, &[0xAA], 1),       // genesis
+            entry(2, 200, 0xAA, &[0xAA, 0xBB], 2), // Alice authorized as signer...
+        ]);
+        // ...but `verify` rejects entry 2's signature → rotation dropped.
+        let writers = writers_at_authenticated(&log, &[], hb, |e| e.delta_id[0] == 1).unwrap();
+        assert_eq!(
+            sorted_keys(&writers),
+            expect(&[0xAA]),
+            "a rotation with an invalid signature must be rejected"
+        );
+    }
+
+    /// The authorized linear chain folds to the latest set (sanity: the fold
+    /// doesn't over-reject legitimate rotations).
+    #[test]
+    fn authenticated_fold_accepts_authorized_chain() {
+        let hb = |a: &[u8; 32], b: &[u8; 32]| a[0] < b[0];
+        let log = log_of(vec![
+            entry(1, 100, 0xAA, &[0xAA], 1),
+            entry(2, 200, 0xAA, &[0xAA, 0xBB], 2),
+            entry(3, 300, 0xBB, &[0xBB], 3), // Bob (ADMIN in {Alice,Bob}) rotates to {Bob}
+        ]);
+        let writers = writers_at_authenticated(&log, &[], hb, |_| true).unwrap();
+        assert_eq!(sorted_keys(&writers), expect(&[0xBB]));
     }
 
     #[test]
