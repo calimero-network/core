@@ -288,6 +288,38 @@ converts its identity-gated data. `WriterSetCell`/`SharedStorage` (group
 writer-set data) converts only via the organic writer-write path, never the
 one-tap batch (it is group data, not single-owner "my data").
 
+**You do not write `migrate_my_entries` — `#[app::state(version = N)]` generates
+it.** All you do is declare the version; the method appears on your app and is
+exported for RPC:
+
+```rust
+// v2 binary. `version = 2` both sets the convert target AND generates
+// `migrate_my_entries()` because the state has an AuthoredMap field.
+#[app::state(version = 2, emits = for<'a> Event<'a>)]
+#[derive(app::Migrate)]
+#[migrate(from = NotesV1, method = migrate_v1_to_v2)]
+pub struct NotesV2 {
+    notes: AuthoredMap<String, LwwRegister<String>>,  // carried by the migrate
+    #[migrate(new = LwwRegister::new(String::new()))]
+    migration_note: LwwRegister<String>,
+}
+// No migrate_my_entries body anywhere — the macro emits it.
+```
+
+Then the owner triggers it like any other method — one signed call, no args,
+returning `{converted, remaining}`:
+
+```text
+# after the upgrade, from the owner's node (frontend "migrate my data" button):
+app_call(context_id, "migrate_my_entries", {})
+  → { "converted": 2, "remaining": 0 }   # this owner's 2 stale notes converted
+```
+
+Loop until `remaining == 0` if you want to drain everything in one sitting
+(a single call already converts all of the caller's currently-stale entries; a
+second call returns `{converted: 0, remaining: 0}`). It only ever touches
+entries the caller owns, so each user converts their own data independently.
+
 ---
 
 ## 6. The no-silent-downgrade rail
