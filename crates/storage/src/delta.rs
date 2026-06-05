@@ -5,7 +5,6 @@
 
 use core::cell::RefCell;
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::io;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
@@ -14,7 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::action::Action;
 use crate::address::Id;
-use crate::entities::{Metadata, SignatureData, StorageType};
+use crate::entities::{Metadata, OpMask, SignatureData, StorageType};
 use crate::env;
 use crate::integration::Comparison;
 use crate::logical_clock::HybridTimestamp;
@@ -172,7 +171,7 @@ pub enum StorageDelta {
         /// signatures against the entry for the action's entity id;
         /// non-Shared entities (User / Frozen / Public) are absent
         /// from the map.
-        effective_writers: BTreeMap<Id, BTreeSet<PublicKey>>,
+        effective_writers: BTreeMap<Id, BTreeMap<PublicKey, OpMask>>,
     },
 }
 
@@ -467,8 +466,11 @@ mod borsh_roundtrip_tests {
         let writer2 = PublicKey::from([0xBB_u8; 32]);
 
         let mut effective_writers = BTreeMap::new();
-        let _ = effective_writers.insert(entity_a, BTreeSet::from([writer1, writer2]));
-        let _ = effective_writers.insert(entity_b, BTreeSet::from([writer1]));
+        let _ = effective_writers.insert(
+            entity_a,
+            BTreeMap::from([(writer1, OpMask::FULL), (writer2, OpMask::FULL)]),
+        );
+        let _ = effective_writers.insert(entity_b, BTreeMap::from([(writer1, OpMask::FULL)]));
 
         let original = StorageDelta::CausalActions {
             actions: vec![make_action(0xFE)],

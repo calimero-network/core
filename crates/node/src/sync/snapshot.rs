@@ -1,6 +1,6 @@
 //! Snapshot sync protocol for full state bootstrap.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 use borsh::BorshDeserialize;
@@ -554,8 +554,10 @@ impl SyncManager {
         // members against that authenticated map once the stream completes. A
         // member still only persists after its writers are authenticated (the
         // anchor's own record is signature-verified in pass 1).
-        let mut anchor_writers: HashMap<Id, BTreeSet<calimero_primitives::identity::PublicKey>> =
-            HashMap::new();
+        let mut anchor_writers: HashMap<
+            Id,
+            BTreeMap<calimero_primitives::identity::PublicKey, calimero_storage::entities::OpMask>,
+        > = HashMap::new();
         let mut deferred_members: Vec<(Id, Vec<u8>, Vec<u8>)> = Vec::new();
 
         loop {

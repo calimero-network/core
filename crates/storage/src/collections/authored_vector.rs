@@ -180,6 +180,32 @@ where
         }))
     }
 
+    /// Returns the slot's stamped `schema_version`, or `None` if the slot is
+    /// out of bounds or was never stamped (legacy). Reads the Merkle-invisible
+    /// `Metadata.schema_version`; used to skip already-migrated slots.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn entry_schema_version(&self, index: usize) -> Result<Option<u32>, StoreError> {
+        let Some(id) = self.inner.entry_id_at(index)? else {
+            return Ok(None);
+        };
+        let metadata = <Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
+        Ok(metadata.and_then(|m| m.schema_version))
+    }
+
+    /// Returns whether the current executor owns the slot at `index`. False for
+    /// out-of-bounds slots. Only the owner can drive the per-entry convert.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn owned_by_me(&self, index: usize) -> Result<bool, StoreError> {
+        Ok(self
+            .owner_of(index)?
+            .as_ref()
+            .is_some_and(super::authored_common::executor_matches_owner))
+    }
+
     /// Iterates over all values in insertion order.
     ///
     /// # Errors
@@ -320,6 +346,32 @@ mod tests {
 
     fn pk(bytes: [u8; 32]) -> PublicKey {
         bytes.into()
+    }
+
+    #[test]
+    #[serial]
+    fn entry_schema_version_and_ownership_reflect_stored_metadata() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+
+        let mut v = Root::new(|| AuthoredVector::<u64>::new());
+        v.push(7).expect("push");
+
+        // The pusher's write stamps the binary's current target schema version.
+        assert_eq!(
+            v.entry_schema_version(0).unwrap(),
+            Some(calimero_sdk::app::schema_version()),
+        );
+        assert!(v.owned_by_me(0).unwrap());
+
+        // A different executor is not the owner.
+        env::set_executor_id(BOB);
+        assert!(!v.owned_by_me(0).unwrap());
+
+        // Out-of-bounds slot: no version, not owned.
+        env::set_executor_id(ALICE);
+        assert_eq!(v.entry_schema_version(99).unwrap(), None);
+        assert!(!v.owned_by_me(99).unwrap());
     }
 
     #[test]

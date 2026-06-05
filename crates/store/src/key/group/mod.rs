@@ -1404,6 +1404,15 @@ pub struct GroupUpgradeValue {
     /// non-cascade upgrades and pre-existing records. NEVER cleared once set
     /// (survives `Completed`) — the boundary the state-delta HLC fence reads.
     pub cascade_hlc: Option<HybridTimestamp>,
+    /// The migration's expand-entry governance position: the
+    /// `NamespaceGovHead.sequence` captured when this cascade was applied.
+    /// Unlike [`Self::cascade_hlc`] (an NTP64 physical-time HLC), this is a
+    /// monotonic governance-op counter — the SAME number space the migration
+    /// heartbeat's `synced_up_to_hlc` (`= head.sequence`) lives in, so the
+    /// migration-status rollup pins the cohort by comparing `synced_up_to_hlc <
+    /// cascade_seq` like-for-like. `None` for non-cascade upgrades and pre-existing
+    /// records.
+    pub cascade_seq: Option<u64>,
 }
 
 #[cfg(feature = "borsh")]
@@ -1439,6 +1448,29 @@ impl BorshDeserialize for GroupUpgradeValue {
                 }
             }
         };
+        // Second backward-compatible trailing field, added after `cascade_hlc`.
+        // Records written before this field decode as `None`: a clean EOF right
+        // after `cascade_hlc` (legacy and pre-`cascade_seq` records) yields
+        // `None`, mirroring the `cascade_hlc` decode above. 0 = None,
+        // 1 = Some(u64).
+        let cascade_seq = {
+            let mut first = [0u8; 1];
+            if !read_byte(reader, &mut first)? {
+                None
+            } else {
+                let tag = first[0];
+                match tag {
+                    0 => None,
+                    1 => Some(u64::deserialize_reader(reader)?),
+                    _ => {
+                        return Err(borsh::io::Error::new(
+                            borsh::io::ErrorKind::InvalidData,
+                            "invalid Option tag for cascade_seq",
+                        ))
+                    }
+                }
+            }
+        };
         Ok(Self {
             from_version,
             to_version,
@@ -1447,6 +1479,7 @@ impl BorshDeserialize for GroupUpgradeValue {
             initiated_by,
             status,
             cascade_hlc,
+            cascade_seq,
         })
     }
 }
@@ -2362,6 +2395,7 @@ mod tests {
                     failed: 1,
                 },
                 cascade_hlc: None,
+                cascade_seq: None,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -2433,6 +2467,7 @@ mod tests {
                     completed_at: Some(1_700_001_000),
                 },
                 cascade_hlc: None,
+                cascade_seq: None,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -2469,6 +2504,7 @@ mod cascade_hlc_borsh_tests {
             initiated_by: PrimitivePublicKey::from([7u8; 32]),
             status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc,
+            cascade_seq: None,
         }
     }
 
@@ -2529,5 +2565,61 @@ mod cascade_hlc_borsh_tests {
             result.is_err(),
             "expected Err for truncated cascade_hlc body"
         );
+    }
+
+    #[test]
+    fn roundtrips_with_populated_cascade_seq() {
+        let mut value = sample(Some(HybridTimestamp::zero()));
+        value.cascade_seq = Some(12);
+        let bytes = to_vec(&value).unwrap();
+        let decoded = GroupUpgradeValue::try_from_slice(&bytes).unwrap();
+        assert_eq!(decoded.cascade_hlc, Some(HybridTimestamp::zero()));
+        assert_eq!(decoded.cascade_seq, Some(12));
+    }
+
+    #[test]
+    fn old_format_with_cascade_hlc_but_no_cascade_seq_decodes_as_none() {
+        // A record written after `cascade_hlc` was added but before `cascade_seq`:
+        // it ends right after the `cascade_hlc` Option, so `cascade_seq` must
+        // decode as `None` (clean EOF), not error.
+        let mut legacy = Vec::new();
+        "1.0.0".to_owned().serialize(&mut legacy).unwrap();
+        "2.0.0".to_owned().serialize(&mut legacy).unwrap();
+        Some(vec![1u8, 2, 3]).serialize(&mut legacy).unwrap();
+        1_700_000_000u64.serialize(&mut legacy).unwrap();
+        PrimitivePublicKey::from([7u8; 32])
+            .serialize(&mut legacy)
+            .unwrap();
+        (GroupUpgradeStatus::Completed { completed_at: None })
+            .serialize(&mut legacy)
+            .unwrap();
+        Some(HybridTimestamp::zero())
+            .serialize(&mut legacy)
+            .unwrap();
+
+        let decoded = GroupUpgradeValue::try_from_slice(&legacy).unwrap();
+        assert_eq!(decoded.cascade_hlc, Some(HybridTimestamp::zero()));
+        assert_eq!(decoded.cascade_seq, None);
+    }
+
+    #[test]
+    fn fully_legacy_record_decodes_both_trailing_fields_as_none() {
+        // A pre-`cascade_hlc` record (clean EOF after `status`) must decode BOTH
+        // trailing optionals as `None`.
+        let mut legacy = Vec::new();
+        "1.0.0".to_owned().serialize(&mut legacy).unwrap();
+        "2.0.0".to_owned().serialize(&mut legacy).unwrap();
+        Some(vec![1u8, 2, 3]).serialize(&mut legacy).unwrap();
+        1_700_000_000u64.serialize(&mut legacy).unwrap();
+        PrimitivePublicKey::from([7u8; 32])
+            .serialize(&mut legacy)
+            .unwrap();
+        (GroupUpgradeStatus::Completed { completed_at: None })
+            .serialize(&mut legacy)
+            .unwrap();
+
+        let decoded = GroupUpgradeValue::try_from_slice(&legacy).unwrap();
+        assert_eq!(decoded.cascade_hlc, None);
+        assert_eq!(decoded.cascade_seq, None);
     }
 }

@@ -218,6 +218,7 @@ impl Element {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
             merkle_hash: [0; 32],
         }
@@ -237,6 +238,7 @@ impl Element {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name,
+                schema_version: None,
             },
             merkle_hash: [0; 32],
         }
@@ -260,6 +262,7 @@ impl Element {
                 storage_type: StorageType::Public,
                 crdt_type: Some(crdt_type),
                 field_name,
+                schema_version: None,
             },
             merkle_hash: [0; 32],
         }
@@ -278,6 +281,7 @@ impl Element {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
             merkle_hash: [0; 32],
         }
@@ -362,8 +366,21 @@ impl Element {
         self.update(); // Mark as dirty
     }
 
-    /// Helper to set the storage domain to `Shared` (an anchor entity).
+    /// Helper to set the storage domain to `Shared` (an anchor entity). Every
+    /// writer gets [`OpMask::FULL`] — the default group-writable behaviour. Use
+    /// [`set_shared_domain_scoped`](Self::set_shared_domain_scoped) to grant
+    /// restricted masks.
     pub fn set_shared_domain(&mut self, writers: BTreeSet<PublicKey>) {
+        self.metadata.storage_type = StorageType::Shared {
+            writers: full_mask(writers),
+            signature_data: None, // Will be signed later
+        };
+        self.update(); // Mark as dirty
+    }
+
+    /// Like [`set_shared_domain`](Self::set_shared_domain) but with explicit
+    /// per-writer [`OpMask`]s.
+    pub fn set_shared_domain_scoped(&mut self, writers: BTreeMap<PublicKey, OpMask>) {
         self.metadata.storage_type = StorageType::Shared {
             writers,
             signature_data: None, // Will be signed later
@@ -427,6 +444,72 @@ pub struct SignatureData {
     pub signer: Option<PublicKey>,
 }
 
+/// A per-principal **operation mask** for writer-set-guarded storage: which
+/// classes of mutation a given writer may perform, enforced at merge.
+///
+/// A `u8` bitset of three independent bits. The named combos ([`WRITE`],
+/// [`FULL`]) are just unions of those bits — the merge check only ever tests
+/// individual bits via [`contains`](OpMask::contains).
+///
+/// `INSERT` and `UPDATE` are deliberately *not* split yet: distinguishing them
+/// requires resolving entity existence at the causal cut (a convergence concern,
+/// not a compatibility one), so a single [`WRITE`] bit covers all upserts until
+/// that lands.
+///
+/// [`WRITE`]: OpMask::WRITE
+/// [`FULL`]: OpMask::FULL
+/// [`contains`]: OpMask::contains
+#[derive(
+    BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
+)]
+pub struct OpMask(u8);
+
+impl OpMask {
+    /// Add or edit a value / collection entry (`Add`/`Update`).
+    pub const WRITE: Self = Self(0b0000_0001);
+    /// Remove a value / collection entry (`DeleteRef`).
+    pub const DELETE: Self = Self(0b0000_0010);
+    /// Rotate the writer set / grant / revoke.
+    pub const ADMIN: Self = Self(0b0000_0100);
+
+    /// No permissions.
+    pub const NONE: Self = Self(0);
+    /// Every permission. The default a writer gets when granted without an
+    /// explicit mask, so plain group-writable storage behaves as before.
+    pub const FULL: Self = Self(0b0000_0111);
+
+    /// Whether `self` grants every bit in `needed`.
+    #[must_use]
+    pub const fn contains(self, needed: Self) -> bool {
+        (self.0 & needed.0) == needed.0
+    }
+
+    /// Union of two masks.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// The raw bits — for committing the mask into a signed payload.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+}
+
+/// Build a writer map granting every key [`OpMask::FULL`] — the default
+/// group-writable behaviour (every writer may do anything).
+#[must_use]
+pub fn full_mask(keys: BTreeSet<PublicKey>) -> BTreeMap<PublicKey, OpMask> {
+    keys.into_iter().map(|k| (k, OpMask::FULL)).collect()
+}
+
+impl Default for OpMask {
+    fn default() -> Self {
+        Self::FULL
+    }
+}
+
 /// Defines the type of storage and its associated authorization rules.
 /// Enum to define the storage domain and its associated data.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -454,8 +537,12 @@ pub enum StorageType {
     /// O(1) and retroactively revokes access for the entire subtree without
     /// changing any member's bytes (no per-entity churn → no split-brain).
     Shared {
-        /// The set of public keys authorized to write or rotate.
-        writers: BTreeSet<PublicKey>,
+        /// The public keys authorized to write or rotate, each with its
+        /// [`OpMask`] (which operations it may perform). The map keys are the
+        /// writer set (membership); a key's mask defaults to [`OpMask::FULL`]
+        /// when granted without restriction, so plain group-writable storage is
+        /// unchanged.
+        writers: BTreeMap<PublicKey, OpMask>,
         /// A signature and nonce. The signature must be from a key in `writers`
         /// (the *currently stored* set, not the action's claimed set).
         signature_data: Option<SignatureData>,
@@ -512,6 +599,16 @@ pub struct Metadata {
     /// - Enables schema inference from database without external schema file
     /// - None for legacy data or entities created without field name
     pub field_name: Option<String>,
+
+    /// Per-entry schema version tag for identity-gated migration (PR-6c).
+    ///
+    /// - Stamped on an identity-gated entry by its owner's next signed write
+    ///   under the v2 binary, so peers can detect a stale (un-migrated) entry.
+    /// - `None` indicates a legacy/unmarked entry (treated as version 0).
+    /// - **Merkle-invisible:** never folded into `own_hash`/`full_hash`
+    ///   (`own_hash = Sha256(value bytes)` only, `interface.rs`), so tagging an
+    ///   entry never diverges its leaf hash between peers.
+    pub schema_version: Option<u32>,
 }
 
 impl Metadata {
@@ -524,6 +621,7 @@ impl Metadata {
             storage_type: StorageType::default(),
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         }
     }
 
@@ -536,6 +634,7 @@ impl Metadata {
             storage_type: StorageType::default(),
             crdt_type: Some(crdt_type),
             field_name: None,
+            schema_version: None,
         }
     }
 
@@ -548,6 +647,7 @@ impl Metadata {
             storage_type: StorageType::default(),
             crdt_type: None,
             field_name: Some(field_name),
+            schema_version: None,
         }
     }
 
@@ -565,6 +665,7 @@ impl Metadata {
             storage_type: StorageType::default(),
             crdt_type: Some(crdt_type),
             field_name: Some(field_name),
+            schema_version: None,
         }
     }
 
@@ -584,6 +685,56 @@ impl Metadata {
     pub fn updated_at(&self) -> u64 {
         *self.updated_at
     }
+
+    /// Stamps the per-entry schema version tag (identity-gated migration).
+    ///
+    /// Merkle-invisible: see [`Metadata::schema_version`].
+    #[must_use]
+    pub fn with_schema_version(mut self, version: u32) -> Self {
+        self.schema_version = Some(version);
+        self
+    }
+
+    /// Returns the per-entry schema version tag, if any.
+    ///
+    /// `None` indicates a legacy/unmarked entry (treated as version 0).
+    #[must_use]
+    pub const fn schema_version(&self) -> Option<u32> {
+        self.schema_version
+    }
+}
+
+/// Per-entry dispatch predicate for identity-gated migration (PR-6c).
+///
+/// Returns `true` iff `metadata` describes an **identity-gated** entry
+/// (`StorageType::User` / `Shared` / `SharedMember` — the verifiable,
+/// owner/writer-signed storage types) whose stamped [`schema_version`] trails
+/// the v2 binary's `target_version`. Such an entry is eligible for an
+/// owner-driven convert: the owner's (or a current writer's) next ordinary
+/// signed write re-stamps it at `target_version` (Task 6c.3).
+///
+/// `None` schema versions are legacy/unmarked entries written before tagging
+/// existed; they are treated as version `0`, so any positive `target_version`
+/// counts them as stale.
+///
+/// `Public` / `Frozen` entries always return `false`: they are not
+/// identity-gated and are migrated by the Convergent whole-root path
+/// (PR-6a/6b), never by an owner re-write.
+///
+/// This is the *classification* predicate only — it decides *whether* an entry
+/// needs converting, not *how* (the per-type transform) nor *when* (the
+/// owner's write path).
+///
+/// [`schema_version`]: Metadata::schema_version
+#[must_use]
+pub fn needs_owner_convert(metadata: &Metadata, target_version: u32) -> bool {
+    let identity_gated = matches!(
+        metadata.storage_type,
+        StorageType::User { .. } | StorageType::Shared { .. } | StorageType::SharedMember { .. }
+    );
+
+    // `None` (legacy/unmarked) counts as version 0.
+    identity_gated && metadata.schema_version.unwrap_or(0) < target_version
 }
 
 // Metadata uses standard Borsh serialization via derive.

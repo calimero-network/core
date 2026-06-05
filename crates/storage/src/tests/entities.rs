@@ -284,3 +284,230 @@ mod metadata__constructor {
         todo!()
     }
 }
+
+mod metadata__schema_version {
+    use super::*;
+    use crate::index::Index;
+    use crate::store::{MockedStorage, StorageAdaptor};
+
+    #[test]
+    fn schema_version_defaults_none() {
+        let m = Metadata::new(1, 1);
+        assert_eq!(
+            m.schema_version, None,
+            "legacy/unmarked entries carry no schema tag"
+        );
+    }
+
+    #[test]
+    fn with_schema_version_sets_tag() {
+        let m = Metadata::new(1, 1).with_schema_version(2);
+        assert_eq!(m.schema_version, Some(2));
+        assert_eq!(m.schema_version(), Some(2));
+    }
+
+    #[test]
+    fn constructors_default_schema_version_none() {
+        use calimero_primitives::crdt::CrdtType;
+
+        assert_eq!(Metadata::new(1, 1).schema_version, None);
+        assert_eq!(
+            Metadata::with_crdt_type(1, 1, CrdtType::GCounter).schema_version,
+            None
+        );
+        assert_eq!(
+            Metadata::with_field_name(1, 1, "f".to_owned()).schema_version,
+            None
+        );
+        assert_eq!(
+            Metadata::with_crdt_type_and_field_name(1, 1, CrdtType::GCounter, "f".to_owned())
+                .schema_version,
+            None
+        );
+    }
+
+    /// Drives `data` through the REAL persistence path (`save_raw` →
+    /// `save_internal`, where `own_hash = Sha256(final_data)` and the parent
+    /// `full_hash` is recomputed) under `metadata`, returning the leaf's
+    /// `(full_hash, own_hash)` AND the parent's `(full_hash, _)` as actually
+    /// recorded in the Merkle index. Each call runs in an isolated store
+    /// (distinct `MockedStorage` const generic), so the two invocations cannot
+    /// cross-contaminate. This is the same computation the sync layer compares
+    /// peer-to-peer — not a hand-rolled `Sha256(data)` re-statement.
+    fn persisted_hashes<S: StorageAdaptor>(
+        parent: Id,
+        leaf: Id,
+        data: &[u8],
+        metadata: Metadata,
+    ) -> (([u8; 32], [u8; 32]), [u8; 32]) {
+        use crate::action::Action;
+        use crate::interface::{ApplyContext, Interface};
+
+        // Register the parent (root) and the leaf under it in the index so
+        // `save_raw` doesn't reject the leaf as an orphan.
+        Interface::<S>::apply_action(
+            Action::Add {
+                id: leaf,
+                data: data.to_vec(),
+                ancestors: vec![ChildInfo::new(parent, [0_u8; 32], Metadata::new(1, 1))],
+                metadata: Metadata::new(1, 1),
+            },
+            &ApplyContext::empty(),
+        )
+        .expect("seed leaf under parent");
+
+        // Now persist the value under the metadata-under-test through the real
+        // digest path. `save_raw` stamps `own_hash = Sha256(final_data)` and
+        // propagates the new `full_hash` up to the parent.
+        Interface::<S>::save_raw(leaf, data.to_vec(), metadata).expect("save_raw leaf");
+
+        let leaf_hashes = Index::<S>::get_hashes_for(leaf)
+            .expect("leaf hashes")
+            .expect("leaf index present");
+        let (parent_full, _) = Index::<S>::get_hashes_for(parent)
+            .expect("parent hashes")
+            .expect("parent index present");
+        (leaf_hashes, parent_full)
+    }
+
+    /// Real-behavior guard for the CORE 6c.1 invariant: `Metadata.schema_version`
+    /// is Merkle-invisible. We persist BYTE-IDENTICAL data under two metadata
+    /// that differ ONLY in `schema_version` (`None` vs `Some(7)`) and assert the
+    /// resulting `own_hash`, leaf `full_hash`, AND parent `full_hash` — every
+    /// hash the sync layer compares — are equal. If a future refactor ever
+    /// folded metadata into the digest, the tagged store would diverge and this
+    /// test would fail. (The previous version hashed `Sha256(data)` twice over
+    /// the same input — a tautology that never fed `schema_version` through the
+    /// real hasher and would pass even after such a regression.)
+    #[test]
+    fn schema_version_does_not_affect_own_hash() {
+        let parent = Id::new([0x40; 32]);
+        let leaf = Id::new([0x41; 32]);
+        let data = b"identity-gated-value".to_vec();
+
+        // Identical except `schema_version`: one unmarked, one tagged v7.
+        let untagged = Metadata::new(1, 1);
+        let tagged = Metadata::new(1, 1).with_schema_version(7);
+
+        let ((leaf_full_untagged, own_untagged), parent_full_untagged) =
+            persisted_hashes::<MockedStorage<8101>>(parent, leaf, &data, untagged);
+        let ((leaf_full_tagged, own_tagged), parent_full_tagged) =
+            persisted_hashes::<MockedStorage<8102>>(parent, leaf, &data, tagged);
+
+        assert_eq!(
+            own_untagged, own_tagged,
+            "schema_version must not change the leaf own_hash (Sha256 over value bytes only)"
+        );
+        assert_eq!(
+            leaf_full_untagged, leaf_full_tagged,
+            "schema_version must not change the leaf full_hash"
+        );
+        assert_eq!(
+            parent_full_untagged, parent_full_tagged,
+            "schema_version must not change the parent full_hash that propagates to the root"
+        );
+    }
+}
+
+/// Task 6c.2: per-entry dispatch predicate `needs_owner_convert`. Decides
+/// whether a stored entity is an IDENTITY-GATED entry whose stamped
+/// `schema_version` is older than the v2 binary's target — i.e. one that the
+/// owner's next signed write must convert. Pure classification only (NOT the
+/// convert itself, NOT the SDK schema_version constant).
+mod metadata__needs_owner_convert {
+    use super::*;
+    use crate::entities::needs_owner_convert;
+
+    /// A `PublicKey` for an entry owner / shared writer in the predicate tests.
+    fn key(byte: u8) -> PublicKey {
+        PublicKey::from([byte; 32])
+    }
+
+    /// `Metadata` stamped `User { owner }` with the given `schema_version`
+    /// (`None` ⇒ legacy/unmarked, treated as v0).
+    fn user_meta(schema: Option<u32>) -> Metadata {
+        let mut m = Metadata::new(1, 1);
+        m.storage_type = StorageType::User {
+            owner: key(0xAA),
+            signature_data: None,
+        };
+        m.schema_version = schema;
+        m
+    }
+
+    /// `Metadata` stamped `Shared { writers }` with the given `schema_version`.
+    fn shared_meta(schema: Option<u32>) -> Metadata {
+        let mut m = Metadata::new(1, 1);
+        m.storage_type = StorageType::Shared {
+            writers: [key(0xBB)]
+                .into_iter()
+                .map(|k| (k, crate::entities::OpMask::FULL))
+                .collect(),
+            signature_data: None,
+        };
+        m.schema_version = schema;
+        m
+    }
+
+    /// `Metadata` stamped `SharedMember { anchor }` with the given
+    /// `schema_version`.
+    fn shared_member_meta(schema: Option<u32>) -> Metadata {
+        let mut m = Metadata::new(1, 1);
+        m.storage_type = StorageType::SharedMember {
+            anchor: Id::new([0xCC; 32]),
+            signature_data: None,
+        };
+        m.schema_version = schema;
+        m
+    }
+
+    #[test]
+    fn stale_identity_gated_entries_need_convert() {
+        // None (legacy v0) and an explicit older tag both trail target 2.
+        for build in [user_meta, shared_meta, shared_member_meta] {
+            assert!(
+                needs_owner_convert(&build(None), 2),
+                "legacy (None == v0) identity-gated entry trails target -> convert"
+            );
+            assert!(
+                needs_owner_convert(&build(Some(1)), 2),
+                "explicitly older identity-gated entry trails target -> convert"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_gated_at_or_above_target_does_not_convert() {
+        for build in [user_meta, shared_meta, shared_member_meta] {
+            assert!(
+                !needs_owner_convert(&build(Some(2)), 2),
+                "identity-gated entry already at target must not re-convert"
+            );
+            assert!(
+                !needs_owner_convert(&build(Some(3)), 2),
+                "identity-gated entry ahead of target must not convert"
+            );
+        }
+    }
+
+    #[test]
+    fn public_and_frozen_entries_never_convert() {
+        // Convergent / whole-root path owns these; the owner-driven predicate
+        // must ignore them regardless of (missing) schema tag.
+        let mut public = Metadata::new(1, 1);
+        public.storage_type = StorageType::Public;
+        assert!(!needs_owner_convert(&public, 2));
+
+        let mut frozen = Metadata::new(1, 1);
+        frozen.storage_type = StorageType::Frozen;
+        assert!(!needs_owner_convert(&frozen, 2));
+    }
+
+    #[test]
+    fn none_schema_version_is_treated_as_version_zero() {
+        // Even with target 1, an unmarked legacy identity-gated entry is stale.
+        assert!(needs_owner_convert(&user_meta(None), 1));
+        // ...but target 0 is not greater than the v0 floor, so no convert.
+        assert!(!needs_owner_convert(&user_meta(None), 0));
+    }
+}

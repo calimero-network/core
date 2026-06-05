@@ -31,21 +31,22 @@ use crate::group::{
     GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
     GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GetMemberMetadataRequest,
-    GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse, GroupSummary,
-    GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest,
-    IssueOwnershipProofResponse, JoinContextRequest, JoinContextResponse, JoinGroupRequest,
-    JoinGroupResponse, JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse,
-    LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
-    LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
-    ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, NamespaceSummary, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
-    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
-    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
-    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse,
-    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    GetMigrationStatusRequest, GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse,
+    GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
+    IssueOwnershipProofRequest, IssueOwnershipProofResponse, JoinContextRequest,
+    JoinContextResponse, JoinGroupRequest, JoinGroupResponse, JoinSubgroupInheritanceRequest,
+    JoinSubgroupInheritanceResponse, LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest,
+    LeaveGroupResponse, LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
+    ListNamespacesForApplicationRequest, ListNamespacesRequest, MigrationStatus, NamespaceSummary,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextMetadataRequest,
+    SetDefaultCapabilitiesRequest, SetGroupMetadataRequest, SetMemberAutoFollowRequest,
+    SetMemberCapabilitiesRequest, SetMemberMetadataRequest, SetSubgroupVisibilityRequest,
+    SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
+    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
+    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
+    UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -149,6 +150,7 @@ mod borsh_layout {
         pub(super) storage_type: StorageType,
         pub(super) crdt_type: Option<CrdtType>,
         pub(super) field_name: Option<String>,
+        pub(super) schema_version: Option<u32>,
     }
 
     #[derive(BorshDeserialize)]
@@ -1779,6 +1781,12 @@ impl ContextClient {
         GetCascadeStatus,
         GetCascadeStatusRequest,
         eyre::Result<Vec<CascadeStatusEntry>>
+    );
+    forward_to_actor!(
+        get_migration_status,
+        GetMigrationStatus,
+        GetMigrationStatusRequest,
+        eyre::Result<MigrationStatus>
     );
 
     // --- Methods with custom parameter handling (not suitable for forward_to_actor!) ---

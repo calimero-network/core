@@ -15,17 +15,18 @@ use crate::group::{
     DetachContextFromGroupRequest, GetCascadeStatusRequest, GetContextMetadataRequest,
     GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
     GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberMetadataRequest,
-    GetNamespaceIdentityRequest, IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest,
-    JoinContextRequest, JoinGroupRequest, JoinSubgroupInheritanceRequest, LeaveContextRequest,
-    LeaveGroupRequest, LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest,
-    ListGroupMembersRequest, ListNamespacesForApplicationRequest, ListNamespacesRequest,
-    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextMetadataRequest,
-    SetDefaultCapabilitiesRequest, SetGroupMetadataRequest, SetMemberAutoFollowRequest,
-    SetMemberCapabilitiesRequest, SetMemberMetadataRequest, SetSubgroupVisibilityRequest,
-    SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
-    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
-    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
-    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    GetMigrationStatusRequest, GetNamespaceIdentityRequest, IssueNamespaceOwnershipProofRequest,
+    IssueOwnershipProofRequest, JoinContextRequest, JoinGroupRequest,
+    JoinSubgroupInheritanceRequest, LeaveContextRequest, LeaveGroupRequest, LeaveNamespaceRequest,
+    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
+    RetryGroupUpgradeRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -540,5 +541,9 @@ pub enum ContextMessage {
     GetCascadeStatus {
         request: GetCascadeStatusRequest,
         outcome: oneshot::Sender<<GetCascadeStatusRequest as Message>::Result>,
+    },
+    GetMigrationStatus {
+        request: GetMigrationStatusRequest,
+        outcome: oneshot::Sender<<GetMigrationStatusRequest as Message>::Result>,
     },
 }

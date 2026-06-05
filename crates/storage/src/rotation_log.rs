@@ -25,12 +25,13 @@
 //! The threshold (epic suggests 1000 entries) is a P6 measurement; the shape
 //! is fixed here so the on-disk format doesn't need a breaking change later.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use borsh::{from_slice, to_vec, BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::PublicKey;
 
 use crate::address::Id;
+use crate::entities::OpMask;
 use crate::error::StorageError;
 use crate::logical_clock::HybridTimestamp;
 use crate::store::{Key, StorageAdaptor};
@@ -73,10 +74,10 @@ pub struct RotationLogEntry {
     /// treated as "larger than any").
     pub signer: Option<PublicKey>,
 
-    /// Resolved writer set after this rotation. `BTreeSet` so the on-wire
-    /// representation is canonical (sorted), matching the rest of the
-    /// `Shared` storage path.
-    pub new_writers: BTreeSet<PublicKey>,
+    /// Resolved writer set after this rotation, each writer with its
+    /// [`OpMask`]. `BTreeMap` so the on-wire representation is canonical
+    /// (sorted by key), matching the rest of the `Shared` storage path.
+    pub new_writers: BTreeMap<PublicKey, OpMask>,
 
     /// Per-entity monotonic counter at the time of rotation. Preserved for
     /// debugging and v2 compatibility; the ADR rule does not depend on it.
@@ -92,7 +93,7 @@ pub struct RotationLogEntry {
 pub struct RotationSnapshot {
     /// Writer set as-of the boundary. When a query's `causal_parents` only
     /// reach into the compacted region, this is the answer.
-    pub writers: BTreeSet<PublicKey>,
+    pub writers: BTreeMap<PublicKey, OpMask>,
 
     /// Index into the original (uncompacted) entry stream that the snapshot
     /// represents. Compacted entries had indices `[0, cutoff_index)`; live
@@ -235,7 +236,7 @@ pub fn append<S: StorageAdaptor>(id: Id, entry: RotationLogEntry) -> Result<(), 
 /// Returns `None` only when the log has neither entries nor a compaction
 /// snapshot.
 #[must_use]
-pub fn resolve_local(log: &RotationLog) -> Option<BTreeSet<PublicKey>> {
+pub fn resolve_local(log: &RotationLog) -> Option<BTreeMap<PublicKey, OpMask>> {
     if let Some(entry) = log.entries.iter().max_by(|a, b| {
         // HLC first (causally monotonic post-#2635), then signer as the
         // ADR-0001 tiebreak: smaller signer bytes win, `None` (unsigned legacy)
@@ -294,7 +295,11 @@ mod tests {
             delta_id: [delta_id; 32],
             delta_hlc: HybridTimestamp::new(ts),
             signer: Some(pk(signer)),
-            new_writers: writers.iter().copied().map(pk).collect(),
+            new_writers: writers
+                .iter()
+                .copied()
+                .map(|b| (pk(b), OpMask::FULL))
+                .collect(),
             writers_nonce: nonce,
         }
     }
@@ -374,7 +379,12 @@ mod tests {
         ]);
         assert_eq!(
             resolve_local(&log),
-            Some([0xAA, 0xBB].into_iter().map(pk).collect())
+            Some(
+                [0xAA, 0xBB]
+                    .into_iter()
+                    .map(|b| (pk(b), OpMask::FULL))
+                    .collect()
+            )
         );
     }
 
@@ -393,7 +403,12 @@ mod tests {
         // ...and it is the HLC winner R2 = {B, C}.
         assert_eq!(
             resolve_local(&node1),
-            Some([0xBB, 0xCC].into_iter().map(pk).collect())
+            Some(
+                [0xBB, 0xCC]
+                    .into_iter()
+                    .map(|b| (pk(b), OpMask::FULL))
+                    .collect()
+            )
         );
     }
 
@@ -410,7 +425,11 @@ mod tests {
                 delta_id: [delta_id; 32],
                 delta_hlc: HybridTimestamp::new(ts),
                 signer: Some(pk(signer)),
-                new_writers: writers.iter().copied().map(pk).collect(),
+                new_writers: writers
+                    .iter()
+                    .copied()
+                    .map(|b| (pk(b), OpMask::FULL))
+                    .collect(),
                 writers_nonce: 1,
             }
         };
@@ -421,14 +440,20 @@ mod tests {
         // 0xAA < 0xBB → {A, C} wins; order-independent.
         assert_eq!(
             resolve_local(&log),
-            Some([0xAA, 0xCC].into_iter().map(pk).collect())
+            Some(
+                [0xAA, 0xCC]
+                    .into_iter()
+                    .map(|b| (pk(b), OpMask::FULL))
+                    .collect()
+            )
         );
     }
 
     #[test]
     fn resolve_local_falls_back_to_snapshot() {
         // Compacted log with no live entries → the snapshot's writer set.
-        let snap: BTreeSet<PublicKey> = [0xEE].into_iter().map(pk).collect();
+        let snap: BTreeMap<PublicKey, OpMask> =
+            [0xEE].into_iter().map(|b| (pk(b), OpMask::FULL)).collect();
         let log = RotationLog {
             snapshot: Some(RotationSnapshot {
                 writers: snap.clone(),

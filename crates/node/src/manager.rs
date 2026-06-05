@@ -9,6 +9,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use prometheus_client::metrics::counter::Counter;
 
+use crate::migration_status::{MigrationEmitter, MigrationStatusCache, DEFAULT_EMIT_INTERVAL};
 use crate::readiness::{ReadinessCache, ReadinessCacheNotify, ReadinessConfig, ReadinessManager};
 use crate::sync::SyncManager;
 use crate::{NodeClients, NodeManagers, NodeState};
@@ -111,6 +112,22 @@ pub struct NodeManager {
     /// Touched only by
     /// `handlers::network_event::readiness::handle_readiness_beacon`.
     pub(crate) ns_beacon_sync_debounce: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
+    /// Shared per-(namespace, peer) migration-heartbeat TTL cache (PR-6c
+    /// Task 6c.8). The receiver-side
+    /// `network_event::namespace::handle_namespace_governance_delta`
+    /// `MigrationHeartbeat` arm verifies the signature + cohort membership
+    /// (`verify_migration_heartbeat`) and calls `cache.insert(&heartbeat)`
+    /// directly — the cache is internally synchronised, mirroring
+    /// `readiness_cache`. Read by the `get_migration_status` rollup
+    /// (Task 6c.9). Ephemeral telemetry, never persisted, never a gate.
+    pub(crate) migration_status_cache: Arc<MigrationStatusCache>,
+    /// Address of the [`MigrationEmitter`] actor (PR-6c Task 6c.8 emit side).
+    /// Wired by `setup_migration_emitter` in [`Actor::started`]; `None` until
+    /// then. The node posts [`crate::migration_status::MigrationFactsUpdate`]
+    /// here when a governance apply or owner-driven convert may have changed
+    /// local residue, and the emitter publishes the node's own signed
+    /// heartbeat (on-change + periodic) on the namespace topic.
+    pub(crate) migration_emitter_addr: Option<Addr<MigrationEmitter>>,
 }
 
 impl NodeManager {
@@ -145,6 +162,8 @@ impl NodeManager {
             divergence_detected,
             divergence_streak: HashMap::new(),
             ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
+            migration_status_cache: Arc::new(MigrationStatusCache::default()),
+            migration_emitter_addr: None,
         }
     }
 }
@@ -157,6 +176,7 @@ impl Actor for NodeManager {
         self.setup_maintenance_intervals(ctx);
         self.setup_hash_heartbeat_interval(ctx);
         self.setup_readiness_manager(ctx);
+        self.setup_migration_emitter(ctx);
     }
 }
 
@@ -178,5 +198,50 @@ impl NodeManager {
             last_probe_response_at: std::collections::HashMap::new(),
         };
         self.readiness_addr = Some(manager.start());
+    }
+
+    /// Mount the [`MigrationEmitter`] actor (PR-6c Task 6c.8 emit side) and
+    /// store its address so the governance-apply path can post
+    /// [`crate::migration_status::MigrationFactsUpdate`] on residue changes.
+    /// Idempotent — only mounts once per manager instance.
+    pub(crate) fn setup_migration_emitter(&mut self, _ctx: &mut actix::Context<Self>) {
+        if self.migration_emitter_addr.is_some() {
+            return;
+        }
+        let emitter = MigrationEmitter {
+            node_client: self.clients.node.clone(),
+            datastore: self.datastore.clone(),
+            interval: DEFAULT_EMIT_INTERVAL,
+            last_emitted: std::collections::HashMap::new(),
+        };
+        self.migration_emitter_addr = Some(emitter.start());
+    }
+
+    /// Drive the [`MigrationEmitter`] with the node's freshly-computed migration
+    /// facts for `namespace_id`. Called from every governance-apply seam that
+    /// also notifies the readiness FSM (gossip-receive, backfill-apply, and the
+    /// publisher-side `ForwardNamespaceOpApplied`), so a residue/schema change
+    /// edge-triggers an immediate heartbeat and the namespace is seeded into the
+    /// emitter's `last_emitted` map — the seam that makes the periodic
+    /// keep-alive tick live (before this, `last_emitted` stayed empty forever
+    /// and no heartbeat was ever emitted).
+    ///
+    /// Facts are computed from local governance state
+    /// ([`crate::migration_status::compute_namespace_migration_facts`]); the
+    /// emitter overlays the live `synced_up_to_hlc` and publishes. Best-effort:
+    /// a `None` address (the brief window before `setup_migration_emitter` runs
+    /// in `Actor::started`) drops the signal — the next applied op re-drives it.
+    pub(crate) fn notify_migration_facts(&self, namespace_id: [u8; 32]) {
+        let Some(addr) = &self.migration_emitter_addr else {
+            return;
+        };
+        let facts = crate::migration_status::compute_namespace_migration_facts(
+            &self.datastore,
+            namespace_id,
+        );
+        addr.do_send(crate::migration_status::MigrationFactsUpdate {
+            namespace_id,
+            facts,
+        });
     }
 }

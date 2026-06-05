@@ -246,6 +246,13 @@ impl ToTokens for PublicLogicMethod<'_> {
                 ::calimero_sdk::env::init_logging();
 
                 ::calimero_sdk::event::register::<#self_>();
+                // PR-6c: surface this binary's SCHEMA_VERSION so the
+                // type-erased `app::schema_version()` (read at the
+                // identity-gated storage stamp site) reflects the active
+                // target on a real node, mirroring the event-emitter register
+                // above. Without this every entrypoint would leave it at the
+                // unversioned 0, mis-stamping converted entries.
+                ::calimero_sdk::app::register_schema_version::<#self_>();
 
                 #input
 

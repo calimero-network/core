@@ -1,0 +1,451 @@
+name: 32 — One-tap migrate_my_entries (PR-6e, node-log validated)
+description: >
+  The explicit, one-signature "migrate my authored data" flow, on top of the
+  6c owner-driven convert. After a namespace cascades v1 → v2, each owner's
+  identity-gated AuthoredMap notes are carried through but stay stamped at the
+  v1 schema (1) — below the v2 target (2) — until re-signed. Instead of waiting
+  for an organic per-entry edit, each owner calls the SDK-macro-generated
+  `migrate_my_entries()` export ONCE; it sweeps every note that owner owns and
+  is still below target, re-writing each through the owner-driven convert
+  (re-stamp + re-sign on the monotonic nonce), and returns {converted, remaining}.
+
+  Discriminating assertions:
+    - PRE-convert: each carried note reports note_schema_version == 1 (carried,
+      not yet converted) — proving migrate alone does NOT convert authored data.
+    - The one-tap call is OWNER-SCOPED: node 1's call converts only its 2 notes
+      (converted == 2), node 2's only its 1 (converted == 1); neither touches
+      the other's. remaining == 0 after each owner's single call.
+    - POST-convert: every note reports note_schema_version == 2 on BOTH nodes
+      (converged), and values are preserved.
+    - The 6c per-entry re-stamp branch fired (assert_log_present), the owner
+      gate never tripped (assert_log_absent "Cannot change owner"), and no
+      converted delta was silently dropped by the schema fence.
+    - IDEMPOTENT: a second migrate_my_entries() on node 1 returns converted == 0.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-ux
+  base_port: 9660
+  base_rpc_port: 9760
+
+steps:
+  # Phase 1: Install v1 + v2 on the admin node; node 2 fetches over BlobShare.
+  - name: Install scenario-authored-migrate-ux-v1 on node 1
+    type: install_application
+    node: app-migration-ux-1
+    path: apps/migrations/scenario-authored-migrate-ux-v1/res/scenario_authored_migrate_ux_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-authored-migrate-ux-v2 on node 1
+    type: install_application
+    node: app-migration-ux-1
+    path: apps/migrations/scenario-authored-migrate-ux-v2/res/scenario_authored_migrate_ux_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Phase 2: Namespace + Open descendant subgroup + context.
+  - name: Create namespace on node 1 (anchors app_v1)
+    type: create_namespace
+    node: app-migration-ux-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-ux-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create descendant Open subgroup on node 1
+    type: create_group_in_namespace
+    node: app-migration-ux-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "authored-ux-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-ux-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-ux-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: Invite node 2, materialise inherited membership, join context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-ux-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-ux-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-ux-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-ux-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: Each node writes its OWN owner-keyed notes under v1.
+  # node 1 owns "n1-a" + "n1-b"; node 2 owns "n2-a".
+  - name: Node 1 writes its first note
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: set_note
+    args:
+      key: "n1-a"
+      text: "node1-a-v1"
+
+  - name: Node 1 writes its second note
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: set_note
+    args:
+      key: "n1-b"
+      text: "node1-b-v1"
+
+  - name: Node 2 writes its own note
+    type: call
+    node: app-migration-ux-2
+    context_id: "{{ctx_id}}"
+    method: set_note
+    args:
+      key: "n2-a"
+      text: "node2-a-v1"
+
+  - name: Wait for all v1 notes to sync across nodes
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-ux-1
+      - app-migration-ux-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Read v1 schema on node 1
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema shape (3 identity-gated notes)
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "note_count": 3}})'
+
+  # Phase 5: lazy-on-access policy, then ONE cascade v1 → v2.
+  - name: Set upgrade policy to lazy-on-access on node 1
+    type: update_group_settings
+    node: app-migration-ux-1
+    group_id: "{{namespace_id}}"
+    upgrade_policy: lazy_on_access
+
+  - name: Cascade namespace v1 → v2 (initiated by node 1)
+    type: upgrade_group
+    node: app-migration-ux-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+    cascade: true
+
+  - name: Wait for cascade op to gossip + apply on both nodes
+    type: wait
+    seconds: 15
+
+  # Phase 6: a read drives each node's whole-root migrate to v2 (notes carried).
+  - name: Read post-migration schema_info on node 1
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node1: result
+
+  - name: Read post-migration schema_info on node 2
+    type: call
+    node: app-migration-ux-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  - name: Assert the migration executed on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-ux-1
+    patterns:
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert the migration executed on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-ux-2
+    patterns:
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert v2 schema on node 1 (all 3 notes carried through migrate)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0", "note_count": 3}})'
+
+  # Phase 6b: PRE-convert — carried notes are still stamped at v1 (schema 1).
+  # This proves migrate alone does NOT convert identity-gated data; it waits
+  # for the owner. (If this read itself converted, the value would be 2.)
+  - name: Read node 1's own note schema_version BEFORE convert
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: note_schema_version
+    args:
+      key: "n1-a"
+    outputs:
+      pre_convert_n1a: result
+
+  - name: Assert node 1's note is still at schema 1 before convert
+    type: json_assert
+    statements:
+      - 'json_equal({{pre_convert_n1a}}, {"output": 1})'
+
+  # Phase 7: THE ONE-TAP CONVERT. Each owner calls migrate_my_entries() ONCE.
+  # Owner-scoped: node 1 sweeps its 2 notes, node 2 its 1; neither touches the
+  # other's. The result {converted, remaining} is the completion signal.
+  - name: Node 1 one-tap migrate_my_entries
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: migrate_my_entries
+    outputs:
+      convert_node1: result
+
+  - name: Node 2 one-tap migrate_my_entries
+    type: call
+    node: app-migration-ux-2
+    context_id: "{{ctx_id}}"
+    method: migrate_my_entries
+    outputs:
+      convert_node2: result
+
+  - name: Assert node 1 converted exactly its 2 notes, none left
+    type: json_assert
+    statements:
+      - 'json_equal({{convert_node1}}, {"output": {"converted": 2, "remaining": 0}})'
+
+  - name: Assert node 2 converted exactly its 1 note, none left
+    type: json_assert
+    statements:
+      - 'json_equal({{convert_node2}}, {"output": {"converted": 1, "remaining": 0}})'
+
+  # Phase 7a: RACE-FREE PERSISTENCE ORACLE. Each node reads its OWN note right
+  # after its OWN one-tap — no replication involved. This is the authoritative
+  # proof the convert actually PERSISTED the re-stamp on the originator (a
+  # `converted` count alone is computed before the guard save and would not
+  # catch an LWW-dropped write). If these are 2, the convert works.
+  - name: Read node 1's own note schema_version immediately after its convert
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: note_schema_version
+    args:
+      key: "n1-a"
+    outputs:
+      local_n1a: result
+
+  - name: Read node 2's own note schema_version immediately after its convert
+    type: call
+    node: app-migration-ux-2
+    context_id: "{{ctx_id}}"
+    method: note_schema_version
+    args:
+      key: "n2-a"
+    outputs:
+      local_n2a: result
+
+  - name: Assert each owner's own note persisted at schema 2 (convert landed)
+    type: json_assert
+    statements:
+      - 'json_equal({{local_n1a}}, {"output": 2})'
+      - 'json_equal({{local_n2a}}, {"output": 2})'
+
+  # Phase 7b: give the converted deltas time to gossip + apply on the peer.
+  # (wait_for_sync can return instantly on a trivially-matching DAG-head check,
+  # racing the convert delta, so wait explicitly before cross-node assertions.)
+  - name: Wait for converted notes to replicate as normal signed deltas
+    type: wait
+    seconds: 15
+
+  # Phase 8: NEGATIVE node-log validation.
+  - name: Assert the owner gate never tripped on either node
+    type: assert_log_absent
+    nodes:
+      - app-migration-ux-1
+      - app-migration-ux-2
+    patterns:
+      - "Cannot change owner of User storage"
+
+  - name: Assert no converted owner delta was silently dropped (both nodes)
+    type: assert_log_absent
+    nodes:
+      - app-migration-ux-1
+      - app-migration-ux-2
+    patterns:
+      - "Dropping state delta — HLC fence: stale schema after cascade migration"
+
+  # Phase 9: CONVERGENCE — every note is at schema 2 on BOTH nodes, and values
+  # are preserved. node 2 sees node 1's converted notes at v2 (the convert
+  # replicated as ordinary signed deltas).
+  - name: Read node 1's note schema_version AFTER convert (node 1)
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: note_schema_version
+    args:
+      key: "n1-a"
+    outputs:
+      post_convert_n1a: result
+
+  - name: Read node 1's note schema_version from node 2 (converged)
+    type: call
+    node: app-migration-ux-2
+    context_id: "{{ctx_id}}"
+    method: note_schema_version
+    args:
+      key: "n1-a"
+    outputs:
+      post_convert_n1a_node2: result
+
+  - name: Read node 2's note schema_version from node 1 (converged)
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: note_schema_version
+    args:
+      key: "n2-a"
+    outputs:
+      post_convert_n2a_node1: result
+
+  - name: Assert all notes converged at schema 2 across both nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{post_convert_n1a}}, {"output": 2})'
+      - 'json_equal({{post_convert_n1a_node2}}, {"output": 2})'
+      - 'json_equal({{post_convert_n2a_node1}}, {"output": 2})'
+
+  - name: Read node 1's converted note value from node 2 (value preserved)
+    type: call
+    node: app-migration-ux-2
+    context_id: "{{ctx_id}}"
+    method: my_note
+    args:
+      key: "n1-a"
+    outputs:
+      value_n1a_node2: result
+
+  - name: Assert the converted note value is preserved cross-node
+    type: json_assert
+    statements:
+      - 'json_equal({{value_n1a_node2}}, {"output": "node1-a-v1"})'
+
+  # Phase 9c: NODE-LOG validation. The owner's one-tap re-stamp runs in the wasm
+  # GUEST; it is surfaced to the node log via the guest→host log bridge (forwarded
+  # as WASM_LOG), so it is observable on the ORIGINATING node. Each node converted
+  # its OWN notes, so the signal is present on both. Asserted last: the RPC
+  # convergence above is the primary proof; this is the corroborating node-log
+  # signal (regression-coupled: remove the convert and it never fires).
+  - name: Assert node 1's one-tap convert is node-observable (originating node)
+    type: assert_log_present
+    nodes:
+      - app-migration-ux-1
+    patterns:
+      - "owner-driven convert: re-stamped identity-gated entry schema_version"
+    min_matches: 1
+
+  - name: Assert node 2's one-tap convert is node-observable (originating node)
+    type: assert_log_present
+    nodes:
+      - app-migration-ux-2
+    patterns:
+      - "owner-driven convert: re-stamped identity-gated entry schema_version"
+    min_matches: 1
+
+  # Phase 9b: IDEMPOTENT — a second one-tap on node 1 converts nothing.
+  - name: Node 1 calls migrate_my_entries again (idempotent)
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: migrate_my_entries
+    outputs:
+      convert_node1_again: result
+
+  - name: Assert the second one-tap converted nothing
+    type: json_assert
+    statements:
+      - 'json_equal({{convert_node1_again}}, {"output": {"converted": 0, "remaining": 0}})'
+
+  # Phase 10: Teardown (node 1 holds admin authority).
+  - name: Delete context
+    type: delete_context
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-ux-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-ux-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1 on node 1
+    type: uninstall_application
+    node: app-migration-ux-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2 on node 1
+    type: uninstall_application
+    node: app-migration-ux-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

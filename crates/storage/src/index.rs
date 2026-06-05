@@ -671,6 +671,40 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(())
     }
 
+    /// Persist a new `schema_version` for an existing entity's index entry
+    /// (owner-driven identity-gated migration, PR-6c).
+    ///
+    /// `schema_version` is Merkle-invisible (it lives in
+    /// [`EntityIndex::metadata`], never in the hashed entity bytes — see
+    /// [`Metadata::schema_version`]), so this is hash-neutral and cannot cause
+    /// root-hash divergence. It exists because a re-write of an existing entry
+    /// flows through [`Index::update_hash_for`], which only touches the entity
+    /// hashes and `updated_at` — it deliberately does NOT rewrite the stored
+    /// metadata (see `tests/write_hook_stale_writers.rs`). The owner-driven
+    /// convert therefore stamps the new schema tag through this dedicated,
+    /// field-scoped setter rather than widening `update_hash_for`.
+    ///
+    /// No-op if the entity has no index entry yet, or if the tag is unchanged.
+    ///
+    /// [`Metadata::schema_version`]: crate::entities::Metadata::schema_version
+    ///
+    /// # Errors
+    /// Returns `StorageError` if the index cannot be loaded or written.
+    pub(crate) fn set_schema_version(
+        id: Id,
+        schema_version: Option<u32>,
+    ) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
+        if let Some(mut index) = Self::get_index(id)? {
+            if index.metadata.schema_version == schema_version {
+                return Ok(()); // unchanged — skip the redundant write
+            }
+            index.metadata.schema_version = schema_version;
+            Self::save_index(&index)?;
+        }
+        Ok(())
+    }
+
     /// Checks if an entity is deleted (tombstone marker set).
     ///
     /// Returns false if entity has no index (not found).
@@ -1064,5 +1098,65 @@ impl<S: StorageAdaptor> Index<S> {
         }
 
         Ok(collected)
+    }
+
+    /// Residue: a LOCAL DERIVED count of identity-gated entries that still
+    /// trail `target_version` (owner-driven migration, PR-6c).
+    ///
+    /// Scans this node's converged store and counts every live entry for which
+    /// [`needs_owner_convert`] holds — i.e. an identity-gated
+    /// (`User`/`Shared`/`SharedMember`) entry whose stamped
+    /// [`schema_version`](Metadata::schema_version) is older than the v2
+    /// binary's target. Tombstoned (deleted) entries are excluded: they are no
+    /// longer part of the live state and can never be owner-converted, so they
+    /// must not inflate the residue.
+    ///
+    /// This is deliberately **not** a replicated shrink-CRDT — the only such
+    /// counter double-counts under a concurrent convert (spec decision 8).
+    /// Computing it as a pure function of each node's own converged view makes
+    /// it idempotent (re-running yields the same count) and means a convert
+    /// replicated to `N` nodes decrements each node's local count by exactly 1.
+    /// It feeds the migration-status rollup (Task 6c.9) as observability only,
+    /// never a gate.
+    ///
+    /// `Public`/`Frozen` entries never count — those migrate via the Convergent
+    /// whole-root path (PR-6a/6b), not by an owner re-write.
+    ///
+    /// [`needs_owner_convert`]: crate::entities::needs_owner_convert
+    ///
+    /// # Visibility
+    /// `pub` so the node-side migration-status emitter
+    /// (`calimero_node::migration_status::compute_namespace_migration_facts`,
+    /// PR-6c) can compute honest per-context `residue_identity` telemetry. It is
+    /// the public residue-scan surface the heartbeat reports; the
+    /// `IterableStorage` bound keeps it callable only against an adaptor that can
+    /// enumerate keys (the node binds one per context via `with_runtime_env`),
+    /// so it cannot be misused as a wasm-app primitive.
+    ///
+    /// # Errors
+    /// Returns `StorageError` if an index entry cannot be loaded.
+    pub fn count_unconverted_identity_gated(target_version: u32) -> Result<usize, StorageError>
+    where
+        S: IterableStorage,
+    {
+        let mut residue = 0;
+
+        for key in S::storage_iter_keys() {
+            // Only `Index` keys carry an entry's metadata (not `Entry` payload
+            // keys).
+            if let Key::Index(id) = key {
+                if let Some(index) = Self::get_index(id)? {
+                    // A tombstoned entry is no longer live state — skip it.
+                    if index.deleted_at.is_some() {
+                        continue;
+                    }
+                    if crate::entities::needs_owner_convert(&index.metadata, target_version) {
+                        residue += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(residue)
     }
 }

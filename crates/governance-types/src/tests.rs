@@ -514,3 +514,72 @@ fn cascade_group_migration_set_borsh_round_trip() {
         other => panic!("expected CascadeGroupMigrationSet, got {:?}", other),
     }
 }
+
+// --- CascadeUpgrade wire-format back-compat (schema v7) ---
+
+#[test]
+fn cascade_upgrade_back_compat_discriminant_fixed() {
+    // `CascadeUpgrade` is the LAST variant of `GroupOp`, so its Borsh
+    // discriminant must stay fixed at ordinal 25. This is a GOLDEN
+    // byte-vector guard: the bytes below were produced by the enum at the
+    // v7 layout (CascadeUpgrade at ordinal 25, its leading discriminant
+    // byte). We decode these EXTERNALLY-FIXED bytes with the CURRENT enum —
+    // we never re-encode them here. A same-binary serialize -> deserialize
+    // round-trip would NOT catch a mid-enum insertion, because both sides
+    // would use the shifted layout and still agree. Decoding frozen bytes is
+    // what actually catches it: insert a variant in the MIDDLE of `GroupOp`
+    // and CascadeUpgrade's ordinal shifts off 25, so byte `25` here decodes
+    // as a DIFFERENT variant (or fails).
+    //
+    // Golden encoding of:
+    //   GroupOp::CascadeUpgrade {
+    //       from_app_key: [3u8; 32],
+    //       app_key: [4u8; 32],
+    //       target_application_id: sample_application_id(5),
+    //       migration: Some(b"migrate".to_vec()),
+    //       cascade_hlc: HybridTimestamp::zero(),
+    //   }
+    const GOLDEN_CASCADE_UPGRADE: &[u8] = &[
+        25, // <- CascadeUpgrade's fixed Borsh discriminant (ordinal 25)
+        3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+        3, 3, // from_app_key
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        4, 4, // app_key
+        5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 250, // target_application_id = sample_application_id(5)
+        1, 7, 0, 0, 0, 109, 105, 103, 114, 97, 116, 101, // migration = Some("migrate")
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, // cascade_hlc = HybridTimestamp::zero()
+    ];
+
+    // Up-front: the leading discriminant byte must equal CascadeUpgrade's
+    // known ordinal, so a mid-enum insertion (which shifts it) is caught.
+    assert_eq!(
+        GOLDEN_CASCADE_UPGRADE[0], 25,
+        "CascadeUpgrade's Borsh discriminant must stay at ordinal 25; a \
+         changed leading byte means a prior variant moved"
+    );
+
+    let decoded: GroupOp =
+        borsh::from_slice(GOLDEN_CASCADE_UPGRADE).expect("decode frozen CascadeUpgrade bytes");
+    match decoded {
+        GroupOp::CascadeUpgrade {
+            from_app_key,
+            app_key,
+            target_application_id,
+            migration,
+            cascade_hlc,
+        } => {
+            assert_eq!(from_app_key, [3u8; 32]);
+            assert_eq!(app_key, [4u8; 32]);
+            assert_eq!(target_application_id, sample_application_id(5));
+            assert_eq!(migration, Some(b"migrate".to_vec()));
+            assert_eq!(cascade_hlc, HybridTimestamp::zero());
+        }
+        other => panic!(
+            "frozen CascadeUpgrade bytes (discriminant 25) decoded as {:?}; a \
+             variant was inserted mid-enum, shifting prior variant tags",
+            other
+        ),
+    }
+}

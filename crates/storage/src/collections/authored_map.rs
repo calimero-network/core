@@ -232,6 +232,31 @@ where
         self.inner.len()
     }
 
+    /// Returns the entry's stamped `schema_version`, or `None` if the key is
+    /// absent or the entry was never stamped (legacy). Reads the Merkle-invisible
+    /// `Metadata.schema_version`; used to skip already-migrated entries.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn entry_schema_version(&self, k: &K) -> Result<Option<u32>, StoreError> {
+        let id = self.entry_id(k);
+        let metadata = <Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
+        Ok(metadata.and_then(|m| m.schema_version))
+    }
+
+    /// Returns whether the current executor owns `k`. False for absent keys.
+    /// Only the owner can drive the per-entry convert, so this gates which
+    /// entries `migrate_my_entries()` re-writes.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn owned_by_me(&self, k: &K) -> Result<bool, StoreError> {
+        Ok(self
+            .owner_of(k)?
+            .as_ref()
+            .is_some_and(super::authored_common::executor_matches_owner))
+    }
+
     pub(crate) fn entry_id(&self, k: &K) -> crate::address::Id {
         compute_id(self.inner.element().id(), k.as_ref())
     }
@@ -500,6 +525,144 @@ mod tests {
 
         let map = Root::new(|| AuthoredMap::<String, u64>::new());
         assert_eq!(map.owner_of(&"ghost".to_owned()).unwrap(), None);
+    }
+
+    // Reproduction for the migrate_my_entries convert path: an owner re-write
+    // via the REAL `update()` (the call migrate_my_entries makes) must PERSIST
+    // the schema re-stamp. The existing owner_driven_convert tests hand a
+    // bumped nonce straight to save_raw and never exercise update(); this pins
+    // that the guard write actually advances the nonce enough for save_internal
+    // to persist, otherwise migrate_my_entries reports `converted` while the
+    // entry silently stays stale (no re-stamp, no node-log).
+    #[test]
+    #[serial]
+    fn owner_update_persists_schema_restamp() {
+        use calimero_sdk::event::NoEvent;
+        use calimero_sdk::state::{AppState, AppStateInit};
+
+        #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+        struct V2;
+        impl AppStateInit for V2 {
+            type Return = V2;
+        }
+        impl AppState for V2 {
+            type Event<'a> = NoEvent;
+            const SCHEMA_VERSION: u32 = 2;
+        }
+        #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+        struct Unversioned;
+        impl AppStateInit for Unversioned {
+            type Return = Unversioned;
+        }
+        impl AppState for Unversioned {
+            type Event<'a> = NoEvent;
+        }
+
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+
+        // Insert at the default (unversioned 0) target — the "v1" stamp.
+        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        map.insert("k".to_owned(), 1).unwrap();
+        assert_eq!(map.entry_schema_version(&"k".to_owned()).unwrap(), Some(0));
+
+        // The binary is now v2.
+        calimero_sdk::app::register_schema_version::<V2>();
+
+        // The one-tap convert: owner re-writes through the SAME update() path
+        // migrate_my_entries uses (value unchanged).
+        map.update(&"k".to_owned(), 1).unwrap();
+
+        // The re-stamp MUST have persisted.
+        let after = map.entry_schema_version(&"k".to_owned()).unwrap();
+        calimero_sdk::app::register_schema_version::<Unversioned>(); // reset global
+        assert_eq!(
+            after,
+            Some(2),
+            "owner update() must persist the schema re-stamp; got {after:?}"
+        );
+    }
+
+    // Same as above but with the EXACT value type + read-then-write pattern the
+    // scenario-32 fixture (and migrate_my_entries) use: AuthoredMap<_, LwwRegister>
+    // re-written with the value read back from `get()`. An LwwRegister carries its
+    // own HLC; if the entry nonce is taken from the (stale) register instead of a
+    // fresh write nonce, save_internal's LWW gate drops the convert and the
+    // re-stamp never persists.
+    #[test]
+    #[serial]
+    fn owner_update_persists_schema_restamp_lww_readback() {
+        use calimero_sdk::event::NoEvent;
+        use calimero_sdk::state::{AppState, AppStateInit};
+
+        use crate::collections::LwwRegister;
+
+        #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+        struct V2;
+        impl AppStateInit for V2 {
+            type Return = V2;
+        }
+        impl AppState for V2 {
+            type Event<'a> = NoEvent;
+            const SCHEMA_VERSION: u32 = 2;
+        }
+        #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+        struct Unversioned;
+        impl AppStateInit for Unversioned {
+            type Return = Unversioned;
+        }
+        impl AppState for Unversioned {
+            type Event<'a> = NoEvent;
+        }
+
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+
+        let mut map = Root::new(|| AuthoredMap::<String, LwwRegister<String>>::new());
+        map.insert("k".to_owned(), LwwRegister::new("v1".to_owned()))
+            .unwrap();
+        assert_eq!(map.entry_schema_version(&"k".to_owned()).unwrap(), Some(0));
+
+        calimero_sdk::app::register_schema_version::<V2>();
+
+        // Mirror migrate_my_entries exactly: read the value, then write it back.
+        let v = map.get(&"k".to_owned()).unwrap().expect("entry present");
+        map.update(&"k".to_owned(), v).unwrap();
+
+        let after = map.entry_schema_version(&"k".to_owned()).unwrap();
+        calimero_sdk::app::register_schema_version::<Unversioned>();
+        assert_eq!(
+            after,
+            Some(2),
+            "owner update() of an LwwRegister read-back must persist the re-stamp; got {after:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn entry_schema_version_and_ownership_reflect_stored_metadata() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+
+        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        map.insert("apple".to_owned(), 1).unwrap();
+
+        // An owner write stamps the binary's current target schema version
+        // (0 in the unit env, where no app is registered).
+        assert_eq!(
+            map.entry_schema_version(&"apple".to_owned()).unwrap(),
+            Some(calimero_sdk::app::schema_version()),
+        );
+        assert!(map.owned_by_me(&"apple".to_owned()).unwrap());
+
+        // A different executor is not the owner.
+        env::set_executor_id(BOB);
+        assert!(!map.owned_by_me(&"apple".to_owned()).unwrap());
+
+        // Absent key: no version, not owned.
+        env::set_executor_id(ALICE);
+        assert_eq!(map.entry_schema_version(&"ghost".to_owned()).unwrap(), None);
+        assert!(!map.owned_by_me(&"ghost".to_owned()).unwrap());
     }
 
     #[test]

@@ -78,6 +78,41 @@ pub(super) fn handle_namespace_governance_delta(
             super::readiness::handle_readiness_probe(this, ctx, source, probe);
             return;
         }
+        // PR-6c Task 6c.8: ingest a signed migration heartbeat into the
+        // per-(namespace, peer) TTL cache. Cross-check the heartbeat's
+        // namespace against the topic's namespace FIRST (same guard as the
+        // `ReadinessBeacon` arm) so a peer can't pollute namespace X's cache
+        // from a namespace-Y subscription. Then verify the Ed25519 signature
+        // AND cohort membership via `verify_migration_heartbeat` before
+        // inserting — an unsigned or non-member heartbeat must never enter a
+        // rollup. The heartbeat is ephemeral telemetry, not governance state,
+        // so there is no apply / ack / backfill — just the cache upsert.
+        NamespaceTopicMsg::MigrationHeartbeat(heartbeat) => {
+            if heartbeat.namespace_id != namespace_id {
+                warn!("MigrationHeartbeat namespace_id mismatch with topic; dropping");
+                return;
+            }
+            if !calimero_context::governance_broadcast::verify_migration_heartbeat(
+                &this.datastore,
+                &heartbeat,
+            ) {
+                debug!(
+                    namespace_id = %hex::encode(heartbeat.namespace_id),
+                    "MigrationHeartbeat failed verification (sig/membership); dropping"
+                );
+                return;
+            }
+            this.migration_status_cache.insert(&heartbeat);
+            debug!(
+                namespace_id = %hex::encode(heartbeat.namespace_id),
+                peer = %heartbeat.peer_pubkey,
+                schema_version = heartbeat.schema_version,
+                residue_auto = heartbeat.residue_auto,
+                residue_identity = heartbeat.residue_identity,
+                "migration heartbeat cached"
+            );
+            return;
+        }
     };
 
     if op.namespace_id != namespace_id {
@@ -103,6 +138,12 @@ pub(super) fn handle_namespace_governance_delta(
     let pull_budget_max_peers = this.managers.sync.sync_config.parent_pull_additional_peers;
     let pull_budget_duration = this.managers.sync.sync_config.parent_pull_budget;
     let readiness_addr = this.readiness_addr.clone();
+    // PR-6c Task 6c.8: capture the migration-heartbeat emitter address + a
+    // datastore handle so the apply path can drive an on-change heartbeat once
+    // the governance op applies (mirrors the `readiness_addr` capture). Cloning
+    // is cheap (Arc-wrapped) and the spawned future needs owned handles.
+    let migration_emitter_addr = this.migration_emitter_addr.clone();
+    let migration_datastore = this.datastore.clone();
 
     let op_for_ack = op.clone();
     // Capture the signer for the peer-identity cache before `op` is
@@ -132,6 +173,25 @@ pub(super) fn handle_namespace_governance_delta(
             if let NamespaceApplyOutcome::Applied { divergence } = &outcome {
                 if let Some(addr) = &readiness_addr {
                     addr.do_send(crate::readiness::NamespaceOpApplied { namespace_id });
+                }
+
+                // PR-6c Task 6c.8: drive the migration-heartbeat emitter on the
+                // same applied edge. Recompute the node's facts from the (now
+                // updated) local governance state and post them — this seeds the
+                // namespace into the emitter (making its periodic keep-alive
+                // tick live) and edge-triggers an on-change heartbeat when the
+                // target schema / residue changed. Best-effort: a `None` address
+                // (emitter not yet mounted) drops the signal; the next applied
+                // op re-drives it.
+                if let Some(addr) = &migration_emitter_addr {
+                    let facts = crate::migration_status::compute_namespace_migration_facts(
+                        &migration_datastore,
+                        namespace_id,
+                    );
+                    addr.do_send(crate::migration_status::MigrationFactsUpdate {
+                        namespace_id,
+                        facts,
+                    });
                 }
 
                 // Record the (peer, identity) pair now that the

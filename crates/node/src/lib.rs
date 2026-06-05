@@ -21,6 +21,7 @@ pub mod gc;
 pub mod handlers;
 pub mod join_namespace;
 mod manager;
+pub mod migration_status;
 pub mod network_event_channel;
 pub mod network_event_processor;
 mod node_metrics;

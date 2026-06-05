@@ -871,6 +871,7 @@ mod user_storage_signature_verification {
                 },
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -1042,6 +1043,7 @@ mod user_storage_replay_protection {
             },
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         };
         let mut action = Action::Add {
             id: page.id(),
@@ -1462,7 +1464,7 @@ mod shared_storage_rotation_authentication {
             vec![],
         );
         let ctx = ApplyContext {
-            effective_writers: Some(writers.clone()),
+            effective_writers: Some(crate::entities::full_mask(writers.clone())),
             delta_id: None,
             delta_hlc: None,
         };
@@ -1478,7 +1480,8 @@ mod shared_storage_rotation_authentication {
         match stored.storage_type {
             StorageType::Shared { writers: w, .. } => {
                 assert_eq!(
-                    w, writers,
+                    w,
+                    crate::entities::full_mask(writers.clone()),
                     "writer set must be unchanged after forged rotation"
                 );
             }
@@ -1535,7 +1538,9 @@ mod shared_storage_rotation_authentication {
 
         let stored = <Index<MainStorage>>::get_metadata(id).unwrap().unwrap();
         match stored.storage_type {
-            StorageType::Shared { writers: w, .. } => assert_eq!(w, writers),
+            StorageType::Shared { writers: w, .. } => {
+                assert_eq!(w, crate::entities::full_mask(writers.clone()))
+            }
             other => panic!("expected Shared storage_type, got {other:?}"),
         }
     }
@@ -1588,7 +1593,7 @@ mod shared_storage_rotation_authentication {
             ID::from(core::num::NonZeroU128::new(1).unwrap()),
         ));
         let ctx = ApplyContext {
-            effective_writers: Some(writers),
+            effective_writers: Some(crate::entities::full_mask(writers.clone())),
             delta_id: Some([0xD1; 32]),
             delta_hlc: Some(delta_hlc),
         };
@@ -1602,7 +1607,7 @@ mod shared_storage_rotation_authentication {
             .expect("rotation log must exist after an accepted rotation");
         assert_eq!(
             log.entries.last().expect("a rotation entry").new_writers,
-            new_writers,
+            crate::entities::full_mask(new_writers.clone()),
             "accepted rotation must record the new writer set in the rotation log"
         );
     }
@@ -1647,12 +1652,12 @@ mod shared_storage_rotation_authentication {
         MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
 
         let pre_ctx = || ApplyContext {
-            effective_writers: Some(pre.clone()),
+            effective_writers: Some(crate::entities::full_mask(pre.clone())),
             delta_id: None,
             delta_hlc: None,
         };
         let post_ctx = || ApplyContext {
-            effective_writers: Some(post.clone()),
+            effective_writers: Some(crate::entities::full_mask(post.clone())),
             delta_id: None,
             delta_hlc: None,
         };
@@ -1765,6 +1770,83 @@ mod shared_storage_rotation_authentication {
         let ok_delete = build_signed_member_delete(member, anchor, &alice_sk, n0 + 3_000_000);
         MainInterface::apply_action(ok_delete, &ApplyContext::empty())
             .expect("a writer's member delete must be accepted");
+    }
+
+    /// OpMask gate: a writer holding `WRITE` but not `DELETE` may update a
+    /// member entry, but a (validly-signed) delete from that same writer is
+    /// rejected at merge — "write but not delete", enforced at apply time.
+    #[test]
+    fn member_write_capability_allows_update_but_not_delete() {
+        use crate::entities::OpMask;
+
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = pubkey_of(&alice_sk);
+        let anchor = Id::new([0xA0; 32]);
+        let member = Id::new([0x3E; 32]);
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let n0 = env::time_now();
+
+        // Bootstrap anchor {alice} + a member written by alice.
+        let bootstrap = build_signed_shared_action(
+            true,
+            anchor,
+            b"anchor".to_vec(),
+            writers.clone(),
+            n0,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+        let member_add = build_signed_member_action(
+            true,
+            member,
+            anchor,
+            b"v".to_vec(),
+            n0 + 1_000_000,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(member_add, &ApplyContext::empty()).unwrap();
+
+        // Alice's resolved capability is WRITE-only (no DELETE).
+        let write_only = |id, hlc| crate::interface::ApplyContext {
+            effective_writers: Some([(alice, OpMask::WRITE)].into_iter().collect()),
+            delta_id: id,
+            delta_hlc: hlc,
+        };
+
+        // An update is permitted (WRITE ⊇ WRITE).
+        let member_update = build_signed_member_action(
+            false,
+            member,
+            anchor,
+            b"v2".to_vec(),
+            n0 + 2_000_000,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(member_update, &write_only(None, None))
+            .expect("a WRITE-capable writer's update must be accepted");
+
+        // The same writer's (validly-signed) delete is refused at the op-gate.
+        let del = build_signed_member_delete(member, anchor, &alice_sk, n0 + 3_000_000);
+        let result = MainInterface::apply_action(del, &write_only(None, None));
+        assert!(
+            matches!(result, Err(StorageError::ActionNotAllowed(_))),
+            "a writer lacking DELETE must be refused at the op-gate, got {result:?}"
+        );
+
+        // With FULL capability, the delete is accepted.
+        let full = crate::interface::ApplyContext {
+            effective_writers: Some([(alice, OpMask::FULL)].into_iter().collect()),
+            delta_id: None,
+            delta_hlc: None,
+        };
+        let del2 = build_signed_member_delete(member, anchor, &alice_sk, n0 + 4_000_000);
+        MainInterface::apply_action(del2, &full).expect("FULL writer's delete must be accepted");
     }
 
     /// Snapshot verification of a member resolves the anchor's writers (the
@@ -1896,6 +1978,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -1926,6 +2009,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -1964,6 +2048,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
         assert!(MainInterface::apply_action(add_action, &ApplyContext::empty()).is_ok());
@@ -1985,6 +2070,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2023,6 +2109,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
         assert!(MainInterface::apply_action(add_action, &ApplyContext::empty()).is_ok());
@@ -2071,6 +2158,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2113,6 +2201,7 @@ mod frozen_storage_verification {
                 storage_type: StorageType::Frozen,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2151,6 +2240,7 @@ mod timestamp_drift_protection {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2185,6 +2275,7 @@ mod timestamp_drift_protection {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2213,6 +2304,7 @@ mod timestamp_drift_protection {
                 storage_type: StorageType::Public,
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2286,6 +2378,7 @@ mod storage_type_edge_cases {
             },
             crdt_type: None,
             field_name: None,
+            schema_version: None,
         };
 
         let mut action = Action::DeleteRef {
@@ -2456,6 +2549,7 @@ mod storage_type_edge_cases {
                 },
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2546,6 +2640,7 @@ mod storage_type_edge_cases {
                 storage_type: StorageType::Public, // Changed to Public!
                 crdt_type: None,
                 field_name: None,
+                schema_version: None,
             },
         };
 
@@ -2615,5 +2710,395 @@ mod storage_type_edge_cases {
         // Entity should still exist
         let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
         assert!(retrieved.is_some());
+    }
+}
+
+/// PR-6c task 6c.3 — owner-driven convert at write time.
+///
+/// The owner's next ordinary signed write of a stale identity-gated entry must
+/// re-stamp `Metadata.schema_version` to the binary's current target (read
+/// type-erased via `calimero_sdk::app::schema_version()`) on the normal
+/// monotonic-nonce write path — NOT under `with_merge_mode` (which bypasses the
+/// replay-nonce check) and NOT entropy-suppressed. A non-owner can never drive
+/// the convert: the local-owner stamp branch in `save_raw` only fires when the
+/// executor is the owner.
+#[cfg(test)]
+mod owner_driven_convert {
+    use borsh::{BorshDeserialize, BorshSerialize};
+    use calimero_sdk::event::NoEvent;
+    use calimero_sdk::state::{AppState, AppStateInit};
+
+    use super::*;
+    use crate::env;
+    use crate::tests::common::{create_signed_user_add_action, create_test_keypair};
+
+    // A v2 binary that declares its target schema version. `register_schema_version`
+    // surfaces this through the process-global atomic that `save_raw` reads.
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct V2;
+    impl AppStateInit for V2 {
+        type Return = V2;
+    }
+    impl AppState for V2 {
+        type Event<'a> = NoEvent;
+        const SCHEMA_VERSION: u32 = 1;
+    }
+
+    // A legacy binary that never declared a target — surfaces the unversioned 0.
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct Unversioned;
+    impl AppStateInit for Unversioned {
+        type Return = Unversioned;
+    }
+    impl AppState for Unversioned {
+        type Event<'a> = NoEvent;
+    }
+
+    /// Seed a `User` entry owned by `owner` (schema_version `None`, the legacy
+    /// unmarked shape) as a child of the root, returning its `Id`.
+    fn seed_stale_user_entry(signing_key: &ed25519_dalek::SigningKey, owner: PublicKey) -> Id {
+        let root = crate::tests::common::setup_root_for_main();
+
+        // A non-root child so its id is distinct from the registered Public root.
+        let mut element = Element::new(None);
+        element.set_user_domain(owner);
+        let page = Page::new_from_element("v1", element);
+        let id = page.id();
+        let serialized = borsh::to_vec(&page).unwrap();
+
+        let nonce = env::time_now();
+        let mut action = create_signed_user_add_action(signing_key, owner, id, serialized, nonce);
+        // Re-parent the add under the registered root so it is not an orphan.
+        if let Action::Add {
+            ref mut ancestors, ..
+        } = action
+        {
+            *ancestors = vec![root];
+        }
+        // Re-sign after mutating ancestors so the signature stays valid.
+        if let Action::Add {
+            ref mut metadata, ..
+        } = action
+        {
+            if let StorageType::User {
+                signature_data: Some(ref mut sd),
+                ..
+            } = metadata.storage_type
+            {
+                sd.signature = [0; 64];
+            }
+        }
+        let payload = action.payload_for_signing();
+        let signature = ed25519_dalek::Signer::sign(signing_key, &payload).to_bytes();
+        if let Action::Add {
+            ref mut metadata, ..
+        } = action
+        {
+            if let StorageType::User {
+                signature_data: Some(ref mut sd),
+                ..
+            } = metadata.storage_type
+            {
+                sd.signature = signature;
+            }
+        }
+
+        MainInterface::apply_action(action, &ApplyContext::empty()).expect("seed user entry");
+
+        // Sanity: stored entry is the legacy unmarked shape.
+        let stored = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
+        assert_eq!(stored.schema_version, None, "seeded entry must be unmarked");
+        id
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn owner_write_stamps_target_schema_and_advances_nonce() {
+        env::reset_for_testing();
+        calimero_sdk::app::register_schema_version::<V2>();
+
+        let (signing_key, owner) = create_test_keypair();
+        let id = seed_stale_user_entry(&signing_key, owner);
+
+        let stored = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
+        let prior_nonce = stored.updated_at();
+        let new_nonce = prior_nonce + 1_000_000;
+
+        // The owner's next ordinary write: same owner, new value bytes, strictly
+        // greater `updated_at`. `save_raw`'s local-owner branch only fires when
+        // the executor is the owner, so drive it under the owner's identity.
+        let convert_meta = Metadata {
+            created_at: stored.created_at(),
+            updated_at: new_nonce.into(),
+            storage_type: StorageType::User {
+                owner,
+                signature_data: None,
+            },
+            crdt_type: None,
+            field_name: None,
+            schema_version: None,
+        };
+        env::with_executor_id(*owner, || {
+            assert!(!env::in_merge_mode(), "convert must run on the normal path");
+            MainInterface::save_raw(id, b"v2-bytes".to_vec(), convert_meta)
+                .expect("owner convert write");
+        });
+
+        let m = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
+        assert_eq!(
+            m.schema_version,
+            Some(1),
+            "owner write stamps the binary's target schema version"
+        );
+        assert_eq!(
+            m.updated_at(),
+            new_nonce,
+            "nonce strictly advanced (not merge-mode/entropy-suppressed)"
+        );
+        // The owner is unchanged — the convert re-stamps value + schema, never owner.
+        match m.storage_type {
+            StorageType::User { owner: o, .. } => assert_eq!(o, owner, "owner unchanged"),
+            other => panic!("expected User storage_type, got {other:?}"),
+        }
+
+        // Reset the process-global so a parallel/later test sees the default.
+        calimero_sdk::app::register_schema_version::<Unversioned>();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn non_owner_write_does_not_convert() {
+        env::reset_for_testing();
+        calimero_sdk::app::register_schema_version::<V2>();
+
+        let (signing_key, owner) = create_test_keypair();
+        let (_, not_owner) = create_test_keypair();
+        let id = seed_stale_user_entry(&signing_key, owner);
+
+        let stored = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
+        let new_nonce = stored.updated_at() + 1_000_000;
+
+        let convert_meta = Metadata {
+            created_at: stored.created_at(),
+            updated_at: new_nonce.into(),
+            storage_type: StorageType::User {
+                owner,
+                signature_data: None,
+            },
+            crdt_type: None,
+            field_name: None,
+            schema_version: None,
+        };
+        // Executor is NOT the owner: the local-owner stamp branch must not fire,
+        // so the entry is never converted (schema stays None, no owner signature).
+        env::with_executor_id(*not_owner, || {
+            MainInterface::save_raw(id, b"v2-bytes".to_vec(), convert_meta)
+                .expect("save_raw runs but does not stamp owner");
+        });
+
+        let m = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
+        assert_eq!(
+            m.schema_version, None,
+            "a non-owner write must NOT convert the entry (no owner stamp)"
+        );
+
+        calimero_sdk::app::register_schema_version::<Unversioned>();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn convert_does_not_run_in_merge_mode() {
+        env::reset_for_testing();
+        calimero_sdk::app::register_schema_version::<V2>();
+
+        let (signing_key, owner) = create_test_keypair();
+        let id = seed_stale_user_entry(&signing_key, owner);
+        let stored = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
+        let new_nonce = stored.updated_at() + 1_000_000;
+
+        let convert_meta = Metadata {
+            created_at: stored.created_at(),
+            updated_at: new_nonce.into(),
+            storage_type: StorageType::User {
+                owner,
+                signature_data: None,
+            },
+            crdt_type: None,
+            field_name: None,
+            schema_version: None,
+        };
+        // Guard O4: even an owner-keyed write must NOT drive the convert when it
+        // runs inside a merge scope. Merge mode bypasses the replay-nonce check
+        // (interface.rs:916), so a convert stamped here would re-shape an
+        // identity-gated entry on the idempotent merge re-apply path rather than
+        // as a fresh, monotonic, owner-signed delta — exactly the security
+        // hazard PR-6c must avoid. Drive the owner write under
+        // `with_merge_mode` and assert the entry stays unconverted.
+        let out = env::with_executor_id(*owner, || {
+            env::with_merge_mode(|| MainInterface::save_raw(id, b"v2".to_vec(), convert_meta))
+        });
+        assert!(out.is_ok(), "the write itself still succeeds in merge mode");
+        assert!(
+            !env::in_merge_mode(),
+            "merge mode must be restored after the write"
+        );
+
+        let m = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
+        assert_eq!(
+            m.schema_version, None,
+            "the owner-driven convert must be suppressed under merge mode \
+             (schema_version must stay unstamped)"
+        );
+
+        calimero_sdk::app::register_schema_version::<Unversioned>();
+    }
+
+    /// Seed a `User` entry owned by `owner` (schema `None`) under the root of an
+    /// arbitrary replica `Interface<S>`, returning its `Id` and the root
+    /// `ChildInfo` (for building a subsequent signed `Action::Update`).
+    fn seed_user_entry_on<S: crate::store::StorageAdaptor>(
+        signing_key: &ed25519_dalek::SigningKey,
+        owner: PublicKey,
+    ) -> (Id, crate::entities::ChildInfo) {
+        let root_id = Id::root();
+        let root_meta = Metadata::default();
+        Index::<S>::add_root(crate::entities::ChildInfo::new(
+            root_id,
+            [0; 32],
+            root_meta.clone(),
+        ))
+        .unwrap();
+        let (root_full, _) = Index::<S>::get_hashes_for(root_id).unwrap().unwrap();
+        let root = crate::entities::ChildInfo::new(root_id, root_full, root_meta);
+
+        let mut element = Element::new(None);
+        element.set_user_domain(owner);
+        let page = Page::new_from_element("v1", element);
+        let id = page.id();
+        let serialized = borsh::to_vec(&page).unwrap();
+
+        let nonce = env::time_now();
+        let mut metadata = Metadata {
+            created_at: nonce,
+            updated_at: nonce.into(),
+            storage_type: StorageType::User {
+                owner,
+                signature_data: Some(SignatureData {
+                    signature: [0; 64],
+                    nonce,
+                    signer: None,
+                }),
+            },
+            crdt_type: None,
+            field_name: None,
+            schema_version: None,
+        };
+        let mut action = Action::Add {
+            id,
+            data: serialized,
+            ancestors: vec![root.clone()],
+            metadata: metadata.clone(),
+        };
+        let payload = action.payload_for_signing();
+        let signature = ed25519_dalek::Signer::sign(signing_key, &payload).to_bytes();
+        if let StorageType::User {
+            signature_data: Some(ref mut sd),
+            ..
+        } = metadata.storage_type
+        {
+            sd.signature = signature;
+        }
+        if let Action::Add {
+            metadata: ref mut m,
+            ..
+        } = action
+        {
+            *m = metadata;
+        }
+        Interface::<S>::apply_action(action, &ApplyContext::empty()).expect("seed user on replica");
+        (id, root)
+    }
+
+    // Two-identity convergence: identity A (owner) converts an entry; the
+    // resulting ordinary signed `Action::Update` replicates to identity B, whose
+    // stored entry must then show `schema_version = Some(target)` — proving the
+    // convert lands on a remote as a normal signed delta (NOT merge-mode, NOT
+    // byte-identity), via the normal `new_nonce > last_nonce` apply branch.
+    #[test]
+    #[serial_test::serial]
+    fn convert_replicates_to_a_second_identity() {
+        type ReplicaB = MockedStorage<7301>;
+        type InterfaceB = Interface<ReplicaB>;
+
+        env::reset_for_testing();
+        calimero_sdk::app::register_schema_version::<V2>();
+
+        let (owner_sk, owner) = create_test_keypair();
+
+        // Replica B starts with the legacy unmarked entry (the pre-convert shape).
+        let (id, root) = seed_user_entry_on::<ReplicaB>(&owner_sk, owner);
+        let before = Index::<ReplicaB>::get_metadata(id).unwrap().unwrap();
+        assert_eq!(before.schema_version, None, "B starts unconverted");
+
+        // The owner's convert, as it replicates: an ordinary signed
+        // `Action::Update` with new value bytes, a strictly-greater nonce, and
+        // the new schema tag. The signature commits to (id, data, owner, nonce)
+        // — NOT to schema_version (Merkle/metadata-invisible) — so it verifies
+        // normally on B.
+        let new_nonce = before.updated_at() + 1_000_000;
+        let mut metadata = Metadata {
+            created_at: before.created_at(),
+            updated_at: new_nonce.into(),
+            storage_type: StorageType::User {
+                owner,
+                signature_data: Some(SignatureData {
+                    signature: [0; 64],
+                    nonce: new_nonce,
+                    signer: None,
+                }),
+            },
+            crdt_type: None,
+            field_name: None,
+            schema_version: Some(1),
+        };
+        let mut update = Action::Update {
+            id,
+            data: b"v2-bytes".to_vec(),
+            ancestors: vec![root],
+            metadata: metadata.clone(),
+        };
+        let payload = update.payload_for_signing();
+        let signature = ed25519_dalek::Signer::sign(&owner_sk, &payload).to_bytes();
+        if let StorageType::User {
+            signature_data: Some(ref mut sd),
+            ..
+        } = metadata.storage_type
+        {
+            sd.signature = signature;
+        }
+        if let Action::Update {
+            metadata: ref mut m,
+            ..
+        } = update
+        {
+            *m = metadata;
+        }
+
+        // B applies the replicated convert via the normal apply path.
+        InterfaceB::apply_action(update, &ApplyContext::empty()).expect("B applies convert delta");
+
+        let after = Index::<ReplicaB>::get_metadata(id).unwrap().unwrap();
+        assert_eq!(
+            after.schema_version,
+            Some(1),
+            "the replicated convert advances B's stored schema tag"
+        );
+        assert_eq!(
+            after.updated_at(),
+            new_nonce,
+            "B's entry advanced on the normal monotonic-nonce branch"
+        );
+
+        calimero_sdk::app::register_schema_version::<Unversioned>();
     }
 }
