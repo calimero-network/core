@@ -234,6 +234,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     crate::peer_identity_persist::hydrate(&node_state, &datastore);
     let _peer_identity_tick =
         crate::peer_identity_persist::spawn_snapshot_tick(node_state.clone(), datastore.clone());
+    // Drop removed members from the cache promptly on `MemberRemoved`,
+    // rather than waiting for their entries to age out via TTL.
+    let _peer_identity_invalidation =
+        crate::peer_identity_persist::spawn_invalidation_task(node_state.clone());
 
     // Drain locally-applied delta notifications from the execute path
     // and register them into the in-memory DeltaStore. Replaces the
