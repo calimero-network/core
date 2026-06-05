@@ -1370,6 +1370,19 @@ impl<S: StorageAdaptor> Interface<S> {
                                 "Shared upsert: stale nonce, signature verified \
                                  — skipping save_internal (authentic but no-op)"
                             );
+                            // The rotation was appended to the log above, but we
+                            // skip `save_internal` here — so the anchor's folded
+                            // `own_hash` (which commits to the resolved writer
+                            // set, core#2716 Phase 2) would stay stale and the
+                            // context root would never reflect this rotation.
+                            // That is exactly the concurrent-rotation split-brain:
+                            // a peer's rotation whose nonce is below ours (because
+                            // our own rotation bumped the anchor nonce) is logged
+                            // here but its value-write is stale-skipped, so
+                            // without this the originator of the higher-nonce
+                            // rotation never converges. Recompute the folded
+                            // own_hash from the updated log and propagate.
+                            Self::rehash_shared_anchor(*id)?;
                             return Ok(());
                         }
                     }
