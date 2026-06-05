@@ -182,6 +182,19 @@ for k in keys { tags.push(k.into())?; }
 DocV2 { items: old.items, tags, .. }           // `items` carried + re-read above
 ```
 
+**Drop entries — `remove` from the carried collection; don't rebuild a fresh one.**
+A new same-named `UnorderedMap::new()` is re-keyed to that field's deterministic id
+during migrate, so it **shares the carried v1 storage and unions with it** — the
+entries you "skipped" survive, so nothing is dropped. To actually drop, mutate the
+carried collection (sort first for determinism):
+```rust
+let mut items = old.items;                     // carry — same storage id
+let mut keys: Vec<String> = items.entries()?.map(|(k, _)| k).collect();
+keys.sort();
+if let Some(k) = keys.first() { items.remove(k)?; }   // actually deletes one entry
+DocV2 { items, .. }
+```
+
 > For a *single-field* type change, struct→enum, or content transform, prefer
 > `#[migrate(with = …)]` (§2) — these hand-written patterns are for the cross-field
 > cases the derive can't express. (A single-field type change still works
@@ -338,7 +351,57 @@ is almost never what you want.
 
 ---
 
-## 7. Testing your migration
+## 7. Guarding a migration: `migration_check` + abort
+
+A migration that *compiles and runs* can still be wrong — drop entries, break an
+invariant, orphan a reference. To catch that **before it commits**, declare an
+optional `#[app::migration_check]`. It runs after the migrate produces the v2
+state but **before the v1 root is touched**; if it returns `false`, the runtime
+**logically aborts** — the context stays on v1, intact (no byte snapshot/restore;
+v1 was never mutated). An app with no check commits as before (backwards-compatible).
+
+```rust
+use calimero_sdk::migration_check::entity_count_parity;
+
+// Takes the old + produced-new state by value; returns true to commit.
+#[app::migration_check]
+pub fn check(old: DocV1Data, new: DocV2) -> bool {
+    let old_keys: Vec<String> = old.items.entries().expect("old").map(|(k, _)| k).collect();
+    let new_keys: Vec<String> = new.items.entries().expect("new").map(|(k, _)| k).collect();
+    entity_count_parity(&old_keys, &new_keys, 0)   // every item must survive (delta 0)
+}
+```
+
+Built-in helpers (`calimero_sdk::migration_check`):
+- `entity_count_parity(old, new, delta)` — counts match within `delta`
+- `no_orphaned_refs(refs, keys)` — every reference still resolves
+- `conservation(old_total, new_total)` — a total is preserved
+
+The check is a **deterministic pure function** of `(old, new)`, exactly like the
+migrate: it runs independently on every node against byte-identical state, so all
+nodes reach the **same** verdict — either all commit or all abort. (A split verdict
+means a determinism bug, the same hazard `assert_migrate_converges` guards.) A
+failed check is **retryable**: no migration marker is recorded, so the context
+re-runs migrate+check on its **next access** — a transient cause (e.g. not-yet-synced
+v1) self-heals once the input is complete.
+
+### Aborting an in-flight migration (admin)
+
+An operator can call off a migration that's rolling out:
+
+```text
+POST /admin-api/groups/{namespace_id}/migration/abort
+```
+
+It flips the group's pending target **back** to the pre-migration app id and drops
+the pending marker, **cascading** to every descendant subgroup carrying the same
+pending migration. Idempotent — a subtree with nothing pending is a no-op. It's a
+forward "stop" (un-migrated contexts stop switching), not a rewind of any context
+that already migrated.
+
+---
+
+## 8. Testing your migration
 
 ### Fast, in-process — `TestHost`
 
@@ -397,7 +460,7 @@ workflow. See `workflows/app-migration/README.md` ("Running locally":
 
 ---
 
-## 8. Shipping a migration
+## 9. Shipping a migration
 
 Migrations run only under `UpgradePolicy::LazyOnAccess`. Trigger the upgrade:
 
@@ -424,7 +487,7 @@ post-migrate owner-driven convert (§5) has a target to compare against — see
 
 ---
 
-## 9. Quick reference
+## 10. Quick reference
 
 | Do | Don't |
 |---|---|

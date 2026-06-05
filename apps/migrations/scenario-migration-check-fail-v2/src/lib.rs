@@ -63,23 +63,28 @@ pub fn migrate_v1_to_v2() -> ScenarioMigrationCheckFailV2 {
         to_version: SCHEMA_VERSION_V2,
     });
 
-    // DELIBERATELY LOSSY: rebuild the map, but skip the lexicographically
+    // DELIBERATELY LOSSY: carry the map, then REMOVE the lexicographically
     // smallest key so exactly one item is dropped. The migration_check below
-    // catches the count drop and the runtime logically aborts — this is the
-    // headline lossy-migrate rejection the scenario asserts.
-    let mut entries: Vec<(String, String)> = old_state
-        .items
+    // catches the count drop and the runtime logically aborts — the headline
+    // lossy-migrate rejection the scenario asserts.
+    //
+    // NOTE: we remove from the CARRIED map rather than rebuilding a fresh
+    // same-named `UnorderedMap`. A fresh map assigned to the `items` field is
+    // re-keyed to that field's deterministic id during migrate, so it shares
+    // the carried v1 storage and *unions* with it — the "skipped" key survives
+    // and nothing is dropped. Removing from the carried collection is the
+    // deterministic way to actually drop an entry (sort first for convergence).
+    let mut items = old_state.items;
+    let mut keys: Vec<String> = items
         .entries()
         .unwrap_or_else(|e| panic!("Migration failed: V1 items iteration error {:?}", e))
-        .map(|(k, v)| (k, v.get().clone()))
+        .map(|(k, _)| k)
         .collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut items: UnorderedMap<String, LwwRegister<String>> = UnorderedMap::new();
-    for (k, v) in entries.into_iter().skip(1) {
+    keys.sort();
+    if let Some(smallest) = keys.first() {
         items
-            .insert(k, v.into())
-            .unwrap_or_else(|e| panic!("Migration failed: V2 items rebuild error {:?}", e));
+            .remove(smallest)
+            .unwrap_or_else(|e| panic!("Migration failed: V2 items drop error {:?}", e));
     }
 
     ScenarioMigrationCheckFailV2 {
