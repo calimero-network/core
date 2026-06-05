@@ -5714,3 +5714,286 @@ mod auto_follow_tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// Role-scoped `TeeMemberRemoved` op-event emission (apply-path).
+//
+// `OpEvent::TeeMemberRemoved` is fired ALONGSIDE `OpEvent::MemberRemoved`
+// from the apply path whenever the removed member's stored role was
+// `ReadOnlyTee`. This is the wake-up signal for the
+// `calimero_context::self_purge` listener (TEE eviction → hard-purge).
+// For non-TEE removals only `MemberRemoved` is emitted (soft-leave
+// path preserved for kick-and-readd / rejoin-via-keyshare /
+// inheritance-rejoin workflows).
+// ---------------------------------------------------------------------
+
+#[cfg(test)]
+mod tee_member_removed_event_tests {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::*;
+    use crate::apply_local_signed_group_op;
+    use crate::op_events::{self, OpEvent};
+
+    /// Drain events from `rx` for up to 500ms, counting how many
+    /// `MemberRemoved` and `TeeMemberRemoved` events landed for our
+    /// `(gid, member)` tuple. Other in-flight events (from parallel
+    /// tests on the process-wide channel) are filtered out by the
+    /// tuple-match guard.
+    /// Count `MemberRemoved` / `TeeMemberRemoved` events emitted for
+    /// `(gid_bytes, member)`.
+    ///
+    /// Deterministic, not time-based. `op_events::notify` performs a
+    /// synchronous `broadcast::Sender::send` from inside the apply arm, so
+    /// once `apply_local_signed_group_op` has returned every event the op
+    /// emitted is already sitting in `rx`'s buffer. Draining with
+    /// `try_recv` until the buffer is empty therefore observes the
+    /// complete, final event set with no polling window — no 500ms sleep,
+    /// no CI-load flake (the old fixed-duration poll could both waste
+    /// 500ms on the happy path and, under load, miss a late event). The
+    /// `group_id`/`member` filter still discards events that parallel
+    /// tests interleave onto the process-wide channel.
+    ///
+    fn count_removed_events_for(
+        rx: &mut tokio::sync::broadcast::Receiver<OpEvent>,
+        gid_bytes: [u8; 32],
+        member: PublicKey,
+    ) -> (usize, usize) {
+        use tokio::sync::broadcast::error::TryRecvError;
+        let mut member_removed = 0;
+        let mut tee_member_removed = 0;
+        loop {
+            match rx.try_recv() {
+                Ok(OpEvent::MemberRemoved {
+                    group_id,
+                    member: m,
+                }) if group_id == gid_bytes && m == member => {
+                    member_removed += 1;
+                }
+                Ok(OpEvent::TeeMemberRemoved {
+                    group_id,
+                    member: m,
+                }) if group_id == gid_bytes && m == member => {
+                    tee_member_removed += 1;
+                }
+                Ok(_) => {} // unrelated parallel-test events
+                // Parallel tests overran the shared buffer. Keep draining;
+                // `try_recv` resumes at the oldest still-buffered event. If
+                // our own events were the ones dropped the counts come up
+                // short and the assertion fails loudly — never a silent
+                // flaky pass.
+                Err(TryRecvError::Lagged(_)) => continue,
+                // Empty or Closed: nothing left to drain.
+                Err(_) => break,
+            }
+        }
+        (member_removed, tee_member_removed)
+    }
+
+    /// Removing a `ReadOnlyTee` member via `GroupOp::MemberRemoved`
+    /// must emit BOTH `MemberRemoved` and `TeeMemberRemoved` for the
+    /// same `(group_id, member)`.
+    #[test]
+    fn member_removed_op_emits_tee_event_for_readonly_tee_role() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_pk = admin_sk.public_key();
+        let tee_pk = PublicKey::from([0xE1; 32]);
+
+        let mut meta = test_meta();
+        meta.admin_identity = admin_pk;
+        meta.owner_identity = admin_pk;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &tee_pk, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+
+        // Subscribe BEFORE apply so we don't miss the fire.
+        let mut rx = op_events::subscribe();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid.to_bytes(),
+            vec![],
+            MetaRepository::new(&store)
+                .compute_state_hash(&gid)
+                .unwrap(),
+            1,
+            dummy_member_removed_op(tee_pk),
+        )
+        .expect("sign MemberRemoved");
+        apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
+
+        let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), tee_pk);
+        assert_eq!(
+            mr, 1,
+            "MemberRemoved must still fire for a TEE removal (auto-follow + downstream rely on it)"
+        );
+        assert_eq!(
+            tmr, 1,
+            "TeeMemberRemoved MUST fire for a removal whose stored role was ReadOnlyTee"
+        );
+    }
+
+    /// Removing a regular `Member` via `GroupOp::MemberRemoved` must
+    /// emit ONLY `MemberRemoved` and never `TeeMemberRemoved` — this
+    /// is what preserves the soft-leave path for the 4 e2e workflows
+    /// `group-{kick-and-readd-deny-list, kick-and-rejoin-keyshare,
+    /// leave-namespace, leave-then-rejoin-via-inheritance}` that
+    /// closing #2653 was about.
+    #[test]
+    fn member_removed_op_does_not_emit_tee_event_for_regular_member() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_pk = admin_sk.public_key();
+        let target_pk = PublicKey::from([0xE2; 32]);
+
+        let mut meta = test_meta();
+        meta.admin_identity = admin_pk;
+        meta.owner_identity = admin_pk;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &target_pk, GroupMemberRole::Member)
+            .unwrap();
+
+        let mut rx = op_events::subscribe();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid.to_bytes(),
+            vec![],
+            MetaRepository::new(&store)
+                .compute_state_hash(&gid)
+                .unwrap(),
+            1,
+            dummy_member_removed_op(target_pk),
+        )
+        .expect("sign MemberRemoved");
+        apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
+
+        let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), target_pk);
+        assert_eq!(
+            mr, 1,
+            "MemberRemoved must fire for a regular-Member removal"
+        );
+        assert_eq!(
+            tmr, 0,
+            "TeeMemberRemoved MUST NOT fire for a non-TEE removal (soft-leave path preserved)"
+        );
+    }
+
+    /// Same role-scoped contract on the `MemberLeft` (self-leave) arm:
+    /// a `ReadOnlyTee` self-leave emits both events; an `Admin`/
+    /// `Member` self-leave emits only `MemberRemoved`.
+    #[test]
+    fn member_left_op_emits_tee_event_only_for_readonly_tee_role() {
+        // Case 1: TEE self-leave fires both.
+        {
+            let store = test_store();
+            let gid = test_group_id();
+            // Distinct admin so the leaver is not the last admin (the
+            // apply path bails on `OwnerCannotSelfLeave` /
+            // `LastAdminCannotLeave` otherwise).
+            let admin_sk = PrivateKey::random(&mut OsRng);
+            let admin_pk = admin_sk.public_key();
+            let tee_sk = PrivateKey::random(&mut OsRng);
+            let tee_pk = tee_sk.public_key();
+
+            let mut meta = test_meta();
+            meta.admin_identity = admin_pk;
+            meta.owner_identity = admin_pk;
+            MetaRepository::new(&store).save(&gid, &meta).unwrap();
+            MembershipRepository::new(&store)
+                .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+                .unwrap();
+            MembershipRepository::new(&store)
+                .add_member(&gid, &tee_pk, GroupMemberRole::ReadOnlyTee)
+                .unwrap();
+
+            let mut rx = op_events::subscribe();
+
+            let op = SignedGroupOp::sign(
+                &tee_sk,
+                gid.to_bytes(),
+                vec![],
+                MetaRepository::new(&store)
+                    .compute_state_hash(&gid)
+                    .unwrap(),
+                1,
+                GroupOp::MemberLeft {
+                    member: tee_pk,
+                    expected_group_state_hash: [0u8; 32],
+                    expected_context_state_hashes: Vec::new(),
+                },
+            )
+            .expect("sign MemberLeft (TEE)");
+            apply_local_signed_group_op(&store, &op).expect("apply MemberLeft (TEE)");
+
+            let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), tee_pk);
+            assert_eq!(
+                mr, 1,
+                "MemberRemoved must fire for a TEE self-leave (existing subscribers)"
+            );
+            assert_eq!(
+                tmr, 1,
+                "TeeMemberRemoved MUST fire for a TEE self-leave (purge hygiene)"
+            );
+        }
+        // Case 2: regular-Member self-leave fires only MemberRemoved.
+        {
+            let store = test_store();
+            let gid = test_group_id();
+            let admin_sk = PrivateKey::random(&mut OsRng);
+            let admin_pk = admin_sk.public_key();
+            let leaver_sk = PrivateKey::random(&mut OsRng);
+            let leaver_pk = leaver_sk.public_key();
+
+            let mut meta = test_meta();
+            meta.admin_identity = admin_pk;
+            meta.owner_identity = admin_pk;
+            MetaRepository::new(&store).save(&gid, &meta).unwrap();
+            MembershipRepository::new(&store)
+                .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+                .unwrap();
+            MembershipRepository::new(&store)
+                .add_member(&gid, &leaver_pk, GroupMemberRole::Member)
+                .unwrap();
+
+            let mut rx = op_events::subscribe();
+
+            let op = SignedGroupOp::sign(
+                &leaver_sk,
+                gid.to_bytes(),
+                vec![],
+                MetaRepository::new(&store)
+                    .compute_state_hash(&gid)
+                    .unwrap(),
+                1,
+                GroupOp::MemberLeft {
+                    member: leaver_pk,
+                    expected_group_state_hash: [0u8; 32],
+                    expected_context_state_hashes: Vec::new(),
+                },
+            )
+            .expect("sign MemberLeft (regular)");
+            apply_local_signed_group_op(&store, &op).expect("apply MemberLeft (regular)");
+
+            let (mr, tmr) = count_removed_events_for(&mut rx, gid.to_bytes(), leaver_pk);
+            assert_eq!(mr, 1, "MemberRemoved must fire for a regular self-leave");
+            assert_eq!(
+                tmr, 0,
+                "TeeMemberRemoved MUST NOT fire for a regular self-leave (soft-leave path preserved)"
+            );
+        }
+    }
+}

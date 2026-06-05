@@ -171,6 +171,11 @@ pub enum NetworkMessage {
         request: SendSpecializedNodeInvitationResponse,
         outcome: oneshot::Sender<<SendSpecializedNodeInvitationResponse as actix::Message>::Result>,
     },
+    /// Set a peer's gossipsub application-specific score (membership bias).
+    SetPeerScore {
+        request: SetPeerScore,
+        outcome: oneshot::Sender<<SetPeerScore as actix::Message>::Result>,
+    },
 }
 
 /// Request to bootstrap the Kademlia DHT.
@@ -345,6 +350,19 @@ pub struct Subscribe(pub IdentTopic);
 
 impl actix::Message for Subscribe {
     type Result = eyre::Result<IdentTopic>;
+}
+
+/// Set a peer's gossipsub application-specific score (#2513). Pushed by
+/// the node when it (de)verifies a peer's membership; the network layer
+/// applies it via `gossipsub::Behaviour::set_application_score`.
+#[derive(Debug, Clone, Copy)]
+pub struct SetPeerScore {
+    pub peer_id: PeerId,
+    pub score: f64,
+}
+
+impl actix::Message for SetPeerScore {
+    type Result = ();
 }
 
 /// Request to unsubscribe from a gossipsub topic.

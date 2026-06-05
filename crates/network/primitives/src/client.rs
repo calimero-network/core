@@ -36,8 +36,8 @@ use crate::blob_types::BlobAuth;
 use crate::messages::{
     AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, MeshStats, NetworkMessage,
     NetworkStatus, OpenStream, PeerCount, Publish, QueryBlob, RequestBlob,
-    SendSpecializedNodeInvitationResponse, SendSpecializedNodeVerificationRequest, Subscribe,
-    SubscribedPeers, Unsubscribe,
+    SendSpecializedNodeInvitationResponse, SendSpecializedNodeVerificationRequest, SetPeerScore,
+    Subscribe, SubscribedPeers, Unsubscribe,
 };
 use crate::network_status::NetworkStatusSnapshot;
 use crate::specialized_node_invite::{SpecializedNodeInvitationResponse, VerificationRequest};
@@ -136,6 +136,19 @@ impl NetworkClient {
             .expect("Mailbox not to be dropped");
 
         rx.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Push a peer's gossipsub application-specific score (#2513),
+    /// fire-and-forget. Used on membership-(de)verification paths to bias
+    /// the mesh toward verified members; it does not await a round-trip,
+    /// so it's cheap enough to call from the observation hot path. The
+    /// per-command `outcome` is `()`, so the receiver is simply dropped.
+    pub fn set_peer_score(&self, peer_id: libp2p::PeerId, score: f64) {
+        let (outcome, _rx) = oneshot::channel();
+        self.network_manager.do_send(NetworkMessage::SetPeerScore {
+            request: SetPeerScore { peer_id, score },
+            outcome,
+        });
     }
 
     pub async fn open_stream(&self, peer_id: libp2p::PeerId) -> eyre::Result<Stream> {
