@@ -1,3 +1,22 @@
+Looking at the code diff, I need to determine if the dependency explorer documentation needs updating.
+
+The diff shows:
+1. A new crate dependency `calimero-governance-store` is added to `calimero-node`
+2. New modules are added to `crates/node/src/lib.rs` (`peer_identity_cache` and `peer_identity_persist`)
+3. Various code changes in handlers and the node module
+
+The HTML file contains a JavaScript object `CRATES` that defines the architecture dependencies. Currently, `calimero-node` has these deps:
+```javascript
+"calimero-node": { color: "#3b82f6", group: "core", deps: ["calimero-context","calimero-context-config","calimero-context-primitives","calimero-crypto","calimero-dag","calimero-network","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-server","calimero-storage","calimero-store","calimero-store-encryption","calimero-store-rocksdb","calimero-blobstore","calimero-tee-attestation","calimero-utils-actix"] },
+```
+
+According to the diff, `calimero-governance-store` needs to be added to this dependency list. However, I don't see `calimero-governance-store` defined in the `CRATES` object at all. This means I need to:
+
+1. Add `calimero-governance-store` to `calimero-node`'s deps list
+2. Add a new entry for `calimero-governance-store` in the CRATES object (it should be a data crate like the store-related crates)
+
+Let me create the updated HTML file:
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -92,7 +111,7 @@ document.addEventListener('DOMContentLoaded', () => {
 const CRATES = {
   "merod": { color: "#f59e0b", group: "cli", deps: ["calimero-node","calimero-server","calimero-config","calimero-context","calimero-context-config","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-store","calimero-store-rocksdb","calimero-blobstore","calimero-tee-attestation","calimero-utils-actix","calimero-build-utils","mero-auth"] },
   "meroctl": { color: "#f59e0b", group: "cli", deps: ["calimero-client","calimero-config","calimero-context-config","calimero-primitives","calimero-server-primitives","calimero-build-utils"] },
-  "calimero-node": { color: "#3b82f6", group: "core", deps: ["calimero-context","calimero-context-config","calimero-context-primitives","calimero-crypto","calimero-dag","calimero-network","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-server","calimero-storage","calimero-store","calimero-store-encryption","calimero-store-rocksdb","calimero-blobstore","calimero-tee-attestation","calimero-utils-actix"] },
+  "calimero-node": { color: "#3b82f6", group: "core", deps: ["calimero-context","calimero-context-config","calimero-context-primitives","calimero-crypto","calimero-dag","calimero-governance-store","calimero-network","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-server","calimero-storage","calimero-store","calimero-store-encryption","calimero-store-rocksdb","calimero-blobstore","calimero-tee-attestation","calimero-utils-actix"] },
   "calimero-context": { color: "#10b981", group: "core", deps: ["calimero-context-config","calimero-context-primitives","calimero-dag","calimero-node-primitives","calimero-prelude","calimero-primitives","calimero-runtime","calimero-storage","calimero-store","calimero-utils-actix"] },
   "calimero-context-primitives": { color: "#10b981", group: "types", deps: ["calimero-blobstore","calimero-context-config","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-store","calimero-utils-actix"] },
   "calimero-context-config": { color: "#10b981", group: "types", deps: [] },
@@ -106,6 +125,7 @@ const CRATES = {
   "calimero-store-rocksdb": { color: "#06b6d4", group: "data", deps: ["calimero-store"] },
   "calimero-store-encryption": { color: "#06b6d4", group: "data", deps: ["calimero-store"] },
   "calimero-blobstore": { color: "#06b6d4", group: "data", deps: ["calimero-primitives","calimero-store"] },
+  "calimero-governance-store": { color: "#06b6d4", group: "data", deps: ["calimero-primitives","calimero-store"] },
   "calimero-dag": { color: "#f59e0b", group: "data", deps: ["calimero-storage"] },
   "calimero-storage": { color: "#06b6d4", group: "data", deps: ["calimero-prelude","calimero-primitives","calimero-storage-macros"] },
   "calimero-storage-macros": { color: "#06b6d4", group: "data", deps: [] },
@@ -434,30 +454,18 @@ searchInput.addEventListener('input', () => {
 
   nodeElements.select('.node-circle')
     .attr('stroke-width', d => matches.has(d.id) ? 2.5 : 1.5)
-    .attr('stroke', d => matches.has(d.id) ? '#f0f0f5' : d.color + '25')
-    .attr('fill', d => matches.has(d.id) ? d.color + '40' : d.color + '06');
+    .attr('stroke', d => matches.has(d.id) ? '#f0f0f5' : d.color)
+    .attr('fill', d => matches.has(d.id) ? d.color + '50' : d.color + '20');
 
   nodeElements.select('.node-label')
-    .attr('fill', d => matches.has(d.id) ? '#d4d4dc' : '#6b6b8020');
-
-  linkElements
-    .attr('stroke', '#252538' + '18')
-    .attr('stroke-width', 0.5);
+    .attr('fill', d => matches.has(d.id) ? '#d4d4dc' : '#6b6b80');
 });
 
 document.getElementById('btn-reset').addEventListener('click', () => {
   searchInput.value = '';
   clearSelection();
-  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity);
-  simulation.alpha(0.5).restart();
+  simulation.alphaTarget(0.3).restart();
 });
-
-if (window.arch && window.arch.buildBreadcrumb) {
-  window.arch.buildBreadcrumb([
-    { label: 'Home', href: 'index.html' },
-    { label: 'Dependency Explorer' },
-  ]);
-}
 
 });
 </script>
