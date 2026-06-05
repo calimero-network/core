@@ -259,6 +259,70 @@ impl<S: StorageAdaptor> Interface<S> {
         BTreeMap::new()
     }
 
+    /// Fold a `Shared` anchor's resolved writer/capability map into its base
+    /// content hash (Phase 2 of the unified-causal-log design, core#2716).
+    ///
+    /// A writer-set rotation is otherwise hash-neutral (`storage_type` is
+    /// `#[borsh(skip)]` out of the data bytes), so two nodes could share a root
+    /// hash while disagreeing on who may write — sync declared convergence and
+    /// never reconciled (the shared-storage-concurrent-rotation split-brain).
+    /// Folding the resolved set in makes a rotation MOVE `own_hash` → the
+    /// context root, so divergent writer sets surface as divergent roots and
+    /// HashComparison's tree-diff targets the differing anchor.
+    ///
+    /// Single source of truth for the ACL term — used by `save_internal` (the
+    /// action-apply path) and `rehash_shared_anchor` (the rotation-log union
+    /// path). MUST hash the INSERTION-ORDER-INVARIANT resolved set
+    /// (`resolve_anchor_writers` → `rotation_log::resolve_local`, max-(HLC,
+    /// signer) per #2673), NOT `metadata.storage_type.writers` (last-applied):
+    /// two nodes that applied the same concurrent rotations in different orders
+    /// MUST hash the same set, and the originating node must converge with peers
+    /// that hold both — only the resolved set is equal on every node.
+    fn fold_shared_acl(id: Id, base_own_hash: [u8; 32]) -> [u8; 32] {
+        let resolved = Self::resolve_anchor_writers(id);
+        let acl_bytes = to_vec(&resolved).unwrap_or_default();
+        let mut hasher = Sha256::new();
+        hasher.update(base_own_hash);
+        hasher.update(b"acl:v1");
+        hasher.update(&acl_bytes);
+        hasher.finalize().into()
+    }
+
+    /// Recompute a `Shared` anchor's `own_hash` (with the folded ACL) from its
+    /// stored bytes and propagate up the ancestor chain.
+    ///
+    /// Called after a rotation-log **union** (the reconcile / HashComparison
+    /// tail in `union_received_rotation_logs`) changes the resolved writer set
+    /// *without* an entity write. Without this, `own_hash` keeps the
+    /// pre-union ACL term, the context root never reconverges, and the cluster
+    /// split-brains on a stable-but-different root (the dual of the bug this
+    /// fold fixes). No-op for non-`Shared` entities or ones with no stored
+    /// bytes / index entry.
+    ///
+    /// # Errors
+    /// Propagates index read/write failures.
+    pub fn rehash_shared_anchor(id: Id) -> Result<(), StorageError> {
+        // Hold the reentrant mutation guard across read-recompute-write so a
+        // concurrent writer for the same id can't interleave (same rationale as
+        // `save_internal`); `update_hash_for` re-acquires it on this thread.
+        let _mutation_guard = crate::index::index_mutation_guard();
+
+        let Some(metadata) = <Index<S>>::get_metadata(id)? else {
+            return Ok(());
+        };
+        if !matches!(metadata.storage_type, StorageType::Shared { .. }) {
+            return Ok(());
+        }
+        let Some(data) = S::storage_read(Key::Entry(id)) else {
+            return Ok(());
+        };
+
+        let base: [u8; 32] = Sha256::digest(&data).into();
+        let folded = Self::fold_shared_acl(id, base);
+        let _full_hash = <Index<S>>::update_hash_for(id, folded, None)?;
+        Ok(())
+    }
+
     /// The [`OpMask`] an action requires of its signer to be authorized.
     /// `Add`/`Update` are a single `WRITE` capability for now (INSERT vs UPDATE
     /// is not split — see the OpMask design); `DeleteRef` requires `DELETE`.
@@ -2686,7 +2750,38 @@ impl<S: StorageAdaptor> Interface<S> {
             data.to_vec()
         };
 
-        let own_hash: [u8; 32] = Sha256::digest(&final_data).into();
+        let mut own_hash: [u8; 32] = Sha256::digest(&final_data).into();
+
+        // Phase 2 of the unified-causal-log design (core#2716): a `Shared`
+        // anchor's *authorization state* is part of its identity, so fold the
+        // resolved writer/capability map into `own_hash`. Before this, a
+        // writer-set rotation was hash-neutral (`storage_type` is
+        // `#[borsh(skip)]` out of the data bytes), so two nodes could share a
+        // root hash while disagreeing on who may write — sync declared
+        // convergence and never reconciled the logs (the
+        // shared-storage-concurrent-rotation split-brain).
+        //
+        // Folding it in means a rotation now MOVES `own_hash` → the context
+        // root → divergent writer sets surface as divergent roots, and
+        // HashComparison's tree-diff targets the differing anchor and runs its
+        // tail rotation-log reconcile. The PR #2743 roots-match reconcile
+        // becomes redundant once this lands everywhere.
+        //
+        // CRITICAL: hash the INSERTION-ORDER-INVARIANT resolved set
+        // (`resolve_anchor_writers` → `rotation_log::resolve_local`, max-(HLC,
+        // signer) per #2673), NOT `metadata.storage_type.writers` (the
+        // last-applied set). Two nodes that applied the same concurrent
+        // rotations in different orders MUST hash the same set, and the
+        // originating node (whose `metadata.writers` is its own rotation) must
+        // converge with peers that hold both — only the resolved set is equal
+        // on every node. The log is total on every node (originators self-log
+        // via `add_local_applied_delta`, receivers via
+        // `maybe_append_rotation_log`), so this resolves consistently.
+        // The action-apply leg of the ACL fold (the union/reconcile leg is
+        // `rehash_shared_anchor`, called from `union_received_rotation_logs`).
+        if matches!(metadata.storage_type, StorageType::Shared { .. }) {
+            own_hash = Self::fold_shared_acl(id, own_hash);
+        }
 
         // Write the entry bytes BEFORE updating the Merkle index. The
         // index update propagates the new own_hash up the parent chain,

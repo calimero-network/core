@@ -851,12 +851,35 @@ pub(crate) fn union_received_rotation_logs(logs: &[([u8; 32], Vec<u8>)]) -> usiz
                 continue;
             }
         };
+        let mut entity_applied = 0_usize;
         for entry in remote.entries {
             match rotation_log::append::<MainStorage>(entity_id, entry) {
-                Ok(()) => applied += 1,
+                Ok(()) => {
+                    applied += 1;
+                    entity_applied += 1;
+                }
                 Err(e) => {
                     debug!(%entity_id, error = %e, "rotation-log sync: append skipped");
                 }
+            }
+        }
+
+        // Phase 2 of core#2716: the union just changed this anchor's resolved
+        // writer/capability set WITHOUT an entity write, so its folded
+        // `own_hash` (which now commits to the ACL) is stale. Recompute it and
+        // propagate up the ancestor chain — otherwise the context root would
+        // never reconverge after a reconcile and the cluster would split-brain
+        // on a stable-but-different root (the dual of the bug the fold fixes).
+        // Best-effort: a rehash failure is logged, not fatal — the next sync
+        // round retries. Idempotent: re-delivering present entries recomputes
+        // the same hash.
+        if entity_applied > 0 {
+            if let Err(e) = Interface::<MainStorage>::rehash_shared_anchor(entity_id) {
+                debug!(
+                    %entity_id,
+                    error = %e,
+                    "rotation-log sync: rehash_shared_anchor after union failed"
+                );
             }
         }
     }
@@ -2436,11 +2459,32 @@ mod tests {
             })
         };
 
+        // Read the anchor's stored own_hash (Phase 2 folds the resolved ACL in).
+        let anchor_own_hash = |env: &calimero_storage::env::RuntimeEnv| -> [u8; 32] {
+            with_runtime_env(env.clone(), || {
+                Index::<MainStorage>::get_hashes_for(anchor_id)
+                    .unwrap()
+                    .unwrap()
+                    .1
+            })
+        };
+
         // Precondition: the HC node has NOT learned Carol (it only has bootstrap).
         let hc_before = resolve(&hc_env);
         assert!(
             !hc_before.contains_key(&carol),
             "precondition: HC node lacks Carol; got {hc_before:?}"
+        );
+
+        // Phase 2 (core#2716): the ACL is folded into the anchor's own_hash, so
+        // the divergent writer sets MUST surface as divergent anchor hashes
+        // BEFORE reconcile — otherwise a matching root would hide the ACL
+        // divergence (the hash-neutral split-brain this fold retires).
+        let full_own_before = anchor_own_hash(&full_env);
+        let hc_own_before = anchor_own_hash(&hc_env);
+        assert_ne!(
+            full_own_before, hc_own_before,
+            "Phase 2: divergent writer sets must produce divergent anchor own_hash"
         );
 
         // Collect the full node's Shared rotation logs (the wire payload) — the
@@ -2466,6 +2510,17 @@ mod tests {
         assert!(
             hc_after.contains_key(&carol),
             "HC node now recognises Carol as a writer; got {hc_after:?}"
+        );
+
+        // Phase 2 (core#2716): `union_received_rotation_logs` re-hashes the
+        // anchor (`rehash_shared_anchor`), so the folded own_hash must now match
+        // the full node's — the context root reconverges and there is no
+        // stable-but-different-root split-brain (the dual bug the fold could
+        // otherwise introduce on the union path).
+        let hc_own_after = anchor_own_hash(&hc_env);
+        assert_eq!(
+            hc_own_after, full_own_before,
+            "after the union the HC node's anchor own_hash must match the full node's"
         );
     }
 }
