@@ -245,7 +245,6 @@ mod tests {
         assert_eq!(members[0].peers, vec![peer]);
     }
 
-    #[test]
     // Exercises the handler directly (`apply_invalidation_event`) rather
     // than via `spawn_invalidation_task` + `op_events::notify` — the
     // `op_events` channel is a process-wide singleton shared across

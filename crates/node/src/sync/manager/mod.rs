@@ -5,6 +5,7 @@
 use calimero_context::group_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
 };
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use calimero_context_client::client::ContextClient;
@@ -15,7 +16,7 @@ use calimero_node_primitives::client::{NamespaceJoinParams, NodeClient, OpenSubg
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::common::DIGEST_SIZE;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use eyre::WrapErr;
@@ -862,7 +863,7 @@ impl SyncManager {
     pub(crate) fn member_peers_for_context(
         &self,
         context_id: &ContextId,
-    ) -> Vec<(PeerId, calimero_primitives::context::GroupMemberRole)> {
+    ) -> Vec<(PeerId, GroupMemberRole)> {
         let store = self.context_client.datastore_handle().into_inner();
         let Ok(Some(group_id)) =
             calimero_context::group_store::get_group_for_context(&store, context_id)
@@ -875,17 +876,20 @@ impl SyncManager {
     }
 
     /// Anchor-preference ordering of a cached role: higher binds the
-    /// peer more strongly to the trusted-anchor set. Owner isn't a
-    /// [`GroupMemberRole`] (it's a group `Meta` field) so it doesn't
-    /// appear here — owner preference is applied via the authoritative
-    /// `trusted_anchors` set at selection time, not from this hint.
-    fn role_rank(role: &calimero_primitives::context::GroupMemberRole) -> u8 {
-        use calimero_primitives::context::GroupMemberRole::{Admin, Member, ReadOnly, ReadOnlyTee};
+    /// peer more strongly to the trusted-anchor set. The table mirrors
+    /// `MembershipRepository::trusted_anchors` (Owner ∪ Admins ∪
+    /// ReadOnlyTee) — `Admin` and `ReadOnlyTee` are anchors and rank above
+    /// the non-anchor `ReadOnly`/`Member`; keep it in sync if that set
+    /// changes. Owner isn't a [`GroupMemberRole`] (it's a group `Meta`
+    /// field) so it doesn't appear here — owner preference is applied via
+    /// the authoritative `trusted_anchors` set at selection time, not from
+    /// this hint.
+    fn role_rank(role: &GroupMemberRole) -> u8 {
         match role {
-            Admin => 3,
-            ReadOnlyTee => 2,
-            ReadOnly => 1,
-            Member => 0,
+            GroupMemberRole::Admin => 3,
+            GroupMemberRole::ReadOnlyTee => 2,
+            GroupMemberRole::ReadOnly => 1,
+            GroupMemberRole::Member => 0,
         }
     }
 
@@ -894,19 +898,17 @@ impl SyncManager {
     /// returned once, tagged with its most-anchor role). Output is
     /// sorted by `PeerId` for determinism.
     fn dedup_peers_by_strongest_role(
-        pairs: Vec<(PeerId, calimero_primitives::context::GroupMemberRole)>,
-    ) -> Vec<(PeerId, calimero_primitives::context::GroupMemberRole)> {
-        let mut best: std::collections::BTreeMap<
-            PeerId,
-            calimero_primitives::context::GroupMemberRole,
-        > = std::collections::BTreeMap::new();
+        pairs: Vec<(PeerId, GroupMemberRole)>,
+    ) -> Vec<(PeerId, GroupMemberRole)> {
+        let mut best: BTreeMap<PeerId, GroupMemberRole> = BTreeMap::new();
         for (peer, role) in pairs {
-            match best.get(&peer) {
-                Some(existing) if Self::role_rank(existing) >= Self::role_rank(&role) => {}
-                _ => {
-                    let _ = best.insert(peer, role);
-                }
-            }
+            best.entry(peer)
+                .and_modify(|existing| {
+                    if Self::role_rank(&role) > Self::role_rank(existing) {
+                        *existing = role.clone();
+                    }
+                })
+                .or_insert(role);
         }
         best.into_iter().collect()
     }
