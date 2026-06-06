@@ -28,7 +28,7 @@ use calimero_utils_actix::global_runtime;
 use eyre::bail;
 use tracing::{debug, error, info, warn};
 
-use crate::handlers::execute::storage::ContextStorage;
+use crate::handlers::execute::storage::{ContextStorage, ReadOnlyContextStorage};
 use crate::ContextManager;
 
 impl Handler<UpdateApplicationRequest> for ContextManager {
@@ -846,15 +846,23 @@ async fn run_migration_check(
     let (outcome, storage) = global_runtime()
         .spawn_blocking(move || {
             let mut storage = storage;
-            let outcome = module.run(
-                context_id,
-                executor_identity,
-                "__calimero_migration_check",
-                &input,
-                &mut storage,
-                None,
-                Some(node_client),
-            );
+            // Run the check through a READ-ONLY view of the staging buffer: the
+            // predicate reads the produced v2 state (reads delegate to the
+            // buffer's shadow-over-live) while its writes are suppressed, so a
+            // misbehaving check cannot contaminate the state we may later commit
+            // on a passing verdict (the buffer is reused for the commit).
+            let outcome = {
+                let mut ro = ReadOnlyContextStorage::new(&mut storage);
+                module.run(
+                    context_id,
+                    executor_identity,
+                    "__calimero_migration_check",
+                    &input,
+                    &mut ro,
+                    None,
+                    Some(node_client),
+                )
+            };
             // The check is read-only; scrub any sync delta it pushed into the
             // thread-local DELTA_CONTEXT so it cannot leak into later ops on this
             // pool thread. The buffer is returned UNCOMMITTED — its writes reach
