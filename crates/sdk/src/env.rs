@@ -331,6 +331,20 @@ where
     }
 }
 
+/// Emits the transient migration witness produced by a `#[app::migrate]` whose
+/// return type is a `(State, Witness)` tuple. The witness rides out on the
+/// runtime `Outcome` and is delivered to `#[app::migration_check]`; it is NEVER
+/// written to storage. Called by the macro-generated migrate export.
+#[inline]
+pub fn emit_migration_witness(blob: &[u8]) {
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        sys::emit_migration_witness(Ref::new(&Buffer::from(blob)))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::emit_migration_witness(blob);
+}
+
 /// Logs a message to the runtime's logging system.
 ///
 /// This function sends a log message to the runtime, which will be displayed

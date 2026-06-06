@@ -182,6 +182,19 @@ for k in keys { tags.push(k.into())?; }
 DocV2 { items: old.items, tags, .. }           // `items` carried + re-read above
 ```
 
+**Drop entries — `remove` from the carried collection; don't rebuild a fresh one.**
+A new same-named `UnorderedMap::new()` is re-keyed to that field's deterministic id
+during migrate, so it **shares the carried v1 storage and unions with it** — the
+entries you "skipped" survive, so nothing is dropped. To actually drop, mutate the
+carried collection (sort first for determinism):
+```rust
+let mut items = old.items;                     // carry — same storage id
+let mut keys: Vec<String> = items.entries()?.map(|(k, _)| k).collect();
+keys.sort();
+if let Some(k) = keys.first() { items.remove(k)?; }   // actually deletes one entry
+DocV2 { items, .. }
+```
+
 > For a *single-field* type change, struct→enum, or content transform, prefer
 > `#[migrate(with = …)]` (§2) — these hand-written patterns are for the cross-field
 > cases the derive can't express. (A single-field type change still works
@@ -338,7 +351,104 @@ is almost never what you want.
 
 ---
 
-## 7. Testing your migration
+## 7. Guarding a migration: `migration_check` + abort
+
+A migration that *compiles and runs* can still be wrong — drop entries, break an
+invariant, orphan a reference. To catch that **before it commits**, declare an
+optional `#[app::migration_check]`. The migrate runs against an in-memory
+**staging buffer**; the check runs against that same buffer **before anything is
+written to the live store**. If it returns `false`, the runtime **logically
+aborts** — the staging buffer is dropped, so the context stays on v1 with **zero
+residue** (root *and* every child entry intact; no byte snapshot/restore needed).
+An app with no check commits as before (backwards-compatible).
+
+### What the check can read (the contract)
+
+The check receives `old` (the committed v1 root) and `new` (the produced v2
+root). Staging makes these **asymmetric**:
+
+- **`new` is fully trustworthy** — its scalar/inline fields *and* its lazy
+  collections (read through the staging buffer) reflect the produced v2 state.
+  Read `new.items.len()`, walk `new`'s collections, etc.
+- **`old`'s scalar/inline fields are pristine v1** (decoded from the committed v1
+  root bytes) — a safe baseline.
+- **`old`'s lazy collections are NOT pristine**: `old.items` and `new.items`
+  resolve to the *same* deterministic bucket, so in one check execution they read
+  the *same* (staged) data. **Do not diff `old` vs `new` collections** — the
+  comparison is always trivially equal.
+
+So write the check as an **invariant over `new`** (optionally against an `old`
+scalar baseline), not as an `old`-vs-`new` collection diff.
+
+### Carrying a v1 baseline: the transient migration witness
+
+When the invariant needs a v1 value the v2 schema doesn't keep (e.g. "every item
+survived"), the migrate returns a `(State, Witness)` tuple. The `Witness` is a
+borsh blob delivered to the check and **never persisted** — it rides out on the
+runtime Outcome like logs/events:
+
+```rust
+#[derive(BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
+struct MigrationWitness { v1_count: u64 }
+
+#[app::migrate]
+fn migrate() -> (DocV2, MigrationWitness) {
+    let mut items = old.items;
+    let v1_count = items.len().unwrap_or(0) as u64;   // captured BEFORE any change
+    // ... transform ...
+    (DocV2 { items, /* .. */ }, MigrationWitness { v1_count })
+}
+
+#[app::migration_check]
+fn check(_old: DocV1, new: DocV2, witness: MigrationWitness) -> bool {
+    // `new.items` is the produced collection; compare it to the v1 baseline.
+    matches!(new.items.len(), Ok(n) if n as u64 == witness.v1_count)
+}
+```
+
+A migrate returning a plain `State` (no tuple) and a 2-arg `check(old, new)` stay
+valid — the witness is opt-in. Prefer invariants that need **no** extra field
+where you can: a required key present (`new.items.get("alpha")?.is_some()`),
+conservation against an existing field (`new.total == new.items.values().sum()`),
+or a monotonic version (`new.version > old.version`, an `old` scalar).
+
+Built-in helpers (`calimero_sdk::migration_check`) operate on slices *you* build
+from soundly-readable data (`new` collections, scalars, a witness):
+- `entity_count_parity(a, b, delta)` — counts match within `delta`
+- `no_orphaned_refs(refs, keys)` — every reference still resolves
+- `conservation(old_total, new_total)` — a total is preserved
+
+The check **and any witness** must be a **deterministic pure function** of the v1
+state, exactly like the migrate: they run independently on every node against
+byte-identical input, so all nodes reach the **same** verdict — either all commit
+or all abort. (A non-deterministic check or witness is a split-verdict bug, the
+same hazard `assert_migrate_converges` guards.) A failed check is **retryable**:
+no migration marker is recorded, so the context re-runs migrate+check on its
+**next access** — a transient cause (e.g. not-yet-synced v1) self-heals once the
+input is complete.
+
+> Diffing `old` vs `new` *collection* cardinality directly (without a
+> witness/baseline) would need a pristine-snapshot read path for `old` that is
+> not yet implemented — tracked as a follow-up. Use the witness pattern above.
+
+### Aborting an in-flight migration (admin)
+
+An operator can call off a migration that's rolling out:
+
+```text
+POST /admin-api/groups/{namespace_id}/migration/abort
+```
+
+It flips the group's pending target **back** to the pre-migration app id and drops
+the pending marker, **cascading** to every descendant subgroup carrying the same
+pending migration. Idempotent — a subtree with nothing pending is a no-op. It's a
+forward "stop" (un-migrated contexts stop switching), not a rewind of any context
+that already migrated.
+
+---
+
+## 8. Testing your migration
 
 ### Fast, in-process — `TestHost`
 
@@ -397,7 +507,7 @@ workflow. See `workflows/app-migration/README.md` ("Running locally":
 
 ---
 
-## 8. Shipping a migration
+## 9. Shipping a migration
 
 Migrations run only under `UpgradePolicy::LazyOnAccess`. Trigger the upgrade:
 
@@ -424,7 +534,7 @@ post-migrate owner-driven convert (§5) has a target to compare against — see
 
 ---
 
-## 9. Quick reference
+## 10. Quick reference
 
 | Do | Don't |
 |---|---|

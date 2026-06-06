@@ -19,6 +19,10 @@ pub use {borsh, serde, serde_json};
 pub mod env;
 pub mod event;
 mod macros;
+/// Built-in `migration_check` invariant helpers (entity-count parity,
+/// no-orphaned-refs, conservation) an app author composes inside their
+/// [`#[app::migration_check]`](app::migration_check) body. Native + wasm.
+pub mod migration_check;
 pub mod private_storage;
 mod returns;
 pub mod state;
@@ -37,8 +41,8 @@ pub mod app {
     pub type Result<T, E = Error> = core::result::Result<T, E>;
 
     pub use calimero_sdk_macros::{
-        bail, destroy, emit, err, event, init, log, logic, migrate, private, state, Mergeable,
-        Migrate,
+        bail, destroy, emit, err, event, init, log, logic, migrate, migration_check, private,
+        state, Mergeable, Migrate,
     };
 
     use core::sync::atomic::{AtomicU32, Ordering};

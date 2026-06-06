@@ -17,6 +17,9 @@ wasm_imports! {
         // --
         fn input(register_id: RegisterId);
         fn value_return(value: Ref<ValueReturn<'_>>);
+        // Transient migration witness: emitted by `#[app::migrate]`, read by
+        // `#[app::migration_check]`. Carried on the runtime Outcome, never stored.
+        fn emit_migration_witness(blob: Ref<Buffer<'_>>);
         fn log_utf8(msg: Ref<Buffer<'_>>);
         fn emit(event: Ref<Event<'_>>);
         fn emit_with_handler(event: Ref<Event<'_>>, handler: Ref<Buffer<'_>>);

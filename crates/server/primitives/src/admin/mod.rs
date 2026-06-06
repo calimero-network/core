@@ -2006,6 +2006,23 @@ pub struct GetMigrationStatusApiResponse {
     pub members: Vec<MemberMigrationStatusApiEntry>,
 }
 
+/// Response returned by `POST .../groups/:namespace_id/migration/abort`.
+///
+/// Reports whether a pending migration was found and logically aborted. The
+/// abort flips the group's migration target back to the pre-migration
+/// application and drops the pending migration marker so not-yet-applied lazy
+/// contexts stop migrating. It does not recall an already-committed v2 context.
+/// Idempotent: aborting with nothing pending returns `aborted: false`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbortMigrationApiResponse {
+    /// Hex-encoded 32-byte namespace id the abort targeted.
+    pub namespace_id: String,
+    /// `true` when a pending migration was flipped back; `false` for the
+    /// idempotent no-op (nothing was pending).
+    pub aborted: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupUpgradeStatusApiData {

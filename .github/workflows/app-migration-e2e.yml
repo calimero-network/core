@@ -206,6 +206,14 @@ jobs:
           - 22-scenario-identity-downgrade
           - 26-owner-driven-authored
           - 28-get-migration-status
+          - 29-migration-check-pass
+          - 30-migration-check-fail-abort
+          # 31-admin-abort: temporarily out of the matrix. Its abort POST uses a
+          # raw `script`+curl step (no curl in the node image); the proper fix is
+          # a native merobox `abort_migration` step (calimero-client →
+          # calimero-client-py → merobox release train). Re-enable once that
+          # ships. The admin-abort handler keeps its unit coverage
+          # (abort_flips_target_back_and_drops_migration et al.).
           - 32-authored-migrate-ux
     env:
       WORKFLOW: ${{ matrix.workflow }}

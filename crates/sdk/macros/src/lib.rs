@@ -209,6 +209,35 @@ pub fn migrate(args: TokenStream, input: TokenStream) -> TokenStream {
     migration::migrate_impl(args.into(), input.into()).into()
 }
 
+/// Transforms a migration-check predicate into a WASM-compatible export.
+///
+/// This is the sibling of [`migrate`]: the runtime invokes the generated
+/// `__calimero_migration_check` export on the produced v2 root **before** it is
+/// committed. The author writes `fn check(old: OldState, new: NewState) -> bool`;
+/// returning `false` (or panicking) lets the runtime *logically abort* the
+/// migration, leaving the still-untouched v1 root intact.
+///
+/// # Usage
+///
+/// Apply the `#[app::migration_check]` attribute to a two-parameter predicate
+/// that returns `bool`.
+///
+/// # Features
+///
+/// - **WASM Export**: Generates a `#[no_mangle] pub extern "C" fn
+///   __calimero_migration_check` the runtime calls
+/// - **Old + New Access**: Reads the old v1 root via `calimero_sdk::read_raw()`
+///   and the produced new v2 root via `env::input()`
+/// - **Read-only**: Pure predicate — never assigns deterministic ids and is not
+///   wrapped in merge mode (no state is produced)
+/// - **Backwards Compatible**: Apps without this export migrate unchecked (the
+///   runtime treats a missing export as `Ok(true)`)
+/// - **Testing Support**: Preserves the original function signature for non-WASM testing
+#[proc_macro_attribute]
+pub fn migration_check(args: TokenStream, input: TokenStream) -> TokenStream {
+    migration::migration_check_impl(args.into(), input.into()).into()
+}
+
 /// Defines application events for external communication.
 ///
 /// This macro transforms a struct or enum into a Calimero application event,

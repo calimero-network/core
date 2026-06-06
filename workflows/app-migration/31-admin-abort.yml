@@ -1,0 +1,229 @@
+name: 31 — admin abort-migration POSTs the route (PR-6d, node-log validated)
+description: >
+  Single-node lazy migration whose pending v1→v2 cascade is cancelled by an
+  ACTUAL POST to the admin abort-migration route BEFORE the context is accessed
+  (PR-6d task 6d.6 step 3). The context therefore stays on v1.
+
+  Task 6d.4 shipped the logical-abort surface as a core RPC + admin HTTP route:
+    - `ContextClient::abort_migration` →
+      `crates/context/src/handlers/abort_migration.rs::abort_group_migration`
+    - `POST /admin-api/groups/:namespace_id/migration/abort`
+      (`crates/server/src/admin/service.rs`).
+  It flips the group's pending migration target BACK to the pre-migration v1 app
+  id and drops the pending migration marker, so a not-yet-applied lazy context
+  stops migrating on its next access. It is a **logical** abort — no byte
+  snapshot, no restore; an already-committed v2 context is NOT recalled.
+  Non-admin callers are rejected by the same admin-capability gate the
+  `/groups/:id/upgrade*` routes use (`MembershipRepository::require_admin` in
+  the `AbortMigrationRequest` handler).
+
+  The full target-flip + idempotency + admin-gate behaviour is exhaustively unit
+  covered in `crates/context/src/handlers/abort_migration.rs` (tests
+  `abort_flips_target_back_and_drops_migration`,
+  `abort_mixed_state_group_flips_target_to_pre_migration_v1`,
+  `abort_is_idempotent_noop_when_nothing_pending`, `abort_unknown_group_is_noop`).
+
+  How the route is POSTed without a dedicated merobox step: merobox 0.6.24 has
+  no `abort_migration` step type and no generic admin-HTTP step, but its
+  `script` step (`target: nodes`) runs a shell script INSIDE the node
+  container, where the admin API is reachable on 127.0.0.1:2528/admin-api
+  (DEFAULT_RPC_PORT). `31-abort-migration-post.sh` curls
+  `POST /admin-api/groups/{{namespace_id}}/migration/abort`; the abort handler
+  admin-gates the call against the node's own identity (the namespace admin in
+  this single-node scenario). The load-bearing proof is the node log line the
+  handler emits ("migration logically aborted: target flipped back ..."), plus
+  the post-abort access returning v1 — both asserted below. (When a first-class
+  merobox `abort_migration` step lands, swap the `script` step for it and add a
+  non-admin-rejected assertion; the rest of this scenario is unchanged.)
+
+  Because migration_v2 defaults ON (PR-6b task 6b.8), the migration runs
+  natively — no merobox feature flag is needed.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-admin-abort
+  base_port: 10250
+  base_rpc_port: 10350
+
+steps:
+  # Install v1 + v2 (the PASS fixture — a clean migration the abort cancels).
+  - name: Install scenario-migration-check-pass-v1
+    type: install_application
+    node: app-migration-admin-abort-1
+    path: apps/migrations/scenario-migration-check-pass-v1/res/scenario_migration_check_pass_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-migration-check-pass-v2
+    type: install_application
+    node: app-migration-admin-abort-1
+    path: apps/migrations/scenario-migration-check-pass-v2/res/scenario_migration_check_pass_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Namespace (anchors v1) + descendant subgroup + context, all local.
+  - name: Create namespace (anchors app_v1)
+    type: create_namespace
+    node: app-migration-admin-abort-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-admin-abort-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create descendant subgroup
+    type: create_group_in_namespace
+    node: app-migration-admin-abort-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "admin-abort-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-admin-abort-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Seed v1 state (alpha, bravo).
+  - name: Seed v1 item alpha
+    type: call
+    node: app-migration-admin-abort-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "alpha"
+      value: "a"
+
+  - name: Seed v1 item bravo
+    type: call
+    node: app-migration-admin-abort-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "bravo"
+      value: "b"
+
+  # LazyOnAccess: the migration only applies on the NEXT context access, giving
+  # the admin abort a window to flip the target back first.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-admin-abort-1
+    group_id: "{{namespace_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Fire the cascade. This publishes the pending migration (the in-flight state
+  # the admin abort RPC flips back). NOTE: the context is NOT accessed here, so
+  # it has not yet lazy-migrated.
+  - name: Cascade namespace v1 → v2 (creates the pending migration)
+    type: upgrade_group
+    node: app-migration-admin-abort-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+    cascade: true
+
+  - name: Wait for the pending migration to settle
+    type: wait
+    seconds: 5
+
+  # ── ABORT: actually POST /admin-api/groups/:namespace_id/migration/abort ──
+  # Runs inside the node container; the script curls the local admin API. The
+  # abort handler admin-gates against the node identity (namespace admin) and
+  # flips the target back to v1, dropping the pending migration marker.
+  - name: POST the admin abort-migration route (cancels the pending migration)
+    type: script
+    target: nodes
+    script: workflows/app-migration/31-abort-migration-post.sh
+    args:
+      - "{{namespace_id}}"
+
+  - name: Wait for the abort to be persisted
+    type: wait
+    seconds: 3
+
+  # NODE-LOG VALIDATION — the abort handler ran and flipped the target back.
+  - name: Assert the abort handler flipped the target back
+    type: assert_log_present
+    nodes:
+      - app-migration-admin-abort-1
+    patterns:
+      - "migration logically aborted: target flipped back"
+    min_matches: 1
+
+  # Accessing the context now must NOT migrate — the abort flipped the target
+  # back to v1, so the lazy switch no longer triggers. schema_info stays v1.
+  - name: Read schema_info (must stay v1 — the migration was aborted)
+    type: call
+    node: app-migration-admin-abort-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      post_abort_schema: result
+
+  - name: Assert the context is still v1 (abort prevented the migration)
+    type: json_assert
+    statements:
+      - 'json_subset({{post_abort_schema}}, {"output": {"schema_version": "1.0.0", "item_count": 2}})'
+
+  # The lazy migration must NEVER have run after the abort: no lazy-upgrade log,
+  # and the pre-commit migration_check never reached the pass path (because the
+  # migration was cancelled before it could execute).
+  - name: Assert NO lazy upgrade was performed (abort cancelled it)
+    type: assert_log_absent
+    nodes:
+      - app-migration-admin-abort-1
+    patterns:
+      - "performing lazy upgrade before execution"
+
+  - name: Assert the migration_check pass path was never taken
+    type: assert_log_absent
+    nodes:
+      - app-migration-admin-abort-1
+    patterns:
+      - "migration_check passed"
+
+  # Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-admin-abort-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-admin-abort-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-admin-abort-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-admin-abort-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-admin-abort-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
