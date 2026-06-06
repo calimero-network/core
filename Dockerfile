@@ -52,7 +52,6 @@ LABEL org.opencontainers.image.description="Calimero Node" \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 ARG UID=10001
