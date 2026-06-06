@@ -1,6 +1,5 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::BorshDeserialize;
-use calimero_sdk::migration_check::entity_count_parity;
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::state::read_raw;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
@@ -8,19 +7,29 @@ use calimero_storage::collections::{LwwRegister, UnorderedMap};
 const SCHEMA_VERSION_V1: &str = "1.0.0";
 const SCHEMA_VERSION_V2: &str = "2.0.0";
 
-/// v2 state for the `migration_check` FAIL scenario (PR-6d task 6d.6).
+/// v2 state for the `migration_check` FAIL scenario (PR-6d).
 ///
-/// The migrate is deliberately **lossy**: it drops one item while rebuilding the
-/// map. The `#[app::migration_check]` predicate uses the built-in
-/// [`entity_count_parity`] helper, which sees the count drop and returns
-/// `false` — so the runtime **logically aborts** the migration: the produced v2
-/// root is discarded, the v1 root is never mutated, and the context keeps
-/// serving v1 state.
+/// The migrate is deliberately **lossy**: it drops one item. It emits a
+/// transient [`MigrationWitness`] carrying the v1 item count (captured before
+/// the drop). The `#[app::migration_check]` predicate compares that baseline
+/// against the **produced** v2 item count (read through the staging buffer);
+/// the mismatch makes it return `false`, so the runtime **logically aborts** —
+/// the staged child writes are dropped, the v1 root is never mutated, and the
+/// context keeps serving v1 state with **zero residue**.
 #[app::state(emits = for<'a> Event<'a>)]
 pub struct ScenarioMigrationCheckFailV2 {
     items: UnorderedMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,
     notes: LwwRegister<String>,
+}
+
+/// Transient migration witness — emitted by the migrate, read by the check,
+/// and NEVER persisted to v2 state (rides out on the runtime Outcome).
+#[derive(BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct MigrationWitness {
+    /// The v1 item count, captured BEFORE the deliberately lossy drop.
+    pub v1_count: u64,
 }
 
 #[app::event]
@@ -48,7 +57,7 @@ struct ScenarioMigrationCheckFailV1 {
 }
 
 #[app::migrate]
-pub fn migrate_v1_to_v2() -> ScenarioMigrationCheckFailV2 {
+pub fn migrate_v1_to_v2() -> (ScenarioMigrationCheckFailV2, MigrationWitness) {
     let old_bytes = read_raw().unwrap_or_else(|| {
         panic!("Migration failed: no existing state. Create a V1 context first.");
     });
@@ -64,9 +73,9 @@ pub fn migrate_v1_to_v2() -> ScenarioMigrationCheckFailV2 {
     });
 
     // DELIBERATELY LOSSY: carry the map, then REMOVE the lexicographically
-    // smallest key so exactly one item is dropped. The migration_check below
-    // catches the count drop and the runtime logically aborts — the headline
-    // lossy-migrate rejection the scenario asserts.
+    // smallest key so exactly one item is dropped. We capture the v1 count in a
+    // transient witness BEFORE the drop; the migration_check compares it to the
+    // produced v2 count and the runtime logically aborts the lossy migrate.
     //
     // NOTE: we remove from the CARRIED map rather than rebuilding a fresh
     // same-named `UnorderedMap`. A fresh map assigned to the `items` field is
@@ -81,40 +90,39 @@ pub fn migrate_v1_to_v2() -> ScenarioMigrationCheckFailV2 {
         .map(|(k, _)| k)
         .collect();
     keys.sort();
+    let v1_count = keys.len() as u64;
     if let Some(smallest) = keys.first() {
         items
             .remove(smallest)
             .unwrap_or_else(|e| panic!("Migration failed: V2 items drop error {:?}", e));
     }
 
-    ScenarioMigrationCheckFailV2 {
-        items,
-        title: old_state.title,
-        notes: LwwRegister::new("added in v2".to_owned()),
-    }
+    (
+        ScenarioMigrationCheckFailV2 {
+            items,
+            title: old_state.title,
+            notes: LwwRegister::new("added in v2".to_owned()),
+        },
+        MigrationWitness { v1_count },
+    )
 }
 
 /// Pre-commit health check over the produced v2 root.
 ///
-/// `old` is the still-committed v1 root (read via `read_raw`); `new` is the
-/// produced-but-uncommitted (lossy) v2 root. The dropped item makes the counts
-/// diverge, so [`entity_count_parity`] returns `false` and the runtime
-/// logically aborts the migration.
+/// `new.items` reads the **produced** v2 collection through the staging buffer
+/// (= v1_count − 1 after the lossy drop); `witness.v1_count` is the v1 count the
+/// migrate captured before dropping. They differ, so the check returns `false`
+/// and the runtime logically aborts — dropping the staged writes (zero residue)
+/// and leaving the v1 root intact. (`_old` is the still-committed v1 root; its
+/// lazy collections would read the staged buffer, so we rely on the witness
+/// baseline instead of an `old`-vs-`new` collection diff.)
 #[app::migration_check]
-pub fn check(old: ScenarioMigrationCheckFailV1, new: ScenarioMigrationCheckFailV2) -> bool {
-    let old_keys: Vec<String> = old
-        .items
-        .entries()
-        .expect("read old items")
-        .map(|(k, _v)| k)
-        .collect();
-    let new_keys: Vec<String> = new
-        .items
-        .entries()
-        .expect("read new items")
-        .map(|(k, _v)| k)
-        .collect();
-    entity_count_parity(&old_keys, &new_keys, 0)
+pub fn check(
+    _old: ScenarioMigrationCheckFailV1,
+    new: ScenarioMigrationCheckFailV2,
+    witness: MigrationWitness,
+) -> bool {
+    matches!(new.items.len(), Ok(n) if n as u64 == witness.v1_count)
 }
 
 #[app::logic]

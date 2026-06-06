@@ -163,7 +163,13 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             //      own node_id/timestamp into the v2 root and diverge even
             //      though the logical state is identical — this is what
             //      the `invariant-reshuffle` scenario exercises.
-            let __serialized = ::calimero_storage::env::with_merge_mode(|| {
+            // Pin the closure's error type so the `?` on `borsh::to_vec`
+            // resolves unambiguously (borsh's io::Error has multiple `From`
+            // targets in scope otherwise).
+            let __serialized: ::core::result::Result<
+                (::std::vec::Vec<u8>, ::core::option::Option<::std::vec::Vec<u8>>),
+                ::calimero_sdk::borsh::io::Error,
+            > = ::calimero_storage::env::with_merge_mode(|| {
                 #bind_and_serialize
             });
 
