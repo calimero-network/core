@@ -997,26 +997,65 @@ pub(crate) fn load_rotation_log_direct(
     context_id: ContextId,
     entity_id: Id,
 ) -> Result<Option<RotationLog>> {
-    // P3: the rotation log's synced source of truth is the hashed child entity
-    // (it rides HC/DeltaSync and folds into the anchor's root). Prefer it; fall
-    // back to the legacy side store (`Key::RotationLog`) for anchors whose child
-    // hasn't been written yet (pre-P3 data / mid-transition). The receiver
-    // writes the child during the rotation's own apply (see
-    // `Interface::sync_rotation_log_child_from_side_store`), so it is present at
-    // the causal point any dependent member write resolves against.
-    let child_id = calimero_storage::interface::Interface::<
+    // P3: the rotation log's synced source of truth is the hashed collection
+    // child — a parent entity with one child PER delta_id. Walk it directly:
+    // read the parent's Index for the child list, then union each per-delta
+    // child (a single-entry RotationLog). Falls back to the legacy side store
+    // (`Key::RotationLog`) for anchors with no collection yet (pre-P3 /
+    // mid-transition).
+    let map_id = calimero_storage::interface::Interface::<
         calimero_storage::store::MainStorage,
     >::rotation_log_child_id(entity_id);
-    if let Some(log) =
-        load_rotation_log_bytes_direct(context_client, context_id, StorageKey::Entry(child_id))?
-    {
-        return Ok(Some(log));
+    if let Some(index) = read_entity_index_direct(context_client, context_id, map_id)? {
+        let mut entries = Vec::new();
+        if let Some(children) = index.children() {
+            for child in children {
+                if let Some(child_log) = load_rotation_log_bytes_direct(
+                    context_client,
+                    context_id,
+                    StorageKey::Entry(child.id()),
+                )? {
+                    entries.extend(child_log.entries);
+                }
+            }
+        }
+        // Canonical order so resolution is insertion-order invariant.
+        entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
+        return Ok(Some(RotationLog {
+            snapshot: None,
+            entries,
+        }));
     }
     load_rotation_log_bytes_direct(
         context_client,
         context_id,
         StorageKey::RotationLog(entity_id),
     )
+}
+
+/// Read + Borsh-decode an entity's `EntityIndex` (the child list etc.) via a
+/// direct datastore lookup (no `RUNTIME_ENV`). Used by
+/// [`load_rotation_log_direct`] to walk the rotation-log collection's children.
+fn read_entity_index_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    id: Id,
+) -> Result<Option<calimero_storage::index::EntityIndex>> {
+    let state_key =
+        calimero_store::key::ContextState::new(context_id, StorageKey::Index(id).to_bytes());
+    let handle = context_client.datastore_handle();
+    let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
+        Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
+        Ok(None) => None,
+        Err(e) => return Err(eyre::eyre!("rotation_log index read failed: {e:?}")),
+    };
+    drop(handle);
+    let Some(bytes) = bytes else {
+        return Ok(None);
+    };
+    let index = borsh::from_slice::<calimero_storage::index::EntityIndex>(&bytes)
+        .map_err(|e| eyre::eyre!("rotation_log index decode failed: {e}"))?;
+    Ok(Some(index))
 }
 
 /// Read + Borsh-decode a `RotationLog` at an arbitrary `StorageKey` via a direct

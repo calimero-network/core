@@ -436,27 +436,53 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(changed)
     }
 
-    /// Field key for the rotation-log child entity under a `Shared` anchor (P3
-    /// of core#2716 — the relocation of the rotation log into hashed state).
+    /// Field key for the rotation-log **collection** parent under a `Shared`
+    /// anchor (P3 of core#2716). The rotation log is an `UnorderedMap`-shaped
+    /// child: a parent entity here, with one child PER `delta_id` (each holding
+    /// a single-entry `RotationLog`). Per-entry children are separate
+    /// content-addressed Merkle leaves, so HashComparison reconciles them
+    /// individually via the proven structural add-wins path — a single blob
+    /// child does NOT converge under HC (its custom merge re-runs every round).
     pub(crate) const ROTATION_LOG_CHILD_KEY: &'static [u8] = b"__calimero_rotation_log__";
 
-    /// Id of the rotation-log child entity for `anchor` (P3 hashed location).
+    /// Id of the rotation-log collection PARENT for `anchor`.
     pub fn rotation_log_child_id(anchor: Id) -> Id {
         crate::collections::compute_id(anchor, Self::ROTATION_LOG_CHILD_KEY)
     }
 
-    /// Read the rotation log from its hashed child entity (P3). `None` if no
-    /// rotation has been recorded for this anchor yet.
-    pub fn load_rotation_log_child(anchor: Id) -> Option<crate::rotation_log::RotationLog> {
-        let id = Self::rotation_log_child_id(anchor);
-        S::storage_read(Key::Entry(id)).and_then(|bytes| from_slice(&bytes).ok())
+    /// Id of the per-`delta_id` entry child under the collection parent.
+    fn rotation_log_entry_id(map_id: Id, delta_id: &[u8; 32]) -> Id {
+        crate::collections::compute_id(map_id, &delta_id[..])
     }
 
-    /// Write the rotation log to its hashed child entity under `anchor` so it
-    /// rides ordinary sync (P3). Stamped `crdt_type: RotationLog` (union merge
-    /// via `merge_rotation_log`); linked under the anchor so its hash rolls into
-    /// the anchor's `full_hash` and HC/DeltaSync walk it. Entries are
-    /// authenticated at resolve time (`writers_at`), not here.
+    /// Read the rotation log by unioning every per-`delta_id` entry child of the
+    /// collection parent (P3). `None` if no rotation has been recorded yet.
+    pub fn load_rotation_log_child(anchor: Id) -> Option<crate::rotation_log::RotationLog> {
+        let map_id = Self::rotation_log_child_id(anchor);
+        if S::storage_read(Key::Entry(map_id)).is_none() {
+            return None;
+        }
+        let mut entries = Vec::new();
+        if let Ok(children) = <Index<S>>::get_children_of(map_id) {
+            for child in children {
+                if let Some(bytes) = S::storage_read(Key::Entry(child.id())) {
+                    if let Ok(log) = from_slice::<crate::rotation_log::RotationLog>(&bytes) {
+                        entries.extend(log.entries);
+                    }
+                }
+            }
+        }
+        // Canonical order so resolution is insertion-order invariant.
+        entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
+        Some(crate::rotation_log::RotationLog {
+            snapshot: None,
+            entries,
+        })
+    }
+
+    /// Persist a whole log into the collection: write each entry as its own
+    /// per-`delta_id` child (idempotent). Used by the side-store mirror; the
+    /// apply paths prefer [`Self::append_rotation_to_child`] for a single entry.
     ///
     /// # Errors
     /// Propagates serialization / storage failures.
@@ -464,25 +490,54 @@ impl<S: StorageAdaptor> Interface<S> {
         anchor: Id,
         log: &crate::rotation_log::RotationLog,
     ) -> Result<(), StorageError> {
-        use crate::collections::crdt_meta::CrdtType;
-
-        let id = Self::rotation_log_child_id(anchor);
-        let bytes = to_vec(log).map_err(|e| StorageError::SerializationError(e.into()))?;
-        // `updated_at` is irrelevant to merge (always-union for RotationLog) and
-        // to hashes (not part of own_hash/full_hash); use the entry count so it
-        // advances monotonically and is deterministic across nodes.
-        let ts = log.entries.len() as u64;
-        let metadata = Metadata::with_crdt_type(ts, ts, CrdtType::RotationLog);
-
-        // Link the child under the anchor BEFORE writing it, or `save_raw`
-        // rejects an unparented entity (`CannotCreateOrphan`). Only on first
-        // creation; a placeholder hash is fine because `save_raw` →
-        // `update_hash_for` recomputes the real own_hash and propagates it into
-        // the anchor's `full_hash` immediately after.
-        if S::storage_read(Key::Entry(id)).is_none() {
-            <Index<S>>::add_child_to(anchor, ChildInfo::new(id, [0u8; 32], metadata.clone()))?;
+        let map_id = Self::ensure_rotation_log_parent(anchor)?;
+        for entry in &log.entries {
+            Self::write_rotation_entry_child(map_id, entry)?;
         }
-        let _ = Self::save_raw(id, bytes, metadata)?;
+        Ok(())
+    }
+
+    /// Ensure the rotation-log collection parent exists and is linked under
+    /// `anchor`, returning its id. The parent is a hashed `RotationLog`-stamped
+    /// node (transit-exempt; its own value is an empty log — only its children
+    /// carry entries). `add_child_to` before the value write avoids the
+    /// `CannotCreateOrphan` reject; `save_raw`'s `update_hash_for` then sets the
+    /// real hash and propagates it into the anchor's `full_hash`.
+    fn ensure_rotation_log_parent(anchor: Id) -> Result<Id, StorageError> {
+        use crate::collections::crdt_meta::CrdtType;
+        let map_id = Self::rotation_log_child_id(anchor);
+        if S::storage_read(Key::Entry(map_id)).is_none() {
+            let meta = Metadata::with_crdt_type(0, 0, CrdtType::RotationLog);
+            <Index<S>>::add_child_to(anchor, ChildInfo::new(map_id, [0u8; 32], meta.clone()))?;
+            let empty = to_vec(&crate::rotation_log::RotationLog::empty())
+                .map_err(|e| StorageError::SerializationError(e.into()))?;
+            let _ = Self::save_raw(map_id, empty, meta)?;
+        }
+        Ok(map_id)
+    }
+
+    /// Write one rotation entry as a per-`delta_id` child of the collection
+    /// parent. Content-addressed by `delta_id`, so a replay overwrites the same
+    /// child (idempotent); two nodes holding the same `delta_id` with differing
+    /// bytes converge via the child's `RotationLog` deterministic union merge.
+    /// Each child holds a single-entry `RotationLog` so it reuses
+    /// `crdt_type: RotationLog` (transit-exempt + the deterministic merge).
+    fn write_rotation_entry_child(
+        map_id: Id,
+        entry: &crate::rotation_log::RotationLogEntry,
+    ) -> Result<(), StorageError> {
+        use crate::collections::crdt_meta::CrdtType;
+        let entry_id = Self::rotation_log_entry_id(map_id, &entry.delta_id);
+        let single = crate::rotation_log::RotationLog {
+            snapshot: None,
+            entries: vec![entry.clone()],
+        };
+        let bytes = to_vec(&single).map_err(|e| StorageError::SerializationError(e.into()))?;
+        let meta = Metadata::with_crdt_type(1, 1, CrdtType::RotationLog);
+        if S::storage_read(Key::Entry(entry_id)).is_none() {
+            <Index<S>>::add_child_to(map_id, ChildInfo::new(entry_id, [0u8; 32], meta.clone()))?;
+        }
+        let _ = Self::save_raw(entry_id, bytes, meta)?;
         Ok(())
     }
 
@@ -2342,40 +2397,26 @@ impl<S: StorageAdaptor> Interface<S> {
         })
     }
 
-    /// Append `entry` to the anchor's hashed rotation-log child (P3), the synced
-    /// source of truth for its writer-set history. Idempotent on `delta_id`: a
-    /// replayed delta produces no second entry; a second entry for the same
-    /// `delta_id` with *different* contents is the unsupported "two rotations of
-    /// one entity in one delta" case and returns
-    /// [`StorageError::DuplicateRotationInDelta`] (mirrors
-    /// [`rotation_log::append`](crate::rotation_log::append)). The child's
-    /// always-union merge then makes the write itself commutative across nodes.
+    /// Append `entry` to the anchor's rotation-log collection (P3), the synced
+    /// source of truth for its writer-set history. Writes a single
+    /// per-`delta_id` child, so it is idempotent on replay (same child id +
+    /// content) and convergent on a same-`delta_id`/different-bytes collision
+    /// (the child's `RotationLog` deterministic merge picks a node-independent
+    /// winner — no hard `DuplicateRotationInDelta` error, which a blob would
+    /// have raised; the collection just converges).
     ///
     /// The anchor MUST already exist (callers append only after the anchor's own
     /// `save_internal`, or on the stale-skip path where it was present), so
-    /// `save_rotation_log_child` → `add_child_to` can't synthesise a placeholder.
+    /// `add_child_to` can't synthesise a placeholder.
     ///
     /// # Errors
-    /// `DuplicateRotationInDelta`; propagates child read/write failures.
+    /// Propagates child read/write failures.
     pub fn append_rotation_to_child(
         anchor: Id,
         entry: &crate::rotation_log::RotationLogEntry,
     ) -> Result<(), StorageError> {
-        let mut log = Self::load_rotation_log_child(anchor)
-            .unwrap_or_else(crate::rotation_log::RotationLog::empty);
-        if let Some(existing) = log.entries.iter().find(|e| e.delta_id == entry.delta_id) {
-            if (
-                &existing.new_writers,
-                existing.signer,
-                existing.writers_nonce,
-            ) != (&entry.new_writers, entry.signer, entry.writers_nonce)
-            {
-                return Err(StorageError::DuplicateRotationInDelta(entry.delta_id));
-            }
-            return Ok(());
-        }
-        log.entries.push(entry.clone());
-        Self::save_rotation_log_child(anchor, &log)
+        let map_id = Self::ensure_rotation_log_parent(anchor)?;
+        Self::write_rotation_entry_child(map_id, entry)
     }
 
     /// 2. Exists locally - compare timestamps (LWW)
