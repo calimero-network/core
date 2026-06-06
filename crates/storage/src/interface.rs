@@ -3041,23 +3041,30 @@ impl<S: StorageAdaptor> Interface<S> {
                 metadata.crdt_type,
                 Some(crate::collections::crdt_meta::CrdtType::RotationLog)
             ) {
-                // Commutative/idempotent union CRDT — the rotation log (P3 of
-                // core#2716). Merge with the existing value REGARDLESS of
-                // timestamp ordering: the LWW branches below would drop entries
-                // (taking `incoming` on a newer write loses local-only entries;
-                // the stale-skip above would lose an older peer's entries).
-                // `try_merge_non_root` routes `RotationLog` to the
-                // order-invariant union in `merge_rotation_log`, which is
-                // commutative + idempotent, so always-merging is correct.
-                let existing_data = S::storage_read(Key::Entry(id)).unwrap_or_default();
-                Self::try_merge_non_root(
-                    id,
-                    &existing_data,
-                    data,
-                    &metadata,
-                    *last_metadata.updated_at,
-                    *metadata.updated_at,
-                )?
+                // P3 (core#2716) per-`delta_id` rotation-log child. Merge
+                // REGARDLESS of timestamp ordering (the LWW-by-HLC branches below
+                // would stale-skip a concurrent same-id write). `try_merge_non_root`
+                // resolves a same-`delta_id` collision via `lww_pick`'s
+                // content-hash tiebreak — symmetric, so HashComparison's
+                // bidirectional leaf reconciliation settles.
+                //
+                // First real write: `write_rotation_entry_child` links the child
+                // (`add_child_to`) BEFORE writing its value, so `last_metadata`
+                // is already `Some` while the stored value is still ABSENT. Treat
+                // absent existing bytes as "take incoming" — `lww_pick` would
+                // otherwise compare against an empty buffer and could pick it on
+                // the hash tiebreak, storing an empty child (load returns nothing).
+                match S::storage_read(Key::Entry(id)) {
+                    None => data.to_vec(),
+                    Some(existing_data) => Self::try_merge_non_root(
+                        id,
+                        &existing_data,
+                        data,
+                        &metadata,
+                        *last_metadata.updated_at,
+                        *metadata.updated_at,
+                    )?,
+                }
             } else if last_metadata.updated_at > metadata.updated_at {
                 return Ok(None);
             } else if crate::collections::is_app_root_entry(id) {
@@ -3525,7 +3532,22 @@ impl<S: StorageAdaptor> Interface<S> {
             // LwwRegister's merge_by_crdt_type always returns incoming; the
             // actual last-writer-wins comparison must happen here using the
             // HLC timestamps carried in metadata.
-            let is_lww = matches!(crdt_type, CrdtType::LwwRegister { .. });
+            //
+            // RotationLog joins this LWW path (P3): a rotation-log entry now
+            // lives as its OWN per-`delta_id` child holding a single entry (the
+            // collection accumulates DIFFERENT deltas structurally, via the
+            // parent's children list / add-wins, NOT via a value union). So the
+            // per-child *value* merge is a same-`delta_id` collision, which LWW
+            // resolves convergently: equal timestamps fall to `lww_pick`'s
+            // content-hash tiebreak, so both nodes pick `max_hash` — symmetric,
+            // so HashComparison's bidirectional leaf reconciliation SETTLES
+            // (the value-union merge did not, leaving a sticky HC loop). The
+            // old `merge_rotation_log` union was only needed by the abandoned
+            // single-blob representation.
+            let is_lww = matches!(
+                crdt_type,
+                CrdtType::LwwRegister { .. } | CrdtType::RotationLog
+            );
             if is_lww {
                 return Ok(lww_pick(existing, incoming));
             }
