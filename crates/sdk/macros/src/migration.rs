@@ -51,20 +51,64 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Extract return type for the inner function signature
     let return_type = &sig.output;
 
-    // Extract the state type from the return type for event registration.
-    // The return type of a migration function is the new state struct (e.g., KvStoreV2),
-    // which implements AppState and defines the Event type needed by app::emit!.
-    let event_registration = match return_type {
-        ReturnType::Type(_, ty) => quote! {
+    // A migrate returns either the new state `S` or a `(S, W)` tuple, where `W`
+    // is a transient migration witness emitted for `#[app::migration_check]`
+    // (carried on the Outcome, never persisted). `state_ty` is the AppState
+    // type used for event/schema registration; `is_witness` gates the emit.
+    let (state_ty, is_witness): (Option<syn::Type>, bool) = match return_type {
+        ReturnType::Type(_, ty) => match &**ty {
+            syn::Type::Tuple(t) if t.elems.len() == 2 => (Some(t.elems[0].clone()), true),
+            other => (Some(other.clone()), false),
+        },
+        ReturnType::Default => (None, false),
+    };
+
+    // Register the new state's Event emitter + SCHEMA_VERSION (PR-6c: so the
+    // type-erased `app::schema_version()` reflects the migrated target on a
+    // real node, not the unversioned 0).
+    let event_registration = match &state_ty {
+        Some(ty) => quote! {
             ::calimero_sdk::event::register::<#ty>();
-            // PR-6c: surface the new state's SCHEMA_VERSION so the type-erased
-            // `app::schema_version()` (read at the identity-gated storage stamp
-            // site) reflects the migrated target on a real node. Without this
-            // the migrate entrypoint would leave it at the unversioned 0,
-            // mis-stamping every converted entry.
             ::calimero_sdk::app::register_schema_version::<#ty>();
         },
-        ReturnType::Default => quote! {},
+        None => quote! {},
+    };
+
+    // Inside merge mode: bind the migrate output, assign deterministic ids to
+    // the state, and serialise the state (+ optional witness) to bytes. Yields
+    // `Result<(state_bytes, Option<witness_bytes>), borsh::io::Error>`.
+    let bind_and_serialize = if is_witness {
+        quote! {
+            let (mut __new_state, __witness) = __migration_logic();
+            __new_state.__assign_deterministic_ids();
+            let __state_bytes = ::calimero_sdk::borsh::to_vec(&__new_state)?;
+            let __witness_bytes = ::calimero_sdk::borsh::to_vec(&__witness)?;
+            ::core::result::Result::Ok(
+                (__state_bytes, ::core::option::Option::Some(__witness_bytes))
+            )
+        }
+    } else {
+        quote! {
+            let mut __new_state = __migration_logic();
+            __new_state.__assign_deterministic_ids();
+            let __state_bytes = ::calimero_sdk::borsh::to_vec(&__new_state)?;
+            ::core::result::Result::Ok(
+                (__state_bytes, ::core::option::Option::<::std::vec::Vec<u8>>::None)
+            )
+        }
+    };
+
+    // Only emit the witness on the side channel when the migrate actually
+    // returns one (a `(State, Witness)` tuple); otherwise generate nothing so
+    // the common single-return path carries no dead emit call.
+    let emit_witness = if is_witness {
+        quote! {
+            if let ::core::option::Option::Some(__w) = __witness_opt {
+                ::calimero_sdk::env::emit_migration_witness(&__w);
+            }
+        }
+    } else {
+        quote! {}
     };
 
     quote! {
@@ -119,15 +163,13 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             //      own node_id/timestamp into the v2 root and diverge even
             //      though the logical state is identical — this is what
             //      the `invariant-reshuffle` scenario exercises.
-            let output_bytes = ::calimero_storage::env::with_merge_mode(|| {
-                let mut new_state = __migration_logic();
-                new_state.__assign_deterministic_ids();
-                ::calimero_sdk::borsh::to_vec(&new_state)
+            let __serialized = ::calimero_storage::env::with_merge_mode(|| {
+                #bind_and_serialize
             });
 
-            // Serialize the new state
-            let output_bytes = match output_bytes {
-                Ok(b) => b,
+            // Unpack the serialised state and the optional transient witness.
+            let (__output_bytes, __witness_opt) = match __serialized {
+                Ok(v) => v,
                 Err(e) => {
                     ::calimero_sdk::env::panic_str(
                         &::std::format!("Migration serialization failed: {:?}", e)
@@ -135,8 +177,11 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             };
 
-            // Return the serialized state to the runtime
-            ::calimero_sdk::env::value_return(&Ok::<Vec<u8>, Vec<u8>>(output_bytes));
+            // Return the serialized state to the runtime; emit the transient
+            // witness (if the migrate returned a `(State, Witness)` tuple) on
+            // the Outcome side channel — delivered to migration_check, never persisted.
+            ::calimero_sdk::env::value_return(&Ok::<Vec<u8>, Vec<u8>>(__output_bytes));
+            #emit_witness
         }
 
         /// Native version of the migration function for testing.
@@ -201,12 +246,13 @@ pub fn migration_check_impl(_attr: TokenStream, item: TokenStream) -> TokenStrea
         })
         .collect();
 
-    if typed.len() != sig.inputs.len() || typed.len() != 2 {
+    if typed.len() != sig.inputs.len() || !(2..=3).contains(&typed.len()) {
         return quote! {
             ::core::compile_error!(
-                "calimero: #[app::migration_check] requires exactly two parameters, \
+                "calimero: #[app::migration_check] requires two or three parameters, \
                  `fn check(old: OldState, new: NewState) -> bool` — the old (v1) root \
-                 and the produced new (v2) root"
+                 and the produced new (v2) root — optionally followed by a third \
+                 migration-witness parameter, `fn check(old, new, witness) -> bool`"
             );
         };
     }
@@ -263,6 +309,43 @@ pub fn migration_check_impl(_attr: TokenStream, item: TokenStream) -> TokenStrea
     let old_ty = &old_arg.ty;
     let new_ty = &new_arg.ty;
 
+    // Optional third parameter: the transient migration witness. When present,
+    // decode it from the witness slot of the repacked check input; panic with a
+    // clear message if the migrate emitted none.
+    let witness_decode = match typed.get(2) {
+        Some(witness_arg) => {
+            let wit_pat = match &*witness_arg.pat {
+                Pat::Ident(p) => p.ident.clone(),
+                _ => {
+                    return quote! {
+                        ::core::compile_error!(
+                            "calimero: #[app::migration_check]'s third parameter must be a plain \
+                             identifier, e.g. `witness: MigrationWitness`"
+                        );
+                    };
+                }
+            };
+            let wit_ty = &witness_arg.ty;
+            quote! {
+                let #wit_pat: #wit_ty = match __witness_opt {
+                    ::core::option::Option::Some(__wb) => {
+                        match ::calimero_sdk::borsh::from_slice(&__wb) {
+                            Ok(v) => v,
+                            Err(e) => ::calimero_sdk::env::panic_str(
+                                &::std::format!("migration_check: failed to deserialize witness: {:?}", e)
+                            ),
+                        }
+                    }
+                    ::core::option::Option::None => ::calimero_sdk::env::panic_str(
+                        "migration_check: this check declares a witness parameter, but the \
+                         migrate emitted none — return a `(State, Witness)` tuple from #[app::migrate]"
+                    ),
+                };
+            }
+        }
+        None => quote! {},
+    };
+
     quote! {
         /// WASM export for the migration-check predicate.
         ///
@@ -291,12 +374,23 @@ pub fn migration_check_impl(_attr: TokenStream, item: TokenStream) -> TokenStrea
                 ),
             };
 
-            // The produced NEW v2 root arrives as the runtime input — the same
-            // bytes `write_migration_state` would persist.
-            let __new_bytes = match ::calimero_sdk::env::input() {
+            // The produced NEW v2 root + optional transient witness arrive as the
+            // runtime input, borsh-packed as `(new_state_bytes, Option<witness_bytes>)`
+            // by `run_migration_check`. `new_state_bytes` is the same bytes
+            // `write_migration_state` would persist; the witness is never persisted.
+            let __input = match ::calimero_sdk::env::input() {
                 Some(b) => b,
                 None => ::calimero_sdk::env::panic_str(
-                    "migration_check: no new state provided via env::input()"
+                    "migration_check: no input provided via env::input()"
+                ),
+            };
+            let (__new_bytes, __witness_opt): (
+                ::std::vec::Vec<u8>,
+                ::core::option::Option<::std::vec::Vec<u8>>,
+            ) = match ::calimero_sdk::borsh::from_slice(&__input) {
+                Ok(v) => v,
+                Err(e) => ::calimero_sdk::env::panic_str(
+                    &::std::format!("migration_check: failed to deserialize check input: {:?}", e)
                 ),
             };
             let #new_pat: #new_ty = match ::calimero_sdk::borsh::from_slice(&__new_bytes) {
@@ -305,6 +399,7 @@ pub fn migration_check_impl(_attr: TokenStream, item: TokenStream) -> TokenStrea
                     &::std::format!("migration_check: failed to deserialize new state: {:?}", e)
                 ),
             };
+            #witness_decode
 
             // Run the author's predicate.
             let __result: bool = (|| #block)();
@@ -472,6 +567,100 @@ mod tests {
             expanded.contains("not (target_arch = \"wasm32\")")
                 || expanded.contains("not(target_arch = \"wasm32\")"),
             "expected native cfg stub in expansion: {}",
+            expanded
+        );
+    }
+
+    #[test]
+    fn migrate_tuple_return_emits_witness() {
+        let input = quote! {
+            fn migrate() -> (V2, MigrationWitness) {
+                (V2::default(), MigrationWitness { v1_count: 3 })
+            }
+        };
+        let expanded = migrate_impl(TokenStream::new(), input).to_string();
+
+        assert!(
+            expanded.contains("emit_migration_witness"),
+            "tuple return must emit the transient witness: {}",
+            expanded
+        );
+        // Registration uses the FIRST tuple element (the new state type), not the tuple.
+        assert!(
+            expanded.contains("register :: < V2 >"),
+            "event/schema registration must target the state type V2: {}",
+            expanded
+        );
+        assert!(
+            expanded.contains("__assign_deterministic_ids"),
+            "state still gets deterministic ids under merge mode: {}",
+            expanded
+        );
+    }
+
+    #[test]
+    fn migrate_single_return_no_witness() {
+        let input = quote! {
+            fn migrate() -> V2 { V2::default() }
+        };
+        let expanded = migrate_impl(TokenStream::new(), input).to_string();
+
+        assert!(
+            !expanded.contains("emit_migration_witness"),
+            "a non-tuple return must NOT emit a witness: {}",
+            expanded
+        );
+        assert!(
+            expanded.contains("value_return"),
+            "single return still produces the committed state via value_return: {}",
+            expanded
+        );
+    }
+
+    #[test]
+    fn migration_check_three_args_decodes_witness() {
+        let input = quote! {
+            fn check(old: V1, new: V2, witness: MigrationWitness) -> bool {
+                new.len() as u64 == witness.v1_count
+            }
+        };
+        let expanded = migration_check_impl(TokenStream::new(), input).to_string();
+
+        // Input is decoded as the (new_bytes, Option<witness_bytes>) tuple.
+        assert!(
+            expanded.contains("__witness_opt"),
+            "check input must be decoded as a (new, witness) tuple: {}",
+            expanded
+        );
+        // The witness param is bound (panics if the migrate emitted none).
+        assert!(
+            expanded.contains("declares a witness parameter"),
+            "3-arg check must bind the witness and guard its absence: {}",
+            expanded
+        );
+    }
+
+    #[test]
+    fn migration_check_two_args_still_supported() {
+        let input = quote! {
+            fn check(old: V1, new: V2) -> bool { true }
+        };
+        let expanded = migration_check_impl(TokenStream::new(), input).to_string();
+
+        assert!(
+            !expanded.contains("compile_error"),
+            "the 2-arg form must remain valid: {}",
+            expanded
+        );
+        // Still decodes the tuple input shape (the witness slot is simply ignored).
+        assert!(
+            expanded.contains("__witness_opt"),
+            "2-arg check still decodes the repacked tuple input: {}",
+            expanded
+        );
+        assert!(
+            !expanded.contains("declares a witness parameter"),
+            "2-arg check must NOT bind a witness parameter: {}",
             expanded
         );
     }
