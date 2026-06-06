@@ -876,7 +876,11 @@ pub(crate) fn union_received_rotation_logs(logs: &[([u8; 32], Vec<u8>)]) -> usiz
 /// Best-effort and mixed-version safe: an older peer that doesn't understand
 /// `RotationLogSyncRequest` errors/closes the stream, which surfaces here as an
 /// `Err`/`None` and is swallowed by the caller — the session is unaffected.
-async fn reconcile_rotation_logs_with_peer<T: SyncTransport>(
+///
+/// Also driven standalone (on a fresh stream) by `SyncManager` from the
+/// protocol-selection `None` path, where the Merkle roots already match but
+/// hash-neutral rotations may still diverge (core#2716).
+pub(crate) async fn reconcile_rotation_logs_with_peer<T: SyncTransport>(
     transport: &mut T,
     context_id: ContextId,
     identity: PublicKey,
@@ -2310,7 +2314,7 @@ mod tests {
     #[test]
     fn rotation_log_reconciliation_converges_divergent_shared_logs() {
         use core::num::NonZeroU128;
-        use std::collections::BTreeSet;
+        use std::collections::{BTreeMap, BTreeSet};
         use std::sync::Arc;
 
         use calimero_storage::action::Action;
@@ -2381,7 +2385,9 @@ mod tests {
                 Interface::<MainStorage>::apply_action(
                     bootstrap,
                     &ApplyContext {
-                        effective_writers: Some(genesis.clone()),
+                        effective_writers: Some(calimero_storage::entities::full_mask(
+                            genesis.clone(),
+                        )),
                         delta_id: Some([0xE0; 32]),
                         delta_hlc: Some(hlc(10)),
                     },
@@ -2401,7 +2407,9 @@ mod tests {
                     Interface::<MainStorage>::apply_action(
                         rotation,
                         &ApplyContext {
-                            effective_writers: Some(genesis.clone()),
+                            effective_writers: Some(calimero_storage::entities::full_mask(
+                                genesis.clone(),
+                            )),
                             delta_id: Some([0xE1; 32]),
                             delta_hlc: Some(hlc(30)),
                         },
@@ -2417,7 +2425,7 @@ mod tests {
         let full_env = create_runtime_env(&full, context_id, identity);
         let hc_env = create_runtime_env(&hc, context_id, identity);
 
-        let resolve = |env: &calimero_storage::env::RuntimeEnv| -> BTreeSet<PublicKey> {
+        let resolve = |env: &calimero_storage::env::RuntimeEnv| -> BTreeMap<PublicKey, calimero_storage::entities::OpMask> {
             with_runtime_env(env.clone(), || {
                 rotation_log::resolve_local(
                     &rotation_log::load::<MainStorage>(anchor_id)
@@ -2431,7 +2439,7 @@ mod tests {
         // Precondition: the HC node has NOT learned Carol (it only has bootstrap).
         let hc_before = resolve(&hc_env);
         assert!(
-            !hc_before.contains(&carol),
+            !hc_before.contains_key(&carol),
             "precondition: HC node lacks Carol; got {hc_before:?}"
         );
 
@@ -2456,7 +2464,7 @@ mod tests {
             "after the union both nodes resolve the same writer set"
         );
         assert!(
-            hc_after.contains(&carol),
+            hc_after.contains_key(&carol),
             "HC node now recognises Carol as a writer; got {hc_after:?}"
         );
     }

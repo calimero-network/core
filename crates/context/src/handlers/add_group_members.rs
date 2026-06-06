@@ -1,4 +1,3 @@
-use calimero_governance_store::{GroupKeyring, NamespaceRepository};
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -9,6 +8,7 @@ use tracing::{info, warn};
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::{GroupKeyring, NamespaceRepository};
 
 impl Handler<AddGroupMembersRequest> for ContextManager {
     type Result = ActorResponse<Self, <AddGroupMembersRequest as Message>::Result>;
@@ -51,6 +51,13 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                     .await?;
                     report.observe("add_group_members", "MemberAdded");
 
+                    // Admin-initiated key delivery: proactively push the
+                    // group key to the just-added member, ECDH-wrapped, so
+                    // it can decrypt its `MemberAdded` and the group's ops
+                    // promptly. This is a ONE-SHOT publish per add (not the
+                    // removed receiver-side re-publish that caused #2319).
+                    // The joiner-side pull (`recover_missing_group_keys`) is
+                    // the durable fallback if this delivery is missed.
                     if let Some((_key_id, group_key)) =
                         GroupKeyring::new(&datastore, group_id).load_current_key()?
                     {
@@ -61,14 +68,10 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                                     group_id: group_id.to_bytes(),
                                     envelope,
                                 });
-                                // KeyDelivery is recipient-specific: the
-                                // only ack that proves successful delivery
-                                // is from the added member themselves.
-                                // Pass `required_signers = Some([identity])`
-                                // so non-recipient acks are filtered out
-                                // and the report's `acked_by` cleanly
-                                // signals whether the recipient applied
-                                // and acked.
+                                // Recipient-specific: pass
+                                // `required_signers = Some([identity])` so
+                                // the report's `acked_by` cleanly reflects
+                                // whether the recipient applied and acked.
                                 if let Err(e) = calimero_governance_store::sign_and_publish_namespace_op(
                                     &datastore,
                                     &node_client,

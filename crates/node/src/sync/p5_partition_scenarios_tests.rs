@@ -737,11 +737,14 @@ fn writer_set_diverges_when_rotation_reconciled_via_hc_until_log_union() {
     // wins); the HC node, missing that rotation, resolves {Alice}.
     assert_eq!(
         both_writers,
-        [alice, carol].into_iter().collect(),
+        [alice, carol]
+            .into_iter()
+            .map(|k| (k, calimero_storage::entities::OpMask::FULL))
+            .collect::<std::collections::BTreeMap<_, _>>(),
         "the node that applied both rotations resolves node-1's later-HLC {{A,C}}"
     );
     assert!(
-        both_writers.contains(&carol) && !hc_writers_before.contains(&carol),
+        both_writers.contains_key(&carol) && !hc_writers_before.contains_key(&carol),
         "repro of the #2703 divergence: HC node lacks Carol because it never \
          received node-1's hash-neutral rotation (HC carries no rotation log); \
          both={both_writers:?} hc={hc_writers_before:?}"

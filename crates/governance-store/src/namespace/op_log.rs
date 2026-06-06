@@ -189,6 +189,61 @@ impl<'a> NamespaceOpLogService<'a> {
         Ok(entries)
     }
 
+    /// Every buffered `NamespaceOp::Group` op for this namespace, as
+    /// `(group_id, key_id)` pairs. Same column walk and prefix-collision
+    /// termination as [`collect_signed_group_ops_for_group`](Self::collect_signed_group_ops_for_group)
+    /// — see the long comment there — but across all groups, carrying the
+    /// per-op `key_id` so the caller can decide decryptability per op
+    /// (a node may hold the namespace key yet still lack a *Restricted*
+    /// subgroup's own key). Used by the joiner-side direct key-delivery
+    /// pull to learn which groups it has undecryptable pending ops for.
+    /// Deduplicated on `(group_id, key_id)`.
+    pub fn collect_buffered_group_op_keys(&self) -> EyreResult<Vec<([u8; 32], [u8; 32])>> {
+        let mut seen = std::collections::BTreeSet::new();
+        let handle = self.store.handle();
+        let start = calimero_store::key::NamespaceGovOp::new(self.namespace_id, [0u8; 32]);
+        let mut iter = handle
+            .iter::<calimero_store::key::NamespaceGovOp>()
+            .map_err(|e| eyre::eyre!("iter::<NamespaceGovOp>: {e}"))?;
+        let first = iter.seek(start).transpose();
+
+        let mut entries_iter = first.into_iter().chain(iter.keys());
+        loop {
+            let key = match entries_iter.next() {
+                None => break,
+                Some(Ok(k)) => k,
+                Some(Err(_)) => {
+                    record_namespace_decode_invalid("group_ids_iter_end");
+                    break;
+                }
+            };
+            if key.namespace_id() != self.namespace_id {
+                break;
+            }
+            let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
+                Ok(Some(v)) => v,
+                Ok(None) => continue,
+                Err(_) => {
+                    record_namespace_decode_invalid("group_ids_iter_value");
+                    continue;
+                }
+            };
+            let Some(signed_op) = decode_signed_namespace_op(&value.skeleton_bytes) else {
+                continue;
+            };
+            if let NamespaceOp::Group {
+                group_id: op_group_id,
+                key_id,
+                ..
+            } = signed_op.op
+            {
+                seen.insert((op_group_id, key_id));
+            }
+        }
+
+        Ok(seen.into_iter().collect())
+    }
+
     pub fn collect_opaque_skeleton_delta_ids_for_group(
         &self,
         group_id: [u8; 32],

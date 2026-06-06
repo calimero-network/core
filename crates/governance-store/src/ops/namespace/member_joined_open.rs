@@ -7,9 +7,10 @@
 //! path to `group_id` — i.e. the subgroup is `Open` and they hold
 //! `CAN_JOIN_OPEN_SUBGROUPS` at the namespace root (the same check
 //! `join_context.rs` runs locally before letting the joiner
-//! proceed). We don't mutate state here — the side-effect (pushing
-//! a `PendingKeyDelivery` if we hold the key) happens in the outer
-//! `apply_signed_op` match.
+//! proceed). We don't mutate state here — the side-effects
+//! (deny-list clear, identity restore) happen in the outer
+//! `apply_signed_op` match. The joiner obtains the group key via the
+//! direct pull-based key-delivery path, not from this op.
 
 use super::context::NamespaceApplyCtx;
 use crate::{

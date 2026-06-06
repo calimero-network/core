@@ -100,11 +100,12 @@ pub use self::migrations::MigrationsRepository;
 pub use self::namespace::NamespaceRepository;
 pub use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
-    apply_signed_namespace_op, collect_skeleton_delta_ids_for_group, sign_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure,
-    NamespaceDagService, NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord,
-    NamespaceMembershipService, NamespaceOpLogService, NamespaceRetryService, PendingKeyDelivery,
-    ReparentOutcome, ResolvedNamespaceIdentity,
+    apply_received_group_key, apply_signed_namespace_op, build_group_key_delivery,
+    collect_skeleton_delta_ids_for_group, namespace_groups_awaiting_key,
+    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult,
+    CascadePayload, KeyUnwrapFailure, NamespaceDagService, NamespaceGovernance, NamespaceHead,
+    NamespaceIdentityRecord, NamespaceMembershipService, NamespaceOpLogService,
+    NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::SigningKeysRepository;

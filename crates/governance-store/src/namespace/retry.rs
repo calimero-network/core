@@ -26,6 +26,48 @@ impl<'a> NamespaceRetryService<'a> {
         }
     }
 
+    /// Distinct group ids that have at least one buffered encrypted op the
+    /// local node cannot yet decrypt — decided **per op `key_id`**, not by
+    /// whether the node holds *some* key for the group.
+    ///
+    /// The distinction is load-bearing: a node can hold the namespace
+    /// (root) key — delivered with its join — yet still lack a
+    /// **Restricted** subgroup's own key. Such a subgroup's ops are
+    /// encrypted under the subgroup key, so the node must still pull it.
+    /// Mirroring the apply path (which resolves `key_id` against the
+    /// subgroup keyring then falls back to the namespace keyring for the
+    /// `Open` case), a group is awaiting iff some buffered op's `key_id`
+    /// resolves to no key in either keyring. Driving off
+    /// buffered-and-undecryptable ops means a group with nothing pending
+    /// is never requested, so the set is naturally self-limiting.
+    pub fn groups_awaiting_key(&self) -> EyreResult<Vec<[u8; 32]>> {
+        let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
+        let op_keys = op_log
+            .collect_buffered_group_op_keys()
+            .map_err(|e| eyre::eyre!("op_log.collect_buffered_group_op_keys: {e}"))?;
+        let ns_typed = ContextGroupId::from(self.namespace_id);
+
+        let mut awaiting = std::collections::BTreeSet::new();
+        for (group_id, key_id) in op_keys {
+            let gid_typed = ContextGroupId::from(group_id);
+            // Same resolution order as `apply_signed_op`'s Group arm:
+            // the subgroup's own keyring first (Restricted), then the
+            // namespace keyring (Open subgroups are encrypted under it).
+            let resolvable = GroupKeyring::new(self.store, gid_typed)
+                .load_key_by_id(&key_id)
+                .map_err(|e| eyre::eyre!("load_key_by_id(group): {e}"))?
+                .is_some()
+                || GroupKeyring::new(self.store, ns_typed)
+                    .load_key_by_id(&key_id)
+                    .map_err(|e| eyre::eyre!("load_key_by_id(namespace): {e}"))?
+                    .is_some();
+            if !resolvable {
+                awaiting.insert(group_id);
+            }
+        }
+        Ok(awaiting.into_iter().collect())
+    }
+
     pub fn collect_retry_candidates_for_group(
         &self,
         group_id: [u8; 32],

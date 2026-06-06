@@ -102,14 +102,13 @@ pub enum OpEvent {
         contexts: bool,
         subgroups: bool,
     },
-    /// `RootOp::KeyDelivery` — the local node successfully unwrapped and
-    /// stored a group key from a `KeyDelivery` op addressed to it.
+    /// The local node successfully unwrapped and stored a group key
+    /// received via the direct (pull-based) key-delivery exchange.
     /// Subscribers (notably `join_group`) use this as the wake-up signal
-    /// for the gossip-fallback path when the direct join response did
-    /// not deliver a key. Only fires for *our* identity (the apply path
-    /// already filters by `envelope.recipient == our_pk`); subscribers
-    /// must still match on `group_id` because the broadcast channel is
-    /// process-wide.
+    /// when waiting for a key. Only fires for *our* identity (the apply
+    /// path already filters by `envelope.recipient == our_pk`);
+    /// subscribers must still match on `group_id` because the broadcast
+    /// channel is process-wide.
     GroupKeyDelivered {
         group_id: [u8; 32],
         recipient: PublicKey,

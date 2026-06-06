@@ -1212,22 +1212,14 @@ impl SyncManager {
                                     if let Some(report) = divergence {
                                         pending_divergences.push(report);
                                     }
-                                    // Only react to a *newly-applied*
-                                    // `MemberJoined`. On `Duplicate`
-                                    // (the common case — a backfill
-                                    // re-sends the whole DAG every
-                                    // round) re-publishing a fresh
-                                    // `KeyDelivery` each time would
-                                    // grow the namespace governance
-                                    // DAG without bound until it hits
-                                    // the backfill cap and never
-                                    // converges again (#2319).
-                                    crate::key_delivery::maybe_publish_key_delivery(
-                                        &self.context_client,
-                                        &self.node_client,
-                                        &op,
-                                    )
-                                    .await;
+                                    // Group-key delivery is no longer pushed
+                                    // from the apply path (the one-shot
+                                    // receiver-side push was the #2613
+                                    // defect). The joiner pulls any key it
+                                    // lacks at the end of this sync round
+                                    // (see `recover_missing_group_keys`);
+                                    // admin-initiated pushes still come from
+                                    // `add_group_members`/`admit_tee_node`.
                                 }
                                 Ok(_) => {}
                             }
@@ -1272,11 +1264,262 @@ impl SyncManager {
                 if ops_received > 0 {
                     self.drain_governance_pending_after_sync().await;
                 }
+
+                // Pull-based group-key recovery (#2613). Having just synced
+                // the namespace DAG with this peer, ask it for the key to any
+                // group we hold buffered-but-undecryptable ops for. The
+                // durable replacement for the removed one-shot receiver-side
+                // push: retried every sync round (and on the interval tick /
+                // gossip receipt) so a member that missed a delivery is never
+                // permanently locked out of group decryption.
+                self.recover_missing_group_keys(namespace_id, Some(peer))
+                    .await;
             }
             _ => {
                 debug!("unexpected response to namespace sync request");
             }
         }
+    }
+
+    /// Joiner side of direct key delivery (#2613). For each group in
+    /// `namespace_id` that we hold buffered-but-undecryptable ops for,
+    /// request the key and apply any wrapped key a peer returns.
+    ///
+    /// Tries `preferred_peer` first (the peer we just synced with), then
+    /// namespace-mesh peers, stopping at the first peer that serves each
+    /// group's key. A keyless peer answers with an empty envelope, so trying
+    /// several peers in one round means a single keyless peer doesn't cost a
+    /// whole interval.
+    ///
+    /// **Durability (the #2613 fix):** runs at the end of a namespace sync,
+    /// on every interval tick (`perform_interval_sync`), and on gossip receipt
+    /// of a namespace op. Namespace sync is otherwise edge-triggered, so
+    /// without these a member that missed its key at join time would never
+    /// retry. Best-effort: every error path is `debug!`/continue.
+    pub(crate) async fn recover_missing_group_keys(
+        &self,
+        namespace_id: [u8; 32],
+        preferred_peer: Option<PeerId>,
+    ) {
+        let store = self.context_client.datastore_handle().into_inner();
+        let ns_gid = calimero_context_config::types::ContextGroupId::from(namespace_id);
+
+        // Our namespace identity is the member we request a key for and the
+        // ECDH recipient. No identity in this namespace ⇒ nothing to recover.
+        let requester_public_key = match NamespaceRepository::new(&store).identity_record(&ns_gid) {
+            Ok(Some(record)) => {
+                calimero_primitives::identity::PrivateKey::from(record.private_key).public_key()
+            }
+            Ok(None) => return,
+            Err(err) => {
+                debug!(%err, "failed to resolve namespace identity for key recovery");
+                return;
+            }
+        };
+
+        let awaiting = match calimero_context::group_store::namespace_groups_awaiting_key(
+            &store,
+            namespace_id,
+        ) {
+            Ok(groups) => groups,
+            Err(err) => {
+                debug!(%err, "failed to enumerate groups awaiting key");
+                return;
+            }
+        };
+        drop(store);
+        if awaiting.is_empty() {
+            return;
+        }
+
+        // Candidate key-holders: the peer we just synced with first (a
+        // confirmed, connected member), then namespace-mesh subscribers.
+        let topic =
+            libp2p::gossipsub::TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
+        let mesh = self.sync_network.subscribed_peers(topic).await;
+        let mut candidates: Vec<PeerId> = Vec::new();
+        if let Some(p) = preferred_peer {
+            candidates.push(p);
+        }
+        for p in mesh {
+            if !candidates.contains(&p) {
+                candidates.push(p);
+            }
+        }
+        if candidates.is_empty() {
+            return;
+        }
+
+        for group_id in awaiting {
+            for peer in &candidates {
+                let Some((envelope_bytes, responder_identity)) = self
+                    .request_group_key_from_peer(
+                        *peer,
+                        namespace_id,
+                        group_id,
+                        requester_public_key,
+                    )
+                    .await
+                else {
+                    continue;
+                };
+                if envelope_bytes.is_empty() {
+                    // This peer doesn't hold the key — try the next one.
+                    continue;
+                }
+                let store = self.context_client.datastore_handle().into_inner();
+                let outcome = calimero_context::group_store::apply_received_group_key(
+                    &store,
+                    namespace_id,
+                    group_id,
+                    &envelope_bytes,
+                    responder_identity,
+                );
+                drop(store);
+                match outcome {
+                    Ok(divergence) => {
+                        info!(
+                            namespace_id = %hex::encode(namespace_id),
+                            group_id = %hex::encode(group_id),
+                            "recovered group key via direct delivery"
+                        );
+                        if let Some(report) = divergence {
+                            self.reconcile_after_divergence(report).await;
+                        }
+                        self.drain_governance_pending_after_sync().await;
+                    }
+                    Err(err) => {
+                        warn!(
+                            group_id = %hex::encode(group_id),
+                            %err,
+                            "failed to apply recovered group key"
+                        );
+                    }
+                }
+                // Got this group's key (or logged an apply error) — stop
+                // trying peers for it.
+                break;
+            }
+        }
+    }
+
+    /// Open a one-shot stream to `peer`, send a `GroupKeyRequest`, and return
+    /// `(envelope_bytes, responder_identity)` from its `GroupKeyResponse`
+    /// (empty envelope ⇒ peer holds no key). `None` on any transport error or
+    /// unexpected reply.
+    async fn request_group_key_from_peer(
+        &self,
+        peer: PeerId,
+        namespace_id: [u8; 32],
+        group_id: [u8; 32],
+        requester_public_key: PublicKey,
+    ) -> Option<(Vec<u8>, PublicKey)> {
+        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+
+        let mut stream = match self.sync_network.open_stream(peer).await {
+            Ok(s) => s,
+            Err(err) => {
+                debug!(%err, "failed to open stream for group-key request");
+                return None;
+            }
+        };
+
+        let msg = StreamMessage::Init {
+            context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+            party_id: requester_public_key,
+            payload: InitPayload::GroupKeyRequest {
+                namespace_id,
+                group_id,
+                requester_public_key,
+            },
+            next_nonce: {
+                use rand::Rng;
+                rand::thread_rng().gen()
+            },
+        };
+
+        if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {
+            debug!(%err, "failed to send GroupKeyRequest");
+            return None;
+        }
+
+        match crate::sync::stream::recv(&mut stream, None, self.sync_config.timeout).await {
+            Ok(Some(StreamMessage::Message {
+                payload:
+                    MessagePayload::GroupKeyResponse {
+                        key_envelope_bytes,
+                        responder_identity,
+                    },
+                ..
+            })) => Some((key_envelope_bytes, responder_identity)),
+            Ok(other) => {
+                debug!(
+                    "unexpected response to GroupKeyRequest: {:?}",
+                    other.as_ref().map(std::mem::discriminant)
+                );
+                None
+            }
+            Err(err) => {
+                debug!(%err, "GroupKeyRequest recv failed");
+                None
+            }
+        }
+    }
+
+    /// Responder for `InitPayload::GroupKeyRequest` — the pull-based
+    /// counterpart to the admin push. A member that lacks a group key asks
+    /// for it here; we authorise by current membership + cross-namespace pin,
+    /// ECDH-wrap the key (`build_group_key_delivery`), and reply. Every
+    /// non-deliverable case replies with an empty envelope (the requester
+    /// tries another peer; no membership oracle leak).
+    pub(super) async fn handle_group_key_request(
+        &self,
+        namespace_id: [u8; 32],
+        group_id: [u8; 32],
+        requester_public_key: PublicKey,
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_node_primitives::sync::{MessagePayload, StreamMessage};
+
+        let store = self.context_client.datastore_handle().into_inner();
+        let (key_envelope_bytes, responder_identity) =
+            match calimero_context::group_store::build_group_key_delivery(
+                &store,
+                namespace_id,
+                group_id,
+                requester_public_key,
+            ) {
+                Ok(pair) => pair,
+                Err(err) => {
+                    debug!(
+                        namespace_id = %hex::encode(namespace_id),
+                        group_id = %hex::encode(group_id),
+                        %err,
+                        "failed to build group-key delivery"
+                    );
+                    (Vec::new(), requester_public_key)
+                }
+            };
+        drop(store);
+
+        debug!(
+            namespace_id = %hex::encode(namespace_id),
+            group_id = %hex::encode(group_id),
+            has_key = !key_envelope_bytes.is_empty(),
+            "Sending GroupKeyResponse"
+        );
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::GroupKeyResponse {
+                key_envelope_bytes,
+                responder_identity,
+            },
+            next_nonce: nonce,
+        };
+        crate::sync::stream::send(stream, &msg, None).await?;
+        Ok(())
     }
 }
 

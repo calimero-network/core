@@ -1988,7 +1988,6 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
 
     // Replay the exact same op — should be a no-op, not a duplicate head.
     let replay = gov.apply_signed_op(&op).expect("replay apply");
-    assert!(replay.pending_deliveries.is_empty());
     assert!(replay.key_unwrap_failures.is_empty());
     assert_eq!(
         raw_namespace_dag_heads(&store, ns_id),
@@ -3237,41 +3236,366 @@ fn namespace_root_op_with_stale_state_hash_applies_with_warning() {
         .expect("stale root state_hash must apply with a warning, not reject");
 }
 
+// ---------------------------------------------------------------------------
+// Direct (pull-based) group-key delivery (#2613)
+// ---------------------------------------------------------------------------
+
 #[test]
-fn namespace_root_key_delivery_ignores_non_zero_state_hash() {
-    use calimero_context_client::local_governance::{
-        KeyEnvelope, NamespaceOp, RootOp, SignedNamespaceOp,
-    };
+fn apply_received_group_key_stores_key_for_recipient() {
+    use rand::rngs::OsRng;
 
-    use super::NamespaceGovernance;
+    let store = test_store();
+    let mut rng = OsRng;
 
-    let (store, signer_sk, namespace_id, group_gid, _group_key, _key_id) =
-        setup_state_hash_test_fixture();
+    let namespace_id = [0xD0u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    // A non-root subgroup, so the bootstrap-admin seed path is not exercised.
+    let group_id = [0xD1u8; 32];
+    let group_gid = ContextGroupId::from(group_id);
 
-    // KeyDelivery is intentionally NOT gated by `root_op_commits_to_
-    // namespace_state` — it's additive/idempotent, and a stale-but-valid
-    // delivery is still a valid delivery. Even if a peer (bug or otherwise)
-    // sets a non-matching state_hash on it, apply must succeed.
-    let bogus_hash = [0xCDu8; 32];
+    // The local node's namespace identity = the ECDH recipient.
+    let recipient_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let recipient_sk = PrivateKey::from(recipient_sk_bytes);
+    NamespaceRepository::new(&store)
+        .store_identity(
+            &ns_gid,
+            &recipient_sk.public_key(),
+            &recipient_sk_bytes,
+            &[0u8; 32],
+        )
+        .unwrap();
+
+    // A remote key-holder wraps the group key for us.
+    let sender_sk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let group_key = [0x6Au8; 32];
+    let envelope =
+        GroupKeyring::wrap_for_member(&sender_sk, &recipient_sk.public_key(), &group_key).unwrap();
+    let envelope_bytes = borsh::to_vec(&envelope).unwrap();
+
+    // Precondition: we hold no key yet.
+    assert!(GroupKeyring::new(&store, group_gid)
+        .load_current_key()
+        .unwrap()
+        .is_none());
+
+    apply_received_group_key(
+        &store,
+        namespace_id,
+        group_id,
+        &envelope_bytes,
+        sender_sk.public_key(),
+    )
+    .unwrap();
+
+    let stored = GroupKeyring::new(&store, group_gid)
+        .load_current_key()
+        .unwrap();
+    assert_eq!(stored.map(|(_, k)| k), Some(group_key));
+}
+
+#[test]
+fn apply_received_group_key_ignores_envelope_for_other_recipient() {
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    let namespace_id = [0xD2u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let group_id = [0xD3u8; 32];
+    let group_gid = ContextGroupId::from(group_id);
+
+    let recipient_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let recipient_sk = PrivateKey::from(recipient_sk_bytes);
+    NamespaceRepository::new(&store)
+        .store_identity(
+            &ns_gid,
+            &recipient_sk.public_key(),
+            &recipient_sk_bytes,
+            &[0u8; 32],
+        )
+        .unwrap();
+
+    // Envelope wrapped for somebody else entirely.
+    let sender_sk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let other_pk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng)).public_key();
+    let group_key = [0x6Bu8; 32];
+    let envelope = GroupKeyring::wrap_for_member(&sender_sk, &other_pk, &group_key).unwrap();
+    let envelope_bytes = borsh::to_vec(&envelope).unwrap();
+
+    // Not addressed to us: benign no-op, no key stored.
+    let divergence = apply_received_group_key(
+        &store,
+        namespace_id,
+        group_id,
+        &envelope_bytes,
+        sender_sk.public_key(),
+    )
+    .unwrap();
+    assert!(divergence.is_none());
+    assert!(GroupKeyring::new(&store, group_gid)
+        .load_current_key()
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn groups_awaiting_key_reports_then_clears() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let signer_sk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+
+    let namespace_id = [0xD4u8; 32];
+    let group_id = [0xD5u8; 32];
+    let group_gid = ContextGroupId::from(group_id);
+
+    // Buffer an encrypted group op for `group_id` whose key we don't hold.
     let op = SignedNamespaceOp::sign(
         &signer_sk,
         namespace_id,
         vec![],
-        bogus_hash,
+        [0u8; 32],
         1,
-        NamespaceOp::Root(RootOp::KeyDelivery {
-            group_id: group_gid.to_bytes(),
-            envelope: KeyEnvelope {
-                recipient: signer_sk.public_key(),
-                ephemeral_pk: PublicKey::from([0u8; 32]),
-                nonce: [0u8; 12],
-                ciphertext: vec![0u8; 48],
-            },
-        }),
+        NamespaceOp::Group {
+            group_id,
+            // Content-addressed id of the key the op is encrypted under, so
+            // storing that exact key later resolves the op (awaiting clears).
+            key_id: GroupKeyring::key_id_for(&[0xAA; 32]),
+            encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    NamespaceOpLogService::new(&store, namespace_id)
+        .store_signed_operation(&op)
+        .unwrap();
+
+    // Keyless: the group is reported as awaiting a key.
+    let awaiting = namespace_groups_awaiting_key(&store, namespace_id).unwrap();
+    assert_eq!(awaiting, vec![group_id]);
+
+    // Once the op's key is stored locally, the group drops out of the set.
+    GroupKeyring::new(&store, group_gid)
+        .store_key(&[0xAA; 32])
+        .unwrap();
+    let awaiting = namespace_groups_awaiting_key(&store, namespace_id).unwrap();
+    assert!(awaiting.is_empty());
+}
+
+#[test]
+fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
+    // Regression for the whole group-* e2e suite going red: a joiner gets
+    // the namespace (root) key with its join, then is added to a RESTRICTED
+    // subgroup whose ops are encrypted under the subgroup's OWN key. Holding
+    // the namespace key must NOT mask that the subgroup is still awaiting its
+    // own key — otherwise the pull never requests it and the subgroup's
+    // `ContextRegistered` op never decrypts ("context does not belong to any
+    // group" on join_context).
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let signer_sk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+
+    let namespace_id = [0xD6u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let subgroup_id = [0xD7u8; 32];
+
+    let namespace_key = [0x11u8; 32];
+    let subgroup_key = [0x22u8; 32];
+
+    // The node holds the namespace key (delivered with its join)...
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+
+    // ...but the buffered subgroup op is encrypted under the subgroup's own
+    // key, which the node does NOT hold.
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: subgroup_id,
+            key_id: GroupKeyring::key_id_for(&subgroup_key),
+            encrypted: GroupKeyring::encrypt_op(&subgroup_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    NamespaceOpLogService::new(&store, namespace_id)
+        .store_signed_operation(&op)
+        .unwrap();
+
+    // The subgroup must still be reported as awaiting its key.
+    assert_eq!(
+        namespace_groups_awaiting_key(&store, namespace_id).unwrap(),
+        vec![subgroup_id],
+        "holding the namespace key must not mask a Restricted subgroup awaiting its own key"
+    );
+}
+
+#[test]
+fn responder_delivery_round_trips_key_to_joiner_cross_store() {
+    // The cross-node exchange minus the libp2p transport: a key-holding
+    // responder store and a keyless joiner store with DISTINCT identities.
+    // Proves the responder authz + ECDH wrap (`build_group_key_delivery`)
+    // interoperates with the joiner unwrap + buffered-op replay
+    // (`apply_received_group_key`) — i.e. the exact bytes a `GroupKeyResponse`
+    // would carry on the wire actually unlock the joiner's group.
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+
+    let namespace_id = [0xF0u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    // A non-root subgroup so the bootstrap-admin seed path is not exercised.
+    let subgroup_id = [0xF1u8; 32];
+    let subgroup_gid = ContextGroupId::from(subgroup_id);
+    let group_key = [0x6Cu8; 32];
+
+    // Joiner identity: the ECDH recipient and the member the key is for.
+    let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let joiner_sk = PrivateKey::from(joiner_sk_bytes);
+    let joiner_pk = joiner_sk.public_key();
+
+    // Responder identity: the namespace identity that holds and wraps the key.
+    let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_pk = responder_sk.public_key();
+
+    // ---- Responder store: holds the key, knows the joiner is a member. ----
+    let responder_store = test_store();
+    NamespaceRepository::new(&responder_store)
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
+        .unwrap();
+    MetaRepository::new(&responder_store)
+        .save(&ns_gid, &sample_meta_with_admin(responder_pk))
+        .unwrap();
+    MetaRepository::new(&responder_store)
+        .save(&subgroup_gid, &sample_meta_with_admin(responder_pk))
+        .unwrap();
+    NamespaceRepository::new(&responder_store)
+        .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+    MembershipRepository::new(&responder_store)
+        .add_member(&subgroup_gid, &joiner_pk, GroupMemberRole::Member)
+        .unwrap();
+    GroupKeyring::new(&responder_store, subgroup_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    // Responder builds the delivery for the joiner (the `GroupKeyResponse`).
+    let (envelope_bytes, responder_identity) =
+        build_group_key_delivery(&responder_store, namespace_id, subgroup_id, joiner_pk).unwrap();
+    assert!(
+        !envelope_bytes.is_empty(),
+        "responder holding the key must deliver it to a member"
+    );
+    assert_eq!(responder_identity, responder_pk);
+
+    // ---- Joiner store: keyless, with a buffered encrypted op for the group. -
+    let joiner_store = test_store();
+    NamespaceRepository::new(&joiner_store)
+        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes, &[0u8; 32])
+        .unwrap();
+    let buffered = SignedNamespaceOp::sign(
+        &responder_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: subgroup_id,
+            // Content-addressed id of `group_key`, so the retry path finds
+            // the delivered key by id once it is stored.
+            key_id: GroupKeyring::key_id_for(&group_key),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    NamespaceOpLogService::new(&joiner_store, namespace_id)
+        .store_signed_operation(&buffered)
+        .unwrap();
+
+    // Precondition: joiner awaits the key and holds none.
+    assert_eq!(
+        namespace_groups_awaiting_key(&joiner_store, namespace_id).unwrap(),
+        vec![subgroup_id]
+    );
+
+    // Joiner applies the responder's delivery (the wire payload).
+    apply_received_group_key(
+        &joiner_store,
+        namespace_id,
+        subgroup_id,
+        &envelope_bytes,
+        responder_identity,
     )
     .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, namespace_id);
-    gov.apply_signed_op(&op)
-        .expect("non-gated root variants must skip the staleness check");
+    // Postcondition: the ECDH-wrapped key round-tripped between the two
+    // distinct identities, is stored under the joiner's keyring, and the
+    // group no longer awaits a key (its buffered ops are now decryptable).
+    assert_eq!(
+        GroupKeyring::new(&joiner_store, subgroup_gid)
+            .load_current_key()
+            .unwrap()
+            .map(|(_, k)| k),
+        Some(group_key)
+    );
+    assert!(namespace_groups_awaiting_key(&joiner_store, namespace_id)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn responder_refuses_delivery_to_non_member() {
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+
+    let namespace_id = [0xF2u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let subgroup_id = [0xF3u8; 32];
+    let subgroup_gid = ContextGroupId::from(subgroup_id);
+
+    let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_pk = responder_sk.public_key();
+    let stranger_pk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng)).public_key();
+
+    let store = test_store();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(responder_pk))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup_gid, &sample_meta_with_admin(responder_pk))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup_gid)
+        .store_key(&[0x6Du8; 32])
+        .unwrap();
+
+    // The requester is NOT a member of the subgroup → empty envelope: no key
+    // wrapped, and no membership oracle leaked (same reply as "key not held").
+    let (envelope_bytes, _responder_identity) =
+        build_group_key_delivery(&store, namespace_id, subgroup_id, stranger_pk).unwrap();
+    assert!(
+        envelope_bytes.is_empty(),
+        "responder must not wrap a key for a non-member"
+    );
 }

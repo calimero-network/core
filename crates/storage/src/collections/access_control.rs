@@ -21,20 +21,31 @@
 //!   tombstone. [`has_role`](AccessControl::has_role) is the lookup app guards
 //!   use.
 //!
-//! To make a role actually gate *writes to specific data*, store that data in
-//! its own [`SharedStorage`] and rotate its writers to the role's members; this
-//! registry is the source of truth for "who is in role R", and `only_role` is
-//! the fail-fast guard at the API surface.
+//! # Op-granular roles ([`project_onto`](AccessControl::project_onto))
+//!
+//! A role can confer a *capability* on guarded data, not just membership. Give
+//! each role an [`OpMask`] (e.g. `editor = WRITE`, `moderator = WRITE | DELETE`)
+//! and call [`project_onto`](AccessControl::project_onto) to push those masks
+//! onto a [`PermissionedStorage`]'s capability map — each member gets the union
+//! of its roles' masks (admins keep [`OpMask::FULL`]). The masks are then
+//! signed and enforced at merge by
+//! [`ProtocolAuthorizer`](super::permissioned::ProtocolAuthorizer): a member
+//! with `WRITE` but not `DELETE` has a forged delete rejected by peers.
+//!
+//! Re-run `project_onto` after any role/admin change — the registry write and
+//! the projection are separate signed actions, so `data` converges to the new
+//! roles eventually (a transient skew between them is not a security gap; merge
+//! always enforces whatever `data`'s map currently resolves to).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::PublicKey;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
-use super::permissioned::SharedStorage;
+use super::permissioned::{Authorizer, PermissionedStorage, SharedStorage};
 use super::{LwwRegister, StoreError, UnorderedMap};
-use crate::entities::{ChildInfo, Data, Element};
+use crate::entities::{ChildInfo, Data, Element, OpMask};
 use crate::env;
 use crate::interface::StorageError;
 
@@ -294,6 +305,73 @@ impl AccessControl {
             .insert(key, LwwRegister::new(false))?;
         Ok(())
     }
+
+    // --- op-granular projection: roles -> per-writer masks on guarded data ---
+
+    /// Enumerate the current members of `role` (those whose grant flag is
+    /// `true`). O(total registry entries) — a prefix scan over `role\0`.
+    ///
+    /// # Errors
+    /// `ActionNotAllowed` if `role` contains the separator byte; propagates a
+    /// storage error from the scan.
+    pub fn members_of(&self, role: &str) -> Result<Vec<PublicKey>, StoreError> {
+        Self::check_role(role)?;
+        let prefix = format!("{role}{ROLE_MEMBER_SEP}");
+        let mut out = Vec::new();
+        for (k, v) in self.grants.get()?.entries()? {
+            // The `\0` separator means `role="edit"` never prefix-matches
+            // `"editor\0..."`, so this is an exact role match.
+            let Some(hex_tail) = k.strip_prefix(&prefix) else {
+                continue;
+            };
+            if !*v.get() {
+                continue; // revoked
+            }
+            if let Ok(bytes) = hex::decode(hex_tail) {
+                if let Ok(arr) = <[u8; 32]>::try_from(bytes) {
+                    out.push(PublicKey::from(arr));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Project role memberships onto `data`'s capability map: every member of a
+    /// role listed in `role_masks` receives that role's [`OpMask`] (the **union**
+    /// across all roles it holds), and the admins keep [`OpMask::FULL`] so they
+    /// can keep administering. This is one authenticated rotation of `data`, so
+    /// the caller must be authorised for `Op::Admin` on `data`; the resulting
+    /// masks are signed and enforced at merge by [`ProtocolAuthorizer`].
+    ///
+    /// Re-run after any role/admin change to keep `data` in sync (the registry
+    /// write and this projection are separate signed actions — see the module
+    /// docs on eventual consistency).
+    ///
+    /// # Errors
+    /// Propagates the registry scan error, or `ActionNotAllowed` if the executor
+    /// is not authorised to rotate `data`.
+    pub fn project_onto<T, A>(
+        &self,
+        role_masks: &[(&str, OpMask)],
+        data: &mut PermissionedStorage<T, A>,
+    ) -> Result<(), StoreError>
+    where
+        T: BorshSerialize + BorshDeserialize + Mergeable + Default,
+        A: Authorizer,
+    {
+        let mut caps: BTreeMap<PublicKey, OpMask> = BTreeMap::new();
+        for (role, mask) in role_masks {
+            for member in self.members_of(role)? {
+                let entry = caps.entry(member).or_insert(OpMask::NONE);
+                *entry = entry.union(*mask);
+            }
+        }
+        // Admins keep FULL so they never lock themselves out of `data`.
+        for admin in self.admins() {
+            let _ = caps.insert(admin, OpMask::FULL);
+        }
+        data.set_capabilities(caps)
+    }
 }
 
 // `Data`/`Mergeable`/`CrdtMeta` delegate to the backing storage so `AccessControl`
@@ -462,5 +540,88 @@ mod tests {
         // A name at the limit is fine.
         let ok = "r".repeat(super::MAX_ROLE_NAME_LEN);
         assert!(ac.grant(&ok, BOB.into()).is_ok());
+    }
+
+    #[test]
+    #[serial]
+    fn members_of_lists_current_holders() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        let mut ac = Root::new(AccessControl::new_admin_caller);
+
+        ac.grant("editor", BOB.into()).unwrap();
+        ac.grant("editor", CAROL.into()).unwrap();
+        ac.grant("viewer", BOB.into()).unwrap();
+        ac.revoke("editor", &CAROL.into()).unwrap();
+
+        let mut editors = ac.members_of("editor").unwrap();
+        editors.sort();
+        assert_eq!(editors, vec![BOB.into()]); // Carol was revoked
+        assert_eq!(ac.members_of("viewer").unwrap(), vec![BOB.into()]);
+        assert!(ac.members_of("ghost").unwrap().is_empty());
+        // `editor` must not prefix-match a longer role name.
+        ac.grant("editorial", CAROL.into()).unwrap();
+        assert_eq!(ac.members_of("editor").unwrap(), vec![BOB.into()]);
+    }
+
+    #[test]
+    #[serial]
+    fn project_roles_grants_op_masks_on_data() {
+        use std::collections::BTreeSet;
+
+        use borsh::{BorshDeserialize, BorshSerialize};
+
+        use crate::collections::{LwwRegister, Op, PermissionedStorage, ProtocolAuthorizer};
+        use crate::entities::OpMask;
+
+        #[derive(BorshSerialize, BorshDeserialize)]
+        struct St {
+            ac: AccessControl,
+            data: PermissionedStorage<LwwRegister<String>, ProtocolAuthorizer>,
+        }
+
+        const ROLE_MASKS: &[(&str, OpMask)] = &[
+            ("editor", OpMask::WRITE),
+            ("moderator", OpMask::WRITE.union(OpMask::DELETE)),
+        ];
+
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        let mut s = Root::new(|| St {
+            ac: AccessControl::new(ALICE.into()),
+            data: PermissionedStorage::new(BTreeSet::from([ALICE.into()]), false),
+        });
+
+        s.ac.grant("editor", BOB.into()).unwrap();
+        s.ac.grant("moderator", CAROL.into()).unwrap();
+
+        {
+            let st = &mut *s;
+            st.ac.project_onto(ROLE_MASKS, &mut st.data).unwrap();
+        }
+
+        // Roles now confer the right ops on `data`, enforced via the mask map.
+        assert!(s.data.can(&BOB.into(), Op::Write), "editor may write");
+        assert!(
+            !s.data.can(&BOB.into(), Op::Delete),
+            "editor may NOT delete"
+        );
+        assert!(
+            s.data.can(&CAROL.into(), Op::Delete),
+            "moderator may delete"
+        );
+        assert!(s.data.can(&ALICE.into(), Op::Admin), "admin keeps FULL");
+
+        // Revoke Bob's editor role and re-project → he loses write on `data`.
+        s.ac.revoke("editor", &BOB.into()).unwrap();
+        {
+            let st = &mut *s;
+            st.ac.project_onto(ROLE_MASKS, &mut st.data).unwrap();
+        }
+        assert!(
+            !s.data.can(&BOB.into(), Op::Write),
+            "revoked editor loses write"
+        );
+        assert!(s.data.can(&CAROL.into(), Op::Delete), "moderator unchanged");
     }
 }
