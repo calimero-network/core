@@ -586,8 +586,21 @@ impl ContextRegistry {
         bytes: &[u8],
     ) -> eyre::Result<[u8; 32]> {
         let mut reader: &[u8] = bytes;
-        let index = borsh_layout::EntityIndex::deserialize_reader(&mut reader)
-            .map_err(|e| eyre::eyre!("Failed to deserialize EntityIndex: {}", e))?;
+        let index = borsh_layout::EntityIndex::deserialize_reader(&mut reader).map_err(|e| {
+            // P3 diagnostics (core#2716): a cold-join EntityIndex decode failure
+            // ("Invalid Option representation") stalls root-hash computation.
+            // Dump the raw bytes (hex, capped) so the offending layout can be
+            // parsed by hand instead of guessed from the error name.
+            let dump_len = bytes.len().min(2048);
+            tracing::warn!(
+                %context_id,
+                error = %e,
+                total_bytes = bytes.len(),
+                index_hex = %hex::encode(&bytes[..dump_len]),
+                "P3-DIAG: EntityIndex borsh decode failed in compute_root_hash_via_borsh"
+            );
+            eyre::eyre!("Failed to deserialize EntityIndex: {}", e)
+        })?;
 
         let trailing = reader.len();
         if trailing > 0 {
