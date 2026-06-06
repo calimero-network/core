@@ -1,21 +1,23 @@
-name: 30 — migration_check FAILS → logical abort, v1 still served (PR-6d, node-log validated)
+name: 30 — migration_check FAILS → zero-residue abort, v1 still served (PR-6d, node-log validated)
 description: >
   Single-node lazy migration whose `#[app::migration_check]` REJECTS the
-  produced v2 root, triggering a LOGICAL ABORT — the headline PR-6d task 6d.6
-  test.
+  produced v2 root, triggering a LOGICAL ABORT with ZERO RESIDUE — the headline
+  PR-6d soundness test.
 
   The v2 fixture (`scenario-migration-check-fail-v2`) runs a deliberately
-  **lossy** migrate: it rebuilds the item map but drops the lexicographically
-  smallest key, so exactly one item is lost. Its `#[app::migration_check]`
-  predicate (built from the SDK helper `entity_count_parity`) sees the count
-  drop and returns `false`. The runtime then returns `Err(MigrationCheckFailed)`
-  BEFORE `write_migration_state` and BEFORE finalize — a logical abort: the
-  produced v2 root is discarded, the v1 root is never mutated.
+  **lossy** migrate: it drops the lexicographically smallest key, so exactly one
+  item is lost. The migrate emits a transient `MigrationWitness` carrying the v1
+  item count (captured before the drop). Its `#[app::migration_check]` compares
+  that baseline against the **produced** v2 count (read through the staging
+  buffer) — they differ, so it returns `false`. The runtime then returns
+  `Err(MigrationCheckFailed)` BEFORE `write_migration_state` and BEFORE finalize.
 
-  Logical-abort discipline: there is NO byte snapshot and NO restore. v1 is
-  intact because it was never written. On the lazy path the failed migration is
-  swallowed and the access PROCEEDS on the current (v1) application, so the
-  triggering call SUCCEEDS serving pre-migration data.
+  Staging discipline: the migrate's child-entry writes were buffered in the
+  staging `ContextStorage` and are DROPPED on the failed check — they never
+  reached the live store. So v1 is intact (root AND every child entry) with zero
+  residue; there is no byte snapshot/restore. On the lazy path the failed
+  migration is swallowed and the access PROCEEDS on the current (v1)
+  application, so the triggering call SUCCEEDS serving pre-migration data.
 
   Node-log validation (the explicit requirement for scenario 30):
     - `assert_log_present "migration_check failed: logical abort"` — the

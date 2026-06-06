@@ -355,35 +355,82 @@ is almost never what you want.
 
 A migration that *compiles and runs* can still be wrong — drop entries, break an
 invariant, orphan a reference. To catch that **before it commits**, declare an
-optional `#[app::migration_check]`. It runs after the migrate produces the v2
-state but **before the v1 root is touched**; if it returns `false`, the runtime
-**logically aborts** — the context stays on v1, intact (no byte snapshot/restore;
-v1 was never mutated). An app with no check commits as before (backwards-compatible).
+optional `#[app::migration_check]`. The migrate runs against an in-memory
+**staging buffer**; the check runs against that same buffer **before anything is
+written to the live store**. If it returns `false`, the runtime **logically
+aborts** — the staging buffer is dropped, so the context stays on v1 with **zero
+residue** (root *and* every child entry intact; no byte snapshot/restore needed).
+An app with no check commits as before (backwards-compatible).
+
+### What the check can read (the contract)
+
+The check receives `old` (the committed v1 root) and `new` (the produced v2
+root). Staging makes these **asymmetric**:
+
+- **`new` is fully trustworthy** — its scalar/inline fields *and* its lazy
+  collections (read through the staging buffer) reflect the produced v2 state.
+  Read `new.items.len()`, walk `new`'s collections, etc.
+- **`old`'s scalar/inline fields are pristine v1** (decoded from the committed v1
+  root bytes) — a safe baseline.
+- **`old`'s lazy collections are NOT pristine**: `old.items` and `new.items`
+  resolve to the *same* deterministic bucket, so in one check execution they read
+  the *same* (staged) data. **Do not diff `old` vs `new` collections** — the
+  comparison is always trivially equal.
+
+So write the check as an **invariant over `new`** (optionally against an `old`
+scalar baseline), not as an `old`-vs-`new` collection diff.
+
+### Carrying a v1 baseline: the transient migration witness
+
+When the invariant needs a v1 value the v2 schema doesn't keep (e.g. "every item
+survived"), the migrate returns a `(State, Witness)` tuple. The `Witness` is a
+borsh blob delivered to the check and **never persisted** — it rides out on the
+runtime Outcome like logs/events:
 
 ```rust
-use calimero_sdk::migration_check::entity_count_parity;
+#[derive(BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
+struct MigrationWitness { v1_count: u64 }
 
-// Takes the old + produced-new state by value; returns true to commit.
+#[app::migrate]
+fn migrate() -> (DocV2, MigrationWitness) {
+    let mut items = old.items;
+    let v1_count = items.len().unwrap_or(0) as u64;   // captured BEFORE any change
+    // ... transform ...
+    (DocV2 { items, /* .. */ }, MigrationWitness { v1_count })
+}
+
 #[app::migration_check]
-pub fn check(old: DocV1Data, new: DocV2) -> bool {
-    let old_keys: Vec<String> = old.items.entries().expect("old").map(|(k, _)| k).collect();
-    let new_keys: Vec<String> = new.items.entries().expect("new").map(|(k, _)| k).collect();
-    entity_count_parity(&old_keys, &new_keys, 0)   // every item must survive (delta 0)
+fn check(_old: DocV1, new: DocV2, witness: MigrationWitness) -> bool {
+    // `new.items` is the produced collection; compare it to the v1 baseline.
+    matches!(new.items.len(), Ok(n) if n as u64 == witness.v1_count)
 }
 ```
 
-Built-in helpers (`calimero_sdk::migration_check`):
-- `entity_count_parity(old, new, delta)` — counts match within `delta`
+A migrate returning a plain `State` (no tuple) and a 2-arg `check(old, new)` stay
+valid — the witness is opt-in. Prefer invariants that need **no** extra field
+where you can: a required key present (`new.items.get("alpha")?.is_some()`),
+conservation against an existing field (`new.total == new.items.values().sum()`),
+or a monotonic version (`new.version > old.version`, an `old` scalar).
+
+Built-in helpers (`calimero_sdk::migration_check`) operate on slices *you* build
+from soundly-readable data (`new` collections, scalars, a witness):
+- `entity_count_parity(a, b, delta)` — counts match within `delta`
 - `no_orphaned_refs(refs, keys)` — every reference still resolves
 - `conservation(old_total, new_total)` — a total is preserved
 
-The check is a **deterministic pure function** of `(old, new)`, exactly like the
-migrate: it runs independently on every node against byte-identical state, so all
-nodes reach the **same** verdict — either all commit or all abort. (A split verdict
-means a determinism bug, the same hazard `assert_migrate_converges` guards.) A
-failed check is **retryable**: no migration marker is recorded, so the context
-re-runs migrate+check on its **next access** — a transient cause (e.g. not-yet-synced
-v1) self-heals once the input is complete.
+The check **and any witness** must be a **deterministic pure function** of the v1
+state, exactly like the migrate: they run independently on every node against
+byte-identical input, so all nodes reach the **same** verdict — either all commit
+or all abort. (A non-deterministic check or witness is a split-verdict bug, the
+same hazard `assert_migrate_converges` guards.) A failed check is **retryable**:
+no migration marker is recorded, so the context re-runs migrate+check on its
+**next access** — a transient cause (e.g. not-yet-synced v1) self-heals once the
+input is complete.
+
+> Diffing `old` vs `new` *collection* cardinality directly (without a
+> witness/baseline) would need a pristine-snapshot read path for `old` that is
+> not yet implemented — tracked as a follow-up. Use the witness pattern above.
 
 ### Aborting an in-flight migration (admin)
 
