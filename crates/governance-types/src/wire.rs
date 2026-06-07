@@ -210,11 +210,36 @@ pub struct SignedMigrationHeartbeat {
     pub authored_remaining: u64,
 }
 
+/// Read an optional trailing fixed-width LE value: `None` on a clean EOF (old
+/// heartbeat, no trailing field), `Some` when the full width is present, `Err`
+/// only on a genuine partial read. Distinguishes "absent" from "truncated" by
+/// bytes-read count, not by matching borsh's error-message text.
+fn read_trailing<R: borsh::io::Read, const N: usize>(
+    reader: &mut R,
+) -> borsh::io::Result<Option<[u8; N]>> {
+    let mut buf = [0u8; N];
+    let mut filled = 0;
+    while filled < N {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == borsh::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    match filled {
+        0 => Ok(None),
+        n if n == N => Ok(Some(buf)),
+        _ => Err(borsh::io::Error::new(
+            borsh::io::ErrorKind::InvalidData,
+            "truncated trailing field",
+        )),
+    }
+}
+
 // Custom deserialize: `authored_remaining` is an unsigned trailing field added
-// after the original layout. Read the original fields, then tolerate a short
-// trailing read (old heartbeat ⇒ 0). Matches the ContextMeta/ApplicationMeta
-// back-compat pattern (this borsh surfaces a short read as InvalidData
-// "Unexpected length", not UnexpectedEof — handle both).
+// after the original layout. Read the original fields, then tolerate a clean
+// EOF (old heartbeat ⇒ 0) by byte count rather than matching borsh's error text.
 impl BorshDeserialize for SignedMigrationHeartbeat {
     fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
         let namespace_id = <[u8; 32]>::deserialize_reader(reader)?;
@@ -225,17 +250,8 @@ impl BorshDeserialize for SignedMigrationHeartbeat {
         let synced_up_to_hlc = u64::deserialize_reader(reader)?;
         let ts_millis = u64::deserialize_reader(reader)?;
         let signature = <[u8; 64]>::deserialize_reader(reader)?;
-        let authored_remaining = match u64::deserialize_reader(reader) {
-            Ok(v) => v,
-            Err(e) if e.kind() == borsh::io::ErrorKind::UnexpectedEof => 0,
-            Err(e)
-                if e.kind() == borsh::io::ErrorKind::InvalidData
-                    && e.to_string().contains("Unexpected length") =>
-            {
-                0
-            }
-            Err(e) => return Err(e),
-        };
+        // borsh integers are little-endian; absent trailing bytes ⇒ old hb ⇒ 0.
+        let authored_remaining = read_trailing::<_, 8>(reader)?.map_or(0, u64::from_le_bytes);
         Ok(Self {
             namespace_id,
             peer_pubkey,

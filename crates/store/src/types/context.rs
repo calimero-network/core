@@ -23,6 +23,34 @@ pub struct ContextMeta {
     pub authored_remaining: u32,
 }
 
+/// Read an optional trailing fixed-width LE value from a borsh reader. Returns
+/// `None` on a clean EOF (old row with no trailing field), `Some` when the full
+/// width is present, and `Err` only on a genuine partial read (corruption).
+/// Distinguishes "absent" from "truncated" by bytes-read count rather than
+/// matching borsh's error-message text (which is not stable across versions).
+fn read_trailing<R: std::io::Read, const N: usize>(
+    reader: &mut R,
+) -> std::io::Result<Option<[u8; N]>> {
+    let mut buf = [0u8; N];
+    let mut filled = 0;
+    while filled < N {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    match filled {
+        0 => Ok(None),
+        n if n == N => Ok(Some(buf)),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "truncated trailing field",
+        )),
+    }
+}
+
 // Custom deserialization: `authored_remaining` was appended after the initial
 // schema. Old on-disk rows end after `service_name`; tolerate EOF and default
 // to 0 so existing contexts deserialize unchanged. (ContextMeta is node-local,
@@ -33,21 +61,8 @@ impl BorshDeserialize for ContextMeta {
         let root_hash = Hash::deserialize_reader(reader)?;
         let dag_heads = Vec::<[u8; 32]>::deserialize_reader(reader)?;
         let service_name = Option::<Box<str>>::deserialize_reader(reader)?;
-        // A short trailing read surfaces as either UnexpectedEof or (in this
-        // borsh version) InvalidData "Unexpected length of input" — both mean
-        // an old row with no authored_remaining; default to 0. Mirrors the
-        // ApplicationMeta `services` back-compat handling.
-        let authored_remaining = match u32::deserialize_reader(reader) {
-            Ok(v) => v,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => 0,
-            Err(e)
-                if e.kind() == std::io::ErrorKind::InvalidData
-                    && e.to_string().contains("Unexpected length") =>
-            {
-                0
-            }
-            Err(e) => return Err(e),
-        };
+        // borsh integers are little-endian; absent trailing bytes ⇒ old row ⇒ 0.
+        let authored_remaining = read_trailing::<_, 4>(reader)?.map_or(0, u32::from_le_bytes);
         Ok(Self {
             application,
             root_hash,

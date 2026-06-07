@@ -597,16 +597,21 @@ impl Actor for MigrationEmitter {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        // Periodic keep-alive re-publish for every namespace we have facts
-        // for. Edge-trigger emits arrive via `MigrationFactsUpdate`.
+        // Periodic keep-alive re-publish for every namespace we have facts for.
+        // RECOMPUTE facts from the store each tick (not a replay of the cached
+        // last_emitted), so node-local fact changes that don't fire a
+        // MigrationFactsUpdate — notably authored_remaining persisted after
+        // migrate_my_entries / a lazy migrate (6f) — self-heal within one
+        // interval instead of staying stale until an unrelated governance op.
+        // Edge-trigger emits via MigrationFactsUpdate still give immediate
+        // updates on governance applies.
         ctx.run_interval(self.interval, |this, _ctx| {
             let ns_ids: Vec<[u8; 32]> = this.last_emitted.keys().copied().collect();
             for ns_id in ns_ids {
-                if let Some(facts) = this.last_emitted.get(&ns_id).copied() {
-                    let facts = this.refresh_hlc(ns_id, facts);
-                    this.last_emitted.insert(ns_id, facts);
-                    this.publish_heartbeat(ns_id, facts);
-                }
+                let facts = compute_namespace_migration_facts(&this.datastore, ns_id);
+                let facts = this.refresh_hlc(ns_id, facts);
+                this.last_emitted.insert(ns_id, facts);
+                this.publish_heartbeat(ns_id, facts);
             }
         });
     }
