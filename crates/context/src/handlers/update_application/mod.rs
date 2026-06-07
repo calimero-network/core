@@ -10,7 +10,8 @@ use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
+    AppVersionChangedPayload, ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent,
+    StateMutationPayload,
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
@@ -265,6 +266,47 @@ async fn finalize_application_update(
     Ok(())
 }
 
+/// Resolves an application's semver from its `ApplicationMeta` row. `None` when
+/// the row is absent (e.g. uninstalled). Labels the `AppVersionChanged` event.
+fn application_version(
+    datastore: &calimero_store::Store,
+    application_id: ApplicationId,
+) -> Option<String> {
+    match datastore
+        .handle()
+        .get(&key::ApplicationMeta::new(application_id))
+    {
+        Ok(meta) => meta.map(|m| m.version.to_string()),
+        Err(err) => {
+            // Best-effort label: a read fault yields None (same as an absent
+            // row), but log it so a persistent store fault isn't fully silent.
+            debug!(%err, %application_id, "failed to read ApplicationMeta for version label");
+            None
+        }
+    }
+}
+
+/// Builds an `AppVersionChanged` node event for a context whose application id
+/// flipped, or `None` when it is unchanged. The id comparison IS the emit-once
+/// dedup (6f.5): a no-op re-apply with the same id emits nothing.
+fn app_version_changed_event(
+    context_id: ContextId,
+    old_application_id: ApplicationId,
+    new_application_id: ApplicationId,
+    from_version: Option<String>,
+    to_version: Option<String>,
+) -> Option<NodeEvent> {
+    (old_application_id != new_application_id).then(|| {
+        NodeEvent::Context(ContextEvent {
+            context_id,
+            payload: ContextEventPayload::AppVersionChanged(AppVersionChangedPayload {
+                from_version,
+                to_version,
+            }),
+        })
+    })
+}
+
 pub async fn update_application_id(
     datastore: calimero_store::Store,
     node_client: NodeClient,
@@ -287,6 +329,10 @@ pub async fn update_application_id(
     // Verify AppKey continuity (signerId match)
     verify_appkey_continuity(&datastore, &context, &application_id)?;
 
+    // Capture the pre-flip app id before finalize persists the new one, so the
+    // post-commit AppVersionChanged carries the correct from/to versions.
+    let old_application_id = context.application_id;
+
     finalize_application_update(
         &datastore,
         &node_client,
@@ -295,6 +341,17 @@ pub async fn update_application_id(
         &application,
     )
     .await?;
+
+    // Post-commit: notify subscribers the application version flipped (skew #2).
+    if let Some(event) = app_version_changed_event(
+        context_id,
+        old_application_id,
+        application.id,
+        application_version(&datastore, old_application_id),
+        application_version(&datastore, application.id),
+    ) {
+        let _ = node_client.send_event(event);
+    }
 
     Ok(application)
 }
@@ -426,6 +483,14 @@ pub(crate) async fn update_application_with_migration(
     // Verify AppKey continuity (signerId match)
     verify_appkey_continuity(&datastore, &context, &application_id)?;
 
+    // Pre-flip app id, captured before finalize persists the new one (for the
+    // post-commit AppVersionChanged from/to versions).
+    let old_application_id = context.application_id;
+
+    // Set to the v2 module once a migration commits, so we can run
+    // `count_my_pending` over the committed v2 state after finalize (6f.8).
+    let mut pending_count_module: Option<calimero_runtime::Module> = None;
+
     // Execute migration if requested
     if let Some(migration_params) = migration {
         info!(
@@ -439,6 +504,8 @@ pub(crate) async fn update_application_with_migration(
         // its copy into `spawn_blocking`, so the migration_check below can run a
         // second `module.run` on the same already-compiled v2 artifact.
         let check_module = module.clone();
+        // A third cheap clone for the post-commit count_my_pending run (6f.8).
+        let count_module = check_module.clone();
 
         // Execute migration function via module.run(). Returns the UNCOMMITTED
         // staging buffer (`storage`) the migrate wrote into, plus the optional
@@ -535,6 +602,11 @@ pub(crate) async fn update_application_with_migration(
             state_size = new_state_bytes.len(),
             "Migration completed successfully"
         );
+
+        // The v2 state is committed; schedule the post-finalize authored_remaining
+        // recompute (6f.8). Reaching here means the check passed and committed —
+        // a failed check returns Err above and never gets here.
+        pending_count_module = Some(count_module);
     }
 
     finalize_application_update(
@@ -545,6 +617,34 @@ pub(crate) async fn update_application_with_migration(
         &application,
     )
     .await?;
+
+    // Post-commit: notify subscribers the application version flipped (skew #2).
+    if let Some(event) = app_version_changed_event(
+        context_id,
+        old_application_id,
+        application.id,
+        application_version(&datastore, old_application_id),
+        application_version(&datastore, application.id),
+    ) {
+        let _ = node_client.send_event(event);
+    }
+
+    // Post-commit: recompute this node's owner's pending-authored count over the
+    // committed v2 state and persist it for the heartbeat self-report (6f.8).
+    // Best-effort — a missing export / failure leaves the prior value untouched.
+    if let Some(module) = pending_count_module {
+        if let Some(count) = run_count_my_pending(
+            &datastore,
+            node_client.clone(),
+            context_id,
+            module,
+            public_key,
+        )
+        .await
+        {
+            persist_authored_remaining(&datastore, context_id, count);
+        }
+    }
 
     Ok((application, context))
 }
@@ -887,6 +987,77 @@ async fn run_migration_check(
     Ok((decode_migration_check_verdict(outcome.returns)?, storage))
 }
 
+/// Run the app's `count_my_pending` export over the COMMITTED v2 state to read
+/// the executor's pending-authored count (the self-reported `authored_remaining`).
+/// Runs post-commit against a fresh buffer over the live store, under the
+/// applying identity, so `owned_by_me` resolves to this node's owner. Read-only
+/// (the export never commits). Best-effort: a missing export (non-authored app),
+/// a host error, or a pool-join failure all yield `None`.
+async fn run_count_my_pending(
+    datastore: &calimero_store::Store,
+    node_client: NodeClient,
+    context_id: ContextId,
+    module: calimero_runtime::Module,
+    executor_identity: PublicKey,
+) -> Option<u32> {
+    let storage = ContextStorage::from(datastore.clone(), context_id);
+    let outcome = global_runtime()
+        .spawn_blocking(move || {
+            let mut storage = storage;
+            let outcome = module.run(
+                context_id,
+                executor_identity,
+                "count_my_pending",
+                &[],
+                &mut storage,
+                None,
+                Some(node_client),
+            );
+            // Read-only call: scrub any thread-local delta it might have pushed.
+            clear_pending_delta();
+            outcome
+        })
+        .await;
+
+    match outcome {
+        // The export returns its u32 count as JSON via value_return. A missing
+        // export (non-authored app ⇒ Err(MethodNotFound)), an empty return, or a
+        // host error all mean "no count" — report None and leave the prior value.
+        Ok(Ok(rt_outcome)) => match rt_outcome.returns {
+            Ok(Some(bytes)) => serde_json::from_slice::<u32>(&bytes).ok(),
+            _ => None,
+        },
+        Ok(Err(e)) => {
+            debug!(%context_id, error = ?e, "count_my_pending host error; reporting no count");
+            None
+        }
+        Err(e) => {
+            debug!(%context_id, error = ?e, "count_my_pending task join failed; reporting no count");
+            None
+        }
+    }
+}
+
+/// Persist this node's owner's pending-authored count to the dedicated
+/// node-local `ContextAuthoredRemaining` key (read by the migration heartbeat).
+/// A single-value put on its own key — NOT folded into `ContextMeta`, so the
+/// hot per-write `ContextMeta` rewrite path cannot clobber it and there is no
+/// read-modify-write race. Best-effort: a store fault is logged and skipped.
+pub(crate) fn persist_authored_remaining(
+    datastore: &calimero_store::Store,
+    context_id: ContextId,
+    authored_remaining: u32,
+) {
+    let mut handle = datastore.handle();
+    let key = key::ContextAuthoredRemaining::new(context_id);
+    let value = types::ContextAuthoredRemaining {
+        count: authored_remaining,
+    };
+    if let Err(err) = handle.put(&key, &value) {
+        debug!(%context_id, %err, "failed to persist authored_remaining");
+    }
+}
+
 /// Storage callback closures used by the `calimero-storage` runtime environment.
 ///
 /// These closures bridge the `calimero-storage` [`Key`]-based interface to the
@@ -1185,8 +1356,10 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::{key, types, Store};
 
-    use super::verify_appkey_continuity;
+    use calimero_primitives::events::{ContextEvent, ContextEventPayload, NodeEvent};
+
     use super::ContextStorage;
+    use super::{app_version_changed_event, application_version, verify_appkey_continuity};
 
     /// Creates a test store with in-memory database.
     fn create_test_store() -> Store {
@@ -1249,6 +1422,66 @@ mod tests {
             "AppKey continuity check should pass with matching signerIds: {:?}",
             result.err()
         );
+    }
+
+    // application_version resolves ApplicationMeta.version (semver) for the emit.
+    #[test]
+    fn application_version_reads_semver_and_handles_missing() {
+        let store = create_test_store();
+        let app_id = ApplicationId::from([42u8; 32]);
+        store
+            .handle()
+            .put(
+                &key::ApplicationMeta::new(app_id),
+                &create_app_meta("signer"),
+            )
+            .expect("seed app meta");
+        assert_eq!(
+            application_version(&store, app_id).as_deref(),
+            Some("1.0.0")
+        );
+        assert_eq!(
+            application_version(&store, ApplicationId::from([99u8; 32])),
+            None
+        );
+    }
+
+    // No event when the application id did not actually change (6f.5 dedup).
+    #[test]
+    fn app_version_changed_event_skips_when_unchanged() {
+        let id = ApplicationId::from([1u8; 32]);
+        let ev = app_version_changed_event(
+            ContextId::from([7u8; 32]),
+            id,
+            id,
+            Some("1.0.0".to_owned()),
+            Some("1.0.0".to_owned()),
+        );
+        assert!(ev.is_none(), "no emit when app id unchanged");
+    }
+
+    // On a real flip, build the AppVersionChanged event with both versions.
+    #[test]
+    fn app_version_changed_event_on_flip() {
+        let ctx = ContextId::from([7u8; 32]);
+        let ev = app_version_changed_event(
+            ctx,
+            ApplicationId::from([1u8; 32]),
+            ApplicationId::from([2u8; 32]),
+            Some("1.0.0".to_owned()),
+            Some("2.0.0".to_owned()),
+        );
+        match ev {
+            Some(NodeEvent::Context(ContextEvent {
+                context_id,
+                payload: ContextEventPayload::AppVersionChanged(p),
+            })) => {
+                assert_eq!(context_id, ctx);
+                assert_eq!(p.from_version.as_deref(), Some("1.0.0"));
+                assert_eq!(p.to_version.as_deref(), Some("2.0.0"));
+            }
+            other => panic!("expected AppVersionChanged, got {other:?}"),
+        }
     }
 
     #[test]

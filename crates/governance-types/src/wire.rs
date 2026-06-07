@@ -190,7 +190,13 @@ pub struct SignableMigrationHeartbeat {
 /// `residue_auto == 0 && residue_identity == 0 && schema_version >= target`
 /// across every pinned cohort member is what a rollup reads as "all migrated";
 /// the signature prevents a peer from forging another peer's completion.
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+// MAINTENANCE: this struct has a hand-written `BorshDeserialize` (below) that
+// reads these fields positionally. If you ADD / REMOVE / REORDER any field
+// here, update that impl in lockstep (new fields go AFTER authored_remaining as
+// another trailing read, or behind a version discriminant). The round-trip +
+// mixed-fleet tests (serialize via this derive, deserialize via the custom impl)
+// fail loudly on a desync — keep them in step.
+#[derive(Debug, Clone, BorshSerialize)]
 pub struct SignedMigrationHeartbeat {
     pub namespace_id: [u8; 32],
     pub peer_pubkey: PublicKey,
@@ -200,6 +206,81 @@ pub struct SignedMigrationHeartbeat {
     pub synced_up_to_hlc: u64,
     pub ts_millis: u64,
     pub signature: [u8; 64],
+    /// Self-reported pending-authored count (sum across the publisher's
+    /// namespace contexts; 6f). DELIBERATELY OUTSIDE the signature and the
+    /// signable body: it is best-effort advisory telemetry (decision #3), not a
+    /// migration gate — the signed residue_* fields cover completion. Appended
+    /// as the trailing field so a heartbeat from an older node (which omits it)
+    /// still deserializes (EOF ⇒ 0) and verifies against the unchanged 7-field
+    /// signed body — full mixed-fleet compatibility, no version discriminator.
+    pub authored_remaining: u64,
+}
+
+/// Read an optional trailing fixed-width LE value: `None` when no trailing field
+/// is present (clean EOF before any byte — an old heartbeat), `Some` when the
+/// full width is present, `Err` on a genuine partial read. A leading 1-byte
+/// sentinel probe distinguishes "absent" from "present" without depending on
+/// `Read::read` returning `Ok(0)` exactly at the field boundary; once any byte
+/// is read, `read_exact` fills the rest and a short read is a hard error. No
+/// error-message-text matching (not stable across borsh versions).
+fn read_trailing<R: borsh::io::Read, const N: usize>(
+    reader: &mut R,
+) -> borsh::io::Result<Option<[u8; N]>> {
+    let mut buf = [0u8; N];
+    // Probe one byte. Loop over Interrupted; a true EOF here (0 bytes) means
+    // the trailing field is absent (old format).
+    let read_first = loop {
+        match reader.read(&mut buf[..1]) {
+            Ok(n) => break n,
+            Err(e) if e.kind() == borsh::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    };
+    if read_first == 0 {
+        return Ok(None);
+    }
+    // A byte was present ⇒ the field must be complete; a short read is an error.
+    reader.read_exact(&mut buf[1..])?;
+    Ok(Some(buf))
+}
+
+// Custom deserialize: `authored_remaining` is an unsigned trailing field added
+// after the original layout. Read the original fields, then tolerate a clean
+// EOF (old heartbeat ⇒ 0) by byte count rather than matching borsh's error text.
+//
+// FIELD ORDER CONTRACT: borsh is positional (no field names), so this reader
+// MUST deserialize the prefix fields in the exact order the derived
+// `BorshSerialize` above writes them — namespace_id, peer_pubkey, schema_version,
+// residue_auto, residue_identity, synced_up_to_hlc, ts_millis, signature — then
+// the trailing authored_remaining. Reordering/adding a field above without
+// updating this reader silently misreads. The round-trip + mixed-fleet tests
+// (which serialize via the derive and deserialize via this impl) guard against
+// such a desync; keep them in step. A future field should go AFTER
+// authored_remaining (another trailing read) or behind a version discriminant.
+impl BorshDeserialize for SignedMigrationHeartbeat {
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        let namespace_id = <[u8; 32]>::deserialize_reader(reader)?;
+        let peer_pubkey = PublicKey::deserialize_reader(reader)?;
+        let schema_version = u32::deserialize_reader(reader)?;
+        let residue_auto = u64::deserialize_reader(reader)?;
+        let residue_identity = u64::deserialize_reader(reader)?;
+        let synced_up_to_hlc = u64::deserialize_reader(reader)?;
+        let ts_millis = u64::deserialize_reader(reader)?;
+        let signature = <[u8; 64]>::deserialize_reader(reader)?;
+        // borsh integers are little-endian; absent trailing bytes ⇒ old hb ⇒ 0.
+        let authored_remaining = read_trailing::<_, 8>(reader)?.map_or(0, u64::from_le_bytes);
+        Ok(Self {
+            namespace_id,
+            peer_pubkey,
+            schema_version,
+            residue_auto,
+            residue_identity,
+            synced_up_to_hlc,
+            ts_millis,
+            signature,
+            authored_remaining,
+        })
+    }
 }
 
 impl SignedMigrationHeartbeat {
@@ -482,6 +563,7 @@ mod tests {
             synced_up_to_hlc: 99,
             ts_millis: 1_700_000_000_000,
             signature: [0u8; 64],
+            authored_remaining: 0,
         };
         hb.signature = sk
             .sign(&hb.signable_bytes().expect("signable"))
@@ -504,6 +586,7 @@ mod tests {
             synced_up_to_hlc: 99,
             ts_millis: 1_700_000_000_000,
             signature: [0u8; 64],
+            authored_remaining: 0,
         };
         hb.signature = sk
             .sign(&hb.signable_bytes().expect("signable"))
@@ -513,6 +596,55 @@ mod tests {
         assert!(
             hb.verify_signature().is_err(),
             "verify must reject mutated `residue_identity`"
+        );
+    }
+
+    // 6f: authored_remaining is an UNSIGNED trailing field. A new heartbeat
+    // round-trips it; an old-format heartbeat (no trailing bytes) deserializes
+    // to 0 and still verifies (signature never covered it); tampering it does
+    // not break verification. This is the mixed-fleet back-compat guarantee.
+    #[test]
+    fn migration_heartbeat_authored_remaining_unsigned_and_eof_tolerant() {
+        let sk = PrivateKey::random(&mut rand::thread_rng());
+        let mut hb = SignedMigrationHeartbeat {
+            namespace_id: [9u8; 32],
+            peer_pubkey: sk.public_key(),
+            schema_version: 2,
+            residue_auto: 0,
+            residue_identity: 0,
+            synced_up_to_hlc: 50,
+            ts_millis: 1_700_000_000_000,
+            signature: [0u8; 64],
+            authored_remaining: 5,
+        };
+        hb.signature = sk
+            .sign(&hb.signable_bytes().expect("signable"))
+            .expect("sign")
+            .to_bytes();
+        assert!(hb.verify_signature().is_ok(), "freshly signed verifies");
+
+        // New heartbeat round-trips the field.
+        let bytes = borsh::to_vec(&hb).expect("ser");
+        let back = SignedMigrationHeartbeat::try_from_slice(&bytes).expect("de");
+        assert_eq!(back.authored_remaining, 5);
+        assert!(back.verify_signature().is_ok());
+
+        // Old-format heartbeat: drop the trailing u64. Defaults to 0 and the
+        // signature (over the unchanged 7-field body) still verifies.
+        let legacy = &bytes[..bytes.len() - core::mem::size_of::<u64>()];
+        let old = SignedMigrationHeartbeat::try_from_slice(legacy).expect("de legacy");
+        assert_eq!(old.authored_remaining, 0, "absent trailing field ⇒ 0");
+        assert!(
+            old.verify_signature().is_ok(),
+            "signature unaffected by the unsigned trailing field"
+        );
+
+        // Tampering the advisory field does not break verification.
+        let mut tampered = hb.clone();
+        tampered.authored_remaining = 999;
+        assert!(
+            tampered.verify_signature().is_ok(),
+            "authored_remaining is unsigned advisory telemetry"
         );
     }
 
@@ -542,6 +674,7 @@ mod tests {
             synced_up_to_hlc: hb_unsigned.synced_up_to_hlc,
             ts_millis: hb_unsigned.ts_millis,
             signature,
+            authored_remaining: 0,
         };
         assert!(
             hb.verify_signature().is_err(),
@@ -561,6 +694,7 @@ mod tests {
             synced_up_to_hlc: 1234,
             ts_millis: 42,
             signature: [5u8; 64],
+            authored_remaining: 0,
         });
         let bytes = borsh::to_vec(&envelope).expect("ser");
         let parsed: NamespaceTopicMsg = borsh::from_slice(&bytes).expect("de");

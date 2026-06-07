@@ -27,6 +27,22 @@ pub enum ContextEventPayload {
     /// changes phase (and as snapshot pages arrive). Lets a client waiting on
     /// initial state watch progress instead of polling `sync_status`.
     SyncStatus(SyncStatusPayload),
+    /// Fired once when a context's application version flips (a migrate/upgrade
+    /// applied). Lets a frontend react live to bundle skew (spec skew #2)
+    /// instead of polling. `contextId` rides on the flattened [`ContextEvent`].
+    AppVersionChanged(AppVersionChangedPayload),
+}
+
+/// Payload of a [`ContextEventPayload::AppVersionChanged`] event. Versions are
+/// the application semver before/after the flip; either may be `None` if the
+/// corresponding `ApplicationMeta` row was unavailable at emit time.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppVersionChangedPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_version: Option<String>,
 }
 
 /// Payload of a [`ContextEventPayload::SyncStatus`] event. Mirrors the fields
@@ -73,4 +89,39 @@ pub struct ExecutionXCall {
     pub target_context_id: ContextId,
     pub function: String,
     pub params: Vec<u8>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // AppVersionChanged serializes with the PascalCase "AppVersionChanged" tag
+    // and camelCase data fields; contextId rides on the flattened ContextEvent.
+    #[test]
+    fn app_version_changed_tag_and_shape() {
+        let event = ContextEvent {
+            context_id: ContextId::from([0x01; 32]),
+            payload: ContextEventPayload::AppVersionChanged(AppVersionChangedPayload {
+                from_version: Some("1.0.0".to_owned()),
+                to_version: Some("2.0.0".to_owned()),
+            }),
+        };
+        let v = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(v["type"], "AppVersionChanged");
+        assert_eq!(v["data"]["fromVersion"], "1.0.0");
+        assert_eq!(v["data"]["toVersion"], "2.0.0");
+        assert!(v.get("contextId").is_some(), "contextId on the wrapper");
+    }
+
+    // None versions are omitted from the data object.
+    #[test]
+    fn app_version_changed_omits_none() {
+        let payload = ContextEventPayload::AppVersionChanged(AppVersionChangedPayload {
+            from_version: None,
+            to_version: Some("2.0.0".to_owned()),
+        });
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert!(v["data"].get("fromVersion").is_none());
+        assert_eq!(v["data"]["toVersion"], "2.0.0");
+    }
 }

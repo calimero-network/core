@@ -1956,6 +1956,9 @@ pub struct MemberMigrationReportApiData {
     pub residue_identity: u64,
     pub synced_up_to_hlc: u64,
     pub reported_at: u64,
+    /// Member's self-reported pending-authored count (best-effort; 6f).
+    #[serde(default)]
+    pub authored_remaining: u64,
 }
 
 /// One per-member row in the migration-status rollup: a pinned-cohort member,
@@ -1984,6 +1987,10 @@ pub struct MigrationStatusRollupApiData {
     /// `true` iff every pinned-cohort member reported a converged schema with
     /// zero residue. Any `unknown` (or in-progress) member keeps this `false`.
     pub all_migrated: bool,
+    /// Count of members reporting `authored_remaining > 0` (owners with
+    /// identity-gated entries still to re-sign; 6f, skew #1). Best-effort.
+    #[serde(default)]
+    pub members_pending_signature: usize,
 }
 
 /// Migration-status answer returned by `GET .../groups/:namespace_id/migration-status`.
@@ -2917,6 +2924,7 @@ mod tests {
                 unknown: 1,
                 total: 2,
                 all_migrated: false,
+                members_pending_signature: 1,
             },
             members: vec![
                 MemberMigrationStatusApiEntry {
@@ -2927,6 +2935,7 @@ mod tests {
                         residue_identity: 0,
                         synced_up_to_hlc: 7,
                         reported_at: 1_700_000_000,
+                        authored_remaining: 3,
                     }),
                     state: "migrated".into(),
                 },
@@ -2945,12 +2954,14 @@ mod tests {
         assert_eq!(json["rollup"]["allMigrated"], false);
         assert_eq!(json["rollup"]["migrated"], 1);
         assert_eq!(json["rollup"]["unknown"], 1);
+        assert_eq!(json["rollup"]["membersPendingSignature"], 1);
 
         let members = json["members"].as_array().unwrap();
         assert_eq!(members.len(), 2);
         assert_eq!(members[0]["state"], "migrated");
         assert_eq!(members[0]["report"]["schemaVersion"], 2);
         assert_eq!(members[0]["report"]["syncedUpToHlc"], 7);
+        assert_eq!(members[0]["report"]["authoredRemaining"], 3);
         // The unknown member has no fresh report — `report` is omitted.
         assert_eq!(members[1]["state"], "unknown");
         assert!(members[1].get("report").is_none());
@@ -2969,6 +2980,7 @@ mod tests {
                 unknown: 0,
                 total: 0,
                 all_migrated: false,
+                members_pending_signature: 0,
             },
             members: vec![],
         };

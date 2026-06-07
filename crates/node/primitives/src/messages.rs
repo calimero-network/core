@@ -100,4 +100,7 @@ pub struct MigrationStatusReport {
     pub synced_up_to_hlc: u64,
     /// Member-signed millis-since-epoch from the heartbeat itself.
     pub reported_at: u64,
+    /// Member's self-reported pending-authored count (sum across its namespace
+    /// contexts); feeds the rollup's `membersPendingSignature` (6f).
+    pub authored_remaining: u64,
 }

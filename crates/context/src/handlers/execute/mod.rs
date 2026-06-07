@@ -620,6 +620,11 @@ impl Handler<ExecuteRequest> for ContextManager {
             let node_client = act.node_client.clone();
             let context_client = act.context_client.clone();
 
+            // Cheap (Arc-backed) clone kept past internal_execute (which moves
+            // `datastore`) so a post-call migrate_my_entries can refresh the
+            // node-local authored_remaining count (6f.8 drop-after-convert).
+            let count_datastore = datastore.clone();
+
             async move {
                 let old_root_hash = context.root_hash;
 
@@ -680,6 +685,41 @@ impl Handler<ExecuteRequest> for ContextManager {
                     status,
                     "Method execution completed"
                 );
+
+                // After the owner converts their authored entries via the
+                // SDK-generated migrate_my_entries export, refresh the node-local
+                // authored_remaining from the summary's `remaining` so the
+                // heartbeat self-report (and the admin rollup) reflect the
+                // post-convert count (6f.8). This is self-reported advisory
+                // telemetry about THIS node's own pending count — never a gate —
+                // so the value is inherently self-attested (like the rest of the
+                // heartbeat); we only guard against a nonsense cast by saturating
+                // the u64→u32 instead of silently wrapping. Apps that wrap
+                // migrate_my_entries under another name simply won't refresh here
+                // (acceptable for advisory telemetry).
+                if method == "migrate_my_entries" {
+                    if let Ok(Some(bytes)) = &outcome.returns {
+                        // Only trust a well-formed MigrateMyEntriesSummary
+                        // ({converted, remaining}) — deserializing into the typed
+                        // shape (both u32 fields required) rejects an unrelated /
+                        // error JSON payload that merely happens to carry a
+                        // `remaining` key, so a malformed return never writes a
+                        // bogus authored_remaining.
+                        #[derive(serde::Deserialize)]
+                        struct MigrateSummary {
+                            #[allow(dead_code)]
+                            converted: u32,
+                            remaining: u32,
+                        }
+                        if let Ok(summary) = serde_json::from_slice::<MigrateSummary>(bytes) {
+                            crate::handlers::update_application::persist_authored_remaining(
+                                &count_datastore,
+                                context_id,
+                                summary.remaining,
+                            );
+                        }
+                    }
+                }
                 debug!(
                     %context_id,
                     %executor,

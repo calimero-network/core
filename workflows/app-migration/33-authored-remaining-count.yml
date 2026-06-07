@@ -1,0 +1,250 @@
+name: 33 — count_my_pending drives authored_remaining (PR-6f, deterministic)
+description: >
+  End-to-end proof of the skew-#1 count primitive (PR-6f): the SDK-generated
+  `count_my_pending` export — the source the node persists as
+  `ContextAuthoredRemaining` and gossips as the heartbeat's `authored_remaining`
+  (rolled up to the admin's `membersPendingSignature`).
+
+  Single node, deterministic, no heartbeat-timing dependence: it calls
+  `count_my_pending` directly (a callable read-only export, like
+  `migrate_my_entries`) and asserts its value across the migrate→convert
+  lifecycle. The owner seeds two identity-gated notes on v1, the namespace
+  cascades to v2 (schema flips to 2.0.0 but the per-entry schema_versions stay
+  at 1 until owner-driven convert), so:
+    - after the cascade, `count_my_pending` == 2 (both owned notes are below the
+      v2 target) — this is exactly what the node persists + reports as
+      authored_remaining, the admin's "2 pending signature";
+    - after one-tap `migrate_my_entries`, `count_my_pending` == 0 (both
+      converted) — authored_remaining drops to 0, membersPendingSignature clears.
+
+  The heartbeat self-report / rollup plumbing layered on this count
+  (compute_namespace_migration_facts sum, the unsigned trailing wire field with
+  mixed-fleet back-compat, and the members_pending_signature rollup) is
+  exhaustively unit-covered; this scenario pins the load-bearing wasm-level
+  count primitive that can only be validated against a real merod runtime. A
+  heartbeat-log assertion is intentionally NOT used here: emit is peer- and
+  interval-gated (publish needs a subscribed peer; periodic recompute is 30s),
+  which would make a log assertion flaky without adding coverage the unit tests
+  don't already provide.
+
+  Because migration_v2 defaults ON (PR-6b), the migration runs natively.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-authored-count
+  base_port: 10260
+  base_rpc_port: 10360
+
+steps:
+  # Install v1 + v2 (the authored-migrate-ux fixtures: identity-gated notes,
+  # `version` declared so the macro emits migrate_my_entries + count_my_pending).
+  - name: Install scenario-authored-migrate-ux-v1
+    type: install_application
+    node: app-migration-authored-count-1
+    path: apps/migrations/scenario-authored-migrate-ux-v1/res/scenario_authored_migrate_ux_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-authored-migrate-ux-v2
+    type: install_application
+    node: app-migration-authored-count-1
+    path: apps/migrations/scenario-authored-migrate-ux-v2/res/scenario_authored_migrate_ux_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Namespace (anchors v1) + descendant Open subgroup + context, all local.
+  - name: Create namespace (anchors app_v1)
+    type: create_namespace
+    node: app-migration-authored-count-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-authored-count-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create descendant subgroup
+    type: create_group_in_namespace
+    node: app-migration-authored-count-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "authored-count-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-authored-count-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Seed two owner-keyed identity-gated notes under v1 (each stamped schema 1).
+  - name: Seed owned note alpha
+    type: call
+    node: app-migration-authored-count-1
+    context_id: "{{ctx_id}}"
+    method: set_note
+    args:
+      key: "alpha"
+      text: "alpha-v1"
+
+  - name: Seed owned note bravo
+    type: call
+    node: app-migration-authored-count-1
+    context_id: "{{ctx_id}}"
+    method: set_note
+    args:
+      key: "bravo"
+      text: "bravo-v1"
+
+  - name: Read v1 schema (2 identity-gated notes)
+    type: call
+    node: app-migration-authored-count-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema shape
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "note_count": 2}})'
+
+  # A migrate-carrying upgrade is only valid under LazyOnAccess (the initiating
+  # node still applies it on access); set it before the cascade, as scenarios
+  # 31/32 do.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-authored-count-1
+    group_id: "{{namespace_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Cascade the namespace v1 → v2. The owning node applies the migration: the
+  # state schema flips to 2.0.0, but the two notes keep their per-entry
+  # schema_version 1 until the owner re-signs them (owner-driven convert).
+  - name: Cascade namespace v1 → v2
+    type: upgrade_group
+    node: app-migration-authored-count-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+    cascade: true
+
+  - name: Wait for the cascade + migration to apply
+    type: wait
+    seconds: 8
+
+  - name: Read post-migration schema_info (now v2, notes carried through)
+    type: call
+    node: app-migration-authored-count-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert state migrated to v2 (both notes carried)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "note_count": 2}})'
+
+  # ── The load-bearing check: count_my_pending == 2 BEFORE convert. ──
+  # Both owned notes are still below the v2 target schema, so the owner's
+  # pending-authored count (the source of authored_remaining) is 2.
+  - name: count_my_pending before convert
+    type: call
+    node: app-migration-authored-count-1
+    context_id: "{{ctx_id}}"
+    method: count_my_pending
+    outputs:
+      pending_before: result
+
+  - name: Assert two entries pending signature before convert
+    type: json_assert
+    statements:
+      - 'json_equal({{pending_before}}, {"output": 2})'
+
+  # One-tap owner-driven convert: re-signs both notes to the v2 schema.
+  - name: One-tap migrate_my_entries
+    type: call
+    node: app-migration-authored-count-1
+    context_id: "{{ctx_id}}"
+    method: migrate_my_entries
+    outputs:
+      convert_summary: result
+
+  - name: Assert the one-tap converted both notes, none left
+    type: json_assert
+    statements:
+      - 'json_equal({{convert_summary}}, {"output": {"converted": 2, "remaining": 0}})'
+
+  # ── count_my_pending == 0 AFTER convert. ──
+  # authored_remaining drops to 0; the admin's membersPendingSignature clears.
+  - name: count_my_pending after convert
+    type: call
+    node: app-migration-authored-count-1
+    context_id: "{{ctx_id}}"
+    method: count_my_pending
+    outputs:
+      pending_after: result
+
+  - name: Assert nothing pending signature after convert
+    type: json_assert
+    statements:
+      - 'json_equal({{pending_after}}, {"output": 0})'
+
+  # Idempotent re-tap: a second count is still 0 (nothing to do).
+  - name: count_my_pending is idempotent at zero
+    type: call
+    node: app-migration-authored-count-1
+    context_id: "{{ctx_id}}"
+    method: count_my_pending
+    outputs:
+      pending_again: result
+
+  - name: Assert count stays at zero
+    type: json_assert
+    statements:
+      - 'json_equal({{pending_again}}, {"output": 0})'
+
+  # Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-authored-count-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-authored-count-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-authored-count-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-authored-count-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-authored-count-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
