@@ -251,22 +251,15 @@ async fn finalize_application_update(
 
     let mut handle = datastore.handle();
 
-    // Preserve the node-local authored_remaining across this rewrite: it tracks
-    // the owner's pending-authored count and is recomputed only at migrate /
-    // migrate_my_entries points, NOT on a code-only app update (6f.8). Building
-    // a fresh ContextMeta here would otherwise reset it to 0.
-    let prior_authored_remaining = handle
-        .get(&key::ContextMeta::new(context.id))?
-        .map_or(0, |m| m.authored_remaining);
-
-    let mut new_meta = types::ContextMeta::new(
-        key::ApplicationMeta::new(application.id),
-        *context.root_hash,
-        context.dag_heads.clone(),
-        context.service_name.as_deref().map(Box::from),
-    );
-    new_meta.authored_remaining = prior_authored_remaining;
-    handle.put(&key::ContextMeta::new(context.id), &new_meta)?;
+    handle.put(
+        &key::ContextMeta::new(context.id),
+        &types::ContextMeta::new(
+            key::ApplicationMeta::new(application.id),
+            *context.root_hash,
+            context.dag_heads.clone(),
+            context.service_name.as_deref().map(Box::from),
+        ),
+    )?;
 
     node_client.sync(Some(&context_id), None).await?;
 
@@ -1045,29 +1038,23 @@ async fn run_count_my_pending(
     }
 }
 
-/// Read-modify-write the node-local `ContextMeta.authored_remaining` for a
-/// context, preserving every other field. Best-effort: a missing row or store
-/// fault is logged and skipped (the heartbeat falls back to the prior value).
+/// Persist this node's owner's pending-authored count to the dedicated
+/// node-local `ContextAuthoredRemaining` key (read by the migration heartbeat).
+/// A single-value put on its own key — NOT folded into `ContextMeta`, so the
+/// hot per-write `ContextMeta` rewrite path cannot clobber it and there is no
+/// read-modify-write race. Best-effort: a store fault is logged and skipped.
 pub(crate) fn persist_authored_remaining(
     datastore: &calimero_store::Store,
     context_id: ContextId,
     authored_remaining: u32,
 ) {
     let mut handle = datastore.handle();
-    let key = key::ContextMeta::new(context_id);
-    match handle.get(&key) {
-        Ok(Some(mut meta)) => {
-            meta.authored_remaining = authored_remaining;
-            if let Err(err) = handle.put(&key, &meta) {
-                debug!(%context_id, %err, "failed to persist authored_remaining");
-            }
-        }
-        Ok(None) => {
-            debug!(%context_id, "context meta absent; skipping authored_remaining persist");
-        }
-        Err(err) => {
-            debug!(%context_id, %err, "failed to read context meta for authored_remaining persist");
-        }
+    let key = key::ContextAuthoredRemaining::new(context_id);
+    let value = types::ContextAuthoredRemaining {
+        count: authored_remaining,
+    };
+    if let Err(err) = handle.put(&key, &value) {
+        debug!(%context_id, %err, "failed to persist authored_remaining");
     }
 }
 

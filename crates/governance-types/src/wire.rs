@@ -210,31 +210,32 @@ pub struct SignedMigrationHeartbeat {
     pub authored_remaining: u64,
 }
 
-/// Read an optional trailing fixed-width LE value: `None` on a clean EOF (old
-/// heartbeat, no trailing field), `Some` when the full width is present, `Err`
-/// only on a genuine partial read. Distinguishes "absent" from "truncated" by
-/// bytes-read count, not by matching borsh's error-message text.
+/// Read an optional trailing fixed-width LE value: `None` when no trailing field
+/// is present (clean EOF before any byte — an old heartbeat), `Some` when the
+/// full width is present, `Err` on a genuine partial read. A leading 1-byte
+/// sentinel probe distinguishes "absent" from "present" without depending on
+/// `Read::read` returning `Ok(0)` exactly at the field boundary; once any byte
+/// is read, `read_exact` fills the rest and a short read is a hard error. No
+/// error-message-text matching (not stable across borsh versions).
 fn read_trailing<R: borsh::io::Read, const N: usize>(
     reader: &mut R,
 ) -> borsh::io::Result<Option<[u8; N]>> {
     let mut buf = [0u8; N];
-    let mut filled = 0;
-    while filled < N {
-        match reader.read(&mut buf[filled..]) {
-            Ok(0) => break,
-            Ok(n) => filled += n,
+    // Probe one byte. Loop over Interrupted; a true EOF here (0 bytes) means
+    // the trailing field is absent (old format).
+    let read_first = loop {
+        match reader.read(&mut buf[..1]) {
+            Ok(n) => break n,
             Err(e) if e.kind() == borsh::io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         }
+    };
+    if read_first == 0 {
+        return Ok(None);
     }
-    match filled {
-        0 => Ok(None),
-        n if n == N => Ok(Some(buf)),
-        _ => Err(borsh::io::Error::new(
-            borsh::io::ErrorKind::InvalidData,
-            "truncated trailing field",
-        )),
-    }
+    // A byte was present ⇒ the field must be complete; a short read is an error.
+    reader.read_exact(&mut buf[1..])?;
+    Ok(Some(buf))
 }
 
 // Custom deserialize: `authored_remaining` is an unsigned trailing field added

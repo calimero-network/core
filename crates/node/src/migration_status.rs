@@ -417,16 +417,19 @@ pub fn compute_namespace_migration_facts(
 
     let mut min_loaded: Option<u32> = None;
     let mut residue_auto: u64 = 0;
-    // Sum the per-context authored_remaining the context handler persisted
-    // (6f.8). A plain store read — no wasm, no committed-state iteration.
+    // Sum the per-context authored_remaining the context handler persisted to
+    // the dedicated node-local key (6f.8). A plain store read — no wasm, no
+    // committed-state iteration. Absent row ⇒ 0.
     let mut authored_remaining: u64 = 0;
     for context_id in &contexts {
-        if let Ok(Some(meta)) = datastore
-            .handle()
-            .get(&calimero_store::key::ContextMeta::new(*context_id))
+        if let Ok(Some(entry)) =
+            datastore
+                .handle()
+                .get(&calimero_store::key::ContextAuthoredRemaining::new(
+                    *context_id,
+                ))
         {
-            authored_remaining =
-                authored_remaining.saturating_add(u64::from(meta.authored_remaining));
+            authored_remaining = authored_remaining.saturating_add(u64::from(entry.count));
         }
         let Some(loaded) = loaded_context_version(datastore, context_id) else {
             continue;

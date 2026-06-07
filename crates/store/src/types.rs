@@ -11,8 +11,8 @@ mod group;
 pub use application::{ApplicationMeta, ServiceMeta};
 pub use blobs::BlobMeta;
 pub use context::{
-    ContextConfig, ContextDagDelta, ContextIdentity, ContextLeftMarker, ContextMeta,
-    ContextPrivateState, ContextState,
+    ContextAuthoredRemaining, ContextConfig, ContextDagDelta, ContextIdentity, ContextLeftMarker,
+    ContextMeta, ContextPrivateState, ContextState,
 };
 pub use generic::GenericData;
 
