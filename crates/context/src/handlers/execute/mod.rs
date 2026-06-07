@@ -686,10 +686,17 @@ impl Handler<ExecuteRequest> for ContextManager {
                     "Method execution completed"
                 );
 
-                // After the owner converts their authored entries via
-                // migrate_my_entries, refresh the node-local authored_remaining
-                // from the summary's `remaining` so the heartbeat self-report
-                // (and the admin rollup) reflect the post-convert count (6f.8).
+                // After the owner converts their authored entries via the
+                // SDK-generated migrate_my_entries export, refresh the node-local
+                // authored_remaining from the summary's `remaining` so the
+                // heartbeat self-report (and the admin rollup) reflect the
+                // post-convert count (6f.8). This is self-reported advisory
+                // telemetry about THIS node's own pending count — never a gate —
+                // so the value is inherently self-attested (like the rest of the
+                // heartbeat); we only guard against a nonsense cast by saturating
+                // the u64→u32 instead of silently wrapping. Apps that wrap
+                // migrate_my_entries under another name simply won't refresh here
+                // (acceptable for advisory telemetry).
                 if method == "migrate_my_entries" {
                     if let Ok(Some(bytes)) = &outcome.returns {
                         if let Some(remaining) = serde_json::from_slice::<serde_json::Value>(bytes)
@@ -699,7 +706,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                             crate::handlers::update_application::persist_authored_remaining(
                                 &count_datastore,
                                 context_id,
-                                remaining as u32,
+                                u32::try_from(remaining).unwrap_or(u32::MAX),
                             );
                         }
                     }

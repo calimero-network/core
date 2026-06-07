@@ -241,6 +241,16 @@ fn read_trailing<R: borsh::io::Read, const N: usize>(
 // Custom deserialize: `authored_remaining` is an unsigned trailing field added
 // after the original layout. Read the original fields, then tolerate a clean
 // EOF (old heartbeat ⇒ 0) by byte count rather than matching borsh's error text.
+//
+// FIELD ORDER CONTRACT: borsh is positional (no field names), so this reader
+// MUST deserialize the prefix fields in the exact order the derived
+// `BorshSerialize` above writes them — namespace_id, peer_pubkey, schema_version,
+// residue_auto, residue_identity, synced_up_to_hlc, ts_millis, signature — then
+// the trailing authored_remaining. Reordering/adding a field above without
+// updating this reader silently misreads. The round-trip + mixed-fleet tests
+// (which serialize via the derive and deserialize via this impl) guard against
+// such a desync; keep them in step. A future field should go AFTER
+// authored_remaining (another trailing read) or behind a version discriminant.
 impl BorshDeserialize for SignedMigrationHeartbeat {
     fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
         let namespace_id = <[u8; 32]>::deserialize_reader(reader)?;
