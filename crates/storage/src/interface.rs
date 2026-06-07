@@ -340,6 +340,28 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(())
     }
 
+    /// Re-fold the `Shared` anchor of a freshly-merged rotation-log entry-child
+    /// (P3 of core#2716) so the anchor's folded `own_hash` stays consistent with
+    /// the rotation-log collection.
+    ///
+    /// HashComparison merges a rotation-log entry as a leaf — it writes the CHILD
+    /// entity, not the anchor — so the anchor's `own_hash` (which folds the
+    /// resolved writer set) is NOT recomputed and goes stale relative to the
+    /// merged collection. The two writer-set representations in the root (the
+    /// fold in `own_hash` and the entry-child's hash in `full_hash`) then desync
+    /// and the context root oscillates across HC rounds. Calling this after the
+    /// leaf merge realigns them. Walks entry-child → collection parent → anchor;
+    /// best-effort (missing links / non-`Shared` anchors are skipped).
+    pub fn refold_anchor_for_rotation_child(entry_id: Id) {
+        let Ok(Some(map_id)) = <Index<S>>::get_parent_id(entry_id) else {
+            return;
+        };
+        let Ok(Some(anchor_id)) = <Index<S>>::get_parent_id(map_id) else {
+            return;
+        };
+        let _ = Self::rehash_shared_anchor(anchor_id);
+    }
+
     /// Mirror an anchor's side-store rotation log (`Key::RotationLog`) into its
     /// hashed child entity so the log rides ordinary sync (HC/DeltaSync) and
     /// folds into the anchor's `full_hash` (P3 of core#2716). Idempotent: the
