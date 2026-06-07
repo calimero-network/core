@@ -10,7 +10,8 @@ use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
+    AppVersionChangedPayload, ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent,
+    StateMutationPayload,
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
@@ -265,6 +266,41 @@ async fn finalize_application_update(
     Ok(())
 }
 
+/// Resolves an application's semver from its `ApplicationMeta` row. `None` when
+/// the row is absent (e.g. uninstalled). Labels the `AppVersionChanged` event.
+fn application_version(
+    datastore: &calimero_store::Store,
+    application_id: ApplicationId,
+) -> Option<String> {
+    datastore
+        .handle()
+        .get(&key::ApplicationMeta::new(application_id))
+        .ok()
+        .flatten()
+        .map(|meta| meta.version.to_string())
+}
+
+/// Builds an `AppVersionChanged` node event for a context whose application id
+/// flipped, or `None` when it is unchanged. The id comparison IS the emit-once
+/// dedup (6f.5): a no-op re-apply with the same id emits nothing.
+fn app_version_changed_event(
+    context_id: ContextId,
+    old_application_id: ApplicationId,
+    new_application_id: ApplicationId,
+    from_version: Option<String>,
+    to_version: Option<String>,
+) -> Option<NodeEvent> {
+    (old_application_id != new_application_id).then(|| {
+        NodeEvent::Context(ContextEvent {
+            context_id,
+            payload: ContextEventPayload::AppVersionChanged(AppVersionChangedPayload {
+                from_version,
+                to_version,
+            }),
+        })
+    })
+}
+
 pub async fn update_application_id(
     datastore: calimero_store::Store,
     node_client: NodeClient,
@@ -287,6 +323,10 @@ pub async fn update_application_id(
     // Verify AppKey continuity (signerId match)
     verify_appkey_continuity(&datastore, &context, &application_id)?;
 
+    // Capture the pre-flip app id before finalize persists the new one, so the
+    // post-commit AppVersionChanged carries the correct from/to versions.
+    let old_application_id = context.application_id;
+
     finalize_application_update(
         &datastore,
         &node_client,
@@ -295,6 +335,17 @@ pub async fn update_application_id(
         &application,
     )
     .await?;
+
+    // Post-commit: notify subscribers the application version flipped (skew #2).
+    if let Some(event) = app_version_changed_event(
+        context_id,
+        old_application_id,
+        application.id,
+        application_version(&datastore, old_application_id),
+        application_version(&datastore, application.id),
+    ) {
+        let _ = node_client.send_event(event);
+    }
 
     Ok(application)
 }
@@ -426,6 +477,10 @@ pub(crate) async fn update_application_with_migration(
     // Verify AppKey continuity (signerId match)
     verify_appkey_continuity(&datastore, &context, &application_id)?;
 
+    // Pre-flip app id, captured before finalize persists the new one (for the
+    // post-commit AppVersionChanged from/to versions).
+    let old_application_id = context.application_id;
+
     // Execute migration if requested
     if let Some(migration_params) = migration {
         info!(
@@ -545,6 +600,17 @@ pub(crate) async fn update_application_with_migration(
         &application,
     )
     .await?;
+
+    // Post-commit: notify subscribers the application version flipped (skew #2).
+    if let Some(event) = app_version_changed_event(
+        context_id,
+        old_application_id,
+        application.id,
+        application_version(&datastore, old_application_id),
+        application_version(&datastore, application.id),
+    ) {
+        let _ = node_client.send_event(event);
+    }
 
     Ok((application, context))
 }
@@ -1185,8 +1251,10 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::{key, types, Store};
 
-    use super::verify_appkey_continuity;
+    use calimero_primitives::events::{ContextEvent, ContextEventPayload, NodeEvent};
+
     use super::ContextStorage;
+    use super::{app_version_changed_event, application_version, verify_appkey_continuity};
 
     /// Creates a test store with in-memory database.
     fn create_test_store() -> Store {
@@ -1249,6 +1317,66 @@ mod tests {
             "AppKey continuity check should pass with matching signerIds: {:?}",
             result.err()
         );
+    }
+
+    // application_version resolves ApplicationMeta.version (semver) for the emit.
+    #[test]
+    fn application_version_reads_semver_and_handles_missing() {
+        let store = create_test_store();
+        let app_id = ApplicationId::from([42u8; 32]);
+        store
+            .handle()
+            .put(
+                &key::ApplicationMeta::new(app_id),
+                &create_app_meta("signer"),
+            )
+            .expect("seed app meta");
+        assert_eq!(
+            application_version(&store, app_id).as_deref(),
+            Some("1.0.0")
+        );
+        assert_eq!(
+            application_version(&store, ApplicationId::from([99u8; 32])),
+            None
+        );
+    }
+
+    // No event when the application id did not actually change (6f.5 dedup).
+    #[test]
+    fn app_version_changed_event_skips_when_unchanged() {
+        let id = ApplicationId::from([1u8; 32]);
+        let ev = app_version_changed_event(
+            ContextId::from([7u8; 32]),
+            id,
+            id,
+            Some("1.0.0".to_owned()),
+            Some("1.0.0".to_owned()),
+        );
+        assert!(ev.is_none(), "no emit when app id unchanged");
+    }
+
+    // On a real flip, build the AppVersionChanged event with both versions.
+    #[test]
+    fn app_version_changed_event_on_flip() {
+        let ctx = ContextId::from([7u8; 32]);
+        let ev = app_version_changed_event(
+            ctx,
+            ApplicationId::from([1u8; 32]),
+            ApplicationId::from([2u8; 32]),
+            Some("1.0.0".to_owned()),
+            Some("2.0.0".to_owned()),
+        );
+        match ev {
+            Some(NodeEvent::Context(ContextEvent {
+                context_id,
+                payload: ContextEventPayload::AppVersionChanged(p),
+            })) => {
+                assert_eq!(context_id, ctx);
+                assert_eq!(p.from_version.as_deref(), Some("1.0.0"));
+                assert_eq!(p.to_version.as_deref(), Some("2.0.0"));
+            }
+            other => panic!("expected AppVersionChanged, got {other:?}"),
+        }
     }
 
     #[test]
