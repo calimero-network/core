@@ -272,12 +272,18 @@ fn application_version(
     datastore: &calimero_store::Store,
     application_id: ApplicationId,
 ) -> Option<String> {
-    datastore
+    match datastore
         .handle()
         .get(&key::ApplicationMeta::new(application_id))
-        .ok()
-        .flatten()
-        .map(|meta| meta.version.to_string())
+    {
+        Ok(meta) => meta.map(|m| m.version.to_string()),
+        Err(err) => {
+            // Best-effort label: a read fault yields None (same as an absent
+            // row), but log it so a persistent store fault isn't fully silent.
+            debug!(%err, %application_id, "failed to read ApplicationMeta for version label");
+            None
+        }
+    }
 }
 
 /// Builds an `AppVersionChanged` node event for a context whose application id
