@@ -9,13 +9,53 @@ use crate::types::PredefinedEntry;
 
 pub type Hash = [u8; 32];
 
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[derive(BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextMeta {
     pub application: key::ApplicationMeta,
     pub root_hash: Hash,
     pub dag_heads: Vec<[u8; 32]>,
     pub service_name: Option<Box<str>>,
+    /// Best-effort count of THIS node's owner's identity-gated entries still
+    /// below the target schema (self-reported in the migration heartbeat as
+    /// `authored_remaining`). Node-local; recomputed at migrate-apply /
+    /// `migrate_my_entries` and preserved across other ContextMeta rewrites.
+    pub authored_remaining: u32,
+}
+
+// Custom deserialization: `authored_remaining` was appended after the initial
+// schema. Old on-disk rows end after `service_name`; tolerate EOF and default
+// to 0 so existing contexts deserialize unchanged. (ContextMeta is node-local,
+// so only on-disk back-compat matters — no cross-node wire concern.)
+impl BorshDeserialize for ContextMeta {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let application = key::ApplicationMeta::deserialize_reader(reader)?;
+        let root_hash = Hash::deserialize_reader(reader)?;
+        let dag_heads = Vec::<[u8; 32]>::deserialize_reader(reader)?;
+        let service_name = Option::<Box<str>>::deserialize_reader(reader)?;
+        // A short trailing read surfaces as either UnexpectedEof or (in this
+        // borsh version) InvalidData "Unexpected length of input" — both mean
+        // an old row with no authored_remaining; default to 0. Mirrors the
+        // ApplicationMeta `services` back-compat handling.
+        let authored_remaining = match u32::deserialize_reader(reader) {
+            Ok(v) => v,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => 0,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::InvalidData
+                    && e.to_string().contains("Unexpected length") =>
+            {
+                0
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(Self {
+            application,
+            root_hash,
+            dag_heads,
+            service_name,
+            authored_remaining,
+        })
+    }
 }
 
 impl ContextMeta {
@@ -31,6 +71,7 @@ impl ContextMeta {
             root_hash,
             dag_heads,
             service_name,
+            authored_remaining: 0,
         }
     }
 }
@@ -208,4 +249,55 @@ impl ContextDagDelta {
 impl PredefinedEntry for key::ContextDagDelta {
     type Codec = Borsh;
     type DataType<'a> = ContextDagDelta;
+}
+
+#[cfg(test)]
+mod context_meta_backcompat {
+    use borsh::{BorshDeserialize, BorshSerialize};
+    use calimero_primitives::application::ApplicationId;
+
+    use super::{ContextMeta, Hash};
+    use crate::key;
+
+    // The on-disk layout before `authored_remaining` was appended.
+    #[derive(BorshSerialize)]
+    struct OldContextMeta {
+        application: key::ApplicationMeta,
+        root_hash: Hash,
+        dag_heads: Vec<[u8; 32]>,
+        service_name: Option<Box<str>>,
+    }
+
+    // An old row (no authored_remaining bytes) deserializes with the field 0.
+    #[test]
+    fn old_row_defaults_authored_remaining_to_zero() {
+        let app = key::ApplicationMeta::new(ApplicationId::from([7u8; 32]));
+        let old = OldContextMeta {
+            application: app,
+            root_hash: [3u8; 32],
+            dag_heads: vec![[9u8; 32]],
+            service_name: Some("svc".into()),
+        };
+        let bytes = borsh::to_vec(&old).expect("serialize old");
+        let meta = ContextMeta::try_from_slice(&bytes).expect("deserialize new");
+        assert_eq!(meta.authored_remaining, 0);
+        assert_eq!(meta.application, app);
+        assert_eq!(meta.root_hash, [3u8; 32]);
+        assert_eq!(meta.service_name.as_deref(), Some("svc"));
+    }
+
+    // A new row round-trips the field.
+    #[test]
+    fn new_row_roundtrips_authored_remaining() {
+        let mut meta = ContextMeta::new(
+            key::ApplicationMeta::new(ApplicationId::from([7u8; 32])),
+            [0u8; 32],
+            vec![],
+            None,
+        );
+        meta.authored_remaining = 5;
+        let bytes = borsh::to_vec(&meta).expect("serialize new");
+        let back = ContextMeta::try_from_slice(&bytes).expect("deserialize");
+        assert_eq!(back.authored_remaining, 5);
+    }
 }
