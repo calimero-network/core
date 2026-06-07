@@ -699,14 +699,23 @@ impl Handler<ExecuteRequest> for ContextManager {
                 // (acceptable for advisory telemetry).
                 if method == "migrate_my_entries" {
                     if let Ok(Some(bytes)) = &outcome.returns {
-                        if let Some(remaining) = serde_json::from_slice::<serde_json::Value>(bytes)
-                            .ok()
-                            .and_then(|v| v.get("remaining").and_then(serde_json::Value::as_u64))
-                        {
+                        // Only trust a well-formed MigrateMyEntriesSummary
+                        // ({converted, remaining}) — deserializing into the typed
+                        // shape (both u32 fields required) rejects an unrelated /
+                        // error JSON payload that merely happens to carry a
+                        // `remaining` key, so a malformed return never writes a
+                        // bogus authored_remaining.
+                        #[derive(serde::Deserialize)]
+                        struct MigrateSummary {
+                            #[allow(dead_code)]
+                            converted: u32,
+                            remaining: u32,
+                        }
+                        if let Ok(summary) = serde_json::from_slice::<MigrateSummary>(bytes) {
                             crate::handlers::update_application::persist_authored_remaining(
                                 &count_datastore,
                                 context_id,
-                                u32::try_from(remaining).unwrap_or(u32::MAX),
+                                summary.remaining,
                             );
                         }
                     }

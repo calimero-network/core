@@ -190,6 +190,12 @@ pub struct SignableMigrationHeartbeat {
 /// `residue_auto == 0 && residue_identity == 0 && schema_version >= target`
 /// across every pinned cohort member is what a rollup reads as "all migrated";
 /// the signature prevents a peer from forging another peer's completion.
+// MAINTENANCE: this struct has a hand-written `BorshDeserialize` (below) that
+// reads these fields positionally. If you ADD / REMOVE / REORDER any field
+// here, update that impl in lockstep (new fields go AFTER authored_remaining as
+// another trailing read, or behind a version discriminant). The round-trip +
+// mixed-fleet tests (serialize via this derive, deserialize via the custom impl)
+// fail loudly on a desync — keep them in step.
 #[derive(Debug, Clone, BorshSerialize)]
 pub struct SignedMigrationHeartbeat {
     pub namespace_id: [u8; 32],
