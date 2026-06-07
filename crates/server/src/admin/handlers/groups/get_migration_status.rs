@@ -54,6 +54,7 @@ pub async fn handler(
                         residue_identity: r.residue_identity,
                         synced_up_to_hlc: r.synced_up_to_hlc,
                         reported_at: r.reported_at,
+                        authored_remaining: r.authored_remaining,
                     },
                 )
             })
@@ -86,6 +87,7 @@ pub async fn handler(
                         residue_identity: r.residue_identity,
                         synced_up_to_hlc: r.synced_up_to_hlc,
                         reported_at: r.reported_at,
+                        authored_remaining: r.authored_remaining,
                     }),
                     state: m.state.as_str().to_owned(),
                 })
@@ -102,6 +104,7 @@ pub async fn handler(
                         unknown: status.rollup.unknown,
                         total: status.rollup.total,
                         all_migrated: status.rollup.all_migrated,
+                        members_pending_signature: status.rollup.members_pending_signature,
                     },
                     members,
                 },

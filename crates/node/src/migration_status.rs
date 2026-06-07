@@ -62,6 +62,9 @@ pub struct CacheEntry {
     pub residue_identity: u64,
     /// Governance HLC the peer has synced/applied through.
     pub synced_up_to_hlc: u64,
+    /// Peer's self-reported pending-authored count (sum across its namespace
+    /// contexts). Surfaced in the rollup as `membersPendingSignature` (6f).
+    pub authored_remaining: u64,
     /// Peer-signed millis-since-epoch from the heartbeat itself.
     /// Authoritative per-peer ordering signal — used by `insert` to drop
     /// stale heartbeats that gossipsub may re-deliver out-of-order on mesh
@@ -85,6 +88,7 @@ pub fn cache_entry_to_report(entry: &CacheEntry) -> MigrationStatusReport {
         residue_identity: entry.residue_identity,
         synced_up_to_hlc: entry.synced_up_to_hlc,
         reported_at: entry.ts_millis,
+        authored_remaining: entry.authored_remaining,
     }
 }
 
@@ -182,6 +186,7 @@ impl MigrationStatusCache {
                 residue_auto: hb.residue_auto,
                 residue_identity: hb.residue_identity,
                 synced_up_to_hlc: hb.synced_up_to_hlc,
+                authored_remaining: hb.authored_remaining,
                 ts_millis: hb.ts_millis,
                 received_at: now,
             },
@@ -250,6 +255,12 @@ pub struct MigrationFacts {
     pub residue_auto: u64,
     pub residue_identity: u64,
     pub synced_up_to_hlc: u64,
+    /// Sum across this node's namespace contexts of each context's owner's
+    /// identity-gated entries still below target (the node-local count the
+    /// context handler persists into `ContextMeta.authored_remaining`). u64
+    /// like the residue fields (a per-namespace sum of per-context u32 counts).
+    /// Best-effort self-report — distinct from `residue_identity` (still 0).
+    pub authored_remaining: u64,
 }
 
 /// Decide whether the local node should emit an *on-change* heartbeat for a
@@ -271,6 +282,7 @@ pub fn should_emit_on_change(last: Option<MigrationFacts>, current: MigrationFac
             prev.schema_version != current.schema_version
                 || prev.residue_auto != current.residue_auto
                 || prev.residue_identity != current.residue_identity
+                || prev.authored_remaining != current.authored_remaining
         }
     }
 }
@@ -405,7 +417,17 @@ pub fn compute_namespace_migration_facts(
 
     let mut min_loaded: Option<u32> = None;
     let mut residue_auto: u64 = 0;
+    // Sum the per-context authored_remaining the context handler persisted
+    // (6f.8). A plain store read — no wasm, no committed-state iteration.
+    let mut authored_remaining: u64 = 0;
     for context_id in &contexts {
+        if let Ok(Some(meta)) = datastore
+            .handle()
+            .get(&calimero_store::key::ContextMeta::new(*context_id))
+        {
+            authored_remaining =
+                authored_remaining.saturating_add(u64::from(meta.authored_remaining));
+        }
         let Some(loaded) = loaded_context_version(datastore, context_id) else {
             continue;
         };
@@ -440,6 +462,7 @@ pub fn compute_namespace_migration_facts(
         residue_auto,
         residue_identity,
         synced_up_to_hlc: 0,
+        authored_remaining,
     }
 }
 
@@ -527,6 +550,7 @@ pub fn build_signed_heartbeat(
         residue_auto: facts.residue_auto,
         residue_identity: facts.residue_identity,
         synced_up_to_hlc: facts.synced_up_to_hlc,
+        authored_remaining: facts.authored_remaining,
         ts_millis,
         signature: [0u8; 64],
     };
@@ -759,6 +783,7 @@ mod tests {
             synced_up_to_hlc: 0,
             ts_millis,
             signature,
+            authored_remaining: 0,
         }
     }
 
@@ -934,6 +959,7 @@ mod tests {
             residue_auto: 0,
             residue_identity: 4,
             synced_up_to_hlc: 10,
+            authored_remaining: 0,
         };
         // First-ever emit (no prior) always fires.
         assert!(should_emit_on_change(None, base));
@@ -970,6 +996,7 @@ mod tests {
             residue_auto: 0,
             residue_identity: 0,
             synced_up_to_hlc: 10,
+            authored_remaining: 0,
         };
         let advanced = MigrationFacts {
             synced_up_to_hlc: 99,
@@ -994,6 +1021,7 @@ mod tests {
             residue_auto: 0,
             residue_identity: 3,
             synced_up_to_hlc: 10,
+            authored_remaining: 0,
         };
 
         let emit = record_facts_update(&mut last_emitted, NS, facts);
@@ -1225,6 +1253,7 @@ mod tests {
             residue_auto: 3,
             residue_identity: 1,
             synced_up_to_hlc: 77,
+            authored_remaining: 0,
         };
         let hb = build_signed_heartbeat(&sk, NS, facts, 1234).expect("sign");
         // The receiver's signature gate accepts it, and the cache then reads

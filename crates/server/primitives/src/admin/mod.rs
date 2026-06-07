@@ -1956,6 +1956,9 @@ pub struct MemberMigrationReportApiData {
     pub residue_identity: u64,
     pub synced_up_to_hlc: u64,
     pub reported_at: u64,
+    /// Member's self-reported pending-authored count (best-effort; 6f).
+    #[serde(default)]
+    pub authored_remaining: u64,
 }
 
 /// One per-member row in the migration-status rollup: a pinned-cohort member,
@@ -1984,6 +1987,10 @@ pub struct MigrationStatusRollupApiData {
     /// `true` iff every pinned-cohort member reported a converged schema with
     /// zero residue. Any `unknown` (or in-progress) member keeps this `false`.
     pub all_migrated: bool,
+    /// Count of members reporting `authored_remaining > 0` (owners with
+    /// identity-gated entries still to re-sign; 6f, skew #1). Best-effort.
+    #[serde(default)]
+    pub members_pending_signature: usize,
 }
 
 /// Migration-status answer returned by `GET .../groups/:namespace_id/migration-status`.
