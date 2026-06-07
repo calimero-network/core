@@ -2924,6 +2924,7 @@ mod tests {
                 unknown: 1,
                 total: 2,
                 all_migrated: false,
+                members_pending_signature: 1,
             },
             members: vec![
                 MemberMigrationStatusApiEntry {
@@ -2934,6 +2935,7 @@ mod tests {
                         residue_identity: 0,
                         synced_up_to_hlc: 7,
                         reported_at: 1_700_000_000,
+                        authored_remaining: 3,
                     }),
                     state: "migrated".into(),
                 },
@@ -2952,12 +2954,14 @@ mod tests {
         assert_eq!(json["rollup"]["allMigrated"], false);
         assert_eq!(json["rollup"]["migrated"], 1);
         assert_eq!(json["rollup"]["unknown"], 1);
+        assert_eq!(json["rollup"]["membersPendingSignature"], 1);
 
         let members = json["members"].as_array().unwrap();
         assert_eq!(members.len(), 2);
         assert_eq!(members[0]["state"], "migrated");
         assert_eq!(members[0]["report"]["schemaVersion"], 2);
         assert_eq!(members[0]["report"]["syncedUpToHlc"], 7);
+        assert_eq!(members[0]["report"]["authoredRemaining"], 3);
         // The unknown member has no fresh report — `report` is omitted.
         assert_eq!(members[1]["state"], "unknown");
         assert!(members[1].get("report").is_none());
@@ -2976,6 +2980,7 @@ mod tests {
                 unknown: 0,
                 total: 0,
                 all_migrated: false,
+                members_pending_signature: 0,
             },
             members: vec![],
         };
