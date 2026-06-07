@@ -251,15 +251,22 @@ async fn finalize_application_update(
 
     let mut handle = datastore.handle();
 
-    handle.put(
-        &key::ContextMeta::new(context.id),
-        &types::ContextMeta::new(
-            key::ApplicationMeta::new(application.id),
-            *context.root_hash,
-            context.dag_heads.clone(),
-            context.service_name.as_deref().map(Box::from),
-        ),
-    )?;
+    // Preserve the node-local authored_remaining across this rewrite: it tracks
+    // the owner's pending-authored count and is recomputed only at migrate /
+    // migrate_my_entries points, NOT on a code-only app update (6f.8). Building
+    // a fresh ContextMeta here would otherwise reset it to 0.
+    let prior_authored_remaining = handle
+        .get(&key::ContextMeta::new(context.id))?
+        .map_or(0, |m| m.authored_remaining);
+
+    let mut new_meta = types::ContextMeta::new(
+        key::ApplicationMeta::new(application.id),
+        *context.root_hash,
+        context.dag_heads.clone(),
+        context.service_name.as_deref().map(Box::from),
+    );
+    new_meta.authored_remaining = prior_authored_remaining;
+    handle.put(&key::ContextMeta::new(context.id), &new_meta)?;
 
     node_client.sync(Some(&context_id), None).await?;
 
@@ -487,6 +494,10 @@ pub(crate) async fn update_application_with_migration(
     // post-commit AppVersionChanged from/to versions).
     let old_application_id = context.application_id;
 
+    // Set to the v2 module once a migration commits, so we can run
+    // `count_my_pending` over the committed v2 state after finalize (6f.8).
+    let mut pending_count_module: Option<calimero_runtime::Module> = None;
+
     // Execute migration if requested
     if let Some(migration_params) = migration {
         info!(
@@ -500,6 +511,8 @@ pub(crate) async fn update_application_with_migration(
         // its copy into `spawn_blocking`, so the migration_check below can run a
         // second `module.run` on the same already-compiled v2 artifact.
         let check_module = module.clone();
+        // A third cheap clone for the post-commit count_my_pending run (6f.8).
+        let count_module = check_module.clone();
 
         // Execute migration function via module.run(). Returns the UNCOMMITTED
         // staging buffer (`storage`) the migrate wrote into, plus the optional
@@ -596,6 +609,11 @@ pub(crate) async fn update_application_with_migration(
             state_size = new_state_bytes.len(),
             "Migration completed successfully"
         );
+
+        // The v2 state is committed; schedule the post-finalize authored_remaining
+        // recompute (6f.8). Reaching here means the check passed and committed —
+        // a failed check returns Err above and never gets here.
+        pending_count_module = Some(count_module);
     }
 
     finalize_application_update(
@@ -616,6 +634,23 @@ pub(crate) async fn update_application_with_migration(
         application_version(&datastore, application.id),
     ) {
         let _ = node_client.send_event(event);
+    }
+
+    // Post-commit: recompute this node's owner's pending-authored count over the
+    // committed v2 state and persist it for the heartbeat self-report (6f.8).
+    // Best-effort — a missing export / failure leaves the prior value untouched.
+    if let Some(module) = pending_count_module {
+        if let Some(count) = run_count_my_pending(
+            &datastore,
+            node_client.clone(),
+            context_id,
+            module,
+            public_key,
+        )
+        .await
+        {
+            persist_authored_remaining(&datastore, context_id, count);
+        }
     }
 
     Ok((application, context))
@@ -957,6 +992,83 @@ async fn run_migration_check(
     };
 
     Ok((decode_migration_check_verdict(outcome.returns)?, storage))
+}
+
+/// Run the app's `count_my_pending` export over the COMMITTED v2 state to read
+/// the executor's pending-authored count (the self-reported `authored_remaining`).
+/// Runs post-commit against a fresh buffer over the live store, under the
+/// applying identity, so `owned_by_me` resolves to this node's owner. Read-only
+/// (the export never commits). Best-effort: a missing export (non-authored app),
+/// a host error, or a pool-join failure all yield `None`.
+async fn run_count_my_pending(
+    datastore: &calimero_store::Store,
+    node_client: NodeClient,
+    context_id: ContextId,
+    module: calimero_runtime::Module,
+    executor_identity: PublicKey,
+) -> Option<u32> {
+    let storage = ContextStorage::from(datastore.clone(), context_id);
+    let outcome = global_runtime()
+        .spawn_blocking(move || {
+            let mut storage = storage;
+            let outcome = module.run(
+                context_id,
+                executor_identity,
+                "count_my_pending",
+                &[],
+                &mut storage,
+                None,
+                Some(node_client),
+            );
+            // Read-only call: scrub any thread-local delta it might have pushed.
+            clear_pending_delta();
+            outcome
+        })
+        .await;
+
+    match outcome {
+        // The export returns its u32 count as JSON via value_return. A missing
+        // export (non-authored app ⇒ Err(MethodNotFound)), an empty return, or a
+        // host error all mean "no count" — report None and leave the prior value.
+        Ok(Ok(rt_outcome)) => match rt_outcome.returns {
+            Ok(Some(bytes)) => serde_json::from_slice::<u32>(&bytes).ok(),
+            _ => None,
+        },
+        Ok(Err(e)) => {
+            debug!(%context_id, error = ?e, "count_my_pending host error; reporting no count");
+            None
+        }
+        Err(e) => {
+            debug!(%context_id, error = ?e, "count_my_pending task join failed; reporting no count");
+            None
+        }
+    }
+}
+
+/// Read-modify-write the node-local `ContextMeta.authored_remaining` for a
+/// context, preserving every other field. Best-effort: a missing row or store
+/// fault is logged and skipped (the heartbeat falls back to the prior value).
+pub(crate) fn persist_authored_remaining(
+    datastore: &calimero_store::Store,
+    context_id: ContextId,
+    authored_remaining: u32,
+) {
+    let mut handle = datastore.handle();
+    let key = key::ContextMeta::new(context_id);
+    match handle.get(&key) {
+        Ok(Some(mut meta)) => {
+            meta.authored_remaining = authored_remaining;
+            if let Err(err) = handle.put(&key, &meta) {
+                debug!(%context_id, %err, "failed to persist authored_remaining");
+            }
+        }
+        Ok(None) => {
+            debug!(%context_id, "context meta absent; skipping authored_remaining persist");
+        }
+        Err(err) => {
+            debug!(%context_id, %err, "failed to read context meta for authored_remaining persist");
+        }
+    }
 }
 
 /// Storage callback closures used by the `calimero-storage` runtime environment.

@@ -620,6 +620,11 @@ impl Handler<ExecuteRequest> for ContextManager {
             let node_client = act.node_client.clone();
             let context_client = act.context_client.clone();
 
+            // Cheap (Arc-backed) clone kept past internal_execute (which moves
+            // `datastore`) so a post-call migrate_my_entries can refresh the
+            // node-local authored_remaining count (6f.8 drop-after-convert).
+            let count_datastore = datastore.clone();
+
             async move {
                 let old_root_hash = context.root_hash;
 
@@ -680,6 +685,25 @@ impl Handler<ExecuteRequest> for ContextManager {
                     status,
                     "Method execution completed"
                 );
+
+                // After the owner converts their authored entries via
+                // migrate_my_entries, refresh the node-local authored_remaining
+                // from the summary's `remaining` so the heartbeat self-report
+                // (and the admin rollup) reflect the post-convert count (6f.8).
+                if method == "migrate_my_entries" {
+                    if let Ok(Some(bytes)) = &outcome.returns {
+                        if let Some(remaining) = serde_json::from_slice::<serde_json::Value>(bytes)
+                            .ok()
+                            .and_then(|v| v.get("remaining").and_then(serde_json::Value::as_u64))
+                        {
+                            crate::handlers::update_application::persist_authored_remaining(
+                                &count_datastore,
+                                context_id,
+                                remaining as u32,
+                            );
+                        }
+                    }
+                }
                 debug!(
                     %context_id,
                     %executor,
