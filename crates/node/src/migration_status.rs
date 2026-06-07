@@ -724,12 +724,14 @@ impl MigrationEmitter {
         let log_ns = ns_id;
         let log_schema = facts.schema_version;
         let log_residue = facts.residue_identity;
+        let log_authored = facts.authored_remaining;
         actix::spawn(async move {
             match net.publish(topic, bytes).await {
                 Ok(_) => tracing::debug!(
                     namespace_id = %hex::encode(log_ns),
                     schema_version = log_schema,
                     residue_identity = log_residue,
+                    authored_remaining = log_authored,
                     "migration heartbeat emitted"
                 ),
                 Err(err) => {
