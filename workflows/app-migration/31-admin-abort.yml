@@ -1,7 +1,7 @@
-name: 31 — admin abort-migration POSTs the route (PR-6d, node-log validated)
+name: 31 — admin abort-migration via native step (PR-6d, node-log validated)
 description: >
-  Single-node lazy migration whose pending v1→v2 cascade is cancelled by an
-  ACTUAL POST to the admin abort-migration route BEFORE the context is accessed
+  Single-node lazy migration whose pending v1→v2 cascade is cancelled by the
+  native merobox `abort_migration` step BEFORE the context is accessed
   (PR-6d task 6d.6 step 3). The context therefore stays on v1.
 
   Task 6d.4 shipped the logical-abort surface as a core RPC + admin HTTP route:
@@ -23,18 +23,14 @@ description: >
   `abort_mixed_state_group_flips_target_to_pre_migration_v1`,
   `abort_is_idempotent_noop_when_nothing_pending`, `abort_unknown_group_is_noop`).
 
-  How the route is POSTed without a dedicated merobox step: merobox 0.6.24 has
-  no `abort_migration` step type and no generic admin-HTTP step, but its
-  `script` step (`target: nodes`) runs a shell script INSIDE the node
-  container, where the admin API is reachable on 127.0.0.1:2528/admin-api
-  (DEFAULT_RPC_PORT). `31-abort-migration-post.sh` curls
-  `POST /admin-api/groups/{{namespace_id}}/migration/abort`; the abort handler
-  admin-gates the call against the node's own identity (the namespace admin in
-  this single-node scenario). The load-bearing proof is the node log line the
-  handler emits ("migration logically aborted: target flipped back ..."), plus
-  the post-abort access returning v1 — both asserted below. (When a first-class
-  merobox `abort_migration` step lands, swap the `script` step for it and add a
-  non-admin-rejected assertion; the rest of this scenario is unchanged.)
+  The abort is issued by merobox's first-class `abort_migration` step type
+  (merobox 0.6.36, calimero-client-py 0.6.18), which calls
+  `abort_migration(namespace_id)` against the node's RPC and returns
+  `{namespace_id, aborted}`. The abort handler admin-gates against the node's own
+  identity (the namespace admin in this single-node scenario). The load-bearing
+  proof is the node log line the handler emits ("migration logically aborted:
+  target flipped back ..."), plus the post-abort access returning v1 — both
+  asserted below.
 
   Because migration_v2 defaults ON (PR-6b task 6b.8), the migration runs
   natively — no merobox feature flag is needed.
@@ -141,16 +137,14 @@ steps:
     type: wait
     seconds: 5
 
-  # ── ABORT: actually POST /admin-api/groups/:namespace_id/migration/abort ──
-  # Runs inside the node container; the script curls the local admin API. The
-  # abort handler admin-gates against the node identity (namespace admin) and
-  # flips the target back to v1, dropping the pending migration marker.
-  - name: POST the admin abort-migration route (cancels the pending migration)
-    type: script
-    target: nodes
-    script: workflows/app-migration/31-abort-migration-post.sh
-    args:
-      - "{{namespace_id}}"
+  # ── ABORT: native merobox abort_migration step ──
+  # Calls abort_migration(namespace_id) against the node's RPC. The abort handler
+  # admin-gates against the node identity (namespace admin) and flips the target
+  # back to v1, dropping the pending migration marker. Idempotent.
+  - name: Abort the pending migration (cancels the v1 → v2 cascade)
+    type: abort_migration
+    node: app-migration-admin-abort-1
+    namespace_id: "{{namespace_id}}"
 
   - name: Wait for the abort to be persisted
     type: wait

@@ -24,18 +24,20 @@ runs:
         timeout 180 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
           -o Acquire::https::Timeout=20 install -y merobox
         merobox --version
-        # Floor: the e2e workflows depend on two merobox features the APT
-        # repo's "latest" must be new enough to provide —
+        # Floor: the e2e workflows depend on merobox features the APT repo's
+        # "latest" must be new enough to provide —
         #   * native per-container log persistence to data/container-logs/
-        #     (merobox#207, 0.6.34), and
+        #     (merobox#207, 0.6.34),
         #   * the partition_peers/heal_peers surgical libp2p partition steps
         #     that keep RPC reachable (merobox#278, 0.6.35), used by
-        #     shared-storage-concurrent-rotation-converge.
+        #     shared-storage-concurrent-rotation-converge, and
+        #   * the native `abort_migration` step (merobox#280, 0.6.36) used by
+        #     31-admin-abort.
         # Pin the floor so an older build fails loudly rather than skipping
         # steps or collecting empty log artifacts.
-        MIN_MEROBOX="0.6.35"
+        MIN_MEROBOX="0.6.36"
         HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         if [ "$(printf '%s\n%s\n' "$MIN_MEROBOX" "$HAVE_MEROBOX" | sort -V | head -1)" != "$MIN_MEROBOX" ]; then
-          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (partition_peers/heal_peers, merobox#278)"
+          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (abort_migration step, merobox#280)"
           exit 1
         fi
