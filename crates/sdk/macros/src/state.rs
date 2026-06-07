@@ -934,6 +934,7 @@ fn generate_migrate_my_entries_impl(
     };
 
     let mut field_loops: Vec<TokenStream> = Vec::new();
+    let mut count_loops: Vec<TokenStream> = Vec::new();
     for (idx, field) in fields.iter().enumerate() {
         let field_type = &field.ty;
         let type_str = quote! { #field_type }.to_string();
@@ -947,6 +948,38 @@ fn generate_migrate_my_entries_impl(
             let index = syn::Index::from(idx);
             quote! { self.#index }
         };
+
+        // Count-only twin of the migrate loop: tally the caller's still-stale
+        // owned entries without re-writing them (read-only, no signed delta).
+        let count_body = if type_str.contains("AuthoredMap") {
+            quote! {
+                let __keys: ::std::vec::Vec<_> = match #access.entries() {
+                    ::core::result::Result::Ok(__it) => __it.map(|(__k, _)| __k).collect(),
+                    ::core::result::Result::Err(_) => ::std::vec::Vec::new(),
+                };
+                for __k in __keys {
+                    let __owned = #access.owned_by_me(&__k).unwrap_or(false);
+                    let __stale =
+                        #access.entry_schema_version(&__k).ok().flatten().unwrap_or(0) < __target;
+                    if __owned && __stale {
+                        __pending = __pending.saturating_add(1);
+                    }
+                }
+            }
+        } else {
+            quote! {
+                let __len = #access.len().unwrap_or(0);
+                for __i in 0..__len {
+                    let __owned = #access.owned_by_me(__i).unwrap_or(false);
+                    let __stale =
+                        #access.entry_schema_version(__i).ok().flatten().unwrap_or(0) < __target;
+                    if __owned && __stale {
+                        __pending = __pending.saturating_add(1);
+                    }
+                }
+            }
+        };
+        count_loops.push(count_body);
 
         // `AuthoredVector` also contains the substring "Vector"; check the map
         // first, then fall to the vector shape (keyed-by-index vs keyed-by-key).
@@ -1025,6 +1058,19 @@ fn generate_migrate_my_entries_impl(
                     remaining: __remaining,
                 }
             }
+
+            /// Count the caller's own identity-gated entries still below the
+            /// target schema, WITHOUT converting them (read-only; no signed
+            /// delta). Read-only twin of `__calimero_migrate_my_entries`; the
+            /// node invokes the `count_my_pending` export to source the
+            /// self-reported `authored_remaining` heartbeat field.
+            #[doc(hidden)]
+            pub fn __calimero_count_my_pending(&self) -> u32 {
+                let __target = ::calimero_sdk::app::schema_version();
+                let mut __pending: u32 = 0;
+                #(#count_loops)*
+                __pending
+            }
         }
 
         // One signed RPC call (`app_call "migrate_my_entries"`) converts the
@@ -1058,6 +1104,39 @@ fn generate_migrate_my_entries_impl(
             };
             ::calimero_sdk::env::value_return(&__out);
             app.commit();
+        }
+
+        // Read-only export: returns the caller's pending-authored count as JSON
+        // `u32`. Invoked node-side (cheaply, no signed write, no commit) to
+        // source the `authored_remaining` heartbeat self-report.
+        #[cfg(target_arch = "wasm32")]
+        #[no_mangle]
+        pub extern "C" fn count_my_pending() {
+            ::calimero_sdk::env::setup_panic_hook();
+            ::calimero_sdk::env::init_logging();
+            ::calimero_sdk::event::register::<#ident #ty_generics>();
+            ::calimero_sdk::app::register_schema_version::<#ident #ty_generics>();
+
+            let ::core::option::Option::Some(app) =
+                ::calimero_storage::collections::Root::<#ident #ty_generics>::fetch()
+            else {
+                ::calimero_sdk::env::panic_str("Failed to find or read app state")
+            };
+            let __count = app.__calimero_count_my_pending();
+            let __out = {
+                #[allow(unused_imports)]
+                use ::calimero_sdk::__private::IntoResult;
+                match ::calimero_sdk::__private::WrappedReturn::new(__count)
+                    .into_result()
+                    .to_json()
+                {
+                    ::core::result::Result::Ok(__o) => __o,
+                    ::core::result::Result::Err(__e) => ::calimero_sdk::env::panic_str(
+                        &format!("Failed to serialize count_my_pending output: {:?}", __e)
+                    ),
+                }
+            };
+            ::calimero_sdk::env::value_return(&__out);
         }
     }
 }
