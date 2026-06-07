@@ -208,7 +208,7 @@ jobs:
           - 28-get-migration-status
           - 29-migration-check-pass
           - 30-migration-check-fail-abort
-          - 31-admin-abort
+          - 31-admin-abort-logical
           - 32-authored-migrate-ux
     env:
       WORKFLOW: ${{ matrix.workflow }}

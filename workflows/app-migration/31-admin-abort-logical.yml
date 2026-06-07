@@ -1,4 +1,4 @@
-name: 31 — admin abort-migration via native step (PR-6d, node-log validated)
+name: 31 — admin logical abort drops the pending marker (PR-6d, node-log validated)
 description: >
   Single-node v1→v2 cascade whose pending migration marker is dropped by the
   native merobox `abort_migration` step (PR-6d task 6d.6 step 3). The node that
@@ -141,9 +141,12 @@ steps:
     migrate_method: migrate_v1_to_v2
     cascade: true
 
+  # 15s to match the peer lazy scenarios (21/28): the cascade's migration commit
+  # runs asynchronously after the upgrade_group RPC returns, so the abort below
+  # must not race it — the context must be committed to v2 first.
   - name: Wait for the migration to settle
     type: wait
-    seconds: 5
+    seconds: 15
 
   # ── ABORT: native merobox abort_migration step ──
   # Calls abort_migration(namespace_id) against the node's RPC. The abort handler

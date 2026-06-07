@@ -32,7 +32,7 @@ runs:
         #     that keep RPC reachable (merobox#278, 0.6.35), used by
         #     shared-storage-concurrent-rotation-converge, and
         #   * the native `abort_migration` step (merobox#280, 0.6.36) used by
-        #     31-admin-abort.
+        #     31-admin-abort-logical.
         # Pin the floor so an older build fails loudly rather than skipping
         # steps or collecting empty log artifacts.
         MIN_MEROBOX="0.6.36"
