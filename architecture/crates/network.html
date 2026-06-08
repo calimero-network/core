@@ -157,6 +157,43 @@
 </div>
 
 <!-- ════════════════════════════════════════════════════════
+     3b. GOSSIPSUB PEER SCORING
+     ════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Gossipsub Peer Scoring</h2>
+<p style="margin-bottom:14px;">Calimero uses <strong>membership-biased gossipsub scoring</strong> (#2513) to prefer mesh peers that are members of the same contexts. Scores influence which peers are selected into the gossipsub mesh and how long non-mesh peers remain eligible.</p>
+
+<h3>How it works</h3>
+<div class="g2" style="margin-top:12px;">
+  <div class="cb">
+    <h4 style="color:var(--violet);">Membership derivation (PR 1/2)</h4>
+    <p style="margin-top:8px;">The node layer tracks which peers share context membership with the local node. When a peer's membership status changes (join, leave, eviction), the node emits a score update to <span class="code">NetworkManager</span> with a pre-computed membership-derived score for that peer.</p>
+    <ul style="margin-top:8px; padding-left:18px;">
+      <li>Peers sharing ≥1 context membership receive a positive score boost.</li>
+      <li>Peers with no shared membership receive a neutral (zero) boost.</li>
+      <li>Evicted peers receive a negative penalty that decays over time.</li>
+    </ul>
+  </div>
+  <div class="cb">
+    <h4 style="color:var(--violet);">Score push (PR 2/2)</h4>
+    <p style="margin-top:8px;">When context membership changes (subscribe, unsubscribe, member add/remove), the node recomputes the score for all affected peers and calls <span class="code">NetworkClient::set_peer_score</span>. The <span class="code">NetworkManager</span> applies the score to libp2p's gossipsub scoring substrate, which then uses it as an application-layer score component during mesh management.</p>
+    <div class="typedef" style="margin-top:8px;">
+<span class="kw">// Conceptual flow:</span><br>
+NodeManager detects membership change<br>
+  → computes membership-derived score per peer<br>
+  → NetworkClient::set_peer_score(peer_id, score)<br>
+  → gossipsub uses score in mesh peer selection
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:14px; padding:12px 16px; background:var(--surface2); border:1px solid var(--border); border-radius:10px;">
+  <p style="color:var(--amber); font-weight:600; margin-bottom:4px;">Design intent</p>
+  <p>Membership-biased scoring ensures that context-relevant peers are mesh-preferred, reducing relay hops for context traffic. It does not affect security — gossipsub message signing and topic access control are independent of scores. Scores are advisory for mesh selection; non-member peers still receive gossiped messages if they are subscribers.</p>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
      4. STREAM PROTOCOLS
      ════════════════════════════════════════════════════════ -->
 <div class="card ga">

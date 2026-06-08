@@ -456,7 +456,8 @@
   ├── immutable, content-addressed              <span class="arrow">→</span> <span class="target">FrozenStorage&lt;T&gt;</span>
   └── identity-bound writes ↓
         ├── one slot per user, disjoint          <span class="arrow">→</span> <span class="target">UserStorage&lt;T&gt;</span>
-        ├── one shared slot, named writer set    <span class="arrow">→</span> <span class="target">SharedStorage&lt;T&gt;</span>
+        ├── one shared slot, named writer set    <span class="arrow">→</span> <span class="target">SharedStorage&lt;T&gt;</span> (alias: <span class="target">PermissionedStorage&lt;T, WriterSetAcl&gt;</span>)
+        ├── one shared slot, single transferable owner <span class="arrow">→</span> <span class="target">Ownable&lt;T&gt;</span> (alias: <span class="target">PermissionedStorage&lt;T, OwnerAcl&gt;</span>)
         ├── shared keyspace, per-entry author    <span class="arrow">→</span> <span class="target">AuthoredMap&lt;K,V&gt;</span>
         └── shared sequence, per-entry author    <span class="arrow">→</span> <span class="target">AuthoredVector&lt;V&gt;</span></div>
 
@@ -494,6 +495,43 @@
       <li><strong>Per-entity scope</strong> — the stored nonce lives on the individual storage entity (the row keyed by entity <span class="code">id</span>), not on the owner globally. For <span class="code">AuthoredMap</span> each map key is its own entity; for <span class="code">UserStorage</span> each per-user slot; for <span class="code">SharedStorage</span> the single value.</li>
       <li><strong>Entity binding</strong> — a signed action targeting one entity cannot be replayed against a different entity even when the same key signed both: the entity <span class="code">id</span> is part of the bytes hashed by <span class="code">Action::payload_for_signing()</span>, so the signature is bound to that specific entity.</li>
     </ul>
+  </div>
+</div>
+
+<div class="g2" style="margin-bottom:14px;">
+  <div class="cb">
+    <h4 style="color:#22c55e;">PermissionedStorage&lt;T, A&gt; / Ownable&lt;T&gt;</h4>
+    <p style="margin-top:8px;">Policy-parameterised wrapper over the underlying <span class="code">WriterSetCell&lt;T&gt;</span> storage primitive. The type parameter <span class="code">A: Authorizer</span> is a zero-sized policy marker that decides, at the API surface, whether the current executor may perform a given <span class="code">Op</span>. Two built-in policies ship:</p>
+    <ul style="margin-top:6px; padding-left:18px;">
+      <li><span class="code">WriterSetAcl</span> — any member of the writer set may perform any op (the behaviour of plain <span class="code">SharedStorage</span>). Aliased as <span class="code">SharedStorage&lt;T&gt;</span>.</li>
+      <li><span class="code">OwnerAcl</span> — the single writer is the owner; <span class="code">Ownable&lt;T&gt;</span> is the ergonomic alias. Supports <span class="code">transfer_ownership</span> and <span class="code">renounce_ownership</span>.</li>
+    </ul>
+    <p style="margin-top:8px;">The security boundary is unchanged: <strong>merge-time signature verification</strong> against the writer set. The <span class="code">Authorizer</span> is fail-fast UX sugar — it lets a method reject an unauthorised caller early, but cannot substitute for correct storage-type placement (data must live inside the wrapper to be protected).</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">use</span> calimero_storage::collections::{<span class="ty">Ownable</span>, <span class="ty">PermissionedStorage</span>, <span class="ty">WriterSetAcl</span>};<br><br>
+<span class="kw">struct</span> <span class="ty">State</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">config</span>: Ownable&lt;LwwRegister&lt;String&gt;&gt;,  <span class="comment">// single owner, transferable</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">policy</span>: PermissionedStorage&lt;LwwRegister&lt;String&gt;, WriterSetAcl&gt;,<br>
+}
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:#22c55e;">OpMask — operation-granular capabilities</h4>
+    <p style="margin-top:8px;">The writer set on a <span class="code">Shared</span> entity has been extended from <span class="code">BTreeSet&lt;PublicKey&gt;</span> to <span class="code">BTreeMap&lt;PublicKey, OpMask&gt;</span>. Each writer now carries a bitmask of permitted operations, enforced at merge time by the <span class="code">ProtocolAuthorizer</span> after signature verification:</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">bitflags!</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">pub struct</span> <span class="ty">OpMask</span>: u8 {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">const</span> <span class="field">INSERT</span> = 0b0000_0001;  <span class="comment">// create new entity</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">const</span> <span class="field">UPDATE</span> = 0b0000_0010;  <span class="comment">// modify existing</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">const</span> <span class="field">DELETE</span> = 0b0000_0100;  <span class="comment">// delete</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">const</span> <span class="field">ADMIN</span>  = 0b0000_1000;  <span class="comment">// rotate writers / grant / revoke</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">const</span> <span class="field">APPEND</span> = INSERT | UPDATE; <span class="comment">// write, no delete</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">const</span> <span class="field">WRITE</span>  = INSERT | UPDATE | DELETE;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">const</span> <span class="field">FULL</span>   = WRITE | ADMIN;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br>
+}
+    </div>
+    <p style="margin-top:8px;">A key with no explicit mask resolves to <span class="code">OpMask::FULL</span> — preserving today's "in the set ⇒ anything" behaviour. <span class="code">grant_capability(who, mask)</span> sets a per-principal mask; concurrent conflicting grants merge by bitwise AND (revoke-wins, fail-safe). WRITE/DELETE/ADMIN bits are merge-enforced; INSERT vs UPDATE is deferred (needs <span class="code">exists_at_cut</span>).</p>
   </div>
 </div>
 

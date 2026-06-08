@@ -1,10 +1,22 @@
 # calimero-components — CRDT-aware access-control components
 
-Status: **Design** (tracked in #2687; supersedes #2557; op-aware ACL slice of
+Status: **Partially Implemented** (tracked in #2687; supersedes #2557; op-aware ACL slice of
 #2541). Targets the merged enforcement substrate:
 #2588 (collection guarding), #2230/#2601/#2612 (authenticated rotation),
 #2655 (SharedMember anchor / retroactive revocation), #2665 (concurrent-rotation
 convergence).
+
+### Implementation status (as of 0.11.0-rc.2)
+
+| Phase | Status | PR / commit | Notes |
+|---|---|---|---|
+| P0 — field-id registry | ✅ shipped | #2544 | `TypeId AssignFieldId` registry |
+| P1 — `Ownable<T>` + `PermissionedStorage<T,A>` + `Authorizer` seam | ✅ shipped | #2700 (`c444e8ef`) | `WriterSetAcl`, `OwnerAcl`; `only_owner`/`transfer`/`renounce` |
+| P2 — `AccessControl` roles | ✅ shipped | #2700 (`c444e8ef`) | `grant`/`revoke`; `AccessControl::project_onto` (#2741) |
+| OpMask (§8) — WRITE/DELETE/ADMIN bits | ✅ shipped | #2735/#2736/#2741 (`bbcc9f3a`, `99fe48b4`, `744eaeb1`) | `OpMask` in writer map; `ProtocolAuthorizer` + `grant_capability` |
+| OpMask — INSERT vs UPDATE distinction | ⚠️ deferred | — | `v2_upsert` tag split; existence-at-cut check (§8.9); see scorecard |
+| P3 — `Pausable` (advisory) | 🔲 not started | — | |
+| P4 — `#[component]` macro sugar | 🔲 not started | — | |
 
 ## 1. Motivation
 
@@ -93,11 +105,12 @@ impl Authorizer for WriterSetAcl {
 }
 ```
 
-Today merge enforces *membership*, not *op*. So `WriterSetAcl` ignores `Op` — the
-seam carries `Op` now so the API surface is stable, and when #2541 lands op
-bounds in the signed action, a `ProtocolAuthorizer` swaps in **with zero app-code
-change**. Until then, op-granularity (`Write` but not `Delete`) is advisory at the
-API and **must not** be advertised as merge-enforced.
+As of #2736 (`ProtocolAuthorizer` + `grant_capability`) and #2735 (`OpMask`
+merge-time enforcement), merge enforces **membership + op mask** (WRITE, DELETE,
+ADMIN bits). `ProtocolAuthorizer` has shipped and resolves the causal op mask
+from the anchor log at merge time — `WRITE` vs `DELETE` distinctions are now
+merge-enforced. INSERT vs UPDATE (§8.9) remains advisory (deferred) until the
+`exists_at_cut` query is implemented.
 
 ### 4.2 `Ownable<T>` — single transferable owner
 
@@ -351,21 +364,16 @@ applied locally, the honest node never converges to it.
 
 ## 7. Implementation plan (phased, each its own PR)
 
-- **P0 — field-id registry (#2544).** TypeId `AssignFieldId` registry replacing
-  the macro string-match; components self-register. *Prerequisite — without it,
-  wrapped collections silently split-brain.*
-- **P1 — `Ownable<T>` + `Authorizer`/`WriterSetAcl` seam.** Facade over
-  `SharedStorage`, single-writer; `only_owner`/`transfer`/`renounce`. Unit tests
-  via `TestHost` + one adversarial e2e (reuse the shared-storage harness).
-- **P2 — `AccessControl`.** Roles as `SharedStorage`-backed sets; admin-gated
-  `grant`/`revoke`; retroactive revoke leveraging #2655. Convergence tests:
-  grant∥write, revoke∥write (per ADR 0001).
-- **P3 — `Pausable` (advisory).** Pause-dominant epoch merge; doc the advisory
-  caveat loudly.
-- **P4 — `#[component]` macro sugar + app migrations.** Make `only_*` derivable;
-  migrate `collaborative-editor` and friends off hand-rolled checks.
-- **P5 (deferred) — `ProtocolAuthorizer` (#2541).** Op-granular bounds in the
-  signed action; swap behind the `Authorizer` seam with zero app changes.
+- **P0 — field-id registry (#2544).** ✅ **Shipped.** TypeId `AssignFieldId` registry replacing
+  the macro string-match; components self-register.
+- **P1 — `Ownable<T>` / `PermissionedStorage<T,A>` + `Authorizer`/`WriterSetAcl` seam.** ✅ **Shipped (#2700).** Facade over
+  `WriterSetCell`; `only_owner`/`transfer`/`renounce`; `WriterSetAcl`/`OwnerAcl`. Unit tests
+  via `TestHost` + adversarial e2e.
+- **P2 — `AccessControl`.** ✅ **Shipped (#2700, #2741).** Roles as `SharedStorage`-backed sets; admin-gated
+  `grant`/`revoke`; `AccessControl::project_onto` for role-based op-mask projection.
+- **P3 — `Pausable` (advisory).** 🔲 Not started. Pause-dominant epoch merge; advisory caveat.
+- **P4 — `#[component]` macro sugar + app migrations.** 🔲 Not started.
+- **P5 — `ProtocolAuthorizer` (#2541).** ✅ **Shipped (#2736, #2735, #2741).** Op-granular bounds (WRITE/DELETE/ADMIN) enforced at merge via `OpMask` in the anchor writer map; `grant_capability` for per-principal mask assignment. INSERT vs UPDATE remains deferred (§8.9).
 
 ## 8. Protocol-level extension (#2541): `OpMask`
 
@@ -479,11 +487,11 @@ order (the #2673 trap).
 
 | OpMask bit | Status |
 |---|---|
-| `DELETE` vs `WRITE` | ✅ clean — tags already separate, only the auth check is new |
-| `ADMIN` | ✅ clean — reuses the rotation-log grant channel |
-| `INSERT` vs `UPDATE` | ⚠️ needs a deterministic existence-at-cut check (`v2_upsert` tag split is optional hardening, §8.9); defer |
+| `DELETE` vs `WRITE` | ✅ **shipped** (#2735/#2736) — merge-time enforcement via `ProtocolAuthorizer`; op mask in anchor writer map |
+| `ADMIN` | ✅ **shipped** (#2736) — `grant_capability` appends to anchor log as `ADMIN`-op action |
+| `INSERT` vs `UPDATE` | ⚠️ deferred — needs `exists_at_cut` query; `v2_upsert` tag split optional hardening (§8.9) |
 | `READ` | ❌ not merge-enforceable — needs encryption; advisory only |
-| wire change | anchors only (writer map gains masks); entries unchanged |
+| wire change | anchors only (writer map: `BTreeSet → BTreeMap<PublicKey, OpMask>`); entries unchanged |
 
 ### 8.9 What `INSERT` vs `UPDATE` specifically needs
 
