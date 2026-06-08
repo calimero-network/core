@@ -359,7 +359,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // `root_hash_verified` will report `false` so the
                     // session is treated as a partial merge rather than a
                     // successful convergence.
-                    if !is_leaf_currently_authorized(store, &context_id, leaf_data) {
+                    if !is_leaf_currently_authorized(store, &context_id, leaf_data, None) {
                         warn!(
                             %context_id,
                             key = %hex::encode(leaf_data.key),
@@ -1146,7 +1146,7 @@ async fn run_responder_impl<T: SyncTransport>(
                 let entity_count = entities.len();
                 trace!(%context_id, entity_count, "Handling EntityPush from initiator");
 
-                let outcome = handle_entity_push(store, &runtime_env, context_id, &entities);
+                let outcome = handle_entity_push(store, &runtime_env, context_id, &entities, None);
                 let applied = outcome.applied;
 
                 // This responder runs without a `ContextClient` in

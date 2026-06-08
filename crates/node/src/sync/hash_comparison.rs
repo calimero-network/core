@@ -28,6 +28,7 @@ use calimero_node_primitives::sync::{
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::index::Index;
@@ -71,6 +72,11 @@ impl SyncManager {
         first_max_depth: Option<u8>,
         transport: &mut T,
         _nonce: Nonce,
+        // The authenticated identity of the initiator (the peer driving this
+        // session). Used to gate ingestion of authorless plain-entity pushes:
+        // a peer that is no longer an authorized member must not launder a
+        // Public write into our store via HC. `None` when unresolvable.
+        peer_identity: Option<PublicKey>,
     ) -> Result<()> {
         info!(%context_id, "Starting HashComparison responder");
 
@@ -210,6 +216,7 @@ impl SyncManager {
                         &runtime_env,
                         context_id,
                         &entities,
+                        peer_identity,
                     )
                     .await;
                     let applied = outcome.applied;

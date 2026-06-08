@@ -132,10 +132,32 @@ pub fn is_leaf_currently_authorized(
     store: &Store,
     context_id: &ContextId,
     leaf: &TreeLeafData,
+    session_peer: Option<PublicKey>,
 ) -> bool {
-    let Some(author) = extract_author_from_leaf_authorization(leaf.metadata.authorization.as_ref())
-    else {
-        return true;
+    let author = match extract_author_from_leaf_authorization(leaf.metadata.authorization.as_ref())
+    {
+        Some(author) => author,
+        None => {
+            // Authorless PLAIN (Public) leaf — carries no signer, so the
+            // author-based gate below can't apply. Fall back to the
+            // authenticated SESSION PEER's current membership: a peer that is
+            // no longer an authorized member of the context must not be able
+            // to launder a plain-entity write into our store via HC/LevelWise
+            // (the gossip path already rejects its signed delta by author, but
+            // HC merges *state*, which a Public entity carries no authorship
+            // for). A removed peer's push is dropped at the first hop, so the
+            // write never propagates further. When there is no session peer
+            // (local / snapshot apply, or a path that can't attribute one),
+            // keep the historical allow — the per-action checks downstream
+            // remain the backstop.
+            return match session_peer {
+                Some(peer) => calimero_context::group_store::is_currently_authorized_for_context(
+                    store, context_id, &peer,
+                )
+                .unwrap_or(false),
+                None => true,
+            };
+        }
     };
     match calimero_context::group_store::is_currently_authorized_for_context(
         store, context_id, &author,
@@ -606,6 +628,7 @@ pub fn handle_entity_push(
     runtime_env: &calimero_storage::env::RuntimeEnv,
     context_id: ContextId,
     entities: &[TreeLeafData],
+    session_peer: Option<PublicKey>,
 ) -> EntityPushOutcome {
     let entities = if entities.len() > MAX_ENTITIES_PER_PUSH {
         tracing::warn!(
@@ -631,7 +654,14 @@ pub fn handle_entity_push(
     // leaves are non-destructive sync-repair leaves that get re-pushed on the
     // next sync cycle, so skipping the batch here is safe.
     let loaded_app_key = calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id);
-    apply_entity_push_batch(store, runtime_env, context_id, entities, loaded_app_key)
+    apply_entity_push_batch(
+        store,
+        runtime_env,
+        context_id,
+        entities,
+        loaded_app_key,
+        session_peer,
+    )
 }
 
 /// Apply (or buffer) a pre-truncated, pre-resolved `EntityPush` batch.
@@ -649,6 +679,7 @@ fn apply_entity_push_batch(
     context_id: ContextId,
     entities: &[TreeLeafData],
     loaded_app_key: Result<Option<[u8; 32]>>,
+    session_peer: Option<PublicKey>,
 ) -> EntityPushOutcome {
     let loaded_app_key = match loaded_app_key {
         Ok(key) => key,
@@ -679,7 +710,7 @@ fn apply_entity_push_batch(
                 );
                 continue;
             }
-            if !is_leaf_currently_authorized(store, &context_id, leaf) {
+            if !is_leaf_currently_authorized(store, &context_id, leaf, session_peer) {
                 dropped_unauthorized += 1;
                 tracing::warn!(
                     %context_id,
@@ -809,12 +840,13 @@ pub async fn handle_entity_push_locked(
     runtime_env: &calimero_storage::env::RuntimeEnv,
     context_id: ContextId,
     entities: &[TreeLeafData],
+    session_peer: Option<PublicKey>,
 ) -> EntityPushOutcome {
     let _guard = match context_client {
         Some(client) => client.acquire_lock(&context_id).await,
         None => None,
     };
-    handle_entity_push(store, runtime_env, context_id, entities)
+    handle_entity_push(store, runtime_env, context_id, entities, session_peer)
 }
 
 /// Apply a batch of tombstones (delete-wins by HLC) through the authenticated

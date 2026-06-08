@@ -3048,6 +3048,7 @@ impl SyncManager {
                     max_depth,
                     &mut transport,
                     nonce,
+                    Some(their_identity),
                 )
                 .await?
             }
