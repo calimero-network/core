@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Accepted |
 | **Date** | 2026-04-24 |
 | **Deciders** | Calimero core team |
 | **Context** | [#2233](https://github.com/calimero-network/core/issues/2233) — DAG-causal Shared verification, phase **P4 (design)** |
