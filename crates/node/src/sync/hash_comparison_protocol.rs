@@ -899,6 +899,20 @@ pub(crate) fn union_received_rotation_logs(logs: &[([u8; 32], Vec<u8>)]) -> usiz
         };
         let mut entity_applied = 0_usize;
         for entry in remote.entries {
+            // P3 S2: a node that learns a rotation via the reconcile (rather
+            // than applying the originating delta) must populate BOTH the side
+            // store AND the hashed child collection — otherwise its collection
+            // stays empty/unlinked and its anchor subtree diverges from peers
+            // that applied the rotation through `append_rotation_to_child`
+            // (the late-joiner / third-node split-brain: node-3 got rotations
+            // only via this reconcile, so its collection never converged).
+            // `append_rotation_to_child` establishes the anchor→map→entry
+            // linkage (idempotent on delta_id), so the per-delta children match
+            // byte-for-byte across nodes and converge under the collection
+            // merge.
+            if let Err(e) = Interface::<MainStorage>::append_rotation_to_child(entity_id, &entry) {
+                debug!(%entity_id, error = %e, "rotation-log sync: child append skipped");
+            }
             match rotation_log::append::<MainStorage>(entity_id, entry) {
                 Ok(()) => {
                     applied += 1;
