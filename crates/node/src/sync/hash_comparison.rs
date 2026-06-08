@@ -483,38 +483,6 @@ impl SyncManager {
             })
             .unwrap_or_default();
 
-        // P3-DIAG (temporary): dump the rotation-log map node as HC sees it, so
-        // node-1 vs node-2 entry-children can be diffed (the collection-set
-        // divergence). Fires only for RotationLog-stamped nodes.
-        if matches!(
-            index.metadata.crdt_type,
-            Some(calimero_primitives::crdt::CrdtType::RotationLog)
-        ) {
-            let kids: Vec<String> = index
-                .children()
-                .map(|cs| {
-                    cs.iter()
-                        .map(|c| {
-                            format!(
-                                "{}:{}",
-                                hex::encode(&c.id().as_bytes()[..4]),
-                                hex::encode(&c.merkle_hash()[..4])
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            warn!(
-                target: "sync::p3_map",
-                %context_id,
-                map = %hex::encode(&entity_id.as_bytes()[..4]),
-                full = %hex::encode(&full_hash[..4]),
-                child_count = children_ids.len(),
-                kids = ?kids,
-                "P3-MAP node as HC sees it"
-            );
-        }
-
         // Determine if this is a leaf or internal node
         if children_ids.is_empty() {
             // Leaf node - try to get entity data

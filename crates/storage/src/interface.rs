@@ -313,25 +313,7 @@ impl<S: StorageAdaptor> Interface<S> {
         hasher.update(base_own_hash);
         hasher.update(b"acl:v1");
         hasher.update(&acl_bytes);
-        let folded: [u8; 32] = hasher.finalize().into();
-        // P3-DIAG (temporary): pin entries-vs-resolve-vs-data on a failing run.
-        let child_count = Self::load_rotation_log_child(id)
-            .map(|l| l.entries.len())
-            .unwrap_or(0);
-        let writers_hex: Vec<_> = resolved
-            .keys()
-            .map(|k| hex::encode(&k.digest()[..4]))
-            .collect();
-        debug!(
-            target: "storage::p3_fold",
-            %id,
-            base = %hex::encode(&base_own_hash[..8]),
-            folded = %hex::encode(&folded[..8]),
-            child_entries = child_count,
-            writers = ?writers_hex,
-            "P3-FOLD"
-        );
-        folded
+        hasher.finalize().into()
     }
 
     /// Recompute a `Shared` anchor's `own_hash` (with the folded ACL) from its
