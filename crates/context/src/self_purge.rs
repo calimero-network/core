@@ -74,7 +74,10 @@ use tokio::task::AbortHandle;
 use tracing::{debug, error, info, warn};
 
 use calimero_governance_store;
-use calimero_governance_store::metrics::{record_purge_failure, PurgeBranch, PurgeFailureClass};
+use calimero_governance_store::metrics::{
+    record_events_dropped, record_purge_failure, record_reconcile_outcome, PurgeBranch,
+    PurgeFailureClass, ReconcileOutcome,
+};
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
     MembershipRepository, NamespaceRepository, PendingSelfPurgeRepository,
@@ -174,6 +177,12 @@ async fn run(store: Store, node_client: NodeClient) {
                      NOT complete it; the residual local key material persists (bounded, \
                      not a forward-secrecy hole — FS is held by key rotation)"
                 );
+                // #2686: surface the silent-residue count as a metric so
+                // operators can alert on it — the `warn!` above is not
+                // machine-queryable. Counts BY the broadcast-reported skip,
+                // since each dropped `TeeMemberRemoved` is a separate
+                // un-reconcilable eviction.
+                record_events_dropped(skipped);
                 continue;
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -369,6 +378,7 @@ async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
     let scanned = pending.len();
     let mut reconciled = 0usize;
     let mut cleared_stale = 0usize;
+    let mut stale_clear_failed = 0usize;
     let mut retained = 0usize;
     let mut skipped = 0usize;
 
@@ -389,8 +399,10 @@ async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
                 // the counter (review nit).
                 if purge_namespace_for_self(store, node_client, ns_id).await {
                     reconciled += 1;
+                    record_reconcile_outcome(ReconcileOutcome::Reconciled);
                 } else {
                     retained += 1;
+                    record_reconcile_outcome(ReconcileOutcome::Retained);
                 }
             }
             ReconcileDecision::ClearStaleMarker(reason) => {
@@ -399,21 +411,39 @@ async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
                     %reason,
                     "self-purge reconcile: clearing stale marker WITHOUT purging"
                 );
-                clear_marker(store, &ns_id);
-                cleared_stale += 1;
+                // #2686: distinguish a successful stale-marker clear from a
+                // failed one. A failed clear is benign (the next restart
+                // re-evaluates the already-clean / re-admitted namespace and
+                // retries the clear), but operators should be able to see it.
+                if clear_marker(store, &ns_id) {
+                    cleared_stale += 1;
+                    record_reconcile_outcome(ReconcileOutcome::ClearedStale);
+                } else {
+                    stale_clear_failed += 1;
+                    record_reconcile_outcome(ReconcileOutcome::StaleClearFailed);
+                }
             }
             ReconcileDecision::Skip => {
-                // A read error somewhere — already logged + metered inside
-                // `reconcile_decision`. Keep the marker; the next restart
-                // retries.
+                // A read error made the decision uncertain — already logged
+                // inside `reconcile_decision` (which is now pure, #2686: it no
+                // longer records a purge-step failure for these reconcile
+                // read-errors). Keep the marker; the next restart retries.
+                // `skipped` is the correct signal for these read-uncertainty
+                // cases, NOT `self_purge_failures_total`.
                 skipped += 1;
+                record_reconcile_outcome(ReconcileOutcome::Skipped);
             }
         }
     }
 
     info!(
         scanned,
-        reconciled, cleared_stale, retained, skipped, "self-purge reconcile sweep complete"
+        reconciled,
+        cleared_stale,
+        stale_clear_failed,
+        retained,
+        skipped,
+        "self-purge reconcile sweep complete"
     );
 }
 
@@ -459,7 +489,13 @@ pub(crate) enum ReconcileDecision {
 ///     `ClearStaleMarker` — do NOT purge a healthy member.
 ///   * Any read error ⇒ `Skip` (never purge on uncertainty).
 ///
-/// Pure store reads; no mutation.
+/// Pure store reads; no mutation AND no metrics side-effect (#2686). This
+/// function deliberately does NOT call `record_purge_failure` on its
+/// read-error paths: a reconcile read-error is uncertainty, not a purge-step
+/// (delete) failure, and labelling it as one inflated
+/// `self_purge_failures_total`. The sweep records those `Skip` decisions via
+/// the `self_purge_reconcile_total{outcome="skipped"}` counter instead — the
+/// correct signal for reconcile read-uncertainty.
 pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> ReconcileDecision {
     let ns_hex = hex::encode(ns_id.to_bytes());
 
@@ -490,7 +526,10 @@ pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> Reconc
                 "self-purge reconcile: failed to re-check pending-self-purge marker \
                  — skipping (will retry on next restart; NOT purging on uncertainty)"
             );
-            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
+            // #2686: NO `record_purge_failure` here — this is a reconcile
+            // read-error (uncertainty), not a purge-step failure. The sweep
+            // records the resulting `Skip` as
+            // `self_purge_reconcile_total{outcome="skipped"}`.
             return ReconcileDecision::Skip;
         }
     }
@@ -509,7 +548,9 @@ pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> Reconc
                 "self-purge reconcile: failed to read namespace identity for a marked \
                  namespace — skipping (will retry on next restart; NOT purging on uncertainty)"
             );
-            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
+            // #2686: NO `record_purge_failure` here — reconcile read-error,
+            // not a purge-step failure. Recorded as `outcome="skipped"` by the
+            // sweep.
             return ReconcileDecision::Skip;
         }
     };
@@ -533,7 +574,9 @@ pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> Reconc
                  — skipping (keeping marker; will retry on next restart; NOT purging \
                  on uncertainty)"
             );
-            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
+            // #2686: NO `record_purge_failure` here — reconcile read-error,
+            // not a purge-step failure. Recorded as `outcome="skipped"` by the
+            // sweep.
             ReconcileDecision::Skip
         }
     }
@@ -543,7 +586,11 @@ pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> Reconc
 /// non-fatal: a stale marker just means the next reconcile re-evaluates the
 /// (already-clean / re-admitted) namespace and tries to clear it again. Logged
 /// so it is visible, but it does not block the sweep.
-fn clear_marker(store: &Store, ns_id: &ContextGroupId) {
+///
+/// Returns `true` iff the clear succeeded (#2686). The reconcile sweep uses
+/// this to distinguish a `cleared_stale` outcome from a `stale_clear_failed`
+/// one rather than counting `cleared_stale` regardless of the result.
+fn clear_marker(store: &Store, ns_id: &ContextGroupId) -> bool {
     if let Err(e) = PendingSelfPurgeRepository::new(store).clear(ns_id) {
         warn!(
             namespace = %hex::encode(ns_id.to_bytes()),
@@ -551,6 +598,9 @@ fn clear_marker(store: &Store, ns_id: &ContextGroupId) {
             "self-purge: failed to clear pending-self-purge marker — stale marker will be \
              re-evaluated on the next reconcile (harmless)"
         );
+        false
+    } else {
+        true
     }
 }
 
@@ -681,6 +731,12 @@ async fn handle_member_removed(
 ///
 /// Sync: store operations only, no async work. Split out so tests can
 /// drive it without standing up a `NodeClient` mock.
+///
+/// Scope note (#2686): this stays sync / no-`Result` on purpose. Subgroup-step
+/// failures are already captured by `record_purge_failure(Subgroup, …)`; the
+/// retry-surface refactor (returning `Result<()>` so a subgroup-scoped
+/// reconcile can complete a failed subgroup-only purge) belongs with the
+/// subgroup-reconcile work in #2726, not here.
 ///
 /// Mirrors the per-group cleanup sequence in
 /// `handlers/delete_namespace.rs:74-90` for a single group:
@@ -1716,6 +1772,44 @@ mod tests {
             .identity_record(&ns_id)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn clear_marker_returns_true_on_success() {
+        // #2686: `clear_marker` now returns whether the clear succeeded so the
+        // reconcile sweep can distinguish `cleared_stale` from
+        // `stale_clear_failed`. Happy path: a present marker clears and the
+        // function reports success, leaving no marker. (A failing clear can't
+        // be cheaply provoked with the InMemoryDB — `clear` is an idempotent
+        // delete that returns Ok even on an absent key — so we cover the
+        // success path here; the false branch is exercised in the metrics
+        // recorder test `self_purge_reconcile_register_and_encode`.)
+        let store = empty_store();
+        let ns_id = ContextGroupId::from([0x55u8; 32]);
+        PendingSelfPurgeRepository::new(&store)
+            .mark(&ns_id)
+            .unwrap();
+        assert!(PendingSelfPurgeRepository::new(&store)
+            .is_marked(&ns_id)
+            .unwrap());
+
+        assert!(
+            clear_marker(&store, &ns_id),
+            "clear_marker MUST return true when the clear succeeds"
+        );
+        assert!(
+            !PendingSelfPurgeRepository::new(&store)
+                .is_marked(&ns_id)
+                .unwrap(),
+            "marker MUST be gone after a successful clear"
+        );
+
+        // Idempotent: clearing an already-absent marker is still a success
+        // (the underlying delete is an idempotent no-op).
+        assert!(
+            clear_marker(&store, &ns_id),
+            "clear_marker MUST return true on an already-absent marker (idempotent)"
+        );
     }
 
     #[test]
