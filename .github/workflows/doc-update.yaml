@@ -1,16 +1,18 @@
 name: Doc Auto-Update
 
 # Inlined from calimero-network/ai-code-reviewer reusable workflow at
-# SHA 25f51a9d76278b55cbfed813fb35a80ae2c458e9, with one fix:
+# SHA 2031b0dbe18eea1da4ff550a389fe80b48defbd1, with one fix:
 # `cache: pip` removed from `actions/setup-python@v5`. The upstream sets
 # it unconditionally, but setup-python's pip cache requires a
 # requirements.txt or pyproject.toml in the calling repo — neither
 # exists here (core is Rust), so every run failed with:
 #   No file in /home/runner/work/core/core matched to
 #   [**/requirements.txt or **/pyproject.toml]
-# Tracked for an upstream fix; once that lands and we bump the pinned
-# install SHA, this can revert to a thin caller invoking the reusable
-# workflow.
+# As of the bumped SHA the upstream omits `cache: pip` too, so this can
+# revert to a thin caller (`uses: calimero-network/ai-code-reviewer/
+# .github/workflows/doc-update.yaml@<sha>`) in a follow-up. We keep the
+# inlined copy for now because its PR-detection (commits/{sha}/pulls)
+# is more accurate than the upstream grep+`gh pr list --limit 1`.
 
 on:
   push:
@@ -56,7 +58,7 @@ jobs:
       # Pinned to the same SHA as ai-review.yaml so both workflows install
       # the audited version of ai-code-reviewer. Bump deliberately.
       - name: Install ai-code-reviewer
-        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@25f51a9d76278b55cbfed813fb35a80ae2c458e9
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@2031b0dbe18eea1da4ff550a389fe80b48defbd1
 
       - name: Get merged PR number
         id: pr
