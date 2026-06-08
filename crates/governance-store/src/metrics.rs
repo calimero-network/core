@@ -73,8 +73,8 @@ pub(crate) struct GovernanceHandlerDeliveryLabels {
 /// Labels for self-purge failures (TEE self-eviction local-state cleanup).
 ///
 /// `branch` is one of:
-///   - `"subgroup"`: a subgroup-only purge ([`purge_subgroup_for_self`]).
-///   - `"namespace"`: a namespace-root cascade ([`cascade_namespace_state`]).
+///   - `"subgroup"`: a subgroup-only purge (`purge_subgroup_for_self`).
+///   - `"namespace"`: a namespace-root cascade (`cascade_namespace_state`).
 ///
 /// `class` is the failure class:
 ///   - `"signing_key"`: the security-critical `delete_group_local_rows`
@@ -87,8 +87,9 @@ pub(crate) struct GovernanceHandlerDeliveryLabels {
 ///     failed. Non-security: the orphaned rows point at soon-to-be / now
 ///     deleted groups. Namespace deletion + unsubscribe still proceed.
 ///
-/// [`purge_subgroup_for_self`]: ../../calimero_context/self_purge/index.html
-/// [`cascade_namespace_state`]: ../../calimero_context/self_purge/index.html
+/// These are produced in `calimero_context::self_purge`; this struct stays
+/// crate-private (only `record_purge_failure`, taking the public
+/// `PurgeBranch`/`PurgeFailureClass` enums, crosses the crate boundary).
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct SelfPurgeFailureLabels {
     // `&'static str`, not `String`: both values come from the closed
