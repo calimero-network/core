@@ -57,6 +57,7 @@ mod migrations;
 mod namespace;
 pub mod nonce_window;
 mod ops;
+mod pending_self_purge;
 mod permission_checker;
 mod signing_keys;
 mod tee;
@@ -107,6 +108,7 @@ pub use self::namespace::{
     NamespaceIdentityRecord, NamespaceMembershipService, NamespaceOpLogService,
     NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
+pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::SigningKeysRepository;
 
