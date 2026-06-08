@@ -95,8 +95,8 @@ pub(crate) struct SelfPurgeFailureLabels {
     // `PurgeBranch` / `PurgeFailureClass` enums via their `as_label`
     // (already `&'static str`), so the label set allocates nothing per
     // `record_purge_failure` call.
-    pub branch: &'static str,
-    pub class: &'static str,
+    pub(crate) branch: &'static str,
+    pub(crate) class: &'static str,
 }
 
 #[derive(Clone, Debug)]
