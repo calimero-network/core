@@ -1195,6 +1195,7 @@ mod tests {
             context_id,
             std::slice::from_ref(&leaf),
             Err(eyre::eyre!("simulated transient store error")),
+            None,
         );
 
         assert_eq!(
@@ -1233,6 +1234,7 @@ mod tests {
             context_id,
             std::slice::from_ref(&leaf),
             Ok(None),
+            None,
         );
 
         assert_eq!(
