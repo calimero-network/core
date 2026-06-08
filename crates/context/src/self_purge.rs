@@ -473,9 +473,15 @@ pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> Reconc
     match PendingSelfPurgeRepository::new(store).is_marked(&ns_id) {
         Ok(true) => {}
         Ok(false) => {
-            // Marker gone since enumeration — only reachable under future
-            // concurrency. Nothing to do.
-            return ReconcileDecision::Skip;
+            // Marker definitively gone since enumeration (only reachable
+            // under a future concurrent/periodic sweep that cleared it). This
+            // is NOT uncertainty — it's a benign concurrent clear — so report
+            // it as a stale-marker clear (the `clear_marker` is an idempotent
+            // no-op on an already-absent marker) rather than `Skip`, which the
+            // sweep logs as a read-error retry.
+            return ReconcileDecision::ClearStaleMarker(
+                "marker cleared concurrently since enumeration",
+            );
         }
         Err(e) => {
             warn!(
@@ -1575,13 +1581,13 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_decision_skips_when_marker_absent() {
+    fn reconcile_decision_clears_stale_when_marker_absent() {
         // Bug 2 TOCTOU guard: if the marker is not present at decision time
         // (only reachable if the sweep is ever made concurrent and another task
         // cleared it between `iter_pending` and `reconcile_decision`), the
-        // decision is `Skip` — a no-op, never a purge. We construct the input
-        // WITHOUT a marker: identity present, membership absent (looks like
-        // evicted residue), but no marker written.
+        // decision is `ClearStaleMarker` — a no-op clear, never a purge. We
+        // construct the input WITHOUT a marker: identity present, membership
+        // absent (looks like evicted residue), but no marker written.
         let (store, ns_id, self_pk) = seed_namespace_self_member();
         MembershipRepository::new(&store)
             .remove_member(&ns_id, &self_pk)
@@ -1593,10 +1599,12 @@ mod tests {
             "fixture must have no marker so the TOCTOU re-check fires"
         );
 
-        assert_eq!(
-            reconcile_decision(&store, ns_id),
-            ReconcileDecision::Skip,
-            "no marker at decision time MUST Skip (TOCTOU guard), never purge"
+        assert!(
+            matches!(
+                reconcile_decision(&store, ns_id),
+                ReconcileDecision::ClearStaleMarker(_)
+            ),
+            "no marker at decision time MUST ClearStaleMarker (TOCTOU guard), never purge"
         );
         // And nothing was purged.
         assert!(SigningKeysRepository::new(&store)
