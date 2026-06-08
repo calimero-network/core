@@ -755,6 +755,39 @@ async fn run_initiator_impl<T: SyncTransport>(
              persistent occurrences across interval-sync ticks indicate a real \
              merge convergence bug rather than benign handshake drift."
         );
+
+        // P3-DIAG (temporary): dump ROOT's children so node-1 vs node-2 can be
+        // diffed to pinpoint the exact diverging child. Unconditional on
+        // divergence (no streak / same-DAG-heads gate, unlike heartbeat dump).
+        if let Some(cc) = context_client {
+            match cc.dump_root(&context_id) {
+                Ok(Some((self_dump, children))) => {
+                    warn!(
+                        target: "sync::hc_diverge",
+                        %context_id,
+                        root_own = %hex::encode(&self_dump.own_hash[..8]),
+                        root_full = %hex::encode(&self_dump.full_hash[..8]),
+                        children = self_dump.children_count,
+                        "HC-DIVERGE root"
+                    );
+                    for c in &children {
+                        warn!(
+                            target: "sync::hc_diverge",
+                            %context_id,
+                            child = %hex::encode(&c.id[..8]),
+                            merkle = %hex::encode(&c.merkle_hash[..8]),
+                            crdt = ?c.crdt_type,
+                            field = ?c.field_name,
+                            "HC-DIVERGE child"
+                        );
+                    }
+                }
+                other => warn!(
+                    target: "sync::hc_diverge",
+                    %context_id, ?other, "HC-DIVERGE dump_root failed"
+                ),
+            }
+        }
     }
 
     Ok(stats)
