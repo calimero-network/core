@@ -24,29 +24,30 @@ use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupLocalStateRequest,
-    CascadeStatusEntry, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
-    CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
-    DeleteNamespaceRequest, DeleteNamespaceResponse, DetachContextFromGroupRequest,
-    GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
-    GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
-    GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GetMemberMetadataRequest,
-    GetMigrationStatusRequest, GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse,
-    GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
-    IssueOwnershipProofRequest, IssueOwnershipProofResponse, JoinContextRequest,
-    JoinContextResponse, JoinGroupRequest, JoinGroupResponse, JoinSubgroupInheritanceRequest,
-    JoinSubgroupInheritanceResponse, LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest,
-    LeaveGroupResponse, LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
-    ListNamespacesForApplicationRequest, ListNamespacesRequest, MigrationStatus, NamespaceSummary,
-    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextMetadataRequest,
-    SetDefaultCapabilitiesRequest, SetGroupMetadataRequest, SetMemberAutoFollowRequest,
-    SetMemberCapabilitiesRequest, SetMemberMetadataRequest, SetSubgroupVisibilityRequest,
-    SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
-    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
-    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
-    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
-    UpgradeGroupRequest, UpgradeGroupResponse,
+    AbortMigrationRequest, AbortMigrationResponse, AddGroupMembersRequest, AdmitTeeNodeRequest,
+    BroadcastGroupLocalStateRequest, CascadeStatusEntry, CreateGroupInvitationRequest,
+    CreateGroupInvitationResponse, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
+    DeleteGroupResponse, DeleteNamespaceRequest, DeleteNamespaceResponse,
+    DetachContextFromGroupRequest, GetCascadeStatusRequest, GetContextMetadataRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
+    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
+    GetMemberMetadataRequest, GetMigrationStatusRequest, GetNamespaceIdentityRequest,
+    GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo,
+    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, IssueOwnershipProofResponse,
+    JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
+    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse, LeaveContextRequest,
+    LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest,
+    LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
+    ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
+    ListNamespacesRequest, MigrationStatus, NamespaceSummary, RemoveGroupMembersRequest,
+    RetryGroupUpgradeRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -244,13 +245,21 @@ impl ContextRegistry {
             return Ok(None);
         };
 
+        // Resolve the application's semver from its ApplicationMeta row so the
+        // Context response carries it directly (skew #2 — bundle version). The
+        // row may be absent (e.g. uninstalled app); leave the version None then.
+        let application_version = handle
+            .get(&meta.application)?
+            .map(|app| app.version.to_string());
+
         let context = Context::with_service(
             *context_id,
             meta.application.application_id(),
             meta.root_hash.into(),
             meta.dag_heads.clone(),
             meta.service_name.as_deref().map(String::from),
-        );
+        )
+        .with_application_version(application_version);
 
         tracing::debug!(
             %context_id,
@@ -1809,6 +1818,12 @@ impl ContextClient {
         GetMigrationStatusRequest,
         eyre::Result<MigrationStatus>
     );
+    forward_to_actor!(
+        abort_migration,
+        AbortMigration,
+        AbortMigrationRequest,
+        eyre::Result<AbortMigrationResponse>
+    );
 
     // --- Methods with custom parameter handling (not suitable for forward_to_actor!) ---
 
@@ -2134,5 +2149,74 @@ mod atomic_persist_tests {
             !has_delta(&store, &cid, DELTA_B),
             "dropped (uncommitted) batch must not persist"
         );
+    }
+}
+
+#[cfg(test)]
+mod get_context_version_tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::{key, types, Store};
+
+    use super::ContextRegistry;
+
+    // get_context resolves ApplicationMeta.version (semver) onto Context.
+    #[test]
+    fn get_context_carries_application_version() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let app_id = ApplicationId::from([0xAA; 32]);
+        let app_key = key::ApplicationMeta::new(app_id);
+
+        let app_meta = types::ApplicationMeta::new(
+            key::BlobMeta::new([1u8; 32].into()),
+            1024,
+            "file://test.wasm".into(),
+            vec![].into(),
+            key::BlobMeta::new([2u8; 32].into()),
+            "com.test.app".into(),
+            "2.1.0".into(),
+            "signer".into(),
+        );
+        let cid = ContextId::from([0x07; 32]);
+        let ctx_meta = types::ContextMeta::new(app_key, [0u8; 32], vec![], None);
+        {
+            let mut handle = store.handle();
+            handle.put(&app_key, &app_meta).expect("seed app meta");
+            handle
+                .put(&key::ContextMeta::new(cid), &ctx_meta)
+                .expect("seed ctx meta");
+        }
+
+        let registry = ContextRegistry::new(store.clone());
+        let ctx = registry
+            .get_context(&cid)
+            .expect("get_context ok")
+            .expect("context present");
+        assert_eq!(ctx.application_version.as_deref(), Some("2.1.0"));
+    }
+
+    // A missing ApplicationMeta row leaves application_version None (not an error).
+    #[test]
+    fn get_context_without_app_meta_has_no_version() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let app_key = key::ApplicationMeta::new(ApplicationId::from([0xBB; 32]));
+        let cid = ContextId::from([0x08; 32]);
+        let ctx_meta = types::ContextMeta::new(app_key, [0u8; 32], vec![], None);
+        {
+            let mut handle = store.handle();
+            handle
+                .put(&key::ContextMeta::new(cid), &ctx_meta)
+                .expect("seed ctx meta");
+        }
+
+        let registry = ContextRegistry::new(store.clone());
+        let ctx = registry
+            .get_context(&cid)
+            .expect("get_context ok")
+            .expect("context present");
+        assert_eq!(ctx.application_version, None);
     }
 }

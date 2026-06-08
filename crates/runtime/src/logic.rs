@@ -278,6 +278,10 @@ pub struct VMLogic<'a> {
     root_hash: Option<[u8; DIGEST_SIZE]>,
     /// A binary artifact produced by the execution.
     artifact: Vec<u8>,
+    /// Transient migration witness emitted by `#[app::migrate]` for
+    /// `#[app::migration_check]` to read. Carried out on `Outcome` like
+    /// logs/events; never written to storage.
+    migration_witness: Option<Vec<u8>>,
     /// Tracks whether the guest has explicitly called `env.commit`.
     commit_called: bool,
 
@@ -329,6 +333,7 @@ impl<'a> VMLogic<'a> {
             xcalls: vec![],
             root_hash: None,
             artifact: vec![],
+            migration_witness: None,
             commit_called: false,
 
             node_client,
@@ -400,6 +405,9 @@ pub struct Outcome {
     /// The binary artifact produced if there were commits during the execution.
     //TODO: why the artifact is not an Option?
     pub artifact: Vec<u8>,
+    /// Transient migration witness: a borsh blob `#[app::migrate]` emitted for
+    /// `#[app::migration_check]`. Carried like logs/events; never persisted.
+    pub migration_witness: Option<Vec<u8>>,
     //TODO: execution runtime (???).
     //TODO: current storage usage of the app (???).
 }
@@ -481,6 +489,7 @@ impl VMLogic<'_> {
             xcalls: self.xcalls,
             root_hash: self.root_hash,
             artifact: self.artifact,
+            migration_witness: self.migration_witness,
         }
     }
 }

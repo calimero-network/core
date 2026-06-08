@@ -925,6 +925,35 @@ impl Message for GetCascadeStatusRequest {
     type Result = eyre::Result<Vec<CascadeStatusEntry>>;
 }
 
+// ---------------------------------------------------------------------------
+// Admin abort-migration
+// ---------------------------------------------------------------------------
+
+/// Logically abort an in-flight namespace migration.
+///
+/// Flips the group's pending migration target back to the pre-migration
+/// application id and drops the pending `migration` marker so not-yet-applied
+/// lazy contexts stop migrating on their next access. Logical abort: no byte
+/// snapshot is restored and an already-committed v2 context is not recalled.
+/// Idempotent: aborting a group with no pending migration is a no-op success.
+#[derive(Clone, Debug)]
+pub struct AbortMigrationRequest {
+    pub namespace_id: ContextGroupId,
+}
+
+impl Message for AbortMigrationRequest {
+    type Result = eyre::Result<AbortMigrationResponse>;
+}
+
+/// Outcome of an [`AbortMigrationRequest`].
+#[derive(Clone, Debug)]
+pub struct AbortMigrationResponse {
+    pub namespace_id: ContextGroupId,
+    /// `true` when a pending migration was found and flipped back; `false` when
+    /// there was nothing to abort (the idempotent no-op case).
+    pub aborted: bool,
+}
+
 /// Request the migration-status rollup for a namespace subtree (Task 6c.9).
 ///
 /// Resolves the pinned-cohort expected members (the inherited-membership
@@ -1004,6 +1033,9 @@ pub struct MemberMigrationReport {
     pub synced_up_to_hlc: u64,
     /// Member-signed millis-since-epoch from the heartbeat itself.
     pub reported_at: u64,
+    /// Member's self-reported pending-authored count (best-effort; 6f). Counted
+    /// into the rollup's `members_pending_signature`.
+    pub authored_remaining: u64,
 }
 
 /// The migration state the rollup assigns a pinned-cohort member.
@@ -1054,6 +1086,11 @@ pub struct MigrationStatusRollup {
     /// `schema_version >= target && residue_auto == 0 && residue_identity == 0`.
     /// Any `unknown` (or any member still in progress) keeps this `false`.
     pub all_migrated: bool,
+    /// Count of pinned-cohort members reporting `authored_remaining > 0` — i.e.
+    /// members whose owners still have identity-gated entries to re-sign (6f,
+    /// skew #1 admin view). `unknown` members (no fresh heartbeat) are NOT
+    /// counted here; they surface via `unknown`. Best-effort / advisory.
+    pub members_pending_signature: usize,
 }
 
 /// Full migration-status answer for a namespace: the pinned cohort, the
@@ -1108,6 +1145,7 @@ pub fn compute_migration_status_rollup(
     let mut migrated = 0usize;
     let mut in_progress = 0usize;
     let mut unknown = 0usize;
+    let mut members_pending_signature = 0usize;
 
     for peer in closure {
         let report = report_for(peer);
@@ -1138,6 +1176,12 @@ pub fn compute_migration_status_rollup(
                 MemberMigrationState::Unknown
             }
             Some(r) => {
+                // Advisory skew-#1 count, independent of the migrated/in-progress
+                // gate: a member can be whole-root "migrated" yet still owe
+                // authored re-signatures (owner-driven convert is separate).
+                if r.authored_remaining > 0 {
+                    members_pending_signature += 1;
+                }
                 if r.schema_version >= target_version
                     && r.residue_auto == 0
                     && r.residue_identity == 0
@@ -1172,6 +1216,7 @@ pub fn compute_migration_status_rollup(
             unknown,
             total,
             all_migrated,
+            members_pending_signature,
         },
         members,
     }
@@ -1217,6 +1262,7 @@ mod migration_status_tests {
             residue_identity,
             synced_up_to_hlc: synced_up_to_seq,
             reported_at: 0,
+            authored_remaining: 0,
         }
     }
 

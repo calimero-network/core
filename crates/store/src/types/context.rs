@@ -40,6 +40,27 @@ impl PredefinedEntry for key::ContextMeta {
     type DataType<'a> = ContextMeta;
 }
 
+/// Value for [`key::ContextAuthoredRemaining`]: this node's owner's count of
+/// identity-gated entries still below the target schema (the heartbeat's
+/// `authored_remaining`; 6f). Node-local + advisory, written only by the
+/// post-migrate / `migrate_my_entries` persist and read by the heartbeat —
+/// kept off the hot `ContextMeta` write path so a per-write rewrite can't
+/// clobber it. A brand-new key, so a missing row reads as `None` (treated as
+/// 0); no on-disk back-compat shim needed.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "single advisory counter; additions would need a migration"
+)]
+pub struct ContextAuthoredRemaining {
+    pub count: u32,
+}
+
+impl PredefinedEntry for key::ContextAuthoredRemaining {
+    type Codec = Borsh;
+    type DataType<'a> = ContextAuthoredRemaining;
+}
+
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextConfig {
@@ -208,4 +229,20 @@ impl ContextDagDelta {
 impl PredefinedEntry for key::ContextDagDelta {
     type Codec = Borsh;
     type DataType<'a> = ContextDagDelta;
+}
+
+#[cfg(test)]
+mod context_authored_remaining_tests {
+    use borsh::BorshDeserialize;
+
+    use super::ContextAuthoredRemaining;
+
+    // The dedicated counter value round-trips through borsh.
+    #[test]
+    fn authored_remaining_roundtrips() {
+        let v = ContextAuthoredRemaining { count: 5 };
+        let bytes = borsh::to_vec(&v).expect("serialize");
+        let back = ContextAuthoredRemaining::try_from_slice(&bytes).expect("deserialize");
+        assert_eq!(back.count, 5);
+    }
 }

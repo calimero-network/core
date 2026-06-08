@@ -51,6 +51,13 @@ SUITES=(
     "apps/migrations/scenario-unordered-set-v2"
     "apps/migrations/scenario-identity-downgrade-v1"
     "apps/migrations/scenario-identity-downgrade-v2"
+    # migration_check pass/fail pairs (PR-6d task 6d.6): the v2 fixtures export
+    # #[app::migration_check] — the PASS pair carries items faithfully (check
+    # accepts), the FAIL pair drops one item (check rejects → logical abort).
+    "apps/migrations/scenario-migration-check-pass-v1"
+    "apps/migrations/scenario-migration-check-pass-v2"
+    "apps/migrations/scenario-migration-check-fail-v1"
+    "apps/migrations/scenario-migration-check-fail-v2"
 )
 
 for suite in "${SUITES[@]}"; do

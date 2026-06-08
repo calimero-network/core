@@ -4,7 +4,11 @@
 //! god-file as an `impl SyncManager` fragment.
 
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::events::{
+    AppVersionChangedPayload, ContextEvent, ContextEventPayload, NodeEvent,
+};
 use eyre::bail;
 use tracing::{debug, warn};
 
@@ -165,6 +169,12 @@ impl SyncManager {
                 context_app_id = %context.application_id,
                 "Installed application ID does not match context application ID, updating to installed ID"
             );
+            // Capture the pre-flip id for the AppVersionChanged emit below; this
+            // is a durable application flip (this node just learned, via blob
+            // sync, that its context's app changed), so it must notify
+            // subscribers like the update_application workers do.
+            let old_app_id = context.application_id;
+
             // Update context with the installed application ID for consistency
             context.application_id = installed_app_id;
 
@@ -186,11 +196,38 @@ impl SyncManager {
                 installed_app_id = %installed_app_id,
                 "Persisted ApplicationId update to database"
             );
+
+            // Notify subscribers of the version flip (skew #2). Best-effort, like
+            // the update_application emit. The guard above is the dedup (only a
+            // genuine id change reaches here). to_version comes straight off the
+            // installed Application; from_version resolves the old app row.
+            let event = NodeEvent::Context(ContextEvent {
+                context_id: *context_id,
+                payload: ContextEventPayload::AppVersionChanged(AppVersionChangedPayload {
+                    from_version: self.application_version(old_app_id),
+                    to_version: Some(installed_application.version.clone())
+                        .filter(|v| !v.is_empty()),
+                }),
+            });
+            let _ = self.node_client.send_event(event);
         }
 
         // Use the verified installed application
         *application = Some(installed_application);
 
         Ok(())
+    }
+
+    /// Resolves an application's semver from its `ApplicationMeta` row via the
+    /// context store; `None` when the row is absent. Labels the from-version of
+    /// the blob-sync `AppVersionChanged` emit (mirrors the context-handler
+    /// `application_version` helper).
+    fn application_version(&self, application_id: ApplicationId) -> Option<String> {
+        self.context_client
+            .datastore_handle()
+            .get(&calimero_store::key::ApplicationMeta::new(application_id))
+            .ok()
+            .flatten()
+            .map(|meta| meta.version.to_string())
     }
 }

@@ -118,6 +118,12 @@ pub struct Context {
     /// Used to track causal dependencies when creating new deltas
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub dag_heads: Vec<[u8; 32]>,
+    /// Resolved semver of the application this context runs (from
+    /// `ApplicationMeta.version`). Lets a frontend detect bundle skew in one
+    /// call. `None` when the application row is unavailable. Optional +
+    /// serde-default so older payloads deserialize unchanged.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub application_version: Option<String>,
 }
 
 impl Context {
@@ -136,6 +142,7 @@ impl Context {
             service_name: None,
             root_hash,
             dag_heads: Vec::new(),
+            application_version: None,
         }
     }
 
@@ -153,6 +160,7 @@ impl Context {
             service_name: None,
             root_hash,
             dag_heads,
+            application_version: None,
         }
     }
 
@@ -171,7 +179,16 @@ impl Context {
             service_name,
             root_hash,
             dag_heads,
+            application_version: None,
         }
+    }
+
+    /// Sets the resolved application semver (builder-style; `Context` is
+    /// `#[non_exhaustive]`, so callers in other crates set it via this method).
+    #[must_use]
+    pub fn with_application_version(mut self, application_version: Option<String>) -> Self {
+        self.application_version = application_version;
+        self
     }
 }
 

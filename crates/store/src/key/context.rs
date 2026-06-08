@@ -64,6 +64,55 @@ impl Debug for ContextMeta {
     }
 }
 
+/// Node-local per-context count of the owner's identity-gated entries still
+/// below the target schema (the heartbeat's `authored_remaining`; 6f). Lives in
+/// the node-local `ContextLocal` column — NOT synchronized, and deliberately
+/// separate from `ContextMeta` so the hot per-write `ContextMeta` rewrite path
+/// (every state-changing execute) cannot clobber this advisory counter.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextAuthoredRemaining(Key<ContextId>);
+
+impl ContextAuthoredRemaining {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId) -> Self {
+        Self(Key((*context_id).into()))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
+    }
+}
+
+impl AsKeyParts for ContextAuthoredRemaining {
+    type Components = (ContextId,);
+
+    fn column() -> Column {
+        Column::ContextLocal
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
+    }
+}
+
+impl FromKeyParts for ContextAuthoredRemaining {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(*<&_>::from(&parts)))
+    }
+}
+
+impl Debug for ContextAuthoredRemaining {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextAuthoredRemaining")
+            .field("id", &self.context_id())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextConfig(Key<ContextId>);

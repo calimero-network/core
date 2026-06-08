@@ -20,6 +20,7 @@ impl VMLogic<'_> {
 
             fn input(register_id: u64);
             fn value_return(value_ptr: u64);
+            fn emit_migration_witness(blob_ptr: u64);
             fn log_utf8(log_ptr: u64);
             fn js_std_d_print(ctx_ptr: u64, message_ptr: u64, message_len: u64) -> u32;
             fn emit(event_ptr: u64);

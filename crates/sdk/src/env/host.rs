@@ -198,6 +198,12 @@ pub(crate) fn value_return(_value: &[u8]) {
     // the wire-format return channel is a no-op here.
 }
 
+pub(crate) fn emit_migration_witness(_blob: &[u8]) {
+    // `TestHost` runs migrate/migration_check natively as plain functions, so the
+    // witness flows as a real `(State, Witness)` return value / `check` argument
+    // rather than through this wire channel. No-op here.
+}
+
 pub(crate) fn commit(_root_hash: &[u8; 32], _artifact: &[u8]) {
     // State is committed through `calimero_storage`'s own native mock; the SDK
     // commit hook has nothing to persist in-process.

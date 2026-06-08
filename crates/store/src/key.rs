@@ -28,8 +28,8 @@ pub use blobs::BlobMeta;
 pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
-    ContextConfig, ContextDagDelta, ContextIdentity, ContextLeftMarker, ContextMeta,
-    ContextPrivateState, ContextState,
+    ContextAuthoredRemaining, ContextConfig, ContextDagDelta, ContextIdentity, ContextLeftMarker,
+    ContextMeta, ContextPrivateState, ContextState,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{
@@ -42,8 +42,8 @@ pub use group::{
     GroupMetadata, GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
     GroupSigningKeyValue, GroupSubgroupVis, GroupSubgroupVisValue, GroupUpgradeKey,
     GroupUpgradeStatus, GroupUpgradeValue, NamespaceGovHead, NamespaceGovHeadValue, NamespaceGovOp,
-    NamespaceGovOpValue, NamespaceIdentity, NamespaceIdentityValue, GROUP_CHILD_INDEX_PREFIX,
-    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
+    NamespaceGovOpValue, NamespaceIdentity, NamespaceIdentityValue, PendingSelfPurge,
+    GROUP_CHILD_INDEX_PREFIX, GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
     GROUP_CONTEXT_MEMBER_CAP_PREFIX, GROUP_CONTEXT_METADATA_PREFIX, GROUP_DEFAULT_CAPS_PREFIX,
     GROUP_DENIED_MEMBER_PREFIX, GROUP_KEY_PREFIX, GROUP_LOCAL_GOV_NONCE_PREFIX,
     GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
@@ -51,7 +51,7 @@ pub use group::{
     GROUP_METADATA_PREFIX, GROUP_META_PREFIX, GROUP_OP_HEAD_PREFIX, GROUP_OP_LOG_PREFIX,
     GROUP_PARENT_REF_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_SUBGROUP_VIS_PREFIX,
     GROUP_UPGRADE_PREFIX, NAMESPACE_GOV_HEAD_PREFIX, NAMESPACE_GOV_OP_PREFIX,
-    NAMESPACE_IDENTITY_PREFIX,
+    NAMESPACE_IDENTITY_PREFIX, PENDING_SELF_PURGE_PREFIX,
 };
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);

@@ -4,6 +4,7 @@ use calimero_utils_actix::adapters::ActorExt;
 
 use crate::ContextManager;
 
+pub mod abort_migration;
 pub mod acquire_context_lock;
 pub mod add_group_members;
 pub mod admit_tee_node;
@@ -255,6 +256,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::GetMigrationStatus { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::AbortMigration { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }

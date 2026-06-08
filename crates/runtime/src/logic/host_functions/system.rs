@@ -461,6 +461,42 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
+    /// Captures the transient migration witness emitted by `#[app::migrate]`.
+    ///
+    /// The witness is a borsh blob that `#[app::migration_check]` reads via the
+    /// repacked check input. It rides out on `Outcome` like logs/events and is
+    /// NEVER written to storage; bounded by `max_storage_value_size`.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_ptr` - A pointer in guest memory to a source-`sys::Buffer` with the witness bytes.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::ValueLengthOverflow` if the witness exceeds the value-size limit.
+    /// * `HostError::InvalidMemoryAccess` if memory access fails for the buffer descriptor.
+    pub fn emit_migration_witness(&mut self, src_ptr: u64) -> VMLogicResult<()> {
+        let src_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_ptr)? };
+        let bytes = self.read_guest_memory_slice(&src_buf)?.to_vec();
+
+        let max_len = usize::try_from(self.borrow_logic().limits.max_storage_value_size.get())
+            .map_err(|_| HostError::IntegerOverflow)?;
+        if bytes.len() > max_len {
+            return Err(HostError::ValueLengthOverflow.into());
+        }
+
+        let witness_len = bytes.len();
+        self.with_logic_mut(|logic| logic.migration_witness = Some(bytes));
+
+        debug!(
+            target: "runtime::host::system",
+            bytes = witness_len,
+            "migration witness captured"
+        );
+
+        Ok(())
+    }
+
     /// Adds a new log message (UTF-8 encoded string) to the execution log. The message is being
     /// obtained from the guest memory.
     ///
@@ -1217,6 +1253,49 @@ mod tests {
         let returned_err_value_str = std::str::from_utf8(&returned_err_value).unwrap();
         // Verify the returned value matches the one from the guest.
         assert_eq!(returned_err_value_str, err_value);
+    }
+
+    /// `emit_migration_witness` captures the guest blob into the transient
+    /// migrate→check channel on VMLogic (never via storage).
+    #[test]
+    fn test_emit_migration_witness() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let witness = [1u8, 2, 3, 4];
+        let data_ptr = 200u64;
+        // Guest: write the witness bytes and a descriptor pointing at them.
+        host.borrow_memory().write(data_ptr, &witness).unwrap();
+        let buf_ptr = 10u64;
+        prepare_guest_buf_descriptor(&host, buf_ptr, data_ptr, witness.len() as u64);
+
+        host.emit_migration_witness(buf_ptr)
+            .expect("witness emit failed");
+        assert_eq!(
+            host.borrow_logic().migration_witness.as_deref(),
+            Some(&witness[..])
+        );
+    }
+
+    /// A captured witness rides out on the Outcome (like logs/events).
+    #[test]
+    fn test_finish_surfaces_migration_witness() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, _store) = setup_vm!(&mut storage, &limits, vec![]);
+        logic.migration_witness = Some(vec![9, 9, 9]);
+        assert_eq!(logic.finish(None).migration_witness, Some(vec![9, 9, 9]));
+    }
+
+    /// A run that emits no witness yields `None` on the Outcome.
+    #[test]
+    fn test_finish_without_witness_is_none() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (logic, _store) = setup_vm!(&mut storage, &limits, vec![]);
+        assert_eq!(logic.finish(None).migration_witness, None);
     }
 
     /// Tests the `log_utf8()` host function for a successful log operation.

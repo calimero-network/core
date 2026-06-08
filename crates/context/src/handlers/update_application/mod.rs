@@ -10,7 +10,8 @@ use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
+    AppVersionChangedPayload, ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent,
+    StateMutationPayload,
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
@@ -26,9 +27,9 @@ use calimero_storage::Interface;
 use calimero_store::{key, types};
 use calimero_utils_actix::global_runtime;
 use eyre::bail;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
-use crate::handlers::execute::storage::ContextStorage;
+use crate::handlers::execute::storage::{ContextStorage, ReadOnlyContextStorage};
 use crate::ContextManager;
 
 impl Handler<UpdateApplicationRequest> for ContextManager {
@@ -114,6 +115,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                 let context_client = context_client.clone();
                 let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
                 let application = act.applications.get(&application_id).cloned();
+                let migration_v2 = act.config.migration_v2;
 
                 async move {
                     update_application_with_migration(
@@ -127,6 +129,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                         public_key,
                         Some(migration_params),
                         module,
+                        migration_v2,
                     )
                     .await
                 }
@@ -263,6 +266,47 @@ async fn finalize_application_update(
     Ok(())
 }
 
+/// Resolves an application's semver from its `ApplicationMeta` row. `None` when
+/// the row is absent (e.g. uninstalled). Labels the `AppVersionChanged` event.
+fn application_version(
+    datastore: &calimero_store::Store,
+    application_id: ApplicationId,
+) -> Option<String> {
+    match datastore
+        .handle()
+        .get(&key::ApplicationMeta::new(application_id))
+    {
+        Ok(meta) => meta.map(|m| m.version.to_string()),
+        Err(err) => {
+            // Best-effort label: a read fault yields None (same as an absent
+            // row), but log it so a persistent store fault isn't fully silent.
+            debug!(%err, %application_id, "failed to read ApplicationMeta for version label");
+            None
+        }
+    }
+}
+
+/// Builds an `AppVersionChanged` node event for a context whose application id
+/// flipped, or `None` when it is unchanged. The id comparison IS the emit-once
+/// dedup (6f.5): a no-op re-apply with the same id emits nothing.
+fn app_version_changed_event(
+    context_id: ContextId,
+    old_application_id: ApplicationId,
+    new_application_id: ApplicationId,
+    from_version: Option<String>,
+    to_version: Option<String>,
+) -> Option<NodeEvent> {
+    (old_application_id != new_application_id).then(|| {
+        NodeEvent::Context(ContextEvent {
+            context_id,
+            payload: ContextEventPayload::AppVersionChanged(AppVersionChangedPayload {
+                from_version,
+                to_version,
+            }),
+        })
+    })
+}
+
 pub async fn update_application_id(
     datastore: calimero_store::Store,
     node_client: NodeClient,
@@ -285,6 +329,10 @@ pub async fn update_application_id(
     // Verify AppKey continuity (signerId match)
     verify_appkey_continuity(&datastore, &context, &application_id)?;
 
+    // Capture the pre-flip app id before finalize persists the new one, so the
+    // post-commit AppVersionChanged carries the correct from/to versions.
+    let old_application_id = context.application_id;
+
     finalize_application_update(
         &datastore,
         &node_client,
@@ -293,6 +341,17 @@ pub async fn update_application_id(
         &application,
     )
     .await?;
+
+    // Post-commit: notify subscribers the application version flipped (skew #2).
+    if let Some(event) = app_version_changed_event(
+        context_id,
+        old_application_id,
+        application.id,
+        application_version(&datastore, old_application_id),
+        application_version(&datastore, application.id),
+    ) {
+        let _ = node_client.send_event(event);
+    }
 
     Ok(application)
 }
@@ -410,6 +469,7 @@ pub(crate) async fn update_application_with_migration(
     public_key: PublicKey,
     migration: Option<MigrationParams>,
     module: calimero_runtime::Module,
+    migration_v2: bool,
 ) -> eyre::Result<(Application, Context)> {
     let (mut context, application) = resolve_context_and_application(
         &context_client,
@@ -423,6 +483,14 @@ pub(crate) async fn update_application_with_migration(
     // Verify AppKey continuity (signerId match)
     verify_appkey_continuity(&datastore, &context, &application_id)?;
 
+    // Pre-flip app id, captured before finalize persists the new one (for the
+    // post-commit AppVersionChanged from/to versions).
+    let old_application_id = context.application_id;
+
+    // Set to the v2 module once a migration commits, so we can run
+    // `count_my_pending` over the committed v2 state after finalize (6f.8).
+    let mut pending_count_module: Option<calimero_runtime::Module> = None;
+
     // Execute migration if requested
     if let Some(migration_params) = migration {
         info!(
@@ -432,40 +500,83 @@ pub(crate) async fn update_application_with_migration(
             "Executing migration"
         );
 
-        // Execute migration function via module.run()
-        let (new_state_bytes, migration_events, migration_logs) = execute_migration(
-            &datastore,
-            node_client.clone(),
-            &context,
-            module,
-            &migration_params,
-            public_key,
-        )
-        .await?;
+        // Clone the (Arc-backed, cheap) module before `execute_migration` moves
+        // its copy into `spawn_blocking`, so the migration_check below can run a
+        // second `module.run` on the same already-compiled v2 artifact.
+        let check_module = module.clone();
+        // A third cheap clone for the post-commit count_my_pending run (6f.8).
+        let count_module = check_module.clone();
+
+        // Execute migration function via module.run(). Returns the UNCOMMITTED
+        // staging buffer (`storage`) the migrate wrote into, plus the optional
+        // transient witness, so the check below sees the produced v2 state and
+        // the gate can commit-or-drop the buffer (zero-residue abort).
+        let (new_state_bytes, migration_witness, migration_events, migration_logs, storage) =
+            execute_migration(
+                &datastore,
+                node_client.clone(),
+                &context,
+                module,
+                &migration_params,
+                public_key,
+            )
+            .await?;
 
         // Log migration logs
         for log_line in &migration_logs {
             info!(%context_id, migration_log = %log_line, "Migration log");
         }
 
-        // Write returned state bytes to root storage key
-        // This uses the storage layer to properly update both Entry and Index
-        let full_hash = write_migration_state(&datastore, &context, &new_state_bytes, public_key)?;
+        // Pre-commit migration_check (migration_v2). Run the app's
+        // `__calimero_migration_check` export over the produced v2 bytes while
+        // the v1 root is still readable, before `write_migration_state` (the
+        // only mutation of the v1 root) and `finalize_application_update`. A
+        // failing check makes `commit_or_abort_migration` return early, leaving
+        // the committed context on v1 (no byte restore — v1 was never mutated).
+        // An app with no check export ⇒ pass ⇒ commits (backwards-compatible).
+        // Thread the staging buffer through the check (so `new` reads the
+        // produced v2 collections) and back out for the commit/drop decision.
+        let (check_passed, storage) = if migration_v2 {
+            let (passed, storage) = run_migration_check(
+                node_client.clone(),
+                &context,
+                check_module,
+                &new_state_bytes,
+                migration_witness.as_deref(),
+                public_key,
+                storage,
+            )
+            .await?;
 
-        // Update root_hash after migration: full_hash is already the Merkle tree hash from
-        // the storage layer; wrap the bytes directly (same as create_context/execute).
-        let new_root_hash = Hash::from(full_hash);
-        context.root_hash = new_root_hash;
+            if passed {
+                info!(%context_id, "migration_check passed");
+            } else {
+                warn!(%context_id, "migration_check failed: logical abort");
+            }
+            (passed, storage)
+        } else {
+            // Flag off ⇒ no check ⇒ commit (backwards-compatible).
+            (true, storage)
+        };
 
-        // Align DAG heads with the new state. Migration does not create a causal delta,
-        // so use root_hash as dag_head fallback (same as execute flow when init() creates
-        // state without actions). This keeps sync protocol consistent and avoids divergence.
-        context.dag_heads = vec![*context.root_hash.as_bytes()];
-        debug!(
-            %context_id,
-            new_root_hash = %new_root_hash,
-            "Updated dag_heads to new root after migration"
-        );
+        // Funnel the verdict through the single gate-decision seam. The decision
+        // source is pluggable (today: the migration_check verdict; a future
+        // canary-subgroup soak would plug in here) without touching
+        // `commit_or_abort_migration`.
+        let decision = MigrationGateDecision::from_check_result(check_passed);
+
+        // Promote the staging buffer + write the v2 root, or DROP the buffer
+        // (zero-residue logical abort). On a failed check this returns
+        // `Err(MigrationCheckFailed)` before any live mutation, propagating out
+        // and skipping `finalize_application_update`.
+        let new_root_hash = commit_or_abort_migration(
+            &datastore,
+            &mut context,
+            &new_state_bytes,
+            public_key,
+            decision,
+            storage,
+        )?;
 
         // Emit migration events to WebSocket clients
         if !migration_events.is_empty() {
@@ -491,6 +602,11 @@ pub(crate) async fn update_application_with_migration(
             state_size = new_state_bytes.len(),
             "Migration completed successfully"
         );
+
+        // The v2 state is committed; schedule the post-finalize authored_remaining
+        // recompute (6f.8). Reaching here means the check passed and committed —
+        // a failed check returns Err above and never gets here.
+        pending_count_module = Some(count_module);
     }
 
     finalize_application_update(
@@ -502,7 +618,134 @@ pub(crate) async fn update_application_with_migration(
     )
     .await?;
 
+    // Post-commit: notify subscribers the application version flipped (skew #2).
+    if let Some(event) = app_version_changed_event(
+        context_id,
+        old_application_id,
+        application.id,
+        application_version(&datastore, old_application_id),
+        application_version(&datastore, application.id),
+    ) {
+        let _ = node_client.send_event(event);
+    }
+
+    // Post-commit: recompute this node's owner's pending-authored count over the
+    // committed v2 state and persist it for the heartbeat self-report (6f.8).
+    // Best-effort — a missing export / failure leaves the prior value untouched.
+    if let Some(module) = pending_count_module {
+        if let Some(count) = run_count_my_pending(
+            &datastore,
+            node_client.clone(),
+            context_id,
+            module,
+            public_key,
+        )
+        .await
+        {
+            persist_authored_remaining(&datastore, context_id, count);
+        }
+    }
+
     Ok((application, context))
+}
+
+/// The decision driving the post-`execute_migration` commit-vs-abort seam.
+///
+/// Every path that has produced a candidate v2 root funnels its verdict through
+/// this enum before reaching [`commit_or_abort_migration`], so the source of the
+/// decision is pluggable while the commit/abort mechanics stay fixed. Today the
+/// only source is the migration_check verdict (pass ⇒ `Commit`, fail ⇒ `Abort`);
+/// a future canary-subgroup soak gate (deferred) would plug in as another source
+/// feeding this same enum, without reworking `commit_or_abort_migration`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MigrationGateDecision {
+    /// Persist the produced v2 root via `write_migration_state` and advance the
+    /// context to it.
+    Commit,
+    /// Logically abort: discard the produced v2 root and leave the still-v1 root
+    /// intact (no byte restore — v1 was never mutated).
+    Abort,
+}
+
+impl MigrationGateDecision {
+    /// Map the migration_check verdict onto a gate decision: `true ⇒ Commit`,
+    /// `false ⇒ Abort`. This is the single point a future canary-subgroup gate
+    /// would replace (or sit beside).
+    pub(crate) const fn from_check_result(check_passed: bool) -> Self {
+        if check_passed {
+            Self::Commit
+        } else {
+            Self::Abort
+        }
+    }
+}
+
+/// Commit the produced v2 migration root, or perform a logical abort. This is
+/// the single seam every post-`execute_migration` commit/abort decision funnels
+/// through.
+///
+/// - [`MigrationGateDecision::Abort`] ⇒ DROP the uncommitted staging buffer and
+///   return `Err(MigrationCheckFailed)` without touching the v1 root. The
+///   migrate's child-entry writes were buffered in that dropped buffer and never
+///   reached the live store, so the v1 root AND its child buckets are intact —
+///   a true zero-residue rollback (no byte snapshot/restore needed). The caller
+///   propagates this before `finalize_application_update`, so the committed
+///   context (root_hash, dag_heads, application_id) stays on v1.
+///
+/// - [`MigrationGateDecision::Commit`] ⇒ promote the staging buffer (flush the
+///   migrate's child-entry writes to the live store), write `new_state_bytes`
+///   through `write_migration_state` (the root writer), advance
+///   `context.root_hash`/`context.dag_heads` to the new v2 root, and return the
+///   new Merkle root hash so the caller can emit events against it.
+fn commit_or_abort_migration(
+    datastore: &calimero_store::Store,
+    context: &mut Context,
+    new_state_bytes: &[u8],
+    executor_identity: PublicKey,
+    decision: MigrationGateDecision,
+    storage: ContextStorage,
+) -> eyre::Result<Hash> {
+    let context_id = context.id;
+
+    if decision == MigrationGateDecision::Abort {
+        // Logical abort: DROP the uncommitted staging buffer. Its buffered
+        // child-entry writes never reached the live store, so the v1 root AND
+        // its child buckets are intact — a true zero-residue rollback (no byte
+        // restore needed). The root is also untouched (`write_migration_state`
+        // never runs). The caller's `?` propagates this out, skipping
+        // `finalize_application_update`.
+        drop(storage);
+        clear_pending_delta();
+        return Err(MigrationCheckFailed { context_id }.into());
+    }
+
+    // Commit decision: promote the staging buffer — flush the migrate's buffered
+    // child-entry writes to the live store — then write the v2 root. The buffer
+    // and the root write target the same Arc-backed datastore.
+    let _committed_store = storage
+        .commit()
+        .map_err(|e| eyre::eyre!("Failed to commit migration storage writes: {e}"))?;
+
+    // Write returned state bytes to root storage key
+    // This uses the storage layer to properly update both Entry and Index
+    let full_hash = write_migration_state(datastore, context, new_state_bytes, executor_identity)?;
+
+    // Update root_hash after migration: full_hash is already the Merkle tree hash from
+    // the storage layer; wrap the bytes directly (same as create_context/execute).
+    let new_root_hash = Hash::from(full_hash);
+    context.root_hash = new_root_hash;
+
+    // Align DAG heads with the new state. Migration does not create a causal delta,
+    // so use root_hash as dag_head fallback (same as execute flow when init() creates
+    // state without actions). This keeps sync protocol consistent and avoids divergence.
+    context.dag_heads = vec![*context.root_hash.as_bytes()];
+    debug!(
+        %context_id,
+        new_root_hash = %new_root_hash,
+        "Updated dag_heads to new root after migration"
+    );
+
+    Ok(new_root_hash)
 }
 
 /// Execute the migration function in the new WASM module.
@@ -516,7 +759,13 @@ async fn execute_migration(
     module: calimero_runtime::Module,
     migration_params: &MigrationParams,
     executor_identity: PublicKey,
-) -> eyre::Result<(Vec<u8>, Vec<RuntimeEvent>, Vec<String>)> {
+) -> eyre::Result<(
+    Vec<u8>,
+    Option<Vec<u8>>,
+    Vec<RuntimeEvent>,
+    Vec<String>,
+    ContextStorage,
+)> {
     let context_id = context.id;
     let method = migration_params.method.clone();
 
@@ -528,19 +777,17 @@ async fn execute_migration(
 
     let storage = ContextStorage::from(datastore.clone(), context_id);
 
-    // Return the storage from the spawn_blocking closure so we can commit
-    // it on the outer side. Without this, every `env::storage_write` the
-    // WASM migrate fn made (e.g. `UnorderedMap::insert` on a newly-
-    // constructed CRDT field) is buffered in the `Temporal` layer wrapped
-    // by `ContextStorage`, then dropped uncommitted when the closure ends
-    // — only the borsh-serialised root state returned via `value_return`
-    // (which `write_migration_state` writes directly to the underlying
-    // datastore below, bypassing the Temporal) survives. That's why
-    // scalar fields survived migration end-to-end but every freshly-
-    // created collection looked empty post-migration (regression that
-    // surfaced in PR #2507's `scenario-field-remove-archive` and
-    // `scenario-invariant-reshuffle` workflows). Mirrors the
-    // execute-path commit (`crates/context/src/handlers/execute/mod.rs:1483`).
+    // Run the migrate body against `storage` (a `Temporal` buffer). Every
+    // `env::storage_write` the migrate makes — `UnorderedMap::insert`,
+    // `Vector::push`, sub-entity saves — is buffered in the shadow and is NOT
+    // flushed to the live store here. The buffer is returned UNCOMMITTED so the
+    // caller can run `migration_check` against it (the check reads the produced
+    // v2 collections through the shadow) and then either commit it on a passing
+    // check or DROP it on a failing one — a true zero-residue rollback.
+    //
+    // (Previously this committed immediately, before the check ran, which is
+    // why a rejected lossy migrate left v2-shaped child entries as residue under
+    // the still-v1 root: the destructive child mutations had already landed.)
     let (outcome, storage) = global_runtime()
         .spawn_blocking(move || {
             let mut storage = storage;
@@ -553,44 +800,15 @@ async fn execute_migration(
                 None,
                 Some(node_client),
             );
+            // Migration is delta-less (no causal delta is published). Scrub any
+            // pending sync delta the migrate writes pushed into the thread-local
+            // DELTA_CONTEXT so it cannot leak into later ops on this pool thread.
+            clear_pending_delta();
             (outcome, storage)
         })
         .await
         .map_err(|e| eyre::eyre!("Migration task failed: {}", e))?;
     let outcome = outcome?;
-
-    // Three-step ordering, in sequence:
-    //   1. `outcome?` (above) propagates a WASM execution error (trap)
-    //      and returns BEFORE this commit, so a failed migrate never
-    //      commits its Temporal-buffered writes. (desired)
-    //   2. `storage.commit()` (here) flushes the Temporal-buffered writes
-    //      the migrate fn made: UnorderedMap entries, Vector pushes,
-    //      sub-entity element saves. Only the borsh-serialised root state
-    //      returned via `value_return` bypasses the Temporal; everything
-    //      else is lost without this commit (the regression that made
-    //      freshly-created collections look empty post-migration).
-    //   3. `write_migration_state` (in the caller) writes the new root
-    //      state — strictly after this commit.
-    //
-    // Why commit before the root write (step 2 before step 3): a failure
-    // between them leaves v2-shaped collection entries under a still-v1
-    // root, the less-bad failure mode (the reverse — a v2 root pointing
-    // at entries that were never written — is unrecoverable). On retry
-    // the caller bails before publishing the upgrade op and the migrate
-    // fn re-runs against the unchanged v1 root. Crucially, migrate IDs
-    // are deterministic (merge mode + key/index-derived `compute_id`), so
-    // the re-run writes to the SAME storage keys and overwrites the
-    // committed entries in place — the partial commit is idempotent, it
-    // does not accumulate orphans across retries.
-    //
-    // `commit()` consumes `storage` and returns the inner `Store` handle;
-    // this path doesn't reuse it (it continues with the `datastore`
-    // already in scope), so the returned handle drops here. The `?` still
-    // propagates any commit failure — the commit itself is the
-    // load-bearing effect, not its return value.
-    storage
-        .commit()
-        .map_err(|e| eyre::eyre!("Failed to commit migration storage writes: {e}"))?;
 
     // Extract the return value from the outcome.
     // `outcome.returns` is `Result<Option<Vec<u8>>, FunctionCallError>` where the
@@ -610,10 +828,234 @@ async fn execute_migration(
         bytes_len = new_state_bytes.len(),
         events_count = outcome.events.len(),
         logs_count = outcome.logs.len(),
+        has_witness = outcome.migration_witness.is_some(),
         "Migration function returned new state"
     );
 
-    Ok((new_state_bytes, outcome.events, outcome.logs))
+    Ok((
+        new_state_bytes,
+        outcome.migration_witness,
+        outcome.events,
+        outcome.logs,
+        storage,
+    ))
+}
+
+/// Error surfaced when a pre-commit `migration_check` rejects (or could not
+/// run on) the produced v2 root.
+///
+/// Surfacing this error from `update_application_with_migration` is the logical
+/// abort: the early return happens before `write_migration_state` (the only
+/// mutation of the v1 root) and `finalize_application_update`, so the committed
+/// context (root_hash, dag_heads, application_id) stays on v1. No byte snapshot
+/// or restore — the v1 root is intact because it was never mutated (clean
+/// rollback).
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "migration_check failed for context '{context_id}': logical abort — the produced v2 root was \
+     discarded and the still-v1 root left intact (no byte restore; v1 was never mutated)"
+)]
+pub(crate) struct MigrationCheckFailed {
+    pub(crate) context_id: ContextId,
+}
+
+/// Decode the verdict of a `__calimero_migration_check` invocation from its
+/// `outcome.returns`.
+///
+/// Decision matrix:
+/// - **Missing export** (`MethodNotFound`) ⇒ `Ok(true)`: an app that defines no
+///   check is never blocked. This keeps the flow backwards-compatible.
+/// - **Any other execution error** (a WASM trap, host error, …) ⇒ `Ok(false)`:
+///   fail-closed. A check that could not complete must not be treated as a pass.
+/// - **`Ok(Some(bytes))`** ⇒ `borsh::from_slice::<bool>(&bytes)`. The verdict
+///   bytes are RAW `borsh(bool)` — the macro hands the runtime `borsh(bool)` via
+///   `value_return`'s `Ok` branch, mirroring `#[app::migrate]`'s
+///   raw-new-state-bytes contract (see `migration.rs`). It is NOT a borsh
+///   `Result<bool, Vec<u8>>` envelope, so it must NOT be decoded as one.
+/// - **`Ok(None)`** ⇒ a defined check that returned nothing is a contract
+///   violation; fail-closed (`Ok(false)`).
+///
+/// Returns `Err` only when a present check returned bytes that are not a valid
+/// borsh `bool` (a genuine, unexpected ABI breakage worth surfacing).
+fn decode_migration_check_verdict(
+    returns: calimero_runtime::logic::VMLogicResult<
+        Option<Vec<u8>>,
+        calimero_runtime::errors::FunctionCallError,
+    >,
+) -> eyre::Result<bool> {
+    use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
+
+    match returns {
+        // No `__calimero_migration_check` export ⇒ no check defined ⇒ never
+        // block (backwards compatible).
+        Err(FunctionCallError::MethodResolutionError(MethodResolutionError::MethodNotFound {
+            ..
+        })) => Ok(true),
+        // The export exists but trapped / errored. Fail closed: a check that
+        // could not run must not pass.
+        Err(e) => {
+            warn!(error = ?e, "migration_check trapped or errored; failing closed (logical abort)");
+            Ok(false)
+        }
+        Ok(Some(bytes)) => borsh::from_slice::<bool>(&bytes).map_err(|e| {
+            eyre::eyre!(
+                "migration_check returned undecodable verdict bytes (expected borsh bool): {e}"
+            )
+        }),
+        // A present check must return a verdict; nothing returned is a contract
+        // violation. Fail closed.
+        Ok(None) => {
+            warn!("migration_check returned no verdict; failing closed (logical abort)");
+            Ok(false)
+        }
+    }
+}
+
+/// Run the app's `__calimero_migration_check` export over the produced v2 root,
+/// returning its verdict (or `Ok(true)` when no check is defined).
+///
+/// The check is a read-only predicate: it reads the still-v1 old root via
+/// `read_raw()` and receives the produced `new_state_bytes` (the same bytes
+/// `write_migration_state` would persist) as its `env::input()`. It is run on a
+/// throwaway [`ContextStorage`] view that is **never committed**, so any writes
+/// it might make are discarded; the lingering pending delta is cleared so it
+/// cannot contaminate later operations on the same runtime thread (mirroring
+/// `write_migration_state`).
+///
+/// `module` is a cheap clone (the compiled artifact is `Arc`-backed, see
+/// `calimero_runtime::Module`), so this second `module.run` shares the
+/// already-compiled module with `execute_migration` rather than re-loading it.
+async fn run_migration_check(
+    node_client: NodeClient,
+    context: &Context,
+    module: calimero_runtime::Module,
+    new_state_bytes: &[u8],
+    witness: Option<&[u8]>,
+    executor_identity: PublicKey,
+    storage: ContextStorage,
+) -> eyre::Result<(bool, ContextStorage)> {
+    let context_id = context.id;
+    // The check runs against the SAME uncommitted staging buffer the migrate
+    // wrote into: `new` (and its collections) reads the produced v2 state
+    // through the shadow, while `old` (via `read_raw`) still sees the pristine
+    // v1 root (the root is only written on commit). The produced v2 bytes + the
+    // optional transient witness are delivered packed as
+    // `borsh((new_state_bytes, Option<witness>))` — see the migration_check macro.
+    let input = borsh::to_vec(&(new_state_bytes.to_vec(), witness.map(<[u8]>::to_vec)))?;
+
+    let (outcome, storage) = global_runtime()
+        .spawn_blocking(move || {
+            let mut storage = storage;
+            // Run the check through a READ-ONLY view of the staging buffer: the
+            // predicate reads the produced v2 state (reads delegate to the
+            // buffer's shadow-over-live) while its writes are suppressed, so a
+            // misbehaving check cannot contaminate the state we may later commit
+            // on a passing verdict (the buffer is reused for the commit).
+            let outcome = {
+                let mut ro = ReadOnlyContextStorage::new(&mut storage);
+                module.run(
+                    context_id,
+                    executor_identity,
+                    "__calimero_migration_check",
+                    &input,
+                    &mut ro,
+                    None,
+                    Some(node_client),
+                )
+            };
+            // The check is read-only; scrub any sync delta it pushed into the
+            // thread-local DELTA_CONTEXT so it cannot leak into later ops on this
+            // pool thread. The buffer is returned UNCOMMITTED — its writes reach
+            // the store only if the caller later commits it (on a passing check).
+            clear_pending_delta();
+            (outcome, storage)
+        })
+        .await
+        .map_err(|e| eyre::eyre!("migration_check task failed: {}", e))?;
+
+    // A host-level runtime error (instantiation / link failure, resource limit)
+    // is distinct from `outcome.returns` and must also fail closed: a check that
+    // could not even start running is not a pass.
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            warn!(%context_id, error = ?e, "migration_check host runtime error; failing closed (logical abort)");
+            return Ok((false, storage));
+        }
+    };
+
+    Ok((decode_migration_check_verdict(outcome.returns)?, storage))
+}
+
+/// Run the app's `count_my_pending` export over the COMMITTED v2 state to read
+/// the executor's pending-authored count (the self-reported `authored_remaining`).
+/// Runs post-commit against a fresh buffer over the live store, under the
+/// applying identity, so `owned_by_me` resolves to this node's owner. Read-only
+/// (the export never commits). Best-effort: a missing export (non-authored app),
+/// a host error, or a pool-join failure all yield `None`.
+async fn run_count_my_pending(
+    datastore: &calimero_store::Store,
+    node_client: NodeClient,
+    context_id: ContextId,
+    module: calimero_runtime::Module,
+    executor_identity: PublicKey,
+) -> Option<u32> {
+    let storage = ContextStorage::from(datastore.clone(), context_id);
+    let outcome = global_runtime()
+        .spawn_blocking(move || {
+            let mut storage = storage;
+            let outcome = module.run(
+                context_id,
+                executor_identity,
+                "count_my_pending",
+                &[],
+                &mut storage,
+                None,
+                Some(node_client),
+            );
+            // Read-only call: scrub any thread-local delta it might have pushed.
+            clear_pending_delta();
+            outcome
+        })
+        .await;
+
+    match outcome {
+        // The export returns its u32 count as JSON via value_return. A missing
+        // export (non-authored app ⇒ Err(MethodNotFound)), an empty return, or a
+        // host error all mean "no count" — report None and leave the prior value.
+        Ok(Ok(rt_outcome)) => match rt_outcome.returns {
+            Ok(Some(bytes)) => serde_json::from_slice::<u32>(&bytes).ok(),
+            _ => None,
+        },
+        Ok(Err(e)) => {
+            debug!(%context_id, error = ?e, "count_my_pending host error; reporting no count");
+            None
+        }
+        Err(e) => {
+            debug!(%context_id, error = ?e, "count_my_pending task join failed; reporting no count");
+            None
+        }
+    }
+}
+
+/// Persist this node's owner's pending-authored count to the dedicated
+/// node-local `ContextAuthoredRemaining` key (read by the migration heartbeat).
+/// A single-value put on its own key — NOT folded into `ContextMeta`, so the
+/// hot per-write `ContextMeta` rewrite path cannot clobber it and there is no
+/// read-modify-write race. Best-effort: a store fault is logged and skipped.
+pub(crate) fn persist_authored_remaining(
+    datastore: &calimero_store::Store,
+    context_id: ContextId,
+    authored_remaining: u32,
+) {
+    let mut handle = datastore.handle();
+    let key = key::ContextAuthoredRemaining::new(context_id);
+    let value = types::ContextAuthoredRemaining {
+        count: authored_remaining,
+    };
+    if let Err(err) = handle.put(&key, &value) {
+        debug!(%context_id, %err, "failed to persist authored_remaining");
+    }
 }
 
 /// Storage callback closures used by the `calimero-storage` runtime environment.
@@ -914,7 +1356,10 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::{key, types, Store};
 
-    use super::verify_appkey_continuity;
+    use calimero_primitives::events::{ContextEvent, ContextEventPayload, NodeEvent};
+
+    use super::ContextStorage;
+    use super::{app_version_changed_event, application_version, verify_appkey_continuity};
 
     /// Creates a test store with in-memory database.
     fn create_test_store() -> Store {
@@ -977,6 +1422,66 @@ mod tests {
             "AppKey continuity check should pass with matching signerIds: {:?}",
             result.err()
         );
+    }
+
+    // application_version resolves ApplicationMeta.version (semver) for the emit.
+    #[test]
+    fn application_version_reads_semver_and_handles_missing() {
+        let store = create_test_store();
+        let app_id = ApplicationId::from([42u8; 32]);
+        store
+            .handle()
+            .put(
+                &key::ApplicationMeta::new(app_id),
+                &create_app_meta("signer"),
+            )
+            .expect("seed app meta");
+        assert_eq!(
+            application_version(&store, app_id).as_deref(),
+            Some("1.0.0")
+        );
+        assert_eq!(
+            application_version(&store, ApplicationId::from([99u8; 32])),
+            None
+        );
+    }
+
+    // No event when the application id did not actually change (6f.5 dedup).
+    #[test]
+    fn app_version_changed_event_skips_when_unchanged() {
+        let id = ApplicationId::from([1u8; 32]);
+        let ev = app_version_changed_event(
+            ContextId::from([7u8; 32]),
+            id,
+            id,
+            Some("1.0.0".to_owned()),
+            Some("1.0.0".to_owned()),
+        );
+        assert!(ev.is_none(), "no emit when app id unchanged");
+    }
+
+    // On a real flip, build the AppVersionChanged event with both versions.
+    #[test]
+    fn app_version_changed_event_on_flip() {
+        let ctx = ContextId::from([7u8; 32]);
+        let ev = app_version_changed_event(
+            ctx,
+            ApplicationId::from([1u8; 32]),
+            ApplicationId::from([2u8; 32]),
+            Some("1.0.0".to_owned()),
+            Some("2.0.0".to_owned()),
+        );
+        match ev {
+            Some(NodeEvent::Context(ContextEvent {
+                context_id,
+                payload: ContextEventPayload::AppVersionChanged(p),
+            })) => {
+                assert_eq!(context_id, ctx);
+                assert_eq!(p.from_version.as_deref(), Some("1.0.0"));
+                assert_eq!(p.to_version.as_deref(), Some("2.0.0"));
+            }
+            other => panic!("expected AppVersionChanged, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1637,6 +2142,399 @@ mod tests {
         assert_eq!(
             stored_bytes, original_state,
             "State should be completely unchanged after multiple failed hijacking attempts"
+        );
+    }
+
+    /// Characterizes the clean-rollback property the logical abort relies on:
+    /// the v1 root entry is never mutated until the migration commits, so a
+    /// pre-commit early-return (a logical abort) leaves it fully intact.
+    ///
+    /// The whole-root migrate path writes the root through exactly one seam —
+    /// `write_migration_state`, the sole caller of
+    /// `Interface::write_pre_merged_root_state` in this file. Everything before
+    /// that is pure computation against a still-v1 store, so "abort" is simply
+    /// not reaching that single writer; there is no byte snapshot to restore
+    /// because the v1 root was never overwritten.
+    ///
+    /// This test locks that single-writer invariant at the source level. If a
+    /// second root-write site appears, the abort path can no longer guarantee a
+    /// clean rollback and this test must be revisited (not merely updated).
+    #[test]
+    fn clean_rollback_root_written_only_via_write_migration_state() {
+        let full = include_str!("mod.rs");
+        // Scope to the non-test region so this test's own string literals
+        // (which mention the writer by name) don't pollute the count.
+        let source = full
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("file should contain a #[cfg(test)] mod tests boundary");
+
+        let write_sites = source.matches("write_pre_merged_root_state(").count();
+        assert_eq!(
+            write_sites, 1,
+            "expected exactly one `write_pre_merged_root_state(` call site (the sole \
+             root writer, inside `write_migration_state`) so a pre-commit logical abort \
+             leaves the v1 root untouched; found {write_sites}. A new root-write site \
+             breaks the clean-rollback guarantee."
+        );
+
+        // The single writer must live inside `write_migration_state` — the
+        // function the abort path skips. Assert the writer call appears after
+        // `fn write_migration_state(` in source order (it is its only caller).
+        let writer_fn = source
+            .find("fn write_migration_state(")
+            .expect("write_migration_state should be defined in this file");
+        let write_call = source
+            .find("write_pre_merged_root_state(")
+            .expect("the root writer call should exist in this file");
+        assert!(
+            write_call > writer_fn,
+            "the sole `write_pre_merged_root_state` call must sit inside \
+             `write_migration_state` (the seam a logical abort skips)"
+        );
+    }
+
+    /// A missing `__calimero_migration_check` export must be treated as a pass
+    /// (`Ok(true)`) so apps that do not define a check are never blocked — the
+    /// backwards-compatible default.
+    #[test]
+    fn migration_check_verdict_missing_export_passes() {
+        use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
+
+        let returns: Result<Option<Vec<u8>>, FunctionCallError> = Err(
+            FunctionCallError::MethodResolutionError(MethodResolutionError::MethodNotFound {
+                name: "__calimero_migration_check".to_owned(),
+            }),
+        );
+
+        let verdict =
+            super::decode_migration_check_verdict(returns).expect("missing export must not error");
+        assert!(
+            verdict,
+            "a missing migration_check export must pass (Ok(true)) for backwards compatibility"
+        );
+    }
+
+    /// A present check that returns `borsh(true)` passes; `borsh(false)` fails.
+    /// The verdict bytes are raw `borsh(bool)` (mirroring `#[app::migrate]`'s
+    /// raw-new-state-bytes contract), NOT a borsh `Result<bool, _>` envelope.
+    #[test]
+    fn migration_check_verdict_decodes_raw_borsh_bool() {
+        use calimero_runtime::errors::FunctionCallError;
+
+        let pass_bytes = borsh::to_vec(&true).expect("serialize true");
+        let pass: Result<Option<Vec<u8>>, FunctionCallError> = Ok(Some(pass_bytes));
+        assert!(
+            super::decode_migration_check_verdict(pass).expect("decode true"),
+            "borsh(true) verdict must decode to a passing check"
+        );
+
+        let fail_bytes = borsh::to_vec(&false).expect("serialize false");
+        let fail: Result<Option<Vec<u8>>, FunctionCallError> = Ok(Some(fail_bytes));
+        assert!(
+            !super::decode_migration_check_verdict(fail).expect("decode false"),
+            "borsh(false) verdict must decode to a failing check"
+        );
+    }
+
+    /// A WASM trap (non-`MethodNotFound` error) fails closed: the verdict is
+    /// `false` so the migration is logically aborted rather than committed on a
+    /// check that could not run.
+    #[test]
+    fn migration_check_verdict_trap_fails_closed() {
+        use calimero_runtime::errors::{FunctionCallError, WasmTrap};
+
+        let returns: Result<Option<Vec<u8>>, FunctionCallError> =
+            Err(FunctionCallError::WasmTrap(WasmTrap::Unreachable));
+
+        let verdict = super::decode_migration_check_verdict(returns)
+            .expect("a trap must be reported as a failing verdict, not a hard error");
+        assert!(
+            !verdict,
+            "a trapping migration_check must fail closed (verdict false ⇒ logical abort)"
+        );
+    }
+
+    /// The `MigrationCheckFailed` error carries the context id and surfaces a
+    /// recognisable "logical abort" message so callers (and e2e log assertions)
+    /// can detect the abort.
+    #[test]
+    fn migration_check_error_is_recognisable() {
+        let context_id = ContextId::from([7u8; 32]);
+        let err = super::MigrationCheckFailed { context_id };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("migration_check failed"),
+            "error message must announce the failed check: {msg}"
+        );
+        assert!(
+            msg.contains("logical abort"),
+            "error message must announce the logical abort: {msg}"
+        );
+    }
+
+    /// Reads the committed root entry's Merkle `full_hash` straight from the
+    /// store, the same hash `write_migration_state` derives for
+    /// `Context::root_hash`. Returns `None` before any root has been written.
+    fn root_full_hash(store: &Store, context_id: ContextId) -> Option<[u8; 32]> {
+        use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
+        use calimero_storage::address::Id;
+        use calimero_storage::index::Index;
+        use calimero_storage::store::{Key, MainStorage};
+
+        let read = {
+            let handle = store.handle();
+            move |key: &Key| -> Option<Vec<u8>> {
+                let state_key = key::ContextState::new(context_id, key.to_bytes());
+                handle
+                    .get(&state_key)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.value.into_boxed().into_vec())
+            }
+        };
+        let noop_write = |_: Key, _: &[u8]| true;
+        let noop_remove = |_: &Key| true;
+
+        let env = calimero_storage::env::RuntimeEnv::new(
+            std::rc::Rc::new(read),
+            std::rc::Rc::new(noop_write),
+            std::rc::Rc::new(noop_remove),
+            *context_id.as_ref(),
+            [0u8; 32],
+        );
+        let _ = ROOT_STORAGE_ENTRY_ID;
+        calimero_storage::env::with_runtime_env(env, || {
+            Index::<MainStorage>::get_hashes_for(Id::root())
+                .ok()
+                .flatten()
+                .map(|(full_hash, _)| full_hash)
+        })
+    }
+
+    /// A failed `migration_check` drives a logical abort through the real
+    /// commit/abort seam — and now a TRUE zero-residue rollback: the migrate's
+    /// child-entry writes are buffered in the staging `ContextStorage` and
+    /// DROPPED on abort, never reaching the live store. Asserts:
+    ///   (a) the seam returns `Err(MigrationCheckFailed { context_id })`;
+    ///   (b) the committed root entry's `full_hash` is identical to the
+    ///       pre-migration v1 hash (v1 root never overwritten);
+    ///   (c) the in-flight `Context` (application_id, root_hash, dag_heads) is
+    ///       left untouched, so a later `finalize_application_update` would never
+    ///       publish the v2 application_id;
+    ///   (d) the staged v2 child entry is ABSENT from the live store after the
+    ///       abort (zero residue) — and PRESENT after a passing commit.
+    #[tokio::test]
+    async fn failed_migration_check_logically_aborts() {
+        use calimero_runtime::store::Storage as _;
+
+        let store = create_test_store();
+
+        let context_id = ContextId::from([3u8; 32]);
+        let app_id_v1 = ApplicationId::from([10u8; 32]);
+        let mut context = create_test_context(context_id, app_id_v1);
+
+        let executor = calimero_primitives::identity::PublicKey::from([5u8; 32]);
+
+        // Install a real v1 root entry through the same storage seam the migrate
+        // flow uses, so it has a genuine Merkle Index + full_hash to compare
+        // against. `write_migration_state` is the sole root writer in this file.
+        let v1_bytes = borsh::to_vec(&("v1-state".to_owned())).expect("serialize v1 state");
+        let full_hash_v1 = super::write_migration_state(&store, &context, &v1_bytes, executor)
+            .expect("install v1 root");
+        context.root_hash = Hash::from(full_hash_v1);
+        context.dag_heads = vec![full_hash_v1];
+
+        let dag_heads_v1 = context.dag_heads.clone();
+
+        assert_eq!(
+            root_full_hash(&store, context_id),
+            Some(full_hash_v1),
+            "sanity: the v1 root full_hash must be readable before the abort"
+        );
+
+        // A deterministic child entry key, as a migrate would write via the
+        // buffer. `is_present` reads the LIVE store (a fresh handle), so it only
+        // sees writes that were actually promoted — not buffered ones.
+        let child_key = key::ContextState::new(context_id, [0xABu8; 32]);
+        let is_present = |store: &calimero_store::Store| {
+            store
+                .handle()
+                .get(&child_key)
+                .expect("read child entry")
+                .is_some()
+        };
+        let v2_bytes = borsh::to_vec(&("v2-state-much-longer".to_owned())).expect("serialize v2");
+
+        // --- ABORT: stage a v2 child through the buffer, then drop it. ---
+        {
+            let mut staging = ContextStorage::from(store.clone(), context_id);
+            let _ = staging.set(vec![0xABu8; 32], b"v2-child-staged".to_vec());
+            assert!(
+                !is_present(&store),
+                "the staged child must be buffered (not live) before commit"
+            );
+
+            let result = super::commit_or_abort_migration(
+                &store,
+                &mut context,
+                &v2_bytes,
+                executor,
+                super::MigrationGateDecision::Abort,
+                staging,
+            );
+
+            // (a) the seam returns the abort error.
+            let err = result.expect_err("a failed migration_check must abort with an error");
+            let downcast = err.downcast_ref::<super::MigrationCheckFailed>();
+            assert!(
+                matches!(downcast, Some(super::MigrationCheckFailed { context_id: cid }) if *cid == context_id),
+                "abort error must be MigrationCheckFailed carrying the context id: {err}"
+            );
+
+            // (b) the committed root entry is byte-for-byte the pre-migration v1 hash.
+            assert_eq!(
+                root_full_hash(&store, context_id),
+                Some(full_hash_v1),
+                "v1 root full_hash must be unchanged after a logical abort (no byte mutation)"
+            );
+
+            // (c) the in-flight context still points entirely at v1.
+            assert_eq!(
+                context.application_id, app_id_v1,
+                "application_id must NOT be finalized after a logical abort"
+            );
+            assert_eq!(
+                context.root_hash,
+                Hash::from(full_hash_v1),
+                "context.root_hash must stay on v1 after a logical abort"
+            );
+            assert_eq!(
+                context.dag_heads, dag_heads_v1,
+                "context.dag_heads must stay on v1 after a logical abort"
+            );
+
+            // (d) ZERO RESIDUE: the staged child never reached the live store.
+            assert!(
+                !is_present(&store),
+                "abort must DROP the staged child entry — zero residue"
+            );
+        }
+
+        // --- COMMIT: stage a v2 child through the buffer, then promote it. ---
+        {
+            let mut staging = ContextStorage::from(store.clone(), context_id);
+            let _ = staging.set(vec![0xABu8; 32], b"v2-child-staged".to_vec());
+
+            super::commit_or_abort_migration(
+                &store,
+                &mut context,
+                &v2_bytes,
+                executor,
+                super::MigrationGateDecision::Commit,
+                staging,
+            )
+            .expect("a passing check must commit");
+
+            // The root advances to the produced v2 bytes...
+            assert_ne!(
+                root_full_hash(&store, context_id),
+                Some(full_hash_v1),
+                "a passing check must overwrite the v1 root with the produced v2 bytes"
+            );
+            assert_eq!(
+                context.root_hash,
+                root_full_hash(&store, context_id).map(Hash::from).unwrap(),
+                "a passing check must advance context.root_hash to the new v2 root"
+            );
+            // ...and the staged child is flushed to the live store.
+            assert!(
+                is_present(&store),
+                "commit must FLUSH the staged child entry to the live store"
+            );
+        }
+    }
+
+    /// The gate-decision seam: every commit/abort decision funnels through one
+    /// [`MigrationGateDecision`] so a future canary-subgroup gate (deferred) can
+    /// supply the decision later without touching `commit_or_abort_migration`.
+    /// Locks two properties:
+    ///   (a) the migration_check verdict maps onto the gate decision —
+    ///       `true ⇒ Commit`, `false ⇒ Abort` — via `from_check_result`, the
+    ///       single point a canary path would replace;
+    ///   (b) the seam routes `Commit` to a real root write and `Abort` to the
+    ///       logical abort (`Err(MigrationCheckFailed)`, v1 root untouched).
+    #[tokio::test]
+    async fn migration_gate_decision_maps_verdict_to_commit_or_abort() {
+        use super::MigrationGateDecision;
+
+        // (a) the verdict → decision mapping (the seam canary will later own).
+        assert!(
+            matches!(
+                MigrationGateDecision::from_check_result(true),
+                MigrationGateDecision::Commit
+            ),
+            "a passing check must yield Commit"
+        );
+        assert!(
+            matches!(
+                MigrationGateDecision::from_check_result(false),
+                MigrationGateDecision::Abort
+            ),
+            "a failing check must yield Abort"
+        );
+
+        // (b) the seam routes each decision through `commit_or_abort_migration`.
+        let store = create_test_store();
+        let context_id = ContextId::from([4u8; 32]);
+        let app_id_v1 = ApplicationId::from([11u8; 32]);
+        let mut context = create_test_context(context_id, app_id_v1);
+        let executor = calimero_primitives::identity::PublicKey::from([6u8; 32]);
+
+        let v1_bytes = borsh::to_vec(&("v1-state".to_owned())).expect("serialize v1 state");
+        let full_hash_v1 = super::write_migration_state(&store, &context, &v1_bytes, executor)
+            .expect("install v1 root");
+        context.root_hash = Hash::from(full_hash_v1);
+        context.dag_heads = vec![full_hash_v1];
+
+        let v2_bytes = borsh::to_vec(&("v2-state-much-longer".to_owned())).expect("serialize v2");
+
+        // Abort decision ⇒ logical abort, v1 root untouched.
+        let abort = super::commit_or_abort_migration(
+            &store,
+            &mut context,
+            &v2_bytes,
+            executor,
+            MigrationGateDecision::Abort,
+            ContextStorage::from(store.clone(), context_id),
+        );
+        assert!(
+            abort
+                .expect_err("Abort must surface the logical-abort error")
+                .downcast_ref::<super::MigrationCheckFailed>()
+                .is_some(),
+            "Abort must map to MigrationCheckFailed (logical abort)"
+        );
+        assert_eq!(
+            root_full_hash(&store, context_id),
+            Some(full_hash_v1),
+            "Abort must leave the v1 root byte-for-byte unchanged"
+        );
+
+        // Commit decision ⇒ root write, v1 root overwritten.
+        super::commit_or_abort_migration(
+            &store,
+            &mut context,
+            &v2_bytes,
+            executor,
+            MigrationGateDecision::Commit,
+            ContextStorage::from(store.clone(), context_id),
+        )
+        .expect("Commit must write the produced v2 root");
+        assert_ne!(
+            root_full_hash(&store, context_id),
+            Some(full_hash_v1),
+            "Commit must overwrite the v1 root with the produced v2 bytes"
         );
     }
 }

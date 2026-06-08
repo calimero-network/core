@@ -10,23 +10,23 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupLocalStateRequest,
-    CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest,
-    DetachContextFromGroupRequest, GetCascadeStatusRequest, GetContextMetadataRequest,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
-    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberMetadataRequest,
-    GetMigrationStatusRequest, GetNamespaceIdentityRequest, IssueNamespaceOwnershipProofRequest,
-    IssueOwnershipProofRequest, JoinContextRequest, JoinGroupRequest,
-    JoinSubgroupInheritanceRequest, LeaveContextRequest, LeaveGroupRequest, LeaveNamespaceRequest,
-    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
-    ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
-    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
-    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
-    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
-    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    AbortMigrationRequest, AddGroupMembersRequest, AdmitTeeNodeRequest,
+    BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
+    DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
+    GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
+    GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetMigrationStatusRequest,
+    GetNamespaceIdentityRequest, IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest,
+    JoinContextRequest, JoinGroupRequest, JoinSubgroupInheritanceRequest, LeaveContextRequest,
+    LeaveGroupRequest, LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest,
+    ListGroupMembersRequest, ListNamespacesForApplicationRequest, ListNamespacesRequest,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextMetadataRequest,
+    SetDefaultCapabilitiesRequest, SetGroupMetadataRequest, SetMemberAutoFollowRequest,
+    SetMemberCapabilitiesRequest, SetMemberMetadataRequest, SetSubgroupVisibilityRequest,
+    SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
+    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
+    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -545,5 +545,9 @@ pub enum ContextMessage {
     GetMigrationStatus {
         request: GetMigrationStatusRequest,
         outcome: oneshot::Sender<<GetMigrationStatusRequest as Message>::Result>,
+    },
+    AbortMigration {
+        request: AbortMigrationRequest,
+        outcome: oneshot::Sender<<AbortMigrationRequest as Message>::Result>,
     },
 }
