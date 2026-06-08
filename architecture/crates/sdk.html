@@ -175,6 +175,7 @@ app::emit!((Event::ItemSet { key: &amp;k, value: &amp;v }, "on_item_set"));
 }
 </div>
 <p style="margin-top:10px;">Both the check and any witness must be deterministic pure functions of the v1 state — they run independently on every node and must reach the same verdict. See <a href="../../docs/migrations.md#7-guarding-a-migration-migration_check--abort">migrations guide §7</a> for the full contract.</p>
+<p style="margin-top:10px;"><strong>Determinism — no node-local inputs.</strong> A migration check (and its witness) must never read <span class="code">env::time_now()</span>, RNG, <span class="code">env::executor_id()</span>, or any other node-local state. Two nodes evaluating different wall-clocks would reach opposite verdicts and fork the network — exactly the divergence <span class="code">Counter::increment</span> / <span class="code">RGA::insert</span> already panic on during a migrate (see <a href="store.html">store.html</a>, nonce/clock section). Treat the inputs as the only legal source of truth: derive the verdict purely from <span class="code">old</span>, <span class="code">new</span>, and the borsh witness carried out of <span class="code">#[app::migrate]</span>. Use the witness to smuggle any v1-derived quantity (counts, hashes) the check needs, rather than recomputing it from ambient state.</p>
 </div>
 </details>
 

@@ -360,6 +360,13 @@ GET /admin-api/groups/{namespace_id}/migration/status
 
 `authored_remaining == 0` means all members have run `migrate_my_entries()` or had no entries to convert. Use this to drive a "migration complete" indicator in admin UIs.
 
+> **Authorization.** This is an `/admin-api/` route and is gated by the same
+> admin-credential check as the rest of that surface — the node rejects
+> unauthenticated callers before any migration state is returned. The
+> `authored_remaining` count (and the group/namespace structure it implies) is
+> internal operational data: never expose it on an unauthenticated path, and
+> scope the admin token to operators of that node/namespace.
+
 ---
 
 ## 6. The no-silent-downgrade rail
