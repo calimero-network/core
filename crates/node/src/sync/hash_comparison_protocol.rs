@@ -730,6 +730,30 @@ async fn run_initiator_impl<T: SyncTransport>(
     })?;
     stats.root_hash_verified = local_root_hash == peer_current_root;
 
+    // core#2716 (ACL-in-root fold): re-anchor the context's persisted
+    // `root_hash` to the freshly-merged storage merkle. The Phase-2 fold folds
+    // each `Shared` anchor's resolved writer set into its `own_hash`, which
+    // moves the storage merkle root. But `context.root_hash` (the value read by
+    // the heartbeat, the sync-manager's protocol selector, and the admin RPC
+    // that e2e `wait_for_sync` polls) is only updated on the WASM execute /
+    // delta forward-apply path — NOT when a HashComparison session converges
+    // storage via CRDT merge (`entities_pushed`/`entities_merged`). That left
+    // the two roots permanently split: the storage merkle converged across
+    // nodes while each node's context root stayed at its last locally-executed
+    // delta's `expected_root_hash`, so `wait_for_sync` never observed
+    // convergence. Persisting the storage merkle here restores the invariant
+    // `context.root_hash == storage merkle root` after every HC session.
+    if local_root_hash != [0u8; 32] {
+        if let Some(cc) = context_client {
+            if let Err(e) = cc.force_root_hash(&context_id, Hash::from(local_root_hash)) {
+                warn!(
+                    %context_id, %e,
+                    "failed to re-anchor context root_hash to storage merkle after HC merge"
+                );
+            }
+        }
+    }
+
     info!(
         %context_id,
         nodes_compared = stats.nodes_compared,
