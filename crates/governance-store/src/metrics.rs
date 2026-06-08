@@ -90,9 +90,13 @@ pub(crate) struct GovernanceHandlerDeliveryLabels {
 /// [`purge_subgroup_for_self`]: ../../calimero_context/self_purge/index.html
 /// [`cascade_namespace_state`]: ../../calimero_context/self_purge/index.html
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-pub struct SelfPurgeFailureLabels {
-    pub branch: String,
-    pub class: String,
+pub(crate) struct SelfPurgeFailureLabels {
+    // `&'static str`, not `String`: both values come from the closed
+    // `PurgeBranch` / `PurgeFailureClass` enums via their `as_label`
+    // (already `&'static str`), so the label set allocates nothing per
+    // `record_purge_failure` call.
+    pub branch: &'static str,
+    pub class: &'static str,
 }
 
 #[derive(Clone, Debug)]
@@ -413,8 +417,8 @@ pub fn record_purge_failure(branch: PurgeBranch, class: PurgeFailureClass) {
     metrics
         .self_purge_failures
         .get_or_create(&SelfPurgeFailureLabels {
-            branch: branch.as_label().to_owned(),
-            class: class.as_label().to_owned(),
+            branch: branch.as_label(),
+            class: class.as_label(),
         })
         .inc();
 }
@@ -490,8 +494,8 @@ mod tests {
         ] {
             family
                 .get_or_create(&SelfPurgeFailureLabels {
-                    branch: branch.as_label().to_owned(),
-                    class: class.as_label().to_owned(),
+                    branch: branch.as_label(),
+                    class: class.as_label(),
                 })
                 .inc();
         }
