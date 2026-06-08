@@ -246,36 +246,35 @@ impl<S: StorageAdaptor> Interface<S> {
     /// and for legacy anchors whose log predates P4 (a vanishing set after a
     /// state reset).
     pub(crate) fn resolve_anchor_writers(anchor: Id) -> BTreeMap<PublicKey, OpMask> {
-        // core#2716: resolve from the UNION of both rotation-log
-        // representations — the hashed child collection AND the side store —
-        // rather than preferring one. The side store is the source the
-        // end-of-session reconcile (`collect_shared_rotation_logs_recursive` →
-        // `union_received_rotation_logs`) exchanges bidirectionally, so it
-        // converges across nodes; the hashed-child collection is mirrored from
-        // it but lags racily (it can be transiently empty mid-sync). Preferring
-        // the collection (the old `or_else`) made `resolve` read a stale/partial
-        // set whenever the mirror lagged, so the folded `own_hash` flipped
-        // run-to-run and the cluster split-brained on a stable-but-different
-        // root (~50% concurrent-rotation flake). Unioning by `delta_id` and
-        // re-running the order-invariant `resolve_local` makes resolution
-        // depend only on the converged entry SET, regardless of which mirror is
-        // ahead at the instant of the fold.
-        let mut entries = Vec::new();
+        // core#2716 P3: resolve from the rotation-log COLLECTION ALONE when it
+        // is present. With the log now a real `UnorderedMap` child (see
+        // `rotation_log_map`), it converges identically on every node via
+        // HashComparison's structural add-wins merge — it is THE authoritative,
+        // synced source.
+        //
+        // We deliberately do NOT union the side store anymore. The side store
+        // converges via a SEPARATE end-of-session reconcile
+        // (`union_received_rotation_logs`) that lags, and on the rotation
+        // ORIGINATOR it additionally holds self-logged entries the peers'
+        // reconcile hasn't mirrored back yet. Unioning it therefore made the
+        // originator resolve a DIFFERENT writer set than its peers even after
+        // the collection had fully converged — so the originator rejected the
+        // peers' `SharedMember` value entry with "Invalid signature for
+        // user-owned data" and the cluster split-brained on the value subtree
+        // (the residual concurrent-rotation failure). Reading the converged
+        // collection alone makes every node resolve the same set.
+        //
+        // The side store survives ONLY as the cold-join / snapshot fallback,
+        // for an anchor whose collection hasn't been materialised on this node
+        // yet (HashComparison / Snapshot can deliver storage without replaying
+        // the rotation deltas that build the collection).
         if let Some(child_log) = Self::load_rotation_log_child(anchor) {
-            entries.extend(child_log.entries);
+            if let Some(writers) = crate::rotation_log::resolve_local(&child_log) {
+                return writers;
+            }
         }
-        let mut snapshot = None;
         if let Ok(Some(side_log)) = crate::rotation_log::load::<S>(anchor) {
-            snapshot = side_log.snapshot.clone();
-            entries.extend(side_log.entries);
-        }
-        if !entries.is_empty() || snapshot.is_some() {
-            // Dedup by delta_id (idempotent across the two mirrors); order is
-            // irrelevant — `resolve_local` is insertion-order invariant.
-            entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
-            entries.dedup_by(|a, b| a.delta_id == b.delta_id);
-            let unified = crate::rotation_log::RotationLog { snapshot, entries };
-            if let Some(writers) = crate::rotation_log::resolve_local(&unified) {
+            if let Some(writers) = crate::rotation_log::resolve_local(&side_log) {
                 return writers;
             }
         }
