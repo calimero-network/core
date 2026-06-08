@@ -2033,9 +2033,9 @@ pub struct GroupKeyValue {
 /// group's ContextGroupId).
 ///
 /// Key layout: `PENDING_SELF_PURGE_PREFIX (1 byte) + namespace_id (32 bytes)`
-/// = 33 bytes — the same shape as [`NamespaceIdentity`], so a prefix scan
-/// over `(namespace_id)` walks every marked namespace the same way
-/// `iter_identities` walks identities. The value is `()` — presence of the
+/// = 33 bytes — the same shape as [`NamespaceIdentity`]. A `(prefix,
+/// namespace_id)` range scan over this column family enumerates every marked
+/// namespace in `namespace_id` order. The value is `()` — presence of the
 /// key IS the marker (like [`GroupDeniedMember`] / [`GroupChildIndex`]).
 ///
 /// Presence means: this node was confirmed TEE-self-evicted from the
