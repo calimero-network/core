@@ -439,7 +439,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 continue;
             }
 
-            let entry = crate::rotation_log::RotationLogEntry {
+            log.entries.push(crate::rotation_log::RotationLogEntry {
                 delta_id,
                 delta_hlc,
                 signer: signature_data.as_ref().and_then(|s| s.signer),
@@ -449,17 +449,11 @@ impl<S: StorageAdaptor> Interface<S> {
                     .map(|_| action.payload_for_signing()),
                 new_writers: writers.clone(),
                 writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
-            };
-            log.entries.push(entry.clone());
+            });
             crate::rotation_log::save::<S>(id, &log)?;
-            // P3 S2: write the SAME entry into the hashed child collection
-            // (authoritative). The originator builds it from its own signed
-            // action; a receiver builds the identical entry from the same delta
-            // via `build_rotation_entry` — byte-identical, so the per-`delta_id`
-            // children converge across nodes under the add-wins collection
-            // merge. The re-fold keeps the P2 `own_hash` term in step (dropped
-            // in S2.3 once resolve reads the child).
-            Self::append_rotation_to_child(id, &entry)?;
+            // `rehash_shared_anchor` mirrors the side-store log into the hashed
+            // child (P3) before folding, so the originator's own rotation rides
+            // ordinary sync.
             Self::rehash_shared_anchor(id)?;
             changed = true;
         }
@@ -1599,17 +1593,8 @@ impl<S: StorageAdaptor> Interface<S> {
                             // our own rotation bumped the anchor nonce) is logged
                             // here but its value-write is stale-skipped, so
                             // without this the originator of the higher-nonce
-                            // rotation never converges.
-                            //
-                            // P3 S2: write the rotation into the hashed child
-                            // collection (authoritative) even on the stale-skip
-                            // path — the anchor exists (stale means it was
-                            // already present), and the writer-set FACT must be
-                            // recorded regardless of the value-write LWW outcome.
-                            // Then re-fold (P2 term, dropped in S2.3).
-                            if let Some(entry) = &rotation_entry {
-                                Self::append_rotation_to_child(*id, entry)?;
-                            }
+                            // rotation never converges. Recompute the folded
+                            // own_hash from the (side-store) log and propagate.
                             Self::rehash_shared_anchor(*id)?;
                             return Ok(());
                         }
@@ -2182,18 +2167,14 @@ impl<S: StorageAdaptor> Interface<S> {
                 // anchor, append it to the hashed child (the anchor exists, so
                 // `add_child_to` can't synthesise a placeholder) and re-fold.
                 //
-                // P3 S2: write the rotation into the anchor's hashed child
-                // collection (the AUTHORITATIVE store the resolver will read in
-                // S2.2). Unlike the P2 mirror (`sync_rotation_log_child_from_
-                // side_store`, which racily reflected the side store and so
-                // diverged the anchor hash), this is a DIRECT write of the
-                // canonical `build_rotation_entry` entry — identical on every
-                // node for a given delta — so the per-`delta_id` children
-                // converge via the normal add-wins collection merge. The
-                // re-fold keeps the P2 `own_hash` term in step during the S2
-                // transition (deleted in S2.3 once resolve reads the child).
-                if let Some(entry) = pending_rotation.take() {
-                    Self::append_rotation_to_child(id, &entry)?;
+                // `save_internal` above folded `own_hash` from the resolved
+                // writer set (which reads the side-store rotation log, updated
+                // by `maybe_append_rotation_log` BEFORE this apply pass), so it
+                // already reflects THIS rotation. The re-fold is a belt-and-
+                // suspenders idempotent recompute so divergent writer sets
+                // surface as divergent roots
+                // (`rotation_log_reconciliation_converges_divergent_shared_logs`).
+                if pending_rotation.take().is_some() {
                     Self::rehash_shared_anchor(id)?;
                 }
 
