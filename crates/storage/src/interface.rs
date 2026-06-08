@@ -363,16 +363,14 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(());
         };
 
-        // P3: keep the hashed rotation-log child in step with the side store on
-        // every path that settles a Shared anchor's ACL (both originator
-        // self-log legs and the receiver stale-skip leg route through here).
-        // Sync BEFORE the fold/`update_hash_for` so the child's hash is already
-        // a child of the anchor when its `full_hash` is recomputed below. The
-        // anchor entity exists here (we just read it), so `add_child_to` can't
-        // create a placeholder anchor — the bootstrap-ordering hazard that keeps
-        // this out of `maybe_append_rotation_log`.
-        Self::sync_rotation_log_child_from_side_store(id)?;
-
+        // core#2716: the rotation log lives ONLY in the side store
+        // (`Key::RotationLog`), which the end-of-session reconcile converges
+        // across nodes; the writer set reaches the Merkle hash exclusively via
+        // the fold below. We deliberately do NOT mirror it into a hashed child
+        // of the anchor: that child is a redundant second representation whose
+        // population races sync (transiently empty on the originator, full on
+        // receivers), so it diverged the anchor's `full_hash` even when the
+        // fold itself had converged — the ~50% concurrent-rotation flake.
         let base: [u8; 32] = Sha256::digest(&data).into();
         let folded = Self::fold_shared_acl(id, base);
         let _full_hash = <Index<S>>::update_hash_for(id, folded, None)?;
@@ -399,23 +397,6 @@ impl<S: StorageAdaptor> Interface<S> {
             return;
         };
         let _ = Self::rehash_shared_anchor(anchor_id);
-    }
-
-    /// Mirror an anchor's side-store rotation log (`Key::RotationLog`) into its
-    /// hashed child entity so the log rides ordinary sync (HC/DeltaSync) and
-    /// folds into the anchor's `full_hash` (P3 of core#2716). Idempotent: the
-    /// child's always-union merge absorbs a re-push without changing its hash.
-    /// No-op when the anchor has no rotation log yet. Callers MUST ensure the
-    /// anchor entity already exists (else `save_rotation_log_child` →
-    /// `add_child_to` would synthesise a placeholder anchor).
-    ///
-    /// # Errors
-    /// Propagates rotation-log read / child-write failures.
-    fn sync_rotation_log_child_from_side_store(id: Id) -> Result<(), StorageError> {
-        if let Some(log) = crate::rotation_log::load::<S>(id)? {
-            Self::save_rotation_log_child(id, &log)?;
-        }
-        Ok(())
     }
 
     /// Originator-side companion to the receive path's
@@ -1631,16 +1612,7 @@ impl<S: StorageAdaptor> Interface<S> {
                             // here but its value-write is stale-skipped, so
                             // without this the originator of the higher-nonce
                             // rotation never converges. Recompute the folded
-                            // own_hash from the updated log and propagate.
-                            //
-                            // P3: append this rotation to the hashed child too
-                            // (the anchor exists — stale means it was already
-                            // present), so the child reflects the rotation even
-                            // when the data write is dropped. `rehash` then
-                            // re-folds from the updated child.
-                            if let Some(entry) = &rotation_entry {
-                                Self::append_rotation_to_child(*id, entry)?;
-                            }
+                            // own_hash from the (side-store) log and propagate.
                             Self::rehash_shared_anchor(*id)?;
                             return Ok(());
                         }
@@ -2213,16 +2185,14 @@ impl<S: StorageAdaptor> Interface<S> {
                 // anchor, append it to the hashed child (the anchor exists, so
                 // `add_child_to` can't synthesise a placeholder) and re-fold.
                 //
-                // `save_internal` above already folded `own_hash` from the
-                // resolved writer set, but with the resolver reading the child
-                // (P3) that fold saw the PRE-rotation child (this apply's child
-                // write hadn't happened yet), so `own_hash` is stale until the
-                // re-fold. `rehash_shared_anchor` re-folds from the fresh child,
-                // so `own_hash` reflects THIS rotation — divergent writer sets
+                // `save_internal` above folded `own_hash` from the resolved
+                // writer set (which reads the side-store rotation log, updated
+                // by `maybe_append_rotation_log` BEFORE this apply pass), so it
+                // already reflects THIS rotation. The re-fold is a belt-and-
+                // suspenders idempotent recompute so divergent writer sets
                 // surface as divergent roots
                 // (`rotation_log_reconciliation_converges_divergent_shared_logs`).
-                if let Some(entry) = pending_rotation.take() {
-                    Self::append_rotation_to_child(id, &entry)?;
+                if pending_rotation.take().is_some() {
                     Self::rehash_shared_anchor(id)?;
                 }
 
