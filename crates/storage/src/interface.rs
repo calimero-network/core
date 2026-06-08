@@ -245,7 +245,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// anchors created post-P4. It remains for local execution (correct there)
     /// and for legacy anchors whose log predates P4 (a vanishing set after a
     /// state reset).
-    fn resolve_anchor_writers(anchor: Id) -> BTreeMap<PublicKey, OpMask> {
+    pub(crate) fn resolve_anchor_writers(anchor: Id) -> BTreeMap<PublicKey, OpMask> {
         // core#2716: resolve from the UNION of both rotation-log
         // representations — the hashed child collection AND the side store —
         // rather than preferring one. The side store is the source the
