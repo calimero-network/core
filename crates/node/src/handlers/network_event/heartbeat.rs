@@ -289,40 +289,6 @@ pub(super) fn handle_hash_heartbeat(
                     their_heads_count = their_dag_heads.len(),
                     "Different root hash (peer is behind or concurrent updates)"
                 );
-
-                // P3-DIAG (temporary): we hold a SUPERSET of the peer's DAG
-                // heads yet our root still differs — a genuine post-merge
-                // divergence (the failing case in convergence e2e). Dump our
-                // ROOT children so the divergent node's tree can be diffed
-                // against the converged peers. Fires only on this branch
-                // (~once per heartbeat), so it is not spammy.
-                match context_client.dump_root(&context_id) {
-                    Ok(Some((self_dump, children))) => {
-                        warn!(
-                            target: "sync::hc_diverge",
-                            %context_id, ?source,
-                            root_own = %hex::encode(&self_dump.own_hash[..8]),
-                            root_full = %hex::encode(&self_dump.full_hash[..8]),
-                            children = self_dump.children_count,
-                            "HC-DIVERGE(hb) root"
-                        );
-                        for c in &children {
-                            warn!(
-                                target: "sync::hc_diverge",
-                                %context_id,
-                                child = %hex::encode(&c.id[..8]),
-                                merkle = %hex::encode(&c.merkle_hash[..8]),
-                                crdt = ?c.crdt_type,
-                                field = ?c.field_name,
-                                "HC-DIVERGE(hb) child"
-                            );
-                        }
-                    }
-                    other => warn!(
-                        target: "sync::hc_diverge",
-                        %context_id, ?other, "HC-DIVERGE(hb) dump_root failed"
-                    ),
-                }
                 return;
             }
 
