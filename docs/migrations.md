@@ -333,6 +333,33 @@ Loop until `remaining == 0` if you want to drain everything in one sitting
 second call returns `{converted: 0, remaining: 0}`). It only ever touches
 entries the caller owns, so each user converts their own data independently.
 
+### Migration UX surfaces
+
+Two node-level events help frontends track migration progress without polling:
+
+**`AppVersionChanged` event** — fired once, over the context's SSE/WebSocket event stream, when the context's application version flips (i.e. a migrate/upgrade was applied). `contextId` rides on the outer `ContextEvent` envelope; the payload carries the `fromVersion` / `toVersion` semver strings (either may be `null` if the corresponding `ApplicationMeta` row was unavailable at emit time):
+
+```json
+{
+  "type": "AppVersionChanged",
+  "data": {
+    "fromVersion": "1.0.0",
+    "toVersion": "2.0.0"
+  }
+}
+```
+
+Subscribe to context events via the node's SSE endpoint and react to this event to prompt owners to run `migrate_my_entries()` — this avoids bundle-skew (spec skew #2) where the frontend loads v2 assets but the context is still running v1.
+
+**`authored_remaining` in the migration status endpoint** — tracks how many members in the cohort still have uncoverted identity-gated entries:
+
+```text
+GET /admin-api/groups/{namespace_id}/migration/status
+→ { ..., "authored_remaining": 3 }   # 3 cohort members still have stale entries
+```
+
+`authored_remaining == 0` means all members have run `migrate_my_entries()` or had no entries to convert. Use this to drive a "migration complete" indicator in admin UIs.
+
 ---
 
 ## 6. The no-silent-downgrade rail

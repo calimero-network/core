@@ -30,17 +30,24 @@
 <summary>#[app::state] &mdash; persistent state struct</summary>
 <div class="detail-body">
 <p>Marks the persistent state struct. Generates automatic storage keys, versioning info, Borsh derives, and CRDT merge registration. Each field with a CRDT type gets its own storage subtree.</p>
+<p>The optional <span class="code">version = N</span> attribute sets the schema target version for identity-gated migration (see <span class="code">migrate_my_entries</span> in <a href="../../docs/migrations.md">migrations guide §5</a>). When the state contains an <span class="code">AuthoredMap</span> / <span class="code">AuthoredVector</span> field and <span class="code">version = N</span> is declared, the macro auto-generates a <span class="code">migrate_my_entries()</span> WASM export that sweeps the caller's stale entries up to that target. Defaults to <span class="code">0</span> (inert).</p>
 <div class="typedef">
 <span class="kw">use</span> calimero_sdk::app;
 <span class="kw">use</span> calimero_sdk::borsh::{BorshSerialize, BorshDeserialize};
 <span class="kw">use</span> calimero_storage::collections::{UnorderedMap, LwwRegister};
 
+<span class="comment">// Basic usage — no events, no version target</span>
+<span class="kw">#[app::state]</span>
+<span class="kw">pub struct</span> <span class="ty">MyApp</span> { <span class="field">items</span>: UnorderedMap&lt;String, LwwRegister&lt;String&gt;&gt; }
+
+<span class="comment">// With events</span>
 <span class="kw">#[app::state(emits = for&lt;'a&gt; Event&lt;'a&gt;)]</span>
-<span class="kw">#[derive(Debug, BorshSerialize, BorshDeserialize)]</span>
-<span class="kw">#[borsh(crate = "calimero_sdk::borsh")]</span>
-<span class="kw">pub struct</span> <span class="ty">MyApp</span> {
-    <span class="field">items</span>: UnorderedMap&lt;String, LwwRegister&lt;String&gt;&gt;,
-    <span class="field">count</span>: Counter,
+<span class="kw">pub struct</span> <span class="ty">MyApp</span> { <span class="field">items</span>: UnorderedMap&lt;String, LwwRegister&lt;String&gt;&gt; }
+
+<span class="comment">// With schema-version target (auto-generates migrate_my_entries for AuthoredMap/AuthoredVector fields)</span>
+<span class="kw">#[app::state(version = 2, emits = for&lt;'a&gt; Event&lt;'a&gt;)]</span>
+<span class="kw">pub struct</span> <span class="ty">NotesV2</span> {
+    <span class="field">notes</span>: AuthoredMap&lt;String, LwwRegister&lt;String&gt;&gt;,  <span class="comment">// migrate_my_entries auto-generated</span>
 }
 </div>
 </div>
@@ -123,6 +130,51 @@ app::emit!((Event::ItemSet { key: &amp;k, value: &amp;v }, "on_item_set"));
     }
 }
 </div>
+</div>
+</details>
+
+<details>
+<summary>#[app::view] &mdash; declare a read-only method</summary>
+<div class="detail-body">
+<p>Marks a public method as read-only. The declaration is stored in the compiled ABI so the node runtime can take a <strong>shared read lock</strong> instead of an exclusive write lock, enabling parallel execution of concurrent <span class="code">view</span> calls. Mutually exclusive with <span class="code">#[app::init]</span> (initializers always write state).</p>
+<div class="typedef">
+<span class="kw">#[app::logic]</span>
+<span class="kw">impl</span> <span class="ty">MyApp</span> {
+    <span class="comment">// Exclusive write lock — state may change</span>
+    <span class="kw">pub fn</span> <span class="field">set</span>(&amp;<span class="kw">mut</span> self, key: String, val: String) -&gt; app::Result&lt;()&gt; { .. }
+
+    <span class="comment">// Shared read lock — concurrent calls run in parallel</span>
+    <span class="kw">#[app::view]</span>
+    <span class="kw">pub fn</span> <span class="field">get</span>(&amp;self, key: &amp;str) -&gt; app::Result&lt;Option&lt;String&gt;&gt; { .. }
+}
+</div>
+<p style="margin-top:10px;">A method marked <span class="code">#[app::view]</span> <strong>must</strong> take <span class="code">&amp;self</span> (not <span class="code">&amp;mut self</span>); the macro enforces this at compile time. No state writes may occur inside a view method — the intent is compiler-documented and runtime-exploited for parallelism. Design note: see <a href="../../docs/design/context-method-read-write-intent.md">docs/design/context-method-read-write-intent.md</a> for the parallel-read accelerator design.</p>
+</div>
+</details>
+
+<details>
+<summary>#[app::migration_check] &mdash; pre-commit migration guard</summary>
+<div class="detail-body">
+<p>Optional companion to <span class="code">#[app::migrate]</span>. Runs against a staging buffer — <em>before</em> the migrated state is committed — and returns <span class="code">bool</span>. <span class="code">false</span> triggers a <strong>logical abort</strong>: the staging buffer is discarded and the context stays on v1 with zero residue (no snapshot/restore needed). A failed check is retryable; no migration marker is recorded, so the context re-runs migrate+check on its next access.</p>
+<div class="typedef">
+<span class="kw">#[derive(BorshSerialize, BorshDeserialize)]</span>
+<span class="kw">struct</span> <span class="ty">MigrationWitness</span> { v1_count: u64 }
+
+<span class="comment">// Migrate returns (State, Witness) so the check has a v1 baseline</span>
+<span class="kw">#[app::migrate]</span>
+<span class="kw">fn</span> <span class="field">migrate_v1_to_v2</span>() -&gt; (<span class="ty">DocV2</span>, <span class="ty">MigrationWitness</span>) {
+    <span class="kw">let</span> old = read_v1();
+    <span class="kw">let</span> v1_count = old.items.len().unwrap_or(0) <span class="kw">as</span> u64;
+    (<span class="ty">DocV2</span> { items: old.items, .. }, <span class="ty">MigrationWitness</span> { v1_count })
+}
+
+<span class="comment">// Check: old scalars + new collections + optional witness → bool</span>
+<span class="kw">#[app::migration_check]</span>
+<span class="kw">fn</span> <span class="field">check_migration</span>(_old: <span class="ty">DocV1</span>, new: <span class="ty">DocV2</span>, w: <span class="ty">MigrationWitness</span>) -&gt; bool {
+    matches!(new.items.len(), Ok(n) <span class="kw">if</span> n <span class="kw">as</span> u64 == w.v1_count)
+}
+</div>
+<p style="margin-top:10px;">Both the check and any witness must be deterministic pure functions of the v1 state — they run independently on every node and must reach the same verdict. See <a href="../../docs/migrations.md#7-guarding-a-migration-migration_check--abort">migrations guide §7</a> for the full contract.</p>
 </div>
 </details>
 
@@ -352,7 +404,8 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
   ├── immutable, content-addressed              <span class="arrow">→</span> <span class="target">FrozenStorage&lt;T&gt;</span>
   └── identity-bound writes ↓
         ├── one slot per user, disjoint          <span class="arrow">→</span> <span class="target">UserStorage&lt;T&gt;</span>
-        ├── one shared slot, named writer set    <span class="arrow">→</span> <span class="target">SharedStorage&lt;T&gt;</span>
+        ├── one shared slot, named writer set    <span class="arrow">→</span> <span class="target">SharedStorage&lt;T&gt;</span> (alias: <span class="target">PermissionedStorage&lt;T, WriterSetAcl&gt;</span>)
+        ├── one shared slot, single transferable owner <span class="arrow">→</span> <span class="target">Ownable&lt;T&gt;</span>
         ├── shared keyspace, per-entry author    <span class="arrow">→</span> <span class="target">AuthoredMap&lt;K,V&gt;</span>
         └── shared sequence, per-entry author    <span class="arrow">→</span> <span class="target">AuthoredVector&lt;V&gt;</span></div>
 
@@ -401,6 +454,28 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">posts</span>: AuthoredMap&lt;PostId, Post&gt;,<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">feed</span>: AuthoredVector&lt;Event&gt;,<br>
 }
+    </div>
+  </div>
+</div>
+
+<div class="g2" style="margin-bottom:16px;">
+  <div class="cb">
+    <h4 style="color:#22c55e;">Ownable&lt;T&gt;</h4>
+    <p style="margin-top:8px;">A single-owner variant of <span class="code">SharedStorage</span> — the writer set is always size 1. Ownership is transferable (<span class="code">transfer_ownership(new_owner)</span>) and renounce-able (<span class="code">renounce_ownership()</span>, which freezes the value). The <span class="code">only_owner()</span> call is a fail-fast API guard; the actual security boundary is merge-time signature verification. See <a href="../../docs/design/calimero-components.md">calimero-components</a> for the full component model.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">use</span> calimero_storage::collections::<span class="ty">Ownable</span>;<br><br>
+<span class="kw">struct</span> <span class="ty">State</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">config</span>: Ownable&lt;LwwRegister&lt;String&gt;&gt;,<br>
+}
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:#22c55e;">Op-granular writer capabilities (OpMask)</h4>
+    <p style="margin-top:8px;">The <span class="code">SharedStorage</span> writer set now supports per-writer <span class="code">OpMask</span> bits (INSERT, UPDATE, DELETE, ADMIN). Use <span class="code">grant_capability(who, mask)</span> to restrict a writer to append-only (<span class="code">OpMask::APPEND</span>) or deny deletes. The mask is enforced at merge time by the <span class="code">ProtocolAuthorizer</span> after signature verification — a writer with <span class="code">DELETE</span> not set cannot delete even by crafting a raw delta. A writer with no explicit mask resolves to <span class="code">FULL</span> (all operations permitted).</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">use</span> calimero_storage::entities::<span class="ty">OpMask</span>;<br><br>
+<span class="comment">// Grant write-but-not-delete to a collaborator:</span><br>
+self.shared.grant_capability(collaborator, OpMask::APPEND)?;
     </div>
   </div>
 </div>
@@ -587,15 +662,19 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 <div class="card gc">
 <h3>Available Macros</h3>
 <div class="typedef">
-<span class="kw">#[app::state]</span>           <span class="comment">— Mark application state struct</span>
-<span class="kw">#[app::state(emits = Event)]</span> <span class="comment">— With events</span>
-<span class="kw">#[app::logic]</span>           <span class="comment">— Mark implementation block</span>
-<span class="kw">#[app::init]</span>            <span class="comment">— Mark constructor</span>
-<span class="kw">#[app::event]</span>           <span class="comment">— Mark event enum</span>
-<span class="kw">#[app::migrate]</span>         <span class="comment">— Mark migration function</span>
-<span class="kw">app::emit!(event)</span>       <span class="comment">— Emit event</span>
-<span class="kw">app::log!("msg")</span>        <span class="comment">— Logging</span>
-<span class="kw">app::bail!(Error::X)</span>    <span class="comment">— Early return with error</span>
+<span class="kw">#[app::state]</span>                    <span class="comment">— Mark application state struct</span>
+<span class="kw">#[app::state(emits = Event)]</span>     <span class="comment">— With event type</span>
+<span class="kw">#[app::state(version = N)]</span>       <span class="comment">— Set schema target (auto-generates migrate_my_entries)</span>
+<span class="kw">#[derive(app::Migrate)]</span>          <span class="comment">— Auto-derive migration body (with #[migrate(…)] annotations)</span>
+<span class="kw">#[app::logic]</span>                    <span class="comment">— Mark implementation block</span>
+<span class="kw">#[app::init]</span>                     <span class="comment">— Mark constructor</span>
+<span class="kw">#[app::view]</span>                     <span class="comment">— Declare method read-only (shared lock, parallel execution)</span>
+<span class="kw">#[app::event]</span>                    <span class="comment">— Mark event enum</span>
+<span class="kw">#[app::migrate]</span>                  <span class="comment">— Mark migration function</span>
+<span class="kw">#[app::migration_check]</span>          <span class="comment">— Pre-commit guard; false → logical abort, zero residue</span>
+<span class="kw">app::emit!(event)</span>                <span class="comment">— Emit event</span>
+<span class="kw">app::log!("msg")</span>                 <span class="comment">— Logging</span>
+<span class="kw">app::bail!(Error::X)</span>             <span class="comment">— Early return with error</span>
 </div>
 </div>
 
