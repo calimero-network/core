@@ -76,7 +76,9 @@ use tracing::{debug, error, info, warn};
 use calimero_governance_store;
 use calimero_governance_store::metrics::{record_purge_failure, PurgeBranch, PurgeFailureClass};
 use calimero_governance_store::op_events::{self, OpEvent};
-use calimero_governance_store::NamespaceRepository;
+use calimero_governance_store::{
+    MembershipRepository, NamespaceRepository, PendingSelfPurgeRepository,
+};
 
 struct HandleState {
     abort: AbortHandle,
@@ -119,6 +121,23 @@ async fn run(store: Store, node_client: NodeClient) {
     let mut rx = op_events::subscribe();
     info!("self-purge handler started");
 
+    // Startup reconcile sweep (#2721). Runs once, BEFORE the event loop, so a
+    // TEE self-eviction whose cascade was interrupted (crash mid-cascade, or a
+    // prior signing-key purge that failed and left a retry anchor) is completed
+    // on the way up.
+    //
+    // Marker-gated, NOT a role-blind full scan: the sweep enumerates the
+    // durable pending-self-purge markers (written ONLY when the listener
+    // confirmed a `TeeMemberRemoved` targeting THIS node's identity) and
+    // completes only those still-evicted per the safety predicate. This
+    // EXCLUDES by construction the two identity-present/membership-absent
+    // look-alikes a full scan would false-purge: a pending join (no marker —
+    // the join path writes the identity before the membership row
+    // materializes) and a non-TEE soft-leave (no marker — the listener never
+    // fires for `MemberRemoved`, and those rows must be kept for
+    // kick-and-rejoin / inheritance-rejoin). Startup-only, not continuous.
+    reconcile_sweep(&store, &node_client).await;
+
     loop {
         let event = match rx.recv().await {
             Ok(e) => e,
@@ -126,20 +145,34 @@ async fn run(store: Store, node_client: NodeClient) {
                 // Missed events: the evicted membership row is already gone
                 // from the local store (apply committed before notify) while
                 // the signing-key + gov-op rows linger. There is no incidental
-                // recovery — an already-evicted identity receives no further
-                // removal events (a re-admitted TEE node derives a fresh
-                // attestation pubkey), and a process restart re-subscribes
-                // without replaying past events. So a dropped event leaves
-                // residue on disk until the reconcile sweep tracked in #2721
-                // is added. Bounded, not a forward-secrecy hole: FS on future
-                // writes comes from key rotation, not this purge (see module
-                // docstring §"Forward-secrecy invariant"); the residue is stale
-                // already-orphaned key material on this node's own disk.
+                // event-driven recovery — an already-evicted identity receives
+                // no further removal events (a re-admitted TEE node derives a
+                // fresh attestation pubkey).
+                //
+                // IMPORTANT — the marker-based startup reconcile sweep does NOT
+                // cover a PURELY-lagged drop. The marker is written by
+                // `handle_member_removed` at dispatch time; if the
+                // `TeeMemberRemoved` event was never delivered (this `Lagged`
+                // arm fired in its place), the listener never ran and so NO
+                // marker exists. The sweep enumerates markers only, so it will
+                // not pick this residue up. This is a deliberate, honest gap:
+                // covering it would require widening the reconcile back into a
+                // role-blind full scan — exactly the unsafe behaviour the
+                // marker gate replaced (it would then false-purge pending-join
+                // and non-TEE soft-leave residue). The lagged-drop case is rare
+                // (it requires >1024 dropped events between two `recv` calls —
+                // the broadcast channel capacity) and bounded: it is NOT a
+                // forward-secrecy hole — FS on future writes comes from key
+                // rotation, not this purge (see module docstring
+                // §"Forward-secrecy invariant"); the residue is stale,
+                // already-orphaned key material on this node's own disk. #2721.
                 warn!(
                     skipped,
                     "self-purge subscriber lagged; some events were dropped — \
-                     residual local state will persist with no automatic recovery \
-                     until the reconcile sweep (#2721) is added"
+                     a purely-dropped TeeMemberRemoved leaves no pending-self-purge \
+                     marker, so the marker-gated startup reconcile sweep (#2721) does \
+                     NOT complete it; the residual local key material persists (bounded, \
+                     not a forward-secrecy hole — FS is held by key rotation)"
                 );
                 continue;
             }
@@ -260,6 +293,344 @@ pub(crate) fn decide_purge_action(
     }
 }
 
+/// Startup reconcile sweep (#2721): complete any TEE self-eviction purge
+/// that was marked but left unfinished (crash mid-cascade, or a prior
+/// signing-key purge failure that kept a retry anchor).
+///
+/// # Marker-gated, role-scoped — NOT a role-blind identity scan
+///
+/// The sweep enumerates the durable **pending-self-purge markers**
+/// ([`PendingSelfPurgeRepository::iter_pending`]), NOT every stored
+/// `NamespaceIdentity`. A marker is written ONLY when the listener confirmed
+/// (via [`decide_purge_action`]) a `TeeMemberRemoved` targeting THIS node's
+/// identity at the namespace root — so the marker is the role/intent gate
+/// the post-eviction store state can no longer reconstruct (the role row is
+/// erased at removal). This is what regains the scoping the event path has.
+///
+/// Two identity-present / membership-absent states look IDENTICAL to evicted
+/// residue but MUST NOT be purged; both are excluded by construction because
+/// neither ever gets a marker:
+///
+///   1. **Pending join** — the join path writes `NamespaceIdentity` BEFORE
+///      the joiner's `GroupMember` row materializes (the row appears only
+///      when this node's `MemberJoined` op applies). A restart mid-join is
+///      identity-present / membership-absent. No `TeeMemberRemoved` fired, so
+///      no marker → the sweep skips it.
+///   2. **Non-TEE soft-leave** — a regular member kicked from a namespace is
+///      identity-present / membership-absent too (the role is erased at
+///      removal). The soft-leave invariant REQUIRES keeping those rows for
+///      kick-and-rejoin-keyshare / inheritance-rejoin. The listener gates on
+///      `TeeMemberRemoved` (never `MemberRemoved`), so no marker → the sweep
+///      skips it.
+///
+/// # The two-gate invariant (get this right — false-purging a healthy member,
+/// TEE or not, is a serious bug)
+///
+/// A namespace is purged by the reconcile ONLY IF **(marker present)** AND
+/// **(still-evicted per [`namespace_needs_reconcile`])**. Both must hold:
+///
+///   * The **marker** is the role/intent gate: it proves this was a confirmed
+///     TEE self-eviction (excludes pending-join and non-TEE soft-leave).
+///   * The **predicate** is the still-evicted safety gate: if we were
+///     re-admitted since the marker was written (a fresh `GroupMember` row
+///     exists), the predicate returns false and we clear the stale marker
+///     WITHOUT purging.
+///
+/// For each marked `ns_id` the sweep:
+///   * looks up THIS node's current `NamespaceIdentity`; if it's gone
+///     (already purged) ⇒ clear the stale marker, skip;
+///   * re-checks [`namespace_needs_reconcile`]; if false (live member again)
+///     ⇒ clear the stale marker, skip;
+///   * if true (still evicted) ⇒ run [`purge_namespace_for_self`], which
+///     clears the marker on a fully-successful purge (and leaves it on a
+///     signing-key failure so the next restart retries).
+///
+/// # Scope
+///
+/// Startup-only, not continuous. The purely-lagged-drop case (a
+/// `TeeMemberRemoved` dropped by the broadcast `Lagged` arm before the
+/// listener ran) writes no marker and is therefore NOT covered — see the
+/// `Lagged` arm in [`run`]. Widening the sweep back to a role-blind scan to
+/// cover it would re-introduce the pending-join / non-TEE false-purge bugs,
+/// so it is deliberately left uncovered (#2721).
+async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
+    let pending = match PendingSelfPurgeRepository::new(store).iter_pending() {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                error = ?e,
+                "self-purge reconcile: failed to enumerate pending-self-purge markers — \
+                 skipping startup sweep (marked residue, if any, persists until next restart)"
+            );
+            return;
+        }
+    };
+
+    let scanned = pending.len();
+    let mut reconciled = 0usize;
+    let mut cleared_stale = 0usize;
+    let mut retained = 0usize;
+    let mut skipped = 0usize;
+
+    for ns_id in pending {
+        let ns_hex = hex::encode(ns_id.to_bytes());
+
+        match reconcile_decision(store, ns_id) {
+            ReconcileDecision::Purge => {
+                info!(
+                    namespace = %ns_hex,
+                    "self-purge reconcile: marked namespace still has no surviving membership \
+                     — completing the evicted purge"
+                );
+                // Idempotent namespace-root purge. Clears the marker on full
+                // success; leaves it on a signing-key failure for the next
+                // restart. Only count it as `reconciled` when it actually
+                // completed — a silent signing-key failure must not inflate
+                // the counter (review nit).
+                if purge_namespace_for_self(store, node_client, ns_id).await {
+                    reconciled += 1;
+                } else {
+                    retained += 1;
+                }
+            }
+            ReconcileDecision::ClearStaleMarker(reason) => {
+                info!(
+                    namespace = %ns_hex,
+                    %reason,
+                    "self-purge reconcile: clearing stale marker WITHOUT purging"
+                );
+                clear_marker(store, &ns_id);
+                cleared_stale += 1;
+            }
+            ReconcileDecision::Skip => {
+                // A read error somewhere — already logged + metered inside
+                // `reconcile_decision`. Keep the marker; the next restart
+                // retries.
+                skipped += 1;
+            }
+        }
+    }
+
+    info!(
+        scanned,
+        reconciled, cleared_stale, retained, skipped, "self-purge reconcile sweep complete"
+    );
+}
+
+/// What the reconcile should do for one marked namespace. Split out from
+/// [`reconcile_sweep`] so the two-gate decision — the part most likely to
+/// regress into a false-purge — is unit-testable WITHOUT standing up a
+/// `NodeClient`. The async sweep only adds the actual purge (and the
+/// counter bookkeeping) on top of this pure decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReconcileDecision {
+    /// Marker present AND still-evicted per [`namespace_needs_reconcile`] —
+    /// run the namespace-root purge. BOTH gates held.
+    Purge,
+    /// Marker present but no purge is warranted — clear the stale marker.
+    /// Carries a short reason for the log line.
+    ClearStaleMarker(&'static str),
+    /// A read error made the decision uncertain — do nothing (keep the
+    /// marker, retry next restart). Logged + metered at the call site.
+    Skip,
+}
+
+/// Pure two-gate reconcile decision for a single marked namespace.
+///
+/// Precondition: `ns_id` came out of [`PendingSelfPurgeRepository::iter_pending`],
+/// so the marker (the role/intent gate) is normally already known present.
+/// This function nonetheless RE-CHECKS the marker at the top via
+/// [`PendingSelfPurgeRepository::is_marked`] before doing anything else, then
+/// applies the SECOND, safety gate:
+///
+///   * Marker no longer present ⇒ `Skip` (nothing to do). The marker was
+///     present at `iter_pending` time but is gone now — only reachable if the
+///     sweep is ever made concurrent/periodic and another task cleared it
+///     between enumeration and decision. This re-check closes that TOCTOU
+///     window; the function is otherwise still single-task (the startup sweep
+///     enumerates and decides in one task, so the marker cannot vanish under
+///     it today).
+///   * No current `NamespaceIdentity` ⇒ already purged ⇒
+///     `ClearStaleMarker` (nothing left to do).
+///   * Identity present AND [`namespace_needs_reconcile`] true (still
+///     evicted) ⇒ `Purge`. This is the ONLY path that purges, and it
+///     requires BOTH gates (marker + still-evicted).
+///   * Identity present BUT we are a live member again (re-admitted) ⇒
+///     `ClearStaleMarker` — do NOT purge a healthy member.
+///   * Any read error ⇒ `Skip` (never purge on uncertainty).
+///
+/// Pure store reads; no mutation.
+pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> ReconcileDecision {
+    let ns_hex = hex::encode(ns_id.to_bytes());
+
+    // Re-check the marker (TOCTOU guard). `ns_id` came from `iter_pending`, so
+    // the marker was present at enumeration time; under the current single-task
+    // startup sweep it cannot vanish before we get here. The re-check exists so
+    // that if the sweep is ever made concurrent/periodic, a marker cleared by
+    // another task between enumeration and this decision results in a no-op
+    // `Skip` rather than acting on a stale namespace. On a read error we also
+    // `Skip` (never act on uncertainty).
+    match PendingSelfPurgeRepository::new(store).is_marked(&ns_id) {
+        Ok(true) => {}
+        Ok(false) => {
+            // Marker definitively gone since enumeration (only reachable
+            // under a future concurrent/periodic sweep that cleared it). This
+            // is NOT uncertainty — it's a benign concurrent clear — so report
+            // it as a stale-marker clear (the `clear_marker` is an idempotent
+            // no-op on an already-absent marker) rather than `Skip`, which the
+            // sweep logs as a read-error retry.
+            return ReconcileDecision::ClearStaleMarker(
+                "marker cleared concurrently since enumeration",
+            );
+        }
+        Err(e) => {
+            warn!(
+                namespace = %ns_hex,
+                error = ?e,
+                "self-purge reconcile: failed to re-check pending-self-purge marker \
+                 — skipping (will retry on next restart; NOT purging on uncertainty)"
+            );
+            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
+            return ReconcileDecision::Skip;
+        }
+    }
+
+    let self_pk = match NamespaceRepository::new(store).identity_record(&ns_id) {
+        Ok(Some(record)) => record.public_key,
+        Ok(None) => {
+            // Identity already gone — the purge completed but the marker
+            // clear was missed (e.g. crash between the two). Stale marker.
+            return ReconcileDecision::ClearStaleMarker("already purged (no identity row)");
+        }
+        Err(e) => {
+            warn!(
+                namespace = %ns_hex,
+                error = ?e,
+                "self-purge reconcile: failed to read namespace identity for a marked \
+                 namespace — skipping (will retry on next restart; NOT purging on uncertainty)"
+            );
+            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
+            return ReconcileDecision::Skip;
+        }
+    };
+
+    // SAFETY RE-CHECK: still-evicted? The marker proves it WAS a TEE
+    // self-eviction; the predicate proves we have not been re-admitted since.
+    // Both gates must hold to purge.
+    match namespace_needs_reconcile(store, ns_id, self_pk) {
+        Ok(true) => ReconcileDecision::Purge,
+        Ok(false) => {
+            // Re-admitted as a live member since the marker was written (a
+            // fresh `GroupMember` row exists). The intent gate fired but the
+            // safety gate vetoes — clear the stale marker, do NOT purge.
+            ReconcileDecision::ClearStaleMarker("live member again (re-admitted)")
+        }
+        Err(e) => {
+            warn!(
+                namespace = %ns_hex,
+                error = ?e,
+                "self-purge reconcile: membership check errored for a marked namespace \
+                 — skipping (keeping marker; will retry on next restart; NOT purging \
+                 on uncertainty)"
+            );
+            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
+            ReconcileDecision::Skip
+        }
+    }
+}
+
+/// Best-effort clear of a pending-self-purge marker. A failure here is
+/// non-fatal: a stale marker just means the next reconcile re-evaluates the
+/// (already-clean / re-admitted) namespace and tries to clear it again. Logged
+/// so it is visible, but it does not block the sweep.
+fn clear_marker(store: &Store, ns_id: &ContextGroupId) {
+    if let Err(e) = PendingSelfPurgeRepository::new(store).clear(ns_id) {
+        warn!(
+            namespace = %hex::encode(ns_id.to_bytes()),
+            error = ?e,
+            "self-purge: failed to clear pending-self-purge marker — stale marker will be \
+             re-evaluated on the next reconcile (harmless)"
+        );
+    }
+}
+
+/// Reconcile safety predicate: is `self_pk` STILL evicted from namespace
+/// `ns_id`, or has it become a live member again at the namespace ROOT?
+///
+/// This is the **still-evicted safety gate** of the reconcile's two-gate
+/// invariant — it is only ever evaluated for namespaces that ALREADY carry a
+/// pending-self-purge marker (the role/intent gate). It does NOT, on its own,
+/// distinguish evicted-TEE residue from a pending join or a non-TEE
+/// soft-leave — that is the marker's job. Here we answer only: given that this
+/// WAS a confirmed TEE self-eviction AT THE NAMESPACE ROOT, are we still out?
+///
+/// # Root-only — descendants are deliberately NOT consulted
+///
+/// The check is **namespace-root membership ONLY** (`role_of(&ns_id, &self_pk)`).
+/// A surviving DESCENDANT `GroupMember` row does NOT veto the purge. This is
+/// load-bearing — an earlier subtree walk (root OR any descendant) abandoned
+/// the purge whenever descendant residue survived, leaking the
+/// `NamespaceIdentity` + signing keys forever (cursor Bugbot HIGH):
+///
+///   * A marker is written ONLY for a namespace-ROOT eviction
+///     (`decide_purge_action` returns `PurgeAction::Namespace` exclusively when
+///     `gid == ns_id`). So every namespace reaching this predicate was evicted
+///     at the root.
+///   * A namespace-root `MemberRemoved` apply removes ONLY the root
+///     `GroupMember` row; `cascade_remove_member_from_group_tree`
+///     (`governance-store::context_tree::cascade_remove_member`) deletes
+///     `ContextIdentity` rows, NOT descendant `GroupMember` rows. So a
+///     surviving descendant `GroupMember` row after a root eviction is
+///     **un-cascaded residue**, NOT live membership — exactly what the cascade
+///     here will clean up. Treating it as "re-admitted" was the bug.
+///
+/// Root-row present ⇒ `Ok(false)` (genuinely re-admitted: TEE re-admission
+/// re-adds the root row via `MemberJoinedViaTeeAttestation`). Root-row
+/// absent ⇒ `Ok(true)` (still evicted; any surviving descendant row is residue
+/// the cascade will sweep).
+///
+/// # Why this can't false-purge a healthy member
+///
+/// The marker gate already restricts callers to confirmed root evictions, so
+/// a pending-join / non-TEE soft-leave never reaches here. For the marked
+/// root-eviction namespaces that DO, root membership is the correct
+/// re-admission signal: re-admission re-adds the root row, and its absence
+/// means we are still out. A node that is "only in a descendant" cannot be a
+/// healthy namespace-root member (it has no root row by definition) — and the
+/// marker proves the root row was deliberately removed by a root eviction, so
+/// the descendant row is residue, not standing membership.
+///
+/// We use DIRECT membership (`role_of`), not inherited
+/// (`is_member`/`check_path`): a TEE node's presence under a namespace is its
+/// `GroupMember` row, which is what the apply path removes on eviction.
+/// Inherited (Open-subgroup admin-inheritance) membership is an authorization
+/// concept, not a "this node holds key material here" signal, and would never
+/// apply to a `ReadOnlyTee` node anyway.
+///
+/// Pure store reads; no mutation. Split out so it is unit-testable without a
+/// `NodeClient`.
+pub(crate) fn namespace_needs_reconcile(
+    store: &Store,
+    ns_id: ContextGroupId,
+    self_pk: PublicKey,
+) -> eyre::Result<bool> {
+    let membership = MembershipRepository::new(store);
+
+    // Root-only: re-admission after a root eviction re-adds the namespace-root
+    // `GroupMember` row. Its presence means we are a live member again; its
+    // absence means we are still evicted and a surviving descendant row is
+    // un-cascaded residue (the cascade removed the root row but not descendant
+    // membership rows), NOT live membership. Consulting descendants here would
+    // misread that residue as re-admission and abandon the purge.
+    if membership.role_of(&ns_id, &self_pk)?.is_some() {
+        // Re-admitted at the namespace root → live member again.
+        return Ok(false);
+    }
+
+    // No namespace-root membership → still evicted, complete the purge.
+    Ok(true)
+}
+
 async fn handle_member_removed(
     store: &Store,
     node_client: &NodeClient,
@@ -270,6 +641,31 @@ async fn handle_member_removed(
         PurgeAction::None => {}
         PurgeAction::Subgroup(gid) => purge_subgroup_for_self(store, gid),
         PurgeAction::Namespace(ns_id) => {
+            // Write the durable pending-self-purge marker BEFORE running the
+            // cascade. This is the ONE call site (besides the reconcile's
+            // re-evaluation) where we KNOW — node-aware AND role-aware — that
+            // this is a TEE self-eviction targeting our identity:
+            // `decide_purge_action` only returns `Namespace` for a confirmed
+            // `TeeMemberRemoved` whose member equals our stored namespace
+            // identity. Marking here (not in the reconcile) is what lets the
+            // startup sweep stay role-scoped without re-reading a role row the
+            // apply path has already erased. Writing before the cascade also
+            // covers a crash mid-cascade: the marker survives so the next
+            // restart's reconcile completes the purge.
+            if let Err(e) = PendingSelfPurgeRepository::new(store).mark(&ns_id) {
+                // Non-fatal: the cascade still runs and, on full success,
+                // there is nothing to reconcile. The only thing lost on a
+                // mark failure is the crash-mid-cascade / signing-key-failure
+                // retry anchor. Log it; do not abort the purge.
+                warn!(
+                    namespace = %hex::encode(ns_id.to_bytes()),
+                    error = ?e,
+                    "self-purge: failed to write pending-self-purge marker before cascade \
+                     — proceeding with purge; a crash mid-cascade would NOT be reconciled \
+                     on restart (no marker)"
+                );
+                record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
+            }
             purge_namespace_for_self(store, node_client, ns_id).await;
         }
     }
@@ -355,8 +751,13 @@ pub(crate) fn purge_subgroup_for_self(store: &Store, gid: ContextGroupId) {
             error = ?e,
             "self-purge: failed to drop local rows for evicted subgroup — \
              signing-key material remains on disk (no retry surface for \
-             subgroup-only purge; manual cleanup or startup-reconcile \
-             follow-up needed; see ADR 0002)"
+             subgroup-only purge; the #2721 startup reconcile sweep does NOT \
+             cover this case — it only completes namespaces that carry a \
+             pending-self-purge marker, and the marker is written ONLY on a \
+             namespace-root TEE eviction, never on a subgroup-only one — so \
+             manual cleanup or a subgroup-scoped reconcile follow-up is needed; \
+             subgroup-only purge-failure residue is out of scope, tracked in \
+             #2726; see ADR 0002)"
         );
         record_purge_failure(PurgeBranch::Subgroup, PurgeFailureClass::SigningKey);
         return;
@@ -371,8 +772,12 @@ pub(crate) fn purge_subgroup_for_self(store: &Store, gid: ContextGroupId) {
         if let Err(e) = delete_tree_edges(store, &gid, &parent) {
             // Elevated to `error!` because — unlike the cascade branch —
             // a subgroup-only eviction has no future `MemberRemoved` event
-            // to drive a retry, and the broader startup-reconcile sweep
-            // is the deferred follow-up tracked by ADR 0002. The leak is
+            // to drive a retry, AND the #2721 startup reconcile sweep does
+            // not reach it: that sweep only completes namespaces carrying a
+            // pending-self-purge marker, and the marker is written ONLY on a
+            // namespace-root TEE eviction, never on a subgroup-only one. A
+            // subgroup-scoped reconcile remains the deferred follow-up
+            // tracked by ADR 0002 / #2726. The leak is
             // bounded: the orphaned `GroupParentRef` / `GroupChildIndex`
             // rows point at a now-deleted group, so traversal won't find
             // anything when it walks them. Pure dead state; flagged at
@@ -384,7 +789,9 @@ pub(crate) fn purge_subgroup_for_self(store: &Store, gid: ContextGroupId) {
                 error = ?e,
                 "self-purge: failed to drop tree edges for evicted subgroup — \
                  orphaned tree-edge rows will persist (no retry surface for \
-                 subgroup-only purge; see ADR 0002 startup-reconcile follow-up)"
+                 subgroup-only purge; not covered by the #2721 marker-gated \
+                 namespace-root reconcile sweep; subgroup-only residue out of \
+                 scope, tracked in #2726; see ADR 0002 subgroup-reconcile follow-up)"
             );
             record_purge_failure(PurgeBranch::Subgroup, PurgeFailureClass::ContextCleanup);
         }
@@ -434,8 +841,10 @@ pub(crate) struct CascadeResult {
     /// signing-key purge) failed for at least one group, OR the subtree
     /// enumeration itself failed (so we cannot be sure all signing keys
     /// were swept). When true, the `NamespaceIdentity` anchor + gossipsub
-    /// subscription are deliberately KEPT so the reconcile sweep (#2721)
-    /// can resolve our identity and retry.
+    /// subscription + pending-self-purge marker are deliberately KEPT so the
+    /// marker-gated startup reconcile sweep (#2721, [`reconcile_sweep`])
+    /// re-evaluates the marked namespace and retries on the next process
+    /// start.
     pub signing_key_purge_failed: bool,
     /// True iff a best-effort dead-pointer cleanup step failed
     /// (context-index unregister, parent-edge read, tree-edge delete, or
@@ -454,8 +863,11 @@ pub(crate) struct CascadeResult {
 /// tree-edge cleanup failed — those orphans are non-security dead
 /// pointers, and leaving the namespace identity + subscription alive on
 /// such a failure is strictly worse. When the signing-key purge itself
-/// failed, we KEEP the identity + subscription as a retry anchor for the
-/// reconcile sweep (#2721); there is NO event-driven retry today.
+/// failed, we KEEP the identity + subscription + pending-self-purge marker as
+/// a retry anchor for the marker-gated startup reconcile sweep (#2721). There
+/// is no EVENT-driven retry (an evicted identity never gets a follow-up
+/// event); recovery comes from the sweep re-running this path on the next
+/// process start for the still-marked, still-evicted namespace.
 pub(crate) fn should_finalize_namespace(signing_key_purge_failed: bool) -> bool {
     !signing_key_purge_failed
 }
@@ -470,9 +882,12 @@ pub(crate) fn should_finalize_namespace(signing_key_purge_failed: bool) -> bool 
 ///   fails (or the subtree enumeration fails, so we can't be sure the
 ///   sweep was complete). This is the security-critical, load-bearing
 ///   step: private signing-key material lives in those rows. When set, we
-///   KEEP the `NamespaceIdentity` anchor (and the caller keeps the
-///   gossipsub subscription) so the reconcile sweep (#2721) can resolve
-///   our identity and retry. There is NO event-driven retry today.
+///   KEEP the `NamespaceIdentity` anchor (and the caller keeps the gossipsub
+///   subscription + the pending-self-purge marker) so the marker-gated
+///   startup reconcile sweep (#2721, [`reconcile_sweep`]) re-evaluates the
+///   marked namespace and retries on the next process start. There is no
+///   EVENT-driven retry (an evicted identity gets no follow-up event); the
+///   sweep is what drives completion.
 /// * `context_cleanup_failed` — set when a best-effort dead-pointer
 ///   cleanup step fails (context-index unregister, parent-edge read,
 ///   tree-edge delete, or the namespace-level state delete). Non-security:
@@ -580,17 +995,20 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
         if let Err(e) = calimero_governance_store::delete_group_local_rows(store, &gid) {
             // Security-critical failure: private signing-key material
             // remains on disk. Set `signing_key_purge_failed` so the
-            // namespace identity + gossipsub subscription are KEPT as a
-            // retry anchor for the reconcile sweep (#2721); there is NO
-            // event-driven retry today. Skip tree-edge cleanup to avoid
-            // severing the parent link while rows still exist.
+            // namespace identity + gossipsub subscription + pending-self-purge
+            // marker are KEPT as a retry anchor for the marker-gated startup
+            // reconcile sweep (#2721, `reconcile_sweep`), which re-evaluates
+            // the marked namespace and re-runs this path on the next process
+            // start. Skip tree-edge cleanup to avoid severing the parent link
+            // while rows still exist.
             warn!(
                 namespace = %ns_hex,
                 group_id = %group_hex,
                 error = ?e,
                 "self-purge: failed to drop local rows for one group — \
                  signing-key material remains; skipping tree-edge cleanup; \
-                 keeping namespace identity for the reconcile sweep (#2721)"
+                 keeping namespace identity + pending-self-purge marker for the \
+                 startup reconcile sweep (#2721)"
             );
             signing_key_purge_failed = true;
             record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::SigningKey);
@@ -617,17 +1035,21 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
     // on the SIGNING-KEY purge ONLY (#2692). If all signing keys are gone
     // the forward-secrecy objective is met, so we complete the namespace
     // cleanup even if some best-effort context / tree-edge cleanup failed.
-    // Only a signing-key purge failure keeps the identity row in place — as
-    // a retry anchor for the reconcile sweep (#2721).
+    // Only a signing-key purge failure keeps the identity row (and the
+    // pending-self-purge marker) in place — as a retry anchor for the
+    // marker-gated startup reconcile sweep (#2721).
     //
-    // IMPORTANT — there is currently NO automatic retry of a signing-key
-    // failure. The listener dispatches only on `TeeMemberRemoved` (not
+    // IMPORTANT — there is no EVENT-driven retry of a signing-key failure.
+    // The listener dispatches only on `TeeMemberRemoved` (not
     // `MemberRemoved`), and an already-evicted identity receives no further
     // removal events anyway (a re-admitted TEE node derives a fresh
     // attestation pubkey, so the old identity never gets a matching event).
-    // So on a signing-key failure the `NamespaceIdentity` + signing-key
-    // residue persists until the reconcile sweep is added — tracked in
-    // #2721.
+    // Recovery instead comes from the startup reconcile sweep
+    // (`reconcile_sweep`, #2721): on the next process start it enumerates the
+    // pending-self-purge markers, finds this namespace still marked AND still
+    // with no surviving membership, and re-runs this cascade idempotently. So
+    // the residue persists only until the next restart — the sweep is
+    // startup-only, not continuous.
     //
     // This is bounded and NOT a forward-secrecy hole: FS on the namespace's
     // future writes is provided by the key-rotation pipeline (which re-keys
@@ -657,9 +1079,9 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
             namespace = %ns_hex,
             purged_groups,
             "self-purge: signing-key purge failed for at least one group — \
-             NamespaceIdentity + signing-key residue left on disk with no automatic \
-             retry (FS still held by key rotation); cleanup needs the reconcile \
-             sweep tracked in #2721"
+             NamespaceIdentity + signing-key residue + pending-self-purge marker left on \
+             disk with no EVENT-driven retry (FS still held by key rotation); the \
+             marker-gated startup reconcile sweep (#2721) completes it on the next restart"
         );
     }
 
@@ -670,21 +1092,42 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
     }
 }
 
-/// Namespace-root purge async wrapper: runs [`cascade_namespace_state`]
-/// then unsubscribes from the namespace gossipsub topic.
+/// Namespace-root purge async wrapper: runs [`cascade_namespace_state`],
+/// then (on full success) unsubscribes from the namespace gossipsub topic
+/// and clears the pending-self-purge marker.
+///
+/// Returns `true` iff the purge FULLY completed — i.e. the signing-key purge
+/// succeeded (`should_finalize_namespace(!signing_key_purge_failed)`), which
+/// is exactly when the `NamespaceIdentity` + subscription were dropped and
+/// the marker is safe to clear. Returns `false` when the signing-key purge
+/// failed, in which case the marker is deliberately LEFT so the next restart's
+/// reconcile retries. (This return value also fixes the earlier
+/// "reconciled counter increments on silent failure" review nit — callers can
+/// now distinguish a completed purge from a retained-residue one.)
 ///
 /// The unsubscribe is **gated on the signing-key purge ONLY** (#2692, via
 /// [`should_finalize_namespace`]) — exactly the same gate the cascade
 /// applies to dropping `NamespaceIdentity`. If all signing keys are gone
 /// the forward-secrecy objective is met, so we unsubscribe even if some
 /// best-effort context / tree-edge cleanup failed. Only when the
-/// signing-key purge itself failed do we KEEP the subscription, so a
-/// future reconcile sweep can resolve our identity and finish the purge.
-/// There is no event-driven retry today (see the `cascade_namespace_state`
-/// comment and #2721); retaining the subscription is for that planned
-/// reconcile, not a working retry path. mdma#106 v4 review (cursor
-/// "Unsubscribe after failed purge").
-async fn purge_namespace_for_self(store: &Store, node_client: &NodeClient, ns_id: ContextGroupId) {
+/// signing-key purge itself failed do we KEEP the subscription AND the marker.
+///
+/// NOTE on what now drives completion: the marker-gated startup reconcile
+/// sweep (`reconcile_sweep`, #2721) re-runs this purge on the next process
+/// start for any namespace whose marker survives a signing-key failure — it
+/// does NOT depend on the gossipsub subscription (it reads on-disk markers +
+/// rows, not the wire). So the retained subscription is no longer load-bearing
+/// for retry. We keep it anyway as a deliberately-narrow choice: dropping it
+/// on the signing-key-failure path while rows still exist would diverge the
+/// two finalize gates (identity-drop vs unsubscribe) and widen this PR's blast
+/// radius into the networking path for no correctness gain — the sweep already
+/// closes the residue. mdma#106 v4 review (cursor "Unsubscribe after failed
+/// purge").
+async fn purge_namespace_for_self(
+    store: &Store,
+    node_client: &NodeClient,
+    ns_id: ContextGroupId,
+) -> bool {
     let ns_hex = hex::encode(ns_id.to_bytes());
     let result = cascade_namespace_state(store, ns_id);
 
@@ -698,20 +1141,32 @@ async fn purge_namespace_for_self(store: &Store, node_client: &NodeClient, ns_id
                 "self-purge: failed to unsubscribe from namespace gossipsub topic"
             );
         }
+        // Purge fully completed — the marker has served its purpose. Clear it
+        // so the next reconcile doesn't re-evaluate an already-clean
+        // namespace. Best-effort: a stale marker is harmless (the reconcile
+        // finds no identity and clears it then).
+        clear_marker(store, &ns_id);
         info!(
             namespace = %ns_hex,
             purged_groups = result.purged_groups,
             context_cleanup_failed = result.context_cleanup_failed,
             "self-purge: completed namespace cascade after eviction (signing keys purged); \
-             unsubscribed even if best-effort context cleanup had failures"
+             unsubscribed and cleared pending-self-purge marker even if best-effort context \
+             cleanup had failures"
         );
+        true
     } else {
+        // Signing-key purge failed: KEEP the marker (and the identity +
+        // subscription) so the marker-gated reconcile retries on the next
+        // restart. Do NOT clear it here.
         info!(
             namespace = %ns_hex,
             purged_groups = result.purged_groups,
             "self-purge: signing-key purge failed — keeping namespace identity + gossipsub \
-             subscription for the planned reconcile sweep (#2721); no automatic retry today"
+             subscription + pending-self-purge marker; the startup reconcile sweep (#2721) \
+             retries on the next restart"
         );
+        false
     }
 }
 
@@ -739,7 +1194,9 @@ mod tests {
     use rand::rngs::OsRng;
     use rand::RngCore;
 
-    use calimero_governance_store::{MembershipRepository, MetaRepository, SigningKeysRepository};
+    use calimero_governance_store::{
+        MembershipRepository, MetaRepository, PendingSelfPurgeRepository, SigningKeysRepository,
+    };
 
     use super::*;
 
@@ -816,6 +1273,449 @@ mod tests {
         );
 
         (store, ns_id, self_pk)
+    }
+
+    // --- Reconcile sweep (#2721) ---------------------------------------
+    //
+    // These cover the startup reconcile predicate `namespace_needs_reconcile`
+    // and the end-to-end "evicted residue ⇒ cascade clears keys + identity"
+    // behaviour the sweep relies on. The async `reconcile_sweep` wrapper just
+    // dispatches to `purge_namespace_for_self` (already covered by the cascade
+    // tests) on the namespaces the predicate flags, so we test the predicate
+    // (the part most likely to regress — a false `true` here would purge a
+    // HEALTHY member) plus a store-level proof of the purge effect.
+
+    #[test]
+    fn reconcile_predicate_false_for_healthy_member() {
+        // A node that still holds its namespace-root `GroupMember` row is a
+        // live member. The predicate MUST NOT flag it for purge.
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        assert!(
+            !namespace_needs_reconcile(&store, ns_id, self_pk).unwrap(),
+            "a healthy member (identity + root membership) MUST NOT be reconciled"
+        );
+    }
+
+    #[test]
+    fn reconcile_predicate_false_for_subgroup_only_member() {
+        // Kicked from a subgroup but still in the namespace root: the
+        // identity is legitimately retained. The predicate keys off DIRECT
+        // membership anywhere under the subtree; the surviving root row
+        // blocks the purge. (Subgroup-only residue is a separate, deferred
+        // concern — see the `purge_subgroup_for_self` comments.)
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        // Seed a descendant subgroup the node is NOT in (apply already
+        // removed it), but the root membership from the seed remains.
+        let sub_id = ContextGroupId::from([0x88u8; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_id, &sub_id)
+            .unwrap();
+        assert!(
+            !namespace_needs_reconcile(&store, ns_id, self_pk).unwrap(),
+            "surviving root membership MUST block the namespace-root reconcile"
+        );
+    }
+
+    #[test]
+    fn reconcile_predicate_true_when_only_descendant_residue_survives() {
+        // Root-only semantics (cursor Bugbot HIGH fix): root membership gone,
+        // but a DESCENDANT subgroup `GroupMember` row survives. Under a
+        // namespace-ROOT eviction (the only kind that gets a marker), the
+        // cascade removes ONLY the root row, so a surviving descendant row is
+        // un-cascaded RESIDUE, not live membership. It MUST NOT block the
+        // reconcile — the predicate is `true` (still evicted) so the cascade
+        // sweeps the residue. The old subtree walk wrongly returned `false`
+        // here, abandoning the purge and leaking identity + signing keys.
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        // Remove the root membership the seed added (the root eviction).
+        MembershipRepository::new(&store)
+            .remove_member(&ns_id, &self_pk)
+            .unwrap();
+        // Leave a descendant subgroup membership row in place — residue the
+        // root-eviction cascade did not (yet) remove.
+        let sub_id = ContextGroupId::from([0x88u8; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_id, &sub_id)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member_with_keys(
+                &sub_id,
+                &self_pk,
+                GroupMemberRole::Member,
+                Some([0xCC; 32]),
+                Some([0xDD; 32]),
+            )
+            .unwrap();
+        assert!(
+            namespace_needs_reconcile(&store, ns_id, self_pk).unwrap(),
+            "descendant residue MUST NOT block the reconcile — root row absent means \
+             still evicted; the descendant row is un-cascaded residue, not membership"
+        );
+    }
+
+    #[test]
+    fn reconcile_predicate_true_for_evicted_residue() {
+        // Identity present, but NO membership row anywhere under the
+        // namespace (apply removed it, the purge never completed). This is
+        // exactly the residue the sweep exists to clear → predicate true.
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        MembershipRepository::new(&store)
+            .remove_member(&ns_id, &self_pk)
+            .unwrap();
+        assert!(
+            namespace_needs_reconcile(&store, ns_id, self_pk).unwrap(),
+            "stored identity with no surviving membership MUST be flagged as residue"
+        );
+    }
+
+    #[test]
+    fn reconcile_cascade_clears_signing_keys_and_identity_for_residue() {
+        // End-to-end store proof: for evicted residue, running the purge path
+        // the sweep invokes (`cascade_namespace_state`) clears the signing
+        // keys AND the namespace identity — completing the abandoned purge.
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        MembershipRepository::new(&store)
+            .remove_member(&ns_id, &self_pk)
+            .unwrap();
+
+        // Precondition: the residue (identity + signing key) is present and
+        // the predicate flags it.
+        assert!(namespace_needs_reconcile(&store, ns_id, self_pk).unwrap());
+        assert!(SigningKeysRepository::new(&store)
+            .get_key(&ns_id, &self_pk)
+            .unwrap()
+            .is_some());
+
+        let result = cascade_namespace_state(&store, ns_id);
+        assert!(
+            !result.signing_key_purge_failed,
+            "reconcile cascade on a clean store must fully purge signing keys"
+        );
+
+        assert!(
+            SigningKeysRepository::new(&store)
+                .get_key(&ns_id, &self_pk)
+                .unwrap()
+                .is_none(),
+            "signing-key material MUST be cleared by the reconcile cascade"
+        );
+        assert!(
+            NamespaceRepository::new(&store)
+                .identity_record(&ns_id)
+                .unwrap()
+                .is_none(),
+            "namespace identity MUST be cleared by the reconcile cascade"
+        );
+    }
+
+    #[test]
+    fn reconcile_predicate_gates_out_healthy_member_leaving_state_intact() {
+        // The predicate is the safety gate: a healthy member (identity + root
+        // membership) returns `false`, so the sweep never reaches the cascade
+        // for it. We do NOT run the cascade here — that would purge; the point
+        // is that the predicate vetoes it. State stays untouched.
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        assert!(
+            !namespace_needs_reconcile(&store, ns_id, self_pk).unwrap(),
+            "healthy member must be gated out before any cascade runs"
+        );
+        // Identity + signing key untouched (no purge happened).
+        assert!(NamespaceRepository::new(&store)
+            .identity_record(&ns_id)
+            .unwrap()
+            .is_some());
+        assert!(SigningKeysRepository::new(&store)
+            .get_key(&ns_id, &self_pk)
+            .unwrap()
+            .is_some());
+    }
+
+    // --- Marker-gated reconcile decision (#2721) -----------------------
+    //
+    // These exercise `reconcile_decision`, the pure two-gate decision the
+    // sweep dispatches on. The async `reconcile_sweep` wrapper adds only the
+    // actual purge + counter bookkeeping on top, so testing the decision
+    // covers the safety-critical logic (false-purge avoidance) without a
+    // `NodeClient`. The marker-store round-trip itself is covered in
+    // `calimero-governance-store::pending_self_purge`.
+
+    #[test]
+    fn reconcile_decision_purges_when_marked_and_still_evicted() {
+        // Marker present AND identity-present / membership-absent ⇒ Purge.
+        // BOTH gates hold.
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        MembershipRepository::new(&store)
+            .remove_member(&ns_id, &self_pk)
+            .unwrap();
+        PendingSelfPurgeRepository::new(&store)
+            .mark(&ns_id)
+            .unwrap();
+
+        assert_eq!(
+            reconcile_decision(&store, ns_id),
+            ReconcileDecision::Purge,
+            "marked + still-evicted MUST decide to purge"
+        );
+    }
+
+    #[test]
+    fn reconcile_decision_clears_stale_marker_for_live_member() {
+        // Marker present but a `GroupMember` row survives (re-admitted) ⇒
+        // clear the stale marker, do NOT purge. The intent gate fired but the
+        // safety gate vetoes.
+        let (store, ns_id, _self_pk) = seed_namespace_self_member();
+        // Note: seed leaves the root membership in place — a live member.
+        PendingSelfPurgeRepository::new(&store)
+            .mark(&ns_id)
+            .unwrap();
+
+        assert!(
+            matches!(
+                reconcile_decision(&store, ns_id),
+                ReconcileDecision::ClearStaleMarker(_)
+            ),
+            "marked but live member MUST clear the stale marker WITHOUT purging"
+        );
+    }
+
+    #[test]
+    fn reconcile_decision_clears_stale_marker_when_identity_gone() {
+        // Marker present but no identity row (already purged) ⇒ clear the
+        // stale marker.
+        let store = empty_store();
+        let ns_id = ContextGroupId::from([0x55u8; 32]);
+        PendingSelfPurgeRepository::new(&store)
+            .mark(&ns_id)
+            .unwrap();
+
+        assert!(
+            matches!(
+                reconcile_decision(&store, ns_id),
+                ReconcileDecision::ClearStaleMarker(_)
+            ),
+            "marked but no identity MUST clear the stale marker"
+        );
+    }
+
+    /// THE KEY REGRESSION TEST (cursor Bugbot HIGH). A marked namespace whose
+    /// ROOT `GroupMember` row was removed (the root eviction) but which still
+    /// has a surviving DESCENDANT subgroup `GroupMember` row — un-cascaded
+    /// residue, NOT live membership — MUST be purged, not abandoned. The old
+    /// subtree walk in `namespace_needs_reconcile` read the descendant row as
+    /// "re-admitted" and returned `ClearStaleMarker`, leaking the
+    /// `NamespaceIdentity` + signing keys forever. We assert `reconcile_decision`
+    /// returns `Purge`, then drive the cascade and assert the signing keys +
+    /// identity are cleared.
+    #[test]
+    fn reconcile_purges_namespace_root_eviction_despite_surviving_descendant_residue() {
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+
+        // Root eviction: remove the namespace-root membership row.
+        MembershipRepository::new(&store)
+            .remove_member(&ns_id, &self_pk)
+            .unwrap();
+
+        // Leave a descendant subgroup `GroupMember` row in place — the
+        // un-cascaded residue a partial/crashed root-eviction cascade leaves
+        // behind (`cascade_remove_member` removes ContextIdentity rows, not
+        // descendant GroupMember rows).
+        let sub_id = ContextGroupId::from([0x88u8; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_id, &sub_id)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member_with_keys(
+                &sub_id,
+                &self_pk,
+                GroupMemberRole::Member,
+                Some([0xCC; 32]),
+                Some([0xDD; 32]),
+            )
+            .unwrap();
+
+        // Mark it as the root-eviction dispatch path does.
+        PendingSelfPurgeRepository::new(&store)
+            .mark(&ns_id)
+            .unwrap();
+
+        // Precondition: the residue (identity + ns-root signing key) is present.
+        assert!(SigningKeysRepository::new(&store)
+            .get_key(&ns_id, &self_pk)
+            .unwrap()
+            .is_some());
+        assert!(NamespaceRepository::new(&store)
+            .identity_record(&ns_id)
+            .unwrap()
+            .is_some());
+
+        // The fix: despite the surviving descendant row, the decision is Purge
+        // (NOT ClearStaleMarker). This is exactly the case the old subtree walk
+        // mis-classified.
+        assert_eq!(
+            reconcile_decision(&store, ns_id),
+            ReconcileDecision::Purge,
+            "marked root eviction with surviving DESCENDANT residue MUST purge, \
+             not abandon (cursor Bugbot HIGH regression)"
+        );
+
+        // Drive the cascade the sweep would run and prove the leak is closed.
+        let result = cascade_namespace_state(&store, ns_id);
+        assert!(
+            !result.signing_key_purge_failed,
+            "cascade on a clean store must fully purge signing keys"
+        );
+        assert!(
+            SigningKeysRepository::new(&store)
+                .get_key(&ns_id, &self_pk)
+                .unwrap()
+                .is_none(),
+            "ns-root signing-key material MUST be cleared by the reconcile cascade"
+        );
+        assert!(
+            NamespaceRepository::new(&store)
+                .identity_record(&ns_id)
+                .unwrap()
+                .is_none(),
+            "namespace identity MUST be cleared by the reconcile cascade"
+        );
+    }
+
+    #[test]
+    fn reconcile_decision_clears_stale_when_marker_absent() {
+        // Bug 2 TOCTOU guard: if the marker is not present at decision time
+        // (only reachable if the sweep is ever made concurrent and another task
+        // cleared it between `iter_pending` and `reconcile_decision`), the
+        // decision is `ClearStaleMarker` — a no-op clear, never a purge. We
+        // construct the input WITHOUT a marker: identity present, membership
+        // absent (looks like evicted residue), but no marker written.
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        MembershipRepository::new(&store)
+            .remove_member(&ns_id, &self_pk)
+            .unwrap();
+        assert!(
+            !PendingSelfPurgeRepository::new(&store)
+                .is_marked(&ns_id)
+                .unwrap(),
+            "fixture must have no marker so the TOCTOU re-check fires"
+        );
+
+        assert!(
+            matches!(
+                reconcile_decision(&store, ns_id),
+                ReconcileDecision::ClearStaleMarker(_)
+            ),
+            "no marker at decision time MUST ClearStaleMarker (TOCTOU guard), never purge"
+        );
+        // And nothing was purged.
+        assert!(SigningKeysRepository::new(&store)
+            .get_key(&ns_id, &self_pk)
+            .unwrap()
+            .is_some());
+        assert!(NamespaceRepository::new(&store)
+            .identity_record(&ns_id)
+            .unwrap()
+            .is_some());
+    }
+
+    /// A namespace that is identity-present /
+    /// membership-absent but carries NO marker MUST NOT be purged by the
+    /// reconcile. This is BOTH the pending-join case (identity written before
+    /// the membership row materializes) AND the non-TEE soft-leave case (role
+    /// erased at removal) — they are indistinguishable from evicted TEE
+    /// residue in post-removal store state, and the marker is the ONLY thing
+    /// that tells them apart. The full sweep visits markers only, so an
+    /// unmarked namespace is never even handed to `reconcile_decision`. We
+    /// prove the gate holds at both layers: (a) the namespace is absent from
+    /// `iter_pending`, so the sweep never visits it; and (b) the signing keys
+    /// + identity remain intact (no purge happened).
+    #[test]
+    fn reconcile_does_not_purge_unmarked_identity_residue() {
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        // Make it look EXACTLY like evicted residue: identity present, no
+        // membership — but DO NOT write a marker.
+        MembershipRepository::new(&store)
+            .remove_member(&ns_id, &self_pk)
+            .unwrap();
+
+        // The standalone predicate would flag this as "still evicted" — that
+        // is precisely why the marker gate is needed. Without the marker, the
+        // sweep must never act on it.
+        assert!(
+            namespace_needs_reconcile(&store, ns_id, self_pk).unwrap(),
+            "fixture must look like evicted residue to the bare predicate"
+        );
+
+        // Gate (a): the unmarked namespace is NOT enumerated by the sweep.
+        assert!(
+            PendingSelfPurgeRepository::new(&store)
+                .iter_pending()
+                .unwrap()
+                .is_empty(),
+            "an unmarked namespace MUST NOT appear in the reconcile's pending set"
+        );
+
+        // Gate (b): signing keys + identity are untouched — the soft-leave /
+        // pending-join invariant is preserved. (No reconcile path ran; we
+        // assert the residue the sweep would have wrongly purged is intact.)
+        assert!(
+            SigningKeysRepository::new(&store)
+                .get_key(&ns_id, &self_pk)
+                .unwrap()
+                .is_some(),
+            "signing keys MUST remain for an unmarked identity (soft-leave / pending-join)"
+        );
+        assert!(
+            NamespaceRepository::new(&store)
+                .identity_record(&ns_id)
+                .unwrap()
+                .is_some(),
+            "namespace identity MUST remain for an unmarked identity (soft-leave / pending-join)"
+        );
+    }
+
+    #[test]
+    fn dispatch_path_clears_marker_on_full_purge() {
+        // The dispatch-path purge (`cascade_namespace_state` + marker clear in
+        // `purge_namespace_for_self`) must clear the marker on full success.
+        // We drive the sync cascade + the clear directly (the async wrapper's
+        // only extra step is the gossipsub unsubscribe, which needs a
+        // NodeClient and is best-effort). Seed the marker as the dispatch path
+        // does, run the cascade (full success on a clean fixture), then assert
+        // the post-finalize marker clear leaves no marker.
+        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        MembershipRepository::new(&store)
+            .remove_member(&ns_id, &self_pk)
+            .unwrap();
+        PendingSelfPurgeRepository::new(&store)
+            .mark(&ns_id)
+            .unwrap();
+        assert!(PendingSelfPurgeRepository::new(&store)
+            .is_marked(&ns_id)
+            .unwrap());
+
+        let result = cascade_namespace_state(&store, ns_id);
+        assert!(
+            should_finalize_namespace(result.signing_key_purge_failed),
+            "clean cascade must finalize so the marker is cleared"
+        );
+        // This is the clear the async wrapper performs on full success.
+        clear_marker(&store, &ns_id);
+
+        assert!(
+            !PendingSelfPurgeRepository::new(&store)
+                .is_marked(&ns_id)
+                .unwrap(),
+            "marker MUST be cleared after a fully-successful dispatch-path purge"
+        );
+        // And the residue is gone.
+        assert!(SigningKeysRepository::new(&store)
+            .get_key(&ns_id, &self_pk)
+            .unwrap()
+            .is_none());
+        assert!(NamespaceRepository::new(&store)
+            .identity_record(&ns_id)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

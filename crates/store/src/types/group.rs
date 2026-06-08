@@ -119,6 +119,11 @@ impl PredefinedEntry for key::NamespaceIdentity {
     type DataType<'a> = key::NamespaceIdentityValue;
 }
 
+impl PredefinedEntry for key::PendingSelfPurge {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 impl PredefinedEntry for key::ContextServiceName {
     type Codec = Borsh;
     type DataType<'a> = key::ContextServiceNameValue;

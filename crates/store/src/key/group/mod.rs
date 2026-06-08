@@ -1882,6 +1882,17 @@ pub const GROUP_KEY_PREFIX: u8 = 0x3A;
 /// would drop legitimate traffic for groups they still belong to.
 pub const GROUP_DENIED_MEMBER_PREFIX: u8 = 0x3B;
 
+/// Prefix for the durable pending-self-purge marker. A row keyed by
+/// `namespace_id` marks that THIS node was confirmed TEE-self-evicted from
+/// the namespace and the local-state cascade purge is in flight or
+/// incomplete. Written by the self-purge listener (`calimero-context`'s
+/// `self_purge`) at dispatch time — BEFORE the cascade runs — only when the
+/// removal was a role-scoped `TeeMemberRemoved` targeting this node's
+/// identity; cleared once the cascade fully completes (signing keys gone).
+/// The startup reconcile sweep completes ONLY marked namespaces, so it
+/// cannot false-purge a pending-join or a non-TEE soft-leave (#2721).
+pub const PENDING_SELF_PURGE_PREFIX: u8 = 0x3D;
+
 /// Stores a group encryption key by `(group_id, key_id)`.
 ///
 /// Key layout: `prefix(1) + group_id(32) + key_id(32)` = 65 bytes.
@@ -2018,6 +2029,69 @@ pub struct GroupKeyValue {
     pub created_at: u64,
 }
 
+/// Durable pending-self-purge marker, keyed by `namespace_id` (the root
+/// group's ContextGroupId).
+///
+/// Key layout: `PENDING_SELF_PURGE_PREFIX (1 byte) + namespace_id (32 bytes)`
+/// = 33 bytes — the same shape as [`NamespaceIdentity`]. A `(prefix,
+/// namespace_id)` range scan over this column family enumerates every marked
+/// namespace in `namespace_id` order. The value is `()` — presence of the
+/// key IS the marker (like [`GroupDeniedMember`] / [`GroupChildIndex`]).
+///
+/// Presence means: this node was confirmed TEE-self-evicted from the
+/// namespace and its local-state cascade purge has not yet fully completed.
+/// Written before the cascade runs (so a crash mid-cascade is covered) and
+/// cleared only once the signing-key purge fully succeeds. The startup
+/// reconcile sweep enumerates these markers and completes ONLY the
+/// namespaces still flagged AND still-evicted — see the `self_purge` module
+/// in `calimero-context` (#2721).
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct PendingSelfPurge(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl PendingSelfPurge {
+    #[must_use]
+    pub fn new(namespace_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([PENDING_SELF_PURGE_PREFIX])
+            .concat(GenericArray::from(namespace_id))))
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for PendingSelfPurge {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for PendingSelfPurge {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for PendingSelfPurge {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingSelfPurge")
+            .field("namespace_id", &self.namespace_id())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2040,6 +2114,15 @@ mod tests {
         assert_eq!(key.identity(), pk);
         assert_eq!(key.as_key().as_bytes()[0], GROUP_MEMBER_PREFIX);
         assert_eq!(key.as_key().as_bytes().len(), 65);
+    }
+
+    #[test]
+    fn pending_self_purge_roundtrip() {
+        let ns = [0x77; 32];
+        let key = PendingSelfPurge::new(ns);
+        assert_eq!(key.namespace_id(), ns);
+        assert_eq!(key.as_key().as_bytes()[0], PENDING_SELF_PURGE_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 33);
     }
 
     /// A record written under the pre-auto-follow three-field layout
@@ -2218,6 +2301,7 @@ mod tests {
             NAMESPACE_GOV_HEAD_PREFIX,
             GROUP_KEY_PREFIX,
             GROUP_DENIED_MEMBER_PREFIX,
+            PENDING_SELF_PURGE_PREFIX,
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {
