@@ -440,27 +440,26 @@ async fn run_initiator_impl<T: SyncTransport>(
                     }
                     stats.entities_merged += 1;
 
-                    // P3 (core#2716): a rotation-log entry-child just merged. Its
-                    // anchor's `own_hash` folds the resolved writer set (Phase-2),
-                    // but HC wrote the CHILD entity, not the anchor — so without
-                    // re-folding here, `own_hash` still reflects the PRE-merge
-                    // writers while the child's hash (in the anchor's `full_hash`)
-                    // reflects the merged set. The two writer-set representations
-                    // in the root desync and the root oscillates across HC rounds
-                    // (the concurrent/multi-node non-convergence). Re-fold the
-                    // anchor (entry-child → map parent → anchor) so the fold and
-                    // the collection agree. Best-effort + under the context lock,
-                    // same as the leaf apply above.
-                    if matches!(
-                        leaf_data.metadata.crdt_type,
-                        calimero_primitives::crdt::CrdtType::RotationLog
-                    ) {
-                        let entry_id = calimero_storage::address::Id::new(leaf_data.key);
-                        apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                            Interface::<MainStorage>::refold_anchor_for_rotation_child(entry_id);
-                        })
-                        .await;
-                    }
+                    // P3 (core#2716): if the leaf that just merged is a
+                    // rotation-log entry-child, its anchor's `own_hash` folds the
+                    // resolved writer set (Phase-2), but HC wrote the CHILD
+                    // entity, not the anchor — so without re-folding here,
+                    // `own_hash` still reflects the PRE-merge writers while the
+                    // child's hash (in the anchor's `full_hash`) reflects the
+                    // merged set. The two writer-set representations in the root
+                    // desync and the root oscillates across HC rounds (the
+                    // concurrent/multi-node non-convergence). The rotation log is
+                    // now a real `UnorderedMap`, so its per-entry children carry
+                    // no distinguishing `crdt_type` — `refold_anchor_for_rotation_child`
+                    // identifies them structurally (entry → rotation-log map →
+                    // anchor) and is a no-op for any other leaf, so we invoke it
+                    // unconditionally. Best-effort + under the context lock, same
+                    // as the leaf apply above.
+                    let entry_id = calimero_storage::address::Id::new(leaf_data.key);
+                    apply_under_context_lock(context_client, context_id, &runtime_env, || {
+                        Interface::<MainStorage>::refold_anchor_for_rotation_child(entry_id);
+                    })
+                    .await;
 
                     // #2407 bidirectional leaf reconciliation: a parent's
                     // `children` list is keyed by entity_id (see

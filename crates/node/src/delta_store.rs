@@ -1010,12 +1010,19 @@ pub(crate) fn load_rotation_log_direct(
         let mut entries = Vec::new();
         if let Some(children) = index.children() {
             for child in children {
-                if let Some(child_log) = load_rotation_log_bytes_direct(
+                // P3: each child is an `UnorderedMap` entry, so its stored value
+                // is `borsh(Entry<([u8;32], RotationLogEntry)>)` — decode the
+                // single entry it holds (NOT a bare `RotationLog` blob).
+                if let Some(bytes) = read_entity_value_direct(
                     context_client,
                     context_id,
                     StorageKey::Entry(child.id()),
                 )? {
-                    entries.extend(child_log.entries);
+                    if let Some(entry) =
+                        calimero_storage::collections::decode_rotation_log_entry_child(&bytes)
+                    {
+                        entries.push(entry);
+                    }
                 }
             }
         }
@@ -1056,6 +1063,26 @@ fn read_entity_index_direct(
     let index = borsh::from_slice::<calimero_storage::index::EntityIndex>(&bytes)
         .map_err(|e| eyre::eyre!("rotation_log index decode failed: {e}"))?;
     Ok(Some(index))
+}
+
+/// Read an entity's raw stored VALUE bytes via a direct datastore lookup (no
+/// `RUNTIME_ENV`). Used by [`load_rotation_log_direct`] to read each rotation-log
+/// map child, whose value is decoded by
+/// [`calimero_storage::collections::decode_rotation_log_entry_child`].
+fn read_entity_value_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    key: StorageKey,
+) -> Result<Option<Vec<u8>>> {
+    let state_key = calimero_store::key::ContextState::new(context_id, key.to_bytes());
+    let handle = context_client.datastore_handle();
+    let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
+        Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
+        Ok(None) => None,
+        Err(e) => return Err(eyre::eyre!("rotation_log value read failed: {e:?}")),
+    };
+    drop(handle);
+    Ok(bytes)
 }
 
 /// Read + Borsh-decode a `RotationLog` at an arbitrary `StorageKey` via a direct
