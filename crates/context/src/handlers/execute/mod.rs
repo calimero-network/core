@@ -1648,16 +1648,17 @@ async fn internal_execute(
                 expected_root_hash: root_hash,
             };
 
-            // Leg 4 of the ACL-in-root fold (core#2716): the local write path
-            // computed each `Shared` anchor's `own_hash` DURING WASM execution —
-            // before this `delta_id` existed — so the originator's own rotation
-            // isn't in its rotation log yet and the fold used the pre-rotation
-            // writer set. Now that the (signed) delta is built, self-log its
-            // rotations + rehash the affected anchors, then recompute the
-            // context root so BOTH `context.root_hash` and the delta's
-            // `expected_root_hash` reflect the new writer set. Peers fold the
-            // same resolved set when they apply the rotation, so every node
-            // converges. No-op unless this delta rotates a `Shared` writer set.
+            // Leg 4 of rotation-log convergence (core#2716): the local write
+            // path persisted each `Shared` anchor and its children DURING WASM
+            // execution — before this `delta_id` existed — so the originator's
+            // own rotation isn't in its hashed rotation-log collection yet. Now
+            // that the (signed) delta is built, self-log its rotations (the
+            // `insert` propagates each new child's hash into the anchor's
+            // `full_hash` and up to the root), then recompute the context root
+            // so BOTH `context.root_hash` and the delta's `expected_root_hash`
+            // reflect the new writer set. Peers log the same entries when they
+            // apply the rotation, so every node converges. No-op unless this
+            // delta rotates a `Shared` writer set.
             {
                 let callbacks = create_storage_callbacks(&store, context.id);
                 let env = RuntimeEnv::new(
@@ -1669,7 +1670,7 @@ async fn internal_execute(
                 );
                 let recomputed_root =
                     with_runtime_env(env, || -> eyre::Result<Option<[u8; 32]>> {
-                        let changed = Interface::<MainStorage>::self_log_and_rehash_own_rotations(
+                        let changed = Interface::<MainStorage>::self_log_own_rotations(
                             &delta.actions,
                             delta.id,
                             delta.hlc,
@@ -1680,7 +1681,7 @@ async fn internal_execute(
                         let root_id = Id::new(*context.id.as_ref());
                         let (full_hash, _) = Index::<MainStorage>::get_hashes_for(root_id)?
                             .ok_or_else(|| {
-                                eyre::eyre!("root index missing after rotation rehash")
+                                eyre::eyre!("root index missing after rotation self-log")
                             })?;
                         Ok(Some(full_hash))
                     })?;

@@ -438,27 +438,6 @@ async fn run_initiator_impl<T: SyncTransport>(
                     }
                     stats.entities_merged += 1;
 
-                    // P3 (core#2716): if the leaf that just merged is a
-                    // rotation-log entry-child, its anchor's `own_hash` folds the
-                    // resolved writer set (Phase-2), but HC wrote the CHILD
-                    // entity, not the anchor — so without re-folding here,
-                    // `own_hash` still reflects the PRE-merge writers while the
-                    // child's hash (in the anchor's `full_hash`) reflects the
-                    // merged set. The two writer-set representations in the root
-                    // desync and the root oscillates across HC rounds (the
-                    // concurrent/multi-node non-convergence). The rotation log is
-                    // now a real `UnorderedMap`, so its per-entry children carry
-                    // no distinguishing `crdt_type` — `refold_anchor_for_rotation_child`
-                    // identifies them structurally (entry → rotation-log map →
-                    // anchor) and is a no-op for any other leaf, so we invoke it
-                    // unconditionally. Best-effort + under the context lock, same
-                    // as the leaf apply above.
-                    let entry_id = calimero_storage::address::Id::new(leaf_data.key);
-                    apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                        Interface::<MainStorage>::refold_anchor_for_rotation_child(entry_id);
-                    })
-                    .await;
-
                     // #2407 bidirectional leaf reconciliation: a parent's
                     // `children` list is keyed by entity_id (see
                     // `get_local_tree_node`: `c.id().as_bytes()`), so a
@@ -720,10 +699,8 @@ async fn run_initiator_impl<T: SyncTransport>(
     })?;
     stats.root_hash_verified = local_root_hash == peer_current_root;
 
-    // core#2716 (ACL-in-root fold): re-anchor the context's persisted
-    // `root_hash` to the freshly-merged storage merkle. The Phase-2 fold folds
-    // each `Shared` anchor's resolved writer set into its `own_hash`, which
-    // moves the storage merkle root. But `context.root_hash` (the value read by
+    // core#2716: re-anchor the context's persisted `root_hash` to the
+    // freshly-merged storage merkle. `context.root_hash` (the value read by
     // the heartbeat, the sync-manager's protocol selector, and the admin RPC
     // that e2e `wait_for_sync` polls) is only updated on the WASM execute /
     // delta forward-apply path — NOT when a HashComparison session converges
@@ -2166,13 +2143,15 @@ mod tests {
         );
     }
 
-    /// Phase 2 leg 4 (core#2716): the originator records its OWN rotation via
-    /// `self_log_and_rehash_own_rotations` (the execute pipeline's post-delta
-    /// step), the receiver via `apply_action`. Both must land the *same* anchor
-    /// `own_hash` — otherwise the author of a rotation never converges with the
-    /// peers it ships the rotation to.
+    /// Rotation-log convergence (core#2716): the originator records its OWN
+    /// rotation via `self_log_own_rotations` (the execute pipeline's post-delta
+    /// step), the receiver via `apply_action`. Both build the *same*
+    /// rotation-log entry for the delta, so the anchor's `full_hash` (which
+    /// includes the hashed rotation-log collection child) must match —
+    /// otherwise the author of a rotation never converges with the peers it
+    /// ships the rotation to.
     #[test]
-    fn originator_self_log_and_rehash_matches_receiver_apply_action() {
+    fn originator_self_log_matches_receiver_apply_action() {
         use core::num::NonZeroU128;
         use std::collections::BTreeSet;
         use std::sync::Arc;
@@ -2249,13 +2228,13 @@ mod tests {
             });
         };
 
-        let own_hash = |store: &Store| -> [u8; 32] {
+        let anchor_full_hash = |store: &Store| -> [u8; 32] {
             let env = create_runtime_env(store, context_id, identity);
             with_runtime_env(env, || {
                 Index::<MainStorage>::get_hashes_for(anchor_id)
                     .unwrap()
                     .unwrap()
-                    .1
+                    .0
             })
         };
 
@@ -2272,7 +2251,8 @@ mod tests {
             )
         };
 
-        // Receiver: applies the rotation as a delta (maybe_append + fold).
+        // Receiver: applies the rotation as a delta via `apply_action`, which
+        // appends the entry to the hashed rotation-log collection.
         let receiver = Store::new(Arc::new(InMemoryDB::owned()));
         bootstrap(&receiver);
         with_runtime_env(create_runtime_env(&receiver, context_id, identity), || {
@@ -2287,28 +2267,32 @@ mod tests {
             .expect("receiver applies rotation");
         });
 
-        // Originator: records the SAME rotation via the leg-4 primitive (the
-        // local write left the anchor's own_hash folding the pre-rotation set).
+        // Originator: records the SAME rotation via the post-delta self-log
+        // primitive (the local write predates this delta_id, so the
+        // originator's own rotation isn't in its log yet).
         let originator = Store::new(Arc::new(InMemoryDB::owned()));
         bootstrap(&originator);
         with_runtime_env(
             create_runtime_env(&originator, context_id, identity),
             || {
-                let changed = Interface::<MainStorage>::self_log_and_rehash_own_rotations(
+                let changed = Interface::<MainStorage>::self_log_own_rotations(
                     &[rotation()],
                     rotation_delta_id,
                     hlc(30),
                 )
-                .expect("originator self-log + rehash");
-                assert!(changed, "leg 4 must register the originator's own rotation");
+                .expect("originator self-log");
+                assert!(
+                    changed,
+                    "self-log must register the originator's own rotation"
+                );
             },
         );
 
         assert_eq!(
-            own_hash(&originator),
-            own_hash(&receiver),
-            "originator (self_log_and_rehash) and receiver (apply_action) must land \
-             the same folded anchor own_hash"
+            anchor_full_hash(&originator),
+            anchor_full_hash(&receiver),
+            "originator (self_log_own_rotations) and receiver (apply_action) must land \
+             the same anchor full_hash via the rotation-log collection child"
         );
     }
 }

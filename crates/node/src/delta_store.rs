@@ -1830,7 +1830,7 @@ impl DeltaStore {
 
         // (The originator's own `Shared` rotations are logged into the hashed
         // rotation-log collection by the storage-side
-        // `self_log_and_rehash_own_rotations` during execute; no side-store
+        // `self_log_own_rotations` during execute; no side-store
         // self-log is needed here — S2.3.)
 
         // Mirror the hash-tracking writes load_persisted_deltas does.
