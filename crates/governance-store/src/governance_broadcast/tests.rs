@@ -600,6 +600,7 @@ fn signed_heartbeat(
         ts_millis: 1_700_000_000_000,
         signature: [0u8; 64],
         authored_remaining: 0,
+        migration_failed: 0,
     };
     hb.signature = sk
         .sign(&hb.signable_bytes().expect("signable_bytes"))
