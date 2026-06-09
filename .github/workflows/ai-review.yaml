@@ -60,7 +60,7 @@ jobs:
       # prevent an upstream change from running with this repo's secrets.
       # Bump deliberately when adopting new reviewer features.
       - name: Install ai-code-reviewer
-        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@2031b0dbe18eea1da4ff550a389fe80b48defbd1
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@06d0a027b59caba85269b5a63bac4b0e53ffa0ea
 
       - name: Determine PR number and agent count
         id: pr

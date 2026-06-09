@@ -1,7 +1,7 @@
 name: Doc Auto-Update
 
 # Inlined from calimero-network/ai-code-reviewer reusable workflow at
-# SHA 2031b0dbe18eea1da4ff550a389fe80b48defbd1, with one fix:
+# SHA 06d0a027b59caba85269b5a63bac4b0e53ffa0ea, with one fix:
 # `cache: pip` removed from `actions/setup-python@v5`. The upstream sets
 # it unconditionally, but setup-python's pip cache requires a
 # requirements.txt or pyproject.toml in the calling repo — neither
@@ -58,7 +58,7 @@ jobs:
       # Pinned to the same SHA as ai-review.yaml so both workflows install
       # the audited version of ai-code-reviewer. Bump deliberately.
       - name: Install ai-code-reviewer
-        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@2031b0dbe18eea1da4ff550a389fe80b48defbd1
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@06d0a027b59caba85269b5a63bac4b0e53ffa0ea
 
       - name: Get merged PR number
         id: pr
