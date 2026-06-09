@@ -12,8 +12,9 @@ pub struct Manifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_root: Option<String>,
     /// Present when the app declares a migrate via `#[app::migrate]` /
-    /// `#[derive(app::Migrate)]`. Absent on code-only releases.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `#[derive(app::Migrate)]`. Absent on code-only releases and on every
+    /// pre-existing ABI — hence `default` so older manifests still deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration: Option<MigrationAbi>,
 }
 
