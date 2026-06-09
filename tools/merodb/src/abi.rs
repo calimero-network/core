@@ -42,6 +42,7 @@ pub fn load_state_schema_from_json_value(schema_value: &serde_json::Value) -> Re
         methods: Vec::new(),
         events: Vec::new(),
         state_root: Some(state_root),
+        migration: None,
     };
 
     Ok(schema)
@@ -278,5 +279,6 @@ pub fn infer_schema_from_database(
         methods: Vec::new(),
         events: Vec::new(),
         state_root: Some(state_root_type),
+        migration: None,
     })
 }
