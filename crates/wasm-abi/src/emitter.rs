@@ -308,6 +308,10 @@ fn app_state_version(attrs: &[syn::Attribute]) -> Option<u32> {
                 if meta.path.is_ident("version") {
                     let lit: syn::LitInt = meta.value()?.parse()?;
                     found = lit.base10_parse::<u32>().ok();
+                } else if meta.input.peek(syn::Token![=]) {
+                    // Consume `= <value>` for keys we don't use (emits, …) so
+                    // parse_nested_meta advances past them regardless of order.
+                    let _: syn::Expr = meta.value()?.parse()?;
                 }
                 Ok(())
             });
@@ -317,8 +321,11 @@ fn app_state_version(attrs: &[syn::Attribute]) -> Option<u32> {
     None
 }
 
-/// The migrate method from `#[migrate(method = ident, …)]` on the state struct
-/// (the `#[derive(app::Migrate)]` form).
+/// The migrate method declared by `#[migrate(method = ident, …)]` on the state
+/// struct (the `#[derive(app::Migrate)]` form). Presence of a `#[migrate(...)]`
+/// attribute IS the migration declaration; `method` is optional and **defaults
+/// to `migrate`** (matching the derive macro), so a `#[migrate(from = ...)]`
+/// without an explicit method still yields the entrypoint name.
 fn migrate_method_from_attrs(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         if attr.path().is_ident("migrate") {
@@ -334,9 +341,9 @@ fn migrate_method_from_attrs(attrs: &[syn::Attribute]) -> Option<String> {
                 }
                 Ok(())
             });
-            if method.is_some() {
-                return method;
-            }
+            // A `#[migrate(...)]` attr present ⇒ this is a migration; default the
+            // method name to `migrate` when not given explicitly.
+            return Some(method.unwrap_or_else(|| "migrate".to_owned()));
         }
     }
     None
@@ -833,6 +840,39 @@ mod migration_tests {
         let mig = m.migration.expect("migration emitted");
         assert_eq!(mig.method, "migrate_v2_to_v3");
         assert_eq!(mig.to_schema_version, 3);
+    }
+
+    #[test]
+    fn derive_without_explicit_method_defaults_to_migrate() {
+        let lib = r#"
+            #[app::state(version = 2)]
+            #[derive(app::Migrate)]
+            #[migrate(from = OldState)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        let mig = m.migration.expect("migration emitted");
+        assert_eq!(mig.method, "migrate");
+        assert_eq!(mig.to_schema_version, 2);
+    }
+
+    #[test]
+    fn version_read_regardless_of_key_order() {
+        // `version` after `emits` — parse_nested_meta must consume `emits`'s value.
+        let lib = r#"
+            #[app::state(emits = Event, version = 5)]
+            #[derive(app::Migrate)]
+            #[migrate(from = OldState, method = migrate_v4_to_v5)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        let mig = m.migration.expect("migration emitted");
+        assert_eq!(mig.method, "migrate_v4_to_v5");
+        assert_eq!(mig.to_schema_version, 5);
     }
 
     #[test]
