@@ -2279,6 +2279,47 @@ impl<S: StorageAdaptor> Interface<S> {
                     Self::rehash_shared_anchor(id)?;
                 }
 
+                // Receiver-side signature/data COUPLING (mirror of the
+                // originator's `persist_signed_signatures`). `save_internal`
+                // (→ `update_hash_for`: hashes + `updated_at`) and `add_child_to`
+                // (refreshes the PARENT's child list + this entity's hashes, but
+                // for an already-present entity keeps its stored `metadata`) never
+                // rewrite the entity's OWN stored `signature_data`. So a receiver
+                // that LWW-accepts the INCOMING data kept the PREVIOUS write's
+                // signature, then shipped a decoupled `{new data, old signature}`
+                // leaf (HashComparison ships the entity's own index
+                // `storage_type` as the wire authorization) that NO peer — nor the
+                // node itself on a pushed-back leaf — could verify: the residual
+                // concurrent-rotation `SharedMember` "Invalid signature for
+                // user-owned data" split-brain (two writers stamp the same HLC on
+                // different content; the equal-HLC `lww_pick` keeps one side's
+                // bytes while the signature stayed the other's).
+                //
+                // Re-couple them: when the stored bytes are now the INCOMING
+                // write's (it won the LWW / equal-HLC tiebreak), patch the
+                // entity's `signature_data` to the incoming one so
+                // `{stored data, stored signature}` stays consistent. Gated on the
+                // stored bytes equalling `data` so an EXISTING-data winner keeps
+                // its own (already-consistent) signature. Scoped to
+                // `User`/`SharedMember` — a `Shared` ANCHOR's writer set changes on
+                // rotation (the in-place guard rejects that) and its consistency is
+                // handled by the rotation machinery above. Best-effort: an
+                // identity/placeholder mismatch returns `Err`, which means this was
+                // not a same-record signed update — leave the stored signature.
+                if matches!(
+                    metadata.storage_type,
+                    StorageType::User {
+                        signature_data: Some(_),
+                        ..
+                    } | StorageType::SharedMember {
+                        signature_data: Some(_),
+                        ..
+                    }
+                ) && S::storage_read(Key::Entry(id)).as_deref() == Some(data.as_slice())
+                {
+                    let _ = Self::update_signature_in_place(id, metadata.storage_type.clone());
+                }
+
                 // Owner-driven convert (PR-6c): persist the incoming
                 // `schema_version` to the stored index entry. A replicated
                 // convert lands here as an ordinary signed `Action::Update`
