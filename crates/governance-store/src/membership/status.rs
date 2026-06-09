@@ -286,6 +286,94 @@ pub fn membership_status_at(
     )
 }
 
+/// Resolve [`MembershipStatus`] for `signer` at the governance cut named by
+/// `heads` — the data op's **governance parent edge** (core#2716 Phase 4).
+///
+/// This is the successor to [`membership_status_at`]. Two differences, both
+/// intentional:
+///
+/// 1. **Parent edge, not `GovernancePosition`.** It takes `(group_id, heads)`
+///    directly. `group_id` is supplied by the caller from the *context→group*
+///    mapping (canonical and unforgeable) rather than a signer-supplied field,
+///    which is what makes the old `GroupIdCheck` /
+///    `verify_position_group_id_matches_context` structurally unnecessary: a
+///    signer can no longer cite a *different* group it happens to be a member
+///    of to authorize a write into this context.
+///
+/// 2. **No `group_state_hash` cross-check.** Membership at a cut is a
+///    deterministic function of the ops in the prefix of `heads`, so the heads
+///    alone name the cut; the old fast-path hash compare was a redundant
+///    local-divergence detector (it never guarded against a malicious sender,
+///    who controls both heads and hash). It collapses into `scope_root` in
+///    Phase 5.
+///
+/// The **forward-only** contract is identical to [`membership_status_at`]:
+/// only the ancestry of `heads` is observed (see [`prefix_walk_membership`]),
+/// so a pre-removal write resolves to `Member` regardless of arrival order.
+/// `heads` MUST come from a signed delta envelope — the cut the author claimed
+/// at sign time — never the receiver's current local state.
+pub fn acl_view_at(
+    store: &Store,
+    group_id: ContextGroupId,
+    signer: &PublicKey,
+    heads: &[[u8; 32]],
+) -> EyreResult<MembershipStatus> {
+    // Cheap guard against malformed / attacker-crafted edges before any store
+    // work. See [`MAX_GOVERNANCE_DAG_HEADS`].
+    if heads.len() > MAX_GOVERNANCE_DAG_HEADS {
+        eyre::bail!(ApplyError::DagHeadsExceeded);
+    }
+
+    // Namespace creator / root admin carve-out — the creator does not emit a
+    // self-`MemberJoined` op at genesis; their membership lives in
+    // `GroupMeta::admin_identity`. Same carve-out as `membership_status_at`;
+    // see that function's doc for the full rationale and the `AdminChanged`
+    // under-permissiveness trade-off.
+    if MembershipRepository::new(store).is_admin(&group_id, signer)? {
+        return Ok(MembershipStatus::Member(GroupMemberRole::Admin));
+    }
+
+    let namespace_id = NamespaceRepository::new(store).resolve(&group_id)?;
+    let dag = super::super::NamespaceDagService::new(store, namespace_id.to_bytes());
+    let local_heads = dag.read_head_record()?.parent_hashes;
+
+    // Branch 1 — heads match local state exactly. Use the materialized member
+    // set; steady-state hot path. (No `group_state_hash` compare — see the
+    // function doc.) `role_of` returning `None` conflates "never added" with
+    // "added then removed"; the prefix walk below recovers the distinction
+    // when the receiver is ahead of the sender.
+    if heads_equal(&local_heads, heads) {
+        if let Some(role) = MembershipRepository::new(store).role_of(&group_id, signer)? {
+            return Ok(MembershipStatus::Member(role));
+        }
+        // Inherited (Open-subgroup parent-walk) membership — no direct
+        // `GroupMember` row but reachable via `CAN_JOIN_OPEN_SUBGROUPS`.
+        return match MembershipRepository::new(store).check_path(&group_id, signer)? {
+            super::core::MembershipPath::Direct | super::core::MembershipPath::Inherited { .. } => {
+                Ok(MembershipStatus::Member(GroupMemberRole::Member))
+            }
+            super::core::MembershipPath::None => Ok(MembershipStatus::NeverMember),
+        };
+    }
+
+    // Branch 2 — collect every referenced head missing from our local
+    // namespace op log so the receiver can buffer once and request them all.
+    let op_log = NamespaceOpLogService::new(store, namespace_id.to_bytes());
+    let mut missing: Vec<[u8; 32]> = Vec::with_capacity(heads.len());
+    for head in heads {
+        if !op_log.contains_op(*head)? {
+            missing.push(*head);
+        }
+    }
+    if !missing.is_empty() {
+        return Ok(MembershipStatus::Unknown { needed: missing });
+    }
+
+    // Branch 3 — heads known but differ from local state: walk the governance
+    // DAG from `heads` backwards and replay the membership state machine.
+    prefix_walk_membership(store, namespace_id.to_bytes(), group_id, signer, heads)
+}
+
 /// Walk the namespace governance DAG from `target_heads` backwards through
 /// `parent_op_hashes`, replaying every membership-affecting op for `signer`
 /// in `group_id`, and return the resulting [`MembershipStatus`].
@@ -1129,6 +1217,79 @@ mod tests {
         assert!(
             msg.contains("MAX_GOVERNANCE_DAG_HEADS"),
             "error should mention MAX_GOVERNANCE_DAG_HEADS, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn acl_view_at_recognises_namespace_creator_as_admin() {
+        // P4 parent-edge successor of
+        // `membership_status_at_recognises_namespace_creator_as_admin`: the
+        // admin carve-out must fire identically when authorizing via the
+        // parent edge (group derived from context, heads as the cut).
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::context::UpgradePolicy;
+        use calimero_store::key::GroupMetaValue;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let admin = PublicKey::from([0xAA; 32]);
+        let group_id = ContextGroupId::from([0xAB; 32]);
+
+        let meta = GroupMetaValue {
+            app_key: [0u8; 32],
+            target_application_id: ApplicationId::from([0u8; 32]),
+            upgrade_policy: UpgradePolicy::LazyOnAccess,
+            created_at: 0,
+            admin_identity: admin.into(),
+            owner_identity: admin.into(),
+            migration: None,
+            auto_join: false,
+        };
+        MetaRepository::new(&store)
+            .save(&group_id, &meta)
+            .expect("save_group_meta");
+
+        // Any heads will do — the admin carve-out short-circuits before we
+        // ever look at heads or the namespace DAG.
+        let status = acl_view_at(&store, group_id, &admin, &[[0u8; 32]])
+            .expect("admin carve-out must short-circuit cleanly");
+        assert!(
+            matches!(status, MembershipStatus::Member(GroupMemberRole::Admin)),
+            "creator must be recognised as Member(Admin), got {status:?}"
+        );
+
+        let other = PublicKey::from([0x99; 32]);
+        let other_result = acl_view_at(&store, group_id, &other, &[[0u8; 32]]);
+        assert!(
+            other_result.is_err()
+                || !matches!(
+                    other_result.unwrap(),
+                    MembershipStatus::Member(GroupMemberRole::Admin)
+                ),
+            "non-admin signer must NOT be classified as Member(Admin)"
+        );
+    }
+
+    #[test]
+    fn acl_view_at_rejects_oversized_heads() {
+        // The parent edge carries no `GovernancePosition::new` constructor
+        // guard, so `acl_view_at` enforces `MAX_GOVERNANCE_DAG_HEADS` itself
+        // before any store work (DoS guard, same as `membership_status_at`).
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let signer = PublicKey::from([0u8; 32]);
+        let group_id = ContextGroupId::from([0xAB; 32]);
+        let oversized: Vec<[u8; 32]> = (0..MAX_GOVERNANCE_DAG_HEADS + 1)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = i as u8;
+                h
+            })
+            .collect();
+
+        let err = acl_view_at(&store, group_id, &signer, &oversized)
+            .expect_err("oversized heads must be rejected");
+        assert!(
+            format!("{err}").contains("MAX_GOVERNANCE_DAG_HEADS"),
+            "error should mention MAX_GOVERNANCE_DAG_HEADS, got: {err}"
         );
     }
 
