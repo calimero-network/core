@@ -1794,8 +1794,17 @@ impl<S: StorageAdaptor> Interface<S> {
                                     l.entries
                                         .iter()
                                         .map(|e| {
+                                            // Full byte-distinguishing fields per
+                                            // delta_id: the rotation-log map child
+                                            // bytes diverge across nodes for the SAME
+                                            // logical entry, so dump delta_id +
+                                            // signature + signed_payload presence +
+                                            // writers_nonce to pin which field is
+                                            // non-deterministic (the flaky collection
+                                            // map divergence).
                                             format!(
-                                                "hlc={:?} signer={} writers=[{}]",
+                                                "delta={} hlc={:?} signer={} writers=[{}] sig={} pay={} nonce={}",
+                                                hex::encode(&e.delta_id[..4]),
                                                 e.delta_hlc,
                                                 e.signer
                                                     .map(|s| hex::encode(&s.digest()[..4]))
@@ -1804,7 +1813,14 @@ impl<S: StorageAdaptor> Interface<S> {
                                                     .keys()
                                                     .map(|w| hex::encode(&w.digest()[..4]))
                                                     .collect::<Vec<_>>()
-                                                    .join(",")
+                                                    .join(","),
+                                                e.signature
+                                                    .map(|s| hex::encode(&s[..4]))
+                                                    .unwrap_or_else(|| "none".into()),
+                                                e.signed_payload
+                                                    .map(|p| hex::encode(&p[..4]))
+                                                    .unwrap_or_else(|| "none".into()),
+                                                e.writers_nonce,
                                             )
                                         })
                                         .collect()
