@@ -1697,6 +1697,46 @@ impl<S: StorageAdaptor> Interface<S> {
                             }),
                         };
                         let Some(signer) = signer else {
+                            // P3-SIG diag (temporary): the SharedMember value
+                            // verification is rejecting — dump the resolved
+                            // writer set, the value's HLC, and the full rotation
+                            // log so we can see whether this is a latest-vs-causal
+                            // writer-set mismatch (value signed under an earlier
+                            // rotation whose writer the LATEST set excludes).
+                            let log_dump: Vec<String> = Self::load_rotation_log_child(*anchor)
+                                .map(|l| {
+                                    l.entries
+                                        .iter()
+                                        .map(|e| {
+                                            format!(
+                                                "hlc={:?} signer={} writers=[{}]",
+                                                e.delta_hlc,
+                                                e.signer
+                                                    .map(|s| hex::encode(&s.digest()[..4]))
+                                                    .unwrap_or_else(|| "none".into()),
+                                                e.new_writers
+                                                    .keys()
+                                                    .map(|w| hex::encode(&w.digest()[..4]))
+                                                    .collect::<Vec<_>>()
+                                                    .join(",")
+                                            )
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            warn!(
+                                target: "sync::p3sig",
+                                anchor = %hex::encode(&anchor.as_bytes()[..4]),
+                                value_hlc = metadata.updated_at(),
+                                effective = ctx.effective_writers.is_some(),
+                                resolved_writers = ?authoritative_writers
+                                    .keys()
+                                    .map(|w| hex::encode(&w.digest()[..4]))
+                                    .collect::<Vec<_>>(),
+                                signer_hint = ?sig_data.signer.map(|s| hex::encode(&s.digest()[..4])),
+                                rotation_log = ?log_dump,
+                                "P3-SIG SharedMember reject"
+                            );
                             return Err(StorageError::InvalidSignature);
                         };
                         // Operation-granularity gate (member resolves the anchor's masks).
