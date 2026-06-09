@@ -3112,6 +3112,8 @@ mod owner_driven_convert {
         use core::num::NonZeroU128;
         use std::collections::BTreeMap;
 
+        use calimero_primitives::identity::PublicKey;
+
         use crate::address::Id;
         use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
         use crate::rotation_log::{RotationLog, RotationLogEntry};
@@ -3119,17 +3121,22 @@ mod owner_driven_convert {
         type S = MockedStorage<7411>;
         let anchor = Id::new([0x55; 32]);
 
+        // SIGNED entries: `append_rotation_to_child` skips unsigned
+        // (`signer == None`) entries — they carry no authoritative writer-set
+        // fact and would diverge the collection hash across nodes (only the
+        // originator self-logs the unsigned bootstrap). This test exercises the
+        // collection's UNION behaviour, so its entries must be signed to land.
         let entry = |d: u8| RotationLogEntry {
             delta_id: [d; 32],
             delta_hlc: HybridTimestamp::new(Timestamp::new(
                 NTP64(u64::from(d)),
                 ID::from(NonZeroU128::new(1).unwrap()),
             )),
-            signer: None,
-            signature: None,
-            signed_payload: None,
+            signer: Some(PublicKey::from([d; 32])),
+            signature: Some([d; 64]),
+            signed_payload: Some([d; 32]),
             new_writers: BTreeMap::new(),
-            writers_nonce: 0,
+            writers_nonce: u64::from(d),
         };
 
         // Local log {1,2} → child entity.

@@ -2661,6 +2661,26 @@ impl<S: StorageAdaptor> Interface<S> {
         anchor: Id,
         entry: &crate::rotation_log::RotationLogEntry,
     ) -> Result<(), StorageError> {
+        // Only SIGNED rotations belong in the hashed collection. An unsigned
+        // entry (`signer == None` — the bootstrap/genesis writer set, logged by
+        // the originator's self-log from an unsigned bootstrap action) carries no
+        // authoritative writer-set fact: `writers_at_authenticated` and
+        // `resolve_local_as_of` both IGNORE unsigned entries (they can't be
+        // verified), and the genesis writer set is already available via the
+        // anchor's stored `metadata.storage_type.writers` and, when it actually
+        // rotated, via the first SIGNED entry. So an unsigned entry has ZERO
+        // effect on resolution — but if it lands in the collection it diverges
+        // the collection's Merkle hash across nodes: the ORIGINATOR self-logs it
+        // while peers (which receive the anchor via sync, not via that unsigned
+        // bootstrap action) never do, so the rotation-log map child hash splits
+        // and the anchor's `full_hash` never converges (CI run 27196723799:
+        // node-1 had a 4th unsigned entry `31498e5e writers=[8ae4fd15] signer=none`
+        // that node-3 lacked, with the 3 SIGNED entries byte-identical on both).
+        // Keep the collection to SIGNED rotations only so every node logs the
+        // same set.
+        if entry.signer.is_none() {
+            return Ok(());
+        }
         // Ensure the map parent exists + is linked under the anchor before
         // opening the handle (so `insert`'s `add_child_to(map_id, ..)` links the
         // entry into a parent that is itself in the anchor's subtree).
