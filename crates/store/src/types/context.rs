@@ -265,3 +265,41 @@ mod context_authored_remaining_tests {
         assert_eq!(back.count, 5);
     }
 }
+
+#[cfg(test)]
+mod context_local_key_isolation_tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::context::ContextId;
+
+    use crate::db::InMemoryDB;
+    use crate::key;
+    use crate::types::{ContextAuthoredRemaining, ContextMigrationFailed};
+    use crate::Store;
+
+    // ContextMigrationFailed lives in its own column, so its context_id-only key
+    // must not share a KV row with the same-shaped ContextAuthoredRemaining key.
+    // (Sharing ContextLocal collided: a failure write clobbered the count, and a
+    // count of 1 misdecoded as `check_aborted`.) Writing/clearing one must leave
+    // the other untouched.
+    #[test]
+    fn migration_failed_does_not_collide_with_authored_remaining() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ctx = ContextId::from([7u8; 32]);
+        let ar = key::ContextAuthoredRemaining::new(ctx);
+        let mf = key::ContextMigrationFailed::new(ctx);
+
+        let mut h = store.handle();
+        h.put(&ar, &ContextAuthoredRemaining { count: 5 }).unwrap();
+        h.put(&mf, &ContextMigrationFailed { kind: 2 }).unwrap();
+
+        // Independent rows — neither write clobbered the other.
+        assert_eq!(h.get(&ar).unwrap().unwrap().count, 5);
+        assert_eq!(h.get(&mf).unwrap().unwrap().kind, 2);
+
+        // Clearing the failure marker must NOT delete the authored-remaining row.
+        h.delete(&mf).unwrap();
+        assert_eq!(h.get(&ar).unwrap().unwrap().count, 5);
+        assert!(h.get(&mf).unwrap().is_none());
+    }
+}

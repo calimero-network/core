@@ -116,8 +116,10 @@ impl Debug for ContextAuthoredRemaining {
 /// Node-local marker that this context's most recent migration attempt did not
 /// complete (the developer's migration-check aborted it, or the migrate apply
 /// errored). Read by the migration heartbeat so the member surfaces as `failed`
-/// rather than a silent `in_progress`. Lives in the node-local `ContextLocal`
-/// column — not synchronized; absence means "no failure on record".
+/// rather than a silent `in_progress`. Lives in its own node-local
+/// `ContextMigrationFailed` column (a `context_id`-only key would collide with
+/// `ContextAuthoredRemaining` in `ContextLocal`) — not synchronized; absence
+/// means "no failure on record".
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextMigrationFailed(Key<ContextId>);
@@ -138,7 +140,9 @@ impl AsKeyParts for ContextMigrationFailed {
     type Components = (ContextId,);
 
     fn column() -> Column {
-        Column::ContextLocal
+        // Own column — NOT `ContextLocal` — so this context_id-only key cannot
+        // collide with the same-shaped `ContextAuthoredRemaining` key there.
+        Column::ContextMigrationFailed
     }
 
     fn as_key(&self) -> &Key<Self::Components> {
