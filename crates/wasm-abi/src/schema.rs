@@ -11,6 +11,23 @@ pub struct Manifest {
     pub events: Vec<Event>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_root: Option<String>,
+    /// Present when the app declares a migrate via `#[app::migrate]` /
+    /// `#[derive(app::Migrate)]`. Absent on code-only releases and on every
+    /// pre-existing ABI — hence `default` so older manifests still deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration: Option<MigrationAbi>,
+}
+
+/// The app declares it migrates from an older schema: the entrypoint to invoke
+/// on cascade and the schema version it targets. Drives the admin "migrate"
+/// action so the method isn't hand-coded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationAbi {
+    /// The migrate entrypoint export to invoke (e.g. `migrate_v1_to_v2`).
+    pub method: String,
+    /// `AppState::SCHEMA_VERSION` (the `#[app::state(version = N)]`) this bundle targets.
+    pub to_schema_version: u32,
 }
 
 impl Default for Manifest {
@@ -21,6 +38,7 @@ impl Default for Manifest {
             methods: Vec::new(),
             events: Vec::new(),
             state_root: None,
+            migration: None,
         }
     }
 }
@@ -367,6 +385,7 @@ impl Manifest {
             methods: Vec::new(),
             events: Vec::new(),
             state_root: None,
+            migration: None,
         }
     }
 
@@ -400,6 +419,7 @@ impl Manifest {
             methods: Vec::new(),
             events: Vec::new(),
             state_root: Some(state_root_name.clone()),
+            migration: self.migration.clone(),
         })
     }
 
@@ -633,6 +653,21 @@ impl TypeRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_field_serde_roundtrip_and_omitted_when_none() {
+        let mut m = Manifest::default();
+        assert!(!serde_json::to_string(&m).unwrap().contains("migration"));
+        m.migration = Some(MigrationAbi {
+            method: "migrate_v1_to_v2".to_owned(),
+            to_schema_version: 2,
+        });
+        let j = serde_json::to_value(&m).unwrap();
+        assert_eq!(j["migration"]["method"], "migrate_v1_to_v2");
+        assert_eq!(j["migration"]["toSchemaVersion"], 2);
+        let back: Manifest = serde_json::from_value(j).unwrap();
+        assert_eq!(back.migration.unwrap().to_schema_version, 2);
+    }
 
     #[test]
     fn collection_category_classifies_every_crdt_type() {

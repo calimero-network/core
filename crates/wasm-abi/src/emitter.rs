@@ -6,7 +6,8 @@ use syn::{Item, ItemEnum, ItemImpl, ItemStruct, Type};
 
 use crate::normalize::{normalize_type, ResolvedLocal, TypeResolver};
 use crate::schema::{
-    Event, Field, Manifest, Method, MethodIntent, Parameter, ScalarType, TypeDef, TypeRef, Variant,
+    Event, Field, Manifest, Method, MethodIntent, MigrationAbi, Parameter, ScalarType, TypeDef,
+    TypeRef, Variant,
 };
 
 /// ABI emitter that processes Rust source code
@@ -295,6 +296,73 @@ fn has_app_view_attribute(attrs: &[syn::Attribute]) -> bool {
         let segments: Vec<_> = path.segments.iter().collect();
         segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "view"
     })
+}
+
+/// Parse `version = N` out of `#[app::state(version = N, …)]`. `None` if no version arg.
+fn app_state_version(attrs: &[syn::Attribute]) -> Option<u32> {
+    for attr in attrs {
+        let segs: Vec<_> = attr.path().segments.iter().collect();
+        if segs.len() == 2 && segs[0].ident == "app" && segs[1].ident == "state" {
+            let mut found = None;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("version") {
+                    let lit: syn::LitInt = meta.value()?.parse()?;
+                    found = lit.base10_parse::<u32>().ok();
+                } else if meta.input.peek(syn::Token![=]) {
+                    // Consume `= <value>` for keys we don't use (emits, …) so
+                    // parse_nested_meta advances past them regardless of order.
+                    let _: syn::Expr = meta.value()?.parse()?;
+                }
+                Ok(())
+            });
+            return found;
+        }
+    }
+    None
+}
+
+/// The migrate method declared by `#[migrate(method = ident, …)]` on the state
+/// struct (the `#[derive(app::Migrate)]` form). Presence of a `#[migrate(...)]`
+/// attribute IS the migration declaration; `method` is optional and **defaults
+/// to `migrate`** (matching the derive macro), so a `#[migrate(from = ...)]`
+/// without an explicit method still yields the entrypoint name.
+fn migrate_method_from_attrs(attrs: &[syn::Attribute]) -> Option<String> {
+    for attr in attrs {
+        if attr.path().is_ident("migrate") {
+            let mut method = None;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("method") {
+                    let p: syn::Path = meta.value()?.parse()?;
+                    method = p.get_ident().map(|i| i.to_string());
+                } else if meta.input.peek(syn::Token![=]) {
+                    // Consume `= <value>` for keys we don't use (from, emit, …)
+                    // so parse_nested_meta advances past them to reach `method`.
+                    let _: syn::Expr = meta.value()?.parse()?;
+                }
+                Ok(())
+            });
+            // A `#[migrate(...)]` attr present ⇒ this is a migration; default the
+            // method name to `migrate` when not given explicitly.
+            return Some(method.unwrap_or_else(|| "migrate".to_owned()));
+        }
+    }
+    None
+}
+
+/// The name of a free `#[app::migrate] fn …()` (the attribute-macro form).
+fn free_migrate_fn_name(items: &[syn::Item]) -> Option<String> {
+    for item in items {
+        if let syn::Item::Fn(f) = item {
+            let has = f.attrs.iter().any(|a| {
+                let s: Vec<_> = a.path().segments.iter().collect();
+                s.len() == 2 && s[0].ident == "app" && s[1].ident == "migrate"
+            });
+            if has {
+                return Some(f.sig.ident.to_string());
+            }
+        }
+    }
+    None
 }
 
 impl<'ast> Visit<'ast> for AbiEmitter {
@@ -695,12 +763,35 @@ pub fn emit_manifest_from_crate(
     }
 
     // Create the manifest
+    // Target schema from `#[app::state(version = N)]`, method from
+    // `#[migrate(method = …)]` (derive form) or a free `#[app::migrate] fn`.
+    let mut migration = None;
+    for file in &files {
+        for item in &file.items {
+            if let Item::Struct(s) = item {
+                if has_app_state_attribute(&s.attrs) {
+                    if let Some(to) = app_state_version(&s.attrs) {
+                        if let Some(method) = migrate_method_from_attrs(&s.attrs)
+                            .or_else(|| free_migrate_fn_name(&file.items))
+                        {
+                            migration = Some(MigrationAbi {
+                                method,
+                                to_schema_version: to,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let mut manifest = Manifest {
         schema_version: "wasm-abi/1".to_owned(),
         types: emitter.type_definitions.into_iter().collect(),
         methods: emitter.methods,
         events: emitter.events,
         state_root: emitter.state_type,
+        migration,
     };
 
     // Remove any internal types that shouldn't be exposed
@@ -713,4 +804,86 @@ pub fn emit_manifest_from_crate(
 /// Emit ABI manifest from Rust source code (single file - for backward compatibility)
 pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
     emit_manifest_from_crate(&[("lib.rs".to_owned(), source.to_owned())])
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn emits_migration_for_derive_form() {
+        let lib = r#"
+            #[app::state(version = 2, emits = Event)]
+            #[derive(app::Migrate)]
+            #[migrate(from = OldState, method = migrate_v1_to_v2, emit = Event::Migrated)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        let mig = m.migration.expect("migration emitted");
+        assert_eq!(mig.method, "migrate_v1_to_v2");
+        assert_eq!(mig.to_schema_version, 2);
+    }
+
+    #[test]
+    fn emits_migration_for_free_fn_form() {
+        let lib = r#"
+            #[app::state(version = 3)]
+            pub struct State { x: u32 }
+            #[app::migrate]
+            pub fn migrate_v2_to_v3() -> State { State { x: 0 } }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        let mig = m.migration.expect("migration emitted");
+        assert_eq!(mig.method, "migrate_v2_to_v3");
+        assert_eq!(mig.to_schema_version, 3);
+    }
+
+    #[test]
+    fn derive_without_explicit_method_defaults_to_migrate() {
+        let lib = r#"
+            #[app::state(version = 2)]
+            #[derive(app::Migrate)]
+            #[migrate(from = OldState)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        let mig = m.migration.expect("migration emitted");
+        assert_eq!(mig.method, "migrate");
+        assert_eq!(mig.to_schema_version, 2);
+    }
+
+    #[test]
+    fn version_read_regardless_of_key_order() {
+        // `version` after `emits` — parse_nested_meta must consume `emits`'s value.
+        let lib = r#"
+            #[app::state(emits = Event, version = 5)]
+            #[derive(app::Migrate)]
+            #[migrate(from = OldState, method = migrate_v4_to_v5)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        let mig = m.migration.expect("migration emitted");
+        assert_eq!(mig.method, "migrate_v4_to_v5");
+        assert_eq!(mig.to_schema_version, 5);
+    }
+
+    #[test]
+    fn no_migration_when_absent() {
+        let lib = r#"
+            #[app::state(version = 1)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        assert!(m.migration.is_none());
+    }
 }
