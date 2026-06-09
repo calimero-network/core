@@ -352,14 +352,26 @@ impl<S: StorageAdaptor> Interface<S> {
     /// two nodes that applied the same concurrent rotations in different orders
     /// MUST hash the same set, and the originating node must converge with peers
     /// that hold both — only the resolved set is equal on every node.
-    fn fold_shared_acl(id: Id, base_own_hash: [u8; 32]) -> [u8; 32] {
-        let resolved = Self::resolve_anchor_writers(id);
-        let acl_bytes = to_vec(&resolved).unwrap_or_default();
-        let mut hasher = Sha256::new();
-        hasher.update(base_own_hash);
-        hasher.update(b"acl:v1");
-        hasher.update(&acl_bytes);
-        hasher.finalize().into()
+    fn fold_shared_acl(_id: Id, base_own_hash: [u8; 32]) -> [u8; 32] {
+        // P3 (core#2716): the rotation log is now a hashed `UnorderedMap` child of
+        // the anchor (see `rotation_log_map`), so the writer-set history lives in
+        // the anchor's `full_hash` via the collection child — divergent writer sets
+        // surface as divergent child hashes (and thus divergent roots) WITHOUT
+        // folding the resolved set into `own_hash`. The Phase-2 fold became
+        // redundant the moment the children carried the hash, and it was the LAST
+        // divergence source: a node could fold a stale/transient `resolve_anchor_writers`
+        // result and never re-fold after the collection converged via HC, leaving
+        // `own_hash` (hence the context root) divergent even though BOTH children
+        // matched on every node (the residual concurrent-rotation split-brain —
+        // CI run 27195364372: identical `d584501d`/`ae87c628` children, divergent
+        // anchor `own_hash`). Dropping the fold makes `own_hash = Sha256(data)` on
+        // EVERY write path (WASM-execute and merge alike), which also closes the
+        // context.root_hash-vs-storage-merkle split the re-anchor band-aid patched.
+        //
+        // Kept as an identity passthrough (rather than deleting the call sites) so
+        // the change is one surgical edit to validate; the now-dead fold plumbing
+        // is removed in S2.3.
+        base_own_hash
     }
 
     /// Recompute a `Shared` anchor's `own_hash` (with the folded ACL) from its
