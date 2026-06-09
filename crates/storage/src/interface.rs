@@ -1696,6 +1696,35 @@ impl<S: StorageAdaptor> Interface<S> {
                                 )
                             }),
                         };
+                        // P3-SIG diag (temporary): log EVERY SharedMember verify
+                        // (accept + reject) so node-1's reject can be diffed
+                        // against node-2/3's accept for the same entity. The sig
+                        // bytes + zero-flag distinguish a placeholder/stale wire
+                        // signature from a genuine payload mismatch; data_hash +
+                        // payload localise which side of `payload_for_signing`
+                        // (data vs auth metadata) diverged.
+                        {
+                            let data_hash: [u8; 32] = Sha256::digest(data).into();
+                            warn!(
+                                target: "sync::p3sig",
+                                id = %hex::encode(&id.as_bytes()[..4]),
+                                anchor = %hex::encode(&anchor.as_bytes()[..4]),
+                                value_hlc = metadata.updated_at(),
+                                effective = ctx.effective_writers.is_some(),
+                                outcome = if signer.is_some() { "ACCEPT" } else { "REJECT" },
+                                sig4 = %hex::encode(&sig_data.signature[..4]),
+                                sig_zero = (sig_data.signature == [0u8; 64]),
+                                nonce = sig_data.nonce,
+                                data4 = %hex::encode(&data_hash[..4]),
+                                payload4 = %hex::encode(&payload[..4]),
+                                signer_hint = ?sig_data.signer.map(|s| hex::encode(&s.digest()[..4])),
+                                resolved = ?authoritative_writers
+                                    .keys()
+                                    .map(|w| hex::encode(&w.digest()[..4]))
+                                    .collect::<Vec<_>>(),
+                                "P3-SIG SharedMember verify"
+                            );
+                        }
                         let Some(signer) = signer else {
                             // P3-SIG diag (temporary): the SharedMember value
                             // verification is rejecting — dump the resolved
