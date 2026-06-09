@@ -61,6 +61,25 @@ impl PredefinedEntry for key::ContextAuthoredRemaining {
     type DataType<'a> = ContextAuthoredRemaining;
 }
 
+/// Value for [`key::ContextMigrationFailed`]: the categorized reason this
+/// context's last migration attempt did not complete, as a stable discriminant
+/// (`1` = migration-check aborted, `2` = migrate apply errored). Node-local +
+/// advisory; the key's presence is the signal, the byte carries the reason. A
+/// brand-new key, so a missing row reads as `None` (no failure on record).
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "single advisory discriminant; additions would need a migration"
+)]
+pub struct ContextMigrationFailed {
+    pub kind: u8,
+}
+
+impl PredefinedEntry for key::ContextMigrationFailed {
+    type Codec = Borsh;
+    type DataType<'a> = ContextMigrationFailed;
+}
+
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextConfig {
@@ -244,5 +263,43 @@ mod context_authored_remaining_tests {
         let bytes = borsh::to_vec(&v).expect("serialize");
         let back = ContextAuthoredRemaining::try_from_slice(&bytes).expect("deserialize");
         assert_eq!(back.count, 5);
+    }
+}
+
+#[cfg(test)]
+mod context_local_key_isolation_tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::context::ContextId;
+
+    use crate::db::InMemoryDB;
+    use crate::key;
+    use crate::types::{ContextAuthoredRemaining, ContextMigrationFailed};
+    use crate::Store;
+
+    // ContextMigrationFailed lives in its own column, so its context_id-only key
+    // must not share a KV row with the same-shaped ContextAuthoredRemaining key.
+    // (Sharing ContextLocal collided: a failure write clobbered the count, and a
+    // count of 1 misdecoded as `check_aborted`.) Writing/clearing one must leave
+    // the other untouched.
+    #[test]
+    fn migration_failed_does_not_collide_with_authored_remaining() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ctx = ContextId::from([7u8; 32]);
+        let ar = key::ContextAuthoredRemaining::new(ctx);
+        let mf = key::ContextMigrationFailed::new(ctx);
+
+        let mut h = store.handle();
+        h.put(&ar, &ContextAuthoredRemaining { count: 5 }).unwrap();
+        h.put(&mf, &ContextMigrationFailed { kind: 2 }).unwrap();
+
+        // Independent rows — neither write clobbered the other.
+        assert_eq!(h.get(&ar).unwrap().unwrap().count, 5);
+        assert_eq!(h.get(&mf).unwrap().unwrap().kind, 2);
+
+        // Clearing the failure marker must NOT delete the authored-remaining row.
+        h.delete(&mf).unwrap();
+        assert_eq!(h.get(&ar).unwrap().unwrap().count, 5);
+        assert!(h.get(&mf).unwrap().is_none());
     }
 }

@@ -113,6 +113,59 @@ impl Debug for ContextAuthoredRemaining {
     }
 }
 
+/// Node-local marker that this context's most recent migration attempt did not
+/// complete (the developer's migration-check aborted it, or the migrate apply
+/// errored). Read by the migration heartbeat so the member surfaces as `failed`
+/// rather than a silent `in_progress`. Lives in its own node-local
+/// `ContextMigrationFailed` column (a `context_id`-only key would collide with
+/// `ContextAuthoredRemaining` in `ContextLocal`) — not synchronized; absence
+/// means "no failure on record".
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextMigrationFailed(Key<ContextId>);
+
+impl ContextMigrationFailed {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId) -> Self {
+        Self(Key((*context_id).into()))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
+    }
+}
+
+impl AsKeyParts for ContextMigrationFailed {
+    type Components = (ContextId,);
+
+    fn column() -> Column {
+        // Own column — NOT `ContextLocal` — so this context_id-only key cannot
+        // collide with the same-shaped `ContextAuthoredRemaining` key there.
+        Column::ContextMigrationFailed
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
+    }
+}
+
+impl FromKeyParts for ContextMigrationFailed {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(*<&_>::from(&parts)))
+    }
+}
+
+impl Debug for ContextMigrationFailed {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextMigrationFailed")
+            .field("id", &self.context_id())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextConfig(Key<ContextId>);

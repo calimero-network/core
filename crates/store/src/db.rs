@@ -47,6 +47,12 @@ pub enum Column {
     /// migration). Keys are `prefix(1) ‖ context(32) ‖ producing_app_key(32) ‖
     /// delta_id(32)`; values are borsh'd `AbsorbRecord`s.
     AbsorbBuffer,
+    /// Node-local per-context marker that the last migration attempt did not
+    /// complete (read by the migration heartbeat). Its own column so its
+    /// `context_id`-only key cannot collide with the same-shaped key in
+    /// `ContextLocal` (e.g. `ContextAuthoredRemaining`). NOT synchronized;
+    /// auto-created from `Column::iter()` at `open_cf` (no DB migration).
+    ContextMigrationFailed,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {

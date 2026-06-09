@@ -4,6 +4,7 @@ use std::rc::Rc;
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use borsh::BorshDeserialize;
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::group::MigrationFailureKind;
 use calimero_context_client::messages::{MigrationParams, UpdateApplicationRequest};
 use calimero_node_primitives::client::NodeClient;
 use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
@@ -512,7 +513,7 @@ pub(crate) async fn update_application_with_migration(
         // transient witness, so the check below sees the produced v2 state and
         // the gate can commit-or-drop the buffer (zero-residue abort).
         let (new_state_bytes, migration_witness, migration_events, migration_logs, storage) =
-            execute_migration(
+            match execute_migration(
                 &datastore,
                 node_client.clone(),
                 &context,
@@ -520,7 +521,21 @@ pub(crate) async fn update_application_with_migration(
                 &migration_params,
                 public_key,
             )
-            .await?;
+            .await
+            {
+                Ok(out) => out,
+                Err(err) => {
+                    // The migrate apply itself errored (e.g. the v2 wasm trapped).
+                    // Record the reason so the heartbeat surfaces this member as
+                    // `failed`, then propagate — the context stays on v1.
+                    persist_migration_failed(
+                        &datastore,
+                        context_id,
+                        MigrationFailureKind::ApplyFailed,
+                    );
+                    return Err(err);
+                }
+            };
 
         // Log migration logs
         for log_line in &migration_logs {
@@ -716,6 +731,9 @@ fn commit_or_abort_migration(
         // `finalize_application_update`.
         drop(storage);
         clear_pending_delta();
+        // Record the abort so the heartbeat surfaces this member as `failed`
+        // (not a silent in-progress). Cleared if a later migrate commits.
+        persist_migration_failed(datastore, context_id, MigrationFailureKind::CheckAborted);
         return Err(MigrationCheckFailed { context_id }.into());
     }
 
@@ -744,6 +762,10 @@ fn commit_or_abort_migration(
         new_root_hash = %new_root_hash,
         "Updated dag_heads to new root after migration"
     );
+
+    // The migrate committed: drop any prior failure marker so a context that
+    // recovered (this attempt, or after an earlier abort) stops reporting failed.
+    clear_migration_failed(datastore, context_id);
 
     Ok(new_root_hash)
 }
@@ -1055,6 +1077,34 @@ pub(crate) fn persist_authored_remaining(
     };
     if let Err(err) = handle.put(&key, &value) {
         debug!(%context_id, %err, "failed to persist authored_remaining");
+    }
+}
+
+/// Persist a node-local marker that this context's last migration attempt did
+/// not complete, with a categorized reason. Read by the migration heartbeat so
+/// the member surfaces as `failed` rather than a silent `in_progress`; cleared
+/// by [`clear_migration_failed`] once a later migrate commits. Best-effort.
+pub(crate) fn persist_migration_failed(
+    datastore: &calimero_store::Store,
+    context_id: ContextId,
+    kind: MigrationFailureKind,
+) {
+    let mut handle = datastore.handle();
+    let key = key::ContextMigrationFailed::new(context_id);
+    let value = types::ContextMigrationFailed { kind: kind.to_u8() };
+    if let Err(err) = handle.put(&key, &value) {
+        debug!(%context_id, %err, "failed to persist migration_failed marker");
+    }
+}
+
+/// Drop any persisted migration-failure marker for `context_id` — called when a
+/// migration commits so a recovered context stops reporting `failed`. Deleting
+/// an absent marker (the common case) is a store no-op, not an error.
+pub(crate) fn clear_migration_failed(datastore: &calimero_store::Store, context_id: ContextId) {
+    let mut handle = datastore.handle();
+    let key = key::ContextMigrationFailed::new(context_id);
+    if let Err(err) = handle.delete(&key) {
+        debug!(%context_id, %err, "failed to clear migration_failed marker");
     }
 }
 
@@ -2366,6 +2416,16 @@ mod tests {
         };
         let v2_bytes = borsh::to_vec(&("v2-state-much-longer".to_owned())).expect("serialize v2");
 
+        // Reads the node-local migration-failure marker (the heartbeat's source
+        // for surfacing a member as `failed`), as its raw discriminant.
+        let failed_marker = |store: &calimero_store::Store| {
+            store
+                .handle()
+                .get(&key::ContextMigrationFailed::new(context_id))
+                .expect("read failure marker")
+                .map(|m| m.kind)
+        };
+
         // --- ABORT: stage a v2 child through the buffer, then drop it. ---
         {
             let mut staging = ContextStorage::from(store.clone(), context_id);
@@ -2419,6 +2479,14 @@ mod tests {
                 !is_present(&store),
                 "abort must DROP the staged child entry — zero residue"
             );
+
+            // (e) the abort persists a CheckAborted marker so the heartbeat
+            // surfaces this member as `failed` rather than a silent in-progress.
+            assert_eq!(
+                failed_marker(&store),
+                Some(super::MigrationFailureKind::CheckAborted.to_u8()),
+                "a logical abort must persist the check-aborted failure marker"
+            );
         }
 
         // --- COMMIT: stage a v2 child through the buffer, then promote it. ---
@@ -2451,6 +2519,14 @@ mod tests {
             assert!(
                 is_present(&store),
                 "commit must FLUSH the staged child entry to the live store"
+            );
+
+            // ...and the prior abort's failure marker is cleared (self-heal): a
+            // context that recovered must stop reporting `failed`.
+            assert_eq!(
+                failed_marker(&store),
+                None,
+                "a passing commit must clear the prior failure marker"
             );
         }
     }
