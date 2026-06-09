@@ -314,34 +314,6 @@ impl SyncManager {
                     requests_handled += 1;
                 }
 
-                InitPayload::RotationLogSyncRequest { logs, .. } => {
-                    // End-of-session rotation-log reconciliation (core#2716/#2703).
-                    // A writer-set rotation is hash-neutral, so HC never carries
-                    // it; union the initiator's Shared rotation logs into ours and
-                    // reply with our own so the initiator unions them too — one
-                    // round-trip reconciles both directions.
-                    let applied = with_runtime_env(runtime_env.clone(), || {
-                        super::hash_comparison_protocol::union_received_rotation_logs(&logs)
-                    });
-                    let local_logs = with_runtime_env(runtime_env.clone(), || {
-                        super::hash_comparison_protocol::collect_local_shared_rotation_logs(
-                            context_id,
-                        )
-                    });
-
-                    let msg = StreamMessage::Message {
-                        sequence_id: sqx.next(),
-                        payload: MessagePayload::RotationLogSyncResponse { logs: local_logs },
-                        next_nonce: super::helpers::generate_nonce(),
-                    };
-                    transport.send(&msg).await?;
-                    requests_handled += 1;
-
-                    if applied > 0 {
-                        info!(%context_id, applied, "rotation-log sync: unioned initiator's Shared rotation logs");
-                    }
-                }
-
                 _ => {
                     debug!(%context_id, "Received unknown payload, ending responder");
                     break;

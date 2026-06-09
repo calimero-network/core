@@ -1,14 +1,12 @@
 //! Snapshot sync protocol for full state bootstrap.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use borsh::BorshDeserialize;
 use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::sync::snapshot::{
-    snapshot_record_kind, SnapshotRecord, MAX_SNAPSHOT_PAGE_SIZE,
-};
+use calimero_node_primitives::sync::snapshot::{SnapshotRecord, MAX_SNAPSHOT_PAGE_SIZE};
 use calimero_node_primitives::sync::{
     MessagePayload, SnapshotCursor, SnapshotError, StreamMessage,
 };
@@ -750,15 +748,6 @@ impl SyncManager {
                                         .put(&index_key, &ContextStateValue::from(index_slice))?;
                                     let _ = received_keys.insert(entry_state_key);
                                     let _ = received_keys.insert(index_state_key);
-                                    // Preserve any local RotationLog
-                                    // history for this entity from
-                                    // the upcoming `cleanup_stale_keys`
-                                    // pass — snapshot doesn't ship
-                                    // rotation logs but the receiver
-                                    // may have built one up via
-                                    // verified delta replay.
-                                    let _ = received_keys
-                                        .insert(StorageKey::RotationLog(id_obj).to_bytes());
                                     applied += 1;
 
                                     // Record this verified anchor's writer set so
@@ -771,26 +760,12 @@ impl SyncManager {
                                     } = &index_entity.metadata.storage_type
                                     {
                                         let _ = anchor_writers.insert(id_obj, writers.clone());
-                                        // P4: seed this anchor's rotation-log floor
-                                        // with the settled writers at the snapshot
-                                        // boundary, so post-join `writers_at` is
-                                        // total (the joiner never applies deltas
-                                        // predating its boundary). Idempotent.
-                                        if let Err(e) =
-                                            crate::delta_store::seed_rotation_log_genesis_direct(
-                                                &self.context_client,
-                                                context_id,
-                                                id_obj,
-                                                writers.clone(),
-                                            )
-                                        {
-                                            warn!(
-                                                %context_id,
-                                                id = ?id_obj.as_bytes(),
-                                                error = ?e,
-                                                "snapshot: failed to seed anchor rotation-log floor"
-                                            );
-                                        }
+                                        // (S2.3: the side-store genesis floor seed
+                                        // was removed — a cold joiner resolves an
+                                        // anchor's writers from its stored
+                                        // `metadata.storage_type.writers`, delivered
+                                        // by this snapshot, when no rotation-log
+                                        // collection is materialised yet.)
                                     }
                                 }
                                 SnapshotRecord::Auxiliary { kind, id, .. } => {
@@ -970,8 +945,6 @@ impl SyncManager {
                                             )?;
                                             let _ = received_keys.insert(entry_state_key);
                                             let _ = received_keys.insert(index_state_key);
-                                            let _ = received_keys
-                                                .insert(StorageKey::RotationLog(id_obj).to_bytes());
                                             total_applied += 1;
                                         }
                                     }
@@ -1433,14 +1406,13 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         let id_bytes = *id.as_bytes();
         let index_key = StorageKey::Index(*id).to_bytes();
         let entry_key = StorageKey::Entry(*id).to_bytes();
-        let rotation_log_key = StorageKey::RotationLog(*id).to_bytes();
         let has_index = present_keys.contains(&index_key);
         let has_entry = present_keys.contains(&entry_key);
-        let has_rotation_log = present_keys.contains(&rotation_log_key);
 
         // An entity contributes 1 record (Entity bundling Entry +
-        // Index) — RotationLog Auxiliary isn't shipped per the
-        // #2387 security trade-off, so it doesn't contribute.
+        // Index). The writer-set rotation log is no longer a separate
+        // auxiliary key — it lives as `UnorderedMap` collection
+        // children, each shipped as its own Entry+Index entity above.
         if has_index && has_entry {
             total_entries += 1;
         }
@@ -1453,8 +1425,8 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
                 // current page.
                 //
                 // Only insert keys that actually exist. Inserting a
-                // phantom key (e.g. a RotationLog state_key for an
-                // entity that doesn't have one) would push
+                // phantom key (one for an entity that doesn't have it)
+                // would push
                 // `consumed_keys.len()` past `total_records`, making
                 // the `saturating_sub` below return 0 and silently
                 // suppress the operator-visible unrecognized-records
@@ -1464,9 +1436,6 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
                 }
                 if has_entry {
                     let _ = consumed_keys.insert(entry_key);
-                }
-                if has_rotation_log {
-                    let _ = consumed_keys.insert(rotation_log_key);
                 }
                 continue;
             }
@@ -1522,22 +1491,10 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             (false, false) => {}
         }
 
-        // RotationLog is intentionally NOT shipped via snapshot.
-        // The receiver rejects all `SnapshotRecord::Auxiliary`
-        // kinds (issue #2387 follow-up: per-record signing).
-        // Sending them would just burn bandwidth for records the
-        // receiver drops. The receiver reconstructs rotation
-        // history from verified delta replay; late-arriving
-        // pre-snapshot deltas referencing pre-snapshot rotation
-        // points may fail to verify until per-entry rotation-log
-        // signing lands — bounded edge case, documented in the
-        // receiver's Auxiliary reject path.
-        if has_rotation_log {
-            // Mark the key consumed so the unrecognized-records
-            // warning below doesn't fire for it (we know about the
-            // record; we're choosing not to ship it).
-            let _ = consumed_keys.insert(rotation_log_key);
-        }
+        // The writer-set rotation log is no longer a separate
+        // auxiliary key — it lives as `UnorderedMap` collection
+        // children, each a normal Entry+Index entity classified and
+        // shipped by the loop above. Nothing extra to consume here.
     }
 
     // Residual non-bundle records: state_keys present for this
@@ -1943,6 +1900,11 @@ mod tests {
     use calimero_store::Store;
 
     use super::*;
+    // Wire-codec round-trip tests below use the `ROTATION_LOG` auxiliary
+    // kind as a sample `SnapshotRecord::Auxiliary`; the constant lives in
+    // node-primitives and is exercised only here (the sender never emits a
+    // rotation-log auxiliary record — the log syncs as collection children).
+    use calimero_node_primitives::sync::snapshot::snapshot_record_kind;
 
     #[test]
     fn snapshot_progress_unknown_total_yields_no_estimate() {

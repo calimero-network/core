@@ -263,34 +263,6 @@ pub enum InitPayload {
         joiner_public_key: PublicKey,
     },
 
-    /// Reconcile per-`Shared`-entity rotation logs at the end of a sync
-    /// session (core#2716/#2703).
-    ///
-    /// A `SharedStorage` writer-set rotation is hash-neutral (the writers
-    /// live in `Metadata`, which is `#[borsh(skip)]` out of the Merkle
-    /// hash), so HashComparison — which reconciles entity trees by hash and
-    /// prunes hash-equal subtrees — never carries it, and a node that
-    /// catches up to a peer's branch via HC never learns the rotation. Its
-    /// `resolve_local` writer set then stays stale and nodes disagree on who
-    /// is a writer even though the data converged.
-    ///
-    /// This message ships the sender's per-`Shared`-entity rotation logs so
-    /// the receiver can UNION them into its own (dedup by `delta_id`). The
-    /// receiver replies with [`MessagePayload::RotationLogSyncResponse`]
-    /// carrying its own logs, so one round-trip reconciles both directions.
-    ///
-    /// New variant appended to the enum tail (borsh tags by declaration
-    /// order); an older peer that can't decode it simply errors the stream,
-    /// which the initiator treats as "nothing to reconcile" — graceful,
-    /// best-effort degradation.
-    RotationLogSyncRequest {
-        /// Context being synchronized.
-        context_id: ContextId,
-        /// `(entity_id, borsh(RotationLog))` for each `Shared` anchor the
-        /// sender holds locally.
-        logs: Vec<([u8; 32], Vec<u8>)>,
-    },
-
     /// Pull-based recovery request for a group key the requester is
     /// already an admitted member of but does not yet hold locally.
     ///
@@ -518,15 +490,6 @@ pub enum MessagePayload<'a> {
     /// joiner has no `MembershipPath::Inherited` to the subgroup, or
     /// the subgroup doesn't belong to the named namespace.
     OpenSubgroupJoinRejected { reason: String },
-
-    /// Response to [`InitPayload::RotationLogSyncRequest`] carrying the
-    /// responder's own per-`Shared`-entity rotation logs so the initiator
-    /// can union them. See that variant for the full rationale.
-    RotationLogSyncResponse {
-        /// `(entity_id, borsh(RotationLog))` for each `Shared` anchor the
-        /// responder holds locally.
-        logs: Vec<([u8; 32], Vec<u8>)>,
-    },
 
     /// Response to [`GroupKeyRequest`](InitPayload::GroupKeyRequest).
     /// Carries the ECDH-wrapped group-key envelope; empty if the

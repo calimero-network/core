@@ -254,8 +254,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // Fall back to the anchor's stored `metadata.storage_type.writers` only
         // for an anchor with no collection yet (legacy/bootstrap, or a cold join
         // that hasn't materialised it — that stored set is the last-applied
-        // writers, correct for those non-causal paths). The legacy side store
-        // (`Key::RotationLog`) was removed in S2.3.
+        // writers, correct for those non-causal paths).
         if let Some(child_log) = Self::load_rotation_log_child(anchor) {
             if let Some(writers) = crate::rotation_log::resolve_local(&child_log) {
                 return writers;
@@ -2136,6 +2135,20 @@ impl<S: StorageAdaptor> Interface<S> {
                         %id,
                         "Remote action produced no storage change (save_internal returned None)"
                     );
+                    // The data write lost LWW (stored.updated_at >=
+                    // incoming.updated_at), but a `Shared` ROTATION is still a
+                    // causal FACT that must be recorded regardless of which value
+                    // bytes win — otherwise a concurrent sibling rotation whose
+                    // value lost LWW would never enter this node's rotation-log
+                    // collection and `writers_at` could never grant the writer it
+                    // added (the #2716 split-brain). Append it before returning
+                    // (the anchor exists — `save_internal` returning `None` means
+                    // it was already present). Same principle as the stale-nonce
+                    // skip path above.
+                    if let Some(entry) = pending_rotation.take() {
+                        Self::append_rotation_to_child(id, &entry)?;
+                        Self::rehash_shared_anchor(id)?;
+                    }
                     // save_internal short-circuited because stored.updated_at >
                     // incoming.updated_at: nothing changed locally, but the
                     // apply still "happened" from the network's perspective —
