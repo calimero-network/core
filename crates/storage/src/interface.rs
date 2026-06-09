@@ -352,38 +352,15 @@ impl<S: StorageAdaptor> Interface<S> {
     /// two nodes that applied the same concurrent rotations in different orders
     /// MUST hash the same set, and the originating node must converge with peers
     /// that hold both — only the resolved set is equal on every node.
-    fn fold_shared_acl(_id: Id, base_own_hash: [u8; 32]) -> [u8; 32] {
-        // P3 (core#2716): the rotation log is now a hashed `UnorderedMap` child of
-        // the anchor (see `rotation_log_map`), so the writer-set history lives in
-        // the anchor's `full_hash` via the collection child — divergent writer sets
-        // surface as divergent child hashes (and thus divergent roots) WITHOUT
-        // folding the resolved set into `own_hash`. The Phase-2 fold became
-        // redundant the moment the children carried the hash, and it was the LAST
-        // divergence source: a node could fold a stale/transient `resolve_anchor_writers`
-        // result and never re-fold after the collection converged via HC, leaving
-        // `own_hash` (hence the context root) divergent even though BOTH children
-        // matched on every node (the residual concurrent-rotation split-brain —
-        // CI run 27195364372: identical `d584501d`/`ae87c628` children, divergent
-        // anchor `own_hash`). Dropping the fold makes `own_hash = Sha256(data)` on
-        // EVERY write path (WASM-execute and merge alike), which also closes the
-        // context.root_hash-vs-storage-merkle split the re-anchor band-aid patched.
-        //
-        // Kept as an identity passthrough (rather than deleting the call sites) so
-        // the change is one surgical edit to validate; the now-dead fold plumbing
-        // is removed in S2.3.
-        base_own_hash
-    }
-
-    /// Recompute a `Shared` anchor's `own_hash` (with the folded ACL) from its
-    /// stored bytes and propagate up the ancestor chain.
+    /// Recompute a `Shared` anchor's `own_hash` from its stored bytes
+    /// (`Sha256(data)`) and propagate up the ancestor chain. No-op for
+    /// non-`Shared` entities or ones with no stored bytes / index entry.
     ///
-    /// Called after a rotation-log **union** (the reconcile / HashComparison
-    /// tail in `union_received_rotation_logs`) changes the resolved writer set
-    /// *without* an entity write. Without this, `own_hash` keeps the
-    /// pre-union ACL term, the context root never reconverges, and the cluster
-    /// split-brains on a stable-but-different root (the dual of the bug this
-    /// fold fixes). No-op for non-`Shared` entities or ones with no stored
-    /// bytes / index entry.
+    /// Post-P3 this is a thin re-propagation helper: `own_hash` no longer folds
+    /// the writer set (the rotation log is a hashed collection child whose hash
+    /// is already in the anchor's `full_hash`), so this just refreshes the
+    /// stored `own_hash`/`full_hash` after a write path that didn't already do
+    /// so. (Fully redundant call sites are pruned in S2.3.)
     ///
     /// # Errors
     /// Propagates index read/write failures.
@@ -403,17 +380,8 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(());
         };
 
-        // core#2716: the rotation log lives ONLY in the side store
-        // (`Key::RotationLog`), which the end-of-session reconcile converges
-        // across nodes; the writer set reaches the Merkle hash exclusively via
-        // the fold below. We deliberately do NOT mirror it into a hashed child
-        // of the anchor: that child is a redundant second representation whose
-        // population races sync (transiently empty on the originator, full on
-        // receivers), so it diverged the anchor's `full_hash` even when the
-        // fold itself had converged — the ~50% concurrent-rotation flake.
-        let base: [u8; 32] = Sha256::digest(&data).into();
-        let folded = Self::fold_shared_acl(id, base);
-        let _full_hash = <Index<S>>::update_hash_for(id, folded, None)?;
+        let own_hash: [u8; 32] = Sha256::digest(&data).into();
+        let _full_hash = <Index<S>>::update_hash_for(id, own_hash, None)?;
         Ok(())
     }
 
@@ -3445,38 +3413,19 @@ impl<S: StorageAdaptor> Interface<S> {
             data.to_vec()
         };
 
-        let mut own_hash: [u8; 32] = Sha256::digest(&final_data).into();
+        let own_hash: [u8; 32] = Sha256::digest(&final_data).into();
 
-        // Phase 2 of the unified-causal-log design (core#2716): a `Shared`
-        // anchor's *authorization state* is part of its identity, so fold the
-        // resolved writer/capability map into `own_hash`. Before this, a
-        // writer-set rotation was hash-neutral (`storage_type` is
-        // `#[borsh(skip)]` out of the data bytes), so two nodes could share a
-        // root hash while disagreeing on who may write — sync declared
-        // convergence and never reconciled the logs (the
-        // shared-storage-concurrent-rotation split-brain).
-        //
-        // Folding it in means a rotation now MOVES `own_hash` → the context
-        // root → divergent writer sets surface as divergent roots, and
-        // HashComparison's tree-diff targets the differing anchor and runs its
-        // tail rotation-log reconcile. The PR #2743 roots-match reconcile
-        // becomes redundant once this lands everywhere.
-        //
-        // CRITICAL: hash the INSERTION-ORDER-INVARIANT resolved set
-        // (`resolve_anchor_writers` → `rotation_log::resolve_local`, max-(HLC,
-        // signer) per #2673), NOT `metadata.storage_type.writers` (the
-        // last-applied set). Two nodes that applied the same concurrent
-        // rotations in different orders MUST hash the same set, and the
-        // originating node (whose `metadata.writers` is its own rotation) must
-        // converge with peers that hold both — only the resolved set is equal
-        // on every node. The log is total on every node (originators self-log
-        // via `add_local_applied_delta`, receivers via
-        // `maybe_append_rotation_log`), so this resolves consistently.
-        // The action-apply leg of the ACL fold (the union/reconcile leg is
-        // `rehash_shared_anchor`, called from `union_received_rotation_logs`).
-        if matches!(metadata.storage_type, StorageType::Shared { .. }) {
-            own_hash = Self::fold_shared_acl(id, own_hash);
-        }
+        // `own_hash` is `Sha256(data)` for every storage type, including
+        // `Shared` anchors. The Phase-2 ACL fold (mixing the resolved writer set
+        // into a `Shared` anchor's `own_hash`) was removed once the rotation log
+        // became a hashed `UnorderedMap` child of the anchor (P3): a writer-set
+        // rotation is recorded as a per-`delta_id` child whose hash is part of
+        // the anchor's `full_hash`, so divergent writer sets surface as divergent
+        // child hashes (and divergent roots) WITHOUT folding them into `own_hash`.
+        // The fold was redundant AND it was a divergence source in its own right
+        // (a node could fold a stale/transient resolved set and never re-fold
+        // after the collection converged via HC), so dropping it makes `own_hash`
+        // identical on every write path (WASM-execute and merge alike).
 
         // Write the entry bytes BEFORE updating the Merkle index. The
         // index update propagates the new own_hash up the parent chain,
