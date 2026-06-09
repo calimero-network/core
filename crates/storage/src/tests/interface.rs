@@ -1600,13 +1600,13 @@ mod shared_storage_rotation_authentication {
         MainInterface::apply_action(rotation, &ctx)
             .expect("authentic rotation by a current writer must be accepted");
 
-        // The rotation must be recorded in the wrapper's rotation log with the
-        // new writer set.
-        let log = crate::rotation_log::load::<MainStorage>(id)
-            .unwrap()
+        // The rotation must be recorded in the wrapper's rotation-log collection
+        // with the new writer set. `resolve_local` picks the causally-latest
+        // entry (the collection is unordered by id, so don't use `.last()`).
+        let log = MainInterface::load_rotation_log_child(id)
             .expect("rotation log must exist after an accepted rotation");
         assert_eq!(
-            log.entries.last().expect("a rotation entry").new_writers,
+            crate::rotation_log::resolve_local(&log).expect("resolved writers"),
             crate::entities::full_mask(new_writers.clone()),
             "accepted rotation must record the new writer set in the rotation log"
         );
