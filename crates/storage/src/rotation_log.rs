@@ -278,6 +278,62 @@ pub fn resolve_local(log: &RotationLog) -> Option<BTreeMap<PublicKey, OpMask>> {
     log.snapshot.as_ref().map(|s| s.writers.clone())
 }
 
+/// Resolve the writer set **as of** the causal point of a write at storage-HLC
+/// `at` — the writers in effect when that write was authored, NOT the latest
+/// set ([`resolve_local`]).
+///
+/// This is the local resolver for verifying a value entity whose causal DAG
+/// position is unavailable (a HashComparison-pushed leaf carries no delta
+/// parents, so the node can't run the exact `writers_at(parents)`). A value
+/// authored under writer `w` and then rotated out by a LATER rotation must
+/// still verify against the set that contained `w` — checking it against the
+/// *latest* set wrongly rejects it (the #2716/#2673 concurrent-rotation
+/// `SharedMember` split-brain, where the rotation originator could never accept
+/// a peer's pre-rotation value).
+///
+/// `at` is a storage HLC (`Metadata::updated_at` / `SignatureData::nonce`), the
+/// same clock a rotation entry's `writers_nonce` records. We consider only
+/// **signed** entries (`signer.is_some()`): their `writers_nonce` is the
+/// rotation author's real nonce on that clock, so `writers_nonce <= at` is a
+/// sound "happened at or before this write" test; an UNSIGNED entry carries no
+/// authoritative nonce (and can't authoritatively rotate anyway — the merge
+/// verifier requires a signature), so it never forms the cut. Among the
+/// eligible entries we pick the latest by the same `(delta_hlc, signer)` order
+/// as [`resolve_local`]. If no signed rotation is at/before `at`, fall back to
+/// the compaction snapshot (the genesis / floor writer set).
+///
+/// Soundness: for SEQUENTIAL rotations (one causal chain) this resolves the
+/// exact set in effect at `at` — a removed writer's LATER write resolves to the
+/// post-removal set and is correctly rejected; a then-valid writer's earlier
+/// write resolves to the pre-removal set and is accepted. For genuinely
+/// CONCURRENT rotations it is an approximation (the gossip/delta path's
+/// `writers_at(parents)` stays the exact boundary) — the design's accepted
+/// "liveness wrinkle". It is never weaker than `resolve_local` (latest): it can
+/// only authorize a signer against an *earlier* set that genuinely contained
+/// them.
+#[must_use]
+pub fn resolve_local_as_of(log: &RotationLog, at: u64) -> Option<BTreeMap<PublicKey, OpMask>> {
+    let eligible = log
+        .entries
+        .iter()
+        .filter(|e| e.signer.is_some() && e.writers_nonce <= at);
+    if let Some(entry) = eligible.max_by(|a, b| {
+        match a.delta_hlc.cmp(&b.delta_hlc) {
+            core::cmp::Ordering::Equal => {}
+            non_eq => return non_eq,
+        }
+        match (&a.signer, &b.signer) {
+            (Some(sa), Some(sb)) => sb.digest().cmp(sa.digest()),
+            (Some(_), None) => core::cmp::Ordering::Greater,
+            (None, Some(_)) => core::cmp::Ordering::Less,
+            (None, None) => core::cmp::Ordering::Equal,
+        }
+    }) {
+        return Some(entry.new_writers.clone());
+    }
+    log.snapshot.as_ref().map(|s| s.writers.clone())
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -407,6 +463,55 @@ mod tests {
                     .collect()
             )
         );
+    }
+
+    #[test]
+    fn resolve_local_as_of_returns_the_set_in_effect_at_the_cut() {
+        // Genesis writers = {A}; a signed rotation by A at storage-HLC nonce 200
+        // rotates A out in favour of {C}. A value authored BEFORE the rotation
+        // (nonce 150) must resolve to the pre-rotation set {A} so its signature
+        // (by A, a writer then) verifies; a value authored AFTER (nonce 250)
+        // must resolve to {C}, so A (removed) is correctly rejected. Resolving
+        // the LATEST set ({C}) for the pre-rotation value is the
+        // concurrent-rotation `SharedMember` reject bug this resolver fixes.
+        let genesis: BTreeMap<PublicKey, OpMask> =
+            [0xAA].into_iter().map(|b| (pk(b), OpMask::FULL)).collect();
+        let log = RotationLog {
+            snapshot: Some(RotationSnapshot {
+                writers: genesis.clone(),
+                cutoff_index: 0,
+            }),
+            // writers_nonce 200 is the rotation's storage HLC; signed (signer A).
+            entries: vec![entry(1, 200, 0xAA, &[0xCC], 200)],
+        };
+
+        // Before the rotation → genesis {A}.
+        assert_eq!(resolve_local_as_of(&log, 150), Some(genesis.clone()));
+        // At/after the rotation → {C}.
+        let post: BTreeMap<PublicKey, OpMask> =
+            [0xCC].into_iter().map(|b| (pk(b), OpMask::FULL)).collect();
+        assert_eq!(resolve_local_as_of(&log, 200), Some(post.clone()));
+        assert_eq!(resolve_local_as_of(&log, 250), Some(post));
+    }
+
+    #[test]
+    fn resolve_local_as_of_ignores_unsigned_entries_in_the_cut() {
+        // An UNSIGNED entry (signer=None) carries no authoritative nonce and
+        // cannot authoritatively rotate, so it must never form the as-of cut —
+        // otherwise a value would be authorized against (or rejected by) a set
+        // no one signed. Here only the genesis {A} is trustworthy at nonce 250.
+        let genesis: BTreeMap<PublicKey, OpMask> =
+            [0xAA].into_iter().map(|b| (pk(b), OpMask::FULL)).collect();
+        let mut unsigned = entry(1, 300, 0xBB, &[0xCC], 0);
+        unsigned.signer = None;
+        let log = RotationLog {
+            snapshot: Some(RotationSnapshot {
+                writers: genesis.clone(),
+                cutoff_index: 0,
+            }),
+            entries: vec![unsigned],
+        };
+        assert_eq!(resolve_local_as_of(&log, 250), Some(genesis));
     }
 
     #[test]

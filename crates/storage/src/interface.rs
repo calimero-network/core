@@ -286,6 +286,53 @@ impl<S: StorageAdaptor> Interface<S> {
         BTreeMap::new()
     }
 
+    /// Resolve an anchor's writer set **as of** the causal point of a write at
+    /// storage-HLC `at` (core#2716/#2673), rather than the latest set
+    /// ([`Self::resolve_anchor_writers`]).
+    ///
+    /// Used to verify a `SharedMember`/`Shared` value whose causal DAG position
+    /// is unavailable — a HashComparison-pushed leaf carries no delta parents,
+    /// so the node can't run the exact `writers_at(parents)` the gossip path
+    /// uses. Verifying such a value against the LATEST writers wrongly rejects a
+    /// value authored under an earlier rotation whose writer a later rotation
+    /// removed (the residual concurrent-rotation split-brain). Resolving as of
+    /// the value's own HLC authorizes it against the set that was in effect when
+    /// it was written.
+    ///
+    /// Reads the same unified source as [`Self::resolve_anchor_writers`] (the
+    /// converged collection child PLUS the side store, whose compaction
+    /// `snapshot` is the genesis/floor writer set the as-of resolver falls back
+    /// to when no signed rotation precedes `at`), then applies
+    /// [`rotation_log::resolve_local_as_of`]. Falls back to the anchor's stored
+    /// writers for a legacy anchor with no log.
+    pub(crate) fn resolve_anchor_writers_as_of(anchor: Id, at: u64) -> BTreeMap<PublicKey, OpMask> {
+        let mut entries = Vec::new();
+        let mut snapshot = None;
+        if let Some(child_log) = Self::load_rotation_log_child(anchor) {
+            entries.extend(child_log.entries);
+        }
+        if let Ok(Some(side_log)) = crate::rotation_log::load::<S>(anchor) {
+            snapshot = side_log.snapshot.clone();
+            entries.extend(side_log.entries);
+        }
+        if !entries.is_empty() || snapshot.is_some() {
+            // Dedup by delta_id across the two mirrors; the as-of resolver is
+            // order-invariant (it `max_by`es the eligible set).
+            entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
+            entries.dedup_by(|a, b| a.delta_id == b.delta_id);
+            let unified = crate::rotation_log::RotationLog { snapshot, entries };
+            if let Some(writers) = crate::rotation_log::resolve_local_as_of(&unified, at) {
+                return writers;
+            }
+        }
+        if let Ok(Some(metadata)) = <Index<S>>::get_metadata(anchor) {
+            if let StorageType::Shared { writers, .. } = metadata.storage_type {
+                return writers;
+            }
+        }
+        BTreeMap::new()
+    }
+
     /// Fold a `Shared` anchor's resolved writer/capability map into its base
     /// content hash (Phase 2 of the unified-causal-log design, core#2716).
     ///
@@ -762,10 +809,13 @@ impl<S: StorageAdaptor> Interface<S> {
                     return Err(StorageError::InvalidSignature);
                 }
                 // A member carries no writer set: resolve it from the anchor's
-                // locally-verified state. An unsynced anchor yields the empty
-                // set, which fails verification (the scan finds no writer) —
-                // fail closed rather than accept an unverifiable member.
-                let writers = Self::resolve_anchor_writers(*anchor);
+                // locally-verified state, AS OF this member write's own HLC
+                // (`sig_data.nonce`) so a value authored under an earlier rotation
+                // verifies against the set then in effect, not the latest
+                // (core#2716/#2673). An unsynced anchor yields the empty set,
+                // which fails verification (the scan finds no writer) — fail
+                // closed rather than accept an unverifiable member.
+                let writers = Self::resolve_anchor_writers_as_of(*anchor, sig_data.nonce);
                 let verified = match sig_data.signer {
                     Some(hint) if writers.contains_key(&hint) => {
                         crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
@@ -1664,7 +1714,14 @@ impl<S: StorageAdaptor> Interface<S> {
                         // lives in the node sync layer; storage just rejects.)
                         let authoritative_writers = match ctx.effective_writers.as_ref() {
                             Some(effective) => effective.clone(),
-                            None => Self::resolve_anchor_writers(*anchor),
+                            // No causal context (HashComparison-pushed leaf has no
+                            // delta parents): resolve the writers AS OF this value's
+                            // own HLC, not the latest set, so a value authored under
+                            // an earlier rotation whose writer a later rotation
+                            // removed still verifies (core#2716/#2673). `sig_data.nonce`
+                            // is this write's storage HLC, the same clock the rotation
+                            // entries' `writers_nonce` records.
+                            None => Self::resolve_anchor_writers_as_of(*anchor, sig_data.nonce),
                         };
 
                         // Replay protection — identical baseline to the Shared
@@ -2038,7 +2095,12 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // scan fails → InvalidSignature (fail closed).
                                 let existing_writers =
                                     ctx.effective_writers.clone().unwrap_or_else(|| {
-                                        Self::resolve_anchor_writers(existing_anchor)
+                                        // As-of THIS delete's HLC — same rationale as
+                                        // the upsert arm (core#2716/#2673).
+                                        Self::resolve_anchor_writers_as_of(
+                                            existing_anchor,
+                                            sig_data.nonce,
+                                        )
                                     });
 
                                 let payload = action.payload_for_signing();
