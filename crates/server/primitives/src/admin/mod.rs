@@ -1959,6 +1959,11 @@ pub struct MemberMigrationReportApiData {
     /// Member's self-reported pending-authored count (best-effort; 6f).
     #[serde(default)]
     pub authored_remaining: u64,
+    /// Why this member's migration did not complete: `"check_aborted"` or
+    /// `"apply_failed"`. Absent when the member has no failure on record (its
+    /// `state` is then `"migrated"`/`"in_progress"`/`"unknown"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration_failed: Option<String>,
 }
 
 /// One per-member row in the migration-status rollup: a pinned-cohort member,
@@ -1972,7 +1977,8 @@ pub struct MemberMigrationStatusApiEntry {
     /// heartbeat (in which case `state == "unknown"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<MemberMigrationReportApiData>,
-    /// Derived state discriminant: `"migrated"`, `"in_progress"`, or `"unknown"`.
+    /// Derived state discriminant: `"migrated"`, `"in_progress"`, `"unknown"`,
+    /// or `"failed"`.
     pub state: String,
 }
 
@@ -1983,9 +1989,13 @@ pub struct MigrationStatusRollupApiData {
     pub migrated: usize,
     pub in_progress: usize,
     pub unknown: usize,
+    /// Members whose migrate aborted (migration-check failed or apply errored).
+    #[serde(default)]
+    pub failed: usize,
     pub total: usize,
     /// `true` iff every pinned-cohort member reported a converged schema with
-    /// zero residue. Any `unknown` (or in-progress) member keeps this `false`.
+    /// zero residue. Any `unknown`, `failed`, or in-progress member keeps this
+    /// `false`.
     pub all_migrated: bool,
     /// Count of members reporting `authored_remaining > 0` (owners with
     /// identity-gated entries still to re-sign; 6f, skew #1). Best-effort.

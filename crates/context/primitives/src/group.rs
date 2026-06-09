@@ -1036,6 +1036,52 @@ pub struct MemberMigrationReport {
     /// Member's self-reported pending-authored count (best-effort; 6f). Counted
     /// into the rollup's `members_pending_signature`.
     pub authored_remaining: u64,
+    /// Set when the member's migrate aborted (a developer-declared
+    /// migration-check failed, or the migrate apply errored). Surfaces the
+    /// member as `Failed` in the rollup rather than a silent `in_progress`.
+    pub migration_failed: Option<MigrationFailureKind>,
+}
+
+/// Why a member's migration did not complete. A categorized, `Copy`-safe
+/// reason (the human string is derived from this in the UI); kept narrow so
+/// the report stays `Copy` and the heartbeat carries a single discriminant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MigrationFailureKind {
+    /// The app's `#[app::migrate(..)]` migration-check returned a failure, so
+    /// the migrate was aborted (state rolled back, zero residue).
+    CheckAborted,
+    /// The migrate apply itself errored (e.g. the target wasm could not run).
+    ApplyFailed,
+}
+
+impl MigrationFailureKind {
+    /// Stable JSON discriminant for the admin API.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CheckAborted => "check_aborted",
+            Self::ApplyFailed => "apply_failed",
+        }
+    }
+
+    /// Map a wire discriminant byte back to a kind (`1`/`2`); other values None.
+    #[must_use]
+    pub const fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            1 => Some(Self::CheckAborted),
+            2 => Some(Self::ApplyFailed),
+            _ => None,
+        }
+    }
+
+    /// The wire discriminant byte (`0` = none is handled by the caller).
+    #[must_use]
+    pub const fn to_u8(self) -> u8 {
+        match self {
+            Self::CheckAborted => 1,
+            Self::ApplyFailed => 2,
+        }
+    }
 }
 
 /// The migration state the rollup assigns a pinned-cohort member.
@@ -1050,6 +1096,8 @@ pub enum MemberMigrationState {
     /// keeps `all_migrated == false` rather than being silently dropped, so a
     /// member that stopped reporting can never produce a false green.
     Unknown,
+    /// The member's migrate aborted (migration-check failed or apply errored).
+    Failed,
 }
 
 impl MemberMigrationState {
@@ -1060,6 +1108,7 @@ impl MemberMigrationState {
             Self::Migrated => "migrated",
             Self::InProgress => "in_progress",
             Self::Unknown => "unknown",
+            Self::Failed => "failed",
         }
     }
 }
@@ -1081,10 +1130,12 @@ pub struct MigrationStatusRollup {
     pub migrated: usize,
     pub in_progress: usize,
     pub unknown: usize,
+    /// Members whose migrate aborted (migration-check failed or apply errored).
+    pub failed: usize,
     pub total: usize,
     /// `true` iff **every** pinned-cohort member reported
     /// `schema_version >= target && residue_auto == 0 && residue_identity == 0`.
-    /// Any `unknown` (or any member still in progress) keeps this `false`.
+    /// Any `unknown`, `failed`, or in-progress member keeps this `false`.
     pub all_migrated: bool,
     /// Count of pinned-cohort members reporting `authored_remaining > 0` — i.e.
     /// members whose owners still have identity-gated entries to re-sign (6f,
@@ -1145,6 +1196,7 @@ pub fn compute_migration_status_rollup(
     let mut migrated = 0usize;
     let mut in_progress = 0usize;
     let mut unknown = 0usize;
+    let mut failed = 0usize;
     let mut members_pending_signature = 0usize;
 
     for peer in closure {
@@ -1174,6 +1226,12 @@ pub fn compute_migration_status_rollup(
             None => {
                 unknown += 1;
                 MemberMigrationState::Unknown
+            }
+            Some(r) if r.migration_failed.is_some() => {
+                // An aborted migrate takes precedence: surface it explicitly
+                // rather than as a silent in-progress.
+                failed += 1;
+                MemberMigrationState::Failed
             }
             Some(r) => {
                 // Advisory skew-#1 count, independent of the migrated/in-progress
@@ -1214,6 +1272,7 @@ pub fn compute_migration_status_rollup(
             migrated,
             in_progress,
             unknown,
+            failed,
             total,
             all_migrated,
             members_pending_signature,
@@ -1230,7 +1289,10 @@ mod migration_status_tests {
 
     use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 
-    use super::{compute_migration_status_rollup, MemberMigrationReport, MemberMigrationState};
+    use super::{
+        compute_migration_status_rollup, MemberMigrationReport, MemberMigrationState,
+        MigrationFailureKind,
+    };
 
     fn pk(b: u8) -> PublicKey {
         PublicKey::from([b; 32])
@@ -1263,7 +1325,35 @@ mod migration_status_tests {
             synced_up_to_hlc: synced_up_to_seq,
             reported_at: 0,
             authored_remaining: 0,
+            migration_failed: None,
         }
+    }
+
+    /// A report whose member's migrate aborted (e.g. migration-check failed).
+    fn report_failed(kind: MigrationFailureKind) -> MemberMigrationReport {
+        MemberMigrationReport {
+            migration_failed: Some(kind),
+            ..report(1, 0, 0)
+        }
+    }
+
+    #[test]
+    fn failed_member_surfaces_as_failed_not_in_progress() {
+        let pa = pk(0xA1);
+        let pb = pk(0xB2);
+        let st = compute_migration_status_rollup(2, None, None, &[pa, pb], |peer| {
+            if *peer == pa {
+                Some(report(2, 0, 0)) // migrated
+            } else {
+                Some(report_failed(MigrationFailureKind::CheckAborted))
+            }
+        });
+        assert_eq!(st.rollup.failed, 1);
+        assert_eq!(st.rollup.migrated, 1);
+        assert_eq!(st.rollup.in_progress, 0);
+        assert!(!st.rollup.all_migrated);
+        let failed = st.members.iter().find(|m| m.peer == pb).unwrap();
+        assert_eq!(failed.state, MemberMigrationState::Failed);
     }
 
     /// Build the DISPLAY-only HLC fence (`cascade_hlc`) the way the initiator

@@ -103,4 +103,9 @@ pub struct MigrationStatusReport {
     /// Member's self-reported pending-authored count (sum across its namespace
     /// contexts); feeds the rollup's `membersPendingSignature` (6f).
     pub authored_remaining: u64,
+    /// Member's self-reported migration-failure discriminant (`0` = none, `1` =
+    /// migration-check aborted, `2` = apply errored). Raw `u8` — kept primitive
+    /// so this crate need not depend on `calimero-context-client` (cycle); the
+    /// server maps it to a typed kind for the rollup.
+    pub migration_failed: u8,
 }

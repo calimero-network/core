@@ -61,6 +61,25 @@ impl PredefinedEntry for key::ContextAuthoredRemaining {
     type DataType<'a> = ContextAuthoredRemaining;
 }
 
+/// Value for [`key::ContextMigrationFailed`]: the categorized reason this
+/// context's last migration attempt did not complete, as a stable discriminant
+/// (`1` = migration-check aborted, `2` = migrate apply errored). Node-local +
+/// advisory; the key's presence is the signal, the byte carries the reason. A
+/// brand-new key, so a missing row reads as `None` (no failure on record).
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "single advisory discriminant; additions would need a migration"
+)]
+pub struct ContextMigrationFailed {
+    pub kind: u8,
+}
+
+impl PredefinedEntry for key::ContextMigrationFailed {
+    type Codec = Borsh;
+    type DataType<'a> = ContextMigrationFailed;
+}
+
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextConfig {

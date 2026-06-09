@@ -12,7 +12,7 @@ pub use application::{ApplicationMeta, ServiceMeta};
 pub use blobs::BlobMeta;
 pub use context::{
     ContextAuthoredRemaining, ContextConfig, ContextDagDelta, ContextIdentity, ContextLeftMarker,
-    ContextMeta, ContextPrivateState, ContextState,
+    ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextState,
 };
 pub use generic::GenericData;
 

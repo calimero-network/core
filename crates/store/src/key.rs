@@ -29,7 +29,7 @@ pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
     ContextAuthoredRemaining, ContextConfig, ContextDagDelta, ContextIdentity, ContextLeftMarker,
-    ContextMeta, ContextPrivateState, ContextState,
+    ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextState,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{
