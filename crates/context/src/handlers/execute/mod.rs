@@ -457,7 +457,9 @@ impl Handler<ExecuteRequest> for ContextManager {
         // directly without routing through the actor mailbox (which would deadlock while an
         // ActorFuture is in flight on the same actor).
         let lazy_upgrade_task = guard_task.map(move |guard, act, _ctx| {
-            if let Some((target_app_id, migrate_method, group_id)) = lazy_upgrade_params {
+            if let Some((target_app_id, migrate_method, group_id, target_app_key)) =
+                lazy_upgrade_params
+            {
                 info!(
                     %context_id,
                     %target_app_id,
@@ -480,6 +482,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     application,
                     migrate_method,
                     group_id,
+                    target_app_key,
                 )));
             }
             Ok(Either::Left(guard))
@@ -499,11 +502,38 @@ impl Handler<ExecuteRequest> for ContextManager {
                     application,
                     migrate,
                     group_id,
+                    target_app_key,
                 )) => {
                     if let Some(method) = migrate {
                         let migration_params = MigrationParams { method: method.clone() };
                         let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
-                        act.get_module(target_app, service_name)
+                        // Bundle apps keep a version-stable ApplicationId, so the
+                        // bytecode installed under `target_app` can still be the OLD
+                        // version. Fetch + install the group's target blob first;
+                        // otherwise get_module would compile v1 and the migrate
+                        // would no-op/fail.
+                        let blob_node_client = node_client.clone();
+                        async move {
+                            ensure_target_blob_installed(
+                                &blob_node_client,
+                                &cid,
+                                &target_app,
+                                target_app_key,
+                            )
+                            .await
+                        }
+                        .into_actor(act)
+                        .then(move |freshly_installed, act, _ctx| {
+                            if freshly_installed {
+                                // In-place install under the same id: evict the
+                                // (application_id, service)-keyed caches so
+                                // get_module compiles the new bytecode instead of
+                                // serving stale entries.
+                                let _ = act.applications.remove(&target_app);
+                                act.modules.retain(|(id, _), _| *id != target_app);
+                            }
+                            act.get_module(target_app, service_name)
+                        })
                             .then(move |module_result, act, _ctx| {
                                 // Re-read cached values; they may have been refreshed during load
                                 let context_meta =
@@ -1290,6 +1320,96 @@ impl ContextManager {
 enum CachedOrBlob {
     Cached(calimero_runtime::Module),
     Blob(calimero_primitives::application::ApplicationBlob),
+}
+
+/// Ensure the bytecode installed under `target_app` is the group's target
+/// blob (`target_app_key`) before the lazy migrate loads its module.
+///
+/// Bundle apps derive `ApplicationId = hash(package, signer)`, so a version
+/// bump leaves the id unchanged and only moves the blob — without this step
+/// the migrate would compile the OLD bytecode (which lacks the migrate
+/// export) and no-op. Fetches the blob via DHT/peer download (it is
+/// announced at upgrade time) and installs it in place under the same id.
+///
+/// Returns `true` when a fresh install happened (the caller must evict the
+/// module/application caches keyed by `target_app`). All failures warn and
+/// return `false` — the migrate then proceeds against the current bytecode
+/// exactly as before this fix, and the next access retries.
+async fn ensure_target_blob_installed(
+    node_client: &NodeClient,
+    context_id: &ContextId,
+    target_app: &calimero_primitives::application::ApplicationId,
+    target_app_key: [u8; 32],
+) -> bool {
+    if target_app_key == [0u8; 32] {
+        return false;
+    }
+    let installed = match node_client.get_application(target_app) {
+        Ok(Some(app)) => app,
+        // Not installed under this id at all: the distinct-id machinery
+        // (stub row + blob share) owns that case.
+        Ok(None) => return false,
+        Err(err) => {
+            warn!(%context_id, %target_app, %err, "lazy upgrade: failed to read installed application");
+            return false;
+        }
+    };
+    let target_blob = calimero_primitives::blobs::BlobId::from(target_app_key);
+    if installed.blob.bytecode == target_blob {
+        return false;
+    }
+    info!(
+        %context_id,
+        %target_app,
+        %target_blob,
+        installed_blob = %installed.blob.bytecode,
+        "lazy upgrade: fetching target bytecode (version-stable application id)"
+    );
+    let bytes = match node_client
+        .get_blob_bytes(&target_blob, Some(context_id))
+        .await
+    {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            warn!(%context_id, %target_blob, "lazy upgrade: target blob not available locally or from peers");
+            return false;
+        }
+        Err(err) => {
+            warn!(%context_id, %target_blob, %err, "lazy upgrade: target blob fetch failed");
+            return false;
+        }
+    };
+    if !NodeClient::is_bundle_blob(&bytes) {
+        // Same-id blob swaps only occur for bundles (raw-wasm ids are
+        // content-addressed, so their upgrades change the id); anything else
+        // here is unexpected — leave it to the sync machinery.
+        warn!(%context_id, %target_blob, "lazy upgrade: target blob is not a bundle; skipping in-place install");
+        return false;
+    }
+    match node_client
+        .install_application_from_bundle_blob(&target_blob, &installed.source)
+        .await
+    {
+        Ok(installed_id) if installed_id == *target_app => {
+            info!(%context_id, %target_app, %target_blob, "lazy upgrade: installed target bundle in place");
+            true
+        }
+        Ok(installed_id) => {
+            // The bundle resolves to a different id (package/signer changed)
+            // — not the in-place case; the id-keyed path owns it.
+            warn!(
+                %context_id,
+                %target_app,
+                %installed_id,
+                "lazy upgrade: fetched bundle installed under a different application id"
+            );
+            false
+        }
+        Err(err) => {
+            warn!(%context_id, %target_blob, %err, "lazy upgrade: in-place bundle install failed");
+            false
+        }
+    }
 }
 
 async fn internal_execute(

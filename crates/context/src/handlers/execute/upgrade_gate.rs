@@ -56,9 +56,14 @@ pub(super) fn upgrade_rejects_committed_write(block_writes: bool, produced_write
 /// Checks if a context belongs to a group with LazyOnAccess policy and
 /// needs an upgrade or migration.
 ///
-/// Returns `(target_application_id, migrate_method, group_id)` when an
-/// upgrade should be performed.  The `group_id` is included so the caller
-/// can record a per-context migration marker after a successful run.
+/// Returns `(target_application_id, migrate_method, group_id, target_app_key)`
+/// when an upgrade should be performed.  The `group_id` is included so the
+/// caller can record a per-context migration marker after a successful run.
+/// `target_app_key` is the group's blob-derived app key (the target bytecode
+/// blob id, stamped by the upgrade): bundle apps keep a version-stable
+/// `ApplicationId`, so the caller must compare this against the blob actually
+/// installed under `target_application_id` and fetch it first when they
+/// differ — otherwise the migrate would load the OLD bytecode.
 pub(super) fn maybe_lazy_upgrade(
     datastore: &Store,
     context_id: &ContextId,
@@ -67,6 +72,7 @@ pub(super) fn maybe_lazy_upgrade(
     ApplicationId,
     Option<String>,
     calimero_context_config::types::ContextGroupId,
+    [u8; 32],
 )> {
     use calimero_governance_store;
 
@@ -131,7 +137,12 @@ pub(super) fn maybe_lazy_upgrade(
         "lazy upgrade triggered for context"
     );
 
-    Some((meta.target_application_id, migrate_method, group_id))
+    Some((
+        meta.target_application_id,
+        migrate_method,
+        group_id,
+        meta.app_key,
+    ))
 }
 
 /// The blob-derived app key the sender is executing under — `GroupMeta.app_key`
