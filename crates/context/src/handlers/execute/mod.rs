@@ -523,7 +523,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                             .await
                         }
                         .into_actor(act)
-                        .then(move |_freshly_installed, act, _ctx| {
+                        .then(move |_row_holds_target, act, _ctx| {
                             // The target id is version-stable for bundles, so the
                             // (application_id, service)-keyed caches may hold the
                             // PREVIOUS version's module — whether the new bytecode
@@ -597,32 +597,23 @@ impl Handler<ExecuteRequest> for ContextManager {
                             .boxed_local()
                     } else {
                         // No migration. A same-id (bundle) code-only bump must
-                        // first activate the staged bytecode: install it in
-                        // place under the unchanged id (if the blob has been
-                        // staged — the sync layer delivers it; otherwise the
-                        // next access retries) and drop stale caches. The
-                        // eviction is unconditional: an in-place install may
-                        // have flipped the row BEFORE this upgrade, leaving
-                        // the caches on the old build with nothing to fetch.
+                        // first activate the target bytecode: fetch it if
+                        // needed (sync pre-stages it, but a peer can also
+                        // serve it on demand), install it in place under the
+                        // unchanged id, and drop stale caches. `true` only
+                        // when the row verifiably holds the target blob — a
+                        // failed fetch/install must NOT record the activation
+                        // marker, or the lazy trigger would stop retrying
+                        // while the node still runs the old build.
                         let blob_node_client = node_client.clone();
                         async move {
-                            let staged = blob_node_client
-                                .has_blob(&calimero_primitives::blobs::BlobId::from(
-                                    target_app_key,
-                                ))
-                                .unwrap_or(false);
-                            if staged {
-                                let _ = ensure_target_blob_installed(
-                                    &blob_node_client,
-                                    &cid,
-                                    &target_app,
-                                    target_app_key,
-                                )
-                                .await;
-                                true
-                            } else {
-                                false
-                            }
+                            ensure_target_blob_installed(
+                                &blob_node_client,
+                                &cid,
+                                &target_app,
+                                target_app_key,
+                            )
+                            .await
                         }
                         .into_actor(act)
                         .then(move |blob_available, act, _ctx| {
@@ -1466,10 +1457,12 @@ enum CachedOrBlob {
 /// export) and no-op. Fetches the blob via DHT/peer download (it is
 /// announced at upgrade time) and installs it in place under the same id.
 ///
-/// Returns `true` when a fresh install happened (the caller must evict the
-/// module/application caches keyed by `target_app`). All failures warn and
-/// return `false` — the migrate then proceeds against the current bytecode
-/// exactly as before this fix, and the next access retries.
+/// Returns `true` when the application row holds the target bytecode on
+/// return — either it already matched or a fresh in-place install succeeded
+/// (callers evict the `target_app`-keyed caches unconditionally; reuse of an
+/// already-current module is a cheap recompile at most). All failures warn
+/// and return `false` — the upgrade proceeds against the current bytecode
+/// and the next access retries.
 async fn ensure_target_blob_installed(
     node_client: &NodeClient,
     context_id: &ContextId,
@@ -1491,7 +1484,7 @@ async fn ensure_target_blob_installed(
     };
     let target_blob = calimero_primitives::blobs::BlobId::from(target_app_key);
     if installed.blob.bytecode == target_blob {
-        return false;
+        return true;
     }
     info!(
         %context_id,
