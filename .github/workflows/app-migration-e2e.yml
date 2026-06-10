@@ -108,7 +108,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-migration-wasm-fixtures
-          path: apps/migrations/**/res/*.wasm
+          # The workflows install the signed same-package .mpk bundles; the
+          # raw wasms ride along for the schema-guard job and local rebuilds.
+          path: |
+            apps/migrations/**/res/*.wasm
+            apps/migrations/**/res/*.mpk
           retention-days: 1
           if-no-files-found: error
 
