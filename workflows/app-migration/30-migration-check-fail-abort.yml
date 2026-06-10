@@ -44,15 +44,28 @@ nodes:
   base_port: 10050
   base_rpc_port: 10150
 
+# NOTE: still on distinct-id raw-wasm fixtures — post-abort execution and
+# the L1 downgrade gate assume two coexisting app rows and break on a
+# same-id in-place install. Convert to the same-package .mpk fixtures
+# when #2756 lands.
+
 steps:
   # Install v1 + v2 (the lossy v2) on the single node.
   - name: Install scenario-migration-check-fail-v1
     type: install_application
     node: app-migration-check-fail-1
-    path: apps/migrations/scenario-migration-check-fail-v1/res/scenario-migration-check-fail-1.0.0.mpk
+    path: apps/migrations/scenario-migration-check-fail-v1/res/scenario_migration_check_fail_v1.wasm
     dev: true
     outputs:
       app_v1: applicationId
+
+  - name: Install scenario-migration-check-fail-v2
+    type: install_application
+    node: app-migration-check-fail-1
+    path: apps/migrations/scenario-migration-check-fail-v2/res/scenario_migration_check_fail_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
 
   # Namespace (anchors v1) + descendant subgroup + context, all local.
   - name: Create namespace (anchors app_v1)
@@ -132,23 +145,6 @@ steps:
     node: app-migration-check-fail-1
     group_id: "{{namespace_id}}"
     upgrade_policy: lazy_on_access
-
-  - name: Install scenario-migration-check-fail-v2
-    type: install_application
-    node: app-migration-check-fail-1
-    path: apps/migrations/scenario-migration-check-fail-v2/res/scenario-migration-check-fail-2.0.0.mpk
-    dev: true
-    outputs:
-      app_v2: applicationId
-
-
-  - name: Assert both versions share one application id (bundle same-id)
-    # Same-package bundles derive ApplicationId = hash(package, signer),
-    # so the second install MUST dedup onto the first id — the upgrade
-    # below then exercises the same-id (blob-only) propagation path.
-    type: json_assert
-    statements:
-      - 'equal("{{app_v1}}", "{{app_v2}}")'
 
   - name: Cascade namespace v1 → v2 (lossy migrate)
     type: upgrade_group
@@ -244,5 +240,9 @@ steps:
     node: app-migration-check-fail-1
     application_id: "{{app_v1}}"
 
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-check-fail-1
+    application_id: "{{app_v2}}"
 
 stop_all_nodes: false
