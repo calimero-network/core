@@ -1407,6 +1407,38 @@ impl SyncManager {
                 "Skipping context-state sync: application upgrade pending (gate); \
                  node self-migrates on next access before reconciling"
             );
+            // Pre-stage the target bytecode while state sync is gated, so the
+            // lazy migrate on next access has it locally. Bundle apps keep a
+            // version-stable ApplicationId, so nothing else fetches the new
+            // blob under the same id; BlobShare is exempt from the
+            // responder-side gate for exactly this. Failures are benign —
+            // every sync attempt retries until the migrate lifts the gate.
+            {
+                let store = self.context_client.datastore_handle().into_inner();
+                if let Some(stage_blob) = pending_upgrade_stage_blob(&store, &context_id) {
+                    let stage_blob = calimero_primitives::blobs::BlobId::from(stage_blob);
+                    if !self.node_client.has_blob(&stage_blob).unwrap_or(true) {
+                        if let Err(err) = self
+                            .stage_target_blob(&context, stage_blob, chosen_peer)
+                            .await
+                        {
+                            warn!(
+                                %context_id,
+                                %chosen_peer,
+                                %stage_blob,
+                                %err,
+                                "failed to pre-stage target app blob; will retry on next sync"
+                            );
+                        } else {
+                            info!(
+                                %context_id,
+                                %stage_blob,
+                                "pre-staged target app bytecode for pending upgrade"
+                            );
+                        }
+                    }
+                }
+            }
             return Ok(SyncProtocol::None);
         }
 
@@ -3251,6 +3283,54 @@ impl super::driver::SyncDriverDispatch for SyncManager {
 // `SyncManager` decomposition. Call sites use
 // `super::peers::partition_peers_anchor_first`.
 
+impl SyncManager {
+    /// Fetch `blob_id` from `chosen_peer` over a dedicated BlobShare stream.
+    /// Used to pre-stage a pending upgrade's target bytecode while the
+    /// state-sync gate is closed (the responder serves BlobShare during the
+    /// gate window by design).
+    async fn stage_target_blob(
+        &self,
+        context: &calimero_primitives::context::Context,
+        blob_id: calimero_primitives::blobs::BlobId,
+        chosen_peer: libp2p::PeerId,
+    ) -> eyre::Result<()> {
+        let identities = self
+            .context_client
+            .get_context_members(&context.id, Some(true));
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+            .await
+            .transpose()?
+        else {
+            bail!("no owned identities found for context: {}", context.id);
+        };
+        let mut stream = self
+            .sync_network
+            .open_stream(chosen_peer)
+            .await
+            .wrap_err("open stream for target blob share")?;
+        // Size unknown ahead of the transfer (the target app may not have a
+        // local ApplicationMeta row yet); 0 disables the expected-size check.
+        self.initiate_blob_share_process(context, our_identity, blob_id, 0, &mut stream)
+            .await
+    }
+}
+
+/// The bytecode blob to pre-stage while [`pending_upgrade_target_in`] gates a
+/// context: the group's recorded target blob (`app_key`). Restricted to
+/// migration-carrying upgrades — the same corroboration as the gate's
+/// same-id arm — so a legacy group's randomly-seeded `app_key` is never
+/// requested from peers.
+pub(crate) fn pending_upgrade_stage_blob(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+) -> Option<[u8; 32]> {
+    let group_id = calimero_context::group_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
+    meta.migration.is_some().then_some(meta.app_key)
+}
+
 /// Store-level core of [`SyncManager::pending_upgrade_target`], extracted so
 /// the predicate is unit-testable without constructing a `SyncManager`.
 ///
@@ -3431,6 +3511,29 @@ mod pending_upgrade_tests {
         let target = ApplicationId::from([0xBB; 32]);
         let _gid = seed(&store, ctx, zero, target, Some("migrate_v1_to_v2"));
         assert_eq!(pending_upgrade_target_in(&store, &ctx), None);
+    }
+
+    // The pre-stage blob is the group's recorded target blob, surfaced only
+    // for migration-carrying upgrades — a legacy group's randomly-seeded
+    // app_key (migration None) must never be requested from peers.
+    #[test]
+    fn stage_blob_requires_a_migration() {
+        let store = store();
+        let app = ApplicationId::from([0xAA; 32]);
+
+        let with_migration = ContextId::from([6u8; 32]);
+        let _g = seed(&store, with_migration, app, app, Some("migrate_v1_to_v2"));
+        assert_eq!(
+            super::pending_upgrade_stage_blob(&store, &with_migration),
+            Some([0x11; 32])
+        );
+
+        let without_migration = ContextId::from([7u8; 32]);
+        let _g = seed(&store, without_migration, app, app, None);
+        assert_eq!(
+            super::pending_upgrade_stage_blob(&store, &without_migration),
+            None
+        );
     }
 }
 
