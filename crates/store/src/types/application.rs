@@ -123,3 +123,23 @@ impl PredefinedEntry for key::ApplicationMeta {
     type Codec = Borsh;
     type DataType<'a> = ApplicationMeta;
 }
+
+/// Value for [`key::ApplicationPreviousBlob`]: the bytecode blob that an
+/// in-place (same-id) bundle install overwrote. Node-local breadcrumb — lets
+/// a logically-aborted migration pin its context back to the pre-upgrade
+/// code, and gives the L1 downgrade gate a pre-install ABI to compare. A
+/// brand-new key, so a missing row reads as `None` (no prior in-place
+/// install on record).
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "single breadcrumb value; additions would need a migration"
+)]
+pub struct ApplicationPreviousBlob {
+    pub bytecode: [u8; 32],
+}
+
+impl PredefinedEntry for key::ApplicationPreviousBlob {
+    type Codec = Borsh;
+    type DataType<'a> = ApplicationPreviousBlob;
+}

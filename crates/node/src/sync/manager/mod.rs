@@ -173,6 +173,14 @@ pub struct SyncManager {
     /// opaque anyway.
     pub(crate) metrics: Option<Arc<dyn super::metrics::SyncMetricsCollector>>,
 
+    /// Retry-backoff memo for target-blob pre-staging: (context, blob) ->
+    /// last attempt. A legacy group whose randomly-seeded `app_key` never
+    /// resolves to a real blob would otherwise issue one doomed BlobShare per
+    /// sync tick forever; with the memo a failed stage retries at most every
+    /// few minutes. Shared across clones (initiator/responder handles).
+    pub(super) stale_blob_attempts:
+        Arc<std::sync::Mutex<std::collections::HashMap<(ContextId, [u8; 32]), Instant>>>,
+
     /// Reconcile-after-divergence orchestrator. Owns the orchestration
     /// for [`Self::reconcile_after_divergence`]; that method is a thin
     /// forwarder. See `sync::reconciler`.
@@ -217,6 +225,7 @@ impl Clone for SyncManager {
             // recording surface unified across the original (which runs
             // `start`) and every responder/initiator clone.
             metrics: self.metrics.clone(),
+            stale_blob_attempts: Arc::clone(&self.stale_blob_attempts),
             // Reconciler holds Arcs internally, so its `Clone` is
             // cheap and clones share the same state_access/sync_network
             // surfaces as the parent.
@@ -281,6 +290,7 @@ impl SyncManager {
             session_tx: None,
             session_result_rx: None,
             metrics: None,
+            stale_blob_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             reconciler,
             protocol_selector,
         }
@@ -1415,9 +1425,11 @@ impl SyncManager {
             // every sync attempt retries until the migrate lifts the gate.
             {
                 let store = self.context_client.datastore_handle().into_inner();
-                if let Some(stage_blob) = pending_upgrade_stage_blob(&store, &context_id) {
-                    let stage_blob = calimero_primitives::blobs::BlobId::from(stage_blob);
-                    if !self.node_client.has_blob(&stage_blob).unwrap_or(true) {
+                if let Some(stage) = pending_upgrade_stage_blob(&store, &context_id) {
+                    let stage_blob = calimero_primitives::blobs::BlobId::from(stage);
+                    if !self.node_client.has_blob(&stage_blob).unwrap_or(true)
+                        && self.should_attempt_stage(context_id, stage)
+                    {
                         if let Err(err) = self
                             .stage_target_blob(&context, stage_blob, chosen_peer)
                             .await
@@ -1427,9 +1439,10 @@ impl SyncManager {
                                 %chosen_peer,
                                 %stage_blob,
                                 %err,
-                                "failed to pre-stage target app blob; will retry on next sync"
+                                "failed to pre-stage target app blob; will retry after backoff"
                             );
                         } else {
+                            self.clear_stage_attempt(context_id, stage);
                             info!(
                                 %context_id,
                                 %stage_blob,
@@ -1508,6 +1521,47 @@ impl SyncManager {
                 )
                 .await
                 .wrap_err("install bundle after blob share")?;
+            }
+        }
+
+        // Same-id (bundle) upgrades move only the bytecode under an unchanged
+        // application id — additionally stage the group's recorded target
+        // blob so the next access can activate it. Code-only upgrades never
+        // arm the state-sync gate (same schema, sync stays safe), so this is
+        // their only staging point. Best-effort with retry backoff.
+        {
+            let store = self.context_client.datastore_handle().into_inner();
+            if let Some(stage) = pending_upgrade_stage_blob(&store, &context_id) {
+                let stage_blob = calimero_primitives::blobs::BlobId::from(stage);
+                if !self.node_client.has_blob(&stage_blob).unwrap_or(true)
+                    && self.should_attempt_stage(context_id, stage)
+                {
+                    match self
+                        .initiate_blob_share_process(
+                            &context,
+                            our_identity,
+                            stage_blob,
+                            0,
+                            &mut stream,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            self.clear_stage_attempt(context_id, stage);
+                            info!(
+                                %context_id,
+                                %stage_blob,
+                                "staged target app bytecode for pending same-id upgrade"
+                            );
+                        }
+                        Err(err) => warn!(
+                            %context_id,
+                            %stage_blob,
+                            %err,
+                            "failed to stage target app bytecode; will retry after backoff"
+                        ),
+                    }
+                }
             }
         }
 
@@ -3284,6 +3338,36 @@ impl super::driver::SyncDriverDispatch for SyncManager {
 // `super::peers::partition_peers_anchor_first`.
 
 impl SyncManager {
+    /// Whether a stage attempt for `(context, blob)` is due — records the
+    /// attempt when it is. A failed stage retries only after the backoff, so
+    /// a blob that never materialises (legacy randomly-seeded `app_key`)
+    /// costs one doomed BlobShare per window, not one per sync tick.
+    fn should_attempt_stage(&self, context_id: ContextId, blob: [u8; 32]) -> bool {
+        const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
+        let mut memo = self
+            .stale_blob_attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        if let Some(last) = memo.get(&(context_id, blob)) {
+            if now.duration_since(*last) < RETRY_AFTER {
+                return false;
+            }
+        }
+        let _ = memo.insert((context_id, blob), now);
+        true
+    }
+
+    /// Drop the stage-attempt memo after a successful share so a later
+    /// upgrade of the same context starts fresh.
+    fn clear_stage_attempt(&self, context_id: ContextId, blob: [u8; 32]) {
+        let mut memo = self
+            .stale_blob_attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = memo.remove(&(context_id, blob));
+    }
+
     /// Fetch `blob_id` from `chosen_peer` over a dedicated BlobShare stream.
     /// Used to pre-stage a pending upgrade's target bytecode while the
     /// state-sync gate is closed (the responder serves BlobShare during the
@@ -3315,11 +3399,13 @@ impl SyncManager {
     }
 }
 
-/// The bytecode blob to pre-stage while [`pending_upgrade_target_in`] gates a
-/// context: the group's recorded target blob (`app_key`). Restricted to
-/// migration-carrying upgrades — the same corroboration as the gate's
-/// same-id arm — so a legacy group's randomly-seeded `app_key` is never
-/// requested from peers.
+/// The bytecode blob worth pre-staging for `context_id`: the group's recorded
+/// target blob (`app_key`) when it differs from the bytecode installed under
+/// the group's target application — i.e. an upgrade (migration-carrying or
+/// code-only) moved the blob under a version-stable bundle id and this node
+/// doesn't run it yet. `None` once the row catches up. A legacy group's
+/// randomly-seeded `app_key` reads as permanently stale; the BlobShare retry
+/// memo bounds what that can cost.
 pub(crate) fn pending_upgrade_stage_blob(
     store: &calimero_store::Store,
     context_id: &ContextId,
@@ -3328,7 +3414,18 @@ pub(crate) fn pending_upgrade_stage_blob(
         .ok()
         .flatten()?;
     let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
-    meta.migration.is_some().then_some(meta.app_key)
+    if meta.app_key == [0u8; 32] {
+        return None;
+    }
+    let row_blob = store
+        .handle()
+        .get(&calimero_store::key::ApplicationMeta::new(
+            meta.target_application_id,
+        ))
+        .ok()
+        .flatten()
+        .map(|app| *app.bytecode.blob_id().as_ref())?;
+    (row_blob != meta.app_key).then_some(meta.app_key)
 }
 
 /// Store-level core of [`SyncManager::pending_upgrade_target`], extracted so
@@ -3514,26 +3611,70 @@ mod pending_upgrade_tests {
     }
 
     // The pre-stage blob is the group's recorded target blob, surfaced only
-    // for migration-carrying upgrades — a legacy group's randomly-seeded
-    // app_key (migration None) must never be requested from peers.
+    // while it diverges from the bytecode installed under the target
+    // application row — equal blobs (caught up) and a missing row both
+    // surface nothing.
     #[test]
-    fn stage_blob_requires_a_migration() {
+    fn stage_blob_tracks_row_divergence() {
         let store = store();
         let app = ApplicationId::from([0xAA; 32]);
 
-        let with_migration = ContextId::from([6u8; 32]);
-        let _g = seed(&store, with_migration, app, app, Some("migrate_v1_to_v2"));
+        // No application row at all: nothing to compare, nothing to stage.
+        let no_row = ContextId::from([6u8; 32]);
+        let _g = seed(&store, no_row, app, app, None);
+        assert_eq!(super::pending_upgrade_stage_blob(&store, &no_row), None);
+
+        // Row installed at a DIFFERENT blob than the group's app_key
+        // ([0x11; 32] in the fixture): the upgrade's bytecode is pending.
+        let mut handle = store.handle();
+        handle
+            .put(
+                &ApplicationMetaKey::new(app),
+                &calimero_store::types::ApplicationMeta::new(
+                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+                        [0x99; 32],
+                    )),
+                    1,
+                    "test://stage".to_owned().into_boxed_str(),
+                    Box::default(),
+                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+                        [0u8; 32],
+                    )),
+                    "stage-pkg".to_owned().into_boxed_str(),
+                    "1.0.0".to_owned().into_boxed_str(),
+                    "stage-signer".to_owned().into_boxed_str(),
+                ),
+            )
+            .expect("put app row");
+        drop(handle);
         assert_eq!(
-            super::pending_upgrade_stage_blob(&store, &with_migration),
+            super::pending_upgrade_stage_blob(&store, &no_row),
             Some([0x11; 32])
         );
 
-        let without_migration = ContextId::from([7u8; 32]);
-        let _g = seed(&store, without_migration, app, app, None);
-        assert_eq!(
-            super::pending_upgrade_stage_blob(&store, &without_migration),
-            None
-        );
+        // Row caught up to the group's app_key: nothing to stage.
+        let mut handle = store.handle();
+        handle
+            .put(
+                &ApplicationMetaKey::new(app),
+                &calimero_store::types::ApplicationMeta::new(
+                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+                        [0x11; 32],
+                    )),
+                    1,
+                    "test://stage".to_owned().into_boxed_str(),
+                    Box::default(),
+                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+                        [0u8; 32],
+                    )),
+                    "stage-pkg".to_owned().into_boxed_str(),
+                    "1.0.0".to_owned().into_boxed_str(),
+                    "stage-signer".to_owned().into_boxed_str(),
+                ),
+            )
+            .expect("put app row");
+        drop(handle);
+        assert_eq!(super::pending_upgrade_stage_blob(&store, &no_row), None);
     }
 }
 

@@ -279,3 +279,51 @@ impl NodeClient {
 
 #[cfg(test)]
 mod tests;
+
+impl NodeClient {
+    /// Application wasm bytes straight from a bytecode BLOB — used for a
+    /// context pinned to a blob the application row no longer references
+    /// (version-stable bundle id overwritten in place). Fully in-memory: the
+    /// pinned version's extracted dir may be gone, but the blob is still in
+    /// the blobstore. `None` when the blob itself is absent locally.
+    pub async fn application_bytes_from_blob(
+        &self,
+        blob_id: &BlobId,
+        service_name: Option<&str>,
+    ) -> eyre::Result<Option<Arc<[u8]>>> {
+        let Some(blob_bytes) = self.get_blob_bytes(blob_id, None).await? else {
+            return Ok(None);
+        };
+        if !Self::is_bundle_blob(&blob_bytes) {
+            return Ok(Some(blob_bytes));
+        }
+        let service_owned = service_name.map(str::to_owned);
+        let wasm = tokio::task::spawn_blocking(move || -> eyre::Result<Option<Vec<u8>>> {
+            let (_, manifest) = bundle::extract_manifest_allow_unsigned(&blob_bytes)?;
+            let wasm_relative_path = match service_owned.as_deref() {
+                Some(name) => manifest
+                    .services
+                    .as_ref()
+                    .and_then(|svcs| svcs.iter().find(|s| s.name == name))
+                    .map(|s| s.wasm.path.clone())
+                    .ok_or_else(|| {
+                        eyre::eyre!("service '{}' not found in bundle manifest", name)
+                    })?,
+                None => manifest
+                    .wasm
+                    .as_ref()
+                    .map(|w| w.path.clone())
+                    .unwrap_or_else(|| "app.wasm".to_owned()),
+            };
+            if wasm_relative_path.contains("..") {
+                bail!(
+                    "WASM path traversal detected: {} contains '..' component",
+                    wasm_relative_path
+                );
+            }
+            bundle::extract_bundle_file(&blob_bytes, &wasm_relative_path)
+        })
+        .await??;
+        Ok(wasm.map(Into::into))
+    }
+}

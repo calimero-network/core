@@ -109,24 +109,48 @@ pub(super) fn maybe_lazy_upgrade(
 
     // 5. Compare current vs target application
     if *current_application_id == meta.target_application_id {
-        // IDs match — only proceed if there is a pending migration that
-        // hasn't been applied to this context yet.
-        let Some(ref method) = migrate_method else {
-            return None; // no migration, context is already up to date
-        };
+        // IDs match — bundle ids are version-stable, so this is either a
+        // pending migration or a pending code-only bytecode bump.
+        match migrate_method {
+            Some(ref method) => {
+                // Check per-context marker set after a successful migration run.
+                let already_applied = MigrationsRepository::new(datastore)
+                    .last_migration(&group_id, context_id)
+                    .ok()
+                    .flatten()
+                    .map(|last| last == *method)
+                    .unwrap_or(false);
 
-        // Check per-context marker set after a successful migration run.
-        let already_applied = MigrationsRepository::new(datastore)
-            .last_migration(&group_id, context_id)
-            .ok()
-            .flatten()
-            .map(|last| last == *method)
-            .unwrap_or(false);
-
-        if already_applied {
-            return None; // migration was already applied to this context
+                if already_applied {
+                    return None; // migration was already applied to this context
+                }
+                // Fall through: migration is pending.
+            }
+            None => {
+                // Code-only: pending iff the group's recorded target blob
+                // (app_key, stamped by the upgrade) differs from the blob the
+                // application row is installed at. Comparing against the row
+                // keeps legacy groups safe: a randomly-seeded app_key with NO
+                // upgrade behind it fires here, but the activation step is
+                // local-only (it skips silently unless the blob is already in
+                // the blobstore), so the spurious trigger costs one store
+                // read per access and nothing else.
+                let row_blob = datastore
+                    .handle()
+                    .get(&calimero_store::key::ApplicationMeta::new(
+                        *current_application_id,
+                    ))
+                    .ok()
+                    .flatten()
+                    .map(|app| *app.bytecode.blob_id().as_ref());
+                let stale =
+                    meta.app_key != [0u8; 32] && row_blob.is_some_and(|blob| blob != meta.app_key);
+                if !stale {
+                    return None; // bytecode current — context is up to date
+                }
+                // Fall through: code-only bytecode bump is pending.
+            }
         }
-        // Fall through: migration is pending.
     }
 
     info!(

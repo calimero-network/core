@@ -46,7 +46,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::update_application::{
-    update_application_id, update_application_with_migration,
+    clear_executing_blob_pin, update_application_id, update_application_with_migration,
 };
 use crate::ContextManager;
 use calimero_governance_store::metrics::ExecutionLabels;
@@ -597,30 +597,65 @@ impl Handler<ExecuteRequest> for ContextManager {
                             })
                             .boxed_local()
                     } else {
-                        // No migration: call update_application_id directly — no mailbox.
+                        // No migration. A same-id (bundle) code-only bump must
+                        // first activate the staged bytecode: install it in
+                        // place under the unchanged id and drop stale caches.
+                        // Local-only — if the blob hasn't been staged yet (the
+                        // sync layer delivers it), skip silently and let the
+                        // next access retry; a spurious trigger from a legacy
+                        // group's random app_key therefore costs nothing.
+                        let blob_node_client = node_client.clone();
                         async move {
-                            if let Err(err) = update_application_id(
-                                datastore,
-                                node_client,
-                                context_client,
-                                cid,
-                                context_meta,
-                                target_app,
-                                application,
-                                executor,
-                            )
-                            .await
-                            {
-                                warn!(
-                                    %cid,
-                                    %target_app,
-                                    %err,
-                                    "lazy upgrade failed, proceeding with current application"
-                                );
+                            let staged = blob_node_client
+                                .has_blob(&calimero_primitives::blobs::BlobId::from(
+                                    target_app_key,
+                                ))
+                                .unwrap_or(false);
+                            if staged {
+                                ensure_target_blob_installed(
+                                    &blob_node_client,
+                                    &cid,
+                                    &target_app,
+                                    target_app_key,
+                                )
+                                .await
+                            } else {
+                                false
                             }
-                            Ok(guard)
                         }
                         .into_actor(act)
+                        .then(move |freshly_installed, act, _ctx| {
+                            if freshly_installed {
+                                let _ = act.applications.remove(&target_app);
+                                act.modules.retain(|(id, _), _| *id != target_app);
+                                // Activation is the code-only promote: any
+                                // executing-blob pin is now satisfied.
+                                clear_executing_blob_pin(&act.datastore, cid);
+                            }
+                            async move {
+                                if let Err(err) = update_application_id(
+                                    datastore,
+                                    node_client,
+                                    context_client,
+                                    cid,
+                                    context_meta,
+                                    target_app,
+                                    application,
+                                    executor,
+                                )
+                                .await
+                                {
+                                    warn!(
+                                        %cid,
+                                        %target_app,
+                                        %err,
+                                        "lazy upgrade failed, proceeding with current application"
+                                    );
+                                }
+                                Ok(guard)
+                            }
+                            .into_actor(act)
+                        })
                         .boxed_local()
                     }
                 }
@@ -639,8 +674,25 @@ impl Handler<ExecuteRequest> for ContextManager {
             });
 
         let module_task = context_task.and_then(move |(guard, context), act, _ctx| {
-            act.get_module(context.application_id, context.service_name.clone())
-                .map_ok(move |module, _act, _ctx| (guard, context, module))
+            // A logically-aborted migration leaves this context's state on
+            // the OLD schema while the (version-stable bundle id) application
+            // row may already hold the NEW bytecode — honor the executing-blob
+            // pin so reads keep running the code the state was written under.
+            let pinned = act
+                .datastore
+                .handle()
+                .get(&calimero_store::key::ContextExecutingBlob::new(context.id))
+                .ok()
+                .flatten();
+            let module_fut = match pinned {
+                Some(pin) => act
+                    .get_pinned_module(pin.blob, context.service_name.clone())
+                    .boxed_local(),
+                None => act
+                    .get_module(context.application_id, context.service_name.clone())
+                    .boxed_local(),
+            };
+            module_fut.map_ok(move |module, _act, _ctx| (guard, context, module))
         });
 
         let execution_count = self.metrics.as_ref().map(|m| m.execution_count.clone());
@@ -1309,6 +1361,63 @@ impl ContextManager {
                 error!(?err, "failed to initialize module for execution");
 
                 err
+            })
+    }
+
+    /// Load the module for a context PINNED to a bytecode blob the
+    /// application row no longer references (post-abort, version-stable
+    /// bundle id overwritten in place). Compiles from the raw blob bytes —
+    /// the displaced version has no row to carry a precompiled artifact.
+    ///
+    /// Cached in `modules` under a pseudo application id derived from the
+    /// pinned blob: pins are rare (they only exist after a migration abort),
+    /// blob ids and application ids are both opaque 32-byte hashes, and a
+    /// collision would only alias two cache slots, never corrupt execution.
+    pub fn get_pinned_module(
+        &self,
+        pinned_blob: [u8; 32],
+        service_name: Option<String>,
+    ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
+        let pseudo_id = calimero_primitives::application::ApplicationId::from(pinned_blob);
+        let cache_key = (pseudo_id, service_name.clone());
+        let lookup_key = cache_key.clone();
+
+        async {}
+            .into_actor(self)
+            .map(move |_, act, _ctx| {
+                if let Some(cached) = act.modules.get(&lookup_key) {
+                    return Either::Left(cached.clone());
+                }
+                Either::Right((act.node_client.clone(), act.vm_limits))
+            })
+            .then(move |either, act, _ctx| {
+                let (node_client, vm_limits) = match either {
+                    Either::Left(module) => {
+                        return actix::fut::ready(Ok(module)).into_actor(act).boxed_local()
+                    }
+                    Either::Right(parts) => parts,
+                };
+                let blob_id = calimero_primitives::blobs::BlobId::from(pinned_blob);
+                async move {
+                    let Some(bytecode) = node_client
+                        .application_bytes_from_blob(&blob_id, service_name.as_deref())
+                        .await?
+                    else {
+                        bail!("pinned bytecode blob {} not found in blobstore", blob_id);
+                    };
+                    calimero_utils_actix::global_runtime()
+                        .spawn_blocking(move || {
+                            calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
+                        })
+                        .await?
+                        .map_err(Into::into)
+                }
+                .into_actor(act)
+                .map_ok(move |module: calimero_runtime::Module, act, _ctx| {
+                    let _ = act.modules.insert(cache_key, module.clone());
+                    module
+                })
+                .boxed_local()
             })
     }
 }

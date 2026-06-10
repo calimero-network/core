@@ -156,8 +156,13 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     // is emitted so a forbidden downgrade never reaches the network.
                     // Fail-open when either app lacks an embedded ABI section.
                     if has_migration {
-                        let old =
-                            resolve_embedded_schema(&node_client, &current_application_id).await;
+                        let old = resolve_pre_upgrade_schema(
+                            &node_client,
+                            &datastore,
+                            &current_application_id,
+                            &target_application_id,
+                        )
+                        .await;
                         let new =
                             resolve_embedded_schema(&node_client, &target_application_id).await;
                         verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;
@@ -289,6 +294,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let context_client = self.context_client.clone();
         let datastore_for_canary = self.datastore.clone();
         let datastore = self.datastore.clone();
+        let datastore_for_gate = self.datastore.clone();
         let migrate_method = migration.as_ref().map(|m| m.method.clone());
 
         let canary_signer = match calimero_governance_store::find_local_signing_identity(
@@ -315,7 +321,13 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             // is emitted so a forbidden downgrade never reaches the network.
             // Fail-open when either app lacks an embedded ABI section.
             if has_migration {
-                let old = resolve_embedded_schema(&node_client, &current_application_id).await;
+                let old = resolve_pre_upgrade_schema(
+                    &node_client,
+                    &datastore_for_gate,
+                    &current_application_id,
+                    &target_application_id,
+                )
+                .await;
                 let new = resolve_embedded_schema(&node_client, &target_application_id).await;
                 verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;
             }
@@ -534,6 +546,43 @@ fn verify_no_identity_downgrade(
 
 /// Read a context application's embedded state schema, or None if unavailable
 /// (no blob, no embedded section, or a read error — all fail-open).
+/// "From" side of the L1 gate for a same-id upgrade. An in-place (same-id)
+/// bundle install leaves the application row already on the NEW wasm —
+/// comparing row-to-row would diff a manifest against itself and wave a
+/// downgrade through. Prefer the displaced bytecode's breadcrumb; fall back
+/// to the row when none exists (distinct-id upgrades, or no in-place install
+/// ever happened).
+async fn resolve_pre_upgrade_schema(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    datastore: &calimero_store::Store,
+    current_application_id: &ApplicationId,
+    target_application_id: &ApplicationId,
+) -> Option<Manifest> {
+    if current_application_id == target_application_id {
+        let previous = datastore
+            .handle()
+            .get(&key::ApplicationPreviousBlob::new(*current_application_id))
+            .ok()
+            .flatten();
+        if let Some(previous) = previous {
+            let blob = calimero_primitives::blobs::BlobId::from(previous.bytecode);
+            match node_client.application_bytes_from_blob(&blob, None).await {
+                Ok(Some(bytes)) => {
+                    return calimero_wasm_abi::embed::read_embedded_state_schema(&bytes)
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(
+                        %current_application_id, error = %err,
+                        "L1 gate: failed to read displaced bytecode; falling back to the row"
+                    );
+                }
+            }
+        }
+    }
+    resolve_embedded_schema(node_client, current_application_id).await
+}
+
 async fn resolve_embedded_schema(
     node_client: &calimero_node_primitives::client::NodeClient,
     application_id: &ApplicationId,
@@ -599,9 +648,19 @@ fn validate_upgrade(
         }
     }
 
-    // 5. Target must differ from current
+    // 5. Target must differ from current. Same id no longer implies no-op:
+    //    bundle ids are version-stable (hash(package, signer)), so a new
+    //    version moves only the bytecode blob — compare the group's recorded
+    //    app_key against the target row's blob before rejecting.
     if meta.target_application_id == *target_application_id && !has_migration {
-        bail!("group is already targeting this application and no migration was requested");
+        let target_blob = datastore
+            .handle()
+            .get(&key::ApplicationMeta::new(*target_application_id))?
+            .map(|app| *app.bytecode.blob_id().as_ref());
+        let bytecode_unchanged = target_blob.is_none_or(|blob| blob == meta.app_key);
+        if bytecode_unchanged {
+            bail!("group is already targeting this application and no migration was requested");
+        }
     }
 
     // 6. Group must have contexts
@@ -1143,8 +1202,13 @@ fn dispatch_cascade(
         // identity from a top-level state field. Runs BEFORE the CascadeUpgrade
         // op is emitted. Fail-open when either app lacks an embedded ABI section.
         if has_migration {
-            let old =
-                resolve_embedded_schema(&node_client_for_publish, &current_application_id).await;
+            let old = resolve_pre_upgrade_schema(
+                &node_client_for_publish,
+                &datastore_for_publish,
+                &current_application_id,
+                &target_application_id,
+            )
+            .await;
             let new =
                 resolve_embedded_schema(&node_client_for_publish, &target_application_id).await;
             verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;

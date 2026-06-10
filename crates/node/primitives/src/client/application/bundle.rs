@@ -215,3 +215,24 @@ pub fn is_bundle_blob(blob_bytes: &[u8]) -> bool {
 pub fn is_bundle_archive(path: &camino::Utf8Path) -> bool {
     path.extension().map(|ext| ext == "mpk").unwrap_or(false)
 }
+
+/// Read one file's bytes out of a bundle archive in memory (no extraction to
+/// disk). `file_path` is the manifest-relative artifact path (already
+/// validated against traversal by the manifest parser). Returns `None` when
+/// the archive has no such entry.
+pub fn extract_bundle_file(bundle_data: &[u8], file_path: &str) -> eyre::Result<Option<Vec<u8>>> {
+    let tar = GzDecoder::new(bundle_data);
+    let mut archive = Archive::new(tar);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        if path.to_str() == Some(file_path)
+            || path.file_name().and_then(|n| n.to_str()) == Some(file_path)
+        {
+            let mut bytes = Vec::new();
+            let _ = entry.read_to_end(&mut bytes)?;
+            return Ok(Some(bytes));
+        }
+    }
+    Ok(None)
+}

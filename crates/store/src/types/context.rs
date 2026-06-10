@@ -303,3 +303,23 @@ mod context_local_key_isolation_tests {
         assert!(h.get(&mf).unwrap().is_none());
     }
 }
+
+/// Value for [`key::ContextExecutingBlob`]: the bytecode blob this context's
+/// committed state executes under, when it differs from the application
+/// row's (version-stable bundle id, row already overwritten in place by a
+/// newer version). Written on logical migration abort; deleted when a
+/// migrate succeeds. Node-local; a missing row means "execute the row's
+/// bytecode" (today's behavior).
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "single pin value; additions would need a migration"
+)]
+pub struct ContextExecutingBlob {
+    pub blob: [u8; 32],
+}
+
+impl PredefinedEntry for key::ContextExecutingBlob {
+    type Codec = Borsh;
+    type DataType<'a> = ContextExecutingBlob;
+}

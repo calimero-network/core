@@ -94,6 +94,19 @@ impl NodeClient {
 
         let mut handle = self.datastore.handle();
         let key = key::ApplicationMeta::new(application_id);
+        // Bundle ids are version-stable (hash(package, signer)), so a new
+        // version overwrites the row in place. Breadcrumb the displaced
+        // bytecode: a logically-aborted migration pins its context back to it,
+        // and the L1 downgrade gate reads its ABI as the "from" side.
+        if let Some(existing) = handle.get(&key)? {
+            let old_blob = *existing.bytecode.blob_id().as_ref();
+            if old_blob != *application.bytecode.blob_id().as_ref() {
+                handle.put(
+                    &key::ApplicationPreviousBlob::new(application_id),
+                    &types::ApplicationPreviousBlob { bytecode: old_blob },
+                )?;
+            }
+        }
         handle.put(&key, &application)?;
         Ok(application_id)
     }
