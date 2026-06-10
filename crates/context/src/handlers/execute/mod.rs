@@ -60,8 +60,8 @@ use governance_position::compute_governance_position_for_context;
 pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions};
 use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
 use upgrade_gate::{
-    maybe_lazy_upgrade, resolve_producing_app_key, should_block, upgrade_blocks_write,
-    upgrade_rejects_committed_write,
+    activation_marker, maybe_lazy_upgrade, resolve_producing_app_key, should_block,
+    upgrade_blocks_write, upgrade_rejects_committed_write,
 };
 
 impl Handler<ExecuteRequest> for ContextManager {
@@ -599,11 +599,12 @@ impl Handler<ExecuteRequest> for ContextManager {
                     } else {
                         // No migration. A same-id (bundle) code-only bump must
                         // first activate the staged bytecode: install it in
-                        // place under the unchanged id and drop stale caches.
-                        // Local-only — if the blob hasn't been staged yet (the
-                        // sync layer delivers it), skip silently and let the
-                        // next access retry; a spurious trigger from a legacy
-                        // group's random app_key therefore costs nothing.
+                        // place under the unchanged id (if the blob has been
+                        // staged — the sync layer delivers it; otherwise the
+                        // next access retries) and drop stale caches. The
+                        // eviction is unconditional: an in-place install may
+                        // have flipped the row BEFORE this upgrade, leaving
+                        // the caches on the old build with nothing to fetch.
                         let blob_node_client = node_client.clone();
                         async move {
                             let staged = blob_node_client
@@ -612,25 +613,43 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 ))
                                 .unwrap_or(false);
                             if staged {
-                                ensure_target_blob_installed(
+                                let _ = ensure_target_blob_installed(
                                     &blob_node_client,
                                     &cid,
                                     &target_app,
                                     target_app_key,
                                 )
-                                .await
+                                .await;
+                                true
                             } else {
                                 false
                             }
                         }
                         .into_actor(act)
-                        .then(move |freshly_installed, act, _ctx| {
-                            if freshly_installed {
+                        .then(move |blob_available, act, _ctx| {
+                            if blob_available {
+                                // Activate: the row now holds the target
+                                // bytecode — drop the stale caches so the next
+                                // load compiles it (an in-place install may
+                                // have flipped the row long before this
+                                // upgrade), release any executing-blob pin,
+                                // and record the per-context marker that stops
+                                // the lazy trigger from re-firing. A missing
+                                // blob (not yet staged, or a legacy random
+                                // app_key that never resolves) changes
+                                // nothing — caches stay warm.
                                 let _ = act.applications.remove(&target_app);
                                 act.modules.retain(|(id, _), _| *id != target_app);
-                                // Activation is the code-only promote: any
-                                // executing-blob pin is now satisfied.
                                 clear_executing_blob_pin(&act.datastore, cid);
+                                if let Err(err) = MigrationsRepository::new(&act.datastore)
+                                    .set_last_migration(
+                                        &group_id,
+                                        &cid,
+                                        &activation_marker(&target_app_key),
+                                    )
+                                {
+                                    warn!(%cid, %err, "failed to record activation marker");
+                                }
                             }
                             async move {
                                 if let Err(err) = update_application_id(
