@@ -718,25 +718,7 @@ impl SyncManager {
         context_id: &ContextId,
     ) -> Option<calimero_primitives::application::ApplicationId> {
         let store = self.context_client.datastore_handle().into_inner();
-        let ctx_meta = store
-            .handle()
-            .get(&calimero_store::key::ContextMeta::new(*context_id))
-            .ok()
-            .flatten()?;
-        let current_app = ctx_meta.application.application_id();
-        let group_id = calimero_context::group_store::get_group_for_context(&store, context_id)
-            .ok()
-            .flatten()?;
-        let meta = MetaRepository::new(&store).load(&group_id).ok().flatten()?;
-        let target = meta.target_application_id;
-        // Only gate a context that is bound to a REAL application and differs
-        // from the group target. A context with no app yet
-        // (`current_app == ZERO`, e.g. a freshly-joined node still
-        // bootstrapping its state) must be allowed to sync — gating it would
-        // block the very state sync it needs to come up. Likewise `target ==
-        // ZERO` means no upgrade is set.
-        let zero = calimero_primitives::application::ZERO_APPLICATION_ID;
-        (current_app != zero && target != zero && current_app != target).then_some(target)
+        pending_upgrade_target_in(&store, context_id)
     }
 
     /// Look up the trusted-anchor identity set for the group that owns
@@ -3268,6 +3250,189 @@ impl super::driver::SyncDriverDispatch for SyncManager {
 // `partition_peers_anchor_first` moved to `sync::peers` as Phase 1 of
 // `SyncManager` decomposition. Call sites use
 // `super::peers::partition_peers_anchor_first`.
+
+/// Store-level core of [`SyncManager::pending_upgrade_target`], extracted so
+/// the predicate is unit-testable without constructing a `SyncManager`.
+///
+/// An upgrade is pending in two shapes:
+/// * `current != target` — distinct ids (single-wasm apps, whose ids are
+///   content-addressed and change per version), or
+/// * `current == target` with the group's replicated migration not yet
+///   applied to this context — bundle apps, whose
+///   `ApplicationId = hash(package, signer)` is version-stable so the id
+///   never moves; mirrors `maybe_lazy_upgrade`'s same-id condition. Keyed
+///   off `meta.migration` + the per-context applied marker (NOT a raw
+///   `meta.app_key` blob comparison): groups created before `app_key` was
+///   blob-derived hold a random `app_key`, and a blob comparison would gate
+///   their state sync forever.
+pub(crate) fn pending_upgrade_target_in(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+) -> Option<calimero_primitives::application::ApplicationId> {
+    let ctx_meta = store
+        .handle()
+        .get(&calimero_store::key::ContextMeta::new(*context_id))
+        .ok()
+        .flatten()?;
+    let current_app = ctx_meta.application.application_id();
+    let group_id = calimero_context::group_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
+    let target = meta.target_application_id;
+    // Only gate a context that is bound to a REAL application. A context with
+    // no app yet (`current_app == ZERO`, e.g. a freshly-joined node still
+    // bootstrapping its state) must be allowed to sync — gating it would
+    // block the very state sync it needs to come up. Likewise `target ==
+    // ZERO` means no upgrade is set.
+    let zero = calimero_primitives::application::ZERO_APPLICATION_ID;
+    if current_app == zero || target == zero {
+        return None;
+    }
+    if current_app != target {
+        return Some(target);
+    }
+    // Same id: bundle-app upgrade. Pending while the group's migration has
+    // not been applied to this context — until the lazy migrate runs on next
+    // access, this node's pre-migration state must not reconcile against
+    // already-migrated peers.
+    let method = meta
+        .migration
+        .as_ref()
+        .and_then(|bytes| String::from_utf8(bytes.clone()).ok())?;
+    let applied = calimero_governance_store::MigrationsRepository::new(store)
+        .last_migration(&group_id, context_id)
+        .ok()
+        .flatten()
+        .is_some_and(|last| last == method);
+    (!applied).then_some(target)
+}
+
+#[cfg(test)]
+mod pending_upgrade_tests {
+    use std::sync::Arc;
+
+    use calimero_context::group_store::{register_context_in_group, MetaRepository};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::MigrationsRepository;
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::{ContextId, UpgradePolicy};
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::{
+        ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey, GroupMetaValue,
+    };
+    use calimero_store::types::ContextMeta;
+    use calimero_store::Store;
+
+    use super::pending_upgrade_target_in;
+
+    /// Seed a context bound to `current` in a group whose meta carries
+    /// `target` + `migration`. Mirrors the cascade e2e fixtures, but only
+    /// the rows the predicate reads.
+    fn seed(
+        store: &Store,
+        ctx: ContextId,
+        current: ApplicationId,
+        target: ApplicationId,
+        migration: Option<&str>,
+    ) -> ContextGroupId {
+        let group_id = ContextGroupId::from([0x42; 32]);
+        let admin = PublicKey::from([0x07; 32]);
+        let meta = GroupMetaValue {
+            app_key: [0x11; 32],
+            target_application_id: target,
+            upgrade_policy: UpgradePolicy::LazyOnAccess,
+            created_at: 1_700_000_000,
+            admin_identity: admin,
+            owner_identity: admin,
+            migration: migration.map(|m| m.as_bytes().to_vec()),
+            auto_join: true,
+        };
+        MetaRepository::new(store)
+            .save(&group_id, &meta)
+            .expect("save group meta");
+        let ctx_meta = ContextMeta::new(
+            ApplicationMetaKey::new(current),
+            [0x01; 32],
+            Vec::new(),
+            None,
+        );
+        let mut handle = store.handle();
+        handle
+            .put(&ContextMetaKey::new(ctx), &ctx_meta)
+            .expect("put ContextMeta");
+        drop(handle);
+        register_context_in_group(store, &group_id, &ctx).expect("register context");
+        group_id
+    }
+
+    fn store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    // Bundle shape: ApplicationId is version-stable, so v1→v2 leaves
+    // current == target. The replicated-but-unapplied migration is the
+    // pending signal; before this arm existed the gate returned None here
+    // and migrated peers reconciled their state onto pre-migration nodes.
+    #[test]
+    fn same_id_with_unapplied_migration_is_pending() {
+        let store = store();
+        let ctx = ContextId::from([1u8; 32]);
+        let app = ApplicationId::from([0xAA; 32]);
+        let _gid = seed(&store, ctx, app, app, Some("migrate_v1_to_v2"));
+        assert_eq!(pending_upgrade_target_in(&store, &ctx), Some(app));
+    }
+
+    // No migration on the group (never upgraded, or a legacy group with a
+    // random app_key): same id must NOT read as pending — gating here would
+    // freeze state sync for every group that never runs a migration.
+    #[test]
+    fn same_id_without_migration_is_not_pending() {
+        let store = store();
+        let ctx = ContextId::from([2u8; 32]);
+        let app = ApplicationId::from([0xAA; 32]);
+        let _gid = seed(&store, ctx, app, app, None);
+        assert_eq!(pending_upgrade_target_in(&store, &ctx), None);
+    }
+
+    // Once the per-context applied marker matches the group's migration,
+    // the gate lifts (state sync resumes after the lazy migrate).
+    #[test]
+    fn same_id_with_applied_migration_is_not_pending() {
+        let store = store();
+        let ctx = ContextId::from([3u8; 32]);
+        let app = ApplicationId::from([0xAA; 32]);
+        let gid = seed(&store, ctx, app, app, Some("migrate_v1_to_v2"));
+        MigrationsRepository::new(&store)
+            .set_last_migration(&gid, &ctx, "migrate_v1_to_v2")
+            .expect("record applied migration");
+        assert_eq!(pending_upgrade_target_in(&store, &ctx), None);
+    }
+
+    // Distinct ids (single-wasm upgrades) keep the original behavior.
+    #[test]
+    fn distinct_ids_remain_pending() {
+        let store = store();
+        let ctx = ContextId::from([4u8; 32]);
+        let v1 = ApplicationId::from([0xAA; 32]);
+        let v2 = ApplicationId::from([0xBB; 32]);
+        let _gid = seed(&store, ctx, v1, v2, None);
+        assert_eq!(pending_upgrade_target_in(&store, &ctx), Some(v2));
+    }
+
+    // A bootstrapping context (zero app id) must never be gated, even with
+    // a pending migration on its group — it needs state sync to come up.
+    #[test]
+    fn zero_current_app_is_never_pending() {
+        let store = store();
+        let ctx = ContextId::from([5u8; 32]);
+        let zero = calimero_primitives::application::ZERO_APPLICATION_ID;
+        let target = ApplicationId::from([0xBB; 32]);
+        let _gid = seed(&store, ctx, zero, target, Some("migrate_v1_to_v2"));
+        assert_eq!(pending_upgrade_target_in(&store, &ctx), None);
+    }
+}
 
 mod blob_fetch;
 mod handshake;
