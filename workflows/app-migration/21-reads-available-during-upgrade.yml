@@ -34,18 +34,10 @@ steps:
   - name: Install migration-suite-v1
     type: install_application
     node: app-migration-reads-1
-    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    path: apps/migrations/migration-suite-v1/res/migration-suite-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
-
-  - name: Install migration-suite-v2-add-field
-    type: install_application
-    node: app-migration-reads-1
-    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
-    dev: true
-    outputs:
-      app_v2: applicationId
 
   # Namespace (anchors v1) + descendant subgroup + context, all local.
   - name: Create namespace (anchors app_v1)
@@ -109,6 +101,23 @@ steps:
 
   # Fire the cascade. This RPC returns after publishing the op (status is
   # InProgress, propagator runs async) — it does NOT wait for completion.
+  - name: Install migration-suite-v2-add-field
+    type: install_application
+    node: app-migration-reads-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration-suite-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+
+  - name: Assert both versions share one application id (bundle same-id)
+    # Same-package bundles derive ApplicationId = hash(package, signer),
+    # so the second install MUST dedup onto the first id — the upgrade
+    # below then exercises the same-id (blob-only) propagation path.
+    type: json_assert
+    statements:
+      - 'equal("{{app_v1}}", "{{app_v2}}")'
+
   - name: Cascade namespace v1 → v2
     type: upgrade_group
     node: app-migration-reads-1
@@ -175,9 +184,5 @@ steps:
     node: app-migration-reads-1
     application_id: "{{app_v1}}"
 
-  - name: Uninstall v2
-    type: uninstall_application
-    node: app-migration-reads-1
-    application_id: "{{app_v2}}"
 
 stop_all_nodes: false
