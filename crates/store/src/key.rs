@@ -23,13 +23,14 @@ mod group;
 
 pub use absorb::{AbsorbBufferKey, ABSORB_BUFFER_PREFIX};
 pub use alias::{Alias, Aliasable, StoreScopeCompat};
-pub use application::ApplicationMeta;
+pub use application::{ApplicationMeta, ApplicationPreviousBlob};
 pub use blobs::BlobMeta;
 pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
-    ContextAuthoredRemaining, ContextConfig, ContextDagDelta, ContextIdentity, ContextLeftMarker,
-    ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextState,
+    ContextAuthoredRemaining, ContextConfig, ContextDagDelta, ContextExecutingBlob,
+    ContextIdentity, ContextLeftMarker, ContextMeta, ContextMigrationFailed, ContextPrivateState,
+    ContextState,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{

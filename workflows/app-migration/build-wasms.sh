@@ -73,4 +73,21 @@ for suite in "${SUITES[@]}"; do
     bash "$suite/build.sh"
 done
 
+# Wrap every fixture into a signed single-service `.mpk`. v1/v2 of a pair
+# share the package name, so they install under the SAME ApplicationId
+# (hash(package, signer)) — the realistic upgrade shape, where only the
+# bytecode blob changes between versions. The workflows install these
+# bundles (not the raw wasms) so the same-id propagation path is exercised.
+for suite in "${SUITES[@]}"; do
+    dir_name="$(basename "$suite")"
+    wasm_file="${dir_name//-/_}.wasm"
+    # `migration-suite-v3-remove-field` → base `migration-suite`, version 3.
+    # `scenario-user-storage-v2`       → base `scenario-user-storage`, version 2.
+    base="${dir_name%%-v[0-9]*}"
+    v_num="$(printf '%s' "$dir_name" | sed -E 's/.*-v([0-9]+).*/\1/')"
+    echo ">>> Bundling $suite (com.calimero.${base} @ ${v_num}.0.0)"
+    bash apps/migrations/bundle-wasm.sh \
+        "$suite" "$wasm_file" "com.calimero.${base}" "${v_num}.0.0"
+done
+
 echo ">>> All migration-suite fixtures built."

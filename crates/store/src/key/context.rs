@@ -166,6 +166,57 @@ impl Debug for ContextMigrationFailed {
     }
 }
 
+/// Node-local pin to the bytecode blob this context's committed state runs
+/// under, written when a logically-aborted migration leaves the context on
+/// its pre-upgrade state while the application row (version-stable bundle id)
+/// already holds the NEW bytecode. Module loading honors the pin so reads
+/// keep executing the old code; a successful migrate deletes it. Own column —
+/// a `context_id`-only key would collide with the other same-shaped keys.
+/// Not synchronized; absence means "execute the application row's bytecode".
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextExecutingBlob(Key<ContextId>);
+
+impl ContextExecutingBlob {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId) -> Self {
+        Self(Key((*context_id).into()))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
+    }
+}
+
+impl AsKeyParts for ContextExecutingBlob {
+    type Components = (ContextId,);
+
+    fn column() -> Column {
+        Column::ContextExecutingBlob
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
+    }
+}
+
+impl FromKeyParts for ContextExecutingBlob {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(*<&_>::from(&parts)))
+    }
+}
+
+impl Debug for ContextExecutingBlob {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextExecutingBlob")
+            .field("id", &self.context_id())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextConfig(Key<ContextId>);

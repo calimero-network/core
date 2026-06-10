@@ -53,6 +53,20 @@ pub enum Column {
     /// `ContextLocal` (e.g. `ContextAuthoredRemaining`). NOT synchronized;
     /// auto-created from `Column::iter()` at `open_cf` (no DB migration).
     ContextMigrationFailed,
+    /// Node-local per-context pin to the bytecode blob the context's
+    /// committed state executes under, written by a logically-aborted
+    /// migration: the version-stable bundle ApplicationId's row already holds
+    /// the NEW bytecode, so the pin keeps reads on the old code until a
+    /// migrate succeeds. Own column for the same collision reason as above.
+    /// NOT synchronized; auto-created from `Column::iter()` (no DB migration).
+    ContextExecutingBlob,
+    /// Node-local per-application breadcrumb of the bytecode blob an in-place
+    /// (same-id) bundle install overwrote — the source for the executing-blob
+    /// pin above and the L1 downgrade gate's pre-install ABI. Own column: the
+    /// `application_id`-only key shape would collide with `ApplicationMeta`
+    /// in `Application`. NOT synchronized; auto-created from `Column::iter()`
+    /// (no DB migration).
+    ApplicationPreviousBlob,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {

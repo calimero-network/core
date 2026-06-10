@@ -40,18 +40,10 @@ steps:
   - name: Install scenario-field-split-v1 on node 1
     type: install_application
     node: app-migration-split-1
-    path: apps/migrations/scenario-field-split-v1/res/scenario_field_split_v1.wasm
+    path: apps/migrations/scenario-field-split-v1/res/scenario-field-split-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
-
-  - name: Install scenario-field-split-v2 on node 1
-    type: install_application
-    node: app-migration-split-1
-    path: apps/migrations/scenario-field-split-v2/res/scenario_field_split_v2.wasm
-    dev: true
-    outputs:
-      app_v2: applicationId
 
   # Phase 2: Node 1 builds namespace + Open subgroup + context.
   - name: Create namespace (v1) on node 1
@@ -187,6 +179,23 @@ steps:
   # Under LazyOnAccess this sets the target + migration method on the
   # subgroup meta and returns WITHOUT running a propagator — no node
   # migrates eagerly; each migrates on its next access below.
+  - name: Install scenario-field-split-v2 on node 1
+    type: install_application
+    node: app-migration-split-1
+    path: apps/migrations/scenario-field-split-v2/res/scenario-field-split-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+
+  - name: Assert both versions share one application id (bundle same-id)
+    # Same-package bundles derive ApplicationId = hash(package, signer),
+    # so the second install MUST dedup onto the first id — the upgrade
+    # below then exercises the same-id (blob-only) propagation path.
+    type: json_assert
+    statements:
+      - 'equal("{{app_v1}}", "{{app_v2}}")'
+
   - name: Upgrade subgroup v1 → v2 (per-context, not cascade)
     type: upgrade_group
     node: app-migration-split-1
@@ -333,9 +342,5 @@ steps:
     node: app-migration-split-1
     application_id: "{{app_v1}}"
 
-  - name: Uninstall v2 on node 1
-    type: uninstall_application
-    node: app-migration-split-1
-    application_id: "{{app_v2}}"
 
 stop_all_nodes: false

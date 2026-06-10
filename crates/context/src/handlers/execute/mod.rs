@@ -46,7 +46,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::update_application::{
-    update_application_id, update_application_with_migration,
+    clear_executing_blob_pin, update_application_id, update_application_with_migration,
 };
 use crate::ContextManager;
 use calimero_governance_store::metrics::ExecutionLabels;
@@ -60,8 +60,8 @@ use governance_position::compute_governance_position_for_context;
 pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions};
 use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
 use upgrade_gate::{
-    maybe_lazy_upgrade, resolve_producing_app_key, should_block, upgrade_blocks_write,
-    upgrade_rejects_committed_write,
+    activation_marker, maybe_lazy_upgrade, resolve_producing_app_key, should_block,
+    upgrade_blocks_write, upgrade_rejects_committed_write,
 };
 
 impl Handler<ExecuteRequest> for ContextManager {
@@ -457,7 +457,9 @@ impl Handler<ExecuteRequest> for ContextManager {
         // directly without routing through the actor mailbox (which would deadlock while an
         // ActorFuture is in flight on the same actor).
         let lazy_upgrade_task = guard_task.map(move |guard, act, _ctx| {
-            if let Some((target_app_id, migrate_method, group_id)) = lazy_upgrade_params {
+            if let Some((target_app_id, migrate_method, group_id, target_app_key)) =
+                lazy_upgrade_params
+            {
                 info!(
                     %context_id,
                     %target_app_id,
@@ -480,6 +482,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     application,
                     migrate_method,
                     group_id,
+                    target_app_key,
                 )));
             }
             Ok(Either::Left(guard))
@@ -499,11 +502,38 @@ impl Handler<ExecuteRequest> for ContextManager {
                     application,
                     migrate,
                     group_id,
+                    target_app_key,
                 )) => {
                     if let Some(method) = migrate {
                         let migration_params = MigrationParams { method: method.clone() };
                         let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
-                        act.get_module(target_app, service_name)
+                        // Bundle apps keep a version-stable ApplicationId, so the
+                        // bytecode installed under `target_app` can still be the OLD
+                        // version. Fetch + install the group's target blob first;
+                        // otherwise get_module would compile v1 and the migrate
+                        // would no-op/fail.
+                        let blob_node_client = node_client.clone();
+                        async move {
+                            ensure_target_blob_installed(
+                                &blob_node_client,
+                                &cid,
+                                &target_app,
+                                target_app_key,
+                            )
+                            .await
+                        }
+                        .into_actor(act)
+                        .then(move |_row_holds_target, act, _ctx| {
+                            // The target id is version-stable for bundles, so the
+                            // (application_id, service)-keyed caches may hold the
+                            // PREVIOUS version's module — whether the new bytecode
+                            // arrived via the fetch above or an earlier in-place
+                            // admin install. Evict unconditionally: a lazy
+                            // migration runs once per context, so one recompile
+                            // is irrelevant.
+                            act.evict_application_caches(target_app);
+                            act.get_module(target_app, service_name)
+                        })
                             .then(move |module_result, act, _ctx| {
                                 // Re-read cached values; they may have been refreshed during load
                                 let context_meta =
@@ -566,30 +596,74 @@ impl Handler<ExecuteRequest> for ContextManager {
                             })
                             .boxed_local()
                     } else {
-                        // No migration: call update_application_id directly — no mailbox.
+                        // No migration. A same-id (bundle) code-only bump must
+                        // first activate the target bytecode: fetch it if
+                        // needed (sync pre-stages it, but a peer can also
+                        // serve it on demand), install it in place under the
+                        // unchanged id, and drop stale caches. `true` only
+                        // when the row verifiably holds the target blob — a
+                        // failed fetch/install must NOT record the activation
+                        // marker, or the lazy trigger would stop retrying
+                        // while the node still runs the old build.
+                        let blob_node_client = node_client.clone();
                         async move {
-                            if let Err(err) = update_application_id(
-                                datastore,
-                                node_client,
-                                context_client,
-                                cid,
-                                context_meta,
-                                target_app,
-                                application,
-                                executor,
+                            ensure_target_blob_installed(
+                                &blob_node_client,
+                                &cid,
+                                &target_app,
+                                target_app_key,
                             )
                             .await
-                            {
-                                warn!(
-                                    %cid,
-                                    %target_app,
-                                    %err,
-                                    "lazy upgrade failed, proceeding with current application"
-                                );
-                            }
-                            Ok(guard)
                         }
                         .into_actor(act)
+                        .then(move |blob_available, act, _ctx| {
+                            if blob_available {
+                                // Activate: the row now holds the target
+                                // bytecode — drop the stale caches so the next
+                                // load compiles it (an in-place install may
+                                // have flipped the row long before this
+                                // upgrade), release any executing-blob pin,
+                                // and record the per-context marker that stops
+                                // the lazy trigger from re-firing. A missing
+                                // blob (not yet staged, or a legacy random
+                                // app_key that never resolves) changes
+                                // nothing — caches stay warm.
+                                act.evict_application_caches(target_app);
+                                clear_executing_blob_pin(&act.datastore, cid);
+                                if let Err(err) = MigrationsRepository::new(&act.datastore)
+                                    .set_last_migration(
+                                        &group_id,
+                                        &cid,
+                                        &activation_marker(&target_app_key),
+                                    )
+                                {
+                                    warn!(%cid, %err, "failed to record activation marker");
+                                }
+                            }
+                            async move {
+                                if let Err(err) = update_application_id(
+                                    datastore,
+                                    node_client,
+                                    context_client,
+                                    cid,
+                                    context_meta,
+                                    target_app,
+                                    application,
+                                    executor,
+                                )
+                                .await
+                                {
+                                    warn!(
+                                        %cid,
+                                        %target_app,
+                                        %err,
+                                        "lazy upgrade failed, proceeding with current application"
+                                    );
+                                }
+                                Ok(guard)
+                            }
+                            .into_actor(act)
+                        })
                         .boxed_local()
                     }
                 }
@@ -608,8 +682,29 @@ impl Handler<ExecuteRequest> for ContextManager {
             });
 
         let module_task = context_task.and_then(move |(guard, context), act, _ctx| {
-            act.get_module(context.application_id, context.service_name.clone())
-                .map_ok(move |module, _act, _ctx| (guard, context, module))
+            // A logically-aborted migration leaves this context's state on
+            // the OLD schema while the (version-stable bundle id) application
+            // row may already hold the NEW bytecode — honor the executing-blob
+            // pin so reads keep running the code the state was written under.
+            // Per-execution cost: one point-get on a dedicated, near-empty
+            // column family (pins exist only between an abort and the next
+            // successful migrate) — bloom-filtered to a memtable miss, noise
+            // next to the wasm call it precedes.
+            let pinned = act
+                .datastore
+                .handle()
+                .get(&calimero_store::key::ContextExecutingBlob::new(context.id))
+                .ok()
+                .flatten();
+            let module_fut = match pinned {
+                Some(pin) => act
+                    .get_pinned_module(pin.blob, context.service_name.clone())
+                    .boxed_local(),
+                None => act
+                    .get_module(context.application_id, context.service_name.clone())
+                    .boxed_local(),
+            };
+            module_fut.map_ok(move |module, _act, _ctx| (guard, context, module))
         });
 
         let execution_count = self.metrics.as_ref().map(|m| m.execution_count.clone());
@@ -1280,6 +1375,67 @@ impl ContextManager {
                 err
             })
     }
+
+    /// Load the module for a context PINNED to a bytecode blob the
+    /// application row no longer references (post-abort, version-stable
+    /// bundle id overwritten in place). Compiles from the raw blob bytes —
+    /// the displaced version has no row to carry a precompiled artifact.
+    ///
+    /// Cached in `modules` under a pseudo application id derived from the
+    /// pinned blob: pins are rare (they only exist after a migration abort),
+    /// blob ids and application ids are both opaque 32-byte hashes, and a
+    /// collision would only alias two cache slots, never corrupt execution.
+    /// `update_application`'s per-id eviction never targets pseudo keys; that
+    /// is fine — the entry is content-addressed (same blob ⇒ same module, so
+    /// reuse is always correct) and `modules` is a BoundedCache, which
+    /// reclaims the slot under capacity pressure.
+    pub fn get_pinned_module(
+        &self,
+        pinned_blob: [u8; 32],
+        service_name: Option<String>,
+    ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
+        let pseudo_id = calimero_primitives::application::ApplicationId::from(pinned_blob);
+        let cache_key = (pseudo_id, service_name.clone());
+        let lookup_key = cache_key.clone();
+
+        async {}
+            .into_actor(self)
+            .map(move |_, act, _ctx| {
+                if let Some(cached) = act.modules.get(&lookup_key) {
+                    return Either::Left(cached.clone());
+                }
+                Either::Right((act.node_client.clone(), act.vm_limits))
+            })
+            .then(move |either, act, _ctx| {
+                let (node_client, vm_limits) = match either {
+                    Either::Left(module) => {
+                        return actix::fut::ready(Ok(module)).into_actor(act).boxed_local()
+                    }
+                    Either::Right(parts) => parts,
+                };
+                let blob_id = calimero_primitives::blobs::BlobId::from(pinned_blob);
+                async move {
+                    let Some(bytecode) = node_client
+                        .application_bytes_from_blob(&blob_id, service_name.as_deref())
+                        .await?
+                    else {
+                        bail!("pinned bytecode blob {} not found in blobstore", blob_id);
+                    };
+                    calimero_utils_actix::global_runtime()
+                        .spawn_blocking(move || {
+                            calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
+                        })
+                        .await?
+                        .map_err(Into::into)
+                }
+                .into_actor(act)
+                .map_ok(move |module: calimero_runtime::Module, act, _ctx| {
+                    let _ = act.modules.insert(cache_key, module.clone());
+                    module
+                })
+                .boxed_local()
+            })
+    }
 }
 
 /// Result of the blob-resolution / cache-lookup phase inside
@@ -1290,6 +1446,98 @@ impl ContextManager {
 enum CachedOrBlob {
     Cached(calimero_runtime::Module),
     Blob(calimero_primitives::application::ApplicationBlob),
+}
+
+/// Ensure the bytecode installed under `target_app` is the group's target
+/// blob (`target_app_key`) before the lazy migrate loads its module.
+///
+/// Bundle apps derive `ApplicationId = hash(package, signer)`, so a version
+/// bump leaves the id unchanged and only moves the blob — without this step
+/// the migrate would compile the OLD bytecode (which lacks the migrate
+/// export) and no-op. Fetches the blob via DHT/peer download (it is
+/// announced at upgrade time) and installs it in place under the same id.
+///
+/// Returns `true` when the application row holds the target bytecode on
+/// return — either it already matched or a fresh in-place install succeeded
+/// (callers evict the `target_app`-keyed caches unconditionally; reuse of an
+/// already-current module is a cheap recompile at most). All failures warn
+/// and return `false` — the upgrade proceeds against the current bytecode
+/// and the next access retries.
+async fn ensure_target_blob_installed(
+    node_client: &NodeClient,
+    context_id: &ContextId,
+    target_app: &calimero_primitives::application::ApplicationId,
+    target_app_key: [u8; 32],
+) -> bool {
+    if target_app_key == [0u8; 32] {
+        return false;
+    }
+    let installed = match node_client.get_application(target_app) {
+        Ok(Some(app)) => app,
+        // Not installed under this id at all: the distinct-id machinery
+        // (stub row + blob share) owns that case.
+        Ok(None) => return false,
+        Err(err) => {
+            warn!(%context_id, %target_app, %err, "lazy upgrade: failed to read installed application");
+            return false;
+        }
+    };
+    let target_blob = calimero_primitives::blobs::BlobId::from(target_app_key);
+    if installed.blob.bytecode == target_blob {
+        return true;
+    }
+    info!(
+        %context_id,
+        %target_app,
+        %target_blob,
+        installed_blob = %installed.blob.bytecode,
+        "lazy upgrade: fetching target bytecode (version-stable application id)"
+    );
+    let bytes = match node_client
+        .get_blob_bytes(&target_blob, Some(context_id))
+        .await
+    {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            warn!(%context_id, %target_blob, "lazy upgrade: target blob not available locally or from peers");
+            return false;
+        }
+        Err(err) => {
+            warn!(%context_id, %target_blob, %err, "lazy upgrade: target blob fetch failed");
+            return false;
+        }
+    };
+    if !NodeClient::is_bundle_blob(&bytes) {
+        // Same-id blob swaps only occur for bundles (raw-wasm ids are
+        // content-addressed, so their upgrades change the id); anything else
+        // here is unexpected — leave it to the sync machinery.
+        warn!(%context_id, %target_blob, "lazy upgrade: target blob is not a bundle; skipping in-place install");
+        return false;
+    }
+    match node_client
+        .install_application_from_bundle_blob(&target_blob, &installed.source)
+        .await
+    {
+        Ok(installed_id) if installed_id == *target_app => {
+            info!(%context_id, %target_app, %target_blob, "lazy upgrade: installed target bundle in place");
+            true
+        }
+        Ok(installed_id) => {
+            // The bundle resolves to a different id (package/signer changed)
+            // — not the in-place case; the id-keyed path owns it.
+            warn!(
+                %context_id,
+                %target_app,
+                %installed_id,
+                "lazy upgrade: fetched bundle installed under a different application id"
+            );
+            false
+        }
+        Err(err) => {
+            warn!(%context_id, %target_blob, %err, "lazy upgrade: in-place bundle install failed");
+            false
+        }
+    }
 }
 
 async fn internal_execute(

@@ -35,31 +35,27 @@ nodes:
   base_rpc_port: 9330
 
 steps:
-  # Phase 1: Install v1 + v2 binaries on the ADMIN node only.
+  # Phase 1: Install the v1 BUNDLE on the ADMIN node only.
   #
   # Realistic distribution: only the admin (node 1) holds the bytecode.
-  # Node 2 never runs install_application — it obtains both versions
-  # automatically: v1 when it joins the context (blob announced for the
-  # context, fetched over BlobShare on first execution), and v2 when the
-  # cascade upgrade announces the target blob (pulled during node 2's
-  # lazy migration; the sync-gate leaves BlobShare open for exactly this).
-  # App ids are content-addressed, so node 1's app_v1/app_v2 ids are the
-  # same ids node 2 resolves and fetches.
+  # Node 2 never runs install_application — it obtains v1 automatically
+  # when it joins the context (blob announced for the context, fetched
+  # over BlobShare on first execution), and v2 when the cascade upgrade
+  # announces the target blob (pulled during node 2's lazy migration).
+  #
+  # Bundles derive ApplicationId = hash(package, signer): v1 and v2 share
+  # one package, so they install under the SAME id and the upgrade moves
+  # only the bytecode blob — the realistic app-update shape. The v2
+  # install therefore happens LATER (right before the cascade), as an
+  # in-place version bump; installing it earlier would flip node 1's
+  # bytecode before the v1 phase runs.
   - name: Install migration-suite-v1 on node 1
     type: install_application
     node: app-migration-cascade-1
-    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    path: apps/migrations/migration-suite-v1/res/migration-suite-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
-
-  - name: Install migration-suite-v2-add-field on node 1
-    type: install_application
-    node: app-migration-cascade-1
-    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
-    dev: true
-    outputs:
-      app_v2: applicationId
 
   # Phase 2: Node 1 builds namespace + subgroup + context. NO
   # pre-cascade alignment — cascade should work straight out of
@@ -218,6 +214,23 @@ steps:
   # The cascade engine emits a single atomic CascadeUpgrade op on the
   # namespace DAG; the apply path runs on every peer subscribed to the
   # namespace (node 1 + node 2).
+  - name: Install migration-suite-v2-add-field on node 1
+    type: install_application
+    node: app-migration-cascade-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration-suite-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+
+  - name: Assert both versions share one application id (bundle same-id)
+    # Same-package bundles derive ApplicationId = hash(package, signer),
+    # so the second install MUST dedup onto the first id — the upgrade
+    # below then exercises the same-id (blob-only) propagation path.
+    type: json_assert
+    statements:
+      - 'equal("{{app_v1}}", "{{app_v2}}")'
+
   - name: Cascade namespace v1 → v2 (initiated by node 1)
     type: upgrade_group
     node: app-migration-cascade-1
@@ -444,9 +457,5 @@ steps:
     node: app-migration-cascade-1
     application_id: "{{app_v1}}"
 
-  - name: Uninstall v2 on node 1
-    type: uninstall_application
-    node: app-migration-cascade-1
-    application_id: "{{app_v2}}"
 
 stop_all_nodes: false

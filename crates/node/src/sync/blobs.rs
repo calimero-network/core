@@ -166,7 +166,14 @@ impl SyncManager {
 
         let Some(mut blob) = self.node_client.get_blob(&blob_id, None).await? else {
             warn!(%blob_id, "blob not found");
-
+            // Tell the initiator instead of going silent — without a reply it
+            // sits in recv() until the stream times out, stalling its whole
+            // sync attempt (the upgrade pre-stage path requests blobs this
+            // node may not hold yet). OpaqueError makes it bail fast and
+            // retry after its backoff.
+            if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
+                warn!(%blob_id, %err, "failed to signal missing blob to initiator");
+            }
             return Ok(());
         };
 
