@@ -523,15 +523,16 @@ impl Handler<ExecuteRequest> for ContextManager {
                             .await
                         }
                         .into_actor(act)
-                        .then(move |freshly_installed, act, _ctx| {
-                            if freshly_installed {
-                                // In-place install under the same id: evict the
-                                // (application_id, service)-keyed caches so
-                                // get_module compiles the new bytecode instead of
-                                // serving stale entries.
-                                let _ = act.applications.remove(&target_app);
-                                act.modules.retain(|(id, _), _| *id != target_app);
-                            }
+                        .then(move |_freshly_installed, act, _ctx| {
+                            // The target id is version-stable for bundles, so the
+                            // (application_id, service)-keyed caches may hold the
+                            // PREVIOUS version's module — whether the new bytecode
+                            // arrived via the fetch above or an earlier in-place
+                            // admin install. Evict unconditionally: a lazy
+                            // migration runs once per context, so one recompile
+                            // is irrelevant.
+                            let _ = act.applications.remove(&target_app);
+                            act.modules.retain(|(id, _), _| *id != target_app);
                             act.get_module(target_app, service_name)
                         })
                             .then(move |module_result, act, _ctx| {
