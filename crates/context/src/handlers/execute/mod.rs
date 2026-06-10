@@ -531,8 +531,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                             // admin install. Evict unconditionally: a lazy
                             // migration runs once per context, so one recompile
                             // is irrelevant.
-                            let _ = act.applications.remove(&target_app);
-                            act.modules.retain(|(id, _), _| *id != target_app);
+                            act.evict_application_caches(target_app);
                             act.get_module(target_app, service_name)
                         })
                             .then(move |module_result, act, _ctx| {
@@ -638,8 +637,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 // blob (not yet staged, or a legacy random
                                 // app_key that never resolves) changes
                                 // nothing — caches stay warm.
-                                let _ = act.applications.remove(&target_app);
-                                act.modules.retain(|(id, _), _| *id != target_app);
+                                act.evict_application_caches(target_app);
                                 clear_executing_blob_pin(&act.datastore, cid);
                                 if let Err(err) = MigrationsRepository::new(&act.datastore)
                                     .set_last_migration(
@@ -697,6 +695,10 @@ impl Handler<ExecuteRequest> for ContextManager {
             // the OLD schema while the (version-stable bundle id) application
             // row may already hold the NEW bytecode — honor the executing-blob
             // pin so reads keep running the code the state was written under.
+            // Per-execution cost: one point-get on a dedicated, near-empty
+            // column family (pins exist only between an abort and the next
+            // successful migrate) — bloom-filtered to a memtable miss, noise
+            // next to the wasm call it precedes.
             let pinned = act
                 .datastore
                 .handle()
@@ -1392,6 +1394,10 @@ impl ContextManager {
     /// pinned blob: pins are rare (they only exist after a migration abort),
     /// blob ids and application ids are both opaque 32-byte hashes, and a
     /// collision would only alias two cache slots, never corrupt execution.
+    /// `update_application`'s per-id eviction never targets pseudo keys; that
+    /// is fine — the entry is content-addressed (same blob ⇒ same module, so
+    /// reuse is always correct) and `modules` is a BoundedCache, which
+    /// reclaims the slot under capacity pressure.
     pub fn get_pinned_module(
         &self,
         pinned_blob: [u8; 32],

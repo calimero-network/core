@@ -200,11 +200,5 @@ pub(super) fn resolve_producing_app_key(
 /// migration-marker repository under a synthetic method name; the `blob:`
 /// prefix cannot collide with a real `#[app::migrate]` method.
 pub(super) fn activation_marker(app_key: &[u8; 32]) -> String {
-    use core::fmt::Write as _;
-    let mut s = String::with_capacity(5 + 64);
-    s.push_str("blob:");
-    for byte in app_key {
-        let _ = write!(s, "{byte:02x}");
-    }
-    s
+    format!("blob:{}", hex::encode(app_key))
 }

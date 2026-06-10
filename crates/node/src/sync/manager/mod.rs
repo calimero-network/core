@@ -178,8 +178,9 @@ pub struct SyncManager {
     /// resolves to a real blob would otherwise issue one doomed BlobShare per
     /// sync tick forever; with the memo a failed stage retries at most every
     /// few minutes. Shared across clones (initiator/responder handles).
-    pub(super) stale_blob_attempts:
-        Arc<std::sync::Mutex<std::collections::HashMap<(ContextId, [u8; 32]), Instant>>>,
+    pub(super) stale_blob_attempts: Arc<
+        std::sync::Mutex<std::collections::HashMap<(ContextId, [u8; 32]), (Option<Instant>, u32)>>,
+    >,
 
     /// Reconcile-after-divergence orchestrator. Owns the orchestration
     /// for [`Self::reconcile_after_divergence`]; that method is a thin
@@ -1408,7 +1409,9 @@ impl SyncManager {
         // state our own LazyOnAccess migration must read as input. Skip
         // as a clean no-op; we self-migrate on next access, after which
         // the gate lifts. See `pending_upgrade_target`.
-        if let Some(target) = self.pending_upgrade_target(&context_id) {
+        let store_for_gate = self.context_client.datastore_handle().into_inner();
+        if let Some((target, gate_stage_blob)) = pending_upgrade_info(&store_for_gate, &context_id)
+        {
             info!(
                 %context_id,
                 %chosen_peer,
@@ -1424,8 +1427,7 @@ impl SyncManager {
             // responder-side gate for exactly this. Failures are benign —
             // every sync attempt retries until the migrate lifts the gate.
             {
-                let store = self.context_client.datastore_handle().into_inner();
-                if let Some(stage) = pending_upgrade_stage_blob(&store, &context_id) {
+                if let Some(stage) = gate_stage_blob {
                     let stage_blob = calimero_primitives::blobs::BlobId::from(stage);
                     if !self.node_client.has_blob(&stage_blob).unwrap_or(true)
                         && self.should_attempt_stage(context_id, stage)
@@ -3339,22 +3341,30 @@ impl super::driver::SyncDriverDispatch for SyncManager {
 
 impl SyncManager {
     /// Whether a stage attempt for `(context, blob)` is due — records the
-    /// attempt when it is. A failed stage retries only after the backoff, so
-    /// a blob that never materialises (legacy randomly-seeded `app_key`)
-    /// costs one doomed BlobShare per window, not one per sync tick.
+    /// attempt when it is. A failed stage retries only after the backoff,
+    /// and after `MAX_ATTEMPTS` consecutive failures the pair is parked for
+    /// the process lifetime — a blob that never materialises (legacy
+    /// randomly-seeded `app_key`) costs a bounded number of doomed
+    /// BlobShares, not one per window forever.
     fn should_attempt_stage(&self, context_id: ContextId, blob: [u8; 32]) -> bool {
         const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
+        const MAX_ATTEMPTS: u32 = 12; // ~1h of retries, then give up
         let mut memo = self
             .stale_blob_attempts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = Instant::now();
-        if let Some(last) = memo.get(&(context_id, blob)) {
-            if now.duration_since(*last) < RETRY_AFTER {
+        let entry = memo.entry((context_id, blob)).or_insert((None, 0));
+        if entry.1 >= MAX_ATTEMPTS {
+            return false;
+        }
+        if let Some(last) = entry.0 {
+            if now.duration_since(last) < RETRY_AFTER {
                 return false;
             }
         }
-        let _ = memo.insert((context_id, blob), now);
+        entry.0 = Some(now);
+        entry.1 += 1;
         true
     }
 
@@ -3399,21 +3409,17 @@ impl SyncManager {
     }
 }
 
-/// The bytecode blob worth pre-staging for `context_id`: the group's recorded
-/// target blob (`app_key`) when it differs from the bytecode installed under
-/// the group's target application — i.e. an upgrade (migration-carrying or
-/// code-only) moved the blob under a version-stable bundle id and this node
-/// doesn't run it yet. `None` once the row catches up. A legacy group's
-/// randomly-seeded `app_key` reads as permanently stale; the BlobShare retry
-/// memo bounds what that can cost.
-pub(crate) fn pending_upgrade_stage_blob(
+/// The bytecode blob worth pre-staging for an already-loaded group `meta`:
+/// the group's recorded target blob (`app_key`) when it differs from the
+/// bytecode installed under the group's target application — i.e. an upgrade
+/// (migration-carrying or code-only) moved the blob under a version-stable
+/// bundle id and this node doesn't run it yet. `None` once the row catches
+/// up. A legacy group's randomly-seeded `app_key` reads as permanently
+/// stale; the BlobShare retry memo caps what that can cost.
+fn stage_blob_for(
     store: &calimero_store::Store,
-    context_id: &ContextId,
+    meta: &calimero_store::key::GroupMetaValue,
 ) -> Option<[u8; 32]> {
-    let group_id = calimero_context::group_store::get_group_for_context(store, context_id)
-        .ok()
-        .flatten()?;
-    let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
     if meta.app_key == [0u8; 32] {
         return None;
     }
@@ -3426,6 +3432,19 @@ pub(crate) fn pending_upgrade_stage_blob(
         .flatten()
         .map(|app| *app.bytecode.blob_id().as_ref())?;
     (row_blob != meta.app_key).then_some(meta.app_key)
+}
+
+/// One-load variant for `context_id` (group + meta resolved internally) —
+/// used by the mid-session stage step where no meta is already in hand.
+pub(crate) fn pending_upgrade_stage_blob(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+) -> Option<[u8; 32]> {
+    let group_id = calimero_context::group_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
+    stage_blob_for(store, &meta)
 }
 
 /// Store-level core of [`SyncManager::pending_upgrade_target`], extracted so
@@ -3446,6 +3465,19 @@ pub(crate) fn pending_upgrade_target_in(
     store: &calimero_store::Store,
     context_id: &ContextId,
 ) -> Option<calimero_primitives::application::ApplicationId> {
+    pending_upgrade_info(store, context_id).map(|(target, _)| target)
+}
+
+/// [`pending_upgrade_target_in`] plus the stage-blob decision from the SAME
+/// group/meta load — the sync gate needs both, and loading meta twice per
+/// gated sync attempt is wasted I/O.
+pub(crate) fn pending_upgrade_info(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+) -> Option<(
+    calimero_primitives::application::ApplicationId,
+    Option<[u8; 32]>,
+)> {
     let ctx_meta = store
         .handle()
         .get(&calimero_store::key::ContextMeta::new(*context_id))
@@ -3467,7 +3499,7 @@ pub(crate) fn pending_upgrade_target_in(
         return None;
     }
     if current_app != target {
-        return Some(target);
+        return Some((target, stage_blob_for(store, &meta)));
     }
     // Same id: bundle-app upgrade. Pending while the group's migration has
     // not been applied to this context — until the lazy migrate runs on next
@@ -3482,7 +3514,7 @@ pub(crate) fn pending_upgrade_target_in(
         .ok()
         .flatten()
         .is_some_and(|last| last == method);
-    (!applied).then_some(target)
+    (!applied).then(|| (target, stage_blob_for(store, &meta)))
 }
 
 #[cfg(test)]

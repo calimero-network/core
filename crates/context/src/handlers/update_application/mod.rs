@@ -1120,6 +1120,14 @@ pub(crate) fn clear_migration_failed(datastore: &calimero_store::Store, context_
 /// so post-abort reads keep executing the code the context's state was written
 /// under. No-op when no in-place install happened (no breadcrumb) or the pin
 /// is already set (the oldest pin wins until a migrate commits). Best-effort.
+///
+/// Known residual: the breadcrumb is one slot per application, overwritten by
+/// each in-place install. A context whose state lags MORE than one version
+/// behind (two installs landed before it ever migrated) gets pinned to the
+/// intermediate blob, not its true original — exact pinning needs a
+/// per-context executed-blob record, which is the install-time activation
+/// follow-up. Single pending upgrade at a time (the normal fleet cadence) is
+/// always pinned correctly.
 pub(crate) fn pin_executing_blob_to_previous(
     datastore: &calimero_store::Store,
     context_id: ContextId,
