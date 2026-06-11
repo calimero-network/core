@@ -1026,10 +1026,24 @@ fn dispatch_cascade(
         }
     }
 
+    // Same-id is a no-op only when the bytecode also matches — bundle ids
+    // are version-stable (hash(package, signer)), so a new version moves
+    // only the blob. Mirrors `validate_upgrade` rule 5; this duplicate
+    // originally kept the id-only comparison and rejected every same-id
+    // bundle cascade as "already targeting".
     if meta.target_application_id == target_application_id && !has_migration {
-        return ActorResponse::reply(Err(eyre::eyre!(
-            "group is already targeting this application and no migration was requested"
-        )));
+        let target_blob = {
+            let handle = actor.datastore.handle();
+            match handle.get(&key::ApplicationMeta::new(target_application_id)) {
+                Ok(row) => row.map(|app| *app.bytecode.blob_id().as_ref()),
+                Err(err) => return ActorResponse::reply(Err(err.into())),
+            }
+        };
+        if target_blob.is_none_or(|blob| blob == meta.app_key) {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "group is already targeting this application and no migration was requested"
+            )));
+        }
     }
 
     // Resolve target application meta (for the new app_key + blob announce).
