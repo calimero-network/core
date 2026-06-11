@@ -36,6 +36,7 @@ pub mod governance_dag;
 pub mod handlers;
 pub mod hlc_fence;
 mod lifecycle;
+pub mod migration_plan;
 pub mod self_purge;
 
 pub(crate) use cache::{BoundedCache, Evictable};
