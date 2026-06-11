@@ -646,6 +646,15 @@ async fn resolve_upgrade_from_abis(
 
     let current_blob_id = (current_app_key != [0u8; 32]).then(|| BlobId::from(current_app_key));
 
+    // Service inventory of the CURRENT bundle, fetched once: a service present
+    // in the target but absent here is genuinely NEW (no old data → code-only
+    // for it). Detecting that by error-kind from the per-service bytes fetch
+    // would conflate "not in bundle" with real I/O failures.
+    let current_services: Option<Vec<Option<String>>> = match current_blob_id {
+        Some(blob) => node_client.bundle_service_names(&blob).await.ok().flatten(),
+        None => None,
+    };
+
     /// Whether a target manifest declares anything migration-relevant: a
     /// state version past 1 or any migration edge. When it does, an
     /// unresolvable CURRENT side must reject the upgrade rather than guess —
@@ -674,7 +683,12 @@ async fn resolve_upgrade_from_abis(
         //    target declares no migration at all (pre-versioned world);
         //    otherwise reject — the caller can pass migrateMethod explicitly
         //    as the escape hatch.
+        // A service the old bundle never had cannot need a data migration.
+        let new_service = current_services
+            .as_ref()
+            .is_some_and(|svcs| !svcs.contains(service));
         let current_abi = match current_blob_id {
+            Some(_) if new_service => target_abi.clone(),
             Some(blob) => match node_client
                 .application_bytes_from_blob(&blob, service.as_deref())
                 .await
@@ -700,9 +714,20 @@ async fn resolve_upgrade_from_abis(
                     }
                     target_abi.clone()
                 }
-                // The service does not exist in the old bundle (newly added
-                // service): no old data → same-version → code-only for it.
-                Err(_) => target_abi.clone(),
+                // Not "service missing" (that's `new_service` above) — a
+                // real read failure. Same unknowable-from rule as the other
+                // arms: only safe when the target declares no migration.
+                Err(err) => {
+                    if target_abi.as_ref().is_some_and(target_declares_migration) {
+                        eyre::bail!(
+                            "service '{}': failed to read the currently-running bytecode \
+                             ({err}), and the target declares a state migration — cannot \
+                             determine the from-version safely. Pass migrateMethod explicitly",
+                            service.as_deref().unwrap_or("<single>"),
+                        );
+                    }
+                    target_abi.clone()
+                }
             },
             // Legacy group with no blob-derived app_key: the from-version is
             // unknowable — same rule as above.

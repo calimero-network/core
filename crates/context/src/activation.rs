@@ -47,6 +47,12 @@ pub fn legacy_blob_marker(app_key: &[u8; 32]) -> String {
 /// the group's current app_key" when it matches either the group's recorded
 /// migrate method or the legacy `blob:` marker for the current app_key.
 /// A successful fold WRITES the v2 marker so subsequent reads are one get.
+///
+/// Zero `app_key` (legacy randomly-seeded groups): a matching legacy marker
+/// still answers `Some([0;32])` — callers compare against the same zero
+/// `meta.app_key`, reproducing the pre-v2 "marker matches method ⇒ applied"
+/// gate semantics exactly — but the zero value is never persisted (it carries
+/// no blob identity for the blob-keyed loading that builds on this marker).
 pub fn activated_blob_folding_legacy(
     store: &Store,
     group_id: &ContextGroupId,
