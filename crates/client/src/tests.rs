@@ -414,6 +414,7 @@ async fn create_namespace() {
             application_id: ApplicationId::from([0u8; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             name: None,
+            app_key: None,
         })
         .await
         .unwrap();
@@ -839,6 +840,7 @@ async fn create_namespace_returns_err_on_server_error() {
             application_id: ApplicationId::from([0u8; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             name: None,
+            app_key: None,
         })
         .await;
 

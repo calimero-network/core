@@ -1680,6 +1680,11 @@ pub struct CreateNamespaceApiRequest {
     pub upgrade_policy: UpgradePolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Hex-encoded 32-byte bytecode blob id to pin the namespace to a
+    /// specific installed version. Default: the application row's blob
+    /// (latest fetched).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_key: Option<String>,
 }
 
 impl Validate for CreateNamespaceApiRequest {
