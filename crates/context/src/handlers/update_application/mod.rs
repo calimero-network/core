@@ -354,6 +354,16 @@ pub async fn update_application_id(
         let _ = node_client.send_event(event);
     }
 
+    // Unified activation marker: code-only updates (this fn — the eager
+    // propagator's no-migration route and the lazy code-only finish) count
+    // as activations too, or the same-id up-to-date rule would keep reading
+    // these contexts as pending.
+    crate::activation::record_activation(
+        &datastore,
+        &context_id,
+        *application.blob.bytecode.as_ref(),
+    );
+
     Ok(application)
 }
 
