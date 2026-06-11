@@ -81,7 +81,8 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             // Invalidate the cached application entry BEFORE loading the module.
             // The WASM binary may have been replaced under the same application ID
             // (same signing key, new version), so we must force a fresh fetch from
-            // the node's blob storage to get the updated bytecode.
+            // the node's blob storage to get the updated bytecode. The module and
+            // read-only caches are blob-keyed (content-addressed) — never stale.
             if self.applications.remove(&application_id).is_some() {
                 debug!(
                     %context_id,
@@ -89,15 +90,6 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                     "Invalidated stale cached application before migration module load"
                 );
             }
-            // Same reason for the compiled-module cache: every service
-            // under this application_id is now potentially stale.
-            self.modules.retain(|(id, _), _| *id != application_id);
-            // Evict read-only method sets alongside modules: the new WASM may
-            // have different #[app::view] annotations. Stale entries would
-            // cause the execute path to take a shared read lock for methods
-            // that no longer (or newly) declare read-only intent.
-            self.read_only_methods
-                .retain(|(id, _), _| *id != application_id);
 
             // Clone values needed for migration
             let datastore = self.datastore.clone();
@@ -139,14 +131,12 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
 
             return ActorResponse::r#async(task.map_ok(
                 move |(_application, updated_context), act, _ctx| {
-                    // Invalidate cached module so the next execution loads the new WASM from the node.
-                    // Otherwise we would keep using the pre-migration (v1) module for execute calls.
+                    // Invalidate the cached application row so the next resolution
+                    // re-reads it. Blob-keyed module entries are content-addressed
+                    // and stay valid.
                     if act.applications.remove(&application_id).is_some() {
-                        debug!(%context_id, %application_id, "Invalidated cached application module after migration");
+                        debug!(%context_id, %application_id, "Invalidated cached application after migration");
                     }
-                    act.modules.retain(|(id, _), _| *id != application_id);
-                    act.read_only_methods
-                        .retain(|(id, _), _| *id != application_id);
 
                     if let Some(cached) = act.contexts.get_mut(&context_id) {
                         debug!(

@@ -25,12 +25,7 @@ use calimero_primitives::events::{
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_runtime::logic::Outcome;
-use calimero_storage::{
-    delta::{CausalDelta, StorageDelta},
-    env::{with_runtime_env, RuntimeEnv},
-    interface::Interface,
-    store::MainStorage,
-};
+use calimero_storage::delta::{CausalDelta, StorageDelta};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -40,7 +35,6 @@ use calimero_wasm_abi::schema::MethodIntent;
 use either::Either;
 use eyre::{bail, WrapErr};
 use futures_util::future::TryFutureExt;
-use futures_util::io::Cursor;
 use memchr::memmem;
 use tracing::{debug, error, info, warn};
 
@@ -120,8 +114,19 @@ impl Handler<ExecuteRequest> for ContextManager {
             let Some(cm) = self.contexts.get(&context_id) else {
                 break 'ro false; // not cached yet — conservative write lock
             };
-            let key = (cm.meta.application_id, cm.meta.service_name.clone());
-            let Some(set) = self.read_only_methods.get(&key).cloned() else {
+            let application_id = cm.meta.application_id;
+            let service_name = cm.meta.service_name.clone();
+            // Blob-keyed lookup: the read-only sets are keyed by the executing
+            // bytecode blob. Resolve via the cached application row here (the
+            // dominant case); a miss defaults to the write lock (fail-safe).
+            let Some(blob) = self
+                .applications
+                .get(&application_id)
+                .map(|app| app.blob.bytecode)
+            else {
+                break 'ro false;
+            };
+            let Some(set) = self.read_only_methods.get(&(blob, service_name)).cloned() else {
                 break 'ro false;
             };
             set.contains(method.as_str())
@@ -713,7 +718,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 .flatten();
             let module_fut = match pinned {
                 Some(pin) => act
-                    .get_pinned_module(pin.blob, context.service_name.clone())
+                    .get_module_for_blob(pin.blob.into(), context.service_name.clone())
                     .boxed_local(),
                 None => act
                     .get_module(context.application_id, context.service_name.clone())
@@ -1119,298 +1124,53 @@ impl Handler<ExecuteRequest> for ContextManager {
 }
 
 impl ContextManager {
+    /// Load the module for `application_id` via its row: resolve the row's
+    /// top-level bytecode blob (the bundle blob for bundles, the raw wasm
+    /// blob otherwise) and delegate to [`Self::get_module_for_blob`]. The
+    /// row is a download-cache pointer ("latest fetched") — contexts bound
+    /// to a specific version load through their blob directly.
     pub fn get_module(
         &self,
         application_id: ApplicationId,
         service_name: Option<String>,
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
-        let service_name_for_bytes = service_name.clone();
-        let service_name_for_cache = service_name.clone();
-        let blob_task = async {}.into_actor(self).map(move |_, act, _ctx| {
-            // Fast path: a compiled module is already cached for this
-            // (application_id, service_name) key. Every `get_module`
-            // call previously paid ~5% CPU to run
-            // `Engine::from_precompiled` (wasmer artifact deserialize)
-            // even though the same bytes were being deserialized. Serve
-            // the cached Module (cheap Arc clone) and skip the entire
-            // blob-fetch / deserialize path. Cache entries are
-            // invalidated in `update_application` / migration sites.
-            if let Some(cached) = act
-                .modules
-                .get(&(application_id, service_name_for_cache.clone()))
-            {
-                return Ok(CachedOrBlob::Cached(cached.clone()));
-            }
-
-            // Fetch on a cache miss *before* inserting (so a not-installed app
-            // never wastes an eviction); `insert_new` caps the cache. This
-            // `get_module` path is the dominant `applications` insert site on a
-            // long-running node, so it must honour the cap too.
-            if !act.applications.contains_key(&application_id) {
-                let Some(app) = act.node_client.get_application(&application_id)? else {
-                    bail!(ExecuteError::ApplicationNotInstalled { application_id });
-                };
-                let _ = act.applications.insert_new(application_id, app);
-            }
-            let app = act
-                .applications
-                .get(&application_id)
-                .expect("application just inserted or already cached");
-
-            let blob = app
-                .resolve_service_blob(service_name.as_deref())
-                .ok_or_else(|| {
-                    eyre::eyre!(
-                        "service '{}' not found in application {} (available: {})",
-                        service_name.as_deref().unwrap_or("<none>"),
-                        application_id,
-                        if app.services.is_empty() {
-                            "<single-service>".to_owned()
-                        } else {
-                            app.services
-                                .keys()
-                                .map(String::as_str)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        }
-                    )
-                })?;
-
-            Ok(CachedOrBlob::Blob(blob))
-        });
-
-        let module_task = blob_task.and_then(move |cached_or_blob, act, _ctx| {
-            let node_client = act.node_client.clone();
-            // Operator-configured limits, baked into the engine that compiles
-            // or deserializes the module here and applied at execution time.
-            let vm_limits = act.vm_limits;
-
-            async move {
-                let mut blob = match cached_or_blob {
-                    // Fast path: cache hit. Skip blob fetch + deserialize
-                    // + compile. `blob_info = None` signals the post-task
-                    // closure below that there's nothing new to write
-                    // back into `applications` or the module cache.
-                    CachedOrBlob::Cached(module) => return Ok((module, None)),
-                    CachedOrBlob::Blob(blob) => blob,
-                };
-
-                // Staleness anchor for the `map_ok` below. Captures the
-                // blob_id we loaded from *before* any recompile rewrites
-                // `blob.compiled`. A concurrent `update_application`
-                // migration between now and `map_ok` would evict and
-                // repopulate `applications[app_id]` with a different
-                // blob_id — the post-task closure compares against this
-                // anchor and drops both the blob writeback and the
-                // module cache insert when they disagree.
-                let original_blob_id = blob.compiled;
-
-                if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled, None).await? {
-                    let module = unsafe {
-                        calimero_runtime::Engine::headless_with_limits(vm_limits)
-                            .from_precompiled(&compiled)
+        async {}
+            .into_actor(self)
+            .map(move |_, act, _ctx| {
+                // Fetch on a cache miss *before* inserting (so a not-installed
+                // app never wastes an eviction); `insert_new` caps the cache.
+                if !act.applications.contains_key(&application_id) {
+                    let Some(app) = act.node_client.get_application(&application_id)? else {
+                        bail!(ExecuteError::ApplicationNotInstalled { application_id });
                     };
-
-                    match module {
-                        Ok(module) => {
-                            return Ok((
-                                module,
-                                Some((blob, service_name_for_bytes, original_blob_id, None)),
-                            ))
-                        }
-                        Err(err) => {
-                            debug!(
-                                ?err,
-                                %application_id,
-                                blob_id=%blob.compiled,
-                                "failed to load precompiled module, recompiling.."
-                            );
-                        }
-                    }
+                    let _ = act.applications.insert_new(application_id, app);
                 }
+                let app = act
+                    .applications
+                    .get(&application_id)
+                    .expect("application just inserted or already cached");
 
-                debug!(
-                    %application_id,
-                    blob_id=%blob.compiled,
-                    "no usable precompiled module found, compiling.."
-                );
-
-                // Use get_application_bytes instead of get_blob_bytes for bytecode
-                // because get_application_bytes knows how to extract WASM from bundles
-                let Some(bytecode) = node_client
-                    .get_application_bytes(&application_id, service_name_for_bytes.as_deref())
-                    .await?
-                else {
-                    bail!(ExecuteError::ApplicationNotInstalled { application_id });
-                };
-
-                // Extract the read-only method set from the embedded ABI manifest
-                // before moving `bytecode` into the blocking compile task.
-                // A missing/unparseable manifest is not an error — the execute
-                // path defaults to the write lock (fail-safe).
-                let read_only_set = extract_read_only_set(&bytecode);
-
-                // Compile WASM in a blocking task to avoid blocking the async executor.
-                // Note: panics during compilation will surface as JoinError.
-                let module = global_runtime()
-                    .spawn_blocking(move || {
-                        calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
-                    })
-                    .await
-                    .wrap_err("WASM compilation task failed")? // JoinError (task panicked/cancelled)
-                    ?; // Compilation error
-
-                let compiled = Cursor::new(module.to_bytes()?);
-
-                let (blob_id, _ignored) = node_client.add_blob(compiled, None, None).await?;
-
-                blob.compiled = blob_id;
-
-                node_client.update_compiled_app(
-                    &application_id,
-                    &blob_id,
-                    service_name_for_bytes.as_deref(),
-                )?;
-
-                Ok((
-                    module,
-                    Some((
-                        blob,
-                        service_name_for_bytes,
-                        original_blob_id,
-                        read_only_set,
-                    )),
-                ))
-            }
-            .into_actor(act)
-        });
-
-        module_task
-            .map_ok(move |(module, blob_info), act, _ctx| {
-                if let Some((blob, svc_name, original_blob_id, read_only_set)) = blob_info {
-                    // The `applications` map is the source of truth for
-                    // whether this app is still live. Tie both the blob
-                    // writeback and the module cache update to the same
-                    // guard, plus a staleness check on `original_blob_id`.
-                    //
-                    // Three cases we need to handle correctly:
-                    //
-                    // 1. App still present with the same blob_id we
-                    //    loaded from → our module is current, write
-                    //    back and cache.
-                    // 2. App evicted (`get_mut` → None) — an
-                    //    `update_application` migration ran and hasn't
-                    //    repopulated yet → our work is stale, drop.
-                    // 3. App repopulated with a different blob_id —
-                    //    another `get_module` call beat us to it with
-                    //    fresher data → our work is stale, drop both
-                    //    writeback and module cache insert so we don't
-                    //    stomp the fresh state.
-                    if let Some(app) = act.applications.get_mut(&application_id) {
-                        // Both the staleness lookup and the writeback
-                        // must mirror `Application::resolve_service_blob`
-                        // exactly — that's where `blob` came from at
-                        // load time. For single-service bundles called
-                        // with `svc_name = None`, `resolve_service_blob`
-                        // returns `services.values().next()`, *not*
-                        // `app.blob`. Reading `app.blob.compiled` for
-                        // the staleness check would fail every time on
-                        // such bundles (the two blob_ids would never
-                        // match), defeating both the cache and the
-                        // recompile writeback.
-                        let current_blob_id = match svc_name.as_deref() {
-                            None if app.services.is_empty() => Some(app.blob.compiled),
-                            None if app.services.len() == 1 => {
-                                app.services.values().next().map(|b| b.compiled)
-                            }
-                            // Multi-service with no name is ambiguous —
-                            // `resolve_service_blob` returns None so we
-                            // never get here via the happy path. Treat
-                            // as stale.
-                            None => None,
-                            Some(name) => app.services.get(name).map(|b| b.compiled),
-                        };
-
-                        if current_blob_id == Some(original_blob_id) {
-                            // Writeback target must match the same
-                            // resolution. `services.len() == 1` with
-                            // `svc_name = None` means the single
-                            // service entry is the owner — pull its
-                            // key so we can `get_mut` into it without
-                            // iterating twice.
-                            let target_service_key =
-                                if svc_name.is_none() && app.services.len() == 1 {
-                                    app.services.keys().next().cloned()
-                                } else {
-                                    svc_name.clone()
-                                };
-                            match target_service_key.as_deref() {
-                                Some(name) => {
-                                    if let Some(svc_blob) = app.services.get_mut(name) {
-                                        *svc_blob = blob;
-                                    }
-                                }
-                                None => {
-                                    app.blob = blob;
-                                }
-                            }
-
-                            // `BoundedCache::insert` caps the map: replacing an
-                            // already-cached (recompiled) key overwrites in
-                            // place, while a new key evicts a by-key-order
-                            // victim first when at capacity.
-                            let cache_key = (application_id, svc_name);
-                            let _ = act.modules.insert(cache_key.clone(), module.clone());
-                            // Populate the read-only method set only when we
-                            // successfully parsed the embedded ABI (fresh-compile
-                            // path). When `read_only_set` is None (precompiled
-                            // path where raw bytecode is not re-fetched), skip the
-                            // insert so a subsequent fresh compile can populate it
-                            // correctly. An absent entry in `read_only_methods`
-                            // falls back to the write lock (fail-safe).
-                            if let Some(set) = read_only_set {
-                                let _ = act.read_only_methods.insert(cache_key, set);
-                            }
-                        } else {
-                            debug!(
-                                %application_id,
-                                loaded_blob = %original_blob_id,
-                                current_blob = ?current_blob_id,
-                                "module load result stale — applications was repopulated while loading, dropping"
-                            );
-                        }
-                    }
-                }
-
-                module
+                Ok(app.blob.bytecode)
             })
-            .map_err(|err, _act, _ctx| {
-                error!(?err, "failed to initialize module for execution");
-
-                err
-            })
+            .and_then(move |blob, act, _ctx| act.get_module_for_blob(blob, service_name))
     }
 
-    /// Load the module for a context PINNED to a bytecode blob the
-    /// application row no longer references (post-abort, version-stable
-    /// bundle id overwritten in place). Compiles from the raw blob bytes —
-    /// the displaced version has no row to carry a precompiled artifact.
+    /// Load (compile + cache) the module for a content-addressed bytecode
+    /// blob — THE module-loading path: contexts execute the blob their
+    /// activation marker / group `app_key` points at, independent of what
+    /// the shared application row currently holds. For bundle blobs,
+    /// `service_name` selects the service wasm inside the bundle.
     ///
-    /// Cached in `modules` under a pseudo application id derived from the
-    /// pinned blob: pins are rare (they only exist after a migration abort),
-    /// blob ids and application ids are both opaque 32-byte hashes, and a
-    /// collision would only alias two cache slots, never corrupt execution.
-    /// `update_application`'s per-id eviction never targets pseudo keys; that
-    /// is fine — the entry is content-addressed (same blob ⇒ same module, so
-    /// reuse is always correct) and `modules` is a BoundedCache, which
-    /// reclaims the slot under capacity pressure.
-    pub fn get_pinned_module(
+    /// Cached in `modules` under `(blob_id, service_name)`; content
+    /// addressing makes reuse always sound (same blob ⇒ same module), so
+    /// entries never need eviction. The read-only method set is populated
+    /// alongside from the embedded ABI.
+    pub fn get_module_for_blob(
         &self,
-        pinned_blob: [u8; 32],
+        blob_id: calimero_primitives::blobs::BlobId,
         service_name: Option<String>,
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
-        let pseudo_id = calimero_primitives::application::ApplicationId::from(pinned_blob);
-        let cache_key = (pseudo_id, service_name.clone());
+        let cache_key = (blob_id, service_name.clone());
         let lookup_key = cache_key.clone();
 
         async {}
@@ -1428,39 +1188,44 @@ impl ContextManager {
                     }
                     Either::Right(parts) => parts,
                 };
-                let blob_id = calimero_primitives::blobs::BlobId::from(pinned_blob);
                 async move {
                     let Some(bytecode) = node_client
                         .application_bytes_from_blob(&blob_id, service_name.as_deref())
                         .await?
                     else {
-                        bail!("pinned bytecode blob {} not found in blobstore", blob_id);
+                        bail!("bytecode blob {} not found in blobstore", blob_id);
                     };
-                    calimero_utils_actix::global_runtime()
+                    // Extract the read-only method set from the embedded ABI
+                    // before the bytes move into the blocking compile task. A
+                    // missing/unparseable manifest is not an error — the
+                    // execute path defaults to the write lock (fail-safe).
+                    let read_only_set = extract_read_only_set(&bytecode);
+                    let module = calimero_utils_actix::global_runtime()
                         .spawn_blocking(move || {
                             calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
                         })
-                        .await?
-                        .map_err(Into::into)
+                        .await
+                        .wrap_err("WASM compilation task failed")??;
+                    Ok((module, read_only_set))
                 }
                 .into_actor(act)
-                .map_ok(move |module: calimero_runtime::Module, act, _ctx| {
-                    let _ = act.modules.insert(cache_key, module.clone());
-                    module
-                })
+                .map_ok(
+                    move |(module, read_only_set): (calimero_runtime::Module, _), act, _ctx| {
+                        let _ = act.modules.insert(cache_key.clone(), module.clone());
+                        if let Some(set) = read_only_set {
+                            let _ = act.read_only_methods.insert(cache_key, set);
+                        }
+                        module
+                    },
+                )
                 .boxed_local()
             })
-    }
-}
+            .map_err(|err, _act, _ctx| {
+                error!(?err, "failed to initialize module for execution");
 
-/// Result of the blob-resolution / cache-lookup phase inside
-/// [`ContextManager::get_module`]. Either we already have the compiled
-/// module (fast path — skip deserialize), or we have the blob metadata
-/// pointing at where the compiled bytes live and need to fetch +
-/// deserialize.
-enum CachedOrBlob {
-    Cached(calimero_runtime::Module),
-    Blob(calimero_primitives::application::ApplicationBlob),
+                err
+            })
+    }
 }
 
 /// Ensure the bytecode installed under `target_app` is the group's target
