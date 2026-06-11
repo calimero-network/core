@@ -191,6 +191,23 @@ impl ListApplicationsResponse {
     }
 }
 
+/// One locally-retained bytecode version of an application's package, as
+/// returned by `GET /admin-api/applications/:application_id/versions`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplicationVersionEntry {
+    pub version: String,
+    pub blob_id: String,
+    pub size: u64,
+    pub package: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListApplicationVersionsResponse {
+    pub data: Vec<ApplicationVersionEntry>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetApplicationResponseData {

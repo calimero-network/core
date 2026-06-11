@@ -11,6 +11,7 @@ use calimero_primitives::application::{
 };
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
+use calimero_store::key::AsKeyParts;
 use calimero_store::{key, types};
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::bail;
@@ -280,6 +281,20 @@ impl NodeClient {
 #[cfg(test)]
 mod tests;
 
+/// One locally-retained bytecode version of an application's package — an
+/// entry in [`NodeClient::list_application_versions`].
+#[derive(Clone, Debug)]
+pub struct ApplicationVersionInfo {
+    /// Manifest `app_version` (the row's version for raw-wasm apps).
+    pub version: String,
+    /// The bundle (or raw-wasm) bytecode blob.
+    pub blob_id: BlobId,
+    /// Blob size in bytes.
+    pub size: u64,
+    /// Manifest package name.
+    pub package: String,
+}
+
 impl NodeClient {
     /// Application wasm bytes straight from a bytecode BLOB — used for a
     /// context pinned to a blob the application row no longer references
@@ -312,6 +327,141 @@ impl NodeClient {
         .await
         .map_err(|e| eyre::eyre!("bundle manifest read task failed: {e}"))??;
         Ok(Some(names))
+    }
+
+    /// Bundle manifest of the blob at `blob_id`, parsed leniently (unsigned
+    /// allowed — admission verification happened at install/upgrade time).
+    /// `None` when the blob is absent locally or is not a bundle.
+    pub async fn bundle_manifest_for_blob(
+        &self,
+        blob_id: &BlobId,
+    ) -> eyre::Result<Option<BundleManifest>> {
+        let Some(blob_bytes) = self.get_blob_bytes(blob_id, None).await? else {
+            return Ok(None);
+        };
+        if !Self::is_bundle_blob(&blob_bytes) {
+            return Ok(None);
+        }
+        let manifest = tokio::task::spawn_blocking(move || {
+            bundle::extract_manifest_allow_unsigned(&blob_bytes)
+        })
+        .await
+        .map_err(|e| eyre::eyre!("bundle manifest read task failed: {e}"))??
+        .1;
+        Ok(Some(manifest))
+    }
+
+    /// Manifest `app_version` of the bundle blob at `blob_id`; `None` when
+    /// the blob is absent locally, is not a bundle, or fails to parse —
+    /// display-only, never an error.
+    pub async fn blob_app_version(&self, blob_id: &BlobId) -> Option<String> {
+        self.bundle_manifest_for_blob(blob_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|m| m.app_version)
+    }
+
+    /// Every locally-retained bytecode version of `application_id`'s package:
+    /// the application row's blob (latest fetched) plus every blob referenced
+    /// by a group's `app_key` or a context's activation marker whose bundle
+    /// manifest parses to the same package. Deduped by blob; blobs absent
+    /// from the blobstore (or foreign packages) are skipped.
+    pub async fn list_application_versions(
+        &self,
+        application_id: &ApplicationId,
+    ) -> eyre::Result<Vec<ApplicationVersionInfo>> {
+        let Some(app) = self.get_application(application_id)? else {
+            bail!("application '{}' not found", application_id);
+        };
+        let row_blob = app.blob.bytecode;
+
+        // Candidate blob set: the row + group app_keys + activation markers.
+        let mut candidates = std::collections::BTreeSet::new();
+        let _ = candidates.insert(*row_blob.as_ref());
+        {
+            let handle = self.datastore.handle();
+            // The Group column holds several prefixed key shapes; GroupMeta
+            // (0x20) sorts first — seek there and stop at the first foreign
+            // prefix (mirrors the governance-store enumeration helper, which
+            // is not reachable from this crate without a dependency cycle).
+            let mut iter = handle.iter::<key::GroupMeta>()?;
+            let first = iter.seek(key::GroupMeta::new([0u8; 32])).transpose();
+            let mut group_keys = Vec::new();
+            for key_result in first.into_iter().chain(iter.keys()) {
+                let group_key = key_result?;
+                if group_key.as_key().as_bytes()[0] != key::GROUP_META_PREFIX {
+                    break;
+                }
+                group_keys.push(group_key);
+            }
+            for group_key in group_keys {
+                if let Some(meta) = handle.get(&group_key)? {
+                    let _ = candidates.insert(meta.app_key);
+                }
+            }
+            let mut iter = handle.iter::<key::ContextActivatedBlob>()?;
+            for (k, v) in iter.entries() {
+                let (_, marker) = (k?, v?);
+                let _ = candidates.insert(marker.blob);
+            }
+        }
+
+        let mut versions = Vec::new();
+        for candidate in candidates {
+            if candidate == [0u8; 32] {
+                continue;
+            }
+            let blob_id = BlobId::from(candidate);
+            let Some(blob_bytes) = self.get_blob_bytes(&blob_id, None).await? else {
+                continue; // referenced but not locally retained
+            };
+            let size = blob_bytes.len() as u64;
+            if Self::is_bundle_blob(&blob_bytes) {
+                let manifest = match tokio::task::spawn_blocking(move || {
+                    bundle::extract_manifest_allow_unsigned(&blob_bytes)
+                })
+                .await
+                {
+                    Ok(Ok((_, manifest))) => manifest,
+                    // Unparseable manifests are skipped, not fatal: foreign
+                    // or corrupt blobs must not break the inventory.
+                    Ok(Err(_)) | Err(_) => continue,
+                };
+                if manifest.package != app.package {
+                    continue; // a different application's version blob
+                }
+                versions.push(ApplicationVersionInfo {
+                    version: manifest.app_version,
+                    blob_id,
+                    size,
+                    package: manifest.package,
+                });
+            } else if blob_id == row_blob {
+                // Raw-wasm apps carry no manifest; the row's metadata is the
+                // only version identity available.
+                versions.push(ApplicationVersionInfo {
+                    version: app.version.clone(),
+                    blob_id,
+                    size,
+                    package: app.package.clone(),
+                });
+            }
+        }
+
+        // Newest first; non-semver strings sort lexicographically after.
+        versions.sort_by(|a, b| {
+            match (
+                semver::Version::parse(&a.version),
+                semver::Version::parse(&b.version),
+            ) {
+                (Ok(va), Ok(vb)) => vb.cmp(&va),
+                (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+                (Err(_), Err(_)) => b.version.cmp(&a.version),
+            }
+        });
+        Ok(versions)
     }
 
     pub async fn application_bytes_from_blob(
