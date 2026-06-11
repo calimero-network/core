@@ -6,8 +6,8 @@ use syn::{Item, ItemEnum, ItemImpl, ItemStruct, Type};
 
 use crate::normalize::{normalize_type, ResolvedLocal, TypeResolver};
 use crate::schema::{
-    Event, Field, Manifest, Method, MethodIntent, MigrationAbi, Parameter, ScalarType, TypeDef,
-    TypeRef, Variant,
+    Event, Field, Manifest, Method, MethodIntent, MigrationAbi, MigrationEdgeAbi, Parameter,
+    ScalarType, TypeDef, TypeRef, Variant,
 };
 
 /// ABI emitter that processes Rust source code
@@ -763,22 +763,34 @@ pub fn emit_manifest_from_crate(
     }
 
     // Create the manifest
-    // Target schema from `#[app::state(version = N)]`, method from
-    // `#[migrate(method = …)]` (derive form) or a free `#[app::migrate] fn`.
+    // State version from `#[app::state(version = N)]` (default 1 — always
+    // recorded so version comparison is total even on code-only releases).
+    // Migration method from `#[migrate(method = …)]` (derive form, which
+    // defaults to `migrate` when omitted — mirrored by the derive macro) or a
+    // free `#[app::migrate] fn`. The single `migration` field stays emitted as
+    // a deprecated alias of the edge list.
     let mut migration = None;
+    let mut state_version = None;
+    let mut migrations = Vec::new();
     for file in &files {
         for item in &file.items {
             if let Item::Struct(s) = item {
                 if has_app_state_attribute(&s.attrs) {
-                    if let Some(to) = app_state_version(&s.attrs) {
-                        if let Some(method) = migrate_method_from_attrs(&s.attrs)
-                            .or_else(|| free_migrate_fn_name(&file.items))
-                        {
-                            migration = Some(MigrationAbi {
-                                method,
-                                to_schema_version: to,
+                    let to = app_state_version(&s.attrs).unwrap_or(1);
+                    state_version = Some(to);
+                    let method = migrate_method_from_attrs(&s.attrs)
+                        .or_else(|| free_migrate_fn_name(&file.items));
+                    if let Some(method) = method {
+                        if to > 1 {
+                            migrations.push(MigrationEdgeAbi {
+                                method: method.clone(),
+                                from_version: to - 1,
                             });
                         }
+                        migration = Some(MigrationAbi {
+                            method,
+                            to_schema_version: to,
+                        });
                     }
                 }
             }
@@ -792,6 +804,8 @@ pub fn emit_manifest_from_crate(
         events: emitter.events,
         state_root: emitter.state_type,
         migration,
+        state_version,
+        migrations,
     };
 
     // Remove any internal types that shouldn't be exposed
@@ -873,6 +887,50 @@ mod migration_tests {
         let mig = m.migration.expect("migration emitted");
         assert_eq!(mig.method, "migrate_v4_to_v5");
         assert_eq!(mig.to_schema_version, 5);
+    }
+
+    // `state_version` is always emitted (default 1) so the upgrade decision
+    // table can compare versions even across code-only releases, and the edge
+    // list mirrors the legacy single `migration` for from = N-1.
+    #[test]
+    fn state_version_and_edges_always_emitted() {
+        // Versioned migration build: version + one edge.
+        let lib = r#"
+            #[app::state(version = 2)]
+            #[derive(app::Migrate)]
+            #[migrate(from = OldState, method = migrate_v1_to_v2)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        assert_eq!(m.state_version, Some(2));
+        assert_eq!(m.migrations.len(), 1);
+        assert_eq!(m.migrations[0].method, "migrate_v1_to_v2");
+        assert_eq!(m.migrations[0].from_version, 1);
+
+        // Code-only build (no migration declared): version still present,
+        // no edges.
+        let lib = r#"
+            #[app::state(version = 2)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        assert_eq!(m.state_version, Some(2));
+        assert!(m.migrations.is_empty());
+
+        // Unversioned `#[app::state]`: defaults to 1.
+        let lib = r#"
+            #[app::state]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        assert_eq!(m.state_version, Some(1));
+        assert!(m.migrations.is_empty());
     }
 
     #[test]
