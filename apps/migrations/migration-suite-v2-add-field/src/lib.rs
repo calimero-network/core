@@ -6,7 +6,10 @@ use calimero_storage::collections::{LwwRegister, UnorderedMap};
 const SCHEMA_VERSION_V1: &str = "1.0.0";
 const SCHEMA_VERSION_V2: &str = "2.0.0";
 
-#[app::state(emits = for<'a> Event<'a>)]
+// version = 2 is what the v2 upgrade path resolves against: the node compares
+// this against the running bytecode's state_version and picks the declared
+// edge — no caller-supplied migrate_method (see workflows 00/01).
+#[app::state(version = 2, emits = for<'a> Event<'a>)]
 #[derive(app::Migrate)]
 #[migrate(
     from = MigrationSuiteV1,
