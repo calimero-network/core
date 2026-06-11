@@ -286,6 +286,34 @@ impl NodeClient {
     /// (version-stable bundle id overwritten in place). Fully in-memory: the
     /// pinned version's extracted dir may be gone, but the blob is still in
     /// the blobstore. `None` when the blob itself is absent locally.
+    /// Service names inside the bundle at `blob_id`: one `Some(name)` per
+    /// declared service, or a single `None` for single-service bundles. For a
+    /// raw (non-bundle) wasm blob the result is also `[None]` — exactly the
+    /// `service` values `application_bytes_from_blob` accepts. `Ok(None)`
+    /// when the blob is absent locally.
+    pub async fn bundle_service_names(
+        &self,
+        blob_id: &BlobId,
+    ) -> eyre::Result<Option<Vec<Option<String>>>> {
+        let Some(blob_bytes) = self.get_blob_bytes(blob_id, None).await? else {
+            return Ok(None);
+        };
+        if !Self::is_bundle_blob(&blob_bytes) {
+            return Ok(Some(vec![None]));
+        }
+        let names = tokio::task::spawn_blocking(move || -> eyre::Result<Vec<Option<String>>> {
+            let (_, manifest) = bundle::extract_manifest_allow_unsigned(&blob_bytes)?;
+            Ok(manifest
+                .wasm_artifacts()
+                .iter()
+                .map(|a| a.name.map(str::to_owned))
+                .collect())
+        })
+        .await
+        .map_err(|e| eyre::eyre!("bundle manifest read task failed: {e}"))??;
+        Ok(Some(names))
+    }
+
     pub async fn application_bytes_from_blob(
         &self,
         blob_id: &BlobId,
