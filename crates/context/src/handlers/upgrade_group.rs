@@ -646,6 +646,15 @@ async fn resolve_upgrade_from_abis(
 
     let current_blob_id = (current_app_key != [0u8; 32]).then(|| BlobId::from(current_app_key));
 
+    /// Whether a target manifest declares anything migration-relevant: a
+    /// state version past 1 or any migration edge. When it does, an
+    /// unresolvable CURRENT side must reject the upgrade rather than guess —
+    /// code-only-by-default here is exactly the silent new-code-on-old-state
+    /// failure this resolution exists to prevent.
+    fn target_declares_migration(m: &Manifest) -> bool {
+        m.state_version_or_default() > 1 || !m.migrations.is_empty() || m.migration.is_some()
+    }
+
     let mut resolved_method: Option<String> = None;
     for service in &services {
         let target_abi = match node_client
@@ -655,23 +664,67 @@ async fn resolve_upgrade_from_abis(
             Ok(Some(bytes)) => read_embedded_state_schema(&bytes),
             _ => None,
         };
+
+        // Resolve the CURRENT side, distinguishing the safe unknowns from the
+        // dangerous ones:
+        //  * service absent from the old bundle → genuinely NEW service, no
+        //    old data to migrate → code-only for it;
+        //  * old blob missing locally / no embedded ABI / legacy random
+        //    app_key → the from-version is UNKNOWABLE. Only safe when the
+        //    target declares no migration at all (pre-versioned world);
+        //    otherwise reject — the caller can pass migrateMethod explicitly
+        //    as the escape hatch.
         let current_abi = match current_blob_id {
             Some(blob) => match node_client
                 .application_bytes_from_blob(&blob, service.as_deref())
                 .await
             {
-                Ok(Some(bytes)) => read_embedded_state_schema(&bytes),
-                // The service may not exist in the old bundle (newly added
-                // service): treat as same-version → code-only for it.
-                _ => target_abi.clone(),
+                Ok(Some(bytes)) => match read_embedded_state_schema(&bytes) {
+                    Some(m) => Some(m),
+                    None => {
+                        if target_abi.as_ref().is_some_and(target_declares_migration) {
+                            eyre::bail!(
+                                "service '{}': the currently-running bytecode has no embedded                                  ABI, but the target declares a state migration — cannot                                  determine the from-version safely. Pass migrateMethod                                  explicitly, or rebuild the previous version with the current                                  SDK",
+                                service.as_deref().unwrap_or("<single>"),
+                            );
+                        }
+                        target_abi.clone()
+                    }
+                },
+                Ok(None) => {
+                    if target_abi.as_ref().is_some_and(target_declares_migration) {
+                        eyre::bail!(
+                            "service '{}': the currently-running bytecode blob is not                              available locally, but the target declares a state migration —                              cannot determine the from-version safely. Pass migrateMethod                              explicitly, or fetch the previous version first",
+                            service.as_deref().unwrap_or("<single>"),
+                        );
+                    }
+                    target_abi.clone()
+                }
+                // The service does not exist in the old bundle (newly added
+                // service): no old data → same-version → code-only for it.
+                Err(_) => target_abi.clone(),
             },
-            // Legacy group with no blob-derived app_key: no version signal —
-            // fall back to the target's own version (code-only).
-            None => target_abi.clone(),
+            // Legacy group with no blob-derived app_key: the from-version is
+            // unknowable — same rule as above.
+            None => {
+                if target_abi.as_ref().is_some_and(target_declares_migration) {
+                    eyre::bail!(
+                        "service '{}': this group predates blob-derived app keys, but the                          target declares a state migration — cannot determine the                          from-version safely. Pass migrateMethod explicitly",
+                        service.as_deref().unwrap_or("<single>"),
+                    );
+                }
+                target_abi.clone()
+            }
         };
 
         match plan_upgrade(current_abi.as_ref(), target_abi.as_ref()) {
-            Ok(UpgradeAction::CodeOnly | UpgradeAction::Downgrade { .. }) => {}
+            Ok(UpgradeAction::CodeOnly) => {}
+            Ok(UpgradeAction::Downgrade { from, to }) => {
+                eyre::bail!(
+                    "service '{}' declares state v{to}, OLDER than the running v{from} —                      schema downgrades are not supported",
+                    service.as_deref().unwrap_or("<single>"),
+                );
+            }
             Ok(UpgradeAction::Migrate { method, from, to }) => {
                 info!(
                     service = service.as_deref().unwrap_or("<single>"),
