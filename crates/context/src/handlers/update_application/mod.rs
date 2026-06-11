@@ -772,12 +772,9 @@ fn commit_or_abort_migration(
         clear_pending_delta();
         // Record the abort so the heartbeat surfaces this member as `failed`
         // (not a silent in-progress). Cleared if a later migrate commits.
+        // The activation marker did not move, so per-context module binding
+        // keeps executing the pre-upgrade bytecode — no pin needed.
         persist_migration_failed(datastore, context_id, MigrationFailureKind::CheckAborted);
-        // The state stays pre-migration, but a version-stable bundle id's row
-        // may already hold the NEW bytecode (in-place install) — pin this
-        // context to the displaced blob so reads keep executing the code its
-        // state was written under. Deleted when a later migrate commits.
-        pin_executing_blob_to_previous(datastore, context_id, context.application_id);
         return Err(MigrationCheckFailed { context_id }.into());
     }
 
@@ -810,9 +807,6 @@ fn commit_or_abort_migration(
     // The migrate committed: drop any prior failure marker so a context that
     // recovered (this attempt, or after an earlier abort) stops reporting failed.
     clear_migration_failed(datastore, context_id);
-    // And drop any executing-blob pin from an earlier abort — the state is now
-    // on the target schema, so the application row's bytecode is correct again.
-    clear_executing_blob_pin(datastore, context_id);
 
     Ok(new_root_hash)
 }
@@ -1176,66 +1170,6 @@ pub(crate) fn clear_migration_failed(datastore: &calimero_store::Store, context_
     let key = key::ContextMigrationFailed::new(context_id);
     if let Err(err) = handle.delete(&key) {
         debug!(%context_id, %err, "failed to clear migration_failed marker");
-    }
-}
-
-/// Pin `context_id` to the bytecode an in-place (same-id) install displaced,
-/// so post-abort reads keep executing the code the context's state was written
-/// under. No-op when no in-place install happened (no breadcrumb) or the pin
-/// is already set (the oldest pin wins until a migrate commits). Best-effort.
-///
-/// Known residual: the breadcrumb is one slot per application, overwritten by
-/// each in-place install. A context whose state lags MORE than one version
-/// behind (two installs landed before it ever migrated) gets pinned to the
-/// intermediate blob, not its true original — exact pinning needs a
-/// per-context executed-blob record, which is the install-time activation
-/// follow-up. Single pending upgrade at a time (the normal fleet cadence) is
-/// always pinned correctly.
-pub(crate) fn pin_executing_blob_to_previous(
-    datastore: &calimero_store::Store,
-    context_id: ContextId,
-    application_id: calimero_primitives::application::ApplicationId,
-) {
-    let mut handle = datastore.handle();
-    let pin_key = key::ContextExecutingBlob::new(context_id);
-    match handle.get(&pin_key) {
-        Ok(Some(_)) => return, // earlier abort already pinned the right blob
-        Ok(None) => {}
-        Err(err) => {
-            debug!(%context_id, %err, "failed to read executing-blob pin");
-            return;
-        }
-    }
-    let previous = match handle.get(&key::ApplicationPreviousBlob::new(application_id)) {
-        Ok(Some(p)) => p,
-        Ok(None) => return, // row never overwritten in place — nothing to pin
-        Err(err) => {
-            debug!(%context_id, %err, "failed to read previous-blob breadcrumb");
-            return;
-        }
-    };
-    if let Err(err) = handle.put(
-        &pin_key,
-        &types::ContextExecutingBlob {
-            blob: previous.bytecode,
-        },
-    ) {
-        debug!(%context_id, %err, "failed to pin executing blob");
-    } else {
-        info!(
-            %context_id,
-            %application_id,
-            "pinned context to pre-upgrade bytecode after migration abort"
-        );
-    }
-}
-
-/// Drop the executing-blob pin once a migrate commits — the context's state is
-/// on the target schema, so the application row's bytecode is correct again.
-pub(crate) fn clear_executing_blob_pin(datastore: &calimero_store::Store, context_id: ContextId) {
-    let mut handle = datastore.handle();
-    if let Err(err) = handle.delete(&key::ContextExecutingBlob::new(context_id)) {
-        debug!(%context_id, %err, "failed to clear executing-blob pin");
     }
 }
 

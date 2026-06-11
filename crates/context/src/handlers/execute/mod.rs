@@ -1,5 +1,5 @@
 use calimero_governance_store::{
-    CapabilitiesRepository, GroupKeyring, MigrationsRepository, NamespaceRepository,
+    CapabilitiesRepository, GroupKeyring, MetaRepository, MigrationsRepository, NamespaceRepository,
 };
 use std::borrow::Cow;
 // Removed: NonZeroUsize (replaced with CausalDelta)
@@ -40,7 +40,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::update_application::{
-    clear_executing_blob_pin, update_application_id, update_application_with_migration,
+    update_application_id, update_application_with_migration,
 };
 use crate::ContextManager;
 use calimero_governance_store::metrics::ExecutionLabels;
@@ -117,13 +117,13 @@ impl Handler<ExecuteRequest> for ContextManager {
             let application_id = cm.meta.application_id;
             let service_name = cm.meta.service_name.clone();
             // Blob-keyed lookup: the read-only sets are keyed by the executing
-            // bytecode blob. Resolve via the cached application row here (the
-            // dominant case); a miss defaults to the write lock (fail-safe).
-            let Some(blob) = self
-                .applications
-                .get(&application_id)
-                .map(|app| app.blob.bytecode)
-            else {
+            // bytecode blob (per-context binding), with the cached row blob as
+            // fallback. A miss defaults to the write lock (fail-safe).
+            let Some(blob) = self.executing_blob_for_context(&context_id).or_else(|| {
+                self.applications
+                    .get(&application_id)
+                    .map(|app| app.blob.bytecode)
+            }) else {
                 break 'ro false;
             };
             let Some(set) = self.read_only_methods.get(&(blob, service_name)).cloned() else {
@@ -512,32 +512,27 @@ impl Handler<ExecuteRequest> for ContextManager {
                     if let Some(method) = migrate {
                         let migration_params = MigrationParams { method: method.clone() };
                         let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
-                        // Bundle apps keep a version-stable ApplicationId, so the
-                        // bytecode installed under `target_app` can still be the OLD
-                        // version. Fetch + install the group's target blob first;
-                        // otherwise get_module would compile v1 and the migrate
-                        // would no-op/fail.
+                        // The migrate must execute the TARGET bytecode. Load it
+                        // straight from the group's recorded target blob
+                        // (fetching from peers when absent) — the application
+                        // row is a download cache and may still hold the
+                        // previous version.
                         let blob_node_client = node_client.clone();
                         async move {
-                            ensure_target_blob_installed(
-                                &blob_node_client,
-                                &cid,
-                                &target_app,
-                                target_app_key,
-                            )
-                            .await
+                            ensure_blob_local(&blob_node_client, &cid, target_app_key).await
                         }
                         .into_actor(act)
-                        .then(move |_row_holds_target, act, _ctx| {
-                            // The target id is version-stable for bundles, so the
-                            // (application_id, service)-keyed caches may hold the
-                            // PREVIOUS version's module — whether the new bytecode
-                            // arrived via the fetch above or an earlier in-place
-                            // admin install. Evict unconditionally: a lazy
-                            // migration runs once per context, so one recompile
-                            // is irrelevant.
-                            act.evict_application_caches(target_app);
-                            act.get_module(target_app, service_name)
+                        .then(move |blob_local, act, _ctx| {
+                            if blob_local {
+                                act.get_module_for_blob(target_app_key.into(), service_name)
+                                    .boxed_local()
+                            } else {
+                                // Legacy groups (randomly-seeded app_key that
+                                // resolves to no blob) and failed fetches: the
+                                // row's bytecode is the only available truth.
+                                act.evict_application_caches(target_app);
+                                act.get_module(target_app, service_name).boxed_local()
+                            }
                         })
                             .then(move |module_result, act, _ctx| {
                                 // Re-read cached values; they may have been refreshed during load
@@ -609,59 +604,29 @@ impl Handler<ExecuteRequest> for ContextManager {
                             })
                             .boxed_local()
                     } else {
-                        // No migration. A same-id (bundle) code-only bump must
-                        // first activate the target bytecode: fetch it if
-                        // needed (sync pre-stages it, but a peer can also
-                        // serve it on demand), install it in place under the
-                        // unchanged id, and drop stale caches. `true` only
-                        // when the row verifiably holds the target blob — a
-                        // failed fetch/install must NOT record the activation
-                        // marker, or the lazy trigger would stop retrying
-                        // while the node still runs the old build.
+                        // No migration. A same-id (bundle) code-only bump
+                        // activates by marker move alone: fetch the target
+                        // blob if absent (sync pre-stages it, but a peer can
+                        // also serve it on demand) and record the activation.
+                        // The application row is never reinstalled — the
+                        // per-context binding decides what executes. A failed
+                        // fetch must NOT record the marker, or the lazy
+                        // trigger would stop retrying while the node still
+                        // runs the old build.
                         let blob_node_client = node_client.clone();
                         async move {
-                            ensure_target_blob_installed(
-                                &blob_node_client,
-                                &cid,
-                                &target_app,
-                                target_app_key,
-                            )
-                            .await
+                            ensure_blob_local(&blob_node_client, &cid, target_app_key).await
                         }
                         .into_actor(act)
                         .then(move |blob_available, act, _ctx| {
                             if blob_available {
-                                // Activate: the row now holds the target
-                                // bytecode — drop the stale caches so the next
-                                // load compiles it (an in-place install may
-                                // have flipped the row long before this
-                                // upgrade), release any executing-blob pin,
-                                // and record the per-context marker that stops
-                                // the lazy trigger from re-firing. A missing
-                                // blob (not yet staged, or a legacy random
-                                // app_key that never resolves) changes
-                                // nothing — caches stay warm.
+                                // Drop the cached application row so the
+                                // update below re-reads it fresh.
                                 act.evict_application_caches(target_app);
-                                clear_executing_blob_pin(&act.datastore, cid);
-                                crate::activation::record_activation(
-                                    &act.datastore,
-                                    &cid,
-                                    target_app_key,
-                                );
-                                // Legacy blob: marker still written for one release so
-                                // pre-v2 peers' gates converge.
-                                if let Err(err) = MigrationsRepository::new(&act.datastore)
-                                    .set_last_migration(
-                                        &group_id,
-                                        &cid,
-                                        &activation_marker(&target_app_key),
-                                    )
-                                {
-                                    warn!(%cid, %err, "failed to record activation marker");
-                                }
                             }
+                            let marker_datastore = act.datastore.clone();
                             async move {
-                                if let Err(err) = update_application_id(
+                                match update_application_id(
                                     datastore,
                                     node_client,
                                     context_client,
@@ -673,12 +638,40 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 )
                                 .await
                                 {
-                                    warn!(
-                                        %cid,
-                                        %target_app,
-                                        %err,
-                                        "lazy upgrade failed, proceeding with current application"
-                                    );
+                                    Ok(_) if blob_available => {
+                                        // Marker AFTER the flip: the update
+                                        // records the row's blob, which for a
+                                        // same-id bump may still be the
+                                        // previous version — the group target
+                                        // (what this context executes now)
+                                        // must win. Legacy blob: marker still
+                                        // written for one release so pre-v2
+                                        // peers' gates converge.
+                                        crate::activation::record_activation(
+                                            &marker_datastore,
+                                            &cid,
+                                            target_app_key,
+                                        );
+                                        if let Err(err) =
+                                            MigrationsRepository::new(&marker_datastore)
+                                                .set_last_migration(
+                                                    &group_id,
+                                                    &cid,
+                                                    &activation_marker(&target_app_key),
+                                                )
+                                        {
+                                            warn!(%cid, %err, "failed to record activation marker");
+                                        }
+                                    }
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        warn!(
+                                            %cid,
+                                            %target_app,
+                                            %err,
+                                            "lazy upgrade failed, proceeding with current application"
+                                        );
+                                    }
                                 }
                                 Ok(guard)
                             }
@@ -702,23 +695,14 @@ impl Handler<ExecuteRequest> for ContextManager {
             });
 
         let module_task = context_task.and_then(move |(guard, context), act, _ctx| {
-            // A logically-aborted migration leaves this context's state on
-            // the OLD schema while the (version-stable bundle id) application
-            // row may already hold the NEW bytecode — honor the executing-blob
-            // pin so reads keep running the code the state was written under.
-            // Per-execution cost: one point-get on a dedicated, near-empty
-            // column family (pins exist only between an abort and the next
-            // successful migrate) — bloom-filtered to a memtable miss, noise
-            // next to the wasm call it precedes.
-            let pinned = act
-                .datastore
-                .handle()
-                .get(&calimero_store::key::ContextExecutingBlob::new(context.id))
-                .ok()
-                .flatten();
-            let module_fut = match pinned {
-                Some(pin) => act
-                    .get_module_for_blob(pin.blob.into(), context.service_name.clone())
+            // Per-context bytecode binding: a context executes the blob its
+            // activation marker points at, else the blob its group's
+            // `app_key` points at, else the application row (non-group
+            // contexts, legacy groups). Cost: a couple of bloom-filtered
+            // point-gets, noise next to the wasm call they precede.
+            let module_fut = match act.executing_blob_for_context(&context.id) {
+                Some(blob) => act
+                    .get_module_for_blob(blob, context.service_name.clone())
                     .boxed_local(),
                 None => act
                     .get_module(context.application_id, context.service_name.clone())
@@ -1228,95 +1212,81 @@ impl ContextManager {
     }
 }
 
-/// Ensure the bytecode installed under `target_app` is the group's target
-/// blob (`target_app_key`) before the lazy migrate loads its module.
-///
-/// Bundle apps derive `ApplicationId = hash(package, signer)`, so a version
-/// bump leaves the id unchanged and only moves the blob — without this step
-/// the migrate would compile the OLD bytecode (which lacks the migrate
-/// export) and no-op. Fetches the blob via DHT/peer download (it is
-/// announced at upgrade time) and installs it in place under the same id.
-///
-/// Returns `true` when the application row holds the target bytecode on
-/// return — either it already matched or a fresh in-place install succeeded
-/// (callers evict the `target_app`-keyed caches unconditionally; reuse of an
-/// already-current module is a cheap recompile at most). All failures warn
-/// and return `false` — the upgrade proceeds against the current bytecode
-/// and the next access retries.
-async fn ensure_target_blob_installed(
+/// Ensure the bytecode blob is present in the local blobstore, fetching it
+/// from peers (it is announced at upgrade time; the sync gate leaves
+/// BlobShare open for exactly this) when absent. Pure byte movement — the
+/// application row is never touched; per-context binding decides what
+/// executes. `false` ⇒ unavailable (zero/legacy key, fetch failure): the
+/// caller falls back and the next access retries.
+async fn ensure_blob_local(
     node_client: &NodeClient,
     context_id: &ContextId,
-    target_app: &calimero_primitives::application::ApplicationId,
-    target_app_key: [u8; 32],
+    blob: [u8; 32],
 ) -> bool {
-    if target_app_key == [0u8; 32] {
+    if blob == [0u8; 32] {
         return false;
     }
-    let installed = match node_client.get_application(target_app) {
-        Ok(Some(app)) => app,
-        // Not installed under this id at all: the distinct-id machinery
-        // (stub row + blob share) owns that case.
-        Ok(None) => return false,
+    let blob_id = calimero_primitives::blobs::BlobId::from(blob);
+    match node_client.has_blob(&blob_id) {
+        Ok(true) => return true,
+        Ok(false) => {}
         Err(err) => {
-            warn!(%context_id, %target_app, %err, "lazy upgrade: failed to read installed application");
+            warn!(%context_id, %blob_id, %err, "lazy upgrade: blobstore lookup failed");
             return false;
         }
-    };
-    let target_blob = calimero_primitives::blobs::BlobId::from(target_app_key);
-    if installed.blob.bytecode == target_blob {
-        return true;
     }
-    info!(
-        %context_id,
-        %target_app,
-        %target_blob,
-        installed_blob = %installed.blob.bytecode,
-        "lazy upgrade: fetching target bytecode (version-stable application id)"
-    );
-    let bytes = match node_client
-        .get_blob_bytes(&target_blob, Some(context_id))
-        .await
-    {
-        Ok(Some(bytes)) => bytes,
+    info!(%context_id, %blob_id, "lazy upgrade: fetching target bytecode blob");
+    // A successful peer fetch persists the blob into the local blobstore,
+    // so the subsequent module load finds it.
+    match node_client.get_blob_bytes(&blob_id, Some(context_id)).await {
+        Ok(Some(_)) => true,
         Ok(None) => {
-            warn!(%context_id, %target_blob, "lazy upgrade: target blob not available locally or from peers");
-            return false;
+            warn!(%context_id, %blob_id, "lazy upgrade: target blob not available locally or from peers");
+            false
         }
         Err(err) => {
-            warn!(%context_id, %target_blob, %err, "lazy upgrade: target blob fetch failed");
-            return false;
+            warn!(%context_id, %blob_id, %err, "lazy upgrade: target blob fetch failed");
+            false
         }
-    };
-    if !NodeClient::is_bundle_blob(&bytes) {
-        // Same-id blob swaps only occur for bundles (raw-wasm ids are
-        // content-addressed, so their upgrades change the id); anything else
-        // here is unexpected — leave it to the sync machinery.
-        warn!(%context_id, %target_blob, "lazy upgrade: target blob is not a bundle; skipping in-place install");
-        return false;
     }
-    match node_client
-        .install_application_from_bundle_blob(&target_blob, &installed.source)
-        .await
-    {
-        Ok(installed_id) if installed_id == *target_app => {
-            info!(%context_id, %target_app, %target_blob, "lazy upgrade: installed target bundle in place");
-            true
+}
+
+/// Store-level executing-blob resolution for a context: its activation
+/// marker (the blob it last activated), else its owning group's recorded
+/// target blob. The `bool` is `true` when the blob came from the group
+/// `app_key` (callers gate that branch on local blob presence — legacy
+/// groups carry randomly-seeded keys that resolve to nothing). `None` ⇒
+/// fall back to the application row.
+pub(crate) fn bound_blob_for_context(
+    store: &Store,
+    context_id: &ContextId,
+) -> Option<([u8; 32], bool)> {
+    if let Some(blob) = crate::activation::activated_blob(store, context_id) {
+        return Some((blob, false));
+    }
+    let group_id = calimero_governance_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
+    (meta.app_key != [0u8; 32]).then_some((meta.app_key, true))
+}
+
+impl ContextManager {
+    /// The bytecode blob this context executes (per-context binding):
+    /// activation marker → group target blob (when locally present) →
+    /// `None` (callers fall back to the application row).
+    pub(crate) fn executing_blob_for_context(
+        &self,
+        context_id: &ContextId,
+    ) -> Option<calimero_primitives::blobs::BlobId> {
+        let (blob, from_group_key) = bound_blob_for_context(&self.datastore, context_id)?;
+        let blob_id = calimero_primitives::blobs::BlobId::from(blob);
+        if from_group_key && !self.node_client.has_blob(&blob_id).unwrap_or(false) {
+            // Legacy randomly-seeded app_key (or not-yet-fetched target):
+            // nothing to execute under that key — use the row.
+            return None;
         }
-        Ok(installed_id) => {
-            // The bundle resolves to a different id (package/signer changed)
-            // — not the in-place case; the id-keyed path owns it.
-            warn!(
-                %context_id,
-                %target_app,
-                %installed_id,
-                "lazy upgrade: fetched bundle installed under a different application id"
-            );
-            false
-        }
-        Err(err) => {
-            warn!(%context_id, %target_blob, %err, "lazy upgrade: in-place bundle install failed");
-            false
-        }
+        Some(blob_id)
     }
 }
 
@@ -2172,5 +2142,71 @@ mod tests {
             !should_block(false, &GroupUpgradeStatus::Completed { completed_at: None }),
             "Completed never blocks, regardless of the flag"
         );
+    }
+
+    // Per-context bytecode binding: the executing blob resolves marker →
+    // group app_key → None (row fallback). Two contexts sharing one
+    // application id but holding different markers must resolve different
+    // blobs — the coexistence invariant the module cache re-key enables.
+
+    #[test]
+    fn bound_blob_two_contexts_different_markers_resolve_different_blobs() {
+        let store = fresh_store();
+        let group_id = ContextGroupId::from([0xB0; 32]);
+        let ctx_a = ContextId::from([0xB1; 32]);
+        let ctx_b = ContextId::from([0xB2; 32]);
+
+        register_context_in_group(&store, &group_id, &ctx_a).expect("register a");
+        register_context_in_group(&store, &group_id, &ctx_b).expect("register b");
+        MetaRepository::new(&store)
+            .save(&group_id, &group_meta_with_app_key([0x33; 32]))
+            .expect("save group meta");
+
+        crate::activation::record_activation(&store, &ctx_a, [0x11; 32]);
+        crate::activation::record_activation(&store, &ctx_b, [0x22; 32]);
+
+        assert_eq!(
+            super::bound_blob_for_context(&store, &ctx_a),
+            Some(([0x11; 32], false))
+        );
+        assert_eq!(
+            super::bound_blob_for_context(&store, &ctx_b),
+            Some(([0x22; 32], false))
+        );
+    }
+
+    #[test]
+    fn bound_blob_falls_back_to_group_app_key_without_marker() {
+        let store = fresh_store();
+        let group_id = ContextGroupId::from([0xB3; 32]);
+        let ctx = ContextId::from([0xB4; 32]);
+
+        register_context_in_group(&store, &group_id, &ctx).expect("register");
+        MetaRepository::new(&store)
+            .save(&group_id, &group_meta_with_app_key([0x44; 32]))
+            .expect("save group meta");
+
+        assert_eq!(
+            super::bound_blob_for_context(&store, &ctx),
+            Some(([0x44; 32], true))
+        );
+    }
+
+    #[test]
+    fn bound_blob_none_for_zero_app_key_or_non_group_context() {
+        let store = fresh_store();
+        let group_id = ContextGroupId::from([0xB5; 32]);
+        let ctx = ContextId::from([0xB6; 32]);
+
+        register_context_in_group(&store, &group_id, &ctx).expect("register");
+        MetaRepository::new(&store)
+            .save(&group_id, &group_meta_with_app_key([0u8; 32]))
+            .expect("save group meta");
+
+        // Zero app_key (legacy) carries no blob identity — row fallback.
+        assert_eq!(super::bound_blob_for_context(&store, &ctx), None);
+        // Non-group context — row fallback.
+        let lone = ContextId::from([0xB7; 32]);
+        assert_eq!(super::bound_blob_for_context(&store, &lone), None);
     }
 }
