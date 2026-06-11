@@ -215,6 +215,7 @@ jobs:
           - 31-admin-abort-logical
           - 32-authored-migrate-ux
           - 33-authored-remaining-count
+          - 35-two-namespaces-coexist
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:
