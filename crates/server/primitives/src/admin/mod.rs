@@ -3097,6 +3097,12 @@ pub struct NamespaceApiResponse {
     pub member_count: usize,
     pub context_count: usize,
     pub subgroup_count: usize,
+    /// Bundle-manifest version of this namespace's `app_key` blob — the
+    /// per-namespace truth (the shared application row only says "latest
+    /// fetched"). `None` when unresolvable (raw-wasm app, legacy key,
+    /// blob not retained locally).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

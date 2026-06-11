@@ -46,9 +46,11 @@ pub async fn handler(
 
     match result {
         Ok(entries) => {
-            let data = entries
-                .into_iter()
-                .map(|ns| NamespaceApiResponse {
+            let mut data = Vec::with_capacity(entries.len());
+            for ns in entries {
+                let app_version =
+                    super::namespace_app_version(&state.node_client, ns.app_key.to_bytes()).await;
+                data.push(NamespaceApiResponse {
                     namespace_id: hex::encode(ns.namespace_id.to_bytes()),
                     app_key: hex::encode(ns.app_key.to_bytes()),
                     target_application_id: ns.target_application_id.to_string(),
@@ -58,8 +60,9 @@ pub async fn handler(
                     member_count: ns.member_count,
                     context_count: ns.context_count,
                     subgroup_count: ns.subgroup_count,
-                })
-                .collect();
+                    app_version,
+                });
+            }
             ApiResponse {
                 payload: ListNamespacesApiResponse { data },
             }
