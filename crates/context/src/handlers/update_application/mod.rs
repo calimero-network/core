@@ -494,134 +494,150 @@ pub(crate) async fn update_application_with_migration(
 
     // Execute migration if requested
     if let Some(migration_params) = migration {
-        info!(
-            %context_id,
-            %application_id,
-            method = %migration_params.method,
-            "Executing migration"
-        );
+        'migration: {
+            info!(
+                %context_id,
+                %application_id,
+                method = %migration_params.method,
+                "Executing migration"
+            );
 
-        // Clone the (Arc-backed, cheap) module before `execute_migration` moves
-        // its copy into `spawn_blocking`, so the migration_check below can run a
-        // second `module.run` on the same already-compiled v2 artifact.
-        let check_module = module.clone();
-        // A third cheap clone for the post-commit count_my_pending run (6f.8).
-        let count_module = check_module.clone();
+            // Clone the (Arc-backed, cheap) module before `execute_migration` moves
+            // its copy into `spawn_blocking`, so the migration_check below can run a
+            // second `module.run` on the same already-compiled v2 artifact.
+            let check_module = module.clone();
+            // A third cheap clone for the post-commit count_my_pending run (6f.8).
+            let count_module = check_module.clone();
 
-        // Execute migration function via module.run(). Returns the UNCOMMITTED
-        // staging buffer (`storage`) the migrate wrote into, plus the optional
-        // transient witness, so the check below sees the produced v2 state and
-        // the gate can commit-or-drop the buffer (zero-residue abort).
-        let (new_state_bytes, migration_witness, migration_events, migration_logs, storage) =
-            match execute_migration(
-                &datastore,
-                node_client.clone(),
-                &context,
-                module,
-                &migration_params,
-                public_key,
-            )
-            .await
-            {
-                Ok(out) => out,
-                Err(err) => {
-                    // The migrate apply itself errored (e.g. the v2 wasm trapped).
-                    // Record the reason so the heartbeat surfaces this member as
-                    // `failed`, then propagate — the context stays on v1.
-                    persist_migration_failed(
-                        &datastore,
-                        context_id,
-                        MigrationFailureKind::ApplyFailed,
-                    );
-                    return Err(err);
+            // Execute migration function via module.run(). Returns the UNCOMMITTED
+            // staging buffer (`storage`) the migrate wrote into, plus the optional
+            // transient witness, so the check below sees the produced v2 state and
+            // the gate can commit-or-drop the buffer (zero-residue abort).
+            let (new_state_bytes, migration_witness, migration_events, migration_logs, storage) =
+                match execute_migration(
+                    &datastore,
+                    node_client.clone(),
+                    &context,
+                    module,
+                    &migration_params,
+                    public_key,
+                )
+                .await
+                {
+                    Ok(out) => out,
+                    Err(err) if err.downcast_ref::<MigrateExportMissing>().is_some() => {
+                        // This context's service has no such export — multi-service
+                        // bundles record ONE migrate method group-wide, but only the
+                        // schema-changing service defines it. Vacuously applied:
+                        // proceed as a code-only bytecode swap (and drop any failed
+                        // marker a pre-fix attempt persisted).
+                        info!(
+                            %context_id,
+                            method = %migration_params.method,
+                            "service does not export the migrate method; applying upgrade code-only"
+                        );
+                        clear_migration_failed(&datastore, context_id);
+                        break 'migration;
+                    }
+                    Err(err) => {
+                        // The migrate apply itself errored (e.g. the v2 wasm trapped).
+                        // Record the reason so the heartbeat surfaces this member as
+                        // `failed`, then propagate — the context stays on v1.
+                        persist_migration_failed(
+                            &datastore,
+                            context_id,
+                            MigrationFailureKind::ApplyFailed,
+                        );
+                        return Err(err);
+                    }
+                };
+
+            // Log migration logs
+            for log_line in &migration_logs {
+                info!(%context_id, migration_log = %log_line, "Migration log");
+            }
+
+            // Pre-commit migration_check (migration_v2). Run the app's
+            // `__calimero_migration_check` export over the produced v2 bytes while
+            // the v1 root is still readable, before `write_migration_state` (the
+            // only mutation of the v1 root) and `finalize_application_update`. A
+            // failing check makes `commit_or_abort_migration` return early, leaving
+            // the committed context on v1 (no byte restore — v1 was never mutated).
+            // An app with no check export ⇒ pass ⇒ commits (backwards-compatible).
+            // Thread the staging buffer through the check (so `new` reads the
+            // produced v2 collections) and back out for the commit/drop decision.
+            let (check_passed, storage) = if migration_v2 {
+                let (passed, storage) = run_migration_check(
+                    node_client.clone(),
+                    &context,
+                    check_module,
+                    &new_state_bytes,
+                    migration_witness.as_deref(),
+                    public_key,
+                    storage,
+                )
+                .await?;
+
+                if passed {
+                    info!(%context_id, "migration_check passed");
+                } else {
+                    warn!(%context_id, "migration_check failed: logical abort");
                 }
+                (passed, storage)
+            } else {
+                // Flag off ⇒ no check ⇒ commit (backwards-compatible).
+                (true, storage)
             };
 
-        // Log migration logs
-        for log_line in &migration_logs {
-            info!(%context_id, migration_log = %log_line, "Migration log");
-        }
+            // Funnel the verdict through the single gate-decision seam. The decision
+            // source is pluggable (today: the migration_check verdict; a future
+            // canary-subgroup soak would plug in here) without touching
+            // `commit_or_abort_migration`.
+            let decision = MigrationGateDecision::from_check_result(check_passed);
 
-        // Pre-commit migration_check (migration_v2). Run the app's
-        // `__calimero_migration_check` export over the produced v2 bytes while
-        // the v1 root is still readable, before `write_migration_state` (the
-        // only mutation of the v1 root) and `finalize_application_update`. A
-        // failing check makes `commit_or_abort_migration` return early, leaving
-        // the committed context on v1 (no byte restore — v1 was never mutated).
-        // An app with no check export ⇒ pass ⇒ commits (backwards-compatible).
-        // Thread the staging buffer through the check (so `new` reads the
-        // produced v2 collections) and back out for the commit/drop decision.
-        let (check_passed, storage) = if migration_v2 {
-            let (passed, storage) = run_migration_check(
-                node_client.clone(),
-                &context,
-                check_module,
+            // Promote the staging buffer + write the v2 root, or DROP the buffer
+            // (zero-residue logical abort). On a failed check this returns
+            // `Err(MigrationCheckFailed)` before any live mutation, propagating out
+            // and skipping `finalize_application_update`.
+            let new_root_hash = commit_or_abort_migration(
+                &datastore,
+                &mut context,
                 &new_state_bytes,
-                migration_witness.as_deref(),
                 public_key,
+                decision,
                 storage,
-            )
-            .await?;
+            )?;
 
-            if passed {
-                info!(%context_id, "migration_check passed");
-            } else {
-                warn!(%context_id, "migration_check failed: logical abort");
+            // Emit migration events to WebSocket clients
+            if !migration_events.is_empty() {
+                let events_vec: Vec<ExecutionEvent> = migration_events
+                    .into_iter()
+                    .map(|e| ExecutionEvent {
+                        kind: e.kind,
+                        data: e.data,
+                        handler: e.handler,
+                    })
+                    .collect();
+                let _ = node_client.send_event(NodeEvent::Context(ContextEvent {
+                    context_id,
+                    payload: ContextEventPayload::StateMutation(
+                        StateMutationPayload::with_root_and_events(new_root_hash, events_vec),
+                    ),
+                }));
             }
-            (passed, storage)
-        } else {
-            // Flag off ⇒ no check ⇒ commit (backwards-compatible).
-            (true, storage)
-        };
 
-        // Funnel the verdict through the single gate-decision seam. The decision
-        // source is pluggable (today: the migration_check verdict; a future
-        // canary-subgroup soak would plug in here) without touching
-        // `commit_or_abort_migration`.
-        let decision = MigrationGateDecision::from_check_result(check_passed);
+            info!(
+                %context_id,
+                new_root_hash = %new_root_hash,
+                state_size = new_state_bytes.len(),
+                "Migration completed successfully"
+            );
 
-        // Promote the staging buffer + write the v2 root, or DROP the buffer
-        // (zero-residue logical abort). On a failed check this returns
-        // `Err(MigrationCheckFailed)` before any live mutation, propagating out
-        // and skipping `finalize_application_update`.
-        let new_root_hash = commit_or_abort_migration(
-            &datastore,
-            &mut context,
-            &new_state_bytes,
-            public_key,
-            decision,
-            storage,
-        )?;
-
-        // Emit migration events to WebSocket clients
-        if !migration_events.is_empty() {
-            let events_vec: Vec<ExecutionEvent> = migration_events
-                .into_iter()
-                .map(|e| ExecutionEvent {
-                    kind: e.kind,
-                    data: e.data,
-                    handler: e.handler,
-                })
-                .collect();
-            let _ = node_client.send_event(NodeEvent::Context(ContextEvent {
-                context_id,
-                payload: ContextEventPayload::StateMutation(
-                    StateMutationPayload::with_root_and_events(new_root_hash, events_vec),
-                ),
-            }));
+            // The v2 state is committed; schedule the post-finalize authored_remaining
+            // recompute (6f.8). Reaching here means the check passed and committed —
+            // a failed check returns Err above and never gets here.
+            pending_count_module = Some(count_module);
         }
-
-        info!(
-            %context_id,
-            new_root_hash = %new_root_hash,
-            state_size = new_state_bytes.len(),
-            "Migration completed successfully"
-        );
-
-        // The v2 state is committed; schedule the post-finalize authored_remaining
-        // recompute (6f.8). Reaching here means the check passed and committed —
-        // a failed check returns Err above and never gets here.
-        pending_count_module = Some(count_module);
     }
 
     finalize_application_update(
@@ -845,9 +861,22 @@ async fn execute_migration(
     // Ok/Err discrimination is already handled by the `value_return` host function.
     // The inner `Vec<u8>` is the raw borsh-serialized new state bytes — NOT a
     // borsh-serialized `Result<Vec<u8>, Vec<u8>>`.
-    let returns = outcome
-        .returns
-        .map_err(|e| eyre::eyre!("Migration execution failed: {:?}", e))?;
+    let returns = match outcome.returns {
+        // The service module has no such export. Multi-service bundles record
+        // ONE migrate method group-wide, but only the schema-changing service
+        // defines it — surface a typed error so the caller can treat the
+        // migration as vacuous for this context instead of failing it.
+        Err(calimero_runtime::errors::FunctionCallError::MethodResolutionError(
+            calimero_runtime::errors::MethodResolutionError::MethodNotFound { .. },
+        )) => {
+            return Err(MigrateExportMissing {
+                context_id,
+                method: migration_params.method.clone(),
+            }
+            .into());
+        }
+        r => r.map_err(|e| eyre::eyre!("Migration execution failed: {:?}", e))?,
+    };
 
     let Some(new_state_bytes) = returns else {
         bail!("Migration function did not return any data. Ensure the migration function returns the new state.");
@@ -887,6 +916,17 @@ async fn execute_migration(
 )]
 pub(crate) struct MigrationCheckFailed {
     pub(crate) context_id: ContextId,
+}
+
+/// The context's service module does not export the requested migrate method.
+/// Multi-service bundles record ONE migrate method group-wide, but only the
+/// schema-changing service defines it — for every other service the migration
+/// is vacuous and the upgrade proceeds as a code-only bytecode swap.
+#[derive(Debug, thiserror::Error)]
+#[error("service module does not export migrate method '{method}' for context '{context_id}'")]
+pub(crate) struct MigrateExportMissing {
+    pub(crate) context_id: ContextId,
+    pub(crate) method: String,
 }
 
 /// Decode the verdict of a `__calimero_migration_check` invocation from its
