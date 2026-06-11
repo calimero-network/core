@@ -323,3 +323,23 @@ impl PredefinedEntry for key::ContextExecutingBlob {
     type Codec = Borsh;
     type DataType<'a> = ContextExecutingBlob;
 }
+
+/// Value for [`key::ContextActivatedBlob`]: the bytecode blob this context
+/// last ACTIVATED — set when a migration commits or a code-only swap is
+/// applied, moved forward only. The single up-to-date check everywhere is
+/// `marker == group.app_key`; it replaces the legacy method-name and
+/// `blob:`-string markers (which are folded forward on first read).
+/// Node-local; a missing row means "never activated by v2 machinery".
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "single marker value; additions would need a migration"
+)]
+pub struct ContextActivatedBlob {
+    pub blob: [u8; 32],
+}
+
+impl PredefinedEntry for key::ContextActivatedBlob {
+    type Codec = Borsh;
+    type DataType<'a> = ContextActivatedBlob;
+}

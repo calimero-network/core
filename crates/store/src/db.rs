@@ -60,6 +60,7 @@ pub enum Column {
     /// migrate succeeds. Own column for the same collision reason as above.
     /// NOT synchronized; auto-created from `Column::iter()` (no DB migration).
     ContextExecutingBlob,
+    ContextActivatedBlob,
     /// Node-local per-application breadcrumb of the bytecode blob an in-place
     /// (same-id) bundle install overwrote — the source for the executing-blob
     /// pin above and the L1 downgrade gate's pre-install ABI. Own column: the
