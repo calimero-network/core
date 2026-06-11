@@ -660,6 +660,15 @@ pub(crate) async fn update_application_with_migration(
         let _ = node_client.send_event(event);
     }
 
+    // Unified activation marker: this context now executes the new app's
+    // bytecode (whether a migration committed above or this was a code-only
+    // update). The single up-to-date signal for the gate/trigger/rollup.
+    crate::activation::record_activation(
+        &datastore,
+        &context_id,
+        *application.blob.bytecode.as_ref(),
+    );
+
     // Post-commit: recompute this node's owner's pending-authored count over the
     // committed v2 state and persist it for the heartbeat self-report (6f.8).
     // Best-effort — a missing export / failure leaves the prior value untouched.

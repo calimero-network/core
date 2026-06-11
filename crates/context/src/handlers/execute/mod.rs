@@ -559,8 +559,16 @@ impl Handler<ExecuteRequest> for ContextManager {
                                             .await
                                             {
                                                 Ok(_) => {
-                                                    // Record that this migration was applied so
-                                                    // maybe_lazy_upgrade skips it on future accesses.
+                                                    // Unified activation marker: the single
+                                                    // up-to-date signal for the gate, the lazy
+                                                    // trigger, and the rollup. The legacy
+                                                    // method-name marker is still written for one
+                                                    // release so pre-v2 peers' gates converge.
+                                                    crate::activation::record_activation(
+                                                        &datastore,
+                                                        &cid,
+                                                        target_app_key,
+                                                    );
                                                     if let Err(err) =
                                                         MigrationsRepository::new(&datastore).set_last_migration(&group_id, &cid, &method, )
                                                     {
@@ -630,6 +638,13 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 // nothing — caches stay warm.
                                 act.evict_application_caches(target_app);
                                 clear_executing_blob_pin(&act.datastore, cid);
+                                crate::activation::record_activation(
+                                    &act.datastore,
+                                    &cid,
+                                    target_app_key,
+                                );
+                                // Legacy blob: marker still written for one release so
+                                // pre-v2 peers' gates converge.
                                 if let Err(err) = MigrationsRepository::new(&act.datastore)
                                     .set_last_migration(
                                         &group_id,

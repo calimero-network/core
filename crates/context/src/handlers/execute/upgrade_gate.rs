@@ -3,7 +3,7 @@
 //! rejected mid-upgrade, the lazy-on-access migration trigger, and the
 //! producing-app-key resolver. Extracted from the execute handler.
 
-use calimero_governance_store::{MetaRepository, MigrationsRepository};
+use calimero_governance_store::MetaRepository;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_store::Store;
@@ -110,48 +110,23 @@ pub(super) fn maybe_lazy_upgrade(
     // 5. Compare current vs target application
     if *current_application_id == meta.target_application_id {
         // IDs match — bundle ids are version-stable, so this is either a
-        // pending migration or a pending code-only bytecode bump.
-        match migrate_method {
-            Some(ref method) => {
-                // Check per-context marker set after a successful migration run.
-                let already_applied = MigrationsRepository::new(datastore)
-                    .last_migration(&group_id, context_id)
-                    .ok()
-                    .flatten()
-                    .map(|last| last == *method)
-                    .unwrap_or(false);
-
-                if already_applied {
-                    return None; // migration was already applied to this context
-                }
-                // Fall through: migration is pending.
-            }
-            None => {
-                // Code-only: pending until this context has ACTIVATED the
-                // group's recorded target blob (app_key). The row alone can't
-                // signal this — an in-place install flips the row before the
-                // upgrade, leaving the actor's module cache on the old build —
-                // so activation is tracked per context, as a synthetic marker
-                // in the migration-marker store (real migrate methods never
-                // collide with the "blob:" prefix). Legacy groups whose
-                // app_key was randomly seeded converge after one activation
-                // pass (the marker then matches and this stops firing).
-                if meta.app_key == [0u8; 32] {
-                    return None;
-                }
-                let marker = activation_marker(&meta.app_key);
-                let activated = MigrationsRepository::new(datastore)
-                    .last_migration(&group_id, context_id)
-                    .ok()
-                    .flatten()
-                    .map(|last| last == marker)
-                    .unwrap_or(false);
-                if activated {
-                    return None; // bytecode current — context is up to date
-                }
-                // Fall through: code-only bytecode activation is pending.
-            }
+        // pending migration or a pending code-only bytecode bump. One rule
+        // covers both: the context is up to date iff its activation marker
+        // (legacy markers folded forward) equals the group's recorded target
+        // blob. Legacy groups whose app_key was randomly seeded read as
+        // permanently divergent, so they are exempted up front (their
+        // contexts converge through the distinct-id path or not at all —
+        // exactly the pre-v2 behavior).
+        if meta.app_key == [0u8; 32] {
+            return None;
         }
+        let activated = crate::activation::activated_blob_folding_legacy(
+            datastore, &group_id, context_id, &meta,
+        );
+        if activated == Some(meta.app_key) {
+            return None; // bytecode + migration current — context is up to date
+        }
+        // Fall through: activation (migration and/or bytecode swap) pending.
     }
 
     info!(
