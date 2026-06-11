@@ -326,7 +326,10 @@ fn app_state_version(attrs: &[syn::Attribute]) -> Option<u32> {
 /// attribute IS the migration declaration; `method` is optional and **defaults
 /// to `migrate`** (matching the derive macro), so a `#[migrate(from = ...)]`
 /// without an explicit method still yields the entrypoint name.
-fn migrate_method_from_attrs(attrs: &[syn::Attribute]) -> Option<String> {
+fn migrate_method_from_attrs(
+    attrs: &[syn::Attribute],
+    state_version: Option<u32>,
+) -> Option<String> {
     for attr in attrs {
         if attr.path().is_ident("migrate") {
             let mut method = None;
@@ -341,9 +344,15 @@ fn migrate_method_from_attrs(attrs: &[syn::Attribute]) -> Option<String> {
                 }
                 Ok(())
             });
-            // A `#[migrate(...)]` attr present ⇒ this is a migration; default the
-            // method name to `migrate` when not given explicitly.
-            return Some(method.unwrap_or_else(|| "migrate".to_owned()));
+            // A `#[migrate(...)]` attr present ⇒ this is a migration. The
+            // default name mirrors the derive macro: versioned
+            // (`migrate_v{N-1}_to_v{N}`) when the state declares a version
+            // past 1 — a bare `migrate` collides across releases — else
+            // `migrate`.
+            return Some(method.unwrap_or_else(|| match state_version {
+                Some(to) if to > 1 => format!("migrate_v{}_to_v{}", to - 1, to),
+                _ => "migrate".to_owned(),
+            }));
         }
     }
     None
@@ -778,7 +787,7 @@ pub fn emit_manifest_from_crate(
                 if has_app_state_attribute(&s.attrs) {
                     let to = app_state_version(&s.attrs).unwrap_or(1);
                     state_version = Some(to);
-                    let method = migrate_method_from_attrs(&s.attrs)
+                    let method = migrate_method_from_attrs(&s.attrs, Some(to))
                         .or_else(|| free_migrate_fn_name(&file.items));
                     if let Some(method) = method {
                         if to > 1 {
@@ -856,8 +865,12 @@ mod migration_tests {
         assert_eq!(mig.to_schema_version, 3);
     }
 
+    // Omitted `method = …` defaults to the VERSIONED name when the state
+    // declares a version (mirrors the derive macro): a bare `migrate` would
+    // collide across releases at the applied-marker layer. Unversioned
+    // states keep the legacy `migrate` default.
     #[test]
-    fn derive_without_explicit_method_defaults_to_migrate() {
+    fn derive_without_explicit_method_defaults_to_versioned_name() {
         let lib = r#"
             #[app::state(version = 2)]
             #[derive(app::Migrate)]
@@ -868,8 +881,19 @@ mod migration_tests {
         "#;
         let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
         let mig = m.migration.expect("migration emitted");
-        assert_eq!(mig.method, "migrate");
+        assert_eq!(mig.method, "migrate_v1_to_v2");
         assert_eq!(mig.to_schema_version, 2);
+
+        let lib = r#"
+            #[app::state]
+            #[derive(app::Migrate)]
+            #[migrate(from = OldState)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        assert_eq!(m.migration.expect("migration emitted").method, "migrate");
     }
 
     #[test]

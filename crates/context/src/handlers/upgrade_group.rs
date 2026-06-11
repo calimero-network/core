@@ -731,8 +731,22 @@ async fn resolve_upgrade_from_abis(
                     %method, from, to,
                     "upgrade resolves a declared migration edge from the app ABI"
                 );
-                if resolved_method.is_none() {
-                    resolved_method = Some(method);
+                match &resolved_method {
+                    None => resolved_method = Some(method),
+                    Some(existing) if *existing == method => {}
+                    Some(existing) => {
+                        // The wire carries ONE method; running it on every
+                        // context (with missing-export = vacuous) is only
+                        // sound when all migrating services agree on the
+                        // name. Distinct names need per-service actuation —
+                        // reject rather than silently dropping one.
+                        eyre::bail!(
+                            "services declare DIFFERENT migration methods for this release \
+                             ('{existing}' vs '{method}'); migrating multiple services with \
+                             distinct methods in one release is not supported yet — use the \
+                             same method name in each service, or split the release",
+                        );
+                    }
                 }
             }
             Ok(UpgradeAction::MissingEdge { from, to }) => {
@@ -750,14 +764,18 @@ async fn resolve_upgrade_from_abis(
                     to - from,
                 );
             }
-            // Pre-ABI builds: no version signal at all. Treat the upgrade as
-            // code-only (the legacy explicit-method path remains available
-            // for apps that migrate but predate embedded ABIs).
+            // Only reachable when the TARGET build has no embedded ABI (the
+            // current-side unknowns all reject above when the target declares
+            // a migration). A pre-ABI target declares nothing — code-only
+            // here preserves the exact pre-v2 no-method semantics for legacy
+            // apps; a legacy app that migrates must pass migrateMethod
+            // explicitly, as it always had to.
             Err(err) => {
-                debug!(
+                warn!(
                     service = service.as_deref().unwrap_or("<single>"),
                     %err,
-                    "no embedded ABI for service; treating as code-only"
+                    "target build has no embedded ABI; proceeding code-only (legacy \
+                     semantics — pass migrateMethod explicitly if this release migrates)"
                 );
             }
         }

@@ -67,7 +67,12 @@ pub fn activated_blob_folding_legacy(
         .is_some_and(|method| legacy == method);
     let matches_blob = legacy == legacy_blob_marker(&meta.app_key);
     if matches_method || matches_blob {
-        record_activation(store, context_id, meta.app_key);
+        // Return the equality answer either way, but never PERSIST a zero
+        // marker: a legacy randomly-seeded/zero app_key carries no real blob
+        // identity, and a stored zero would later read as "executes blob 0".
+        if meta.app_key != [0u8; 32] {
+            record_activation(store, context_id, meta.app_key);
+        }
         return Some(meta.app_key);
     }
     // A stale legacy marker (older method / older blob) carries no usable

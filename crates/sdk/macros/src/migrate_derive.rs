@@ -184,13 +184,48 @@ fn parse_struct_args(input: &DeriveInput) -> syn::Result<StructArgs> {
              borsh layout of the previous version",
         )
     })?;
-    let method = method.unwrap_or_else(|| Ident::new("migrate", input.ident.span()));
+    // Default the export name to a VERSIONED form when `#[app::state(version =
+    // N)]` is declared: `migrate_v{N-1}_to_v{N}`. A bare `migrate` default
+    // collides across releases — a context's old applied-marker for release
+    // K's `migrate` would read as applied for release K+1's `migrate`, and two
+    // derives in one module collide at compile time. Falls back to `migrate`
+    // only for unversioned states (single-edge world, nothing to confuse).
+    let method = method.unwrap_or_else(|| match app_state_version(&input.attrs) {
+        Some(to) if to > 1 => Ident::new(
+            &format!("migrate_v{}_to_v{}", to - 1, to),
+            input.ident.span(),
+        ),
+        _ => Ident::new("migrate", input.ident.span()),
+    });
 
     Ok(StructArgs {
         from_type,
         method,
         emit,
     })
+}
+
+/// `version = N` from `#[app::state(version = N, ...)]` on the same struct,
+/// if present. Mirrors the wasm-abi emitter's parsing so the generated
+/// export name and the declared ABI edge always agree.
+fn app_state_version(attrs: &[syn::Attribute]) -> Option<u32> {
+    for attr in attrs {
+        let segs: Vec<_> = attr.path().segments.iter().collect();
+        if segs.len() == 2 && segs[0].ident == "app" && segs[1].ident == "state" {
+            let mut found = None;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("version") {
+                    let lit: syn::LitInt = meta.value()?.parse()?;
+                    found = lit.base10_parse::<u32>().ok();
+                } else if meta.input.peek(syn::Token![=]) {
+                    let _: Expr = meta.value()?.parse()?;
+                }
+                Ok(())
+            });
+            return found;
+        }
+    }
+    None
 }
 
 /// Parses a field's `#[migrate(...)]` (if any) into a [`FieldStrategy`].
