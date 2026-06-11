@@ -113,11 +113,12 @@ pub(super) fn maybe_lazy_upgrade(
         // pending migration or a pending code-only bytecode bump. One rule
         // covers both: the context is up to date iff its activation marker
         // (legacy markers folded forward) equals the group's recorded target
-        // blob. Legacy groups whose app_key was randomly seeded read as
-        // permanently divergent, so they are exempted up front (their
-        // contexts converge through the distinct-id path or not at all —
-        // exactly the pre-v2 behavior).
-        if meta.app_key == [0u8; 32] {
+        // blob. A zero app_key (legacy randomly-seeded groups) carries no
+        // bytecode signal, so a code-only bump can never be detected there —
+        // but a recorded MIGRATION still must fire (the fold reproduces the
+        // legacy marker-matches-method rule for the zero case), so only the
+        // no-migration shape is exempted.
+        if meta.app_key == [0u8; 32] && meta.migration.is_none() {
             return None;
         }
         let activated = crate::activation::activated_blob_folding_legacy(

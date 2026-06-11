@@ -361,10 +361,24 @@ pub async fn update_application_id(
     crate::activation::record_activation(
         &datastore,
         &context_id,
-        *application.blob.bytecode.as_ref(),
+        activated_row_blob(&node_client, &application),
     );
 
     Ok(application)
+}
+
+/// The bytecode blob this update activated, read FRESH from the application
+/// row. The `Application` passed through these handlers can be a cache
+/// snapshot taken before a same-id in-place install moved the row — recording
+/// its blob would mark the context as having activated the OLD bytecode.
+fn activated_row_blob(node_client: &NodeClient, application: &Application) -> [u8; 32] {
+    node_client
+        .get_application(&application.id)
+        .ok()
+        .flatten()
+        .map_or(*application.blob.bytecode.as_ref(), |fresh| {
+            *fresh.blob.bytecode.as_ref()
+        })
 }
 
 /// Verifies AppKey continuity by checking that the signerId matches between
@@ -676,7 +690,7 @@ pub(crate) async fn update_application_with_migration(
     crate::activation::record_activation(
         &datastore,
         &context_id,
-        *application.blob.bytecode.as_ref(),
+        activated_row_blob(&node_client, &application),
     );
 
     // Post-commit: recompute this node's owner's pending-authored count over the
