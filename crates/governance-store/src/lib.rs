@@ -89,7 +89,7 @@ pub use self::local_state::{
 };
 pub use self::membership::MembershipRepository;
 pub use self::membership::{
-    membership_status_at, GroupMembershipView, MembershipPath, MembershipPolicy, MembershipStatus,
+    acl_view_at, GroupMembershipView, MembershipPath, MembershipPolicy, MembershipStatus,
 };
 pub use self::meta::MetaRepository;
 

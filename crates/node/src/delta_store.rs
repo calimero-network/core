@@ -26,7 +26,7 @@ use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::delta::StorageDelta;
 use calimero_storage::entities::{OpMask, StorageType};
-use calimero_storage::rotation_log::{RotationLog, RotationLogEntry, RotationSnapshot};
+use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 use calimero_storage::store::Key as StorageKey;
 use eyre::Result;
 use indexmap::IndexMap;
@@ -874,9 +874,12 @@ impl ContextStorageApplier {
                     }
                 };
 
-            let resolved = rotation_log_reader::writers_at(&log, &delta.parents, |a, b| {
-                happens_before_in_topology(&topology_snapshot, a, b)
-            });
+            let resolved = rotation_log_reader::writers_at_authenticated(
+                &log,
+                &delta.parents,
+                |a, b| happens_before_in_topology(&topology_snapshot, a, b),
+                verify_rotation_entry,
+            );
 
             if let Some(set) = resolved {
                 let _replaced = out.insert(entity_id, set);
@@ -901,11 +904,12 @@ impl ContextStorageApplier {
                         self.context_id,
                         anchor,
                     ) {
-                        Ok(Some(log)) => {
-                            rotation_log_reader::writers_at(&log, &delta.parents, |a, b| {
-                                happens_before_in_topology(&topology_snapshot, a, b)
-                            })
-                        }
+                        Ok(Some(log)) => rotation_log_reader::writers_at_authenticated(
+                            &log,
+                            &delta.parents,
+                            |a, b| happens_before_in_topology(&topology_snapshot, a, b),
+                            verify_rotation_entry,
+                        ),
                         Ok(None) => None,
                         Err(e) => {
                             return Err(eyre::eyre!(
@@ -987,6 +991,35 @@ fn cap_topology(topology: &mut IndexMap<[u8; 32], Vec<[u8; 32]>>) {
 /// `calimero_node_primitives::sync::storage_bridge::create_runtime_env`
 /// writes inside the WASM execute scope: `Key::RotationLog(entity_id)`
 /// is hashed to a 32-byte state key, and the value lives under
+/// Verify a rotation-log entry's envelope signature at **resolve time** — the
+/// `verify` closure for [`rotation_log_reader::writers_at_authenticated`].
+///
+/// The rotation log rides ordinary sync as a hashed collection child, so its
+/// entries are untrusted in transit (any peer can ship bytes). An entry earns
+/// its place in the writer-set fold only if its `signer` actually signed its
+/// stored `signed_payload` (which commits to `new_writers`/nonce/signer-hint).
+/// A forged or signature-less entry returns `false` and is skipped by the
+/// fold, so a fabricated rotation child cannot shift the resolved writers.
+///
+/// Residual (closed by the P5 `SetWriters` chain): the genesis-of-log entry —
+/// the one with no reachable causal ancestor — is self-authorizing on a valid
+/// signature alone, because the pre-genesis writer set isn't anchored in the
+/// log itself. Every *subsequent* rotation is gated on the prior set's ADMIN
+/// holder inside `writers_at_authenticated`.
+fn verify_rotation_entry(entry: &RotationLogEntry) -> bool {
+    match (
+        entry.signer.as_ref(),
+        entry.signature.as_ref(),
+        entry.signed_payload.as_ref(),
+    ) {
+        (Some(signer), Some(signature), Some(payload)) => {
+            signer.verify_raw_signature(payload, signature).is_ok()
+        }
+        // Unsigned / legacy-bootstrap entries are not authenticated — skipped.
+        _ => false,
+    }
+}
+
 /// `ContextState::new(context_id, state_key)`. Decoded via Borsh.
 ///
 /// Returns `Ok(None)` for entities with no rotation log yet (every
@@ -997,177 +1030,122 @@ pub(crate) fn load_rotation_log_direct(
     context_id: ContextId,
     entity_id: Id,
 ) -> Result<Option<RotationLog>> {
-    let storage_key = StorageKey::RotationLog(entity_id).to_bytes();
-    let state_key = calimero_store::key::ContextState::new(context_id, storage_key);
+    // The rotation log's synced source of truth is the hashed collection
+    // child — a parent entity with one child PER delta_id. Walk it directly:
+    // read the parent's Index for the child list, then union each per-delta
+    // child (a single-entry RotationLog). Returns `None` when no collection
+    // has materialised for this anchor yet (cold node / not a Shared anchor).
+    let map_id = calimero_storage::interface::Interface::<
+        calimero_storage::store::MainStorage,
+    >::rotation_log_child_id(entity_id);
+    if let Some(index) = read_entity_index_direct(context_client, context_id, map_id)? {
+        let mut entries = Vec::new();
+        if let Some(children) = index.children() {
+            for child in children {
+                // P3: each child is an `UnorderedMap` entry, so its stored value
+                // is `borsh(Entry<([u8;32], RotationLogEntry)>)` — decode the
+                // single entry it holds (NOT a bare `RotationLog` blob).
+                if let Some(bytes) = read_entity_value_direct(
+                    context_client,
+                    context_id,
+                    StorageKey::Entry(child.id()),
+                )? {
+                    if let Some(entry) =
+                        calimero_storage::collections::decode_rotation_log_entry_child(&bytes)
+                    {
+                        entries.push(entry);
+                    } else {
+                        // A child whose bytes don't decode as a rotation-log
+                        // entry yields a *partial* log — which could silently
+                        // drop a rotation and mis-resolve the writer set. Surface
+                        // it loudly rather than skipping in silence.
+                        tracing::warn!(
+                            %context_id,
+                            anchor = ?entity_id,
+                            child = ?child.id(),
+                            "load_rotation_log_direct: rotation-log child failed to decode; \
+                             skipping (writer resolution may be incomplete for this anchor)"
+                        );
+                    }
+                }
+            }
+        }
+        // Canonical order so resolution is insertion-order invariant.
+        entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
+        return Ok(Some(RotationLog {
+            snapshot: None,
+            entries,
+        }));
+    }
+    // No collection materialised for this anchor (cold node / not a Shared
+    // anchor). The collection is the single source, so there's nothing else
+    // to read.
+    Ok(None)
+}
+
+/// Read + Borsh-decode an entity's `EntityIndex` (the child list etc.) via a
+/// direct datastore lookup (no `RUNTIME_ENV`). Used by
+/// [`load_rotation_log_direct`] to walk the rotation-log collection's children.
+fn read_entity_index_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    id: Id,
+) -> Result<Option<calimero_storage::index::EntityIndex>> {
+    let state_key =
+        calimero_store::key::ContextState::new(context_id, StorageKey::Index(id).to_bytes());
     let handle = context_client.datastore_handle();
-    // Copy the bytes out before `handle` is dropped — `state.value` is a
-    // `Slice<'_>` borrowed from the handle's read snapshot.
     let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
         Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
         Ok(None) => None,
-        Err(e) => return Err(eyre::eyre!("rotation_log datastore read failed: {e:?}")),
+        Err(e) => return Err(eyre::eyre!("rotation_log index read failed: {e:?}")),
     };
     drop(handle);
     let Some(bytes) = bytes else {
         return Ok(None);
     };
-    let log = borsh::from_slice::<RotationLog>(&bytes)
-        .map_err(|e| eyre::eyre!("rotation_log decode failed: {e}"))?;
-    Ok(Some(log))
+    let index = borsh::from_slice::<calimero_storage::index::EntityIndex>(&bytes)
+        .map_err(|e| eyre::eyre!("rotation_log index decode failed: {e}"))?;
+    Ok(Some(index))
 }
 
-/// Write `log` for `entity_id` via a DIRECT datastore write (no WASM
-/// `RUNTIME_ENV`). The byte format is identical to
-/// [`rotation_log::save`](calimero_storage::rotation_log) (borsh `RotationLog`
-/// under `StorageKey::RotationLog`), so a log written here and one written by
-/// the receive-path `MainStorage` hook are interchangeable. Used to self-log a
-/// locally-created delta's own rotations, which happens after execute returns —
-/// outside the env where `MainStorage` is valid.
-fn save_rotation_log_direct(
+/// Read an entity's raw stored VALUE bytes via a direct datastore lookup (no
+/// `RUNTIME_ENV`). Used by [`load_rotation_log_direct`] to read each rotation-log
+/// map child, whose value is decoded by
+/// [`calimero_storage::collections::decode_rotation_log_entry_child`].
+fn read_entity_value_direct(
     context_client: &ContextClient,
     context_id: ContextId,
-    entity_id: Id,
-    log: &RotationLog,
-) -> Result<()> {
-    let bytes = borsh::to_vec(log).map_err(|e| eyre::eyre!("rotation_log encode failed: {e}"))?;
-    let storage_key = StorageKey::RotationLog(entity_id).to_bytes();
-    let state_key = calimero_store::key::ContextState::new(context_id, storage_key);
-    let mut handle = context_client.datastore_handle();
-    handle
-        .put(
-            &state_key,
-            &calimero_store::types::ContextState::from(calimero_store::slice::Slice::from(bytes)),
-        )
-        .map_err(|e| eyre::eyre!("rotation_log datastore write failed: {e:?}"))?;
-    Ok(())
-}
-
-/// Seed `entity_id`'s rotation log with `writers` as its genesis/floor snapshot
-/// via a direct datastore write, **if no log exists yet** (idempotent — never
-/// clobbers real history). Datastore-direct counterpart of
-/// [`rotation_log::seed_genesis`](calimero_storage::rotation_log::seed_genesis)
-/// for the cold-join snapshot path (no `RUNTIME_ENV`): a joiner that receives
-/// settled state needs the boundary writer set as its causal floor, so
-/// `writers_at` is total for any post-join cut (it never applies deltas
-/// predating its snapshot boundary).
-pub(crate) fn seed_rotation_log_genesis_direct(
-    context_client: &ContextClient,
-    context_id: ContextId,
-    entity_id: Id,
-    writers: BTreeMap<PublicKey, OpMask>,
-) -> Result<()> {
-    if load_rotation_log_direct(context_client, context_id, entity_id)?.is_some() {
-        return Ok(());
-    }
-    let log = RotationLog {
-        snapshot: Some(RotationSnapshot {
-            writers,
-            cutoff_index: 0,
-        }),
-        entries: Vec::new(),
+    key: StorageKey,
+) -> Result<Option<Vec<u8>>> {
+    let state_key = calimero_store::key::ContextState::new(context_id, key.to_bytes());
+    let handle = context_client.datastore_handle();
+    let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
+        Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
+        Ok(None) => None,
+        Err(e) => return Err(eyre::eyre!("rotation_log value read failed: {e:?}")),
     };
-    save_rotation_log_direct(context_client, context_id, entity_id, &log)
-}
-
-/// Self-log the `Shared` rotations carried by a locally-originated delta's
-/// `actions` into their entities' rotation logs, via direct datastore writes.
-///
-/// The receive path records rotations in `Interface::maybe_append_rotation_log`
-/// (inside the WASM sync-apply); a locally-created delta never goes through that
-/// path, so without this a node is missing its OWN rotations and `writers_at`
-/// stays asymmetric across nodes under concurrent rotation. Mirrors the
-/// receive-path logic: append only on a real rotation — bootstrap (no prior
-/// writers) or a changed writer set — never on a plain value-write. Idempotent
-/// (dedup on `delta_id`), so it is safe to run on both the live notify
-/// (`add_local_applied_delta`) and crash/restart recovery
-/// (`load_persisted_deltas`); the latter backstops the case where the live
-/// notify was skipped (DeltaStore not yet up) and the delta is later restored
-/// as already-applied.
-///
-/// Best-effort: a per-entity read/write failure is logged and skipped, leaving
-/// that entry for the next restart's restore to re-attempt — it never aborts
-/// the (already-committed) delta.
-fn self_log_rotations_direct(
-    context_client: &ContextClient,
-    context_id: ContextId,
-    delta_id: [u8; 32],
-    delta_hlc: calimero_storage::logical_clock::HybridTimestamp,
-    actions: &[Action],
-) {
-    for action in actions {
-        let (entity_id, metadata) = match action {
-            Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
-                (*id, metadata)
-            }
-            Action::DeleteRef { .. } | Action::Compare { .. } => continue,
-        };
-        // Only `Shared` anchors own a rotation log; members/others don't.
-        let StorageType::Shared {
-            writers,
-            signature_data,
-        } = &metadata.storage_type
-        else {
-            continue;
-        };
-        let mut log = match load_rotation_log_direct(context_client, context_id, entity_id) {
-            Ok(existing) => existing.unwrap_or_else(RotationLog::empty),
-            Err(e) => {
-                warn!(?e, %context_id, %entity_id,
-                    "self-log: failed to read rotation log — skipping (restore will retry)");
-                continue;
-            }
-        };
-        // Append only on an actual rotation — bootstrap (no prior writers) OR
-        // the writer set changed. Mirrors `maybe_append_rotation_log`.
-        let prior = log
-            .entries
-            .last()
-            .map(|e| &e.new_writers)
-            .or_else(|| log.snapshot.as_ref().map(|s| &s.writers));
-        if !prior.map_or(true, |p| p != writers) {
-            continue;
-        }
-        // Idempotent on delta_id (one rotation per entity per delta).
-        if log.entries.iter().any(|e| e.delta_id == delta_id) {
-            continue;
-        }
-        log.entries.push(RotationLogEntry {
-            delta_id,
-            delta_hlc,
-            signer: signature_data.as_ref().and_then(|s| s.signer),
-            new_writers: writers.clone(),
-            writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
-        });
-        if let Err(e) = save_rotation_log_direct(context_client, context_id, entity_id, &log) {
-            warn!(?e, %context_id, %entity_id,
-                "self-log: failed to write rotation log — leaving for restore retry");
-        }
-    }
+    drop(handle);
+    Ok(bytes)
 }
 
 /// Whether the anchor entity `anchor` has synced to this node, by a direct
-/// datastore read (no WASM env). True if either its rotation log
-/// (`StorageKey::RotationLog`) or its index entry (`StorageKey::Index`, written
-/// the moment its `Shared` action applies) exists. Mirrors the two sources
-/// `Interface::resolve_anchor_writers` consults — so "present" here means the
-/// member's writers WILL resolve at apply time. A presence check only (no
-/// decode): we just need to know the anchor arrived.
+/// datastore read (no WASM env). True if its index entry
+/// (`StorageKey::Index`, written the moment its `Shared` action applies)
+/// exists — the source `Interface::resolve_anchor_writers` consults for the
+/// stored-writers fallback, and the parent under which the rotation-log
+/// collection children hang. So "present" here means the member's writers
+/// WILL resolve at apply time. A presence check only (no decode): we just
+/// need to know the anchor arrived.
 fn anchor_present_direct(
     context_client: &ContextClient,
     context_id: ContextId,
     anchor: Id,
 ) -> bool {
     let handle = context_client.datastore_handle();
-    for key_bytes in [
-        StorageKey::RotationLog(anchor).to_bytes(),
-        StorageKey::Index(anchor).to_bytes(),
-    ] {
-        let state_key = calimero_store::key::ContextState::new(context_id, key_bytes);
-        if matches!(handle.get(&state_key), Ok(Some(_))) {
-            return true;
-        }
-    }
-    false
+    let state_key =
+        calimero_store::key::ContextState::new(context_id, StorageKey::Index(anchor).to_bytes());
+    let lookup = handle.get(&state_key);
+    matches!(lookup, Ok(Some(_)))
 }
 
 /// Reverse-BFS reachability over a `delta_id → parents` mirror of the
@@ -1371,25 +1349,6 @@ impl DeltaStore {
                     continue;
                 }
             };
-
-            // P4 backstop: re-self-log this delta's `Shared` rotations on
-            // restore. If the live notify (`add_local_applied_delta`) was
-            // skipped — e.g. the DeltaStore wasn't up when the delta was created
-            // and persisted — the originator's own rotation would otherwise be
-            // missing from its log forever (this delta is restored as
-            // already-applied, so `add_local_applied_delta` won't re-run for
-            // it). Idempotent (dedup on delta_id): a no-op for deltas already
-            // logged at creation or by the receive path. Only applied deltas
-            // represent rotations that actually took effect.
-            if stored_delta.applied {
-                self_log_rotations_direct(
-                    &self.applier.context_client,
-                    self.applier.context_id,
-                    stored_delta.delta_id,
-                    stored_delta.hlc,
-                    &actions,
-                );
-            }
 
             // Reconstruct the delta
             // Infer checkpoint status: checkpoints have genesis as parent and empty payload
@@ -1914,19 +1873,10 @@ impl DeltaStore {
             }
         }
 
-        // P4: self-log this delta's own `Shared` rotations (the receive path
-        // logs received rotations; locally-created deltas need this so the node
-        // records its OWN, keeping `writers_at` symmetric across nodes). Runs
-        // after the `is_applied` dedup, so a live local delta is logged once;
-        // `load_persisted_deltas` re-runs the same idempotent helper on restore,
-        // backstopping the case where this live notify was skipped.
-        self_log_rotations_direct(
-            &self.applier.context_client,
-            self.applier.context_id,
-            delta_id,
-            delta.hlc,
-            &delta.payload,
-        );
+        // (The originator's own `Shared` rotations are logged into the hashed
+        // rotation-log collection by the storage-side
+        // `self_log_own_rotations` during execute; no side-store
+        // self-log is needed here — S2.3.)
 
         // Mirror the hash-tracking writes load_persisted_deltas does.
         {

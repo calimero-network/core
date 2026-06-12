@@ -19,7 +19,7 @@
 
 use std::collections::HashSet;
 
-use calimero_context_config::types::GovernancePosition;
+use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::Nonce;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
@@ -115,7 +115,7 @@ pub struct BufferedDelta {
     /// Dropping it here would silently bypass the membership check for
     /// every delta that happened to arrive during a sync. `None` for
     /// legacy non-group contexts that have no governance DAG.
-    pub governance_position: Option<GovernancePosition>,
+    pub governance_position: Option<GovernanceParentEdge>,
     /// Per-delta envelope signature carried alongside `author_id` /
     /// `governance_position`, used by the receiver to verify the
     /// envelope before applying. `None` for legacy deltas that

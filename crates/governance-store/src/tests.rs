@@ -3575,7 +3575,7 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
 /// Re-applying an already-applied `SignedNamespaceOp` is a no-op: the
 /// op-log already has it, so `apply_signed_op` short-circuits and doesn't
 /// re-run side effects or re-append `delta_id` to the namespace DAG head
-/// set. Regression for #2327 (duplicate heads → empty `GovernancePosition`
+/// set. Regression for #2327 (duplicate heads → empty `GovernanceParentEdge`
 /// → peers reject all of the node's deltas).
 // ---------------------------------------------------------------------------
 // Strict-tree refactor — orphan state is structurally impossible.
@@ -3975,7 +3975,7 @@ fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
 // Fast-path integration tests for `membership_status_at`
 //
 // These exercise Branch 1 of `membership_status_at` against a real
-// in-memory `Store`: a `GovernancePosition` whose heads equal the local
+// in-memory `Store`: a `GovernanceParentEdge` whose heads equal the local
 // DAG heads (both empty here), so the resolver short-circuits to a
 // materialized-set lookup and never invokes `prefix_walk_membership`.
 //

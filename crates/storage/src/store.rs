@@ -21,14 +21,6 @@ pub enum Key {
     /// Sync state key for tracking last sync time with a remote node.
     SyncState(Id),
 
-    /// Rotation log key for `SharedStorage<T>` writer-set history.
-    ///
-    /// Stores a [`RotationLog`](crate::rotation_log::RotationLog) per Shared
-    /// entity so the verifier (P3 of #2233) can resolve `writers_at(causal_point)`
-    /// for actions that pre-date the current writer set. Tag `3` to keep the
-    /// existing `Index`/`Entry`/`SyncState` byte layout stable.
-    RotationLog(Id),
-
     /// Validity marker for a `SortedMap`'s ordered secondary index (core#2559).
     ///
     /// Stores the collection's `full_hash` at the moment its `Column::SortedIndex`
@@ -56,10 +48,6 @@ impl Key {
             }
             Self::SyncState(id) => {
                 bytes[0] = 2;
-                bytes[1..33].copy_from_slice(id.as_bytes());
-            }
-            Self::RotationLog(id) => {
-                bytes[0] = 3;
                 bytes[1..33].copy_from_slice(id.as_bytes());
             }
             Self::SortedIndexMeta(id) => {
