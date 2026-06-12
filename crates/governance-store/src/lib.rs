@@ -60,6 +60,7 @@ mod pending_self_purge;
 mod permission_checker;
 mod signing_keys;
 mod tee;
+mod upgrade_ladder;
 mod upgrades;
 use self::local_state::{op_log_contains_content_hash, persist_group_governance_progress};
 
@@ -112,6 +113,7 @@ pub use self::signing_keys::SigningKeysRepository;
 pub use self::tee::{
     is_quote_hash_used, is_tee_admitted_identity, read_tee_admission_policy, TeeAdmissionPolicy,
 };
+pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;
 
 #[cfg(test)]
