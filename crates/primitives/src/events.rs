@@ -31,6 +31,11 @@ pub enum ContextEventPayload {
     /// applied). Lets a frontend react live to bundle skew (spec skew #2)
     /// instead of polling. `contextId` rides on the flattened [`ContextEvent`].
     AppVersionChanged(AppVersionChangedPayload),
+    /// Emitted once per cross-context call dispatched from a source execution —
+    /// on success, denial (an L1/L3 gate), or target execution error. Gives the
+    /// fire-and-forget xcall path an out-of-band feedback channel (#2137).
+    /// `contextId` on the wrapper is the *source* context.
+    XCall(XCallPayload),
 }
 
 /// Payload of a [`ContextEventPayload::AppVersionChanged`] event. Versions are
@@ -83,12 +88,28 @@ pub struct ExecutionEvent {
     pub handler: Option<String>,
 }
 
+/// Payload of a [`ContextEventPayload::XCall`] event. `contextId` on the
+/// flattened [`ContextEvent`] is the *source* context; `targetContextId` is
+/// the callee. Emitted on success, denial, or target execution error.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExecutionXCall {
+pub struct XCallPayload {
     pub target_context_id: ContextId,
     pub function: String,
-    pub params: Vec<u8>,
+    pub outcome: XCallOutcome,
+}
+
+/// Result of an attempted cross-context call.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "status", content = "detail", rename_all = "snake_case")]
+pub enum XCallOutcome {
+    /// Dispatched and the target execution returned `Ok`.
+    Ok,
+    /// Refused before dispatch by a node-enforced gate (L1 namespace boundary,
+    /// L3 entry-point check, or no owned member of the target).
+    Denied { reason: String },
+    /// Dispatched but the target execution returned an error.
+    ExecError { message: String },
 }
 
 #[cfg(test)]
@@ -123,5 +144,45 @@ mod tests {
         let v = serde_json::to_value(&payload).expect("serialize");
         assert!(v["data"].get("fromVersion").is_none());
         assert_eq!(v["data"]["toVersion"], "2.0.0");
+    }
+
+    // XCall events carry the source on the wrapper (contextId), the callee +
+    // function in data, and a tagged outcome. Denied carries a reason.
+    #[test]
+    fn xcall_event_serializes_with_outcome() {
+        let event = ContextEvent {
+            context_id: ContextId::from([0x02; 32]),
+            payload: ContextEventPayload::XCall(XCallPayload {
+                target_context_id: ContextId::from([0x03; 32]),
+                function: "on_match_finished".to_owned(),
+                outcome: XCallOutcome::Denied {
+                    reason: "namespace boundary".to_owned(),
+                },
+            }),
+        };
+        let v = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(v["type"], "XCall");
+        assert_eq!(v["data"]["function"], "on_match_finished");
+        assert_eq!(v["data"]["outcome"]["status"], "denied");
+        assert_eq!(
+            v["data"]["outcome"]["detail"]["reason"],
+            "namespace boundary"
+        );
+        assert!(
+            v.get("contextId").is_some(),
+            "source contextId on the wrapper"
+        );
+
+        // round-trips
+        let json = serde_json::to_string(&event).expect("to_string");
+        let back: ContextEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.context_id, event.context_id);
+    }
+
+    // The Ok outcome is a bare tagged variant (no detail object).
+    #[test]
+    fn xcall_outcome_ok_shape() {
+        let v = serde_json::to_value(XCallOutcome::Ok).expect("serialize");
+        assert_eq!(v["status"], "ok");
     }
 }

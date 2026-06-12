@@ -21,6 +21,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
+    XCallOutcome, XCallPayload,
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -79,6 +80,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             payload,
             aliases,
             atomic,
+            xcall_origin,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -733,12 +735,39 @@ impl Handler<ExecuteRequest> for ContextManager {
             let node_client = act.node_client.clone();
             let context_client = act.context_client.clone();
 
+            // --- L3: xcall entry-point gate (decided here, while we hold `act`) ---
+            // When this run was dispatched via `xcall` (origin set), restrict the
+            // callable surface to methods the target app declared `#[app::xcall]`.
+            // The module load just above populated `xcall_methods` on the
+            // fresh-compile path, so a PRESENT set reliably means the app opted
+            // in — deny any method not in it. An ABSENT set means the app declared
+            // none, OR the set was not parsed for this load (the precompiled-
+            // artifact path and the executing-blob pin path don't re-read the wasm
+            // ABI section) or was evicted; L3 then cannot decide and falls through
+            // to the always-on L1 namespace boundary. L3 is opt-in defence-in-depth,
+            // not the primary trust boundary.
+            let xcall_denied = xcall_origin.is_some()
+                && !is_state_op
+                && act
+                    .xcall_methods
+                    .get(&(context.application_id, context.service_name.clone()))
+                    .is_some_and(|set| !set.contains(method.as_str()));
+
             // Cheap (Arc-backed) clone kept past internal_execute (which moves
             // `datastore`) so a post-call migrate_my_entries can refresh the
             // node-local authored_remaining count (6f.8 drop-after-convert).
             let count_datastore = datastore.clone();
 
             async move {
+                if xcall_denied {
+                    warn!(
+                        %context_id,
+                        function = %method,
+                        "xcall denied: not an #[app::xcall] entry point"
+                    );
+                    bail!(ExecuteError::XCallNotPermitted { context_id });
+                }
+
                 let old_root_hash = context.root_hash;
 
                 let start = Instant::now();
@@ -758,6 +787,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         is_read_only_call,
                         block_writes_for_group,
                         &private_key,
+                        xcall_origin,
                     )
                     .await?;
 
@@ -876,6 +906,8 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let node_client = act.node_client.clone();
                 let context_client = act.context_client.clone();
+                // Store snapshot for the xcall L1 namespace gate (read-only).
+                let xcall_datastore = act.datastore.clone();
                 // `datastore_for_broadcast` used to recompute the
                 // governance position at broadcast time — that recompute
                 // produced the persist-vs-broadcast signature mismatch
@@ -924,6 +956,44 @@ impl Handler<ExecuteRequest> for ContextManager {
                             "Processing cross-context call"
                         );
 
+                        // Best-effort observability event for this xcall (#2137).
+                        // Source rides on the wrapper `context_id`; emission
+                        // failure must never abort the loop or the source exec.
+                        let emit = |outcome: XCallOutcome| {
+                            let _ = node_client.send_event(NodeEvent::Context(ContextEvent {
+                                context_id,
+                                payload: ContextEventPayload::XCall(XCallPayload {
+                                    target_context_id,
+                                    function: xcall.function.clone(),
+                                    outcome,
+                                }),
+                            }));
+                        };
+
+                        // ── L1: namespace trust boundary (fail-closed) ──
+                        // A context may only xcall a target in its own namespace.
+                        // Any resolution error, or an unresolved namespace on
+                        // either side, denies the call.
+                        let same_namespace = (|| -> eyre::Result<bool> {
+                            let src = resolve_namespace_for_context(&xcall_datastore, &context_id)?;
+                            let tgt =
+                                resolve_namespace_for_context(&xcall_datastore, &target_context_id)?;
+                            Ok(matches!((src, tgt), (Some(a), Some(b)) if a == b))
+                        })();
+                        if !matches!(same_namespace, Ok(true)) {
+                            warn!(
+                                %context_id,
+                                target_context = ?target_context_id,
+                                function = %xcall.function,
+                                resolved = ?same_namespace,
+                                "xcall denied: namespace boundary"
+                            );
+                            emit(XCallOutcome::Denied {
+                                reason: "namespace boundary".to_owned(),
+                            });
+                            continue;
+                        }
+
                         // Find an owned member of the target context to execute as
                         // We need to use a member that has permissions on the target context
                         use futures_util::TryStreamExt;
@@ -934,12 +1004,15 @@ impl Handler<ExecuteRequest> for ContextManager {
                             .unwrap_or_default();
 
                         let Some((target_executor, _is_owned)) = members.first() else {
-                            error!(
+                            warn!(
                                 %context_id,
                                 target_context = ?target_context_id,
                                 function = %xcall.function,
-                                "No owned members found for target context"
+                                "xcall denied: no owned member of target context"
                             );
+                            emit(XCallOutcome::Denied {
+                                reason: "no owned member".to_owned(),
+                            });
                             continue;
                         };
 
@@ -952,15 +1025,21 @@ impl Handler<ExecuteRequest> for ContextManager {
                             "Found owned member for target context"
                         );
 
-                        // Execute the cross-context call with the target context's member
+                        // ── L3 gate (#[app::xcall] entry point) inserted HERE in Phase 2 (Task 9) ──
+
+                        // Execute the cross-context call as the target's member,
+                        // tagging it with the source context (L2a provenance) so
+                        // the target can read `env::xcall_origin()`. The origin is
+                        // set here by the node — never from guest memory.
                         let xcall_result = context_client
-                            .execute(
+                            .execute_with_origin(
                                 &target_context_id,
                                 &target_executor,
                                 xcall.function.clone(),
                                 xcall.params.clone(),
                                 vec![],
                                 None,
+                                Some(context_id),
                             )
                             .await;
 
@@ -972,6 +1051,21 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     function = %xcall.function,
                                     "Cross-context call executed successfully"
                                 );
+                                emit(XCallOutcome::Ok);
+                            }
+                            // An L3 denial surfaces as the typed
+                            // `XCallNotPermitted`; report it as a gate Denial,
+                            // not an execution error.
+                            Err(ExecuteError::XCallNotPermitted { .. }) => {
+                                warn!(
+                                    %context_id,
+                                    target_context = ?target_context_id,
+                                    function = %xcall.function,
+                                    "xcall denied: not an #[app::xcall] entry point"
+                                );
+                                emit(XCallOutcome::Denied {
+                                    reason: "not an xcall entry point".to_owned(),
+                                });
                             }
                             Err(err) => {
                                 error!(
@@ -981,6 +1075,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     ?err,
                                     "Cross-context call failed"
                                 );
+                                emit(XCallOutcome::ExecError {
+                                    message: err.to_string(),
+                                });
                             }
                         }
                     }
@@ -1218,8 +1315,11 @@ impl ContextManager {
                         Ok(module) => {
                             return Ok((
                                 module,
-                                Some((blob, service_name_for_bytes, original_blob_id, None)),
-                            ))
+                                // Precompiled path: raw bytecode isn't re-fetched,
+                                // so neither the read-only nor the xcall set is
+                                // parsed here (both `None` → cache stays absent).
+                                Some((blob, service_name_for_bytes, original_blob_id, None, None)),
+                            ));
                         }
                         Err(err) => {
                             debug!(
@@ -1247,11 +1347,13 @@ impl ContextManager {
                     bail!(ExecuteError::ApplicationNotInstalled { application_id });
                 };
 
-                // Extract the read-only method set from the embedded ABI manifest
-                // before moving `bytecode` into the blocking compile task.
-                // A missing/unparseable manifest is not an error — the execute
-                // path defaults to the write lock (fail-safe).
+                // Extract the read-only and xcall entry-point method sets from
+                // the embedded ABI manifest before moving `bytecode` into the
+                // blocking compile task. A missing/unparseable manifest is not
+                // an error — read-only defaults to the write lock (fail-safe);
+                // an absent xcall set means the L3 gate falls through to L1.
                 let read_only_set = extract_read_only_set(&bytecode);
+                let xcall_set = extract_xcall_set(&bytecode);
 
                 // Compile WASM in a blocking task to avoid blocking the async executor.
                 // Note: panics during compilation will surface as JoinError.
@@ -1282,6 +1384,7 @@ impl ContextManager {
                         service_name_for_bytes,
                         original_blob_id,
                         read_only_set,
+                        xcall_set,
                     )),
                 ))
             }
@@ -1290,7 +1393,8 @@ impl ContextManager {
 
         module_task
             .map_ok(move |(module, blob_info), act, _ctx| {
-                if let Some((blob, svc_name, original_blob_id, read_only_set)) = blob_info {
+                if let Some((blob, svc_name, original_blob_id, read_only_set, xcall_set)) = blob_info
+                {
                     // The `applications` map is the source of truth for
                     // whether this app is still live. Tie both the blob
                     // writeback and the module cache update to the same
@@ -1372,7 +1476,13 @@ impl ContextManager {
                             // correctly. An absent entry in `read_only_methods`
                             // falls back to the write lock (fail-safe).
                             if let Some(set) = read_only_set {
-                                let _ = act.read_only_methods.insert(cache_key, set);
+                                let _ = act.read_only_methods.insert(cache_key.clone(), set);
+                            }
+                            // Same lifecycle for the xcall entry-point set: only
+                            // populated on the fresh-compile path. Absent ⇒ the
+                            // L3 gate falls through to L1 for this module.
+                            if let Some(set) = xcall_set {
+                                let _ = act.xcall_methods.insert(cache_key, set);
                             }
                         } else {
                             debug!(
@@ -1579,6 +1689,10 @@ async fn internal_execute(
     // post-exec gate then serves reads but refuses writes (see `handle()`).
     block_writes_for_group: Option<ContextGroupId>,
     identity_private_key: &PrivateKey,
+    // Source context when this run was dispatched via `xcall`; threaded to the
+    // runtime so the guest can read `env::xcall_origin()`. `None` for direct
+    // calls.
+    xcall_origin: Option<ContextId>,
 ) -> eyre::Result<(
     Outcome,
     Option<CausalDelta>,
@@ -1640,6 +1754,7 @@ async fn internal_execute(
         private_storage,
         node_client.clone(),
         is_read_only_call,
+        xcall_origin,
     )
     .await?;
 
@@ -2116,6 +2231,7 @@ async fn internal_execute(
     ))
 }
 
+#[allow(clippy::too_many_arguments, reason = "execution context is wide")]
 pub async fn execute(
     context: &ContextGuard,
     module: calimero_runtime::Module,
@@ -2126,6 +2242,7 @@ pub async fn execute(
     mut private_storage: ContextPrivateStorage,
     node_client: NodeClient,
     is_read_only_call: bool,
+    xcall_origin: Option<ContextId>,
 ) -> eyre::Result<(Outcome, ContextStorage, ContextPrivateStorage)> {
     let context_id = **context;
 
@@ -2138,7 +2255,7 @@ pub async fn execute(
                 // catches any method that nonetheless produced a mutation.
                 let mut ro_storage = ReadOnlyContextStorage::new(&mut storage);
                 let mut ro_private = ReadOnlyContextStorage::new(&mut private_storage);
-                module.run(
+                module.run_with_origin(
                     context_id,
                     executor,
                     &method,
@@ -2146,9 +2263,10 @@ pub async fn execute(
                     &mut ro_storage,
                     Some(&mut ro_private),
                     Some(node_client),
+                    xcall_origin,
                 )?
             } else {
-                module.run(
+                module.run_with_origin(
                     context_id,
                     executor,
                     &method,
@@ -2156,6 +2274,7 @@ pub async fn execute(
                     &mut storage,
                     Some(&mut private_storage),
                     Some(node_client),
+                    xcall_origin,
                 )?
             };
             Ok((outcome, storage, private_storage))
@@ -2178,6 +2297,44 @@ fn extract_read_only_set(bytecode: &[u8]) -> Option<Arc<HashSet<String>>> {
         .map(|m| m.name)
         .collect();
     Some(Arc::new(set))
+}
+
+/// Extract the set of `#[app::xcall]` entry-point method names from a module's
+/// embedded ABI. Returns `None` when the manifest is absent/unparseable **or**
+/// declares zero xcall methods — in both cases the L3 gate no-ops and an xcall
+/// falls through to the L1 namespace boundary. `Some(set)` (always non-empty)
+/// only when the app opted in with at least one `#[app::xcall]`, at which point
+/// the node restricts xcall dispatch on this module to exactly that set.
+fn extract_xcall_set(bytecode: &[u8]) -> Option<Arc<HashSet<String>>> {
+    let manifest = calimero_wasm_abi::embed::read_embedded_state_schema(bytecode)?;
+    let set: HashSet<String> = manifest
+        .methods
+        .into_iter()
+        .filter(|m| m.xcall_callable)
+        .map(|m| m.name)
+        .collect();
+    if set.is_empty() {
+        None
+    } else {
+        Some(Arc::new(set))
+    }
+}
+
+/// Resolve a context to its namespace root group, or `None` if the context is
+/// not registered in any group. Backs the xcall L1 gate: a cross-context call
+/// is allowed only when source and target resolve to the same namespace.
+/// Fail-closed — callers treat an `Err` (or a `None` on either side) as deny.
+fn resolve_namespace_for_context(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+) -> eyre::Result<Option<ContextGroupId>> {
+    let Some(group_id) = calimero_governance_store::get_group_for_context(store, context_id)?
+    else {
+        return Ok(None);
+    };
+    let namespace =
+        calimero_governance_store::NamespaceRepository::new(store).resolve(&group_id)?;
+    Ok(Some(namespace))
 }
 
 fn substitute_aliases_in_payload(
@@ -2230,7 +2387,9 @@ mod tests {
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
-    use calimero_governance_store::{register_context_in_group, MetaRepository};
+    use calimero_governance_store::{
+        register_context_in_group, MetaRepository, NamespaceRepository,
+    };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::{ContextId, UpgradePolicy};
     use calimero_primitives::identity::PublicKey;
@@ -2239,8 +2398,8 @@ mod tests {
     use calimero_store::Store;
 
     use super::{
-        resolve_producing_app_key, should_block, upgrade_blocks_write,
-        upgrade_rejects_committed_write,
+        extract_xcall_set, resolve_namespace_for_context, resolve_producing_app_key, should_block,
+        upgrade_blocks_write, upgrade_rejects_committed_write,
     };
     use calimero_store::key::GroupUpgradeStatus;
 
@@ -2261,6 +2420,39 @@ mod tests {
             migration: None,
             auto_join: false,
         }
+    }
+
+    #[test]
+    fn resolve_namespace_for_context_returns_root_namespace() {
+        let store = fresh_store();
+        // namespace N (root) ⊃ subgroup ⊃ context
+        let ns = ContextGroupId::from([0xAA; 32]);
+        let sub = ContextGroupId::from([0xBB; 32]);
+        let ctx = ContextId::from([0xCC; 32]);
+
+        NamespaceRepository::new(&store)
+            .nest(&ns, &sub)
+            .expect("nest subgroup under namespace");
+        register_context_in_group(&store, &sub, &ctx).expect("register context in subgroup");
+
+        // resolve walks sub → ns (the root group is the namespace)
+        let got = resolve_namespace_for_context(&store, &ctx).expect("resolve ok");
+        assert_eq!(got, Some(ns));
+    }
+
+    #[test]
+    fn resolve_namespace_for_context_unregistered_is_none() {
+        let store = fresh_store();
+        let ctx = ContextId::from([0xDD; 32]);
+        let got = resolve_namespace_for_context(&store, &ctx).expect("resolve ok");
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn extract_xcall_set_none_on_non_wasm() {
+        // No embedded ABI manifest ⇒ None ⇒ L3 gate falls through to L1.
+        assert!(extract_xcall_set(b"not a wasm module").is_none());
+        assert!(extract_xcall_set(&[]).is_none());
     }
 
     #[test]

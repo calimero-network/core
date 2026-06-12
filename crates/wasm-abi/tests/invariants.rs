@@ -65,6 +65,7 @@ fn test_invariant_error_payload_structure() {
             payload: Some(TypeRef::string()),
         }],
         intent: MethodIntent::Unspecified,
+        xcall_callable: false,
     });
 
     // This should pass validation
@@ -92,6 +93,7 @@ fn test_invariant_variable_bytes_no_size() {
         returns_nullable: None,
         errors: vec![],
         intent: MethodIntent::Unspecified,
+        xcall_callable: false,
     });
 
     // This should pass validation
@@ -123,6 +125,7 @@ fn test_invariant_map_string_key() {
         returns_nullable: None,
         errors: vec![],
         intent: MethodIntent::Unspecified,
+        xcall_callable: false,
     });
 
     // This should pass validation
@@ -152,6 +155,7 @@ fn test_invariant_no_dangling_refs() {
         returns_nullable: None,
         errors: vec![],
         intent: MethodIntent::Unspecified,
+        xcall_callable: false,
     });
 
     // This should pass validation
@@ -176,6 +180,7 @@ fn test_invariant_detects_dangling_refs() {
         returns_nullable: None,
         errors: vec![],
         intent: MethodIntent::Unspecified,
+        xcall_callable: false,
     });
 
     // This should fail validation
@@ -213,6 +218,7 @@ fn test_invariant_detects_dangling_refs_in_inner_type() {
         returns_nullable: None,
         errors: vec![],
         intent: MethodIntent::Unspecified,
+        xcall_callable: false,
     });
 
     // This should fail validation because NonExistentType is referenced in inner_type
@@ -243,6 +249,7 @@ fn test_invariant_deterministic_ordering() {
         returns_nullable: None,
         errors: vec![],
         intent: MethodIntent::Unspecified,
+        xcall_callable: false,
     });
     manifest.methods.push(Method {
         name: "a_method".to_string(),
@@ -251,6 +258,7 @@ fn test_invariant_deterministic_ordering() {
         returns_nullable: None,
         errors: vec![],
         intent: MethodIntent::Unspecified,
+        xcall_callable: false,
     });
 
     // This should fail validation because methods are not sorted

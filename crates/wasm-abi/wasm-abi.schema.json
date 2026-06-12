@@ -413,6 +413,10 @@
             "unspecified"
           ],
           "description": "Read/write intent declared by the app author. Absent on modules compiled before this field existed; treated as write intent by the node."
+        },
+        "xcall_callable": {
+          "type": "boolean",
+          "description": "Cross-context entry point declared via #[app::xcall]. Absent/false on modules compiled before this field existed. When any method in a module sets this, the node enforces that only such methods are reachable via xcall."
         }
       }
     },

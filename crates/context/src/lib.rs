@@ -455,6 +455,17 @@ pub struct ContextManager {
     /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
     read_only_methods: BoundedCache<(ApplicationId, Option<String>), Arc<HashSet<String>>>,
 
+    /// Per-application set of method names declared cross-context entry points
+    /// via `#[app::xcall]` in the module ABI. The xcall dispatch L3 gate denies
+    /// any `xcall` whose target function is not in this set — but only when the
+    /// set is present and non-empty. An absent entry means the module declared
+    /// no `#[app::xcall]` methods (or its manifest is not parsed yet); the gate
+    /// then no-ops and the call falls through to the L1 namespace boundary.
+    ///
+    /// Keyed by `(ApplicationId, Option<String>)` — same key as `modules`.
+    /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
+    xcall_methods: BoundedCache<(ApplicationId, Option<String>), Arc<HashSet<String>>>,
+
     /// Cumulative hit/miss counters for the `contexts` hot cache, driving the
     /// periodic effectiveness log (see [`ContextCacheStats`] and
     /// [`Self::log_cache_stats`]). Independent of `metrics` so the log line
@@ -522,6 +533,7 @@ impl ContextManager {
             applications: BoundedCache::new(MAX_CACHED_APPLICATIONS, "applications"),
             modules: BoundedCache::new(MAX_CACHED_MODULES, "modules"),
             read_only_methods: BoundedCache::new(MAX_CACHED_MODULES, "read_only_methods"),
+            xcall_methods: BoundedCache::new(MAX_CACHED_MODULES, "xcall_methods"),
             cache_stats: ContextCacheStats::default(),
 
             metrics: prometheus_registry.map(Metrics::new),
@@ -605,11 +617,14 @@ impl GovernancePreflight {
 
 impl ContextManager {
     /// Evict every per-application actor cache for `application_id`:
-    /// the application record, compiled modules (all services), and
-    /// read-only method sets. Required whenever the bytecode under an
-    /// application id may have changed (in-place same-id installs,
-    /// migrations) — a stale read_only_methods entry would take a shared
-    /// read lock for methods whose #[app::view] intent changed.
+    /// the application record, compiled modules (all services), and the
+    /// read-only / xcall entry-point method sets. Required whenever the
+    /// bytecode under an application id may have changed (in-place same-id
+    /// installs, migrations) — a stale `read_only_methods` entry would take a
+    /// shared read lock for methods whose `#[app::view]` intent changed, and a
+    /// stale `xcall_methods` entry would mis-gate `xcall` against the old
+    /// version's `#[app::xcall]` set (bundle ids are version-stable, so this
+    /// eviction is the only thing that refreshes the set across an upgrade).
     pub(crate) fn evict_application_caches(
         &mut self,
         application_id: calimero_primitives::application::ApplicationId,
@@ -617,6 +632,8 @@ impl ContextManager {
         let _ = self.applications.remove(&application_id);
         self.modules.retain(|(id, _), _| *id != application_id);
         self.read_only_methods
+            .retain(|(id, _), _| *id != application_id);
+        self.xcall_methods
             .retain(|(id, _), _| *id != application_id);
     }
 

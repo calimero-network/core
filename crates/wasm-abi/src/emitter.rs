@@ -298,6 +298,16 @@ fn has_app_view_attribute(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
+/// Returns `true` when the method carries `#[app::xcall]`, declaring it as a
+/// cross-context entry point — i.e. callable by another context via `xcall`.
+fn has_app_xcall_attribute(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let path = attr.path();
+        let segments: Vec<_> = path.segments.iter().collect();
+        segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "xcall"
+    })
+}
+
 /// Parse `version = N` out of `#[app::state(version = N, …)]`. `None` if no version arg.
 fn app_state_version(attrs: &[syn::Attribute]) -> Option<u32> {
     for attr in attrs {
@@ -591,6 +601,11 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         MethodIntent::Unspecified
                     };
 
+                    // Cross-context entry point from #[app::xcall]; never on
+                    // init (an initializer is not an xcall target).
+                    let xcall_callable =
+                        method_name != "init" && has_app_xcall_attribute(&method.attrs);
+
                     // Create and store the method
                     let method = Method {
                         name: method_name,
@@ -599,6 +614,7 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         returns_nullable,
                         errors: Vec::new(),
                         intent,
+                        xcall_callable,
                     };
 
                     self.methods.push(method);
@@ -827,6 +843,46 @@ pub fn emit_manifest_from_crate(
 /// Emit ABI manifest from Rust source code (single file - for backward compatibility)
 pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
     emit_manifest_from_crate(&[("lib.rs".to_owned(), source.to_owned())])
+}
+
+#[cfg(test)]
+mod xcall_tests {
+    use super::*;
+
+    #[test]
+    fn emits_xcall_callable_only_for_annotated_methods() {
+        let lib = r#"
+            #[app::state(version = 1)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State {
+                #[app::init] pub fn init() -> State { State { x: 0 } }
+                #[app::xcall] pub fn on_event(&mut self) {}
+                pub fn plain(&mut self) {}
+            }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+
+        let on_event = m
+            .methods
+            .iter()
+            .find(|mm| mm.name == "on_event")
+            .expect("on_event present");
+        assert!(
+            on_event.xcall_callable,
+            "#[app::xcall] method must be xcall_callable"
+        );
+
+        let plain = m
+            .methods
+            .iter()
+            .find(|mm| mm.name == "plain")
+            .expect("plain present");
+        assert!(
+            !plain.xcall_callable,
+            "unannotated method must not be xcall_callable"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -92,11 +92,13 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             // Same reason for the compiled-module cache: every service
             // under this application_id is now potentially stale.
             self.modules.retain(|(id, _), _| *id != application_id);
-            // Evict read-only method sets alongside modules: the new WASM may
-            // have different #[app::view] annotations. Stale entries would
-            // cause the execute path to take a shared read lock for methods
-            // that no longer (or newly) declare read-only intent.
+            // Evict read-only and xcall entry-point method sets alongside
+            // modules: the new WASM may have different #[app::view] /
+            // #[app::xcall] annotations. Stale entries would mis-gate — a wrong
+            // read/write lock for read-only, or a wrong L3 xcall decision.
             self.read_only_methods
+                .retain(|(id, _), _| *id != application_id);
+            self.xcall_methods
                 .retain(|(id, _), _| *id != application_id);
 
             // Clone values needed for migration
@@ -146,6 +148,8 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                     }
                     act.modules.retain(|(id, _), _| *id != application_id);
                     act.read_only_methods
+                        .retain(|(id, _), _| *id != application_id);
+                    act.xcall_methods
                         .retain(|(id, _), _| *id != application_id);
 
                     if let Some(cached) = act.contexts.get_mut(&context_id) {

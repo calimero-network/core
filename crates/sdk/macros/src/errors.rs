@@ -124,6 +124,8 @@ pub enum ParseError<'a> {
     },
     #[error("`#[app::view]` and `#[app::init]` are mutually exclusive — an initializer always writes state")]
     ViewAndInitConflict,
+    #[error("`#[app::xcall]` and `#[app::init]` are mutually exclusive — an initializer is never a cross-context entry point")]
+    XCallAndInitConflict,
 }
 
 impl AsRef<Self> for ParseError<'_> {
