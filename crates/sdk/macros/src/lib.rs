@@ -114,7 +114,12 @@ pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
     reserved::init();
 
     let args = parse_macro_input!({ input } => args as StateArgs);
-    let item = parse_macro_input!(input as StructOrEnumItem);
+    let mut item = parse_macro_input!(input as StructOrEnumItem);
+
+    // Hand `version = N` to a `#[derive(app::Migrate)]` below: this attribute
+    // is consumed before that derive expands, so the version is re-emitted as
+    // a `#[migrate(state_version = N)]` helper the derive can read.
+    state::inject_migrate_state_version(&mut item, &args);
 
     let tokens = match StateImpl::try_from(StateImplInput {
         item: &item,
