@@ -196,8 +196,7 @@ steps:
     node: app-migration-remove-1
     group_id: "{{group_id}}"
     target_application_id: "{{app_v3}}"
-    # migrate_method omitted: the node resolves the migration from the
-    # target bundle embedded ABI (declared by the app).
+    # The node resolves the migration from the target bundle's embedded ABI.
 
   # Fixed wait, NOT wait_for_sync (see scenario 01 rationale).
   - name: Wait for upgrade + migration to apply + log flush

@@ -33,9 +33,9 @@ pub enum UpgradeAction {
 }
 
 /// Either side's ABI could not be resolved (blob absent, service missing,
-/// or a pre-ABI build). Emit-side callers reject migration-needing upgrades
-/// with a "rebuild with the current SDK" error; actuation-side callers fall
-/// back to legacy behavior.
+/// or a build with no embedded ABI). Emit-side callers reject
+/// migration-needing upgrades with a "rebuild with the current SDK" error;
+/// actuation-side callers proceed code-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("embedded ABI unavailable for the {side} bytecode")]
 pub struct AbiUnavailable {
@@ -60,9 +60,7 @@ impl core::fmt::Display for AbiSide {
 /// Resolve the action for one context from its service's two manifests.
 ///
 /// Version source is [`Manifest::state_version_or_default`]: the explicit
-/// `state_version` (always emitted by current SDKs), falling back to the
-/// legacy `migration.to_schema_version`, then 1 — so pre-versioned and
-/// 9.4-era builds resolve correctly.
+/// `state_version`, defaulting to 1 for apps that declare none.
 pub fn plan_upgrade(
     current: Option<&Manifest>,
     target: Option<&Manifest>,
@@ -98,7 +96,7 @@ pub fn plan_upgrade(
 
 #[cfg(test)]
 mod tests {
-    use calimero_wasm_abi::schema::{MigrationAbi, MigrationEdgeAbi};
+    use calimero_wasm_abi::schema::MigrationEdgeAbi;
 
     use super::*;
 
@@ -147,45 +145,6 @@ mod tests {
                 method: "migrate".to_owned(),
                 from: 1,
                 to: 2
-            })
-        );
-    }
-
-    #[test]
-    fn one_hop_resolves_via_legacy_single_migration() {
-        // 9.4-era target: no edge list, only the single `migration` field.
-        let cur = manifest(Some(1));
-        let mut tgt = manifest(Some(2));
-        tgt.migration = Some(MigrationAbi {
-            method: "migrate_v1_to_v2".to_owned(),
-            to_schema_version: 2,
-        });
-        assert_eq!(
-            plan_upgrade(Some(&cur), Some(&tgt)),
-            Ok(UpgradeAction::Migrate {
-                method: "migrate_v1_to_v2".to_owned(),
-                from: 1,
-                to: 2
-            })
-        );
-    }
-
-    #[test]
-    fn legacy_current_resolves_from_via_migration_target() {
-        // Current built by a 9.4-era SDK: version only visible through
-        // migration.to_schema_version.
-        let mut cur = manifest(None);
-        cur.migration = Some(MigrationAbi {
-            method: "migrate_v1_to_v2".to_owned(),
-            to_schema_version: 2,
-        });
-        let tgt = with_edge(manifest(Some(3)), "migrate_v2_to_v3", 2);
-        assert_eq!(
-            plan_upgrade(Some(&cur), Some(&tgt)),
-            Ok(UpgradeAction::Migrate {
-                method: "migrate_v2_to_v3".to_owned(),
-                from: 2,
-                to: 3
             })
         );
     }

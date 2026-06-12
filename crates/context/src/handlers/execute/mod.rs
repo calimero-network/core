@@ -1,5 +1,5 @@
 use calimero_governance_store::{
-    CapabilitiesRepository, GroupKeyring, MetaRepository, MigrationsRepository, NamespaceRepository,
+    CapabilitiesRepository, GroupKeyring, MetaRepository, NamespaceRepository,
 };
 use std::borrow::Cow;
 // Removed: NonZeroUsize (replaced with CausalDelta)
@@ -54,8 +54,8 @@ use governance_position::compute_governance_position_for_context;
 pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions};
 use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
 use upgrade_gate::{
-    activation_marker, maybe_lazy_upgrade, resolve_producing_app_key, should_block,
-    upgrade_blocks_write, upgrade_rejects_committed_write,
+    maybe_lazy_upgrade, resolve_producing_app_key, should_block, upgrade_blocks_write,
+    upgrade_rejects_committed_write,
 };
 
 impl Handler<ExecuteRequest> for ContextManager {
@@ -462,9 +462,7 @@ impl Handler<ExecuteRequest> for ContextManager {
         // directly without routing through the actor mailbox (which would deadlock while an
         // ActorFuture is in flight on the same actor).
         let lazy_upgrade_task = guard_task.map(move |guard, act, _ctx| {
-            if let Some((target_app_id, migrate_method, group_id, target_app_key)) =
-                lazy_upgrade_params
-            {
+            if let Some((target_app_id, migrate_method, target_app_key)) = lazy_upgrade_params {
                 info!(
                     %context_id,
                     %target_app_id,
@@ -486,7 +484,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                     context_meta,
                     application,
                     migrate_method,
-                    group_id,
                     target_app_key,
                 )));
             }
@@ -506,7 +503,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                     context_meta,
                     application,
                     migrate,
-                    group_id,
                     target_app_key,
                 )) => {
                     if let Some(method) = migrate {
@@ -561,23 +557,12 @@ impl Handler<ExecuteRequest> for ContextManager {
                                                 Ok(_) => {
                                                     // Unified activation marker: the single
                                                     // up-to-date signal for the gate, the lazy
-                                                    // trigger, and the rollup. The legacy
-                                                    // method-name marker is still written for one
-                                                    // release so pre-v2 peers' gates converge.
+                                                    // trigger, and the rollup.
                                                     crate::activation::record_activation(
                                                         &datastore,
                                                         &cid,
                                                         target_app_key,
                                                     );
-                                                    if let Err(err) =
-                                                        MigrationsRepository::new(&datastore).set_last_migration(&group_id, &cid, &method, )
-                                                    {
-                                                        warn!(
-                                                            %cid,
-                                                            %err,
-                                                            "failed to record migration marker"
-                                                        );
-                                                    }
                                                 }
                                                 Err(err) => {
                                                     warn!(
@@ -644,24 +629,12 @@ impl Handler<ExecuteRequest> for ContextManager {
                                         // same-id bump may still be the
                                         // previous version — the group target
                                         // (what this context executes now)
-                                        // must win. Legacy blob: marker still
-                                        // written for one release so pre-v2
-                                        // peers' gates converge.
+                                        // must win.
                                         crate::activation::record_activation(
                                             &marker_datastore,
                                             &cid,
                                             target_app_key,
                                         );
-                                        if let Err(err) =
-                                            MigrationsRepository::new(&marker_datastore)
-                                                .set_last_migration(
-                                                    &group_id,
-                                                    &cid,
-                                                    &activation_marker(&target_app_key),
-                                                )
-                                        {
-                                            warn!(%cid, %err, "failed to record activation marker");
-                                        }
                                     }
                                     Ok(_) => {}
                                     Err(err) => {

@@ -7,7 +7,7 @@ description: >
   `#[app::migrate]` is needed — the v2 binary deserializes the v1
   state bytes directly. Topology: namespace + one Open subgroup + one
   context in the subgroup. Upgrade is `upgrade_group(group=subgroup,
-  target=v2)` with `migrate_method` omitted entirely.
+  target=v2)`; the node resolves from the embedded ABI (no edge declared).
 
   Negative assertion: before the upgrade, the v2-only method
   `clear_items` must NOT be callable (the binary doesn't export it

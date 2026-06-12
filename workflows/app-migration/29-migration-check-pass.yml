@@ -142,8 +142,7 @@ steps:
     node: app-migration-check-pass-1
     group_id: "{{namespace_id}}"
     target_application_id: "{{app_v2}}"
-    # migrate_method omitted: the node resolves the migration from the
-    # target bundle embedded ABI (declared by the app).
+    # The node resolves the migration from the target bundle's embedded ABI.
     cascade: true
 
   - name: Wait for cascade op to gossip

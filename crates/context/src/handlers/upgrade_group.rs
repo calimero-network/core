@@ -1,7 +1,5 @@
 use calimero_governance_store::SigningKeysRepository;
-use calimero_governance_store::{
-    MembershipRepository, MetaRepository, MigrationsRepository, UpgradesRepository,
-};
+use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,7 +29,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             group_id,
             target_application_id,
             requester,
-            migration,
             cascade,
         }: UpgradeGroupRequest,
         _ctx: &mut Self::Context,
@@ -75,7 +72,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 requester,
                 signing_key,
                 node_identity,
-                migration,
             );
         }
 
@@ -86,7 +82,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             &target_application_id,
             &requester,
             signing_key.is_some(),
-            migration.is_some(),
         ) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -106,8 +101,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-
-        let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
 
         // Auto-store signing key ONLY when the requester IS the node's own identity
         if let (Some(sk), Some((node_pk, _))) = (signing_key, node_identity) {
@@ -154,18 +147,14 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 .map(|m| *m.bytecode.blob_id().as_ref());
             return ActorResponse::r#async(
                 async move {
-                    // v2 path: the caller supplied no migrate method — resolve
-                    // the upgrade from the apps' embedded ABIs (every service
-                    // of the bundle; the wire still carries one method so
-                    // pre-v2 receivers keep working).
-                    let migration = match migration {
-                        Some(m) => Some(m),
-                        None => {
-                            let target_blob = target_blob_bytes
-                                .ok_or_else(|| eyre::eyre!("target application not found"))?;
-                            resolve_upgrade_from_abis(&node_client, current_app_key, target_blob)
-                                .await?
-                        }
+                    // Resolve the upgrade from the apps' embedded ABIs (every
+                    // service of the bundle); the wire carries the one
+                    // resolved method for receivers' lazy actuation.
+                    let migration = {
+                        let target_blob = target_blob_bytes
+                            .ok_or_else(|| eyre::eyre!("target application not found"))?;
+                        resolve_upgrade_from_abis(&node_client, current_app_key, target_blob)
+                            .await?
                     };
                     let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
                     let has_migration = migration.is_some();
@@ -299,7 +288,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let upgrade_value = GroupUpgradeValue {
             from_version,
             to_version,
-            migration: migration_bytes.clone(),
+            // Non-lazy upgrades are code-only by construction: the canary
+            // guard below rejects any target that declares a migration.
+            migration: None,
             initiated_at: now,
             initiated_by: requester,
             status: initial_status.clone(),
@@ -315,7 +306,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let context_client = self.context_client.clone();
         let datastore_for_canary = self.datastore.clone();
         let datastore = self.datastore.clone();
-        let migrate_method = migration.as_ref().map(|m| m.method.clone());
 
         let canary_signer = match calimero_governance_store::find_local_signing_identity(
             &self.datastore,
@@ -334,43 +324,25 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             .as_ref()
             .map(|m| (m.bytecode.blob_id(), m.size));
         let ack_router_for_canary = Arc::clone(&ack_router);
-        let has_migration = migration_bytes.is_some();
         let target_blob_bytes: Option<[u8; 32]> = app_meta_for_contract
             .as_ref()
             .map(|m| *m.bytecode.blob_id().as_ref());
         let canary_task = async move {
-            // v2 guard: the caller supplied no migrate method, but the target
-            // may still DECLARE one in its ABI. Migrations only run under
-            // LazyOnAccess — proceeding here (Automatic/Coordinated) would
-            // swap bytecode under live state without running the declared
-            // migration. Also rejects missing-edge / multi-hop targets.
-            if !has_migration {
-                if let Some(target_blob) = target_blob_bytes {
-                    if let Some(declared) =
-                        resolve_upgrade_from_abis(&node_client, current_app_key, target_blob)
-                            .await?
-                    {
-                        eyre::bail!(
-                            "target app declares migration '{}' in its ABI; migrations only \
-                             run under the LazyOnAccess upgrade policy",
-                            declared.method
-                        );
-                    }
+            // Guard: the target may DECLARE a migration in its ABI.
+            // Migrations only run under LazyOnAccess — proceeding here
+            // (Automatic/Coordinated) would swap bytecode under live state
+            // without running the declared migration. Also rejects
+            // missing-edge / multi-hop targets.
+            if let Some(target_blob) = target_blob_bytes {
+                if let Some(declared) =
+                    resolve_upgrade_from_abis(&node_client, current_app_key, target_blob).await?
+                {
+                    eyre::bail!(
+                        "target app declares migration '{}' in its ABI; migrations only \
+                         run under the LazyOnAccess upgrade policy",
+                        declared.method
+                    );
                 }
-            }
-            // L1 identity-downgrade gate: a migration upgrade may not strip
-            // identity from a top-level state field. Runs BEFORE any group op
-            // is emitted so a forbidden downgrade never reaches the network.
-            // Fail-open when either app lacks an embedded ABI section.
-            if has_migration {
-                let old = resolve_pre_upgrade_schema(
-                    &node_client,
-                    current_app_key,
-                    &current_application_id,
-                )
-                .await;
-                let new = resolve_embedded_schema(&node_client, &target_application_id).await;
-                verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;
             }
             {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
@@ -402,9 +374,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     &ack_router_for_canary,
                     &group_id,
                     &sk,
-                    GroupOp::GroupMigrationSet {
-                        migration: migration_bytes.clone(),
-                    },
+                    GroupOp::GroupMigrationSet { migration: None },
                 )
                 .await?;
                 report.observe("upgrade_group", "GroupMigrationSet");
@@ -415,7 +385,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     &canary_context_id,
                     &target_application_id,
                     &canary_signer,
-                    migrate_method,
+                    None,
                 )
                 .await
         }
@@ -513,7 +483,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             datastore_for_propagator,
                             group_id_clone,
                             target_application_id,
-                            migration,
+                            None,
                             Some(canary_context_id),
                             1, // canary already upgraded
                         );
@@ -616,13 +586,12 @@ async fn resolve_pre_upgrade_schema(
     resolve_embedded_schema(node_client, current_application_id).await
 }
 
-/// Emit-side ABI resolution for an upgrade whose caller supplied no migrate
-/// method (the v2 default): scan EVERY service in the target bundle, plan
-/// each against the same service in the group's current bytecode, and
-/// aggregate. The wire still carries one method (the first declared edge for
-/// this hop, deterministic in bundle service order) so pre-v2 receivers keep
-/// working — v2 receivers re-resolve per context at actuation, so services
-/// without an edge activate code-only by construction.
+/// Emit-side ABI resolution for an upgrade: scan EVERY service in the target
+/// bundle, plan each against the same service in the group's current
+/// bytecode, and aggregate. The wire carries one method (the first declared
+/// edge for this hop, deterministic in bundle service order); receivers
+/// re-resolve per context at actuation, so services without an edge activate
+/// code-only by construction.
 ///
 /// Errors are the contract from the design's decision table: a service that
 /// needs a migration but declares no edge, a group more than one hop behind
@@ -661,7 +630,7 @@ async fn resolve_upgrade_from_abis(
     /// code-only-by-default here is exactly the silent new-code-on-old-state
     /// failure this resolution exists to prevent.
     fn target_declares_migration(m: &Manifest) -> bool {
-        m.state_version_or_default() > 1 || !m.migrations.is_empty() || m.migration.is_some()
+        m.state_version_or_default() > 1 || !m.migrations.is_empty()
     }
 
     let mut resolved_method: Option<String> = None;
@@ -678,11 +647,9 @@ async fn resolve_upgrade_from_abis(
         // dangerous ones:
         //  * service absent from the old bundle → genuinely NEW service, no
         //    old data to migrate → code-only for it;
-        //  * old blob missing locally / no embedded ABI / legacy random
-        //    app_key → the from-version is UNKNOWABLE. Only safe when the
-        //    target declares no migration at all (pre-versioned world);
-        //    otherwise reject — the caller can pass migrateMethod explicitly
-        //    as the escape hatch.
+        //  * old blob missing locally / no embedded ABI / unseeded app_key →
+        //    the from-version is UNKNOWABLE. Only safe when the target
+        //    declares no migration at all; otherwise reject.
         // A service the old bundle never had cannot need a data migration.
         let new_service = current_services
             .as_ref()
@@ -698,7 +665,10 @@ async fn resolve_upgrade_from_abis(
                     None => {
                         if target_abi.as_ref().is_some_and(target_declares_migration) {
                             eyre::bail!(
-                                "service '{}': the currently-running bytecode has no embedded                                  ABI, but the target declares a state migration — cannot                                  determine the from-version safely. Pass migrateMethod                                  explicitly, or rebuild the previous version with the current                                  SDK",
+                                "service '{}': the currently-running bytecode has no embedded \
+                                 ABI, but the target declares a state migration — cannot \
+                                 determine the from-version safely. Rebuild the previous \
+                                 version with the current SDK",
                                 service.as_deref().unwrap_or("<single>"),
                             );
                         }
@@ -708,7 +678,10 @@ async fn resolve_upgrade_from_abis(
                 Ok(None) => {
                     if target_abi.as_ref().is_some_and(target_declares_migration) {
                         eyre::bail!(
-                            "service '{}': the currently-running bytecode blob is not                              available locally, but the target declares a state migration —                              cannot determine the from-version safely. Pass migrateMethod                              explicitly, or fetch the previous version first",
+                            "service '{}': the currently-running bytecode blob is not \
+                             available locally, but the target declares a state migration — \
+                             cannot determine the from-version safely. Fetch the previous \
+                             version first",
                             service.as_deref().unwrap_or("<single>"),
                         );
                     }
@@ -722,19 +695,21 @@ async fn resolve_upgrade_from_abis(
                         eyre::bail!(
                             "service '{}': failed to read the currently-running bytecode \
                              ({err}), and the target declares a state migration — cannot \
-                             determine the from-version safely. Pass migrateMethod explicitly",
+                             determine the from-version safely",
                             service.as_deref().unwrap_or("<single>"),
                         );
                     }
                     target_abi.clone()
                 }
             },
-            // Legacy group with no blob-derived app_key: the from-version is
-            // unknowable — same rule as above.
+            // Group with no blob-derived app_key recorded: the from-version
+            // is unknowable — same rule as above.
             None => {
                 if target_abi.as_ref().is_some_and(target_declares_migration) {
                     eyre::bail!(
-                        "service '{}': this group predates blob-derived app keys, but the                          target declares a state migration — cannot determine the                          from-version safely. Pass migrateMethod explicitly",
+                        "service '{}': this group has no recorded bytecode blob, but the \
+                         target declares a state migration — cannot determine the \
+                         from-version safely",
                         service.as_deref().unwrap_or("<single>"),
                     );
                 }
@@ -791,16 +766,13 @@ async fn resolve_upgrade_from_abis(
             }
             // Only reachable when the TARGET build has no embedded ABI (the
             // current-side unknowns all reject above when the target declares
-            // a migration). A pre-ABI target declares nothing — code-only
-            // here preserves the exact pre-v2 no-method semantics for legacy
-            // apps; a legacy app that migrates must pass migrateMethod
-            // explicitly, as it always had to.
+            // a migration). A target without an ABI declares nothing —
+            // code-only is the only sound action for it.
             Err(err) => {
                 warn!(
                     service = service.as_deref().unwrap_or("<single>"),
                     %err,
-                    "target build has no embedded ABI; proceeding code-only (legacy \
-                     semantics — pass migrateMethod explicitly if this release migrates)"
+                    "target build has no embedded ABI; proceeding code-only"
                 );
             }
         }
@@ -851,7 +823,6 @@ fn validate_upgrade(
     target_application_id: &ApplicationId,
     requester: &PublicKey,
     has_raw_signing_key: bool,
-    has_migration: bool,
 ) -> eyre::Result<UpgradePreamble> {
     // 1. Group must exist
     let meta = MetaRepository::new(datastore)
@@ -860,12 +831,6 @@ fn validate_upgrade(
 
     // 2. Requester must be admin
     MembershipRepository::new(datastore).require_admin(group_id, requester)?;
-
-    // 2a. A migration may only ride on a LazyOnAccess upgrade — receivers
-    //     only run the migrate under that policy (see
-    //     `ensure_migration_policy_supported`). Fail loudly here rather than
-    //     corrupting receiver state.
-    ensure_migration_policy_supported(&meta.upgrade_policy, has_migration)?;
 
     // 3. Verify node holds the key (skip if raw key was provided)
     if !has_raw_signing_key {
@@ -886,14 +851,14 @@ fn validate_upgrade(
     //    races a concurrent in-place install (installs bypass this actor);
     //    the worst case either way is a rejected retry or a no-op upgrade op,
     //    never state corruption, so the window is accepted.
-    if meta.target_application_id == *target_application_id && !has_migration {
+    if meta.target_application_id == *target_application_id {
         let target_blob = datastore
             .handle()
             .get(&key::ApplicationMeta::new(*target_application_id))?
             .map(|app| *app.bytecode.blob_id().as_ref());
         let bytecode_unchanged = target_blob.is_none_or(|blob| blob == meta.app_key);
         if bytecode_unchanged {
-            bail!("group is already targeting this application and no migration was requested");
+            bail!("group is already targeting this application");
         }
     }
 
@@ -1053,33 +1018,9 @@ pub(crate) async fn propagate_upgrade(
             {
                 Ok(()) => {
                     completed += 1;
-                    // Mirror the lazy-upgrade path's marker write
-                    // (execute/mod.rs). When this eager propagator
-                    // migrates a context's state, record the
-                    // per-context migration marker so a subsequent
-                    // LazyOnAccess read on this same node sees the
-                    // context as already-migrated and does NOT re-run
-                    // `migrate` against the now-target-shaped state.
-                    // Without this, an emitter that both eager-migrates
-                    // here AND later serves a read under LazyOnAccess
-                    // would double-migrate (decode v2 bytes as v1).
-                    // Invariant: marker-set ⟺ context migrated to its
-                    // group's current target, regardless of which path
-                    // (eager propagator or lazy access) performed it.
-                    if let Some(ref params) = migration {
-                        if let Err(err) = MigrationsRepository::new(&datastore).set_last_migration(
-                            &group_id,
-                            context_id,
-                            &params.method,
-                        ) {
-                            warn!(
-                                ?group_id,
-                                %context_id,
-                                %err,
-                                "failed to record migration marker after eager propagator migration"
-                            );
-                        }
-                    }
+                    // The update_application handler records the per-context
+                    // activation marker itself, so a subsequent LazyOnAccess
+                    // read sees this context as already activated.
                     debug!(
                         ?group_id,
                         %context_id,
@@ -1221,7 +1162,6 @@ fn dispatch_cascade(
     requester: PublicKey,
     signing_key: Option<[u8; 32]>,
     node_identity: Option<(PublicKey, [u8; 32])>,
-    migration: Option<MigrationParams>,
 ) -> ActorResponse<ContextManager, eyre::Result<UpgradeGroupResponse>> {
     // --- Lightweight cascade validation ---
     // Cascade bypasses `validate_upgrade` because that helper requires
@@ -1245,8 +1185,6 @@ fn dispatch_cascade(
         return ActorResponse::reply(Err(err));
     }
 
-    let has_migration = migration.is_some();
-
     if let Some(existing) = match UpgradesRepository::new(&actor.datastore).load(&group_id) {
         Ok(v) => v,
         Err(err) => return ActorResponse::reply(Err(err)),
@@ -1263,7 +1201,7 @@ fn dispatch_cascade(
     // only the blob. Mirrors `validate_upgrade` rule 5; this duplicate
     // originally kept the id-only comparison and rejected every same-id
     // bundle cascade as "already targeting".
-    if meta.target_application_id == target_application_id && !has_migration {
+    if meta.target_application_id == target_application_id {
         let target_blob = {
             let handle = actor.datastore.handle();
             match handle.get(&key::ApplicationMeta::new(target_application_id)) {
@@ -1371,12 +1309,9 @@ fn dispatch_cascade(
     // Migration-policy gate for cascade. Each matched descendant runs the
     // migrate under its OWN policy on receivers (`maybe_lazy_upgrade` reads the
     // descendant's group meta, not the signed root's), so the gate is
-    // per-descendant — not the signed group's policy. Reject here, before
-    // emitting `CascadeUpgrade`, if any matched descendant is not LazyOnAccess.
-    //
-    // Collected unconditionally: a caller-supplied method checks here (sync),
-    // while the v2 no-method path resolves the migration from ABIs inside the
-    // publish task and re-checks these policies there.
+    // per-descendant — not the signed group's policy. Collected here (sync);
+    // the publish task resolves the migration from ABIs and checks these
+    // policies before emitting `CascadeUpgrade`.
     let descendant_policies = {
         let mut descendant_policies = Vec::with_capacity(matched_descendants.len());
         for gid in &matched_descendants {
@@ -1392,11 +1327,6 @@ fn dispatch_cascade(
         }
         descendant_policies
     };
-    if has_migration {
-        if let Err(err) = ensure_cascade_migration_policies_supported(&descendant_policies) {
-            return ActorResponse::reply(Err(err));
-        }
-    }
 
     info!(
         ?group_id,
@@ -1449,20 +1379,17 @@ fn dispatch_cascade(
     let cascade_hlc = calimero_storage::env::hlc_timestamp();
 
     let publish_task = async move {
-        // v2 path: no caller-supplied method — resolve the migration from the
-        // bundle's embedded ABIs (all services) and re-run the per-descendant
-        // policy gate that the sync section could not (resolution is async).
-        let migration = match migration {
-            Some(m) => Some(m),
-            None => {
-                let resolved =
-                    resolve_upgrade_from_abis(&node_client_for_publish, from_app_key, new_app_key)
-                        .await?;
-                if resolved.is_some() {
-                    ensure_cascade_migration_policies_supported(&descendant_policies)?;
-                }
-                resolved
+        // Resolve the migration from the bundle's embedded ABIs (all
+        // services) and re-run the per-descendant policy gate that the sync
+        // section could not (resolution is async).
+        let migration = {
+            let resolved =
+                resolve_upgrade_from_abis(&node_client_for_publish, from_app_key, new_app_key)
+                    .await?;
+            if resolved.is_some() {
+                ensure_cascade_migration_policies_supported(&descendant_policies)?;
             }
+            resolved
         };
         let migration_bytes_for_publish = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
         let has_migration = migration.is_some();
@@ -1677,22 +1604,7 @@ fn spawn_propagator_for(
 ///
 /// Code-only upgrades (`has_migration == false`) stay allowed under every
 /// policy.
-fn ensure_migration_policy_supported(
-    policy: &UpgradePolicy,
-    has_migration: bool,
-) -> eyre::Result<()> {
-    if has_migration && !matches!(policy, UpgradePolicy::LazyOnAccess) {
-        bail!(
-            "migration-carrying upgrades are only supported under the LazyOnAccess \
-             upgrade policy; the group's policy {policy:?} swaps the application without \
-             running the migration on receivers, corrupting state (silent borsh failure). \
-             Set the group's upgrade policy to LazyOnAccess before migrating."
-        );
-    }
-    Ok(())
-}
-
-/// Cascade variant of [`ensure_migration_policy_supported`].
+/// Cascade migration-policy gate.
 ///
 /// Call this only when the cascade carries a migration — the caller gates on
 /// that before loading each descendant's meta, so no work is done for code-only
@@ -1726,7 +1638,7 @@ fn ensure_cascade_migration_policies_supported(
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_cascade_migration_policies_supported, ensure_migration_policy_supported};
+    use super::ensure_cascade_migration_policies_supported;
     use calimero_context_config::types::ContextGroupId;
     use calimero_primitives::context::UpgradePolicy;
 
@@ -1765,35 +1677,6 @@ mod tests {
     fn gate_fails_open_when_schema_absent() {
         assert!(super::verify_no_identity_downgrade(None, Some(&dg_manifest(DG_PLAIN))).is_ok());
         assert!(super::verify_no_identity_downgrade(Some(&dg_manifest(DG_AUTH)), None).is_ok());
-    }
-
-    #[test]
-    fn migration_under_automatic_is_rejected() {
-        let err = ensure_migration_policy_supported(&UpgradePolicy::Automatic, true)
-            .expect_err("migration under Automatic must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("LazyOnAccess"),
-            "error should name the required policy, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn migration_under_lazy_on_access_is_allowed() {
-        ensure_migration_policy_supported(&UpgradePolicy::LazyOnAccess, true)
-            .expect("migration under LazyOnAccess must be allowed");
-    }
-
-    #[test]
-    fn code_only_upgrade_under_automatic_is_allowed() {
-        ensure_migration_policy_supported(&UpgradePolicy::Automatic, false)
-            .expect("code-only upgrade under Automatic must be allowed");
-    }
-
-    #[test]
-    fn code_only_upgrade_under_lazy_on_access_is_allowed() {
-        ensure_migration_policy_supported(&UpgradePolicy::LazyOnAccess, false)
-            .expect("code-only upgrade under LazyOnAccess must be allowed");
     }
 
     #[test]

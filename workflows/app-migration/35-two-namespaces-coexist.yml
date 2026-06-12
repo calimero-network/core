@@ -136,8 +136,8 @@ steps:
       - 'json_subset({{b_schema_v1}}, {"output": {"schema_version": "1.0.0", "description": "namespace-b"}})'
 
   # Phase 4: Install v2 (same version-stable application id), upgrade
-  # ONLY namespace A's subgroup. No migrate_method — the node resolves
-  # migrate_v1_to_v2 from the target bundle's embedded ABI.
+  # ONLY namespace A's subgroup. The node resolves migrate_v1_to_v2
+  # from the target bundle's embedded ABI.
   - name: Set lazy-on-access policy on subgroup A
     type: update_group_settings
     node: app-migration-coexist-1

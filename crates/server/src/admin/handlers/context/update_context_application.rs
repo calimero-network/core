@@ -35,7 +35,6 @@ pub async fn handler(
     info!(
         context_id=%context_id_result,
         application_id=%req.application_id,
-        migrate_method=?req.migrate_method,
         "Updating context application"
     );
 
@@ -45,7 +44,7 @@ pub async fn handler(
             &context_id_result,
             &req.application_id,
             &req.executor_public_key,
-            req.migrate_method.clone(),
+            None,
         )
         .await
         .map_err(parse_api_error);

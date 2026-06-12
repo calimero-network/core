@@ -562,9 +562,8 @@ currently runs against the target's and decides: equal → code-only swap
 (nothing runs); one ahead with a declared edge → run that edge's migrate;
 version bump with NO edge, more than one hop, or an older target → the
 upgrade is **rejected with an actionable error** instead of silently shipping
-new code onto old-layout state. `migrateMethod` is still accepted as a
-deprecated escape hatch — passing it skips ABI resolution entirely (needed
-only for apps built with pre-v2 SDKs).
+new code onto old-layout state. There is no caller-supplied method at all —
+the declared ABI is the single source of truth.
 
 Each node self-migrates on its next context access (logged as `Executing
 migration` → `Migrated state written successfully`; the extra `performing lazy
@@ -581,8 +580,8 @@ post-migrate owner-driven convert (§5) has a target to compare against — see
 ### 9.1 The policy prerequisite: create groups as `LazyOnAccess`
 
 Migrations run **only** under `UpgradePolicy::LazyOnAccess`; an
-`upgrade_group` carrying a migrate method is **rejected at emit time** under
-`Automatic` or `Coordinated`. The trap: if your app creates its namespace with
+`upgrade_group` whose target declares a migration is **rejected at emit
+time** under `Automatic` or `Coordinated`. The trap: if your app creates its namespace with
 `upgradePolicy: 'Automatic'` (a tempting-sounding default), every migration
 you ever ship to that workspace fails at the upgrade call. Either create
 groups as `LazyOnAccess` from day one, or heal before upgrading:
@@ -620,8 +619,6 @@ reads them at upgrade time. Updater UIs/CLIs never carry a method name; the
 typo/omission class of failure is structurally gone. The export name is
 generated (`migrate_v{N-1}_to_v{N}`) unless you pass `method = …` explicitly
 in the derive — explicit names remain supported and resolve identically.
-The only callers that still pass `migrateMethod` are those upgrading apps
-built with pre-v2 SDKs (no embedded version info to resolve from).
 
 ### 9.2c Multi-service bundles: per-service version arithmetic
 

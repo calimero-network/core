@@ -488,15 +488,14 @@ impl InviteSpecializedNodeResponse {
     }
 }
 
+/// Per-context application switch. Code-only: migrations are declared in the
+/// app's embedded ABI and resolved by the node during a group upgrade — the
+/// caller never names a migrate method.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateContextApplicationRequest {
     pub application_id: ApplicationId,
     pub executor_public_key: PublicKey,
-    /// Optional migration function name to execute during the update.
-    /// The function must be decorated with `#[app::migrate]` in the new application.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub migrate_method: Option<String>,
 }
 
 impl UpdateContextApplicationRequest {
@@ -504,19 +503,6 @@ impl UpdateContextApplicationRequest {
         Self {
             application_id,
             executor_public_key,
-            migrate_method: None,
-        }
-    }
-
-    pub fn with_migration(
-        application_id: ApplicationId,
-        executor_public_key: PublicKey,
-        migrate_method: String,
-    ) -> Self {
-        Self {
-            application_id,
-            executor_public_key,
-            migrate_method: Some(migrate_method),
         }
     }
 }
@@ -1489,24 +1475,8 @@ impl Validate for InviteSpecializedNodeRequest {
 
 impl Validate for UpdateContextApplicationRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        // Validate migrate_method if provided
-        if let Some(ref method) = self.migrate_method {
-            if let Some(e) =
-                validate_string_length(method, "migrate_method", MAX_METHOD_NAME_LENGTH)
-            {
-                errors.push(e);
-            }
-
-            if method.is_empty() {
-                errors.push(ValidationError::EmptyField {
-                    field: "migrate_method",
-                });
-            }
-        }
-
-        errors
+        // All fields are typed (ApplicationId, PublicKey) with their own validation
+        Vec::new()
     }
 }
 
@@ -1883,41 +1853,26 @@ pub struct ListGroupContextsQuery {
     pub limit: Option<usize>,
 }
 
+/// A group upgrade names only the target application — whether and what to
+/// migrate is resolved by the node from the apps' embedded ABIs.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpgradeGroupApiRequest {
     pub target_application_id: ApplicationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub migrate_method: Option<String>,
-    /// When `true`, the handler emits the single atomic `GroupOp::CascadeUpgrade`
-    /// op (target + app_key + migration + fence `cascade_hlc`) and dispatches the
-    /// per-context migration propagator against every descendant subgroup whose
-    /// current `app_key` matches the signed group's current `app_key`.
-    ///
-    /// Default: `false` — existing clients (e.g. PR-1's single-group
-    /// workflow 00) stay on the per-group path bit-identically.
+    /// When `true`, emit one atomic `GroupOp::CascadeUpgrade` fanning out to
+    /// every descendant subgroup whose `app_key` matches the signed group's;
+    /// when `false` (default), stay on the single-group path.
     #[serde(default)]
     pub cascade: bool,
 }
 
 impl Validate for UpgradeGroupApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-        if let Some(ref method) = self.migrate_method {
-            if let Some(e) =
-                validate_string_length(method, "migrate_method", MAX_METHOD_NAME_LENGTH)
-            {
-                errors.push(e);
-            }
-            if method.is_empty() {
-                errors.push(ValidationError::EmptyField {
-                    field: "migrate_method",
-                });
-            }
-        }
-        errors
+        // All fields are typed (ApplicationId, Option<PublicKey>, bool) with
+        // their own validation
+        Vec::new()
     }
 }
 

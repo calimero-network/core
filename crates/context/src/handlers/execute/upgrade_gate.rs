@@ -9,22 +9,10 @@ use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_store::Store;
 use tracing::{debug, info};
 
-/// Returns `true` when a group-upgrade status should block ALL writes
-/// (both user calls and state-op writes such as `__calimero_sync_next`).
-///
-/// Only `GroupUpgradeStatus::InProgress` blocks.  `Completed` (with or
-/// without a timestamp) never blocks.  This is the single source of truth
-/// for the cascade-upgrade write-gate decision.
-///
-/// # Safety invariants
-///
-/// * `LazyOnAccess` upgrades write `Completed` directly (never `InProgress`),
-///   so this fn never returns `true` during a lazy migration.
-/// * The eager propagator's own writes go through `UpdateApplicationRequest`
-///   → `handlers::update_application`, which bypasses the execute gate
-///   entirely — no deadlock is possible.
-/// * Sync-pipeline (`__calimero_sync_next`) failures during `InProgress` are
-///   retried by the periodic sync cycle once the upgrade reaches `Completed`.
+/// `true` when a group-upgrade status blocks ALL writes (user calls and
+/// state-ops alike): only `GroupUpgradeStatus::InProgress` blocks. Lazy
+/// upgrades write `Completed` directly and the eager propagator bypasses the
+/// execute gate, so neither can deadlock on this.
 pub(super) fn upgrade_blocks_write(status: &calimero_store::key::GroupUpgradeStatus) -> bool {
     matches!(
         status,
@@ -53,27 +41,16 @@ pub(super) fn upgrade_rejects_committed_write(block_writes: bool, produced_write
     block_writes && produced_write
 }
 
-/// Checks if a context belongs to a group with LazyOnAccess policy and
-/// needs an upgrade or migration.
-///
-/// Returns `(target_application_id, migrate_method, group_id, target_app_key)`
-/// when an upgrade should be performed.  The `group_id` is included so the
-/// caller can record a per-context migration marker after a successful run.
-/// `target_app_key` is the group's blob-derived app key (the target bytecode
-/// blob id, stamped by the upgrade): bundle apps keep a version-stable
-/// `ApplicationId`, so the caller must compare this against the blob actually
-/// installed under `target_application_id` and fetch it first when they
-/// differ — otherwise the migrate would load the OLD bytecode.
+/// Whether this context, under a LazyOnAccess group, needs an upgrade or
+/// migration. Returns `(target_application_id, migrate_method,
+/// target_app_key)` when one should run. The caller must load bytecode by
+/// `target_app_key` (bundle ids are version-stable) — the application row
+/// may still hold the OLD wasm.
 pub(super) fn maybe_lazy_upgrade(
     datastore: &Store,
     context_id: &ContextId,
     current_application_id: &ApplicationId,
-) -> Option<(
-    ApplicationId,
-    Option<String>,
-    calimero_context_config::types::ContextGroupId,
-    [u8; 32],
-)> {
+) -> Option<(ApplicationId, Option<String>, [u8; 32])> {
     use calimero_governance_store;
 
     // 1. Check if context belongs to a group
@@ -112,18 +89,12 @@ pub(super) fn maybe_lazy_upgrade(
         // IDs match — bundle ids are version-stable, so this is either a
         // pending migration or a pending code-only bytecode bump. One rule
         // covers both: the context is up to date iff its activation marker
-        // (legacy markers folded forward) equals the group's recorded target
-        // blob. A zero app_key (legacy randomly-seeded groups) carries no
-        // bytecode signal, so a code-only bump can never be detected there —
-        // but a recorded MIGRATION still must fire (the fold reproduces the
-        // legacy marker-matches-method rule for the zero case), so only the
-        // no-migration shape is exempted.
-        if meta.app_key == [0u8; 32] && meta.migration.is_none() {
+        // equals the group's recorded target blob. A zero app_key carries no
+        // bytecode signal to compare against, so nothing can be detected.
+        if meta.app_key == [0u8; 32] {
             return None;
         }
-        let activated = crate::activation::activated_blob_folding_legacy(
-            datastore, &group_id, context_id, &meta,
-        );
+        let activated = crate::activation::activated_blob(datastore, context_id);
         if activated == Some(meta.app_key) {
             return None; // bytecode + migration current — context is up to date
         }
@@ -138,27 +109,13 @@ pub(super) fn maybe_lazy_upgrade(
         "lazy upgrade triggered for context"
     );
 
-    Some((
-        meta.target_application_id,
-        migrate_method,
-        group_id,
-        meta.app_key,
-    ))
+    Some((meta.target_application_id, migrate_method, meta.app_key))
 }
 
-/// The blob-derived app key the sender is executing under — `GroupMeta.app_key`
-/// for the context's owning group (`app_key = blob_id(bytecode)` at group
-/// creation / upgrade time).  This is the schema-version discriminator that
-/// changes on every app upgrade; `application_id` is version-stable and
-/// cannot distinguish v1 from v2 of the same application.
-///
-/// Returns `Some(app_key)` for group-context deltas; `None` for non-group
-/// contexts (no owning group) or when the group meta row cannot be loaded
-/// (store error is propagated to the caller as `Err`).
-///
-/// Stamped onto the state-delta broadcast so receivers can fence
-/// stale-schema deltas after a cascade migration.  The fence itself lives
-/// in Tasks 8/9 — this function is the testable store-boundary helper.
+/// The blob-derived app key the sender executes under (`GroupMeta.app_key`
+/// of the owning group) — the schema discriminator stamped onto state-delta
+/// broadcasts so receivers can fence stale-schema deltas. `None` for
+/// non-group contexts.
 pub(super) fn resolve_producing_app_key(
     datastore: &Store,
     context_id: &ContextId,
@@ -169,12 +126,4 @@ pub(super) fn resolve_producing_app_key(
     Ok(MetaRepository::new(datastore)
         .load(&gid)?
         .map(|m| m.app_key))
-}
-
-/// Per-context marker recording that the group's target bytecode (`app_key`)
-/// has been activated (caches evicted, row verified). Stored via the
-/// migration-marker repository under a synthetic method name; the `blob:`
-/// prefix cannot collide with a real `#[app::migrate]` method.
-pub(super) fn activation_marker(app_key: &[u8; 32]) -> String {
-    format!("blob:{}", hex::encode(app_key))
 }

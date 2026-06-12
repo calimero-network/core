@@ -54,11 +54,6 @@ impl PredefinedEntry for key::GroupSubgroupVis {
     type DataType<'a> = key::GroupSubgroupVisValue;
 }
 
-impl PredefinedEntry for key::GroupContextLastMigration {
-    type Codec = Borsh;
-    type DataType<'a> = key::GroupContextLastMigrationValue;
-}
-
 impl PredefinedEntry for key::GroupLocalGovNonce {
     type Codec = Borsh;
     type DataType<'a> = u64;

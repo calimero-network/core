@@ -1,7 +1,6 @@
 use super::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
-    MetadataRepository, MigrationsRepository, NamespaceRepository, SigningKeysRepository,
-    UpgradesRepository,
+    MetadataRepository, NamespaceRepository, SigningKeysRepository, UpgradesRepository,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
@@ -1969,53 +1968,6 @@ fn delete_defaults_and_member_capabilities_clears_values() {
         .is_empty());
 }
 
-#[test]
-fn migration_tracking_roundtrip_and_cleanup() {
-    let store = test_store();
-    let gid = test_group_id();
-    let context_a = ContextId::from([0x51; 32]);
-    let context_b = ContextId::from([0x52; 32]);
-
-    assert!(MigrationsRepository::new(&store)
-        .last_migration(&gid, &context_a)
-        .unwrap()
-        .is_none());
-
-    MigrationsRepository::new(&store)
-        .set_last_migration(&gid, &context_a, "migrate_v2")
-        .unwrap();
-    MigrationsRepository::new(&store)
-        .set_last_migration(&gid, &context_b, "migrate_v3")
-        .unwrap();
-
-    assert_eq!(
-        MigrationsRepository::new(&store)
-            .last_migration(&gid, &context_a)
-            .unwrap()
-            .as_deref(),
-        Some("migrate_v2")
-    );
-    assert_eq!(
-        MigrationsRepository::new(&store)
-            .last_migration(&gid, &context_b)
-            .unwrap()
-            .as_deref(),
-        Some("migrate_v3")
-    );
-
-    MigrationsRepository::new(&store)
-        .delete_all_for_group(&gid)
-        .unwrap();
-    assert!(MigrationsRepository::new(&store)
-        .last_migration(&gid, &context_a)
-        .unwrap()
-        .is_none());
-    assert!(MigrationsRepository::new(&store)
-        .last_migration(&gid, &context_b)
-        .unwrap()
-        .is_none());
-}
-
 // -----------------------------------------------------------------------
 // Auto-group: node identity as admin (regression test for fix)
 // -----------------------------------------------------------------------
@@ -2151,9 +2103,6 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
             },
         )
         .unwrap();
-    MigrationsRepository::new(&store)
-        .set_last_migration(&gid, &context, "v2")
-        .unwrap();
 
     MembershipRepository::new(&store)
         .add_member(&gid, &member, GroupMemberRole::Admin)
@@ -2248,10 +2197,6 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
         .enumerate_members(&gid)
         .unwrap()
         .is_empty());
-    assert!(MigrationsRepository::new(&store)
-        .last_migration(&gid, &context)
-        .unwrap()
-        .is_none());
     assert!(get_local_gov_nonce(&store, &gid, &member)
         .unwrap()
         .is_none());

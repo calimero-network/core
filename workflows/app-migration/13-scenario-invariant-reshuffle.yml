@@ -230,8 +230,7 @@ steps:
     node: app-migration-reshuffle-1
     group_id: "{{group_id}}"
     target_application_id: "{{app_v2}}"
-    # migrate_method omitted: the node resolves the migration from the
-    # target bundle embedded ABI (declared by the app).
+    # The node resolves the migration from the target bundle's embedded ABI.
 
   # Fixed wait, NOT wait_for_sync (see scenario 01 rationale): lets the
   # target+migration meta gossip to node 2 before its lazy read.

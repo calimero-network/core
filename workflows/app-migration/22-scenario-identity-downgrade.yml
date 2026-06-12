@@ -127,8 +127,7 @@ steps:
     node: app-migration-iddowngrade-1
     group_id: "{{group_id}}"
     target_application_id: "{{app_v2}}"
-    # migrate_method omitted: the node resolves the migration from the
-    # target bundle embedded ABI (declared by the app).
+    # The node resolves the migration from the target bundle's embedded ABI.
     expected_failure: true
 
   # Short wait so the docker log stream is flushed before the log asserts.

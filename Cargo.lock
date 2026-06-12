@@ -1452,6 +1452,7 @@ dependencies = [
  "calimero-store-rocksdb",
  "calimero-tee-attestation",
  "calimero-utils-actix",
+ "calimero-wasm-abi",
  "camino",
  "dashmap 6.1.0",
  "ed25519-dalek",
