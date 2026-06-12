@@ -1600,13 +1600,13 @@ mod shared_storage_rotation_authentication {
         MainInterface::apply_action(rotation, &ctx)
             .expect("authentic rotation by a current writer must be accepted");
 
-        // The rotation must be recorded in the wrapper's rotation log with the
-        // new writer set.
-        let log = crate::rotation_log::load::<MainStorage>(id)
-            .unwrap()
+        // The rotation must be recorded in the wrapper's rotation-log collection
+        // with the new writer set. `resolve_local` picks the causally-latest
+        // entry (the collection is unordered by id, so don't use `.last()`).
+        let log = MainInterface::load_rotation_log_child(id)
             .expect("rotation log must exist after an accepted rotation");
         assert_eq!(
-            log.entries.last().expect("a rotation entry").new_writers,
+            crate::rotation_log::resolve_local(&log).expect("resolved writers"),
             crate::entities::full_mask(new_writers.clone()),
             "accepted rotation must record the new writer set in the rotation log"
         );
@@ -3100,5 +3100,69 @@ mod owner_driven_convert {
         );
 
         calimero_sdk::app::register_schema_version::<Unversioned>();
+    }
+
+    /// P3 (core#2716): the rotation log stored as a hashed child entity
+    /// (`crdt_type: RotationLog`) UNIONS divergent saves rather than LWW-
+    /// overwriting — proving the relocated log converges on ordinary sync. This
+    /// exercises the whole foundation end to end: `save_rotation_log_child` →
+    /// `save_raw` → `save_internal`'s always-union dispatch → `merge_rotation_log`.
+    #[test]
+    fn rotation_log_child_unions_divergent_saves() {
+        use core::num::NonZeroU128;
+        use std::collections::BTreeMap;
+
+        use calimero_primitives::identity::PublicKey;
+
+        use crate::address::Id;
+        use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+        use crate::rotation_log::{RotationLog, RotationLogEntry};
+
+        type S = MockedStorage<7411>;
+        let anchor = Id::new([0x55; 32]);
+
+        // SIGNED entries: `append_rotation_to_child` skips unsigned
+        // (`signer == None`) entries — they carry no authoritative writer-set
+        // fact and would diverge the collection hash across nodes (only the
+        // originator self-logs the unsigned bootstrap). This test exercises the
+        // collection's UNION behaviour, so its entries must be signed to land.
+        let entry = |d: u8| RotationLogEntry {
+            delta_id: [d; 32],
+            delta_hlc: HybridTimestamp::new(Timestamp::new(
+                NTP64(u64::from(d)),
+                ID::from(NonZeroU128::new(1).unwrap()),
+            )),
+            signer: Some(PublicKey::from([d; 32])),
+            signature: Some([d; 64]),
+            signed_payload: Some([d; 32]),
+            new_writers: BTreeMap::new(),
+            writers_nonce: u64::from(d),
+        };
+
+        // Local log {1,2} → child entity.
+        let a = RotationLog {
+            snapshot: None,
+            entries: vec![entry(1), entry(2)],
+        };
+        Interface::<S>::save_rotation_log_child(anchor, &a).expect("save A");
+        let loaded = Interface::<S>::load_rotation_log_child(anchor).expect("load A");
+        let ids: Vec<u8> = loaded.entries.iter().map(|e| e.delta_id[0]).collect();
+        assert_eq!(ids, vec![1, 2], "child holds the saved log");
+
+        // A divergent peer log {2,3} merges in — must UNION to {1,2,3}, NOT
+        // LWW-overwrite to {2,3} (which is what the old timestamp branches did).
+        let b = RotationLog {
+            snapshot: None,
+            entries: vec![entry(2), entry(3)],
+        };
+        Interface::<S>::save_rotation_log_child(anchor, &b).expect("merge B");
+        let merged = Interface::<S>::load_rotation_log_child(anchor).expect("load merged");
+        let mut ids: Vec<u8> = merged.entries.iter().map(|e| e.delta_id[0]).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            vec![1, 2, 3],
+            "divergent save must union (always-union dispatch), not LWW-overwrite"
+        );
     }
 }

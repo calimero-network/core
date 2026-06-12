@@ -14,7 +14,7 @@ use calimero_context_client::messages::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, MigrationParams,
 };
 use calimero_context_client::{ContextAtomic, ContextAtomicKey, ContextGuard};
-use calimero_context_config::types::{ContextGroupId, GovernancePosition};
+use calimero_context_config::types::{ContextGroupId, GovernanceParentEdge};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
@@ -26,8 +26,10 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_runtime::logic::Outcome;
 use calimero_storage::{
+    address::Id,
     delta::{CausalDelta, StorageDelta},
     env::{with_runtime_env, RuntimeEnv},
+    index::Index,
     interface::Interface,
     store::MainStorage,
 };
@@ -46,7 +48,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::update_application::{
-    clear_executing_blob_pin, update_application_id, update_application_with_migration,
+    clear_executing_blob_pin, create_storage_callbacks, update_application_id,
+    update_application_with_migration,
 };
 use crate::ContextManager;
 use calimero_governance_store::metrics::ExecutionLabels;
@@ -1580,7 +1583,7 @@ async fn internal_execute(
     Outcome,
     Option<CausalDelta>,
     Option<[u8; 64]>,
-    Option<GovernancePosition>,
+    Option<GovernanceParentEdge>,
 )> {
     let executor_is_read_only = !is_state_op
         && NamespaceRepository::new(&datastore)
@@ -1696,7 +1699,7 @@ async fn internal_execute(
     // matches the signed payload, so receivers would reject the
     // delta on signature mismatch. This single source of truth
     // collapses that race window.
-    let mut governance_position_for_broadcast: Option<GovernancePosition> = None;
+    let mut governance_position_for_broadcast: Option<GovernanceParentEdge> = None;
 
     if executor_is_read_only && outcome.root_hash.is_some() {
         info!(
@@ -1901,13 +1904,56 @@ async fn internal_execute(
             let hlc = calimero_storage::env::hlc_timestamp();
             let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
-            let delta = CausalDelta {
+            let mut delta = CausalDelta {
                 id: delta_id,
                 parents,
                 actions,
                 hlc,
                 expected_root_hash: root_hash,
             };
+
+            // Leg 4 of rotation-log convergence (core#2716): the local write
+            // path persisted each `Shared` anchor and its children DURING WASM
+            // execution — before this `delta_id` existed — so the originator's
+            // own rotation isn't in its hashed rotation-log collection yet. Now
+            // that the (signed) delta is built, self-log its rotations (the
+            // `insert` propagates each new child's hash into the anchor's
+            // `full_hash` and up to the root), then recompute the context root
+            // so BOTH `context.root_hash` and the delta's `expected_root_hash`
+            // reflect the new writer set. Peers log the same entries when they
+            // apply the rotation, so every node converges. No-op unless this
+            // delta rotates a `Shared` writer set.
+            {
+                let callbacks = create_storage_callbacks(&store, context.id);
+                let env = RuntimeEnv::new(
+                    callbacks.read,
+                    callbacks.write,
+                    callbacks.remove,
+                    *context.id.as_ref(),
+                    *identity_private_key.public_key().as_ref(),
+                );
+                let recomputed_root =
+                    with_runtime_env(env, || -> eyre::Result<Option<[u8; 32]>> {
+                        let changed = Interface::<MainStorage>::self_log_own_rotations(
+                            &delta.actions,
+                            delta.id,
+                            delta.hlc,
+                        )?;
+                        if !changed {
+                            return Ok(None);
+                        }
+                        let root_id = Id::new(*context.id.as_ref());
+                        let (full_hash, _) = Index::<MainStorage>::get_hashes_for(root_id)?
+                            .ok_or_else(|| {
+                                eyre::eyre!("root index missing after rotation self-log")
+                            })?;
+                        Ok(Some(full_hash))
+                    })?;
+                if let Some(full_hash) = recomputed_root {
+                    context.root_hash = full_hash.into();
+                    delta.expected_root_hash = full_hash;
+                }
+            }
 
             // Update context's DAG heads to this new delta
             context.dag_heads = vec![delta.id];

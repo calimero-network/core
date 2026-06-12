@@ -53,6 +53,7 @@ pub(crate) use cache::{BoundedCache, Evictable};
 // new crate and not re-exported.
 pub mod group_store {
     pub use calimero_governance_store::{
+        acl_view_at,
         apply_local_signed_group_op,
         apply_received_group_key,
         apply_signed_namespace_op,
@@ -62,7 +63,6 @@ pub mod group_store {
         get_local_gov_nonce,
         get_op_head,
         is_currently_authorized_for_context,
-        membership_status_at,
         namespace_groups_awaiting_key,
         now_millis,
         read_op_log_after,

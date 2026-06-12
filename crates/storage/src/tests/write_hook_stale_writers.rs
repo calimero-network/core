@@ -29,7 +29,6 @@ use crate::entities::{ChildInfo, Metadata};
 use crate::index::Index;
 use crate::interface::{ApplyContext, Interface};
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use crate::rotation_log;
 use crate::store::{MockedStorage, StorageAdaptor};
 use crate::tests::common::{build_signed_shared_action, pubkey_of};
 
@@ -141,8 +140,7 @@ fn write_hook_relies_on_stale_stored_writers_for_rotation_detection() {
     );
     Interface::<S<408>>::apply_action(rotation, &ctx([0xE1; 32], hlc_at(1))).unwrap();
     assert_eq!(
-        rotation_log::load::<S<408>>(id)
-            .unwrap()
+        Interface::<S<408>>::load_rotation_log_child(id)
             .unwrap()
             .entries
             .len(),
@@ -175,7 +173,7 @@ fn write_hook_relies_on_stale_stored_writers_for_rotation_detection() {
     Interface::<S<408>>::apply_action(value_write_with_stale_writers, &ctx([0xE2; 32], hlc_at(2)))
         .unwrap();
 
-    let log = rotation_log::load::<S<408>>(id).unwrap().unwrap();
+    let log = Interface::<S<408>>::load_rotation_log_child(id).unwrap();
     assert_eq!(
         log.entries.len(),
         2,
@@ -297,7 +295,10 @@ fn shared_equal_nonce_different_writers_converge_regardless_of_order() {
 /// signatures verify regardless of the local stored set at apply time.
 fn apply_concurrent_rotations_in_order<const SCOPE: usize>(
     r1_first: bool,
-) -> Vec<std::collections::BTreeMap<PublicKey, crate::entities::OpMask>> {
+) -> (
+    Vec<std::collections::BTreeMap<PublicKey, crate::entities::OpMask>>,
+    [u8; 32],
+) {
     crate::env::reset_for_testing();
     let root = setup_root::<S<SCOPE>>();
 
@@ -360,13 +361,15 @@ fn apply_concurrent_rotations_in_order<const SCOPE: usize>(
             .unwrap();
     }
 
-    rotation_log::load::<S<SCOPE>>(id)
-        .unwrap()
+    let log = Interface::<S<SCOPE>>::load_rotation_log_child(id)
         .unwrap()
         .entries
         .iter()
         .map(|e| e.new_writers.clone())
-        .collect()
+        .collect();
+    // The anchor's `full_hash` (P3: rolls in the rotation-log child's hash).
+    let full_hash = Index::<S<SCOPE>>::get_hashes_for(id).unwrap().unwrap().0;
+    (log, full_hash)
 }
 
 /// #2716 regression: two nodes that apply the SAME pair of concurrent
@@ -389,15 +392,14 @@ fn apply_concurrent_rotations_in_order<const SCOPE: usize>(
 /// orders converge on the same log.
 #[test]
 fn concurrent_rotations_converge_in_log_regardless_of_apply_order() {
-    let alice = pubkey_of(&make_signing_key(0xA1));
     let bob = pubkey_of(&make_signing_key(0xB2));
     let dave = pubkey_of(&make_signing_key(0xD4));
     let with_dave = crate::entities::full_mask([bob, dave].into_iter().collect());
 
     // Node X applies R1 (higher nonce) first, then R2 (lower nonce → stale).
-    let x = apply_concurrent_rotations_in_order::<411>(true);
+    let (x, _) = apply_concurrent_rotations_in_order::<411>(true);
     // Node Y applies them in the opposite order.
-    let y = apply_concurrent_rotations_in_order::<412>(false);
+    let (y, _) = apply_concurrent_rotations_in_order::<412>(false);
 
     // Both logs must contain the {Bob, Dave} rotation — the node that applied
     // it as a stale-nonce sibling must still have recorded it.
@@ -420,5 +422,25 @@ fn concurrent_rotations_converge_in_log_regardless_of_apply_order() {
         xs, ys,
         "the two apply orders must converge on the same rotation set \
          (X={x:?}, Y={y:?})"
+    );
+}
+
+/// P3 (core#2716): with the Phase-2 ACL fold retired, a Shared anchor's
+/// writer-set divergence lives entirely in its hashed rotation-log child, whose
+/// hash rolls into the anchor's `full_hash` (via `add_child_to`/`update_hash_for`).
+/// So two nodes that apply the SAME pair of concurrent rotations in OPPOSITE
+/// orders must land the SAME anchor `full_hash` — the child's order-invariant
+/// union is what converges the context root now that NOTHING is folded into
+/// `own_hash`. This is the fold-free convergence the child mechanism rests on:
+/// if it held only because of the fold, removing the fold would make these two
+/// orders' `full_hash` diverge here.
+#[test]
+fn concurrent_rotations_converge_to_same_anchor_full_hash() {
+    let (_, x_hash) = apply_concurrent_rotations_in_order::<421>(true);
+    let (_, y_hash) = apply_concurrent_rotations_in_order::<422>(false);
+    assert_eq!(
+        x_hash, y_hash,
+        "divergent apply orders must converge on the same anchor full_hash via \
+         the rotation-log child alone (no ACL fold): X={x_hash:?} Y={y_hash:?}"
     );
 }

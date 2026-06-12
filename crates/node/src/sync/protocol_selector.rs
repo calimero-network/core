@@ -52,21 +52,6 @@ pub(crate) trait ProtocolDispatch {
     /// has left the responder in a protocol-specific state.
     async fn open_stream(&self, peer: PeerId) -> Result<Stream>;
 
-    /// Reconcile per-`Shared`-entity writer/capability rotation logs with the
-    /// peer on a FRESH stream. Invoked from the `None` selection arm: the
-    /// Merkle roots already match, but writer/capability rotations are
-    /// hash-neutral (core#2716), so equal roots do NOT imply equal writer
-    /// sets — and the in-`HashComparison` reconciliation this path skips never
-    /// runs. Best-effort; a no-op (no stream opened) for contexts that hold no
-    /// `Shared` anchors. Uses its own stream so it never disturbs the
-    /// handshake / DAG-heads exchange already in flight.
-    async fn reconcile_shared_rotation_logs(
-        &self,
-        context_id: ContextId,
-        peer: PeerId,
-        our_identity: PublicKey,
-    ) -> Result<()>;
-
     /// Send the DAG-heads request and let the peer drive a regular
     /// delta-sync over the same stream.
     async fn request_dag_heads_and_sync(
@@ -167,27 +152,13 @@ impl ProtocolSelector {
                     "No sync needed: {}",
                     selection.reason
                 );
-                // The Merkle roots match, but writer/capability rotations are
-                // hash-neutral (core#2716): equal roots do NOT imply equal
-                // Shared writer sets, and the rotation-log reconciliation that
-                // would catch the difference only runs inside HashComparison —
-                // which this path skips. Reconcile here too, on a fresh stream.
-                // Gate on roots being genuinely equal: `None` is also returned
-                // when the remote is fresh (Rule 2b), where there is nothing to
-                // reconcile. Best-effort — a transient failure retries next tick.
-                if local_root_hash == peer_root_hash {
-                    if let Err(e) = dispatch
-                        .reconcile_shared_rotation_logs(context_id, chosen_peer, our_identity)
-                        .await
-                    {
-                        debug!(
-                            %context_id,
-                            %chosen_peer,
-                            error = %e,
-                            "rotation-log reconciliation (roots match) failed; will retry next sync"
-                        );
-                    }
-                }
+                // (S2.3: the standalone rotation-log reconcile on the roots-match
+                // path was removed. The rotation log is now a hashed
+                // `UnorderedMap` child of its anchor, so a writer-set rotation
+                // MOVES the anchor's `full_hash` and thus the Merkle root — equal
+                // roots now genuinely imply equal writer sets, and any divergence
+                // is reconciled by ordinary HashComparison. No separate reconcile
+                // is needed.)
                 Ok(None)
             }
             SyncProtocol::Snapshot { compressed, .. } => {

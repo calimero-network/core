@@ -15,13 +15,12 @@
 //! regression stays in `calimero_storage::tests::write_hook` (it asserts
 //! a storage-internal invariant; no DAG needed).
 
-use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::entities::{ChildInfo, Metadata};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{ApplyContext, Interface, StorageError};
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use calimero_storage::rotation_log::{self, RotationLogEntry};
+use calimero_storage::rotation_log::RotationLogEntry;
 use calimero_storage::store::{MockedStorage, StorageAdaptor};
 use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
 use core::num::NonZeroU128;
@@ -88,7 +87,7 @@ fn ctx_for<S: StorageAdaptor>(
     delta_hlc_ns: u64,
     dag: &Dag,
 ) -> ApplyContext {
-    let effective_writers = match rotation_log::load::<S>(entity).unwrap() {
+    let effective_writers = match Interface::<S>::load_rotation_log_child(entity) {
         Some(log) => {
             rotation_log_reader::writers_at(&log, parents, |a, b| dag.happens_before(a, b))
         }
@@ -205,12 +204,14 @@ fn verifier_with_dag_context_uses_rotation_log() {
 
     // Pre-populate the rotation log: as-of delta D1, the writer set was {Alice}.
     let d1 = [0xD1; 32];
-    rotation_log::append::<S<6402>>(
+    Interface::<S<6402>>::append_rotation_to_child(
         id,
-        RotationLogEntry {
+        &RotationLogEntry {
             delta_id: d1,
             delta_hlc: hlc(hlc_at(0)),
             signer: Some(alice),
+            signature: None,
+            signed_payload: None,
             new_writers: [alice]
                 .into_iter()
                 .map(|k| (k, calimero_storage::entities::OpMask::FULL))
@@ -265,12 +266,14 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
     Interface::<S<6403>>::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
 
     let d1 = [0xD1; 32];
-    rotation_log::append::<S<6403>>(
+    Interface::<S<6403>>::append_rotation_to_child(
         id,
-        RotationLogEntry {
+        &RotationLogEntry {
             delta_id: d1,
             delta_hlc: hlc(hlc_at(0)),
             signer: Some(alice),
+            signature: None,
+            signed_payload: None,
             new_writers: [alice]
                 .into_iter()
                 .map(|k| (k, calimero_storage::entities::OpMask::FULL))
@@ -324,8 +327,7 @@ fn write_hook_appends_on_bootstrap_with_ctx() {
     let ctx = ctx_for::<S<6404>>(id, &[], [0xAA; 32], hlc_at(0), &dag);
     Interface::<S<6404>>::apply_action(bootstrap, &ctx).unwrap();
 
-    let log = rotation_log::load::<S<6404>>(id)
-        .unwrap()
+    let log = Interface::<S<6404>>::load_rotation_log_child(id)
         .expect("rotation log exists after Shared apply with delta ctx");
     assert_eq!(log.entries.len(), 1);
     assert_eq!(log.entries[0].delta_id, [0xAA; 32]);
@@ -360,7 +362,7 @@ fn write_hook_skips_when_ctx_lacks_delta_id() {
     );
     Interface::<S<6405>>::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
 
-    assert_eq!(rotation_log::load::<S<6405>>(id).unwrap(), None);
+    assert_eq!(Interface::<S<6405>>::load_rotation_log_child(id), None);
 }
 
 /// Value-write (writer set unchanged) does not append an entry.
@@ -391,8 +393,7 @@ fn write_hook_skips_when_writers_unchanged() {
     )
     .unwrap();
     assert_eq!(
-        rotation_log::load::<S<6406>>(id)
-            .unwrap()
+        Interface::<S<6406>>::load_rotation_log_child(id)
             .unwrap()
             .entries
             .len(),
@@ -417,7 +418,7 @@ fn write_hook_skips_when_writers_unchanged() {
     )
     .unwrap();
 
-    let log = rotation_log::load::<S<6406>>(id).unwrap().unwrap();
+    let log = Interface::<S<6406>>::load_rotation_log_child(id).unwrap();
     assert_eq!(log.entries.len(), 1, "value-write did not append");
 }
 
@@ -469,7 +470,7 @@ fn write_hook_appends_on_writer_set_change() {
     )
     .unwrap();
 
-    let log = rotation_log::load::<S<6407>>(id).unwrap().unwrap();
+    let log = Interface::<S<6407>>::load_rotation_log_child(id).unwrap();
     assert_eq!(log.entries.len(), 2);
     assert_eq!(log.entries[1].delta_id, d1);
     assert_eq!(
@@ -539,7 +540,7 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
 
     // Sanity: the local stored writer set is now {Alice} and the rotation log
     // has two entries (bootstrap + rotation).
-    let log = rotation_log::load::<S<6420>>(id).unwrap().unwrap();
+    let log = Interface::<S<6420>>::load_rotation_log_child(id).unwrap();
     assert_eq!(log.entries.len(), 2);
 
     // D2 (concurrent sibling of D1): Bob writes "world" against the writer

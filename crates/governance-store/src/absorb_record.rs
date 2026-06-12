@@ -9,7 +9,7 @@
 //! Borsh on `BufferedDelta` itself.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_context_config::types::GovernancePosition;
+use calimero_context_config::types::GovernanceParentEdge;
 use calimero_node_primitives::delta_buffer::BufferedDelta;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
@@ -20,7 +20,7 @@ use eyre::{Result as EyreResult, WrapErr};
 ///
 /// Every field mirrors `BufferedDelta` 1:1 except `source_peer`, which is
 /// stored as the raw `PeerId::to_bytes()` byte vector (the `PeerId` type has no
-/// clean Borsh derive). `GovernancePosition`, `HybridTimestamp`, `Hash`, and
+/// clean Borsh derive). `GovernanceParentEdge`, `HybridTimestamp`, `Hash`, and
 /// `PublicKey` all carry their own Borsh impls, so they are mirrored directly.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct AbsorbRecord {
@@ -48,7 +48,7 @@ pub struct AbsorbRecord {
     pub key_id: [u8; 32],
     /// Cross-DAG reference — preserved so the apply-time authorization check
     /// fires correctly on replay.
-    pub governance_position: Option<GovernancePosition>,
+    pub governance_position: Option<GovernanceParentEdge>,
     /// Per-delta envelope signature.
     pub delta_signature: Option<[u8; 64]>,
     /// Governance-pending drain re-buffer counter.
@@ -251,17 +251,13 @@ mod tests {
             events: Some(vec![10, 20, 30]),
             source_peer: libp2p::PeerId::random(),
             key_id: [0; 32],
-            // Populate the Some(GovernancePosition) path so the mirror exercises
-            // GovernancePosition's hand-written bounds-enforcing BorshDeserialize
-            // end-to-end (a straggler's signed governance position must survive
+            // Populate the Some(GovernanceParentEdge) path so the mirror exercises
+            // GovernanceParentEdge's hand-written bounds-enforcing BorshDeserialize
+            // end-to-end (a straggler's signed governance edge must survive
             // persist → restore unchanged, or its replay authorization breaks).
             governance_position: Some(
-                GovernancePosition::new(
-                    calimero_context_config::types::ContextGroupId::from([3; 32]),
-                    [4; 32],
-                    vec![[5; 32], [6; 32]],
-                )
-                .expect("valid governance position fixture"),
+                GovernanceParentEdge::new(vec![[5; 32], [6; 32]])
+                    .expect("valid governance edge fixture"),
             ),
             delta_signature: Some([9; 64]),
             governance_drain_attempts: 0,

@@ -66,7 +66,6 @@ use calimero_storage::interface::{
     disable_nonce_check_for_testing, ApplyContext, Interface, StorageError,
 };
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use calimero_storage::rotation_log;
 use calimero_storage::store::MainStorage;
 use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
 use core::num::NonZeroU128;
@@ -182,10 +181,9 @@ impl SharedRotationApplier {
         let topology_snapshot = self.topology.read().await.clone();
 
         for entity_id in shared_entities {
-            let log = match rotation_log::load::<MainStorage>(entity_id) {
-                Ok(Some(log)) => log,
-                Ok(None) => continue, // No log → verifier falls back to v2 stored-writers.
-                Err(e) => panic!("rotation_log::load for {entity_id:?} failed: {e}"),
+            let log = match Interface::<MainStorage>::load_rotation_log_child(entity_id) {
+                Some(log) => log,
+                None => continue, // No log -> verifier falls back to stored writers.
             };
 
             let resolved = rotation_log_reader::writers_at(&log, &delta.parents, |a, b| {
@@ -376,12 +374,19 @@ async fn update_vs_rotation_race_pre_rotation_write_accepted_through_full_sync_p
     // Rotation log has D_root + D1; D2 is a value-write whose claimed
     // {Alice, Bob} matches the bootstrap set, so the rotation hook
     // correctly skips it.
-    let log = rotation_log::load::<MainStorage>(entity_id)
-        .unwrap()
-        .unwrap();
+    let log = Interface::<MainStorage>::load_rotation_log_child(entity_id).unwrap();
     assert_eq!(log.entries.len(), 2);
-    assert_eq!(log.entries[0].delta_id, d_root_id);
-    assert_eq!(log.entries[1].delta_id, d1_id);
+    // The collection is unordered by id (entries sorted by delta_id), so assert
+    // set membership rather than positions.
+    let ids: std::collections::BTreeSet<_> = log.entries.iter().map(|e| e.delta_id).collect();
+    assert!(
+        ids.contains(&d_root_id),
+        "rotation log must hold the bootstrap entry"
+    );
+    assert!(
+        ids.contains(&d1_id),
+        "rotation log must hold the D1 rotation"
+    );
 }
 
 // =============================================================================
@@ -575,8 +580,6 @@ async fn buffered_pre_rotation_write_resolves_correctly_after_parents_arrive() {
         "Bob's pre-rotation write resolved correctly even after buffering"
     );
 
-    let log = rotation_log::load::<MainStorage>(entity_id)
-        .unwrap()
-        .unwrap();
+    let log = Interface::<MainStorage>::load_rotation_log_child(entity_id).unwrap();
     assert_eq!(log.entries.len(), 2);
 }

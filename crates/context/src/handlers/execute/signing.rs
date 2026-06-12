@@ -25,20 +25,15 @@ pub(crate) fn sign_authorized_actions(
         actions_count = actions.len(),
         "Signing authorized actions..."
     );
+    let executor_pk = identity_private_key.public_key();
     for action in actions.iter_mut() {
         let action_id = action.id();
-        let payload_for_signing = action.payload_for_signing();
 
         // The nonce was already set by `calimero-storage`:
         // * For Add/Update, it's `metadata.updated_at`.
         // * For DeleteRef, it's `deleted_at`.
-        // We just need to ensure the action's nonce field matches
         let (metadata, nonce) = match action {
-            Action::Add { metadata, .. } => {
-                let nonce = *metadata.updated_at;
-                (metadata, nonce)
-            }
-            Action::Update { metadata, .. } => {
+            Action::Add { metadata, .. } | Action::Update { metadata, .. } => {
                 let nonce = *metadata.updated_at;
                 (metadata, nonce)
             }
@@ -53,113 +48,90 @@ pub(crate) fn sign_authorized_actions(
             Action::Compare { .. } => continue,
         };
 
-        if let StorageType::User {
-            owner,
-            signature_data: Some(sig_data),
-        } = &mut metadata.storage_type
-        {
-            debug!(
-                action_id = ?action_id,
-                owner = %owner,
-                nonce = %nonce,
-                "Received user action from the outcome"
-            );
-
-            // Check if it's ours and is currently unsigned (placeholder signature)
-            if *owner == identity_private_key.public_key() && sig_data.signature == [0; 64] {
-                // Re-set the nonce in sig_data just in case
-                sig_data.nonce = nonce;
-
-                // TODO: Add `.map_err`.
-                let signature = identity_private_key.sign(&payload_for_signing)?;
-                sig_data.signature = signature.to_bytes();
-
-                debug!(
-                    action_id = ?action_id,
-                    action_id = %action_id,
-                    owner = %owner,
-                    owner = ?owner.digest(),
-                    nonce = %nonce,
-                    payload_for_signing = ?payload_for_signing,
-                    ed25519_signature = ?signature,
-                    signature = ?sig_data.signature,
-                    signature_len = sig_data.signature.len(),
-                    "Signed user action"
-                );
+        // STAMP THE NONCE BEFORE COMPUTING THE PAYLOAD.
+        //
+        // `payload_for_signing` commits to `sig_data.nonce` (for User/Shared/
+        // SharedMember). The nonce carried at outcome-build time can differ from
+        // the final `metadata.updated_at` we stamp here, so computing the payload
+        // before the stamp signed a STALE-nonce payload while the action shipped
+        // the new nonce — every receiver (and the author itself, re-checking a
+        // pushed-back leaf via HashComparison) then reconstructed a different
+        // payload and rejected the signature as "Invalid signature for user-owned
+        // data" (the concurrent-rotation SharedMember value split-brain). Stamp
+        // first, then hash, so the signature commits to exactly the action that
+        // ships. `should_sign` gates on "ours + still a placeholder", matching the
+        // prior per-arm conditions; the borrow of `metadata` ends with this match
+        // (NLL), freeing `action` for the immutable `payload_for_signing` below.
+        let should_sign = match &mut metadata.storage_type {
+            StorageType::User {
+                owner,
+                signature_data: Some(sig_data),
+            } => {
+                let ours = *owner == executor_pk && sig_data.signature == [0; 64];
+                if ours {
+                    sig_data.nonce = nonce;
+                }
+                ours
             }
-        }
-
-        if let StorageType::Shared {
-            writers,
-            signature_data: Some(sig_data),
-            ..
-        } = &mut metadata.storage_type
-        {
-            let executor_pk = identity_private_key.public_key();
-            debug!(
-                action_id = ?action_id,
-                writer_count = writers.len(),
-                executor = %executor_pk,
-                nonce = %nonce,
-                "Received shared action from the outcome"
-            );
-
-            // Sign whenever the placeholder is present. The stamping decision
-            // (whether the executor was authorized to act) was already made in
-            // save_raw / remove_child_from based on stored ∪ claimed writers,
-            // which correctly handles the rotate-self-out case where the
-            // executor is no longer in the action's claimed writer set.
-            if sig_data.signature == [0; 64] {
-                sig_data.nonce = nonce;
-                let signature = identity_private_key.sign(&payload_for_signing)?;
-                sig_data.signature = signature.to_bytes();
-
-                debug!(
-                    action_id = ?action_id,
-                    executor = %executor_pk,
-                    nonce = %nonce,
-                    payload_for_signing = ?payload_for_signing,
-                    ed25519_signature = ?signature,
-                    "Signed shared action"
-                );
+            StorageType::Shared {
+                signature_data: Some(sig_data),
+                ..
             }
-        }
-
-        // SharedMember signs exactly like Shared: the placeholder presence is
-        // the signal, and the authorization decision (executor ∈ the anchor's
-        // writers) was already made in `save_raw` against the anchor's resolved
-        // set. A member carries no writer set, so there is nothing to log here
-        // beyond the anchor.
-        if let StorageType::SharedMember {
-            anchor,
-            signature_data: Some(sig_data),
-            ..
-        } = &mut metadata.storage_type
-        {
-            if sig_data.signature == [0; 64] {
-                sig_data.nonce = nonce;
-                let signature = identity_private_key.sign(&payload_for_signing)?;
-                sig_data.signature = signature.to_bytes();
-
-                debug!(
-                    action_id = ?action_id,
-                    anchor = %anchor,
-                    nonce = %nonce,
-                    "Signed shared-member action"
-                );
+            | StorageType::SharedMember {
+                signature_data: Some(sig_data),
+                ..
+            } => {
+                // Sign whenever the placeholder is present. The authorization
+                // decision (executor ∈ stored ∪ claimed / anchor writers) was
+                // already made in `save_raw` / `remove_child_from`, which handles
+                // the rotate-self-out case.
+                let placeholder = sig_data.signature == [0; 64];
+                if placeholder {
+                    sig_data.nonce = nonce;
+                }
+                placeholder
             }
+            _ => false,
+        };
+
+        if !should_sign {
+            continue;
         }
 
-        if let StorageType::User {
-            owner: _,
-            signature_data: Some(_),
-        } = &metadata.storage_type
-        {
-            debug!(
-                action_serialized = ?borsh::to_vec(action)?,
-                "After signing user action"
-            );
-        }
+        // Payload now reflects the stamped nonce — sign exactly what ships.
+        let payload_for_signing = action.payload_for_signing();
+        let signature = identity_private_key.sign(&payload_for_signing)?;
+
+        let metadata = match action {
+            Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata,
+            Action::DeleteRef { metadata, .. } => metadata,
+            Action::Compare { .. } => continue,
+        };
+        let sig_data = match &mut metadata.storage_type {
+            StorageType::User {
+                signature_data: Some(sd),
+                ..
+            }
+            | StorageType::Shared {
+                signature_data: Some(sd),
+                ..
+            }
+            | StorageType::SharedMember {
+                signature_data: Some(sd),
+                ..
+            } => sd,
+            // `should_sign` was true, so one of the above matched; unreachable.
+            _ => continue,
+        };
+        sig_data.signature = signature.to_bytes();
+
+        debug!(
+            action_id = %action_id,
+            executor = %executor_pk,
+            nonce = %nonce,
+            payload_for_signing = ?payload_for_signing,
+            "Signed authorized action (nonce stamped before payload)"
+        );
     }
     Ok(())
 }

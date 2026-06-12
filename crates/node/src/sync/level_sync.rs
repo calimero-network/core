@@ -445,7 +445,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // without this check, a revoked author's writes that
                     // gossip rejected could re-enter via LevelWise the
                     // same way they did via HC.
-                    if !is_leaf_currently_authorized(store, &context_id, leaf_data) {
+                    if !is_leaf_currently_authorized(store, &context_id, leaf_data, None) {
                         warn!(
                             %context_id,
                             key = %hex::encode(leaf_data.key),

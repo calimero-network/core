@@ -23,7 +23,7 @@
 use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_context_config::types::GovernancePosition;
+use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::Nonce;
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_primitives::context::ContextId;
@@ -676,7 +676,7 @@ pub enum BroadcastMessage<'a> {
         ///
         /// `Some(pos)` for group-context deltas; `None` for legacy
         /// non-group contexts that have no governance DAG.
-        governance_position: Option<GovernancePosition>,
+        governance_position: Option<GovernanceParentEdge>,
 
         /// `sha256(group_key)` — identifies which group key encrypted this
         /// delta. Receivers look up the corresponding key from their local

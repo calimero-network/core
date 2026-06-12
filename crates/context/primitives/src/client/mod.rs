@@ -164,7 +164,21 @@ mod borsh_layout {
         },
         Frozen,
         Shared {
-            writers: std::collections::BTreeSet<[u8; 32]>,
+            // Real type: BTreeMap<PublicKey, OpMask> (#2738). PublicKey is
+            // [u8;32], OpMask is a u8 newtype, so the borsh layout is a map of
+            // 32-byte key → 1-byte value. The old mirror had BTreeSet<[u8;32]>
+            // (no per-writer OpMask byte), which under-counted each writer by one
+            // byte and misaligned the rest of the EntityIndex — surfacing as
+            // "Invalid Option representation" in compute_root_hash_via_borsh once
+            // a Shared entity appears among the root's children.
+            writers: std::collections::BTreeMap<[u8; 32], u8>,
+            signature_data: Option<SignatureData>,
+        },
+        // Real type carries this variant (every SharedStorage member entity);
+        // its absence made the mirror unable to decode any root whose children
+        // include a member — the cold-join failure mode.
+        SharedMember {
+            anchor: [u8; 32],
             signature_data: Option<SignatureData>,
         },
     }
@@ -595,8 +609,15 @@ impl ContextRegistry {
         bytes: &[u8],
     ) -> eyre::Result<[u8; 32]> {
         let mut reader: &[u8] = bytes;
-        let index = borsh_layout::EntityIndex::deserialize_reader(&mut reader)
-            .map_err(|e| eyre::eyre!("Failed to deserialize EntityIndex: {}", e))?;
+        let index = borsh_layout::EntityIndex::deserialize_reader(&mut reader).map_err(|e| {
+            tracing::warn!(
+                %context_id,
+                error = %e,
+                total_bytes = bytes.len(),
+                "EntityIndex borsh decode failed in compute_root_hash_via_borsh"
+            );
+            eyre::eyre!("Failed to deserialize EntityIndex: {}", e)
+        })?;
 
         let trailing = reader.len();
         if trailing > 0 {

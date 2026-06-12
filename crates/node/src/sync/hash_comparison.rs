@@ -28,6 +28,7 @@ use calimero_node_primitives::sync::{
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::index::Index;
@@ -71,6 +72,11 @@ impl SyncManager {
         first_max_depth: Option<u8>,
         transport: &mut T,
         _nonce: Nonce,
+        // The authenticated identity of the initiator (the peer driving this
+        // session). Used to gate ingestion of authorless plain-entity pushes:
+        // a peer that is no longer an authorized member must not launder a
+        // Public write into our store via HC. `None` when unresolvable.
+        peer_identity: Option<PublicKey>,
     ) -> Result<()> {
         info!(%context_id, "Starting HashComparison responder");
 
@@ -210,6 +216,7 @@ impl SyncManager {
                         &runtime_env,
                         context_id,
                         &entities,
+                        peer_identity,
                     )
                     .await;
                     let applied = outcome.applied;
@@ -305,34 +312,6 @@ impl SyncManager {
                     };
                     transport.send(&msg).await?;
                     requests_handled += 1;
-                }
-
-                InitPayload::RotationLogSyncRequest { logs, .. } => {
-                    // End-of-session rotation-log reconciliation (core#2716/#2703).
-                    // A writer-set rotation is hash-neutral, so HC never carries
-                    // it; union the initiator's Shared rotation logs into ours and
-                    // reply with our own so the initiator unions them too — one
-                    // round-trip reconciles both directions.
-                    let applied = with_runtime_env(runtime_env.clone(), || {
-                        super::hash_comparison_protocol::union_received_rotation_logs(&logs)
-                    });
-                    let local_logs = with_runtime_env(runtime_env.clone(), || {
-                        super::hash_comparison_protocol::collect_local_shared_rotation_logs(
-                            context_id,
-                        )
-                    });
-
-                    let msg = StreamMessage::Message {
-                        sequence_id: sqx.next(),
-                        payload: MessagePayload::RotationLogSyncResponse { logs: local_logs },
-                        next_nonce: super::helpers::generate_nonce(),
-                    };
-                    transport.send(&msg).await?;
-                    requests_handled += 1;
-
-                    if applied > 0 {
-                        info!(%context_id, applied, "rotation-log sync: unioned initiator's Shared rotation logs");
-                    }
                 }
 
                 _ => {

@@ -236,6 +236,17 @@ pub fn infer_schema_from_database(
                                     crdt_type: None,
                                     inner_type: None,
                                 },
+                                CrdtType::RotationLog => {
+                                    // Internal SharedStorage writer-set history
+                                    // (core#2716 P3) — a hashed book-keeping
+                                    // child, never a user-facing field. Surface
+                                    // it as an opaque record if it ever appears.
+                                    TypeRef::Collection {
+                                        collection: CollectionType::Record { fields: Vec::new() },
+                                        crdt_type: None,
+                                        inner_type: None,
+                                    }
+                                }
                                 CrdtType::Custom(_) => {
                                     // Custom type - can't infer without schema
                                     TypeRef::Collection {

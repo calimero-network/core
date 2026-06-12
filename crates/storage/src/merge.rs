@@ -400,6 +400,11 @@ pub fn merge_by_crdt_type(
         // signature verification gates which deltas reach this point).
         CrdtType::SharedStorage => Ok(incoming.to_vec()),
 
+        // RotationLog (P3 of core#2716) - unconditional union of entries by
+        // delta_id. Entries are authenticated at resolve time (writers_at), so
+        // the merge trusts nothing and just unions.
+        CrdtType::RotationLog => merge_rotation_log(existing, incoming),
+
         // App-defined types
         CrdtType::Custom(type_name) => Err(MergeError::WasmRequired {
             type_name: type_name.clone(),
@@ -540,6 +545,91 @@ fn merge_unordered_set(_existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, Mer
 /// Container merge prefers incoming.
 fn merge_vector(_existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     Ok(incoming.to_vec())
+}
+
+/// Merge two rotation logs (P3 of core#2716).
+///
+/// Unconditional **union of entries by `delta_id`**, then a canonical sort by
+/// `delta_id` so the merged bytes — and therefore the entity hash — are
+/// identical regardless of the order in which two nodes apply each other's
+/// logs. (Resolution order is HLC-based in `writers_at`, so the *stored* order
+/// is semantically irrelevant, but it MUST be canonical for the hash to
+/// converge.) Entries are NOT authenticated here — the merge trusts nothing;
+/// verification happens at resolve time. The compaction `snapshot` (P6) is
+/// carried forward by the larger `cutoff_index`.
+fn merge_rotation_log(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
+    use crate::rotation_log::RotationLog;
+
+    // Empty bytes = an empty log, NOT a parse error. The first write to a
+    // rotation-log child registers the child in the index (so the merge path
+    // fires) before the value bytes exist, so the stored side is `&[]` on that
+    // first merge; treating it as empty lets the union absorb the incoming log
+    // instead of falling back to LWW (which could pick the empty side and wipe
+    // the entries).
+    let parse = |bytes: &[u8]| -> Result<RotationLog, MergeError> {
+        if bytes.is_empty() {
+            Ok(RotationLog::empty())
+        } else {
+            borsh::from_slice(bytes).map_err(|e| MergeError::SerializationError(e.to_string()))
+        }
+    };
+
+    let existing_log: RotationLog = parse(existing)?;
+    let incoming_log: RotationLog = parse(incoming)?;
+
+    // Union by `delta_id` with a DETERMINISTIC, node-independent tiebreak on
+    // collision. The old "keep first-seen" dedup was NOT convergent: if two
+    // nodes held the same `delta_id` with even slightly different entry bytes
+    // (e.g. one carrying a signature the other built without), each kept its own
+    // and `full_hash` never matched — a permanent HashComparison sticky loop
+    // (observed in root-bootstrap-converge: the same RotationLog child re-merged
+    // every round, `applied=1`, roots never converging). Resolving a collision
+    // by larger serialized bytes makes the merge a true join: commutative,
+    // idempotent, and identical on every replica regardless of apply order, so
+    // the child's hash converges. (delta_hlc/signer/writers are equal for a real
+    // delta; the tiebreak only disambiguates incidental byte differences.)
+    let mut by_id: std::collections::BTreeMap<[u8; 32], crate::rotation_log::RotationLogEntry> =
+        std::collections::BTreeMap::new();
+    for entry in existing_log
+        .entries
+        .into_iter()
+        .chain(incoming_log.entries.into_iter())
+    {
+        match by_id.entry(entry.delta_id) {
+            std::collections::btree_map::Entry::Vacant(v) => {
+                let _ = v.insert(entry);
+            }
+            std::collections::btree_map::Entry::Occupied(mut o) => {
+                let cur = borsh::to_vec(o.get())
+                    .map_err(|e| MergeError::SerializationError(e.to_string()))?;
+                let new = borsh::to_vec(&entry)
+                    .map_err(|e| MergeError::SerializationError(e.to_string()))?;
+                if new > cur {
+                    let _ = o.insert(entry);
+                }
+            }
+        }
+    }
+    // `BTreeMap` iterates in `delta_id` order, so the entry vector is canonical
+    // (the previous explicit sort is subsumed).
+    let mut merged = RotationLog {
+        snapshot: existing_log.snapshot,
+        entries: by_id.into_values().collect(),
+    };
+
+    // Compaction snapshot: adopt the incoming one when it advances the cutoff
+    // (symmetric — the node lacking it adopts, the node holding the larger keeps).
+    if let Some(inc) = incoming_log.snapshot {
+        let take = match &merged.snapshot {
+            Some(cur) => inc.cutoff_index > cur.cutoff_index,
+            None => true,
+        };
+        if take {
+            merged.snapshot = Some(inc);
+        }
+    }
+
+    borsh::to_vec(&merged).map_err(|e| MergeError::SerializationError(e.to_string()))
 }
 
 #[cfg(test)]
@@ -713,5 +803,59 @@ mod typed_dispatch_tests {
         );
 
         clear_merge_registry();
+    }
+
+    /// P3 (core#2716): the rotation-log merge must be an order-invariant union
+    /// by `delta_id`, so two nodes that apply each other's logs in opposite
+    /// orders produce byte-identical results (hence identical hashes → the log
+    /// child converges via ordinary sync).
+    #[test]
+    fn merge_rotation_log_is_order_invariant_union() {
+        use core::num::NonZeroU128;
+        use std::collections::BTreeMap;
+
+        use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+        use crate::rotation_log::{RotationLog, RotationLogEntry};
+
+        let mk = |delta_id: u8, ns: u64| RotationLogEntry {
+            delta_id: [delta_id; 32],
+            delta_hlc: HybridTimestamp::new(Timestamp::new(
+                NTP64(ns),
+                ID::from(NonZeroU128::new(1).unwrap()),
+            )),
+            signer: None,
+            signature: None,
+            signed_payload: None,
+            new_writers: BTreeMap::new(),
+            writers_nonce: 0,
+        };
+
+        // Overlapping logs: {01,02} and {02,03} — 02 is shared.
+        let a = RotationLog {
+            snapshot: None,
+            entries: vec![mk(0x01, 10), mk(0x02, 20)],
+        };
+        let b = RotationLog {
+            snapshot: None,
+            entries: vec![mk(0x02, 20), mk(0x03, 30)],
+        };
+        let a_bytes = borsh::to_vec(&a).unwrap();
+        let b_bytes = borsh::to_vec(&b).unwrap();
+
+        let ab = merge_rotation_log(&a_bytes, &b_bytes).unwrap();
+        let ba = merge_rotation_log(&b_bytes, &a_bytes).unwrap();
+
+        assert_eq!(
+            ab, ba,
+            "merge must be order-invariant (canonical sort) so the hash converges"
+        );
+
+        let merged: RotationLog = borsh::from_slice(&ab).unwrap();
+        let ids: Vec<u8> = merged.entries.iter().map(|e| e.delta_id[0]).collect();
+        assert_eq!(
+            ids,
+            vec![0x01, 0x02, 0x03],
+            "union deduped by delta_id and sorted canonically"
+        );
     }
 }

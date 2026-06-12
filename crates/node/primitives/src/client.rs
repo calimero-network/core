@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_stream::stream;
-use calimero_context_config::types::GovernancePosition;
+use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::{is_no_peers_subscribed_error, NetworkClient};
 use calimero_network_primitives::config::GOSSIPSUB_MESH_N_LOW;
@@ -499,7 +499,7 @@ impl NodeClient {
         parent_ids: Vec<[u8; 32]>,
         hlc: calimero_storage::logical_clock::HybridTimestamp,
         events: Option<Vec<u8>>,
-        governance_position: Option<GovernancePosition>,
+        governance_position: Option<GovernanceParentEdge>,
         key_id: [u8; 32],
         delta_signature: Option<[u8; 64]>,
         // `GroupMeta.app_key` the sender is executing under. `None` for

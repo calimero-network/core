@@ -33,7 +33,7 @@
 //! the action bytes via the hash chain.
 
 use borsh::BorshSerialize;
-use calimero_context_config::types::GovernancePosition;
+use calimero_context_config::types::GovernanceParentEdge;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 
@@ -56,7 +56,7 @@ pub const DOMAIN_SEPARATOR: &[u8; 16] = b"calimero/delta/1";
 /// and signed by `author_id`'s ed25519 key. Only used for serialization —
 /// receivers re-construct it from their own data and compare signature
 /// bytes, so `BorshDeserialize` isn't needed (and wouldn't work with the
-/// `&GovernancePosition` borrow anyway).
+/// `&GovernanceParentEdge` borrow anyway).
 ///
 /// The `domain` field is always [`DOMAIN_SEPARATOR`] — it's serialized
 /// into the signed bytes so signatures from other protocols using the
@@ -67,7 +67,7 @@ pub struct DeltaSignaturePayload<'a> {
     pub context_id: ContextId,
     pub delta_id: [u8; 32],
     pub author_id: PublicKey,
-    pub governance_position: Option<&'a GovernancePosition>,
+    pub governance_position: Option<&'a GovernanceParentEdge>,
 }
 
 /// Borsh-serialize the canonical payload. Used at sign time (execute
@@ -80,7 +80,7 @@ pub fn delta_signature_payload(
     context_id: ContextId,
     delta_id: [u8; 32],
     author_id: PublicKey,
-    governance_position: Option<&GovernancePosition>,
+    governance_position: Option<&GovernanceParentEdge>,
 ) -> Result<Vec<u8>, borsh::io::Error> {
     let payload = DeltaSignaturePayload {
         domain: *DOMAIN_SEPARATOR,
@@ -112,7 +112,7 @@ pub fn verify_delta_signature(
     context_id: ContextId,
     delta_id: [u8; 32],
     author_id: PublicKey,
-    governance_position: Option<&GovernancePosition>,
+    governance_position: Option<&GovernanceParentEdge>,
     signature: &[u8; 64],
 ) -> eyre::Result<()> {
     let payload = delta_signature_payload(context_id, delta_id, author_id, governance_position)
@@ -180,39 +180,33 @@ mod tests {
     }
 
     #[test]
-    fn sign_then_verify_roundtrip_with_position() {
+    fn sign_then_verify_roundtrip_with_edge() {
         let (context_id, delta_id, sk, pk) = fixture();
-        let pos = calimero_context_config::types::GovernancePosition {
-            group_id: calimero_context_config::types::ContextGroupId::from([5u8; 32]),
+        let edge = calimero_context_config::types::GovernanceParentEdge {
             governance_dag_heads: vec![[6u8; 32], [7u8; 32]],
-            group_state_hash: [8u8; 32],
         };
-        let payload = delta_signature_payload(context_id, delta_id, pk, Some(&pos)).unwrap();
+        let payload = delta_signature_payload(context_id, delta_id, pk, Some(&edge)).unwrap();
         let sig = sk.sign(&payload).unwrap().to_bytes();
-        assert!(verify_delta_signature(context_id, delta_id, pk, Some(&pos), &sig).is_ok());
+        assert!(verify_delta_signature(context_id, delta_id, pk, Some(&edge), &sig).is_ok());
     }
 
     #[test]
-    fn verify_rejects_tampered_governance_position() {
+    fn verify_rejects_tampered_governance_edge() {
         let (context_id, delta_id, sk, pk) = fixture();
-        let pos_signed = calimero_context_config::types::GovernancePosition {
-            group_id: calimero_context_config::types::ContextGroupId::from([5u8; 32]),
+        let edge_signed = calimero_context_config::types::GovernanceParentEdge {
             governance_dag_heads: vec![[6u8; 32]],
-            group_state_hash: [8u8; 32],
         };
-        let payload = delta_signature_payload(context_id, delta_id, pk, Some(&pos_signed)).unwrap();
+        let payload =
+            delta_signature_payload(context_id, delta_id, pk, Some(&edge_signed)).unwrap();
         let sig = sk.sign(&payload).unwrap().to_bytes();
 
-        // Verifier reconstructs payload with a different position
-        // (different `group_state_hash`); signature must not verify.
-        // This is the per-cut binding property — a signature for one
-        // governance cut can't be reused for a different cut even if
-        // every other field matches.
-        let pos_other = calimero_context_config::types::GovernancePosition {
-            group_id: pos_signed.group_id,
-            governance_dag_heads: pos_signed.governance_dag_heads.clone(),
-            group_state_hash: [99u8; 32],
+        // Verifier reconstructs the payload with a different edge (different
+        // heads); the signature must not verify. This is the per-cut binding
+        // property — a signature for one governance cut can't be reused for a
+        // different cut.
+        let edge_other = calimero_context_config::types::GovernanceParentEdge {
+            governance_dag_heads: vec![[6u8; 32], [9u8; 32]],
         };
-        assert!(verify_delta_signature(context_id, delta_id, pk, Some(&pos_other), &sig).is_err());
+        assert!(verify_delta_signature(context_id, delta_id, pk, Some(&edge_other), &sig).is_err());
     }
 }

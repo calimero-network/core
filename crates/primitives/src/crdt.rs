@@ -153,6 +153,22 @@ pub enum CrdtType {
     /// The string identifies the custom type name within the application.
     /// Merge: Dispatched to WASM runtime to call the app's merge function.
     Custom(String),
+
+    /// Rotation log (P3 of core#2716).
+    ///
+    /// A per-`Shared`-anchor child (in a keyed collection) holding one writer-set
+    /// rotation entry, stored as `borsh(RotationLog)`. Accumulation across
+    /// `delta_id`s is structural (the collection's add-wins children); a
+    /// same-`delta_id` collision resolves by LWW. Entries are authenticated at
+    /// **resolve time** (each carries its signature + signed payload), not at
+    /// merge time, so the merge itself trusts nothing.
+    ///
+    /// DECLARED LAST on purpose: borsh enums are discriminant-by-position, so a
+    /// new variant must be appended — inserting it mid-enum shifts every later
+    /// variant's tag and misaligns any `CrdtType` that crosses a serialization
+    /// boundary (snapshots, persisted index metadata, mixed-binary peers),
+    /// surfacing as `EntityIndex` borsh decode failures.
+    RotationLog,
 }
 
 impl Default for CrdtType {

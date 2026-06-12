@@ -64,7 +64,6 @@ use crate::entities::{ChildInfo, Data, Element, OpMask, SignatureData, StorageTy
 use crate::env;
 use crate::index::Index;
 use crate::interface::{Interface, StorageError};
-use crate::rotation_log;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 /// Fixed sub-key under which the wrapper's single value entry is stored.
@@ -423,29 +422,18 @@ where
     /// if neither source has a writer set, fail closed with the empty set rather
     /// than trust unverified bytes.
     fn current_writers(&self) -> BTreeMap<PublicKey, OpMask> {
-        if let Ok(Some(log)) = rotation_log::load::<S>(self.inner.id()) {
-            if let Some(writers) = rotation_log::resolve_local(&log) {
-                return writers;
-            }
-        }
-        if let Ok(Some(metadata)) = <Index<S>>::get_metadata(self.inner.id()) {
-            if let StorageType::Shared { writers, .. } = metadata.storage_type {
-                return writers;
-            }
-        }
-        // Neither the rotation log nor a Shared index entry exists. A wrapper a
-        // writer can legitimately act on always has one, so this is an anomaly
-        // (missing/corrupt index, or acting before the wrapper synced). Fail
-        // closed with the empty set — but warn, since the empty set silently
-        // locks every writer out (`insert`/`rotate_writers` → ActionNotAllowed).
-        tracing::warn!(
-            target: "storage::shared",
-            wrapper_id = %self.inner.id(),
-            "WriterSetCell current_writers found no rotation log or Shared index \
-             entry — failing closed with an empty writer set (missing/corrupt \
-             index, or wrapper not yet synced)"
-        );
-        BTreeMap::new()
+        // Delegate to the SINGLE resolver shared with the merge/verify path
+        // (`Interface::resolve_anchor_writers`): it unions the hashed child
+        // collection AND the side store, then runs the order-invariant
+        // `resolve_local`. Using one function here is load-bearing — when this
+        // gate's resolve diverged from the merge-time resolver (this used
+        // `or_else`/collection-first while the other unioned), two nodes
+        // resolved DIFFERENT writer sets for the same anchor (collection on the
+        // originator, side store on a reconcile-only receiver), so a value
+        // signed against one set failed verification on the other ("Invalid
+        // signature for user-owned data") and the cluster split-brained on the
+        // value entry under concurrent rotation. One resolver ⇒ one writer set.
+        crate::interface::Interface::<S>::resolve_anchor_writers(self.inner.id())
     }
 
     /// Read the current writer set (membership only). Public so callers can
