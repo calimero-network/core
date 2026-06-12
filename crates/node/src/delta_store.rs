@@ -26,7 +26,7 @@ use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::delta::StorageDelta;
 use calimero_storage::entities::{OpMask, StorageType};
-use calimero_storage::rotation_log::RotationLog;
+use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 use calimero_storage::store::Key as StorageKey;
 use eyre::Result;
 use indexmap::IndexMap;
@@ -874,9 +874,12 @@ impl ContextStorageApplier {
                     }
                 };
 
-            let resolved = rotation_log_reader::writers_at(&log, &delta.parents, |a, b| {
-                happens_before_in_topology(&topology_snapshot, a, b)
-            });
+            let resolved = rotation_log_reader::writers_at_authenticated(
+                &log,
+                &delta.parents,
+                |a, b| happens_before_in_topology(&topology_snapshot, a, b),
+                verify_rotation_entry,
+            );
 
             if let Some(set) = resolved {
                 let _replaced = out.insert(entity_id, set);
@@ -901,11 +904,12 @@ impl ContextStorageApplier {
                         self.context_id,
                         anchor,
                     ) {
-                        Ok(Some(log)) => {
-                            rotation_log_reader::writers_at(&log, &delta.parents, |a, b| {
-                                happens_before_in_topology(&topology_snapshot, a, b)
-                            })
-                        }
+                        Ok(Some(log)) => rotation_log_reader::writers_at_authenticated(
+                            &log,
+                            &delta.parents,
+                            |a, b| happens_before_in_topology(&topology_snapshot, a, b),
+                            verify_rotation_entry,
+                        ),
                         Ok(None) => None,
                         Err(e) => {
                             return Err(eyre::eyre!(
@@ -987,6 +991,35 @@ fn cap_topology(topology: &mut IndexMap<[u8; 32], Vec<[u8; 32]>>) {
 /// `calimero_node_primitives::sync::storage_bridge::create_runtime_env`
 /// writes inside the WASM execute scope: `Key::RotationLog(entity_id)`
 /// is hashed to a 32-byte state key, and the value lives under
+/// Verify a rotation-log entry's envelope signature at **resolve time** — the
+/// `verify` closure for [`rotation_log_reader::writers_at_authenticated`].
+///
+/// The rotation log rides ordinary sync as a hashed collection child, so its
+/// entries are untrusted in transit (any peer can ship bytes). An entry earns
+/// its place in the writer-set fold only if its `signer` actually signed its
+/// stored `signed_payload` (which commits to `new_writers`/nonce/signer-hint).
+/// A forged or signature-less entry returns `false` and is skipped by the
+/// fold, so a fabricated rotation child cannot shift the resolved writers.
+///
+/// Residual (closed by the P5 `SetWriters` chain): the genesis-of-log entry —
+/// the one with no reachable causal ancestor — is self-authorizing on a valid
+/// signature alone, because the pre-genesis writer set isn't anchored in the
+/// log itself. Every *subsequent* rotation is gated on the prior set's ADMIN
+/// holder inside `writers_at_authenticated`.
+fn verify_rotation_entry(entry: &RotationLogEntry) -> bool {
+    match (
+        entry.signer.as_ref(),
+        entry.signature.as_ref(),
+        entry.signed_payload.as_ref(),
+    ) {
+        (Some(signer), Some(signature), Some(payload)) => {
+            signer.verify_raw_signature(payload, signature).is_ok()
+        }
+        // Unsigned / legacy-bootstrap entries are not authenticated — skipped.
+        _ => false,
+    }
+}
+
 /// `ContextState::new(context_id, state_key)`. Decoded via Borsh.
 ///
 /// Returns `Ok(None)` for entities with no rotation log yet (every
@@ -1021,6 +1054,18 @@ pub(crate) fn load_rotation_log_direct(
                         calimero_storage::collections::decode_rotation_log_entry_child(&bytes)
                     {
                         entries.push(entry);
+                    } else {
+                        // A child whose bytes don't decode as a rotation-log
+                        // entry yields a *partial* log — which could silently
+                        // drop a rotation and mis-resolve the writer set. Surface
+                        // it loudly rather than skipping in silence.
+                        tracing::warn!(
+                            %context_id,
+                            anchor = ?entity_id,
+                            child = ?child.id(),
+                            "load_rotation_log_direct: rotation-log child failed to decode; \
+                             skipping (writer resolution may be incomplete for this anchor)"
+                        );
                     }
                 }
             }

@@ -67,10 +67,18 @@ pub(crate) fn authorize_delta_at_edge(
 
     let owning = match calimero_context::group_store::get_group_for_context(store, context_id) {
         Ok(owning) => owning,
-        Err(_) => {
+        Err(err) => {
+            // Log the underlying error before collapsing to a static reject
+            // reason — a transient store I/O / corruption fault here looks
+            // identical to a deliberate bypass in the caller's warn line
+            // otherwise, which hides real operational problems.
+            tracing::warn!(
+                %context_id, %author, %err,
+                "authorize_delta_at_edge: get_group_for_context failed; rejecting to avoid silent bypass"
+            );
             return DeltaAuthOutcome::Reject(
                 "get_group_for_context failed; rejecting to avoid silent bypass",
-            )
+            );
         }
     };
 
@@ -92,9 +100,17 @@ pub(crate) fn authorize_delta_at_edge(
                     "author is not a member of the group at governance cut",
                 ),
                 Ok(MembershipStatus::Unknown { needed }) => DeltaAuthOutcome::Buffer { needed },
-                Err(_) => DeltaAuthOutcome::Reject(
-                    "membership lookup failed (hash mismatch / corruption)",
-                ),
+                Err(err) => {
+                    // Surface the real cause (hash mismatch / store corruption /
+                    // I/O) rather than swallowing it behind the static reason.
+                    tracing::warn!(
+                        %context_id, %author, group_id = ?group, %err,
+                        "authorize_delta_at_edge: membership lookup failed; rejecting"
+                    );
+                    DeltaAuthOutcome::Reject(
+                        "membership lookup failed (hash mismatch / corruption)",
+                    )
+                }
             }
         }
     }
