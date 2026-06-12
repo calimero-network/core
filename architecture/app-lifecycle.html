@@ -112,16 +112,27 @@ meroctl --node &lt;name&gt; context create \<br>
 
 <div class="card gd">
 <h2>Migration anatomy</h2>
-<p>Use <span class="code">#[app::migrate]</span> on a parameterless function. Read old bytes with <span class="code">read_raw()</span>, deserialize an <strong>old-schema</strong> struct (field order must match Borsh layout), build and <strong>return</strong> the new state struct; the macro serializes it for the runtime.</p>
+<p>Migrations are defined via <span class="code">#[app::state(version = X)]</span> on the new state struct, combined with <span class="code">#[derive(app::Migrate)]</span> and <span class="code">#[migrate(from = OldState, emit = ...)]</span>. The macro automatically derives a migration function that reads old bytes with <span class="code">read_raw()</span>, deserializes the <strong>old-schema</strong> struct (field order must match Borsh layout), and transforms it to the new state.</p>
 <div class="typedef">
-<span class="kw">#[</span><span class="ty">app::migrate</span><span class="kw">]</span><br>
-<span class="kw">pub fn</span> <span class="ty">migrate_v1_to_v2</span><span class="kw">() -></span> <span class="ty">NewState</span> <span class="kw">{</span><br>
-&nbsp;&nbsp;<span class="kw">let</span> old_bytes <span class="kw">=</span> <span class="ty">read_raw</span><span class="kw">().</span><span class="ty">expect</span><span class="kw">(…);</span><br>
-&nbsp;&nbsp;<span class="kw">let</span> old: <span class="ty">OldState</span> <span class="kw">=</span> <span class="ty">BorshDeserialize::deserialize</span><span class="kw">(&amp;mut &amp;old_bytes[..]).</span><span class="ty">expect</span><span class="kw">(…);</span><br>
-&nbsp;&nbsp;<span class="comment">// map fields → NewState { … }</span><br>
+<span class="kw">#[</span><span class="ty">app::state</span><span class="kw">(</span><span class="field">version</span> <span class="kw">=</span> <span class="ty">2</span><span class="kw">)]</span><br>
+<span class="kw">#[</span><span class="ty">derive</span><span class="kw">(</span><span class="ty">app::Migrate</span><span class="kw">)]</span><br>
+<span class="kw">#[</span><span class="ty">migrate</span><span class="kw">(</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">from</span> <span class="kw">=</span> <span class="ty">OldState</span><span class="kw">,</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">emit</span> <span class="kw">=</span> <span class="ty">Event::Migrated</span><br>
+<span class="kw">)]</span><br>
+<span class="kw">pub struct</span> <span class="ty">NewState</span> <span class="kw">{</span><br>
+&nbsp;&nbsp;<span class="field">field1</span><span class="kw">:</span> <span class="ty">Type1</span><span class="kw">,</span><br>
+&nbsp;&nbsp;<span class="field">field2</span><span class="kw">:</span> <span class="ty">Type2</span><span class="kw">,</span><br>
+<span class="kw">}</span><br>
+<br>
+<span class="comment">// impl block to handle field transformation:</span><br>
+<span class="kw">impl</span> <span class="ty">From</span><span class="kw">&lt;</span><span class="ty">OldState</span><span class="kw">&gt;</span> <span class="kw">for</span> <span class="ty">NewState</span> <span class="kw">{</span><br>
+&nbsp;&nbsp;<span class="kw">fn</span> <span class="ty">from</span><span class="kw">(</span>old: <span class="ty">OldState</span><span class="kw">) -></span> <span class="ty">Self</span> <span class="kw">{</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// map old fields → NewState { … }</span><br>
+&nbsp;&nbsp;<span class="kw">}</span><br>
 <span class="kw">}</span>
 </div>
-<p><strong>Deserialization:</strong> use <span class="code">BorshDeserialize::deserialize(&amp;mut &amp;bytes[..])</span> — <em>not</em> <span class="code">try_from_slice</span>. Raw bytes can include trailing storage metadata; strict slice mode fails with <span class="code">"Not all bytes read"</span>.</p>
+<p><strong>Deserialization:</strong> the macro uses <span class="code">BorshDeserialize::deserialize(&amp;mut &amp;bytes[..])</span> — <em>not</em> <span class="code">try_from_slice</span>. Raw bytes can include trailing storage metadata; strict slice mode fails with <span class="code">"Not all bytes read"</span>.</p>
 <details>
 <summary>When is a migration required?</summary>
 <div class="detail-body">
