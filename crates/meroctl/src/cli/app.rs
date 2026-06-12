@@ -11,6 +11,7 @@ pub mod list;
 pub mod list_packages;
 pub mod list_versions;
 pub mod uninstall;
+pub mod versions;
 pub mod watch;
 
 pub const EXAMPLES: &str = r"
@@ -26,8 +27,11 @@ pub const EXAMPLES: &str = r"
   # List all packages
   $ meroctl --node node1 app list-packages
 
-  # List versions of a package
+  # List versions of a package available in the registry
   $ meroctl --node node1 app list-versions com.example.myapp
+
+  # List locally installed versions of an application
+  $ meroctl --node node1 app versions <app_id>
 
   # Get latest version of a package
   $ meroctl --node node1 app get-latest-version com.example.myapp
@@ -60,6 +64,7 @@ pub enum AppSubCommands {
     #[command(alias = "ls")]
     List(list::ListCommand),
     Uninstall(uninstall::UninstallCommand),
+    Versions(versions::VersionsCommand),
     Watch(watch::WatchCommand),
     // Package management commands
     ListPackages(list_packages::ListPackagesCommand),
@@ -74,6 +79,7 @@ impl AppCommand {
             AppSubCommands::Install(install) => install.run(environment).await,
             AppSubCommands::List(list) => list.run(environment).await,
             AppSubCommands::Uninstall(uninstall) => uninstall.run(environment).await,
+            AppSubCommands::Versions(versions) => versions.run(environment).await,
             AppSubCommands::Watch(watch) => watch.run(environment).await,
             // Package management commands
             AppSubCommands::ListPackages(list_packages) => list_packages.run(environment).await,
