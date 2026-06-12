@@ -103,6 +103,14 @@ impl Handler<CreateContextRequest> for ContextManager {
             .filter(|k| *k != [0u8; 32])
             .map(calimero_primitives::blobs::BlobId::from)
             .filter(|b| self.node_client.has_blob(b).unwrap_or(false));
+        // The blob this context inits with — recorded as its birth activation
+        // marker on success, so every new context is positioned on its
+        // group's upgrade ladder from day one (a marker-less context can only
+        // take the legacy single-jump lazy path).
+        let birth_blob: [u8; 32] = pinned_blob
+            .as_ref()
+            .map(|b| *b.as_ref())
+            .unwrap_or_else(|| *application.blob.bytecode.as_ref());
         let module_task = match pinned_blob {
             Some(blob) => self
                 .get_module_for_blob(blob, context_meta.service_name.clone())
@@ -139,6 +147,11 @@ impl Handler<CreateContextRequest> for ContextManager {
                     .into_actor(act)
                 })
                 .map_ok(move |root_hash, act, _ctx| {
+                    crate::activation::record_activation(
+                        &act.datastore,
+                        &context_meta_for_map_ok.id,
+                        birth_blob,
+                    );
                     if let Some(meta) = act.contexts.get_mut(&context_meta_for_map_ok.id) {
                         // this should almost always exist, but with an LruCache, it
                         // may not. And if it's been evicted, the next execution will
