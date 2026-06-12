@@ -597,7 +597,7 @@ async fn resolve_pre_upgrade_schema(
 /// needs a migration but declares no edge, a group more than one hop behind
 /// (chaining not shipped yet), or a version-changing upgrade whose ABIs are
 /// unreadable.
-async fn resolve_upgrade_from_abis(
+pub(crate) async fn resolve_upgrade_from_abis(
     node_client: &calimero_node_primitives::client::NodeClient,
     current_app_key: [u8; 32],
     target_blob: [u8; 32],

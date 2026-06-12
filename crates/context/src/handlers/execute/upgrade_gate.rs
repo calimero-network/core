@@ -41,16 +41,36 @@ pub(super) fn upgrade_rejects_committed_write(block_writes: bool, produced_write
     block_writes && produced_write
 }
 
+/// What the lazy-upgrade path should do for a stale context under a
+/// LazyOnAccess group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum LazyUpgradeAction {
+    /// Context has no activation marker (never activated anything): a
+    /// single jump to the group's current target, method from the
+    /// group-level hint. Sound ONLY for marker-less contexts — the hint
+    /// describes the group's most recent hop, which may not be a marker-ed
+    /// context's next one.
+    SingleJump {
+        target_application_id: ApplicationId,
+        migrate_method: Option<String>,
+        target_app_key: [u8; 32],
+    },
+    /// Context has an activation marker: replay the group's upgrade ladder
+    /// from that bound blob, each hop's method resolved from the two
+    /// blobs' embedded ABIs. The group-level migration hint is never
+    /// executed on this arm.
+    Replay { bound: [u8; 32] },
+}
+
 /// Whether this context, under a LazyOnAccess group, needs an upgrade or
-/// migration. Returns `(target_application_id, migrate_method,
-/// target_app_key)` when one should run. The caller must load bytecode by
-/// `target_app_key` (bundle ids are version-stable) — the application row
-/// may still hold the OLD wasm.
+/// migration, and via which mode. The caller must load bytecode by blob
+/// key (bundle ids are version-stable) — the application row may still
+/// hold the OLD wasm.
 pub(super) fn maybe_lazy_upgrade(
     datastore: &Store,
     context_id: &ContextId,
     current_application_id: &ApplicationId,
-) -> Option<(ApplicationId, Option<String>, [u8; 32])> {
+) -> Option<LazyUpgradeAction> {
     use calimero_governance_store;
 
     // 1. Check if context belongs to a group
@@ -78,11 +98,8 @@ pub(super) fn maybe_lazy_upgrade(
         return None;
     }
 
-    // 4. Extract migration method from group meta (set during upgrade)
-    let migrate_method = meta
-        .migration
-        .as_ref()
-        .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
+    // 4. The activation marker decides both staleness and the mode below.
+    let activated = crate::activation::activated_blob(datastore, context_id);
 
     // 5. Compare current vs target application
     if *current_application_id == meta.target_application_id {
@@ -94,7 +111,6 @@ pub(super) fn maybe_lazy_upgrade(
         if meta.app_key == [0u8; 32] {
             return None;
         }
-        let activated = crate::activation::activated_blob(datastore, context_id);
         if activated == Some(meta.app_key) {
             return None; // bytecode + migration current — context is up to date
         }
@@ -106,10 +122,21 @@ pub(super) fn maybe_lazy_upgrade(
         ?group_id,
         %current_application_id,
         target_app=%meta.target_application_id,
+        marker = activated.is_some(),
         "lazy upgrade triggered for context"
     );
 
-    Some((meta.target_application_id, migrate_method, meta.app_key))
+    Some(match activated {
+        Some(bound) => LazyUpgradeAction::Replay { bound },
+        None => LazyUpgradeAction::SingleJump {
+            target_application_id: meta.target_application_id,
+            migrate_method: meta
+                .migration
+                .as_ref()
+                .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
+            target_app_key: meta.app_key,
+        },
+    })
 }
 
 /// The blob-derived app key the sender executes under (`GroupMeta.app_key`
@@ -126,4 +153,114 @@ pub(super) fn resolve_producing_app_key(
     Ok(MetaRepository::new(datastore)
         .load(&gid)?
         .map(|m| m.app_key))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::GroupMetaValue;
+
+    use super::*;
+
+    const APP_KEY_OLD: [u8; 32] = [0x01; 32];
+    const APP_KEY_NEW: [u8; 32] = [0x02; 32];
+
+    fn store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    fn target_app() -> ApplicationId {
+        ApplicationId::from([0xAA; 32])
+    }
+
+    fn seed_group(store: &Store, ctx: &ContextId, policy: UpgradePolicy) -> ContextGroupId {
+        let gid = ContextGroupId::from([0x60; 32]);
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextGroupRef::new((**ctx).into()),
+                &gid.to_bytes(),
+            )
+            .unwrap();
+        let admin = calimero_primitives::identity::PublicKey::from([0x07; 32]);
+        calimero_governance_store::MetaRepository::new(store)
+            .save(
+                &gid,
+                &GroupMetaValue {
+                    app_key: APP_KEY_NEW,
+                    target_application_id: target_app(),
+                    upgrade_policy: policy,
+                    created_at: 0,
+                    admin_identity: admin,
+                    owner_identity: admin,
+                    migration: Some(b"migrate_v2_to_v3".to_vec()),
+                    auto_join: false,
+                },
+            )
+            .unwrap();
+        gid
+    }
+
+    // The wrong-hop hole (PR-4 regression guard): a marker-ed context must
+    // NEVER receive the group-level migration method — the hint describes
+    // the group's most recent hop, while this context may be several rungs
+    // below it. Running that method against older state mis-decodes or
+    // corrupts. Marker-ed contexts replay the ladder instead.
+    #[test]
+    fn marker_ed_context_replays_and_never_carries_the_group_method() {
+        let store = store();
+        let ctx = ContextId::from([0x50; 32]);
+        let _gid = seed_group(&store, &ctx, UpgradePolicy::LazyOnAccess);
+        crate::activation::record_activation(&store, &ctx, APP_KEY_OLD);
+
+        let action = maybe_lazy_upgrade(&store, &ctx, &target_app()).expect("stale -> fires");
+        assert_eq!(action, LazyUpgradeAction::Replay { bound: APP_KEY_OLD });
+    }
+
+    #[test]
+    fn marker_less_context_keeps_the_single_jump() {
+        let store = store();
+        let ctx = ContextId::from([0x51; 32]);
+        let _gid = seed_group(&store, &ctx, UpgradePolicy::LazyOnAccess);
+
+        let action = maybe_lazy_upgrade(&store, &ctx, &target_app()).expect("stale -> fires");
+        assert_eq!(
+            action,
+            LazyUpgradeAction::SingleJump {
+                target_application_id: target_app(),
+                migrate_method: Some("migrate_v2_to_v3".to_owned()),
+                target_app_key: APP_KEY_NEW,
+            }
+        );
+    }
+
+    #[test]
+    fn up_to_date_marker_returns_none() {
+        let store = store();
+        let ctx = ContextId::from([0x52; 32]);
+        let _gid = seed_group(&store, &ctx, UpgradePolicy::LazyOnAccess);
+        crate::activation::record_activation(&store, &ctx, APP_KEY_NEW);
+
+        assert_eq!(maybe_lazy_upgrade(&store, &ctx, &target_app()), None);
+    }
+
+    #[test]
+    fn non_lazy_policy_returns_none() {
+        let store = store();
+        let ctx = ContextId::from([0x53; 32]);
+        let _gid = seed_group(&store, &ctx, UpgradePolicy::Automatic);
+        crate::activation::record_activation(&store, &ctx, APP_KEY_OLD);
+
+        assert_eq!(maybe_lazy_upgrade(&store, &ctx, &target_app()), None);
+    }
+
+    #[test]
+    fn non_group_context_returns_none() {
+        let store = store();
+        let ctx = ContextId::from([0x54; 32]);
+        assert_eq!(maybe_lazy_upgrade(&store, &ctx, &target_app()), None);
+    }
 }
