@@ -4,7 +4,12 @@
   "description": "Schema for Calimero WASM ABI v1 format",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "types", "methods", "events"],
+  "required": [
+    "schema_version",
+    "types",
+    "methods",
+    "events"
+  ],
   "properties": {
     "schema_version": {
       "type": "string",
@@ -35,7 +40,10 @@
     "migration": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["method", "toSchemaVersion"],
+      "required": [
+        "method",
+        "toSchemaVersion"
+      ],
       "properties": {
         "method": {
           "type": "string",
@@ -48,6 +56,34 @@
         }
       },
       "description": "Present when the app declares a migration (#[app::migrate] / #[derive(app::Migrate)])"
+    },
+    "state_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "AppState::SCHEMA_VERSION of this build (#[app::state(version = N)], default 1). Always emitted by current SDKs; absent only on manifests from older SDKs."
+    },
+    "migrations": {
+      "type": "array",
+      "description": "Declared migration edges, one per retained from->from+1 hop. Retained edges enable chained dispatch for members more than one version behind.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "method",
+          "fromVersion"
+        ],
+        "properties": {
+          "method": {
+            "type": "string",
+            "description": "The migrate entrypoint export for this hop"
+          },
+          "fromVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The state version this edge migrates FROM (targets fromVersion + 1)"
+          }
+        }
+      }
     }
   },
   "definitions": {
@@ -56,7 +92,9 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["$ref"],
+          "required": [
+            "$ref"
+          ],
           "properties": {
             "$ref": {
               "type": "string"
@@ -77,18 +115,32 @@
     "ScalarType": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind"],
+      "required": [
+        "kind"
+      ],
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["bool", "i32", "i64", "u32", "u64", "f32", "f64", "string", "unit"]
+          "enum": [
+            "bool",
+            "i32",
+            "i64",
+            "u32",
+            "u64",
+            "f32",
+            "f64",
+            "string",
+            "unit"
+          ]
         }
       }
     },
     "BytesType": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind"],
+      "required": [
+        "kind"
+      ],
       "properties": {
         "kind": {
           "const": "bytes"
@@ -123,7 +175,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "items"],
+          "required": [
+            "kind",
+            "items"
+          ],
           "properties": {
             "kind": {
               "const": "list"
@@ -139,7 +194,11 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "key", "value"],
+          "required": [
+            "kind",
+            "key",
+            "value"
+          ],
           "properties": {
             "kind": {
               "const": "map"
@@ -158,7 +217,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "fields"],
+          "required": [
+            "kind",
+            "fields"
+          ],
           "properties": {
             "kind": {
               "const": "record"
@@ -182,7 +244,10 @@
     "Field": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "type"],
+      "required": [
+        "name",
+        "type"
+      ],
       "properties": {
         "name": {
           "type": "string"
@@ -198,7 +263,9 @@
     "Variant": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name"],
+      "required": [
+        "name"
+      ],
       "properties": {
         "name": {
           "type": "string"
@@ -216,7 +283,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "fields"],
+          "required": [
+            "kind",
+            "fields"
+          ],
           "properties": {
             "kind": {
               "const": "record"
@@ -232,7 +302,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "variants"],
+          "required": [
+            "kind",
+            "variants"
+          ],
           "properties": {
             "kind": {
               "const": "variant"
@@ -248,7 +321,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "target"],
+          "required": [
+            "kind",
+            "target"
+          ],
           "properties": {
             "kind": {
               "const": "alias"
@@ -269,7 +345,10 @@
     "Parameter": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "type"],
+      "required": [
+        "name",
+        "type"
+      ],
       "properties": {
         "name": {
           "type": "string"
@@ -285,7 +364,9 @@
     "Error": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["code"],
+      "required": [
+        "code"
+      ],
       "properties": {
         "code": {
           "type": "string"
@@ -298,7 +379,10 @@
     "Method": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "params"],
+      "required": [
+        "name",
+        "params"
+      ],
       "properties": {
         "name": {
           "type": "string"
@@ -323,7 +407,11 @@
         },
         "intent": {
           "type": "string",
-          "enum": ["read_only", "mutating", "unspecified"],
+          "enum": [
+            "read_only",
+            "mutating",
+            "unspecified"
+          ],
           "description": "Read/write intent declared by the app author. Absent on modules compiled before this field existed; treated as write intent by the node."
         }
       }
@@ -331,7 +419,9 @@
     "Event": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name"],
+      "required": [
+        "name"
+      ],
       "properties": {
         "name": {
           "type": "string"
@@ -342,4 +432,4 @@
       }
     }
   }
-} 
+}

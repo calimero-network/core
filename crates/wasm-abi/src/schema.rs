@@ -14,8 +14,24 @@ pub struct Manifest {
     /// Present when the app declares a migrate via `#[app::migrate]` /
     /// `#[derive(app::Migrate)]`. Absent on code-only releases and on every
     /// pre-existing ABI — hence `default` so older manifests still deserialize.
+    /// Deprecated alias of the newest entry in `migrations`; kept emitted for
+    /// readers that predate the edge list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration: Option<MigrationAbi>,
+    /// `AppState::SCHEMA_VERSION` of this build (`#[app::state(version = N)]`,
+    /// default 1). Always emitted by current SDKs; `None` only on manifests
+    /// from older SDKs — readers treat missing as 1 (via
+    /// [`Manifest::state_version_or_default`]). The total from/to source for
+    /// the upgrade decision table: unlike `migration.to_schema_version` it is
+    /// present on code-only releases too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_version: Option<u32>,
+    /// Declared migration edges, one per retained `from → from+1` hop.
+    /// Single entry on apps that only keep the latest migration; multiple
+    /// entries enable chained dispatch for members more than one version
+    /// behind. Empty on older manifests (serde default).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub migrations: Vec<MigrationEdgeAbi>,
 }
 
 /// The app declares it migrates from an older schema: the entrypoint to invoke
@@ -30,6 +46,18 @@ pub struct MigrationAbi {
     pub to_schema_version: u32,
 }
 
+/// One declared migration edge: invoking `method` carries state from
+/// `from_version` to `from_version + 1`. Retained edges enable chained
+/// dispatch for members more than one version behind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationEdgeAbi {
+    /// The migrate entrypoint export for this hop.
+    pub method: String,
+    /// The state version this edge migrates FROM (targets `from_version + 1`).
+    pub from_version: u32,
+}
+
 impl Default for Manifest {
     fn default() -> Self {
         Self {
@@ -39,6 +67,8 @@ impl Default for Manifest {
             events: Vec::new(),
             state_root: None,
             migration: None,
+            state_version: None,
+            migrations: Vec::new(),
         }
     }
 }
@@ -386,7 +416,41 @@ impl Manifest {
             events: Vec::new(),
             state_root: None,
             migration: None,
+            state_version: None,
+            migrations: Vec::new(),
         }
+    }
+
+    /// The build's state version, total across SDK generations: explicit
+    /// `state_version` when present, else the legacy
+    /// `migration.to_schema_version` (9.4-era bundles), else 1 (pre-versioned
+    /// apps).
+    #[must_use]
+    pub fn state_version_or_default(&self) -> u32 {
+        self.state_version
+            .or_else(|| self.migration.as_ref().map(|m| m.to_schema_version))
+            .unwrap_or(1)
+    }
+
+    /// The declared edge migrating FROM `from`, if any. Falls back to the
+    /// legacy single `migration` field when the edge list is empty and that
+    /// migration targets `from + 1`.
+    #[must_use]
+    pub fn edge_from(&self, from: u32) -> Option<MigrationEdgeAbi> {
+        if let Some(edge) = self.migrations.iter().find(|e| e.from_version == from) {
+            return Some(edge.clone());
+        }
+        if self.migrations.is_empty() {
+            if let Some(m) = &self.migration {
+                if m.to_schema_version == from + 1 {
+                    return Some(MigrationEdgeAbi {
+                        method: m.method.clone(),
+                        from_version: from,
+                    });
+                }
+            }
+        }
+        None
     }
 
     /// Extract the state schema (state root type and all its dependencies)
@@ -420,6 +484,8 @@ impl Manifest {
             events: Vec::new(),
             state_root: Some(state_root_name.clone()),
             migration: self.migration.clone(),
+            state_version: self.state_version,
+            migrations: self.migrations.clone(),
         })
     }
 
@@ -802,5 +868,82 @@ mod tests {
         let old_json = r#"{"name":"old","params":[]}"#;
         let old: Method = serde_json::from_str(old_json).unwrap();
         assert_eq!(old.intent, MethodIntent::Unspecified);
+    }
+
+    // Old manifests (no state_version / migrations) must keep deserializing,
+    // and the new fields must round-trip. `state_version_or_default` is the
+    // total version source: explicit field → legacy migration target → 1.
+    #[test]
+    fn state_version_roundtrip_and_backcompat() {
+        let old = r#"{"schema_version":"wasm-abi/1","types":{},"methods":[],"events":[]}"#;
+        let m: Manifest = serde_json::from_str(old).unwrap();
+        assert_eq!(m.state_version, None);
+        assert!(m.migrations.is_empty());
+        assert_eq!(m.state_version_or_default(), 1);
+
+        let mut m2 = Manifest::new();
+        m2.state_version = Some(2);
+        m2.migrations = vec![MigrationEdgeAbi {
+            method: "migrate".to_owned(),
+            from_version: 1,
+        }];
+        let json = serde_json::to_string(&m2).unwrap();
+        assert!(json.contains("stateVersion") || json.contains("state_version"));
+        let back: Manifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.state_version, Some(2));
+        assert_eq!(back.state_version_or_default(), 2);
+        assert_eq!(back.migrations.len(), 1);
+
+        // 9.4-era manifests: only `migration.to_schema_version` present.
+        let mut legacy = Manifest::new();
+        legacy.migration = Some(MigrationAbi {
+            method: "migrate_v1_to_v2".to_owned(),
+            to_schema_version: 2,
+        });
+        assert_eq!(legacy.state_version_or_default(), 2);
+    }
+
+    // `edge_from` resolves the declared hop: exact edge-list match first,
+    // legacy single-migration fallback only for the matching from→from+1 hop.
+    #[test]
+    fn edge_from_resolution() {
+        let mut m = Manifest::new();
+        m.migrations = vec![
+            MigrationEdgeAbi {
+                method: "m1".to_owned(),
+                from_version: 1,
+            },
+            MigrationEdgeAbi {
+                method: "m2".to_owned(),
+                from_version: 2,
+            },
+        ];
+        assert_eq!(m.edge_from(1).unwrap().method, "m1");
+        assert_eq!(m.edge_from(2).unwrap().method, "m2");
+        assert!(m.edge_from(3).is_none());
+
+        let mut legacy = Manifest::new();
+        legacy.migration = Some(MigrationAbi {
+            method: "migrate_v1_to_v2".to_owned(),
+            to_schema_version: 2,
+        });
+        assert_eq!(legacy.edge_from(1).unwrap().method, "migrate_v1_to_v2");
+        assert!(legacy.edge_from(2).is_none()); // wrong hop for the legacy decl
+
+        // extract_state_schema (the EMBEDDED form the node reads) carries both.
+        let mut full = Manifest::new();
+        full.state_root = Some("Root".to_owned());
+        drop(
+            full.types
+                .insert("Root".to_owned(), TypeDef::Record { fields: vec![] }),
+        );
+        full.state_version = Some(3);
+        full.migrations = vec![MigrationEdgeAbi {
+            method: "m".to_owned(),
+            from_version: 2,
+        }];
+        let embedded = full.extract_state_schema().unwrap();
+        assert_eq!(embedded.state_version, Some(3));
+        assert_eq!(embedded.migrations.len(), 1);
     }
 }

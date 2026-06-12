@@ -217,6 +217,53 @@ impl Debug for ContextExecutingBlob {
     }
 }
 
+/// Per-context activation marker key: the bytecode blob this context last
+/// ACTIVATED (migration committed, or code-only swap applied). One key per
+/// context, in its own column.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextActivatedBlob(Key<ContextId>);
+
+impl ContextActivatedBlob {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId) -> Self {
+        Self(Key((*context_id).into()))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
+    }
+}
+
+impl AsKeyParts for ContextActivatedBlob {
+    type Components = (ContextId,);
+
+    fn column() -> Column {
+        Column::ContextActivatedBlob
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
+    }
+}
+
+impl FromKeyParts for ContextActivatedBlob {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(*<&_>::from(&parts)))
+    }
+}
+
+impl Debug for ContextActivatedBlob {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextActivatedBlob")
+            .field("id", &self.context_id())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextConfig(Key<ContextId>);

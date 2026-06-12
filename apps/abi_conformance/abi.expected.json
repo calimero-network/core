@@ -962,5 +962,6 @@
       }
     }
   ],
-  "state_root": "AbiState"
+  "state_root": "AbiState",
+  "state_version": 1
 }

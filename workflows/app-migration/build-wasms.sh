@@ -73,6 +73,19 @@ for suite in "${SUITES[@]}"; do
     bash "$suite/build.sh"
 done
 
+# Embed each fixture's state schema as the wasm's `calimero_abi_v1` section
+# (AFTER build.sh so wasm-opt cannot strip it). The node reads this embedded
+# form for the upgrade decision table (state_version + migration edges) and
+# the identity-downgrade gate — without it both are fail-open/unresolvable.
+echo ">>> Building mero-abi (embed tool)"
+cargo build -p mero-abi --release
+ABI_TOOL="${CARGO_TARGET_DIR:-target}/release/mero-abi"
+for suite in "${SUITES[@]}"; do
+    dir_name="$(basename "$suite")"
+    wasm_file="${dir_name//-/_}.wasm"
+    "$ABI_TOOL" embed "$suite/res/$wasm_file" "$suite/res/state-schema.json"
+done
+
 # Wrap every fixture into a signed single-service `.mpk`. v1/v2 of a pair
 # share the package name, so they install under the SAME ApplicationId
 # (hash(package, signer)) — the realistic upgrade shape, where only the

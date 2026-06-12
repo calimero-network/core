@@ -354,7 +354,31 @@ pub async fn update_application_id(
         let _ = node_client.send_event(event);
     }
 
+    // Unified activation marker: code-only updates (this fn — the eager
+    // propagator's no-migration route and the lazy code-only finish) count
+    // as activations too, or the same-id up-to-date rule would keep reading
+    // these contexts as pending.
+    crate::activation::record_activation(
+        &datastore,
+        &context_id,
+        activated_row_blob(&node_client, &application),
+    );
+
     Ok(application)
+}
+
+/// The bytecode blob this update activated, read FRESH from the application
+/// row. The `Application` passed through these handlers can be a cache
+/// snapshot taken before a same-id in-place install moved the row — recording
+/// its blob would mark the context as having activated the OLD bytecode.
+fn activated_row_blob(node_client: &NodeClient, application: &Application) -> [u8; 32] {
+    node_client
+        .get_application(&application.id)
+        .ok()
+        .flatten()
+        .map_or(*application.blob.bytecode.as_ref(), |fresh| {
+            *fresh.blob.bytecode.as_ref()
+        })
 }
 
 /// Verifies AppKey continuity by checking that the signerId matches between
@@ -659,6 +683,15 @@ pub(crate) async fn update_application_with_migration(
     ) {
         let _ = node_client.send_event(event);
     }
+
+    // Unified activation marker: this context now executes the new app's
+    // bytecode (whether a migration committed above or this was a code-only
+    // update). The single up-to-date signal for the gate/trigger/rollup.
+    crate::activation::record_activation(
+        &datastore,
+        &context_id,
+        activated_row_blob(&node_client, &application),
+    );
 
     // Post-commit: recompute this node's owner's pending-authored count over the
     // committed v2 state and persist it for the heartbeat self-report (6f.8).

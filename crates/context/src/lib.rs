@@ -28,6 +28,7 @@ use tokio::sync::{Mutex, RwLock};
 use calimero_governance_store::metrics::Metrics;
 use calimero_wasm_abi::schema::MethodIntent;
 
+pub mod activation;
 pub mod auto_follow;
 mod cache;
 pub mod config;
@@ -36,6 +37,7 @@ pub mod governance_dag;
 pub mod handlers;
 pub mod hlc_fence;
 mod lifecycle;
+pub mod migration_plan;
 pub mod self_purge;
 
 pub(crate) use cache::{BoundedCache, Evictable};

@@ -6,7 +6,8 @@ description: >
   node 2 materialises subgroup membership via inheritance + joins the
   context. Node 1 writes v1 state, waits for node 2 to catch up, then
   runs upgrade_group on the subgroup (per-context, cascade=false)
-  with migrate_v1_to_v2. Asserts the Migrated event + v2 schema shape
+  with NO migrate_method — the node resolves migrate_v1_to_v2 from the
+  target bundle's embedded ABI. Asserts the Migrated event + v2 schema shape
   on node 1 AND mirrors the post-migration schema_info on node 2 to
   prove cross-node convergence via context-sync gossip.
 
@@ -188,7 +189,10 @@ steps:
     node: app-migration-baseline-1
     group_id: "{{group_id}}"
     target_application_id: "{{app_v2}}"
-    migrate_method: migrate_v1_to_v2
+    # migrate_method intentionally omitted: the node resolves the
+    # migration from the target bundle\'s embedded ABI (declared by
+    # #[derive(app::Migrate)]). This workflow is the regression guard
+    # for that resolution path.
 
   # Fixed wait, NOT wait_for_sync: per-context migration apply is
   # asynchronous and a root_hash-based wait_for_sync polled here exits

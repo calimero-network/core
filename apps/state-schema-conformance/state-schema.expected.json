@@ -452,5 +452,6 @@
   },
   "methods": [],
   "events": [],
-  "state_root": "StateSchemaConformance"
+  "state_root": "StateSchemaConformance",
+  "state_version": 1
 }

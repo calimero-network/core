@@ -3501,19 +3501,16 @@ pub(crate) fn pending_upgrade_info(
     if current_app != target {
         return Some((target, stage_blob_for(store, &meta)));
     }
-    // Same id: bundle-app upgrade. Pending while the group's migration has
-    // not been applied to this context — until the lazy migrate runs on next
-    // access, this node's pre-migration state must not reconcile against
-    // already-migrated peers.
-    let method = meta
-        .migration
-        .as_ref()
-        .and_then(|bytes| String::from_utf8(bytes.clone()).ok())?;
-    let applied = calimero_governance_store::MigrationsRepository::new(store)
-        .last_migration(&group_id, context_id)
-        .ok()
-        .flatten()
-        .is_some_and(|last| last == method);
+    // Same id: bundle-app upgrade. Gate state sync only while a MIGRATION is
+    // pending for this context — until the lazy migrate runs on next access,
+    // this node's pre-migration state must not reconcile against
+    // already-migrated peers. (Code-only swaps carry no schema hazard, so
+    // they never gate.) "Applied" is the unified activation marker — legacy
+    // method/blob markers fold forward on first read.
+    let _migration_present = meta.migration.as_ref()?;
+    let applied = calimero_context::activation::activated_blob_folding_legacy(
+        store, &group_id, context_id, &meta,
+    ) == Some(meta.app_key);
     (!applied).then(|| (target, stage_blob_for(store, &meta)))
 }
 
