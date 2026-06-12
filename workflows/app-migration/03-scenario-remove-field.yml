@@ -42,18 +42,10 @@ steps:
   - name: Install migration-suite-v2-add-field on node 1
     type: install_application
     node: app-migration-remove-1
-    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    path: apps/migrations/migration-suite-v2-add-field/res/migration-suite-2.0.0.mpk
     dev: true
     outputs:
       app_v2: applicationId
-
-  - name: Install migration-suite-v3-remove-field on node 1
-    type: install_application
-    node: app-migration-remove-1
-    path: apps/migrations/migration-suite-v3-remove-field/res/migration_suite_v3_remove_field.wasm
-    dev: true
-    outputs:
-      app_v3: applicationId
 
   # Phase 2: Node 1 builds namespace + Open subgroup + context.
   - name: Create namespace (v2) on node 1
@@ -182,6 +174,23 @@ steps:
     upgrade_policy: lazy_on_access
 
   # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
+  - name: Install migration-suite-v3-remove-field on node 1
+    type: install_application
+    node: app-migration-remove-1
+    path: apps/migrations/migration-suite-v3-remove-field/res/migration-suite-3.0.0.mpk
+    dev: true
+    outputs:
+      app_v3: applicationId
+
+
+  - name: Assert both versions share one application id (bundle same-id)
+    # Same-package bundles derive ApplicationId = hash(package, signer),
+    # so the second install MUST dedup onto the first id — the upgrade
+    # below then exercises the same-id (blob-only) propagation path.
+    type: json_assert
+    statements:
+      - 'equal("{{app_v2}}", "{{app_v3}}")'
+
   - name: Upgrade subgroup v2 → v3 (drops notes field)
     type: upgrade_group
     node: app-migration-remove-1
@@ -286,9 +295,5 @@ steps:
     node: app-migration-remove-1
     application_id: "{{app_v2}}"
 
-  - name: Uninstall v3 on node 1
-    type: uninstall_application
-    node: app-migration-remove-1
-    application_id: "{{app_v3}}"
 
 stop_all_nodes: false

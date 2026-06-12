@@ -4,7 +4,9 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_client::group::{GetMigrationStatusRequest, MemberMigrationReport};
+use calimero_context_client::group::{
+    GetMigrationStatusRequest, MemberMigrationReport, MigrationFailureKind,
+};
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     GetMigrationStatusApiResponse, MemberMigrationReportApiData, MemberMigrationStatusApiEntry,
@@ -55,6 +57,7 @@ pub async fn handler(
                         synced_up_to_hlc: r.synced_up_to_hlc,
                         reported_at: r.reported_at,
                         authored_remaining: r.authored_remaining,
+                        migration_failed: MigrationFailureKind::from_u8(r.migration_failed),
                     },
                 )
             })
@@ -88,6 +91,7 @@ pub async fn handler(
                         synced_up_to_hlc: r.synced_up_to_hlc,
                         reported_at: r.reported_at,
                         authored_remaining: r.authored_remaining,
+                        migration_failed: r.migration_failed.map(|k| k.as_str().to_owned()),
                     }),
                     state: m.state.as_str().to_owned(),
                 })
@@ -102,6 +106,7 @@ pub async fn handler(
                         migrated: status.rollup.migrated,
                         in_progress: status.rollup.in_progress,
                         unknown: status.rollup.unknown,
+                        failed: status.rollup.failed,
                         total: status.rollup.total,
                         all_migrated: status.rollup.all_migrated,
                         members_pending_signature: status.rollup.members_pending_signature,

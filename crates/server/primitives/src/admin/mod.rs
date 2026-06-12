@@ -1959,6 +1959,11 @@ pub struct MemberMigrationReportApiData {
     /// Member's self-reported pending-authored count (best-effort; 6f).
     #[serde(default)]
     pub authored_remaining: u64,
+    /// Why this member's migration did not complete: `"check_aborted"` or
+    /// `"apply_failed"`. Absent when the member has no failure on record (its
+    /// `state` is then `"migrated"`/`"in_progress"`/`"unknown"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration_failed: Option<String>,
 }
 
 /// One per-member row in the migration-status rollup: a pinned-cohort member,
@@ -1972,7 +1977,8 @@ pub struct MemberMigrationStatusApiEntry {
     /// heartbeat (in which case `state == "unknown"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<MemberMigrationReportApiData>,
-    /// Derived state discriminant: `"migrated"`, `"in_progress"`, or `"unknown"`.
+    /// Derived state discriminant: `"migrated"`, `"in_progress"`, `"unknown"`,
+    /// or `"failed"`.
     pub state: String,
 }
 
@@ -1983,9 +1989,13 @@ pub struct MigrationStatusRollupApiData {
     pub migrated: usize,
     pub in_progress: usize,
     pub unknown: usize,
+    /// Members whose migrate aborted (migration-check failed or apply errored).
+    #[serde(default)]
+    pub failed: usize,
     pub total: usize,
     /// `true` iff every pinned-cohort member reported a converged schema with
-    /// zero residue. Any `unknown` (or in-progress) member keeps this `false`.
+    /// zero residue. Any `unknown`, `failed`, or in-progress member keeps this
+    /// `false`.
     pub all_migrated: bool,
     /// Count of members reporting `authored_remaining > 0` (owners with
     /// identity-gated entries still to re-sign; 6f, skew #1). Best-effort.
@@ -2913,16 +2923,18 @@ mod tests {
         // member surfacing as `unknown` with its `report` field omitted.
         let migrated_peer = PublicKey::from([0x11; 32]);
         let unknown_peer = PublicKey::from([0x22; 32]);
+        let failed_peer = PublicKey::from([0x33; 32]);
 
         let resp = GetMigrationStatusApiResponse {
             target_version: 2,
-            expected_members: 2,
+            expected_members: 3,
             cohort_pinned_at_hlc: Some("hlc-abc".into()),
             rollup: MigrationStatusRollupApiData {
                 migrated: 1,
                 in_progress: 0,
                 unknown: 1,
-                total: 2,
+                failed: 1,
+                total: 3,
                 all_migrated: false,
                 members_pending_signature: 1,
             },
@@ -2936,6 +2948,7 @@ mod tests {
                         synced_up_to_hlc: 7,
                         reported_at: 1_700_000_000,
                         authored_remaining: 3,
+                        migration_failed: None,
                     }),
                     state: "migrated".into(),
                 },
@@ -2944,27 +2957,46 @@ mod tests {
                     report: None,
                     state: "unknown".into(),
                 },
+                MemberMigrationStatusApiEntry {
+                    peer: failed_peer,
+                    report: Some(MemberMigrationReportApiData {
+                        schema_version: 1,
+                        residue_auto: 1,
+                        residue_identity: 0,
+                        synced_up_to_hlc: 5,
+                        reported_at: 1_700_000_001,
+                        authored_remaining: 0,
+                        migration_failed: Some("check_aborted".into()),
+                    }),
+                    state: "failed".into(),
+                },
             ],
         };
 
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["targetVersion"], 2);
-        assert_eq!(json["expectedMembers"], 2);
+        assert_eq!(json["expectedMembers"], 3);
         assert_eq!(json["cohortPinnedAtHlc"], "hlc-abc");
         assert_eq!(json["rollup"]["allMigrated"], false);
         assert_eq!(json["rollup"]["migrated"], 1);
         assert_eq!(json["rollup"]["unknown"], 1);
+        assert_eq!(json["rollup"]["failed"], 1);
         assert_eq!(json["rollup"]["membersPendingSignature"], 1);
 
         let members = json["members"].as_array().unwrap();
-        assert_eq!(members.len(), 2);
+        assert_eq!(members.len(), 3);
         assert_eq!(members[0]["state"], "migrated");
         assert_eq!(members[0]["report"]["schemaVersion"], 2);
         assert_eq!(members[0]["report"]["syncedUpToHlc"], 7);
         assert_eq!(members[0]["report"]["authoredRemaining"], 3);
+        // A migrated member carries no failure reason — `migrationFailed` omitted.
+        assert!(members[0]["report"].get("migrationFailed").is_none());
         // The unknown member has no fresh report — `report` is omitted.
         assert_eq!(members[1]["state"], "unknown");
         assert!(members[1].get("report").is_none());
+        // The failed member surfaces its categorized reason.
+        assert_eq!(members[2]["state"], "failed");
+        assert_eq!(members[2]["report"]["migrationFailed"], "check_aborted");
     }
 
     #[test]
@@ -2978,6 +3010,7 @@ mod tests {
                 migrated: 0,
                 in_progress: 0,
                 unknown: 0,
+                failed: 0,
                 total: 0,
                 all_migrated: false,
                 members_pending_signature: 0,

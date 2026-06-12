@@ -56,9 +56,14 @@ pub(super) fn upgrade_rejects_committed_write(block_writes: bool, produced_write
 /// Checks if a context belongs to a group with LazyOnAccess policy and
 /// needs an upgrade or migration.
 ///
-/// Returns `(target_application_id, migrate_method, group_id)` when an
-/// upgrade should be performed.  The `group_id` is included so the caller
-/// can record a per-context migration marker after a successful run.
+/// Returns `(target_application_id, migrate_method, group_id, target_app_key)`
+/// when an upgrade should be performed.  The `group_id` is included so the
+/// caller can record a per-context migration marker after a successful run.
+/// `target_app_key` is the group's blob-derived app key (the target bytecode
+/// blob id, stamped by the upgrade): bundle apps keep a version-stable
+/// `ApplicationId`, so the caller must compare this against the blob actually
+/// installed under `target_application_id` and fetch it first when they
+/// differ — otherwise the migrate would load the OLD bytecode.
 pub(super) fn maybe_lazy_upgrade(
     datastore: &Store,
     context_id: &ContextId,
@@ -67,6 +72,7 @@ pub(super) fn maybe_lazy_upgrade(
     ApplicationId,
     Option<String>,
     calimero_context_config::types::ContextGroupId,
+    [u8; 32],
 )> {
     use calimero_governance_store;
 
@@ -103,24 +109,49 @@ pub(super) fn maybe_lazy_upgrade(
 
     // 5. Compare current vs target application
     if *current_application_id == meta.target_application_id {
-        // IDs match — only proceed if there is a pending migration that
-        // hasn't been applied to this context yet.
-        let Some(ref method) = migrate_method else {
-            return None; // no migration, context is already up to date
-        };
+        // IDs match — bundle ids are version-stable, so this is either a
+        // pending migration or a pending code-only bytecode bump.
+        match migrate_method {
+            Some(ref method) => {
+                // Check per-context marker set after a successful migration run.
+                let already_applied = MigrationsRepository::new(datastore)
+                    .last_migration(&group_id, context_id)
+                    .ok()
+                    .flatten()
+                    .map(|last| last == *method)
+                    .unwrap_or(false);
 
-        // Check per-context marker set after a successful migration run.
-        let already_applied = MigrationsRepository::new(datastore)
-            .last_migration(&group_id, context_id)
-            .ok()
-            .flatten()
-            .map(|last| last == *method)
-            .unwrap_or(false);
-
-        if already_applied {
-            return None; // migration was already applied to this context
+                if already_applied {
+                    return None; // migration was already applied to this context
+                }
+                // Fall through: migration is pending.
+            }
+            None => {
+                // Code-only: pending until this context has ACTIVATED the
+                // group's recorded target blob (app_key). The row alone can't
+                // signal this — an in-place install flips the row before the
+                // upgrade, leaving the actor's module cache on the old build —
+                // so activation is tracked per context, as a synthetic marker
+                // in the migration-marker store (real migrate methods never
+                // collide with the "blob:" prefix). Legacy groups whose
+                // app_key was randomly seeded converge after one activation
+                // pass (the marker then matches and this stops firing).
+                if meta.app_key == [0u8; 32] {
+                    return None;
+                }
+                let marker = activation_marker(&meta.app_key);
+                let activated = MigrationsRepository::new(datastore)
+                    .last_migration(&group_id, context_id)
+                    .ok()
+                    .flatten()
+                    .map(|last| last == marker)
+                    .unwrap_or(false);
+                if activated {
+                    return None; // bytecode current — context is up to date
+                }
+                // Fall through: code-only bytecode activation is pending.
+            }
         }
-        // Fall through: migration is pending.
     }
 
     info!(
@@ -131,7 +162,12 @@ pub(super) fn maybe_lazy_upgrade(
         "lazy upgrade triggered for context"
     );
 
-    Some((meta.target_application_id, migrate_method, group_id))
+    Some((
+        meta.target_application_id,
+        migrate_method,
+        group_id,
+        meta.app_key,
+    ))
 }
 
 /// The blob-derived app key the sender is executing under — `GroupMeta.app_key`
@@ -157,4 +193,12 @@ pub(super) fn resolve_producing_app_key(
     Ok(MetaRepository::new(datastore)
         .load(&gid)?
         .map(|m| m.app_key))
+}
+
+/// Per-context marker recording that the group's target bytecode (`app_key`)
+/// has been activated (caches evicted, row verified). Stored via the
+/// migration-marker repository under a synthetic method name; the `blob:`
+/// prefix cannot collide with a real `#[app::migrate]` method.
+pub(super) fn activation_marker(app_key: &[u8; 32]) -> String {
+    format!("blob:{}", hex::encode(app_key))
 }

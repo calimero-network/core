@@ -602,6 +602,22 @@ impl GovernancePreflight {
 }
 
 impl ContextManager {
+    /// Evict every per-application actor cache for `application_id`:
+    /// the application record, compiled modules (all services), and
+    /// read-only method sets. Required whenever the bytecode under an
+    /// application id may have changed (in-place same-id installs,
+    /// migrations) — a stale read_only_methods entry would take a shared
+    /// read lock for methods whose #[app::view] intent changed.
+    pub(crate) fn evict_application_caches(
+        &mut self,
+        application_id: calimero_primitives::application::ApplicationId,
+    ) {
+        let _ = self.applications.remove(&application_id);
+        self.modules.retain(|(id, _), _| *id != application_id);
+        self.read_only_methods
+            .retain(|(id, _), _| *id != application_id);
+    }
+
     /// Common preflight for governance mutation handlers.
     ///
     /// Resolves the requester identity, loads group metadata, checks admin

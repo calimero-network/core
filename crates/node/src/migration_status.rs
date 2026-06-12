@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message};
 use calimero_context::group_store::NamespaceRepository;
+use calimero_context_client::group::MigrationFailureKind;
 use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedMigrationHeartbeat};
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::messages::MigrationStatusReport;
@@ -65,6 +66,10 @@ pub struct CacheEntry {
     /// Peer's self-reported pending-authored count (sum across its namespace
     /// contexts). Surfaced in the rollup as `membersPendingSignature` (6f).
     pub authored_remaining: u64,
+    /// Peer's self-reported migration-failure discriminant (`0` = none, `1` =
+    /// migration-check aborted, `2` = apply errored). Raw `u8` mirroring the
+    /// wire; the server maps it back to a typed kind for the rollup.
+    pub migration_failed: u8,
     /// Peer-signed millis-since-epoch from the heartbeat itself.
     /// Authoritative per-peer ordering signal — used by `insert` to drop
     /// stale heartbeats that gossipsub may re-deliver out-of-order on mesh
@@ -89,6 +94,7 @@ pub fn cache_entry_to_report(entry: &CacheEntry) -> MigrationStatusReport {
         synced_up_to_hlc: entry.synced_up_to_hlc,
         reported_at: entry.ts_millis,
         authored_remaining: entry.authored_remaining,
+        migration_failed: entry.migration_failed,
     }
 }
 
@@ -187,6 +193,7 @@ impl MigrationStatusCache {
                 residue_identity: hb.residue_identity,
                 synced_up_to_hlc: hb.synced_up_to_hlc,
                 authored_remaining: hb.authored_remaining,
+                migration_failed: hb.migration_failed,
                 ts_millis: hb.ts_millis,
                 received_at: now,
             },
@@ -261,6 +268,11 @@ pub struct MigrationFacts {
     /// like the residue fields (a per-namespace sum of per-context u32 counts).
     /// Best-effort self-report — distinct from `residue_identity` (still 0).
     pub authored_remaining: u64,
+    /// Set when one of this namespace's contexts has a migration-failure marker
+    /// persisted (migration-check aborted or apply errored) AND that context is
+    /// still below target — so a recovered context never reports stale failure.
+    /// `None` = no failure on record. Self-report; categorized, not a gate.
+    pub migration_failed: Option<MigrationFailureKind>,
 }
 
 /// Decide whether the local node should emit an *on-change* heartbeat for a
@@ -269,8 +281,9 @@ pub struct MigrationFacts {
 ///
 /// Mirrors the readiness "edge-trigger on tier transition" pattern: a peer
 /// should re-advertise immediately when its *reported state* changes —
-/// here when `schema_version`, `residue_auto`, or `residue_identity` flips
-/// — rather than waiting up to a full periodic interval. `synced_up_to_hlc`
+/// here when `schema_version`, `residue_auto`, `residue_identity`,
+/// `authored_remaining`, or `migration_failed` flips — rather than waiting up
+/// to a full periodic interval. `synced_up_to_hlc`
 /// is intentionally NOT an edge trigger: it advances on every applied op and
 /// would defeat the purpose of debouncing to the periodic tick; the periodic
 /// beat carries its latest value.
@@ -283,6 +296,7 @@ pub fn should_emit_on_change(last: Option<MigrationFacts>, current: MigrationFac
                 || prev.residue_auto != current.residue_auto
                 || prev.residue_identity != current.residue_identity
                 || prev.authored_remaining != current.authored_remaining
+                || prev.migration_failed != current.migration_failed
         }
     }
 }
@@ -421,6 +435,9 @@ pub fn compute_namespace_migration_facts(
     // the dedicated node-local key (6f.8). A plain store read — no wasm, no
     // committed-state iteration. Absent row ⇒ 0.
     let mut authored_remaining: u64 = 0;
+    // Most-severe persisted migration-failure across the namespace's contexts,
+    // honored only for contexts still below target (self-healing on recovery).
+    let mut migration_failed: Option<MigrationFailureKind> = None;
     for context_id in &contexts {
         if let Ok(Some(entry)) =
             datastore
@@ -431,7 +448,30 @@ pub fn compute_namespace_migration_facts(
         {
             authored_remaining = authored_remaining.saturating_add(u64::from(entry.count));
         }
-        let Some(loaded) = loaded_context_version(datastore, context_id) else {
+
+        let loaded = loaded_context_version(datastore, context_id);
+
+        // A persisted failure marker is honored only while the context has NOT
+        // reached target. A context that has since converged (via a later
+        // migrate, lazy access, or cascade) is migrated — a stale marker must
+        // never force a false `failed`. An unresolvable version (None) is
+        // conservatively treated as below-target so a genuine failure surfaces.
+        let below_target = loaded.is_none_or(|l| l < target_version);
+        if below_target {
+            if let Ok(Some(marker)) =
+                datastore
+                    .handle()
+                    .get(&calimero_store::key::ContextMigrationFailed::new(
+                        *context_id,
+                    ))
+            {
+                if let Some(kind) = MigrationFailureKind::from_u8(marker.kind) {
+                    migration_failed = Some(more_severe_failure(migration_failed, kind));
+                }
+            }
+        }
+
+        let Some(loaded) = loaded else {
             continue;
         };
         min_loaded = Some(min_loaded.map_or(loaded, |m| m.min(loaded)));
@@ -466,6 +506,20 @@ pub fn compute_namespace_migration_facts(
         residue_identity,
         synced_up_to_hlc: 0,
         authored_remaining,
+        migration_failed,
+    }
+}
+
+/// Pick the more severe of an accumulated failure and a freshly-read one:
+/// `ApplyFailed` outranks `CheckAborted` (higher discriminant wins). Used to
+/// fold a namespace's per-context failure markers into one reported reason.
+fn more_severe_failure(
+    acc: Option<MigrationFailureKind>,
+    next: MigrationFailureKind,
+) -> MigrationFailureKind {
+    match acc {
+        Some(prev) if prev.to_u8() >= next.to_u8() => prev,
+        _ => next,
     }
 }
 
@@ -554,6 +608,9 @@ pub fn build_signed_heartbeat(
         residue_identity: facts.residue_identity,
         synced_up_to_hlc: facts.synced_up_to_hlc,
         authored_remaining: facts.authored_remaining,
+        migration_failed: facts
+            .migration_failed
+            .map_or(0, MigrationFailureKind::to_u8),
         ts_millis,
         signature: [0u8; 64],
     };
@@ -794,6 +851,7 @@ mod tests {
             ts_millis,
             signature,
             authored_remaining: 0,
+            migration_failed: 0,
         }
     }
 
@@ -970,6 +1028,7 @@ mod tests {
             residue_identity: 4,
             synced_up_to_hlc: 10,
             authored_remaining: 0,
+            migration_failed: None,
         };
         // First-ever emit (no prior) always fires.
         assert!(should_emit_on_change(None, base));
@@ -994,6 +1053,16 @@ mod tests {
             ..base
         };
         assert!(should_emit_on_change(Some(base), bumped));
+        // A migration failure appearing must fire so the failed state propagates
+        // immediately rather than waiting a full periodic interval.
+        let failed = MigrationFacts {
+            migration_failed: Some(MigrationFailureKind::CheckAborted),
+            ..base
+        };
+        assert!(
+            should_emit_on_change(Some(base), failed),
+            "a migration failure appearing must edge-trigger an emit"
+        );
     }
 
     #[test]
@@ -1007,6 +1076,7 @@ mod tests {
             residue_identity: 0,
             synced_up_to_hlc: 10,
             authored_remaining: 0,
+            migration_failed: None,
         };
         let advanced = MigrationFacts {
             synced_up_to_hlc: 99,
@@ -1032,6 +1102,7 @@ mod tests {
             residue_identity: 3,
             synced_up_to_hlc: 10,
             authored_remaining: 0,
+            migration_failed: None,
         };
 
         let emit = record_facts_update(&mut last_emitted, NS, facts);
@@ -1255,6 +1326,75 @@ mod tests {
         );
     }
 
+    /// A persisted migration-failure marker is reported as `migration_failed`
+    /// ONLY while the context is still below the target. A context that has
+    /// since reached the target must not surface a stale marker — the facts are
+    /// self-healing so a recovered member never produces a false `failed`.
+    #[test]
+    fn facts_report_failed_marker_only_while_context_below_target() {
+        use calimero_context::group_store::UpgradesRepository;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+        use std::sync::Arc;
+
+        let save_v2_target = |store: &Store, ns: [u8; 32]| {
+            UpgradesRepository::new(store)
+                .save(
+                    &ContextGroupId::from(ns),
+                    &GroupUpgradeValue {
+                        from_version: "1".to_owned(),
+                        to_version: "2".to_owned(),
+                        migration: None,
+                        initiated_at: 0,
+                        initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                        status: GroupUpgradeStatus::InProgress {
+                            total: 1,
+                            completed: 0,
+                            failed: 0,
+                        },
+                        cascade_hlc: None,
+                        cascade_seq: None,
+                    },
+                )
+                .unwrap();
+        };
+        let set_marker = |store: &Store, ctx: [u8; 32], kind: MigrationFailureKind| {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &calimero_store::key::ContextMigrationFailed::new(ctx.into()),
+                    &calimero_store::types::ContextMigrationFailed { kind: kind.to_u8() },
+                )
+                .expect("put marker");
+        };
+
+        // Context still on v1 (below the v2 target) with a check-aborted marker:
+        // the facts surface the failure.
+        let below = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x79u8; 32];
+        save_v2_target(&below, ns);
+        install_loaded_context(&below, ns, [0xD1u8; 32], "1.0.0");
+        set_marker(&below, [0xD1u8; 32], MigrationFailureKind::CheckAborted);
+        assert_eq!(
+            compute_namespace_migration_facts(&below, ns).migration_failed,
+            Some(MigrationFailureKind::CheckAborted),
+            "a failure marker on a still-below-target context must surface as failed"
+        );
+
+        // Same marker, but the context has since reached v2: the stale marker is
+        // NOT honored (self-healing — a recovered context never reports failed).
+        let healed = Store::new(Arc::new(InMemoryDB::owned()));
+        save_v2_target(&healed, ns);
+        install_loaded_context(&healed, ns, [0xD2u8; 32], "2.0.0");
+        set_marker(&healed, [0xD2u8; 32], MigrationFailureKind::CheckAborted);
+        assert_eq!(
+            compute_namespace_migration_facts(&healed, ns).migration_failed,
+            None,
+            "a context that reached target must not report a stale failure marker"
+        );
+    }
+
     #[test]
     fn built_heartbeat_verifies_and_carries_facts() {
         let sk = PrivateKey::random(&mut rand::thread_rng());
@@ -1264,6 +1404,7 @@ mod tests {
             residue_identity: 1,
             synced_up_to_hlc: 77,
             authored_remaining: 0,
+            migration_failed: None,
         };
         let hb = build_signed_heartbeat(&sk, NS, facts, 1234).expect("sign");
         // The receiver's signature gate accepts it, and the cache then reads

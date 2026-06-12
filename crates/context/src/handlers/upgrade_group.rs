@@ -99,6 +99,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             from_version,
             to_version,
             current_application_id,
+            current_app_key,
         } = preamble;
 
         let now = SystemTime::now()
@@ -156,8 +157,12 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     // is emitted so a forbidden downgrade never reaches the network.
                     // Fail-open when either app lacks an embedded ABI section.
                     if has_migration {
-                        let old =
-                            resolve_embedded_schema(&node_client, &current_application_id).await;
+                        let old = resolve_pre_upgrade_schema(
+                            &node_client,
+                            current_app_key,
+                            &current_application_id,
+                        )
+                        .await;
                         let new =
                             resolve_embedded_schema(&node_client, &target_application_id).await;
                         verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;
@@ -185,20 +190,24 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         )
                         .await?;
                         report.observe("upgrade_group", "TargetApplicationSet");
-                        if migration_bytes.is_some() {
-                            let report = calimero_governance_store::sign_apply_and_publish(
-                                &datastore,
-                                &node_client,
-                                &ack_router_for_lazy,
-                                &group_id,
-                                &sk,
-                                GroupOp::GroupMigrationSet {
-                                    migration: migration_bytes.clone(),
-                                },
-                            )
-                            .await?;
-                            report.observe("upgrade_group", "GroupMigrationSet");
-                        }
+                        // Unconditional: a code-only upgrade (migration None)
+                        // must CLEAR any method left by an earlier migration
+                        // upgrade — a stale Some(method) makes the same-id
+                        // lazy trigger take the migration arm and short-circuit
+                        // on its applied marker, so the new bytecode would
+                        // never activate.
+                        let report = calimero_governance_store::sign_apply_and_publish(
+                            &datastore,
+                            &node_client,
+                            &ack_router_for_lazy,
+                            &group_id,
+                            &sk,
+                            GroupOp::GroupMigrationSet {
+                                migration: migration_bytes.clone(),
+                            },
+                        )
+                        .await?;
+                        report.observe("upgrade_group", "GroupMigrationSet");
                     }
 
                     let mut meta = MetaRepository::new(&datastore)
@@ -315,7 +324,12 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             // is emitted so a forbidden downgrade never reaches the network.
             // Fail-open when either app lacks an embedded ABI section.
             if has_migration {
-                let old = resolve_embedded_schema(&node_client, &current_application_id).await;
+                let old = resolve_pre_upgrade_schema(
+                    &node_client,
+                    current_app_key,
+                    &current_application_id,
+                )
+                .await;
                 let new = resolve_embedded_schema(&node_client, &target_application_id).await;
                 verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;
             }
@@ -340,20 +354,21 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 )
                 .await?;
                 report.observe("upgrade_group", "TargetApplicationSet");
-                if migration_bytes.is_some() {
-                    let report = calimero_governance_store::sign_apply_and_publish(
-                        &datastore_for_canary,
-                        &node_client,
-                        &ack_router_for_canary,
-                        &group_id,
-                        &sk,
-                        GroupOp::GroupMigrationSet {
-                            migration: migration_bytes.clone(),
-                        },
-                    )
-                    .await?;
-                    report.observe("upgrade_group", "GroupMigrationSet");
-                }
+                // Unconditional — see the LazyOnAccess site: clearing a stale
+                // method on code-only upgrades keeps the same-id lazy trigger
+                // out of the migration arm.
+                let report = calimero_governance_store::sign_apply_and_publish(
+                    &datastore_for_canary,
+                    &node_client,
+                    &ack_router_for_canary,
+                    &group_id,
+                    &sk,
+                    GroupOp::GroupMigrationSet {
+                        migration: migration_bytes.clone(),
+                    },
+                )
+                .await?;
+                report.observe("upgrade_group", "GroupMigrationSet");
             }
 
             context_client
@@ -534,6 +549,34 @@ fn verify_no_identity_downgrade(
 
 /// Read a context application's embedded state schema, or None if unavailable
 /// (no blob, no embedded section, or a read error — all fail-open).
+/// "From" side of the L1 gate. An in-place (same-id) bundle install leaves
+/// the application row already on the NEW wasm — comparing row-to-row would
+/// diff a manifest against itself and wave a downgrade through. The group's
+/// `app_key` is the bytecode the group actually runs before this upgrade
+/// (stamped by the previous upgrade / group creation), so read the "from"
+/// ABI from that blob; fall back to the row when the blob is unreadable
+/// (legacy randomly-seeded app_key → fail-open, same as before).
+async fn resolve_pre_upgrade_schema(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    current_app_key: [u8; 32],
+    current_application_id: &ApplicationId,
+) -> Option<Manifest> {
+    if current_app_key != [0u8; 32] {
+        let blob = calimero_primitives::blobs::BlobId::from(current_app_key);
+        match node_client.application_bytes_from_blob(&blob, None).await {
+            Ok(Some(bytes)) => return calimero_wasm_abi::embed::read_embedded_state_schema(&bytes),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    %current_application_id, error = %err,
+                    "L1 gate: failed to read current app_key bytecode; falling back to the row"
+                );
+            }
+        }
+    }
+    resolve_embedded_schema(node_client, current_application_id).await
+}
+
 async fn resolve_embedded_schema(
     node_client: &calimero_node_primitives::client::NodeClient,
     application_id: &ApplicationId,
@@ -563,6 +606,11 @@ struct UpgradePreamble {
     /// The group's CURRENT target application id (before this upgrade), used by
     /// the L1 identity-downgrade gate as the "old" schema source.
     current_application_id: ApplicationId,
+    /// The group's CURRENT blob-derived app key (the bytecode the group runs
+    /// before this upgrade). For same-id (bundle) upgrades the application
+    /// row may already hold the NEW wasm, so the gate must read the "from"
+    /// ABI from this blob rather than the row.
+    current_app_key: [u8; 32],
 }
 
 fn validate_upgrade(
@@ -599,9 +647,22 @@ fn validate_upgrade(
         }
     }
 
-    // 5. Target must differ from current
+    // 5. Target must differ from current. Same id no longer implies no-op:
+    //    bundle ids are version-stable (hash(package, signer)), so a new
+    //    version moves only the bytecode blob — compare the group's recorded
+    //    app_key against the target row's blob before rejecting. The row read
+    //    races a concurrent in-place install (installs bypass this actor);
+    //    the worst case either way is a rejected retry or a no-op upgrade op,
+    //    never state corruption, so the window is accepted.
     if meta.target_application_id == *target_application_id && !has_migration {
-        bail!("group is already targeting this application and no migration was requested");
+        let target_blob = datastore
+            .handle()
+            .get(&key::ApplicationMeta::new(*target_application_id))?
+            .map(|app| *app.bytecode.blob_id().as_ref());
+        let bytecode_unchanged = target_blob.is_none_or(|blob| blob == meta.app_key);
+        if bytecode_unchanged {
+            bail!("group is already targeting this application and no migration was requested");
+        }
     }
 
     // 6. Group must have contexts
@@ -636,6 +697,7 @@ fn validate_upgrade(
         from_version,
         to_version,
         current_application_id: meta.target_application_id,
+        current_app_key: meta.app_key,
     })
 }
 
@@ -964,10 +1026,24 @@ fn dispatch_cascade(
         }
     }
 
+    // Same-id is a no-op only when the bytecode also matches — bundle ids
+    // are version-stable (hash(package, signer)), so a new version moves
+    // only the blob. Mirrors `validate_upgrade` rule 5; this duplicate
+    // originally kept the id-only comparison and rejected every same-id
+    // bundle cascade as "already targeting".
     if meta.target_application_id == target_application_id && !has_migration {
-        return ActorResponse::reply(Err(eyre::eyre!(
-            "group is already targeting this application and no migration was requested"
-        )));
+        let target_blob = {
+            let handle = actor.datastore.handle();
+            match handle.get(&key::ApplicationMeta::new(target_application_id)) {
+                Ok(row) => row.map(|app| *app.bytecode.blob_id().as_ref()),
+                Err(err) => return ActorResponse::reply(Err(err.into())),
+            }
+        };
+        if target_blob.is_none_or(|blob| blob == meta.app_key) {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "group is already targeting this application and no migration was requested"
+            )));
+        }
     }
 
     // Resolve target application meta (for the new app_key + blob announce).
@@ -1132,6 +1208,7 @@ fn dispatch_cascade(
     // op rewrites every matched descendant from `from_app_key` to the new app,
     // so a single gate check on the signed group's app pair covers the family.
     let current_application_id = meta.target_application_id;
+    let current_app_key_for_gate = meta.app_key;
 
     // Stamp the cascade_hlc ONCE at the initiator so every receiver
     // applies the same fence boundary (Task 3 apply handler stores this
@@ -1143,8 +1220,12 @@ fn dispatch_cascade(
         // identity from a top-level state field. Runs BEFORE the CascadeUpgrade
         // op is emitted. Fail-open when either app lacks an embedded ABI section.
         if has_migration {
-            let old =
-                resolve_embedded_schema(&node_client_for_publish, &current_application_id).await;
+            let old = resolve_pre_upgrade_schema(
+                &node_client_for_publish,
+                current_app_key_for_gate,
+                &current_application_id,
+            )
+            .await;
             let new =
                 resolve_embedded_schema(&node_client_for_publish, &target_application_id).await;
             verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;

@@ -36,18 +36,10 @@ steps:
   - name: Install scenario-migration-check-pass-v1
     type: install_application
     node: app-migration-check-pass-1
-    path: apps/migrations/scenario-migration-check-pass-v1/res/scenario_migration_check_pass_v1.wasm
+    path: apps/migrations/scenario-migration-check-pass-v1/res/scenario-migration-check-pass-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
-
-  - name: Install scenario-migration-check-pass-v2
-    type: install_application
-    node: app-migration-check-pass-1
-    path: apps/migrations/scenario-migration-check-pass-v2/res/scenario_migration_check_pass_v2.wasm
-    dev: true
-    outputs:
-      app_v2: applicationId
 
   # Namespace (anchors v1) + descendant subgroup + context, all local.
   - name: Create namespace (anchors app_v1)
@@ -128,6 +120,23 @@ steps:
     group_id: "{{namespace_id}}"
     upgrade_policy: lazy_on_access
 
+  - name: Install scenario-migration-check-pass-v2
+    type: install_application
+    node: app-migration-check-pass-1
+    path: apps/migrations/scenario-migration-check-pass-v2/res/scenario-migration-check-pass-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+
+  - name: Assert both versions share one application id (bundle same-id)
+    # Same-package bundles derive ApplicationId = hash(package, signer),
+    # so the second install MUST dedup onto the first id — the upgrade
+    # below then exercises the same-id (blob-only) propagation path.
+    type: json_assert
+    statements:
+      - 'equal("{{app_v1}}", "{{app_v2}}")'
+
   - name: Cascade namespace v1 → v2
     type: upgrade_group
     node: app-migration-check-pass-1
@@ -196,9 +205,5 @@ steps:
     node: app-migration-check-pass-1
     application_id: "{{app_v1}}"
 
-  - name: Uninstall v2
-    type: uninstall_application
-    node: app-migration-check-pass-1
-    application_id: "{{app_v2}}"
 
 stop_all_nodes: false

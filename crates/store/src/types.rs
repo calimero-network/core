@@ -8,11 +8,12 @@ mod context;
 mod generic;
 mod group;
 
-pub use application::{ApplicationMeta, ServiceMeta};
+pub use application::{ApplicationMeta, ApplicationPreviousBlob, ServiceMeta};
 pub use blobs::BlobMeta;
 pub use context::{
-    ContextAuthoredRemaining, ContextConfig, ContextDagDelta, ContextIdentity, ContextLeftMarker,
-    ContextMeta, ContextPrivateState, ContextState,
+    ContextAuthoredRemaining, ContextConfig, ContextDagDelta, ContextExecutingBlob,
+    ContextIdentity, ContextLeftMarker, ContextMeta, ContextMigrationFailed, ContextPrivateState,
+    ContextState,
 };
 pub use generic::GenericData;
 

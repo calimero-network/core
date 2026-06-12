@@ -36,18 +36,10 @@ steps:
   - name: Install scenario-identity-downgrade-v1 on node 1
     type: install_application
     node: app-migration-iddowngrade-1
-    path: apps/migrations/scenario-identity-downgrade-v1/res/scenario_identity_downgrade_v1.wasm
+    path: apps/migrations/scenario-identity-downgrade-v1/res/scenario-identity-downgrade-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
-
-  - name: Install scenario-identity-downgrade-v2 on node 1
-    type: install_application
-    node: app-migration-iddowngrade-1
-    path: apps/migrations/scenario-identity-downgrade-v2/res/scenario_identity_downgrade_v2.wasm
-    dev: true
-    outputs:
-      app_v2: applicationId
 
   # Phase 2: Node 1 builds namespace + Open subgroup + context.
   - name: Create namespace on node 1
@@ -113,6 +105,23 @@ steps:
   # Err before emitting any GroupOp. The RPC surfaces this as an error;
   # expected_failure: true makes the step PASS on refusal and FAIL if the
   # upgrade unexpectedly succeeds (gate broken).
+  - name: Install scenario-identity-downgrade-v2 on node 1
+    type: install_application
+    node: app-migration-iddowngrade-1
+    path: apps/migrations/scenario-identity-downgrade-v2/res/scenario-identity-downgrade-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+
+  - name: Assert both versions share one application id (bundle same-id)
+    # Same-package bundles derive ApplicationId = hash(package, signer),
+    # so the second install MUST dedup onto the first id — the upgrade
+    # below then exercises the same-id (blob-only) propagation path.
+    type: json_assert
+    statements:
+      - 'equal("{{app_v1}}", "{{app_v2}}")'
+
   - name: Attempt identity-downgrade upgrade (L1 gate must refuse it)
     type: upgrade_group
     node: app-migration-iddowngrade-1
@@ -174,9 +183,5 @@ steps:
     node: app-migration-iddowngrade-1
     application_id: "{{app_v1}}"
 
-  - name: Uninstall v2 on node 1
-    type: uninstall_application
-    node: app-migration-iddowngrade-1
-    application_id: "{{app_v2}}"
 
 stop_all_nodes: false

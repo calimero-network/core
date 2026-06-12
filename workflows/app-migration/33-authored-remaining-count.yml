@@ -46,18 +46,10 @@ steps:
   - name: Install scenario-authored-migrate-ux-v1
     type: install_application
     node: app-migration-authored-count-1
-    path: apps/migrations/scenario-authored-migrate-ux-v1/res/scenario_authored_migrate_ux_v1.wasm
+    path: apps/migrations/scenario-authored-migrate-ux-v1/res/scenario-authored-migrate-ux-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
-
-  - name: Install scenario-authored-migrate-ux-v2
-    type: install_application
-    node: app-migration-authored-count-1
-    path: apps/migrations/scenario-authored-migrate-ux-v2/res/scenario_authored_migrate_ux_v2.wasm
-    dev: true
-    outputs:
-      app_v2: applicationId
 
   # Namespace (anchors v1) + descendant Open subgroup + context, all local.
   - name: Create namespace (anchors app_v1)
@@ -134,6 +126,23 @@ steps:
   # Cascade the namespace v1 → v2. The owning node applies the migration: the
   # state schema flips to 2.0.0, but the two notes keep their per-entry
   # schema_version 1 until the owner re-signs them (owner-driven convert).
+  - name: Install scenario-authored-migrate-ux-v2
+    type: install_application
+    node: app-migration-authored-count-1
+    path: apps/migrations/scenario-authored-migrate-ux-v2/res/scenario-authored-migrate-ux-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+
+  - name: Assert both versions share one application id (bundle same-id)
+    # Same-package bundles derive ApplicationId = hash(package, signer),
+    # so the second install MUST dedup onto the first id — the upgrade
+    # below then exercises the same-id (blob-only) propagation path.
+    type: json_assert
+    statements:
+      - 'equal("{{app_v1}}", "{{app_v2}}")'
+
   - name: Cascade namespace v1 → v2
     type: upgrade_group
     node: app-migration-authored-count-1
@@ -242,9 +251,5 @@ steps:
     node: app-migration-authored-count-1
     application_id: "{{app_v1}}"
 
-  - name: Uninstall v2
-    type: uninstall_application
-    node: app-migration-authored-count-1
-    application_id: "{{app_v2}}"
 
 stop_all_nodes: false

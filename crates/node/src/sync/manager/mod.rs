@@ -173,6 +173,15 @@ pub struct SyncManager {
     /// opaque anyway.
     pub(crate) metrics: Option<Arc<dyn super::metrics::SyncMetricsCollector>>,
 
+    /// Retry-backoff memo for target-blob pre-staging: (context, blob) ->
+    /// last attempt. A legacy group whose randomly-seeded `app_key` never
+    /// resolves to a real blob would otherwise issue one doomed BlobShare per
+    /// sync tick forever; with the memo a failed stage retries at most every
+    /// few minutes. Shared across clones (initiator/responder handles).
+    pub(super) stale_blob_attempts: Arc<
+        std::sync::Mutex<std::collections::HashMap<(ContextId, [u8; 32]), (Option<Instant>, u32)>>,
+    >,
+
     /// Reconcile-after-divergence orchestrator. Owns the orchestration
     /// for [`Self::reconcile_after_divergence`]; that method is a thin
     /// forwarder. See `sync::reconciler`.
@@ -217,6 +226,7 @@ impl Clone for SyncManager {
             // recording surface unified across the original (which runs
             // `start`) and every responder/initiator clone.
             metrics: self.metrics.clone(),
+            stale_blob_attempts: Arc::clone(&self.stale_blob_attempts),
             // Reconciler holds Arcs internally, so its `Clone` is
             // cheap and clones share the same state_access/sync_network
             // surfaces as the parent.
@@ -281,6 +291,7 @@ impl SyncManager {
             session_tx: None,
             session_result_rx: None,
             metrics: None,
+            stale_blob_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             reconciler,
             protocol_selector,
         }
@@ -718,25 +729,7 @@ impl SyncManager {
         context_id: &ContextId,
     ) -> Option<calimero_primitives::application::ApplicationId> {
         let store = self.context_client.datastore_handle().into_inner();
-        let ctx_meta = store
-            .handle()
-            .get(&calimero_store::key::ContextMeta::new(*context_id))
-            .ok()
-            .flatten()?;
-        let current_app = ctx_meta.application.application_id();
-        let group_id = calimero_context::group_store::get_group_for_context(&store, context_id)
-            .ok()
-            .flatten()?;
-        let meta = MetaRepository::new(&store).load(&group_id).ok().flatten()?;
-        let target = meta.target_application_id;
-        // Only gate a context that is bound to a REAL application and differs
-        // from the group target. A context with no app yet
-        // (`current_app == ZERO`, e.g. a freshly-joined node still
-        // bootstrapping its state) must be allowed to sync — gating it would
-        // block the very state sync it needs to come up. Likewise `target ==
-        // ZERO` means no upgrade is set.
-        let zero = calimero_primitives::application::ZERO_APPLICATION_ID;
-        (current_app != zero && target != zero && current_app != target).then_some(target)
+        pending_upgrade_target_in(&store, context_id)
     }
 
     /// Look up the trusted-anchor identity set for the group that owns
@@ -1416,7 +1409,9 @@ impl SyncManager {
         // state our own LazyOnAccess migration must read as input. Skip
         // as a clean no-op; we self-migrate on next access, after which
         // the gate lifts. See `pending_upgrade_target`.
-        if let Some(target) = self.pending_upgrade_target(&context_id) {
+        let store_for_gate = self.context_client.datastore_handle().into_inner();
+        if let Some((target, gate_stage_blob)) = pending_upgrade_info(&store_for_gate, &context_id)
+        {
             info!(
                 %context_id,
                 %chosen_peer,
@@ -1425,6 +1420,40 @@ impl SyncManager {
                 "Skipping context-state sync: application upgrade pending (gate); \
                  node self-migrates on next access before reconciling"
             );
+            // Pre-stage the target bytecode while state sync is gated, so the
+            // lazy migrate on next access has it locally. Bundle apps keep a
+            // version-stable ApplicationId, so nothing else fetches the new
+            // blob under the same id; BlobShare is exempt from the
+            // responder-side gate for exactly this. Failures are benign —
+            // every sync attempt retries until the migrate lifts the gate.
+            {
+                if let Some(stage) = gate_stage_blob {
+                    let stage_blob = calimero_primitives::blobs::BlobId::from(stage);
+                    if !self.node_client.has_blob(&stage_blob).unwrap_or(true)
+                        && self.should_attempt_stage(context_id, stage)
+                    {
+                        if let Err(err) = self
+                            .stage_target_blob(&context, stage_blob, chosen_peer)
+                            .await
+                        {
+                            warn!(
+                                %context_id,
+                                %chosen_peer,
+                                %stage_blob,
+                                %err,
+                                "failed to pre-stage target app blob; will retry after backoff"
+                            );
+                        } else {
+                            self.clear_stage_attempt(context_id, stage);
+                            info!(
+                                %context_id,
+                                %stage_blob,
+                                "pre-staged target app bytecode for pending upgrade"
+                            );
+                        }
+                    }
+                }
+            }
             return Ok(SyncProtocol::None);
         }
 
@@ -1494,6 +1523,47 @@ impl SyncManager {
                 )
                 .await
                 .wrap_err("install bundle after blob share")?;
+            }
+        }
+
+        // Same-id (bundle) upgrades move only the bytecode under an unchanged
+        // application id — additionally stage the group's recorded target
+        // blob so the next access can activate it. Code-only upgrades never
+        // arm the state-sync gate (same schema, sync stays safe), so this is
+        // their only staging point. Best-effort with retry backoff.
+        {
+            let store = self.context_client.datastore_handle().into_inner();
+            if let Some(stage) = pending_upgrade_stage_blob(&store, &context_id) {
+                let stage_blob = calimero_primitives::blobs::BlobId::from(stage);
+                if !self.node_client.has_blob(&stage_blob).unwrap_or(true)
+                    && self.should_attempt_stage(context_id, stage)
+                {
+                    match self
+                        .initiate_blob_share_process(
+                            &context,
+                            our_identity,
+                            stage_blob,
+                            0,
+                            &mut stream,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            self.clear_stage_attempt(context_id, stage);
+                            info!(
+                                %context_id,
+                                %stage_blob,
+                                "staged target app bytecode for pending same-id upgrade"
+                            );
+                        }
+                        Err(err) => warn!(
+                            %context_id,
+                            %stage_blob,
+                            %err,
+                            "failed to stage target app bytecode; will retry after backoff"
+                        ),
+                    }
+                }
             }
         }
 
@@ -3118,6 +3188,377 @@ impl super::driver::SyncDriverDispatch for SyncManager {
 // `partition_peers_anchor_first` moved to `sync::peers` as Phase 1 of
 // `SyncManager` decomposition. Call sites use
 // `super::peers::partition_peers_anchor_first`.
+
+impl SyncManager {
+    /// Whether a stage attempt for `(context, blob)` is due — records the
+    /// attempt when it is. A failed stage retries only after the backoff,
+    /// and after `MAX_ATTEMPTS` consecutive failures the pair is parked for
+    /// the process lifetime — a blob that never materialises (legacy
+    /// randomly-seeded `app_key`) costs a bounded number of doomed
+    /// BlobShares, not one per window forever.
+    fn should_attempt_stage(&self, context_id: ContextId, blob: [u8; 32]) -> bool {
+        const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
+        const MAX_ATTEMPTS: u32 = 12; // ~1h of retries, then give up
+        let mut memo = self
+            .stale_blob_attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        let entry = memo.entry((context_id, blob)).or_insert((None, 0));
+        if entry.1 >= MAX_ATTEMPTS {
+            return false;
+        }
+        if let Some(last) = entry.0 {
+            if now.duration_since(last) < RETRY_AFTER {
+                return false;
+            }
+        }
+        entry.0 = Some(now);
+        entry.1 += 1;
+        true
+    }
+
+    /// Drop the stage-attempt memo after a successful share so a later
+    /// upgrade of the same context starts fresh.
+    fn clear_stage_attempt(&self, context_id: ContextId, blob: [u8; 32]) {
+        let mut memo = self
+            .stale_blob_attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = memo.remove(&(context_id, blob));
+    }
+
+    /// Fetch `blob_id` from `chosen_peer` over a dedicated BlobShare stream.
+    /// Used to pre-stage a pending upgrade's target bytecode while the
+    /// state-sync gate is closed (the responder serves BlobShare during the
+    /// gate window by design).
+    async fn stage_target_blob(
+        &self,
+        context: &calimero_primitives::context::Context,
+        blob_id: calimero_primitives::blobs::BlobId,
+        chosen_peer: libp2p::PeerId,
+    ) -> eyre::Result<()> {
+        let identities = self
+            .context_client
+            .get_context_members(&context.id, Some(true));
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+            .await
+            .transpose()?
+        else {
+            bail!("no owned identities found for context: {}", context.id);
+        };
+        let mut stream = self
+            .sync_network
+            .open_stream(chosen_peer)
+            .await
+            .wrap_err("open stream for target blob share")?;
+        // Size unknown ahead of the transfer (the target app may not have a
+        // local ApplicationMeta row yet); 0 disables the expected-size check.
+        self.initiate_blob_share_process(context, our_identity, blob_id, 0, &mut stream)
+            .await
+    }
+}
+
+/// The bytecode blob worth pre-staging for an already-loaded group `meta`:
+/// the group's recorded target blob (`app_key`) when it differs from the
+/// bytecode installed under the group's target application — i.e. an upgrade
+/// (migration-carrying or code-only) moved the blob under a version-stable
+/// bundle id and this node doesn't run it yet. `None` once the row catches
+/// up. A legacy group's randomly-seeded `app_key` reads as permanently
+/// stale; the BlobShare retry memo caps what that can cost.
+fn stage_blob_for(
+    store: &calimero_store::Store,
+    meta: &calimero_store::key::GroupMetaValue,
+) -> Option<[u8; 32]> {
+    if meta.app_key == [0u8; 32] {
+        return None;
+    }
+    let row_blob = store
+        .handle()
+        .get(&calimero_store::key::ApplicationMeta::new(
+            meta.target_application_id,
+        ))
+        .ok()
+        .flatten()
+        .map(|app| *app.bytecode.blob_id().as_ref())?;
+    (row_blob != meta.app_key).then_some(meta.app_key)
+}
+
+/// One-load variant for `context_id` (group + meta resolved internally) —
+/// used by the mid-session stage step where no meta is already in hand.
+pub(crate) fn pending_upgrade_stage_blob(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+) -> Option<[u8; 32]> {
+    let group_id = calimero_context::group_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
+    stage_blob_for(store, &meta)
+}
+
+/// Store-level core of [`SyncManager::pending_upgrade_target`], extracted so
+/// the predicate is unit-testable without constructing a `SyncManager`.
+///
+/// An upgrade is pending in two shapes:
+/// * `current != target` — distinct ids (single-wasm apps, whose ids are
+///   content-addressed and change per version), or
+/// * `current == target` with the group's replicated migration not yet
+///   applied to this context — bundle apps, whose
+///   `ApplicationId = hash(package, signer)` is version-stable so the id
+///   never moves; mirrors `maybe_lazy_upgrade`'s same-id condition. Keyed
+///   off `meta.migration` + the per-context applied marker (NOT a raw
+///   `meta.app_key` blob comparison): groups created before `app_key` was
+///   blob-derived hold a random `app_key`, and a blob comparison would gate
+///   their state sync forever.
+pub(crate) fn pending_upgrade_target_in(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+) -> Option<calimero_primitives::application::ApplicationId> {
+    pending_upgrade_info(store, context_id).map(|(target, _)| target)
+}
+
+/// [`pending_upgrade_target_in`] plus the stage-blob decision from the SAME
+/// group/meta load — the sync gate needs both, and loading meta twice per
+/// gated sync attempt is wasted I/O.
+pub(crate) fn pending_upgrade_info(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+) -> Option<(
+    calimero_primitives::application::ApplicationId,
+    Option<[u8; 32]>,
+)> {
+    let ctx_meta = store
+        .handle()
+        .get(&calimero_store::key::ContextMeta::new(*context_id))
+        .ok()
+        .flatten()?;
+    let current_app = ctx_meta.application.application_id();
+    let group_id = calimero_context::group_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
+    let target = meta.target_application_id;
+    // Only gate a context that is bound to a REAL application. A context with
+    // no app yet (`current_app == ZERO`, e.g. a freshly-joined node still
+    // bootstrapping its state) must be allowed to sync — gating it would
+    // block the very state sync it needs to come up. Likewise `target ==
+    // ZERO` means no upgrade is set.
+    let zero = calimero_primitives::application::ZERO_APPLICATION_ID;
+    if current_app == zero || target == zero {
+        return None;
+    }
+    if current_app != target {
+        return Some((target, stage_blob_for(store, &meta)));
+    }
+    // Same id: bundle-app upgrade. Pending while the group's migration has
+    // not been applied to this context — until the lazy migrate runs on next
+    // access, this node's pre-migration state must not reconcile against
+    // already-migrated peers.
+    let method = meta
+        .migration
+        .as_ref()
+        .and_then(|bytes| String::from_utf8(bytes.clone()).ok())?;
+    let applied = calimero_governance_store::MigrationsRepository::new(store)
+        .last_migration(&group_id, context_id)
+        .ok()
+        .flatten()
+        .is_some_and(|last| last == method);
+    (!applied).then(|| (target, stage_blob_for(store, &meta)))
+}
+
+#[cfg(test)]
+mod pending_upgrade_tests {
+    use std::sync::Arc;
+
+    use calimero_context::group_store::{register_context_in_group, MetaRepository};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::MigrationsRepository;
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::{ContextId, UpgradePolicy};
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::{
+        ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey, GroupMetaValue,
+    };
+    use calimero_store::types::ContextMeta;
+    use calimero_store::Store;
+
+    use super::pending_upgrade_target_in;
+
+    /// Seed a context bound to `current` in a group whose meta carries
+    /// `target` + `migration`. Mirrors the cascade e2e fixtures, but only
+    /// the rows the predicate reads.
+    fn seed(
+        store: &Store,
+        ctx: ContextId,
+        current: ApplicationId,
+        target: ApplicationId,
+        migration: Option<&str>,
+    ) -> ContextGroupId {
+        let group_id = ContextGroupId::from([0x42; 32]);
+        let admin = PublicKey::from([0x07; 32]);
+        let meta = GroupMetaValue {
+            app_key: [0x11; 32],
+            target_application_id: target,
+            upgrade_policy: UpgradePolicy::LazyOnAccess,
+            created_at: 1_700_000_000,
+            admin_identity: admin,
+            owner_identity: admin,
+            migration: migration.map(|m| m.as_bytes().to_vec()),
+            auto_join: true,
+        };
+        MetaRepository::new(store)
+            .save(&group_id, &meta)
+            .expect("save group meta");
+        let ctx_meta = ContextMeta::new(
+            ApplicationMetaKey::new(current),
+            [0x01; 32],
+            Vec::new(),
+            None,
+        );
+        let mut handle = store.handle();
+        handle
+            .put(&ContextMetaKey::new(ctx), &ctx_meta)
+            .expect("put ContextMeta");
+        drop(handle);
+        register_context_in_group(store, &group_id, &ctx).expect("register context");
+        group_id
+    }
+
+    fn store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    // Bundle shape: ApplicationId is version-stable, so v1→v2 leaves
+    // current == target. The replicated-but-unapplied migration is the
+    // pending signal; before this arm existed the gate returned None here
+    // and migrated peers reconciled their state onto pre-migration nodes.
+    #[test]
+    fn same_id_with_unapplied_migration_is_pending() {
+        let store = store();
+        let ctx = ContextId::from([1u8; 32]);
+        let app = ApplicationId::from([0xAA; 32]);
+        let _gid = seed(&store, ctx, app, app, Some("migrate_v1_to_v2"));
+        assert_eq!(pending_upgrade_target_in(&store, &ctx), Some(app));
+    }
+
+    // No migration on the group (never upgraded, or a legacy group with a
+    // random app_key): same id must NOT read as pending — gating here would
+    // freeze state sync for every group that never runs a migration.
+    #[test]
+    fn same_id_without_migration_is_not_pending() {
+        let store = store();
+        let ctx = ContextId::from([2u8; 32]);
+        let app = ApplicationId::from([0xAA; 32]);
+        let _gid = seed(&store, ctx, app, app, None);
+        assert_eq!(pending_upgrade_target_in(&store, &ctx), None);
+    }
+
+    // Once the per-context applied marker matches the group's migration,
+    // the gate lifts (state sync resumes after the lazy migrate).
+    #[test]
+    fn same_id_with_applied_migration_is_not_pending() {
+        let store = store();
+        let ctx = ContextId::from([3u8; 32]);
+        let app = ApplicationId::from([0xAA; 32]);
+        let gid = seed(&store, ctx, app, app, Some("migrate_v1_to_v2"));
+        MigrationsRepository::new(&store)
+            .set_last_migration(&gid, &ctx, "migrate_v1_to_v2")
+            .expect("record applied migration");
+        assert_eq!(pending_upgrade_target_in(&store, &ctx), None);
+    }
+
+    // Distinct ids (single-wasm upgrades) keep the original behavior.
+    #[test]
+    fn distinct_ids_remain_pending() {
+        let store = store();
+        let ctx = ContextId::from([4u8; 32]);
+        let v1 = ApplicationId::from([0xAA; 32]);
+        let v2 = ApplicationId::from([0xBB; 32]);
+        let _gid = seed(&store, ctx, v1, v2, None);
+        assert_eq!(pending_upgrade_target_in(&store, &ctx), Some(v2));
+    }
+
+    // A bootstrapping context (zero app id) must never be gated, even with
+    // a pending migration on its group — it needs state sync to come up.
+    #[test]
+    fn zero_current_app_is_never_pending() {
+        let store = store();
+        let ctx = ContextId::from([5u8; 32]);
+        let zero = calimero_primitives::application::ZERO_APPLICATION_ID;
+        let target = ApplicationId::from([0xBB; 32]);
+        let _gid = seed(&store, ctx, zero, target, Some("migrate_v1_to_v2"));
+        assert_eq!(pending_upgrade_target_in(&store, &ctx), None);
+    }
+
+    // The pre-stage blob is the group's recorded target blob, surfaced only
+    // while it diverges from the bytecode installed under the target
+    // application row — equal blobs (caught up) and a missing row both
+    // surface nothing.
+    #[test]
+    fn stage_blob_tracks_row_divergence() {
+        let store = store();
+        let app = ApplicationId::from([0xAA; 32]);
+
+        // No application row at all: nothing to compare, nothing to stage.
+        let no_row = ContextId::from([6u8; 32]);
+        let _g = seed(&store, no_row, app, app, None);
+        assert_eq!(super::pending_upgrade_stage_blob(&store, &no_row), None);
+
+        // Row installed at a DIFFERENT blob than the group's app_key
+        // ([0x11; 32] in the fixture): the upgrade's bytecode is pending.
+        let mut handle = store.handle();
+        handle
+            .put(
+                &ApplicationMetaKey::new(app),
+                &calimero_store::types::ApplicationMeta::new(
+                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+                        [0x99; 32],
+                    )),
+                    1,
+                    "test://stage".to_owned().into_boxed_str(),
+                    Box::default(),
+                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+                        [0u8; 32],
+                    )),
+                    "stage-pkg".to_owned().into_boxed_str(),
+                    "1.0.0".to_owned().into_boxed_str(),
+                    "stage-signer".to_owned().into_boxed_str(),
+                ),
+            )
+            .expect("put app row");
+        drop(handle);
+        assert_eq!(
+            super::pending_upgrade_stage_blob(&store, &no_row),
+            Some([0x11; 32])
+        );
+
+        // Row caught up to the group's app_key: nothing to stage.
+        let mut handle = store.handle();
+        handle
+            .put(
+                &ApplicationMetaKey::new(app),
+                &calimero_store::types::ApplicationMeta::new(
+                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+                        [0x11; 32],
+                    )),
+                    1,
+                    "test://stage".to_owned().into_boxed_str(),
+                    Box::default(),
+                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+                        [0u8; 32],
+                    )),
+                    "stage-pkg".to_owned().into_boxed_str(),
+                    "1.0.0".to_owned().into_boxed_str(),
+                    "stage-signer".to_owned().into_boxed_str(),
+                ),
+            )
+            .expect("put app row");
+        drop(handle);
+        assert_eq!(super::pending_upgrade_stage_blob(&store, &no_row), None);
+    }
+}
 
 mod blob_fetch;
 mod handshake;

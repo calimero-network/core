@@ -39,18 +39,10 @@ steps:
   - name: Install scenario-new-enum-variant-v1 on node 1
     type: install_application
     node: app-migration-newenum-1
-    path: apps/migrations/scenario-new-enum-variant-v1/res/scenario_new_enum_variant_v1.wasm
+    path: apps/migrations/scenario-new-enum-variant-v1/res/scenario-new-enum-variant-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
-
-  - name: Install scenario-new-enum-variant-v2 on node 1
-    type: install_application
-    node: app-migration-newenum-1
-    path: apps/migrations/scenario-new-enum-variant-v2/res/scenario_new_enum_variant_v2.wasm
-    dev: true
-    outputs:
-      app_v2: applicationId
 
   # Phase 2: Node 1 builds namespace + Open subgroup + context.
   - name: Create namespace (v1) on node 1
@@ -180,6 +172,23 @@ steps:
     upgrade_policy: lazy_on_access
 
   # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
+  - name: Install scenario-new-enum-variant-v2 on node 1
+    type: install_application
+    node: app-migration-newenum-1
+    path: apps/migrations/scenario-new-enum-variant-v2/res/scenario-new-enum-variant-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+
+  - name: Assert both versions share one application id (bundle same-id)
+    # Same-package bundles derive ApplicationId = hash(package, signer),
+    # so the second install MUST dedup onto the first id — the upgrade
+    # below then exercises the same-id (blob-only) propagation path.
+    type: json_assert
+    statements:
+      - 'equal("{{app_v1}}", "{{app_v2}}")'
+
   - name: Upgrade subgroup v1 → v2 (no migrate — append-only enum is borsh-compatible)
     type: upgrade_group
     node: app-migration-newenum-1
@@ -301,9 +310,5 @@ steps:
     node: app-migration-newenum-1
     application_id: "{{app_v1}}"
 
-  - name: Uninstall v2 on node 1
-    type: uninstall_application
-    node: app-migration-newenum-1
-    application_id: "{{app_v2}}"
 
 stop_all_nodes: false
