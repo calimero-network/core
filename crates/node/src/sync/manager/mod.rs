@@ -1856,88 +1856,12 @@ impl SyncManager {
                                 }
                             }
 
-                            // Anti-bypass parity with the gossip path: before
-                            // running `membership_status_at`, confirm the
-                            // claimed governance position's `group_id`
-                            // actually matches the context's owning group
-                            // (or, for non-group contexts, that no position
-                            // is claimed). Without this:
-                            //   * `GroupContextNoPosition` — a group context
-                            //     would accept a delta with no position at
-                            //     all, silently skipping the membership check
-                            //     entirely (the `if let Some(pos)` branch
-                            //     below would just fall through).
-                            //   * `Mismatch` — an attacker could sign a
-                            //     position for a group they're a member of
-                            //     and attach it to a delta targeted at a
-                            //     different context owned by a different
-                            //     group, and `membership_status_at` would
-                            //     still pass against the spoofed group.
-                            //   * `NonGroupContextWithPosition` — symmetric.
-                            // The gossip path catches all three via
-                            // `verify_position_group_id_matches_context`; we
-                            // share the same helper so the match table
-                            // stays in lockstep across the two code paths.
-                            {
-                                use crate::handlers::state_delta::{
-                                    verify_position_group_id_matches_context, GroupIdCheck,
-                                };
-                                match verify_position_group_id_matches_context(
-                                    &datastore_for_heads,
-                                    &context_id,
-                                    pos.as_ref().map(|p| p.group_id),
-                                ) {
-                                    GroupIdCheck::Match | GroupIdCheck::NonGroupOk => {}
-                                    GroupIdCheck::GroupContextNoPosition { owning } => {
-                                        warn!(
-                                            %context_id,
-                                            %author,
-                                            head_id = ?head_id,
-                                            owning_group = ?owning,
-                                            "DAG-catchup: rejecting delta — context is owned \
-                                             by a group but delta carries no \
-                                             governance_position (parity gap with gossip path)"
-                                        );
-                                        continue;
-                                    }
-                                    GroupIdCheck::NonGroupContextWithPosition { claimed } => {
-                                        warn!(
-                                            %context_id,
-                                            %author,
-                                            head_id = ?head_id,
-                                            claimed_group = ?claimed,
-                                            "DAG-catchup: rejecting delta — delta claims a \
-                                             governance position but context is not in any \
-                                             group"
-                                        );
-                                        continue;
-                                    }
-                                    GroupIdCheck::Mismatch { owning, claimed } => {
-                                        warn!(
-                                            %context_id,
-                                            %author,
-                                            head_id = ?head_id,
-                                            owning_group = ?owning,
-                                            claimed_group = ?claimed,
-                                            "DAG-catchup: rejecting delta — governance_position \
-                                             references a different group than the context's \
-                                             owning group"
-                                        );
-                                        continue;
-                                    }
-                                    GroupIdCheck::LookupError(err) => {
-                                        warn!(
-                                            %context_id,
-                                            %author,
-                                            head_id = ?head_id,
-                                            %err,
-                                            "DAG-catchup: skipping delta — group lookup failed \
-                                             during anti-bypass check"
-                                        );
-                                        continue;
-                                    }
-                                }
-                            }
+                            // Group/membership authorization — including the
+                            // group-id anti-bypass the old `GroupIdCheck`
+                            // performed — is done by `authorize_delta_at_edge`
+                            // below (after the ReadOnly gate), deriving the
+                            // group from the context in lockstep with the
+                            // gossip path.
 
                             // ReadOnly check — parity with the gossip
                             // apply path. `membership_status_at` treats
@@ -1959,43 +1883,37 @@ impl SyncManager {
                                 continue;
                             }
 
-                            if let Some(ref pos) = pos {
-                                use calimero_context::group_store::{
-                                    membership_status_at, MembershipStatus,
+                            {
+                                use crate::handlers::state_delta::{
+                                    authorize_delta_at_edge, DeltaAuthOutcome,
                                 };
-                                match membership_status_at(&datastore_for_heads, &author, pos) {
-                                    Ok(MembershipStatus::Member(_)) => {
+                                match authorize_delta_at_edge(
+                                    &datastore_for_heads,
+                                    &context_id,
+                                    &author,
+                                    pos.as_ref(),
+                                ) {
+                                    DeltaAuthOutcome::Authorized { .. }
+                                    | DeltaAuthOutcome::Ungated => {
                                         // Authorized at the cited cut — proceed.
                                     }
-                                    Ok(MembershipStatus::Removed { last_role }) => {
+                                    DeltaAuthOutcome::Reject(reason) => {
                                         warn!(
                                             %context_id,
                                             %author,
                                             head_id = ?head_id,
-                                            last_role = ?last_role,
-                                            "DAG-catchup: rejecting delta — author was \
-                                             removed at the cited governance cut"
+                                            reason,
+                                            "DAG-catchup: rejecting delta"
                                         );
                                         continue;
                                     }
-                                    Ok(MembershipStatus::NeverMember) => {
-                                        warn!(
-                                            %context_id,
-                                            %author,
-                                            head_id = ?head_id,
-                                            "DAG-catchup: rejecting delta — author was \
-                                             never a member at the cited governance cut"
-                                        );
-                                        continue;
-                                    }
-                                    Ok(MembershipStatus::Unknown { needed }) => {
-                                        // Buffering this delta the way the gossip path
-                                        // does would close the loop, but the DAG-catchup
-                                        // dispatch flow doesn't have the buffer plumbing
-                                        // wired yet. Skipping for now means the next sync
-                                        // tick will re-attempt once governance state has
-                                        // caught up via gossip; safer than admitting an
-                                        // unverified delta on the catch-up path.
+                                    DeltaAuthOutcome::Buffer { needed } => {
+                                        // The DAG-catchup dispatch flow doesn't have the
+                                        // buffer plumbing wired yet. Skipping means the
+                                        // next sync tick re-attempts once governance
+                                        // state has caught up via gossip; safer than
+                                        // admitting an unverified delta on the catch-up
+                                        // path.
                                         warn!(
                                             %context_id,
                                             %author,
@@ -2004,17 +1922,6 @@ impl SyncManager {
                                             "DAG-catchup: skipping delta — governance \
                                              cut not locally known; will re-attempt on \
                                              next sync tick"
-                                        );
-                                        continue;
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            %context_id,
-                                            %author,
-                                            head_id = ?head_id,
-                                            error = %e,
-                                            "DAG-catchup: skipping delta — \
-                                             membership_status_at failed"
                                         );
                                         continue;
                                     }

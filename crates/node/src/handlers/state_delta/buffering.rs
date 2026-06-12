@@ -6,7 +6,7 @@
 //! invoked by the apply path, the sync manager, and namespace network-event
 //! handlers once governance state advances or on startup.
 
-use calimero_context::group_store::{membership_status_at, MembershipStatus};
+use calimero_context::group_store::{acl_view_at, MembershipStatus};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use eyre::Result;
@@ -14,7 +14,7 @@ use tracing::{debug, info, warn};
 
 use super::{
     apply_authorized_state_delta, choose_owned_identity, state_delta_message_from_buffered,
-    verify_position_group_id_matches_context, GroupIdCheck, StateDeltaContext,
+    StateDeltaContext,
 };
 
 /// Drain the governance-pending buffer for `context_id`, re-evaluating each
@@ -77,82 +77,31 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
             continue;
         };
         let datastore = input.node_clients.context.datastore();
-        // Anti-bypass: see `GroupIdCheck` for the bypasses this match
-        // closes. The drain path only sees `Some` positions (the
-        // governance-pending buffer wouldn't accept `None`), so the
-        // `NonGroupOk` / `GroupContextNoPosition` variants are
-        // unreachable here; we still spell them out for exhaustive-
-        // match safety against future buffer shape changes.
+        // Derive the owning group from the CONTEXT (P4) — never the
+        // signer-supplied `pos.group_id` — then authorize at the cut named by
+        // the edge's heads via `acl_view_at`. A context that is no longer part
+        // of any group (detached, or a transient store inconsistency) drops
+        // the delta with a distinct metric label.
         //
-        // INVARIANT: `ContextManager` serializes governance ops, so
-        // no concurrent group reassignment can interleave between
-        // this check and the `membership_status_at` call below — see
-        // the TOCTOU note on `verify_position_group_id_matches_context`.
-        match verify_position_group_id_matches_context(datastore, context_id, Some(pos.group_id)) {
-            GroupIdCheck::Match => {}
-            // `NonGroupOk` and `GroupContextNoPosition` both require
-            // `claimed_group_id == None` per the helper's match table.
-            // The drain always passes `Some(pos.group_id)` here (we
-            // bound `pos` via let-else above), so both variants are
-            // structurally unreachable from this call site.
-            //
-            // `debug_assert!` catches a future refactor that breaks
-            // the call-site contract (e.g. swapping to pass `None`)
-            // in test/dev builds. Release builds fall through to a
-            // defensive `continue` rather than panic — a single
-            // anomalous delta shouldn't crash the actor; the metric
-            // counter is the operator signal.
-            GroupIdCheck::NonGroupOk | GroupIdCheck::GroupContextNoPosition { .. } => {
-                debug_assert!(
-                    false,
-                    "GroupIdCheck::{{NonGroupOk, GroupContextNoPosition}} require \
-                     claimed_group_id=None, but drain always passes Some(pos.group_id) — \
-                     the call-site contract has been broken"
-                );
+        // INVARIANT: `ContextManager` serializes governance ops, so no
+        // concurrent group reassignment can interleave between this lookup and
+        // the `acl_view_at` walk below.
+        let owning_group = match calimero_context::group_store::get_group_for_context(
+            datastore, context_id,
+        ) {
+            Ok(Some(group)) => group,
+            Ok(None) => {
                 warn!(
                     %context_id,
                     delta_id = ?buffered.id,
                     author = %buffered.author_id,
-                    "governance-pending drain: dropping pending delta — \
-                     verify_position_group_id_matches_context returned an outcome that \
-                     requires claimed_group_id=None despite drain passing Some \
-                     (call-site contract violated; investigate)"
-                );
-                crate::node_metrics::record_governance_drain_outcome("helper_contract_violation");
-                continue;
-            }
-            GroupIdCheck::Mismatch { owning, claimed } => {
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    author = %buffered.author_id,
-                    owning_group = ?owning,
-                    claimed_group = ?claimed,
-                    "governance-pending drain: rejecting pending delta — governance_position \
-                     references a different group than the context's owning group"
-                );
-                crate::node_metrics::record_governance_drain_outcome("group_mismatch");
-                continue;
-            }
-            GroupIdCheck::NonGroupContextWithPosition { claimed } => {
-                // The context was in a group when this delta was
-                // accepted into the buffer, but is no longer — either
-                // it was detached, or a store inconsistency caused a
-                // transient `Ok(None)` here. Distinct metric label
-                // from `group_mismatch` so operators can tell the two
-                // cases apart in dashboards.
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    author = %buffered.author_id,
-                    claimed_group = ?claimed,
-                    "governance-pending drain: rejecting pending delta — governance_position \
-                     present but context is not part of any group (group disappeared since buffering?)"
+                    "governance-pending drain: rejecting pending delta — context is not \
+                     part of any group (group disappeared since buffering?)"
                 );
                 crate::node_metrics::record_governance_drain_outcome("group_disappeared");
                 continue;
             }
-            GroupIdCheck::LookupError(err) => {
+            Err(err) => {
                 warn!(
                     %context_id,
                     delta_id = ?buffered.id,
@@ -163,18 +112,23 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
                 crate::node_metrics::record_governance_drain_outcome("group_lookup_failed");
                 continue;
             }
-        }
+        };
         // Forward-only invariant — see the gossip-receive site in
         // `apply_authorized_state_delta` for the full contract. The
-        // governance-pending drain MUST use the buffered delta's
-        // signed `governance_position`, not the receiver's current
-        // state — the whole point of buffering was that the author
-        // signed against a cut the receiver wasn't caught up to. By
-        // the time we drain, the receiver's local DAG may have
-        // advanced past the signed cut (including a `MemberRemoved`
-        // for this author); forward-only resolves pre-removal writes
-        // to `Member` so the deferred apply is correct.
-        let status = membership_status_at(datastore, &buffered.author_id, pos);
+        // governance-pending drain MUST resolve against the buffered delta's
+        // signed governance edge (the cut the author signed at), not the
+        // receiver's current state — the whole point of buffering was that the
+        // author signed against a cut the receiver wasn't caught up to. By the
+        // time we drain, the receiver's local DAG may have advanced past the
+        // signed cut (including a `MemberRemoved` for this author);
+        // forward-only resolves pre-removal writes to `Member` so the deferred
+        // apply is correct.
+        let status = acl_view_at(
+            datastore,
+            owning_group,
+            &buffered.author_id,
+            &pos.governance_dag_heads,
+        );
         match status {
             Ok(MembershipStatus::Member(_)) => {
                 debug!(

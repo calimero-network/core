@@ -94,7 +94,6 @@ fn verify_fetched_parent(
     fetched: &FetchedDelta,
     datastore: &calimero_store::Store,
 ) -> VerifiedParent {
-    use calimero_context::group_store::{membership_status_at, MembershipStatus};
     use calimero_context_config::types::GovernancePosition;
 
     // Genesis carve-out: the responder serves the genesis delta with
@@ -150,69 +149,9 @@ fn verify_fetched_parent(
         }
     }
 
-    // Anti-bypass parity (same as the head-pull path in
-    // `request_dag_heads_and_sync`): confirm the claimed position's
-    // group matches the context's owning group, or that no position is
-    // claimed for a non-group context. Catches the
-    // `GroupContextNoPosition`, `NonGroupContextWithPosition`, and
-    // `Mismatch` bypasses described on `GroupIdCheck`.
-    {
-        use crate::handlers::state_delta::{
-            verify_position_group_id_matches_context, GroupIdCheck,
-        };
-        match verify_position_group_id_matches_context(
-            datastore,
-            context_id,
-            pos.as_ref().map(|p| p.group_id),
-        ) {
-            GroupIdCheck::Match | GroupIdCheck::NonGroupOk => {}
-            GroupIdCheck::GroupContextNoPosition { owning } => {
-                warn!(
-                    %context_id,
-                    author = %fetched.author_id,
-                    delta_id = ?delta_id,
-                    owning_group = ?owning,
-                    "DAG-catchup parent-pull: rejecting delta — context is owned by a \
-                     group but delta carries no governance_position"
-                );
-                return VerifiedParent::Skip;
-            }
-            GroupIdCheck::NonGroupContextWithPosition { claimed } => {
-                warn!(
-                    %context_id,
-                    author = %fetched.author_id,
-                    delta_id = ?delta_id,
-                    claimed_group = ?claimed,
-                    "DAG-catchup parent-pull: rejecting delta — delta claims a \
-                     governance position but context is not in any group"
-                );
-                return VerifiedParent::Skip;
-            }
-            GroupIdCheck::Mismatch { owning, claimed } => {
-                warn!(
-                    %context_id,
-                    author = %fetched.author_id,
-                    delta_id = ?delta_id,
-                    owning_group = ?owning,
-                    claimed_group = ?claimed,
-                    "DAG-catchup parent-pull: rejecting delta — governance_position \
-                     references a different group than the context's owning group"
-                );
-                return VerifiedParent::Skip;
-            }
-            GroupIdCheck::LookupError(err) => {
-                warn!(
-                    %context_id,
-                    author = %fetched.author_id,
-                    delta_id = ?delta_id,
-                    %err,
-                    "DAG-catchup parent-pull: skipping delta — group lookup failed \
-                     during anti-bypass check"
-                );
-                return VerifiedParent::Skip;
-            }
-        }
-    }
+    // Group/membership authorization — including the group-id anti-bypass the
+    // old `GroupIdCheck` performed — is done by `authorize_delta_at_edge`
+    // below (after the ReadOnly gate), deriving the group from the context.
 
     // ReadOnly check — parity with the gossip apply path.
     // `membership_status_at` treats ReadOnly as `Member(ReadOnly)`,
@@ -232,54 +171,36 @@ fn verify_fetched_parent(
         return VerifiedParent::Skip;
     }
 
-    if let Some(ref pos_ref) = pos {
-        match membership_status_at(datastore, &fetched.author_id, pos_ref) {
-            Ok(MembershipStatus::Member(_)) => {
-                // Authorized at the cited cut — proceed.
-            }
-            Ok(MembershipStatus::Removed { last_role }) => {
-                warn!(
-                    %context_id,
-                    author = %fetched.author_id,
-                    delta_id = ?delta_id,
-                    last_role = ?last_role,
-                    "DAG-catchup parent-pull: rejecting delta — author was removed \
-                     at the cited governance cut"
-                );
-                return VerifiedParent::Skip;
-            }
-            Ok(MembershipStatus::NeverMember) => {
-                warn!(
-                    %context_id,
-                    author = %fetched.author_id,
-                    delta_id = ?delta_id,
-                    "DAG-catchup parent-pull: rejecting delta — author was never \
-                     a member at the cited governance cut"
-                );
-                return VerifiedParent::Skip;
-            }
-            Ok(MembershipStatus::Unknown { needed }) => {
-                warn!(
-                    %context_id,
-                    author = %fetched.author_id,
-                    delta_id = ?delta_id,
-                    needed = ?needed,
-                    "DAG-catchup parent-pull: skipping delta — governance cut not \
-                     locally known; will re-attempt on next sync tick"
-                );
-                return VerifiedParent::Skip;
-            }
-            Err(e) => {
-                warn!(
-                    %context_id,
-                    author = %fetched.author_id,
-                    delta_id = ?delta_id,
-                    error = %e,
-                    "DAG-catchup parent-pull: skipping delta — membership_status_at \
-                     failed"
-                );
-                return VerifiedParent::Skip;
-            }
+    match crate::handlers::state_delta::authorize_delta_at_edge(
+        datastore,
+        context_id,
+        &fetched.author_id,
+        pos.as_ref(),
+    ) {
+        crate::handlers::state_delta::DeltaAuthOutcome::Authorized { .. }
+        | crate::handlers::state_delta::DeltaAuthOutcome::Ungated => {
+            // Authorized at the cited cut — proceed.
+        }
+        crate::handlers::state_delta::DeltaAuthOutcome::Reject(reason) => {
+            warn!(
+                %context_id,
+                author = %fetched.author_id,
+                delta_id = ?delta_id,
+                reason,
+                "DAG-catchup parent-pull: rejecting delta"
+            );
+            return VerifiedParent::Skip;
+        }
+        crate::handlers::state_delta::DeltaAuthOutcome::Buffer { needed } => {
+            warn!(
+                %context_id,
+                author = %fetched.author_id,
+                delta_id = ?delta_id,
+                needed = ?needed,
+                "DAG-catchup parent-pull: skipping delta — governance cut not \
+                 locally known; will re-attempt on next sync tick"
+            );
+            return VerifiedParent::Skip;
         }
     }
 

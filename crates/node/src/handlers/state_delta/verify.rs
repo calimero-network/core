@@ -129,3 +129,93 @@ pub(crate) fn verify_position_group_id_matches_context(
         (Some(owning), Some(claimed)) => GroupIdCheck::Mismatch { owning, claimed },
     }
 }
+
+/// Outcome of the apply-time governance authorization check (core#2716 P4),
+/// interpreted by each call site in its local idiom (warn wording, return
+/// shape, buffering construction).
+pub(crate) enum DeltaAuthOutcome {
+    /// Author is a member at the cited governance cut. Carries the context's
+    /// owning group + role for peer-identity observation. Proceed to apply.
+    Authorized {
+        group: calimero_context_config::types::ContextGroupId,
+        role: calimero_primitives::context::GroupMemberRole,
+    },
+    /// No governance gate applies — a non-group context carrying no edge
+    /// (legacy path). Proceed to apply.
+    Ungated,
+    /// Reject the delta. `reason` is a static label for the call site's warn
+    /// log. Covers: author Removed / NeverMember at the cut; a group-context
+    /// delta with no edge (bypass attempt); an edge on a non-group context;
+    /// and lookup / walk errors (rejected conservatively to avoid silent
+    /// bypass on transient I/O or corruption).
+    Reject(&'static str),
+    /// Local governance state is behind the cited cut. Buffer until catchup;
+    /// `needed` lists every missing governance head so the receiver can
+    /// request them all at once.
+    Buffer { needed: Vec<[u8; 32]> },
+}
+
+/// Authorize a state delta against its **governance parent edge** (core#2716
+/// P4) — the successor to the `GroupIdCheck` + `membership_status_at` pair.
+///
+/// `governance_position` is the signed envelope's edge (`None` for a
+/// non-group context); only its `governance_dag_heads` are consulted. The
+/// group is derived from `context_id` via the canonical context→group
+/// mapping — the position's own `group_id` is intentionally ignored, which is
+/// what makes the old `group_id`-equality anti-bypass structurally
+/// unnecessary: the only group ever authorized against is the context's own,
+/// so a signer cannot cite a different group it belongs to elsewhere.
+///
+/// Authorization itself is delegated to
+/// [`acl_view_at`](calimero_context::group_store::acl_view_at), which resolves
+/// membership at the cut named by the heads.
+///
+/// **Forward-only** — `acl_view_at` observes only the ancestry of the cited
+/// heads, so a pre-removal write resolves to [`DeltaAuthOutcome::Authorized`]
+/// regardless of the order the receiver observed the later removal.
+///
+/// **TOCTOU** — runs immediately before apply with no lock held;
+/// `ContextManager` serializes governance ops, so no concurrent group
+/// reassignment can interleave between the group lookup and the walk.
+pub(crate) fn authorize_delta_at_edge(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+    author: &calimero_primitives::identity::PublicKey,
+    governance_position: Option<&calimero_context_config::types::GovernancePosition>,
+) -> DeltaAuthOutcome {
+    use calimero_context::group_store::{acl_view_at, MembershipStatus};
+
+    let owning = match calimero_context::group_store::get_group_for_context(store, context_id) {
+        Ok(owning) => owning,
+        Err(_) => {
+            return DeltaAuthOutcome::Reject(
+                "get_group_for_context failed; rejecting to avoid silent bypass",
+            )
+        }
+    };
+
+    match (owning, governance_position) {
+        (None, None) => DeltaAuthOutcome::Ungated,
+        (Some(_), None) => DeltaAuthOutcome::Reject(
+            "group context but no governance edge (likely a bypass attempt)",
+        ),
+        (None, Some(_)) => {
+            DeltaAuthOutcome::Reject("governance edge present but context is not part of any group")
+        }
+        (Some(group), Some(pos)) => {
+            match acl_view_at(store, group, author, &pos.governance_dag_heads) {
+                Ok(MembershipStatus::Member(role)) => DeltaAuthOutcome::Authorized { group, role },
+                Ok(MembershipStatus::Removed { .. }) => {
+                    DeltaAuthOutcome::Reject("author was removed from group at governance cut")
+                }
+                Ok(MembershipStatus::NeverMember) => DeltaAuthOutcome::Reject(
+                    "author is not a member of the group at governance cut",
+                ),
+                Ok(MembershipStatus::Unknown { needed }) => DeltaAuthOutcome::Buffer { needed },
+                Err(_) => DeltaAuthOutcome::Reject(
+                    "membership lookup failed (hash mismatch / corruption)",
+                ),
+            }
+        }
+    }
+}

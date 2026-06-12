@@ -1,7 +1,6 @@
 //! State delta handling for BroadcastMessage::StateDelta
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
-use calimero_context::group_store::{membership_status_at, MembershipStatus};
 use calimero_context::group_store::{DenyListRepository, NamespaceRepository};
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::GovernancePosition;
@@ -42,7 +41,10 @@ use events::{
 // `choose_owned_identity` is also reached by the sibling `buffering` module via
 // `super::` (re-exported through this import).
 use store_setup::{choose_owned_identity, init_delta_store, DeltaStoreSetup};
-pub(crate) use verify::{verify_position_group_id_matches_context, GroupIdCheck};
+pub(crate) use verify::{
+    authorize_delta_at_edge, verify_position_group_id_matches_context, DeltaAuthOutcome,
+    GroupIdCheck,
+};
 
 pub(crate) struct StateDeltaMessage {
     pub(crate) source: PeerId,
@@ -883,174 +885,92 @@ pub async fn handle_state_delta(
     };
     drain_governance_pending(&drain_input, &context_id).await;
 
-    // Apply-time cross-DAG membership check. If the delta carries a
-    // `governance_position`, ask `membership_status_at` whether `author_id`
-    // was a member at the named cut. Reject ineligible ops; buffer when
-    // governance state hasn't caught up; otherwise fall through to the
-    // existing apply path.
+    // Apply-time cross-DAG membership check (core#2716 P4). Authorize the
+    // delta against the GOVERNANCE PARENT EDGE it carries — the governance
+    // heads the author signed under — resolving membership at that cut via
+    // `acl_view_at`. The group is derived from the CONTEXT's owning group,
+    // never the signer-supplied `governance_position.group_id`, so a signer
+    // cannot cite a different group it belongs to elsewhere to authorize a
+    // write here. Reject ineligible ops; buffer when governance state hasn't
+    // caught up; otherwise fall through to the existing apply path.
     //
-    // Anti-bypass: see [`GroupIdCheck`] for the two bypasses this match
-    // closes (mismatched group_id on a signed position, and lying about
-    // being a non-group context). Single store lookup covers both
-    // position-present and position-absent cases.
+    // Forward-only is load-bearing: `acl_view_at` observes only the ancestry
+    // of the cited heads, so a pre-removal write resolves to `Authorized` on a
+    // receiver that has already applied the later removal — peers observing
+    // ops in different orders still converge.
     //
-    // INVARIANT: `ContextManager` serializes governance ops, so
-    // no concurrent group reassignment can interleave between this
-    // check and the `membership_status_at` call below — see the
-    // TOCTOU note on `verify_position_group_id_matches_context`.
+    // INVARIANT: `ContextManager` serializes governance ops, so no concurrent
+    // group reassignment can interleave between the group lookup inside
+    // `authorize_delta_at_edge` and its membership walk.
     let datastore = node_clients.context.datastore();
-    match verify_position_group_id_matches_context(
+    let delta_auth = authorize_delta_at_edge(
         datastore,
         &context_id,
-        governance_position.as_ref().map(|p| p.group_id),
-    ) {
-        GroupIdCheck::NonGroupOk => {
-            // Legacy non-group context with no claimed group. Fall through.
-        }
-        GroupIdCheck::Match => {
-            // Position's group matches the context's owning group. Fall
-            // through to the membership-status check below.
-        }
-        GroupIdCheck::GroupContextNoPosition { owning } => {
-            warn!(
-                %context_id,
-                %author_id,
-                owning_group = ?owning,
-                delta_id = ?delta_id,
-                "cross-DAG check: rejecting state delta — group context but no \
-                 governance_position (likely a malicious bypass attempt)"
-            );
-            return Ok(());
-        }
-        GroupIdCheck::NonGroupContextWithPosition { claimed } => {
-            warn!(
-                %context_id,
-                %author_id,
-                claimed_group = ?claimed,
-                delta_id = ?delta_id,
-                "cross-DAG check: rejecting state delta — governance_position present \
-                 but context is not part of any group"
-            );
-            return Ok(());
-        }
-        GroupIdCheck::Mismatch { owning, claimed } => {
-            warn!(
-                %context_id,
-                %author_id,
-                owning_group = ?owning,
-                claimed_group = ?claimed,
-                delta_id = ?delta_id,
-                "cross-DAG check: rejecting state delta — governance_position references \
-                 a different group than the context's owning group"
-            );
-            return Ok(());
-        }
-        GroupIdCheck::LookupError(err) => {
-            warn!(
-                %context_id,
-                %author_id,
-                %err,
-                "cross-DAG check: get_group_for_context failed; rejecting delta to avoid silent bypass"
-            );
-            return Ok(());
-        }
-    }
+        &author_id,
+        governance_position.as_ref(),
+    );
 
-    if let Some(pos) = governance_position.as_ref() {
-        // Forward-only invariant — load-bearing. The argument passed
-        // to `membership_status_at` is the delta's *signed* governance
-        // position (carried inside the delta envelope by the author at
-        // sign time), NOT the receiver's current local state. Pre-cut
-        // writes from a now-removed author resolve to `Member` here
-        // even on a receiver whose local DAG has already applied the
-        // removal — without this property, two peers that observe the
-        // `MemberRemoved` op in different orders relative to the
-        // pre-removal delta would diverge. Swapping this argument for
-        // current state or any post-cut heuristic reintroduces that
-        // divergence and turns valid pre-removal writes into rejected
-        // ones retroactively. Tests pinning this behavior live at
-        // `crates/context/src/group_store/membership_status.rs`.
-        match membership_status_at(datastore, &author_id, pos) {
-            Ok(MembershipStatus::Member(role)) => {
-                tracing::debug!(
-                    %context_id,
-                    %author_id,
-                    role = ?role,
-                    group_id = ?pos.group_id,
-                    "cross-DAG check: author authorized at governance cut"
-                );
-                // Record the (peer, identity) pair now that we know the
-                // signature verified AND the author is an authorized
-                // member at the named cut. Consumed by anchor-preferred
-                // sync peer selection. See `NodeState::peer_identities`.
-                //
-                // This path has the group + role at the cut, so it also
-                // writes through to the durable `peer_identity_cache`.
-                node_state.observe_peer_identity(
-                    source,
-                    author_id,
-                    Some(ObservedMembership {
-                        group_id: pos.group_id,
-                        role,
-                    }),
-                );
-            }
-            Ok(MembershipStatus::Removed { last_role }) => {
-                warn!(
-                    %context_id,
-                    %author_id,
-                    last_role = ?last_role,
-                    group_id = ?pos.group_id,
-                    "cross-DAG check: rejecting state delta — author was removed from group at governance cut"
-                );
-                return Ok(());
-            }
-            Ok(MembershipStatus::NeverMember) => {
-                warn!(
-                    %context_id,
-                    %author_id,
-                    group_id = ?pos.group_id,
-                    "cross-DAG check: rejecting state delta — author is not a member of the group at governance cut"
-                );
-                return Ok(());
-            }
-            Ok(MembershipStatus::Unknown { needed }) => {
-                info!(
-                    %context_id,
-                    %author_id,
-                    group_id = ?pos.group_id,
-                    needed_count = needed.len(),
-                    "cross-DAG check: governance state behind position; buffering delta until catchup"
-                );
-                let buffered = calimero_node_primitives::delta_buffer::BufferedDelta {
-                    id: delta_id,
-                    parents: parent_ids.clone(),
-                    hlc,
-                    payload: artifact.clone(),
-                    nonce,
-                    author_id,
-                    root_hash,
-                    events: events.clone(),
-                    source_peer: source,
-                    key_id,
-                    governance_position: governance_position.clone(),
-                    delta_signature,
-                    governance_drain_attempts: 0,
-                    producing_app_key,
-                };
-                node_state.buffer_governance_pending(context_id, buffered);
-                return Ok(());
-            }
-            Err(err) => {
-                warn!(
-                    %context_id,
-                    %author_id,
-                    group_id = ?pos.group_id,
-                    %err,
-                    "cross-DAG check: rejecting state delta — membership lookup failed (hash mismatch / corruption)"
-                );
-                return Ok(());
-            }
+    match delta_auth {
+        DeltaAuthOutcome::Ungated => {
+            // Non-group context with no governance edge — no membership gate.
+        }
+        DeltaAuthOutcome::Authorized { group, role } => {
+            tracing::debug!(
+                %context_id,
+                %author_id,
+                role = ?role,
+                group_id = ?group,
+                "cross-DAG check: author authorized at governance cut"
+            );
+            // Record the (peer, identity) pair now that we know the signature
+            // verified AND the author is an authorized member at the named
+            // cut. Consumed by anchor-preferred sync peer selection; the group
+            // + role at the cut also write through to the durable
+            // `peer_identity_cache`. See `NodeState::peer_identities`.
+            node_state.observe_peer_identity(
+                source,
+                author_id,
+                Some(ObservedMembership {
+                    group_id: group,
+                    role,
+                }),
+            );
+        }
+        DeltaAuthOutcome::Reject(reason) => {
+            warn!(
+                %context_id,
+                %author_id,
+                delta_id = ?delta_id,
+                reason,
+                "cross-DAG check: rejecting state delta"
+            );
+            return Ok(());
+        }
+        DeltaAuthOutcome::Buffer { needed } => {
+            info!(
+                %context_id,
+                %author_id,
+                needed_count = needed.len(),
+                "cross-DAG check: governance state behind edge; buffering delta until catchup"
+            );
+            let buffered = calimero_node_primitives::delta_buffer::BufferedDelta {
+                id: delta_id,
+                parents: parent_ids.clone(),
+                hlc,
+                payload: artifact.clone(),
+                nonce,
+                author_id,
+                root_hash,
+                events: events.clone(),
+                source_peer: source,
+                key_id,
+                governance_position: governance_position.clone(),
+                delta_signature,
+                governance_drain_attempts: 0,
+                producing_app_key,
+            };
+            node_state.buffer_governance_pending(context_id, buffered);
+            return Ok(());
         }
     }
 
@@ -2107,64 +2027,10 @@ async fn request_missing_deltas(
                         continue;
                     }
 
-                    // Group-id parity check: same as the gossip apply
-                    // path. Without this, a delta whose author signed
-                    // a position citing a *different* group's
-                    // governance could pass the membership check
-                    // (`membership_status_at` walks the cited group's
-                    // DAG, not this context's owning group) and slip
-                    // through. Match the `GroupIdCheck` branches
-                    // `verify_position_group_id_matches_context`
-                    // returns to apply identical reject/skip rules.
-                    match verify_position_group_id_matches_context(
-                        &datastore,
-                        &context_id,
-                        governance_position.as_ref().map(|p| p.group_id),
-                    ) {
-                        GroupIdCheck::NonGroupOk | GroupIdCheck::Match => {
-                            // ok — fall through to membership check
-                        }
-                        GroupIdCheck::GroupContextNoPosition { owning } => {
-                            warn!(
-                                %context_id,
-                                delta_id = ?missing_id,
-                                author = %response_author,
-                                owning_group = ?owning,
-                                "parent-fetch: group context but no governance_position, dropping"
-                            );
-                            continue;
-                        }
-                        GroupIdCheck::NonGroupContextWithPosition { claimed } => {
-                            warn!(
-                                %context_id,
-                                delta_id = ?missing_id,
-                                author = %response_author,
-                                claimed_group = ?claimed,
-                                "parent-fetch: non-group context but position claims a group, dropping"
-                            );
-                            continue;
-                        }
-                        GroupIdCheck::Mismatch { owning, claimed } => {
-                            warn!(
-                                %context_id,
-                                delta_id = ?missing_id,
-                                author = %response_author,
-                                owning_group = ?owning,
-                                claimed_group = ?claimed,
-                                "parent-fetch: governance_position cites a different group than context owns, dropping"
-                            );
-                            continue;
-                        }
-                        GroupIdCheck::LookupError(err) => {
-                            warn!(
-                                %context_id,
-                                delta_id = ?missing_id,
-                                %err,
-                                "parent-fetch: get_group_for_context failed, dropping to avoid silent bypass"
-                            );
-                            continue;
-                        }
-                    }
+                    // Group/membership authorization — including the group-id
+                    // anti-bypass that the old `GroupIdCheck` performed — is
+                    // done by `authorize_delta_at_edge` below (after the
+                    // ReadOnly gate), deriving the group from the context.
 
                     // ReadOnly check — parity with the gossip apply
                     // path in `apply_authorized_state_delta`.
@@ -2187,55 +2053,37 @@ async fn request_missing_deltas(
                         continue;
                     }
 
-                    // Cross-DAG membership check: same as the
-                    // request_dag_heads_and_sync path. Reject deltas
-                    // whose author was removed at the cited cut.
-                    if let Some(ref pos) = governance_position {
-                        use calimero_context::group_store::{
-                            membership_status_at, MembershipStatus,
-                        };
-                        match membership_status_at(&datastore, &response_author, pos) {
-                            Ok(MembershipStatus::Member(_)) => {}
-                            Ok(MembershipStatus::Removed { last_role }) => {
-                                warn!(
-                                    %context_id,
-                                    delta_id = ?missing_id,
-                                    author = %response_author,
-                                    last_role = ?last_role,
-                                    "parent-fetch: author was removed at cited cut, dropping"
-                                );
-                                continue;
-                            }
-                            Ok(MembershipStatus::NeverMember) => {
-                                warn!(
-                                    %context_id,
-                                    delta_id = ?missing_id,
-                                    author = %response_author,
-                                    "parent-fetch: author never a member at cited cut, dropping"
-                                );
-                                continue;
-                            }
-                            Ok(MembershipStatus::Unknown { needed }) => {
-                                warn!(
-                                    %context_id,
-                                    delta_id = ?missing_id,
-                                    author = %response_author,
-                                    needed = ?needed,
-                                    "parent-fetch: governance cut not locally known, skipping"
-                                );
-                                continue;
-                            }
-                            Err(err) => {
-                                warn!(
-                                    %context_id,
-                                    delta_id = ?missing_id,
-                                    author = %response_author,
-                                    %err,
-                                    "parent-fetch: membership_status_at failed, dropping to \
-                                     avoid silent bypass"
-                                );
-                                continue;
-                            }
+                    // Cross-DAG authorization against the governance parent
+                    // edge: derives the group from the context (folding in the
+                    // old group-id anti-bypass) and resolves membership at the
+                    // cited cut. Reject deltas whose author was removed / never
+                    // a member; skip when the cut isn't locally known.
+                    match authorize_delta_at_edge(
+                        &datastore,
+                        &context_id,
+                        &response_author,
+                        governance_position.as_ref(),
+                    ) {
+                        DeltaAuthOutcome::Authorized { .. } | DeltaAuthOutcome::Ungated => {}
+                        DeltaAuthOutcome::Reject(reason) => {
+                            warn!(
+                                %context_id,
+                                delta_id = ?missing_id,
+                                author = %response_author,
+                                reason,
+                                "parent-fetch: rejecting delta"
+                            );
+                            continue;
+                        }
+                        DeltaAuthOutcome::Buffer { needed } => {
+                            warn!(
+                                %context_id,
+                                delta_id = ?missing_id,
+                                author = %response_author,
+                                needed = ?needed,
+                                "parent-fetch: governance cut not locally known, skipping"
+                            );
+                            continue;
                         }
                     }
 
@@ -2546,140 +2394,50 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // this, every delta arriving inside the sync window bypasses cross-DAG
     // authorization.
     //
-    // Anti-bypass: see [`GroupIdCheck`] for the two bypasses this match
-    // closes (mismatched group_id on a signed position, and lying about
-    // being a non-group context). Single store lookup covers both
-    // position-present and position-absent cases — same shape as
-    // `handle_state_delta`.
+    // Authorize against the governance parent edge — same
+    // `authorize_delta_at_edge` path as `handle_state_delta`, but the
+    // `Buffer` outcome is interpreted as a DROP here: after snapshot sync the
+    // receiver is at-or-ahead of any legitimate authoring cut, so persistent
+    // Unknown means the edge cites heads we provably do not have, and
+    // re-buffering would be a permanent leak.
     //
-    // INVARIANT: `ContextManager` serializes governance ops, so
-    // no concurrent group reassignment can interleave between this
-    // check and the `membership_status_at` call below — see the
-    // TOCTOU note on `verify_position_group_id_matches_context`.
+    // INVARIANT: `ContextManager` serializes governance ops, so no concurrent
+    // group reassignment can interleave between the group lookup and the walk.
     let datastore = context_client.datastore();
-    match verify_position_group_id_matches_context(
+    match authorize_delta_at_edge(
         datastore,
         &context_id,
-        buffered.governance_position.as_ref().map(|p| p.group_id),
+        &buffered.author_id,
+        buffered.governance_position.as_ref(),
     ) {
-        GroupIdCheck::NonGroupOk => {
-            // Legacy non-group context with no claimed group. Fall through.
+        DeltaAuthOutcome::Ungated => {}
+        DeltaAuthOutcome::Authorized { group, role } => {
+            debug!(
+                %context_id,
+                author = %buffered.author_id,
+                role = ?role,
+                group_id = ?group,
+                "cross-DAG check (replay): author authorized at governance cut"
+            );
         }
-        GroupIdCheck::Match => {
-            // Position's group matches the context's owning group. Fall
-            // through to the membership-status check below.
-        }
-        GroupIdCheck::GroupContextNoPosition { owning } => {
+        DeltaAuthOutcome::Reject(reason) => {
             warn!(
                 %context_id,
                 author = %buffered.author_id,
-                owning_group = ?owning,
                 delta_id = ?delta_id,
-                "cross-DAG check (replay): rejecting buffered delta — group context but no \
-                 governance_position (likely a malicious bypass attempt)"
+                reason,
+                "cross-DAG check (replay): rejecting buffered delta"
             );
             return Ok(false);
         }
-        GroupIdCheck::NonGroupContextWithPosition { claimed } => {
+        DeltaAuthOutcome::Buffer { needed } => {
             warn!(
                 %context_id,
                 author = %buffered.author_id,
-                claimed_group = ?claimed,
-                delta_id = ?delta_id,
-                "cross-DAG check (replay): rejecting buffered delta — governance_position \
-                 present but context is not part of any group"
+                needed_count = needed.len(),
+                "cross-DAG check (replay): governance heads still unknown after sync — dropping"
             );
             return Ok(false);
-        }
-        GroupIdCheck::Mismatch { owning, claimed } => {
-            warn!(
-                %context_id,
-                author = %buffered.author_id,
-                owning_group = ?owning,
-                claimed_group = ?claimed,
-                delta_id = ?delta_id,
-                "cross-DAG check (replay): rejecting buffered delta — governance_position \
-                 references a different group than the context's owning group"
-            );
-            return Ok(false);
-        }
-        GroupIdCheck::LookupError(err) => {
-            warn!(
-                %context_id,
-                author = %buffered.author_id,
-                %err,
-                "cross-DAG check (replay): get_group_for_context failed; rejecting buffered \
-                 delta to avoid silent bypass"
-            );
-            return Ok(false);
-        }
-    }
-
-    if let Some(pos) = buffered.governance_position.as_ref() {
-        let datastore = context_client.datastore();
-        // Forward-only invariant — same contract as the gossip-receive
-        // and drain sites. Snapshot-sync establishes a context-state
-        // baseline that may be at-or-ahead of the buffered delta's
-        // governance cut; resolving against the buffered (signed) cut,
-        // not local state, is what preserves pre-removal write
-        // validity on the replay path. See
-        // `apply_authorized_state_delta` site for full prose.
-        match membership_status_at(datastore, &buffered.author_id, pos) {
-            Ok(MembershipStatus::Member(role)) => {
-                debug!(
-                    %context_id,
-                    author = %buffered.author_id,
-                    role = ?role,
-                    group_id = ?pos.group_id,
-                    "cross-DAG check (replay): author authorized at governance cut"
-                );
-            }
-            Ok(MembershipStatus::Removed { last_role }) => {
-                warn!(
-                    %context_id,
-                    author = %buffered.author_id,
-                    last_role = ?last_role,
-                    group_id = ?pos.group_id,
-                    "cross-DAG check (replay): rejecting buffered delta — author was removed at governance cut"
-                );
-                return Ok(false);
-            }
-            Ok(MembershipStatus::NeverMember) => {
-                warn!(
-                    %context_id,
-                    author = %buffered.author_id,
-                    group_id = ?pos.group_id,
-                    "cross-DAG check (replay): rejecting buffered delta — author is not a member at governance cut"
-                );
-                return Ok(false);
-            }
-            Ok(MembershipStatus::Unknown { needed }) => {
-                // After snapshot sync the receiver is at-or-ahead of any
-                // legitimate authoring cut; persistent Unknown here means
-                // the position references heads we provably do not have.
-                // Re-buffering into governance_pending would amount to a
-                // permanent leak — drop with a warn. A future delta
-                // referencing the same now-known position can still
-                // re-deliver via gossip if it was legitimate.
-                warn!(
-                    %context_id,
-                    author = %buffered.author_id,
-                    group_id = ?pos.group_id,
-                    needed_count = needed.len(),
-                    "cross-DAG check (replay): governance heads still unknown after sync — dropping"
-                );
-                return Ok(false);
-            }
-            Err(err) => {
-                warn!(
-                    %context_id,
-                    author = %buffered.author_id,
-                    group_id = ?pos.group_id,
-                    %err,
-                    "cross-DAG check (replay): rejecting buffered delta — membership lookup failed"
-                );
-                return Ok(false);
-            }
         }
     }
 
