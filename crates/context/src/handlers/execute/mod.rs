@@ -1237,18 +1237,27 @@ async fn ensure_blob_local(
 /// `app_key` (callers gate that branch on local blob presence — legacy
 /// groups carry randomly-seeded keys that resolve to nothing). `None` ⇒
 /// fall back to the application row.
+/// Where a context's bound bytecode blob was resolved from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundBlobSource {
+    /// The per-context activation marker — already executed locally.
+    ActivationMarker,
+    /// The group's recorded target blob — may not be fetched yet.
+    GroupKey,
+}
+
 pub(crate) fn bound_blob_for_context(
     store: &Store,
     context_id: &ContextId,
-) -> Option<([u8; 32], bool)> {
+) -> Option<([u8; 32], BoundBlobSource)> {
     if let Some(blob) = crate::activation::activated_blob(store, context_id) {
-        return Some((blob, false));
+        return Some((blob, BoundBlobSource::ActivationMarker));
     }
     let group_id = calimero_governance_store::get_group_for_context(store, context_id)
         .ok()
         .flatten()?;
     let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
-    (meta.app_key != [0u8; 32]).then_some((meta.app_key, true))
+    (meta.app_key != [0u8; 32]).then_some((meta.app_key, BoundBlobSource::GroupKey))
 }
 
 impl ContextManager {
@@ -1259,9 +1268,11 @@ impl ContextManager {
         &self,
         context_id: &ContextId,
     ) -> Option<calimero_primitives::blobs::BlobId> {
-        let (blob, from_group_key) = bound_blob_for_context(&self.datastore, context_id)?;
+        let (blob, source) = bound_blob_for_context(&self.datastore, context_id)?;
         let blob_id = calimero_primitives::blobs::BlobId::from(blob);
-        if from_group_key && !self.node_client.has_blob(&blob_id).unwrap_or(false) {
+        if source == BoundBlobSource::GroupKey
+            && !self.node_client.has_blob(&blob_id).unwrap_or(false)
+        {
             // Legacy randomly-seeded app_key (or not-yet-fetched target):
             // nothing to execute under that key — use the row.
             return None;
@@ -2190,11 +2201,11 @@ mod tests {
 
         assert_eq!(
             super::bound_blob_for_context(&store, &ctx_a),
-            Some(([0x11; 32], false))
+            Some(([0x11; 32], super::BoundBlobSource::ActivationMarker))
         );
         assert_eq!(
             super::bound_blob_for_context(&store, &ctx_b),
-            Some(([0x22; 32], false))
+            Some(([0x22; 32], super::BoundBlobSource::ActivationMarker))
         );
     }
 
@@ -2211,7 +2222,7 @@ mod tests {
 
         assert_eq!(
             super::bound_blob_for_context(&store, &ctx),
-            Some(([0x44; 32], true))
+            Some(([0x44; 32], super::BoundBlobSource::GroupKey))
         );
     }
 

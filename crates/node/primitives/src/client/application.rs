@@ -443,7 +443,14 @@ impl NodeClient {
                     Ok(Ok((_, manifest))) => manifest,
                     // Unparseable manifests are skipped, not fatal: foreign
                     // or corrupt blobs must not break the inventory.
-                    Ok(Err(_)) | Err(_) => continue,
+                    Ok(Err(err)) => {
+                        debug!(%blob_id, %err, "version inventory: skipping unparseable bundle manifest");
+                        continue;
+                    }
+                    Err(err) => {
+                        debug!(%blob_id, %err, "version inventory: manifest read task failed; skipping blob");
+                        continue;
+                    }
                 };
                 if manifest.package != app.package {
                     continue; // a different application's version blob

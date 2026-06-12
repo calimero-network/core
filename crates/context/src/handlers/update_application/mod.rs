@@ -347,12 +347,17 @@ pub async fn update_application_id(
     // Unified activation marker: code-only updates (this fn — the eager
     // propagator's no-migration route and the lazy code-only finish) count
     // as activations too, or the same-id up-to-date rule would keep reading
-    // these contexts as pending.
-    crate::activation::record_activation(
-        &datastore,
-        &context_id,
-        activated_row_blob(&node_client, &application),
-    );
+    // these contexts as pending. Only recorded when the blob is locally
+    // present: a marker hard-binds execution to that bytecode, so naming a
+    // missing blob would wedge the context AND stop the lazy retry (the
+    // gate reads no-marker as "activation pending").
+    let activated = activated_row_blob(&node_client, &application);
+    if node_client
+        .has_blob(&calimero_primitives::blobs::BlobId::from(activated))
+        .unwrap_or(false)
+    {
+        crate::activation::record_activation(&datastore, &context_id, activated);
+    }
 
     Ok(application)
 }
