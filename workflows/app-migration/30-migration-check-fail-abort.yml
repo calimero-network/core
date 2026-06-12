@@ -22,9 +22,10 @@ description: >
   Node-log validation (the explicit requirement for scenario 30):
     - `assert_log_present "migration_check failed: logical abort"` — the
       pre-commit check rejected the produced v2 root (PR-6d task 6d.3).
-    - `assert_log_present "lazy upgrade (migration) failed, proceeding with
-      current application"` — the lazy access fell back to v1 rather than
-      committing v2.
+    - `assert_log_present "proceeding with current application"` — the lazy
+      access fell back to v1 rather than committing v2 (logged as a failed
+      ladder hop for marker-ed contexts, or a failed single jump for legacy
+      marker-less ones).
     - `assert_log_absent "migration_check passed"` — the commit path was never
       taken.
   Plus a behavioural assertion: a post-abort read still returns v1 schema
@@ -210,7 +211,7 @@ steps:
     nodes:
       - app-migration-check-fail-1
     patterns:
-      - "lazy upgrade (migration) failed, proceeding with current application"
+      - "proceeding with current application"
     min_matches: 1
 
   - name: Assert the commit path was NEVER taken (no passing check logged)

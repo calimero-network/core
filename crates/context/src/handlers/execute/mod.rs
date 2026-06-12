@@ -490,7 +490,12 @@ impl Handler<ExecuteRequest> for ContextManager {
                 // longer ladder resumes on the next access from the last
                 // committed rung.
                 LazyUpgradeAction::Replay { .. } => {
-                    act.replay_upgrade_ladder(guard, context_id, executor, 8)
+                    act.replay_upgrade_ladder(
+                        guard,
+                        context_id,
+                        executor,
+                        ContextManager::LADDER_HOP_BUDGET,
+                    )
                 }
                 // Marker-less context: the pre-ladder single jump to the
                 // group's current target, method from the group-level hint.
@@ -1086,6 +1091,11 @@ impl ContextManager {
     /// blob otherwise) and delegate to [`Self::get_module_for_blob`]. The
     /// row is a download-cache pointer ("latest fetched") — contexts bound
     /// to a specific version load through their blob directly.
+    /// Max ladder hops one access replays — bounds a pathological
+    /// marker-write failure loop; ladders are realistically 1-3 rungs and a
+    /// longer one resumes on the next access from the last committed rung.
+    const LADDER_HOP_BUDGET: u8 = 8;
+
     /// Replay the group's upgrade ladder for one context: each rung runs in
     /// that release's own bytecode, with its method resolved from the two
     /// blobs' embedded ABIs — the group-level migration hint is never
