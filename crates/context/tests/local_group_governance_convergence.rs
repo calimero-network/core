@@ -14,7 +14,7 @@ use calimero_context::group_store::{
 };
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::{
-    ContextGroupId, GovernancePosition, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
+    ContextGroupId, GovernanceParentEdge, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
     SignerId,
 };
 use calimero_context_config::MemberCapabilities;
@@ -1577,7 +1577,7 @@ fn group_member_without_keys_has_none_keys() {
 /// already has (e.g. its own published op coming back via sync backfill —
 /// the `group_store` apply path doesn't dedup against the actor's in-memory
 /// `DagStore`) must NOT accumulate a duplicate in its namespace DAG head
-/// set. A duplicated head set makes `GovernancePosition::new` fail, so the
+/// set. A duplicated head set makes `GovernanceParentEdge::new` fail, so the
 /// node ships state deltas with an empty governance position and every peer
 /// rejects all of its writes ("author is not a member of the group at
 /// governance cut").
@@ -1585,7 +1585,7 @@ fn group_member_without_keys_has_none_keys() {
 fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     use calimero_context::group_store::NamespaceDagService;
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-    use calimero_context_config::types::GovernancePosition;
+    use calimero_context_config::types::GovernanceParentEdge;
 
     let mut rng = OsRng;
     let gid = sample_group_id();
@@ -1652,14 +1652,11 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
             vec![op_hash],
             "namespace DAG head set must stay duplicate-free ({label})"
         );
-        // A node at this cut can embed a non-empty GovernancePosition — i.e.
+        // A node at this cut can embed a non-empty GovernanceParentEdge — i.e.
         // `governance_dag_heads_len == 1`, so peers accept its state deltas.
-        let state_hash = MetaRepository::new(&store)
-            .compute_state_hash(&gid)
-            .expect("compute_group_state_hash");
-        let position = GovernancePosition::new(gid, state_hash, heads)
-            .unwrap_or_else(|e| panic!("GovernancePosition must be embeddable ({label}): {e}"));
-        assert_eq!(position.governance_dag_heads, vec![op_hash]);
+        let edge = GovernanceParentEdge::new(heads)
+            .unwrap_or_else(|e| panic!("GovernanceParentEdge must be embeddable ({label}): {e}"));
+        assert_eq!(edge.governance_dag_heads, vec![op_hash]);
     };
 
     // 1) "Publish locally": apply the op once.

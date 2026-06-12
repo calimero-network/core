@@ -61,7 +61,6 @@ pub mod group_store {
         get_local_gov_nonce,
         get_op_head,
         is_currently_authorized_for_context,
-        membership_status_at,
         namespace_groups_awaiting_key,
         now_millis,
         read_op_log_after,

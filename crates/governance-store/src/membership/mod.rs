@@ -20,5 +20,5 @@ mod tests;
 pub use self::core::{MembershipPath, MembershipRepository};
 pub use self::policy::MembershipPolicy;
 pub(crate) use self::status::role_from_invited_role;
-pub use self::status::{acl_view_at, membership_status_at, MembershipStatus};
+pub use self::status::{acl_view_at, MembershipStatus};
 pub use self::view::GroupMembershipView;

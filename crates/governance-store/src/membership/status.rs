@@ -24,7 +24,7 @@ use std::collections::{HashSet, VecDeque};
 
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_context_config::types::{
-    ContextGroupId, GovernancePosition, MAX_GOVERNANCE_DAG_HEADS,
+    ContextGroupId, GovernanceParentEdge, MAX_GOVERNANCE_DAG_HEADS,
 };
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
@@ -72,227 +72,13 @@ pub enum MembershipStatus {
     Unknown { needed: Vec<[u8; 32]> },
 }
 
-/// Determine [`MembershipStatus`] for `signer` against the governance state
-/// named by `position`.
-///
-/// # Forward-only contract — load-bearing
-///
-/// **`position` must come from a signed op or signed delta envelope — the
-/// position the author claimed at sign time. It must NOT be the receiver's
-/// current local state, nor any post-cut heuristic.** The function answers
-/// "was `signer` a member at the named cut?", not "is `signer` currently
-/// a member?" The two questions have different answers when the receiver
-/// has applied a `MemberRemoved` for `signer` since the cut was signed.
-///
-/// Forward-only is the property that makes apply-time membership
-/// decisions independent of the order in which a receiver observes ops:
-/// a pre-removal delta resolves to `Member` regardless of whether the
-/// receiver has already applied the later removal locally. Callers that
-/// pass the receiver's current state, or any state that may have advanced
-/// past the cut the author signed against, will return wrong answers
-/// for in-flight deltas crossing a `MemberRemoved` / `MemberLeft`, and
-/// peers that observe ops in different orders will diverge.
-///
-/// All three production call sites — gossip-receive, governance-pending
-/// drain, and snapshot-sync replay — pass `delta.governance_position`
-/// from the signed envelope. New callers must do the same. Tests pinning
-/// the property are at `prefix_walk_forward_only_*` and the canary
-/// `prefix_walk_forward_only_canary_retroactive_invalidation_would_break`.
-///
-/// # Three branches
-///
-/// 1. **Fast path** — `position.governance_dag_heads` equals current local
-///    heads. Consults the materialized member set for an immediate
-///    `Member` / `NeverMember` answer. Verifies
-///    `position.group_state_hash` against the locally-computed state hash;
-///    mismatch surfaces as `Err` (tampering or local divergence). On this
-///    path `get_group_member_role` returning `None` does not distinguish
-///    "never added" from "was added then removed" — the fast path
-///    therefore conflates `Removed` into `NeverMember`. Callers must treat
-///    both as "not currently a member" on this path; the distinction is
-///    recovered by the prefix walk below when receivers are slightly
-///    behind senders.
-///
-/// 2. **Unknown** — any head in `position.governance_dag_heads` is missing
-///    from the local namespace op log. Returns
-///    [`Unknown { needed }`](MembershipStatus::Unknown) listing every
-///    missing head so the receiver can buffer once and request them all
-///    in parallel.
-///
-/// 3. **Prefix walk** — all heads are known but `position` differs from
-///    current local state (the receiver is ahead of the sender). Walks the
-///    namespace governance DAG from `position.governance_dag_heads`
-///    backwards, decrypts group ops affecting `signer`, replays the
-///    membership state machine, and returns
-///    `Member(role)` / `Removed { last_role }` / `NeverMember` based on
-///    the final state at the named cut. This branch produces the full
-///    distinction the fast path conflates.
-pub fn membership_status_at(
-    store: &Store,
-    signer: &PublicKey,
-    position: &GovernancePosition,
-) -> EyreResult<MembershipStatus> {
-    // Cheap guard against malformed / attacker-crafted positions before
-    // we do any store work. See [`MAX_GOVERNANCE_DAG_HEADS`].
-    if position.governance_dag_heads.len() > MAX_GOVERNANCE_DAG_HEADS {
-        eyre::bail!(ApplyError::DagHeadsExceeded);
-    }
-
-    let group_id = position.group_id;
-
-    // Namespace creator / root admin carve-out — required because the
-    // creator does **not** emit a self-`MemberJoined` op at namespace
-    // genesis: their membership lives in `GroupMeta::admin_identity`,
-    // not in a `GroupMember` row. Without this short-circuit, both the
-    // fast-path (`get_group_member_role` returns `None`) and the
-    // prefix walk (no `RootOp::MemberJoined` or `GroupOp::MemberAdded`
-    // for the creator) return `NeverMember`, and the apply-time
-    // membership check hard-rejects every state delta authored by the
-    // namespace creator. This was the root cause of the flaky
-    // `group-3node` e2e: when receivers' governance heads hadn't yet
-    // caught up to node-1's at write time, the prefix-walk branch
-    // fired and rejected the legitimate write.
-    //
-    // `is_group_admin` already does the same admin-identity carve-out
-    // for the `MemberJoined`-less creator (see its doc and the
-    // companion `namespace_member_pubkeys` helper at
-    // `membership.rs::namespace_member_pubkeys`). Using the same path
-    // here keeps the semantics aligned: any signer that
-    // `is_group_admin` accepts must also pass the cross-DAG check.
-    //
-    // **Trade-off — under-permissive on `AdminChanged`.**
-    // `is_group_admin` consults the *current* `GroupMeta::admin_identity`,
-    // not the value at `position`. After an `AdminChanged` namespace
-    // op moves admin authority from Alice to Bob:
-    //
-    // * Bob signing a delta: `admin_identity == Bob` → carve-out
-    //   fires → `Member(Admin)`. Accepted. ✓
-    // * Alice signing a *pre-change* delta (legitimate at sign time):
-    //   `admin_identity == Bob != Alice` → carve-out does NOT fire.
-    //   If Alice has no `GroupMember` row (the original creator never
-    //   emits a self-`MemberJoined`), the fast path and prefix walk
-    //   both return `NeverMember` → REJECTED.
-    // * Alice signing a *post-change* delta (stale credentials):
-    //   same path, REJECTED. ✓
-    //
-    // The cost is the second bullet: forward-only would honor Alice's
-    // pre-change writes, but this check has no access to historical
-    // `admin_identity` values, so it can't tell "legitimate former
-    // admin" from "currently no authority." It errs on the side of
-    // rejection — safe, not exploitable, but slightly stricter than
-    // pure forward-only. The proper position-aware resolution would
-    // walk the governance DAG to recover historical `admin_identity`
-    // at `position`; deferred. Note that `AdminChanged` is the op
-    // that mutates `admin_identity`; `TransferOwnership` is a
-    // separate op that touches `owner_identity` and does not affect
-    // this carve-out.
-    if MembershipRepository::new(store).is_admin(&group_id, signer)? {
-        return Ok(MembershipStatus::Member(
-            calimero_primitives::context::GroupMemberRole::Admin,
-        ));
-    }
-
-    let namespace_id = NamespaceRepository::new(store).resolve(&group_id)?;
-    let dag = super::super::NamespaceDagService::new(store, namespace_id.to_bytes());
-    let local_heads = dag.read_head_record()?.parent_hashes;
-
-    // Branch 1 — heads match local state exactly. Use the materialized
-    // member set; this is the steady-state hot path.
-    if heads_equal(&local_heads, &position.governance_dag_heads) {
-        // Verify the embedded group_state_hash against locally-computed
-        // state. When heads match, both should be deterministic functions
-        // of the same materialized state — divergence here signals
-        // tampering or local corruption that the rest of the pipeline
-        // can't detect on its own.
-        let local_state_hash = MetaRepository::new(store).compute_state_hash(&group_id)?;
-        if local_state_hash != position.group_state_hash {
-            eyre::bail!(ApplyError::StateHashMismatch {
-                expected: hex::encode(position.group_state_hash),
-                actual: hex::encode(local_state_hash),
-            });
-        }
-        // Direct membership (GroupMember row at the named group) — the
-        // common case for Restricted subgroups and for explicit-add flows.
-        if let Some(role) = MembershipRepository::new(store).role_of(&group_id, signer)? {
-            return Ok(MembershipStatus::Member(role));
-        }
-        // Inherited membership — the signer doesn't have a `GroupMember`
-        // row on this subgroup, but reaches it via the Open-subgroup
-        // parent-walk with `CAN_JOIN_OPEN_SUBGROUPS` at the anchor. Open
-        // subgroups don't require an admin-issued `MemberAdded`, so
-        // inherited members produce state deltas with no corresponding
-        // direct-membership row — and without this branch every such
-        // delta was hard-rejected at the cross-DAG check, even though
-        // the same member was authorized to JOIN the context.
-        //
-        // We fold Inherited → Member(Member). The actor's effective role
-        // in this subgroup is the inherited one from `check_group_*`;
-        // we don't have a more precise role at the cross-DAG layer.
-        return match MembershipRepository::new(store).check_path(&group_id, signer)? {
-            super::core::MembershipPath::Direct => {
-                // Practically unreachable: `check_group_membership_path`
-                // returns `Direct` iff `has_direct_member` returned
-                // `true`, which reads the same store row that
-                // `get_group_member_role` reads above. The only way to
-                // arrive here is a write-race where a concurrent
-                // `MemberAdded` applied between the two reads. In that
-                // case the signer just became a direct member with the
-                // default `Member` role — return that rather than the
-                // misleading `NeverMember` an earlier revision used.
-                Ok(MembershipStatus::Member(
-                    calimero_primitives::context::GroupMemberRole::Member,
-                ))
-            }
-            super::core::MembershipPath::Inherited { .. } => Ok(MembershipStatus::Member(
-                calimero_primitives::context::GroupMemberRole::Member,
-            )),
-            super::core::MembershipPath::None => {
-                // See function-level doc for the `Removed` vs
-                // `NeverMember` conflation caveat — the prefix walk
-                // recovers the distinction.
-                Ok(MembershipStatus::NeverMember)
-            }
-        };
-    }
-
-    // Branch 2 — collect every referenced head that is not present in our
-    // local namespace op log. Direct key lookups (O(1) per head) against
-    // the namespace-wide op store, not a group-filtered scan: heads can
-    // point at any SignedNamespaceOp (Root ops or Group ops for any group
-    // in the namespace), so filtering by group_id would mis-classify
-    // legitimate heads as missing.
-    let op_log = NamespaceOpLogService::new(store, namespace_id.to_bytes());
-    let mut missing: Vec<[u8; 32]> = Vec::with_capacity(position.governance_dag_heads.len());
-    for head in &position.governance_dag_heads {
-        if !op_log.contains_op(*head)? {
-            missing.push(*head);
-        }
-    }
-    if !missing.is_empty() {
-        return Ok(MembershipStatus::Unknown { needed: missing });
-    }
-
-    // Branch 3 — heads known but differ from local state. Walk the
-    // namespace governance DAG from `position.governance_dag_heads`
-    // backwards, decrypting `Group` ops affecting this group + signer,
-    // and replay the membership state machine to derive the answer at
-    // the named cut.
-    prefix_walk_membership(
-        store,
-        namespace_id.to_bytes(),
-        group_id,
-        signer,
-        &position.governance_dag_heads,
-    )
-}
-
 /// Resolve [`MembershipStatus`] for `signer` at the governance cut named by
 /// `heads` — the data op's **governance parent edge** (core#2716 Phase 4).
 ///
 /// This is the successor to [`membership_status_at`]. Two differences, both
 /// intentional:
 ///
-/// 1. **Parent edge, not `GovernancePosition`.** It takes `(group_id, heads)`
+/// 1. **Parent edge, not `GovernanceParentEdge`.** It takes `(group_id, heads)`
 ///    directly. `group_id` is supplied by the caller from the *context→group*
 ///    mapping (canonical and unforgeable) rather than a signer-supplied field,
 ///    which is what makes the old `GroupIdCheck` /
@@ -1122,105 +908,6 @@ mod tests {
     }
 
     #[test]
-    fn membership_status_at_recognises_namespace_creator_as_admin() {
-        // Regression test for the `group-3node` flake — see
-        // `cross-DAG authorization` notes in this module's docs.
-        //
-        // The namespace creator does not emit a self-`MemberJoined` op at
-        // genesis; their membership lives in `GroupMeta::admin_identity`.
-        // Without the carve-out at the top of `membership_status_at`,
-        // both the fast-path (no `GroupMember` row → `NeverMember`) and
-        // the prefix walk (no `MemberJoined` op for the creator →
-        // `NeverMember`) reject every state delta authored by the
-        // creator with "not a member at governance cut."
-        use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::UpgradePolicy;
-        use calimero_store::key::GroupMetaValue;
-
-        let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let admin = PublicKey::from([0xAA; 32]);
-        let group_id = ContextGroupId::from([0xAB; 32]);
-
-        // Persist a GroupMeta with admin_identity == admin so
-        // is_group_admin returns true without needing any GroupMember
-        // rows or a populated namespace DAG.
-        let meta = GroupMetaValue {
-            app_key: [0u8; 32],
-            target_application_id: ApplicationId::from([0u8; 32]),
-            upgrade_policy: UpgradePolicy::LazyOnAccess,
-            created_at: 0,
-            admin_identity: admin.into(),
-            owner_identity: admin.into(),
-            migration: None,
-            auto_join: false,
-        };
-        MetaRepository::new(&store)
-            .save(&group_id, &meta)
-            .expect("save_group_meta");
-
-        // Any well-formed position will do — the admin carve-out short-
-        // circuits before we ever look at heads or `namespace_dag`.
-        let position = GovernancePosition {
-            group_id,
-            group_state_hash: [0xCD; 32],
-            governance_dag_heads: vec![[0u8; 32]],
-        };
-
-        let status = membership_status_at(&store, &admin, &position)
-            .expect("admin carve-out must short-circuit cleanly");
-        assert!(
-            matches!(status, MembershipStatus::Member(GroupMemberRole::Admin)),
-            "creator must be recognised as Member(Admin), got {status:?}"
-        );
-
-        // Non-admin signer falls through past the carve-out. Without a
-        // namespace_dag set up, the call returns Err — that's fine for
-        // this regression test (we only need to prove the carve-out
-        // doesn't claim every signer is an admin).
-        let other = PublicKey::from([0x99; 32]);
-        let other_result = membership_status_at(&store, &other, &position);
-        assert!(
-            other_result.is_err()
-                || !matches!(
-                    other_result.unwrap(),
-                    MembershipStatus::Member(GroupMemberRole::Admin)
-                ),
-            "non-admin signer must NOT be classified as Member(Admin)"
-        );
-    }
-
-    #[test]
-    fn membership_status_at_rejects_oversized_heads_runtime_guard() {
-        // Defense-in-depth: the constructor and wire-decode bounds cover
-        // sender and receiver entry points. The runtime guard inside
-        // `membership_status_at` covers the residual case where a
-        // GovernancePosition is built via direct struct-init (skipping
-        // the `new()` validation). We construct one that way here.
-        let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let signer = PublicKey::from([0u8; 32]);
-        let oversized_heads: Vec<[u8; 32]> = (0..MAX_GOVERNANCE_DAG_HEADS + 1)
-            .map(|i| {
-                let mut h = [0u8; 32];
-                h[0] = i as u8;
-                h
-            })
-            .collect();
-        let position = GovernancePosition {
-            group_id: ContextGroupId::from([0xAB; 32]),
-            group_state_hash: [0xCD; 32],
-            governance_dag_heads: oversized_heads,
-        };
-
-        let err = membership_status_at(&store, &signer, &position)
-            .expect_err("oversized governance_dag_heads must be rejected");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("MAX_GOVERNANCE_DAG_HEADS"),
-            "error should mention MAX_GOVERNANCE_DAG_HEADS, got: {msg}"
-        );
-    }
-
-    #[test]
     fn acl_view_at_recognises_namespace_creator_as_admin() {
         // P4 parent-edge successor of
         // `membership_status_at_recognises_namespace_creator_as_admin`: the
@@ -1271,7 +958,7 @@ mod tests {
 
     #[test]
     fn acl_view_at_rejects_oversized_heads() {
-        // The parent edge carries no `GovernancePosition::new` constructor
+        // The parent edge carries no `GovernanceParentEdge::new` constructor
         // guard, so `acl_view_at` enforces `MAX_GOVERNANCE_DAG_HEADS` itself
         // before any store work (DoS guard, same as `membership_status_at`).
         let store = Store::new(Arc::new(InMemoryDB::owned()));

@@ -317,7 +317,7 @@ pub enum MessagePayload<'a> {
         /// Initiator runs `membership_status_at` against this author
         /// unconditionally; there is no legacy-accept escape hatch.
         author_id: calimero_primitives::identity::PublicKey,
-        /// Serialized `calimero_context_config::types::GovernancePosition`
+        /// Serialized `calimero_context_config::types::GovernanceParentEdge`
         /// (borsh bytes) at the delta's sign time. Pairs with
         /// `author_id` for the apply-time `membership_status_at` check.
         /// `None` only for non-group contexts where the author has no

@@ -44,7 +44,7 @@ pub use wire::{
 
 /// Wire/schema version for [`SignedGroupOp`].
 ///
-/// v5: Drop the `cut: GovernancePosition` field from `MemberRemoved` and
+/// v5: Drop the `cut: GovernanceParentEdge` field from `MemberRemoved` and
 /// `MemberLeft`. The field was added in v4 with the intent that B3's
 /// descend-from check would consult it; in the actually-shipped B3 the
 /// descend-from boundary comes from the **state delta's** governance

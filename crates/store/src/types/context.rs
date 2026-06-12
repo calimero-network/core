@@ -179,7 +179,7 @@ pub struct ContextDagDelta {
     /// checks can reject revoked-author deltas at apply time (parity
     /// with the gossip-receive cross-DAG check).
     pub author_id: Option<calimero_primitives::identity::PublicKey>,
-    /// Serialized `calimero_context_config::types::GovernancePosition`
+    /// Serialized `calimero_context_config::types::GovernanceParentEdge`
     /// (borsh bytes) at sign time. Stored as a blob to avoid pulling
     /// `calimero-context-config` into `calimero-store` — matches the
     /// existing pattern for `actions` / `events`. Initiator-side

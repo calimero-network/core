@@ -1797,7 +1797,7 @@ impl SyncManager {
                                 .as_deref()
                                 .map(
                                     borsh::from_slice::<
-                                        calimero_context_config::types::GovernancePosition,
+                                        calimero_context_config::types::GovernanceParentEdge,
                                     >,
                                 )
                                 .transpose()

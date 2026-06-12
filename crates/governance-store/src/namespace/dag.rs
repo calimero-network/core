@@ -38,7 +38,7 @@ impl<'a> NamespaceDagService<'a> {
     /// The persisted head set is unique by construction (see
     /// [`Self::advance_dag_head`]), but a node that was corrupted by an older
     /// build — or any not-yet-found path that double-appends — would otherwise
-    /// keep emitting a `GovernancePosition` whose duplicate `governance_dag_heads`
+    /// keep emitting a `GovernanceParentEdge` whose duplicate `governance_dag_heads`
     /// every peer rejects (issue #2327). De-dup defensively on read so such a
     /// store self-heals on its next governance op; the `warn!` makes the
     /// condition observable rather than silent.

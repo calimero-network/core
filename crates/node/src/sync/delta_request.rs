@@ -77,7 +77,7 @@ enum VerifiedParent {
     /// Verified. Persist the delta with the decoded position (when
     /// present) and the wire-received author + signature.
     Apply {
-        position: Option<calimero_context_config::types::GovernancePosition>,
+        position: Option<calimero_context_config::types::GovernanceParentEdge>,
     },
     /// Rejected — drop this delta and continue with the next one.
     Skip,
@@ -94,7 +94,7 @@ fn verify_fetched_parent(
     fetched: &FetchedDelta,
     datastore: &calimero_store::Store,
 ) -> VerifiedParent {
-    use calimero_context_config::types::GovernancePosition;
+    use calimero_context_config::types::GovernanceParentEdge;
 
     // Genesis carve-out: the responder serves the genesis delta with
     // the all-zeros sentinel `author_id` because the wire requires an
@@ -112,7 +112,7 @@ fn verify_fetched_parent(
     let pos = match fetched
         .governance_position_blob
         .as_deref()
-        .map(borsh::from_slice::<GovernancePosition>)
+        .map(borsh::from_slice::<GovernanceParentEdge>)
         .transpose()
     {
         Ok(p) => p,

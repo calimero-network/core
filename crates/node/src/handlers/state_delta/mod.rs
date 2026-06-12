@@ -3,7 +3,7 @@
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
 use calimero_context::group_store::{DenyListRepository, NamespaceRepository};
 use calimero_context_client::client::ContextClient;
-use calimero_context_config::types::GovernancePosition;
+use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::Nonce;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
@@ -41,10 +41,7 @@ use events::{
 // `choose_owned_identity` is also reached by the sibling `buffering` module via
 // `super::` (re-exported through this import).
 use store_setup::{choose_owned_identity, init_delta_store, DeltaStoreSetup};
-pub(crate) use verify::{
-    authorize_delta_at_edge, verify_position_group_id_matches_context, DeltaAuthOutcome,
-    GroupIdCheck,
-};
+pub(crate) use verify::{authorize_delta_at_edge, DeltaAuthOutcome};
 
 pub(crate) struct StateDeltaMessage {
     pub(crate) source: PeerId,
@@ -57,7 +54,7 @@ pub(crate) struct StateDeltaMessage {
     pub(crate) artifact: Vec<u8>,
     pub(crate) nonce: Nonce,
     pub(crate) events: Option<Vec<u8>>,
-    pub(crate) governance_position: Option<GovernancePosition>,
+    pub(crate) governance_position: Option<GovernanceParentEdge>,
     pub(crate) key_id: [u8; 32],
     pub(crate) delta_signature: Option<[u8; 64]>,
     /// The `GroupMeta.app_key` the sender was executing under. `None` for
@@ -1042,130 +1039,6 @@ mod tests {
         assert!(parsed.is_none());
     }
 
-    // ---- verify_position_group_id_matches_context ----
-    //
-    // Covers every variant of `GroupIdCheck` so a regression in the
-    // match arms (swapping `NonGroupOk` and `Match`, mishandling
-    // `(None, Some)` or `(Some, None)`, etc.) gets caught at test
-    // time rather than at apply time.
-    mod group_id_check_tests {
-        use std::sync::Arc;
-
-        use calimero_context_config::types::ContextGroupId;
-        use calimero_store::db::InMemoryDB;
-        use calimero_store::Store;
-
-        use super::super::{verify_position_group_id_matches_context, GroupIdCheck};
-        use super::*;
-
-        fn fresh_store() -> Store {
-            Store::new(Arc::new(InMemoryDB::owned()))
-        }
-
-        fn ctx(byte: u8) -> ContextId {
-            ContextId::from([byte; 32])
-        }
-
-        fn gid(byte: u8) -> ContextGroupId {
-            ContextGroupId::from([byte; 32])
-        }
-
-        #[test]
-        fn non_group_ok_when_context_has_no_group_and_no_position() {
-            let store = fresh_store();
-            let context_id = ctx(0xA1);
-
-            // No `register_context_in_group` call — context isn't
-            // part of any group. With no claimed group, the legacy
-            // non-group path applies.
-            let result = verify_position_group_id_matches_context(&store, &context_id, None);
-            assert!(matches!(result, GroupIdCheck::NonGroupOk));
-        }
-
-        #[test]
-        fn match_when_context_owning_group_equals_claimed() {
-            let store = fresh_store();
-            let context_id = ctx(0xB1);
-            let group_id = gid(0xB2);
-
-            calimero_context::group_store::register_context_in_group(
-                &store,
-                &group_id,
-                &context_id,
-            )
-            .expect("register_context_in_group");
-
-            let result =
-                verify_position_group_id_matches_context(&store, &context_id, Some(group_id));
-            assert!(matches!(result, GroupIdCheck::Match));
-        }
-
-        #[test]
-        fn group_context_no_position_when_context_in_group_but_position_absent() {
-            let store = fresh_store();
-            let context_id = ctx(0xC1);
-            let group_id = gid(0xC2);
-
-            calimero_context::group_store::register_context_in_group(
-                &store,
-                &group_id,
-                &context_id,
-            )
-            .expect("register_context_in_group");
-
-            // Group context but the delta carries no position.
-            let result = verify_position_group_id_matches_context(&store, &context_id, None);
-            match result {
-                GroupIdCheck::GroupContextNoPosition { owning } => {
-                    assert_eq!(owning, group_id);
-                }
-                other => panic!("expected GroupContextNoPosition, got {other:?}"),
-            }
-        }
-
-        #[test]
-        fn non_group_context_with_position_when_context_has_no_group_but_position_set() {
-            let store = fresh_store();
-            let context_id = ctx(0xD1);
-            let claimed = gid(0xD2);
-
-            // Context is not registered under any group, but the delta
-            // claims one — bypass attempt shape.
-            let result =
-                verify_position_group_id_matches_context(&store, &context_id, Some(claimed));
-            match result {
-                GroupIdCheck::NonGroupContextWithPosition { claimed: c } => {
-                    assert_eq!(c, claimed);
-                }
-                other => panic!("expected NonGroupContextWithPosition, got {other:?}"),
-            }
-        }
-
-        #[test]
-        fn mismatch_when_context_owning_group_differs_from_claimed() {
-            let store = fresh_store();
-            let context_id = ctx(0xE1);
-            let owning = gid(0xE2);
-            let claimed = gid(0xE3);
-
-            calimero_context::group_store::register_context_in_group(&store, &owning, &context_id)
-                .expect("register_context_in_group");
-
-            let result =
-                verify_position_group_id_matches_context(&store, &context_id, Some(claimed));
-            match result {
-                GroupIdCheck::Mismatch {
-                    owning: o,
-                    claimed: c,
-                } => {
-                    assert_eq!(o, owning);
-                    assert_eq!(c, claimed);
-                }
-                other => panic!("expected Mismatch, got {other:?}"),
-            }
-        }
-    }
-
     // ---- HLC fence (PR-3): the guard the receive path calls ----
     //
     // Exercises `calimero_context::hlc_fence::delta_is_fenced` against a
@@ -1962,26 +1835,29 @@ async fn request_missing_deltas(
                     // envelope-signature verification and the cross-
                     // DAG membership check below.
                     let governance_position: Option<
-                        calimero_context_config::types::GovernancePosition,
-                    > = match governance_position_blob
-                        .as_deref()
-                        .map(
-                            borsh::from_slice::<calimero_context_config::types::GovernancePosition>,
-                        )
-                        .transpose()
-                    {
-                        Ok(pos) => pos,
-                        Err(err) => {
-                            warn!(
-                                %context_id,
-                                delta_id = ?missing_id,
-                                %err,
-                                "parent-fetch: failed to decode governance_position from \
-                                 peer; skipping this delta to avoid silent bypass"
-                            );
-                            continue;
-                        }
-                    };
+                        calimero_context_config::types::GovernanceParentEdge,
+                    > =
+                        match governance_position_blob
+                            .as_deref()
+                            .map(
+                                borsh::from_slice::<
+                                    calimero_context_config::types::GovernanceParentEdge,
+                                >,
+                            )
+                            .transpose()
+                        {
+                            Ok(pos) => pos,
+                            Err(err) => {
+                                warn!(
+                                    %context_id,
+                                    delta_id = ?missing_id,
+                                    %err,
+                                    "parent-fetch: failed to decode governance_position from \
+                                     peer; skipping this delta to avoid silent bypass"
+                                );
+                                continue;
+                            }
+                        };
 
                     // Envelope-signature verification (parity with the
                     // gossip + DAG-catchup paths in

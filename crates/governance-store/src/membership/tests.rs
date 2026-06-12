@@ -1335,8 +1335,7 @@ fn namespace_member_pubkeys_includes_member_rows() {
 }
 
 #[test]
-fn membership_status_at_branch1_member_when_heads_match_and_member_exists() {
-    use calimero_context_config::types::GovernancePosition;
+fn acl_view_at_branch1_member_when_heads_match_and_member_exists() {
     let store = test_store();
     let gid = test_group_id();
     let signer = PublicKey::from([0x42; 32]);
@@ -1349,12 +1348,7 @@ fn membership_status_at_branch1_member_when_heads_match_and_member_exists() {
         .unwrap();
 
     // Top-level group → namespace_id == group_id, local heads == [].
-    let state_hash = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
-
-    let status = membership_status_at(&store, &signer, &position).unwrap();
+    let status = acl_view_at(&store, gid, &signer, &[]).unwrap();
     assert!(matches!(
         status,
         MembershipStatus::Member(GroupMemberRole::Admin)
@@ -1362,8 +1356,7 @@ fn membership_status_at_branch1_member_when_heads_match_and_member_exists() {
 }
 
 #[test]
-fn membership_status_at_branch1_never_member_when_signer_absent() {
-    use calimero_context_config::types::GovernancePosition;
+fn acl_view_at_branch1_never_member_when_signer_absent() {
     let store = test_store();
     let gid = test_group_id();
     let admin = PublicKey::from([0x01; 32]);
@@ -1376,18 +1369,12 @@ fn membership_status_at_branch1_never_member_when_signer_absent() {
         .add_member(&gid, &admin, GroupMemberRole::Admin)
         .unwrap();
 
-    let state_hash = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
-
-    let status = membership_status_at(&store, &stranger, &position).unwrap();
+    let status = acl_view_at(&store, gid, &stranger, &[]).unwrap();
     assert!(matches!(status, MembershipStatus::NeverMember));
 }
 
 #[test]
-fn membership_status_at_branch1_state_hash_mismatch_bails() {
-    use calimero_context_config::types::GovernancePosition;
+fn acl_view_at_branch2_unknown_when_heads_not_in_op_log() {
     let store = test_store();
     let gid = test_group_id();
     let signer = PublicKey::from([0x42; 32]);
@@ -1399,41 +1386,9 @@ fn membership_status_at_branch1_state_hash_mismatch_bails() {
         .add_member(&gid, &signer, GroupMemberRole::Member)
         .unwrap();
 
-    // heads match (both empty), but state_hash is wrong — must reject.
-    let position = GovernancePosition::new(gid, [0xFF; 32], vec![]).unwrap();
-
-    let err = membership_status_at(&store, &signer, &position).unwrap_err();
-    assert!(
-        matches!(
-            err.downcast_ref::<ApplyError>(),
-            Some(ApplyError::StateHashMismatch { .. })
-        ),
-        "expected hash-mismatch error, got: {err}"
-    );
-}
-
-#[test]
-fn membership_status_at_branch2_unknown_when_heads_not_in_op_log() {
-    use calimero_context_config::types::GovernancePosition;
-    let store = test_store();
-    let gid = test_group_id();
-    let signer = PublicKey::from([0x42; 32]);
-
-    MetaRepository::new(&store)
-        .save(&gid, &test_meta())
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&gid, &signer, GroupMemberRole::Member)
-        .unwrap();
-
-    // Position references a head that's not in the local op log.
+    // Edge references a head that's not in the local op log.
     let unknown_head = [0xCC; 32];
-    let state_hash = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    let position = GovernancePosition::new(gid, state_hash, vec![unknown_head]).unwrap();
-
-    let status = membership_status_at(&store, &signer, &position).unwrap();
+    let status = acl_view_at(&store, gid, &signer, &[unknown_head]).unwrap();
     match status {
         MembershipStatus::Unknown { needed } => {
             assert_eq!(needed, vec![unknown_head]);
@@ -1443,8 +1398,7 @@ fn membership_status_at_branch2_unknown_when_heads_not_in_op_log() {
 }
 
 #[test]
-fn membership_status_at_branch2_unknown_collects_all_missing_heads() {
-    use calimero_context_config::types::GovernancePosition;
+fn acl_view_at_branch2_unknown_collects_all_missing_heads() {
     let store = test_store();
     let gid = test_group_id();
     let signer = PublicKey::from([0x42; 32]);
@@ -1460,12 +1414,7 @@ fn membership_status_at_branch2_unknown_collects_all_missing_heads() {
     let h1 = [0xC1; 32];
     let h2 = [0xC2; 32];
     let h3 = [0xC3; 32];
-    let state_hash = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    let position = GovernancePosition::new(gid, state_hash, vec![h1, h2, h3]).unwrap();
-
-    let status = membership_status_at(&store, &signer, &position).unwrap();
+    let status = acl_view_at(&store, gid, &signer, &[h1, h2, h3]).unwrap();
     match status {
         MembershipStatus::Unknown { needed } => {
             assert_eq!(needed.len(), 3);
@@ -1478,8 +1427,7 @@ fn membership_status_at_branch2_unknown_collects_all_missing_heads() {
 }
 
 #[test]
-fn membership_status_at_rejects_position_with_mismatched_group() {
-    use calimero_context_config::types::GovernancePosition;
+fn acl_view_at_rejects_membership_in_a_different_group() {
     let store = test_store();
     let gid_a = ContextGroupId::from([0xAA; 32]);
     let gid_b = ContextGroupId::from([0xBB; 32]);
@@ -1492,26 +1440,20 @@ fn membership_status_at_rejects_position_with_mismatched_group() {
         .add_member(&gid_a, &signer, GroupMemberRole::Member)
         .unwrap();
 
-    // Position references group B, but B isn't set up. resolve_namespace
-    // will fail or return its own ID, and the lookup proceeds against the
-    // wrong group's empty member set → NeverMember.
-    let state_hash_b = MetaRepository::new(&store)
-        .compute_state_hash(&gid_a)
-        .unwrap();
-    let position = GovernancePosition::new(gid_b, state_hash_b, vec![]).unwrap();
-
-    // The behaviour here depends on whether the group_b lookup errors or
-    // returns empty. Either is a correct rejection — assert it's NOT
-    // returning Member (which would be the security failure).
-    let result = membership_status_at(&store, &signer, &position);
+    // The signer is a member of group A but the caller resolves against
+    // group B (the parent-edge model: the group comes from the context, not
+    // a signer claim). B isn't set up, so resolution proceeds against its
+    // empty member set. Either an error or a non-Member result is a correct
+    // rejection — returning Member would be the security failure.
+    let result = acl_view_at(&store, gid_b, &signer, &[]);
     if let Ok(MembershipStatus::Member(_)) = result {
-        panic!("must not return Member for a position pointing at a different group");
+        panic!("must not return Member when authorizing against a different group");
     }
 }
 
 #[test]
-fn membership_status_at_oversized_governance_dag_heads_runtime_guard() {
-    use calimero_context_config::types::{GovernancePosition, MAX_GOVERNANCE_DAG_HEADS};
+fn acl_view_at_oversized_governance_dag_heads_runtime_guard() {
+    use calimero_context_config::types::MAX_GOVERNANCE_DAG_HEADS;
     let store = test_store();
     let gid = test_group_id();
     let signer = PublicKey::from([0x42; 32]);
@@ -1520,9 +1462,9 @@ fn membership_status_at_oversized_governance_dag_heads_runtime_guard() {
         .save(&gid, &test_meta())
         .unwrap();
 
-    // Bypass the constructor by direct field-init (mimics what would
-    // happen if a deserialized position somehow exceeded the bound —
-    // the runtime check is defense-in-depth).
+    // Defense-in-depth: `acl_view_at` enforces the bound on the heads slice
+    // before any store work, even when the edge was hand-built past the
+    // constructor's check.
     let oversized_heads: Vec<[u8; 32]> = (0..MAX_GOVERNANCE_DAG_HEADS + 1)
         .map(|i| {
             let mut h = [0u8; 32];
@@ -1530,13 +1472,8 @@ fn membership_status_at_oversized_governance_dag_heads_runtime_guard() {
             h
         })
         .collect();
-    let position = GovernancePosition {
-        group_id: gid,
-        group_state_hash: [0u8; 32],
-        governance_dag_heads: oversized_heads,
-    };
 
-    let err = membership_status_at(&store, &signer, &position).unwrap_err();
+    let err = acl_view_at(&store, gid, &signer, &oversized_heads).unwrap_err();
     assert!(
         matches!(
             err.downcast_ref::<ApplyError>(),
@@ -1552,7 +1489,6 @@ fn fast_path_current_member_resolves_to_member() {
     // to `Member(role)` when the position's heads equal local heads.
     // Required precondition for the other Branch 1 tests — if this
     // baseline fails, the others say nothing.
-    use calimero_context_config::types::GovernancePosition;
     let store = test_store();
     let gid = test_group_id();
     let signer = PublicKey::from([0x77; 32]);
@@ -1564,12 +1500,7 @@ fn fast_path_current_member_resolves_to_member() {
         .add_member(&gid, &signer, GroupMemberRole::Member)
         .unwrap();
 
-    let state_hash = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
-
-    let status = membership_status_at(&store, &signer, &position).unwrap();
+    let status = acl_view_at(&store, gid, &signer, &[]).unwrap();
     assert!(
         matches!(status, MembershipStatus::Member(GroupMemberRole::Member)),
         "current member must resolve to Member, got {status:?}"
@@ -1586,7 +1517,6 @@ fn fast_path_removed_member_conflates_to_nevermember() {
     // sender's position predates the removal. The apply-time check
     // treats both `Removed` and `NeverMember` as rejection, so the
     // practical security outcome is identical on this path.
-    use calimero_context_config::types::GovernancePosition;
     let store = test_store();
     let gid = test_group_id();
     let signer = PublicKey::from([0x78; 32]);
@@ -1601,12 +1531,7 @@ fn fast_path_removed_member_conflates_to_nevermember() {
         .remove_member(&gid, &signer)
         .unwrap();
 
-    let state_hash = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
-
-    let status = membership_status_at(&store, &signer, &position).unwrap();
+    let status = acl_view_at(&store, gid, &signer, &[]).unwrap();
     assert!(
         matches!(status, MembershipStatus::NeverMember),
         "removed signer on heads-equal fast path is NeverMember, got {status:?}"
@@ -1619,7 +1544,6 @@ fn fast_path_re_added_member_resolves_to_member() {
     // again, so the fast path returns Member with the latest role.
     // The resolver doesn't remember that they were ever removed —
     // the deny-list elsewhere handles "currently removed" semantics.
-    use calimero_context_config::types::GovernancePosition;
     let store = test_store();
     let gid = test_group_id();
     let signer = PublicKey::from([0x79; 32]);
@@ -1637,12 +1561,7 @@ fn fast_path_re_added_member_resolves_to_member() {
         .add_member(&gid, &signer, GroupMemberRole::Admin)
         .unwrap();
 
-    let state_hash = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
-
-    let status = membership_status_at(&store, &signer, &position).unwrap();
+    let status = acl_view_at(&store, gid, &signer, &[]).unwrap();
     assert!(
         matches!(status, MembershipStatus::Member(GroupMemberRole::Admin)),
         "re-added signer resolves with new role on fast path, got {status:?}"
@@ -1654,7 +1573,6 @@ fn fast_path_role_promotion_picks_current_role() {
     // Role changes between Add and present don't cause spurious
     // rejection on the fast path — the materialized set reflects the
     // latest role.
-    use calimero_context_config::types::GovernancePosition;
     let store = test_store();
     let gid = test_group_id();
     let signer = PublicKey::from([0x7A; 32]);
@@ -1672,12 +1590,7 @@ fn fast_path_role_promotion_picks_current_role() {
         .add_member(&gid, &signer, GroupMemberRole::Admin)
         .unwrap();
 
-    let state_hash = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
-
-    let status = membership_status_at(&store, &signer, &position).unwrap();
+    let status = acl_view_at(&store, gid, &signer, &[]).unwrap();
     assert!(
         matches!(status, MembershipStatus::Member(GroupMemberRole::Admin)),
         "current role wins on fast path, got {status:?}"

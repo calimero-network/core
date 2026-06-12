@@ -29,7 +29,7 @@ use std::vec;
 
 use tracing::{debug, trace};
 
-use calimero_context_config::types::GovernancePosition;
+use calimero_context_config::types::GovernanceParentEdge;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_sys as sys;
@@ -73,7 +73,7 @@ pub struct VMContext<'a> {
     /// contexts that have no governance DAG. Receivers use this to perform
     /// the apply-time membership check: "was the executor a member at this
     /// cut?"
-    pub governance_position: Option<GovernancePosition>,
+    pub governance_position: Option<GovernanceParentEdge>,
 }
 
 impl<'a> VMContext<'a> {

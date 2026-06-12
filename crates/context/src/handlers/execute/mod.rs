@@ -14,7 +14,7 @@ use calimero_context_client::messages::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, MigrationParams,
 };
 use calimero_context_client::{ContextAtomic, ContextAtomicKey, ContextGuard};
-use calimero_context_config::types::{ContextGroupId, GovernancePosition};
+use calimero_context_config::types::{ContextGroupId, GovernanceParentEdge};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
@@ -1319,7 +1319,7 @@ async fn internal_execute(
     Outcome,
     Option<CausalDelta>,
     Option<[u8; 64]>,
-    Option<GovernancePosition>,
+    Option<GovernanceParentEdge>,
 )> {
     let executor_is_read_only = !is_state_op
         && NamespaceRepository::new(&datastore)
@@ -1435,7 +1435,7 @@ async fn internal_execute(
     // matches the signed payload, so receivers would reject the
     // delta on signature mismatch. This single source of truth
     // collapses that race window.
-    let mut governance_position_for_broadcast: Option<GovernancePosition> = None;
+    let mut governance_position_for_broadcast: Option<GovernanceParentEdge> = None;
 
     if executor_is_read_only && outcome.root_hash.is_some() {
         info!(
