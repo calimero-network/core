@@ -28,6 +28,9 @@ use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 use calimero_storage::logical_clock::HybridTimestamp;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 /// Last-writer-wins stamp for a slot: the `(hlc, op_id)` of the op that last
 /// won it. Comparing as a tuple makes concurrent ops (equal `hlc`) tie-break
 /// deterministically by content-address `op_id`, so every node picks the same
@@ -335,6 +338,101 @@ mod tests {
         let b = ScopeState::from_ops([&newer, &older]);
         assert_eq!(a.root(), b.root());
         assert_eq!(a.entities.get(&entity), Some(&vec![0xBB]));
+    }
+
+    #[test]
+    fn harness_catches_convergence_and_isolation_over_random_workloads() {
+        use std::collections::BTreeSet;
+
+        use crate::testing::{assert_converges_and_isolates, check, simulate, ReplicaView};
+
+        // Three scopes; four replicas with overlapping-but-distinct membership
+        // (so every scope has ≥2 members to converge, and ≥1 non-member to
+        // isolate from).
+        let scopes = [
+            ScopeId::from([0xA0; 32]),
+            ScopeId::from([0xB0; 32]),
+            ScopeId::from([0xC0; 32]),
+        ];
+        let membership: Vec<BTreeSet<ScopeId>> = vec![
+            [scopes[0], scopes[1]].into_iter().collect(),
+            [scopes[0], scopes[2]].into_iter().collect(),
+            [scopes[0], scopes[1], scopes[2]].into_iter().collect(),
+            [scopes[1]].into_iter().collect(),
+        ];
+
+        // Seeded op generator: random scope/payload/hlc, distinct ids.
+        let mut state = 0x1234_5678_9ABC_DEF0u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let author = PublicKey::from([1u8; 32]);
+        let mut ops = Vec::new();
+        for _ in 0..120 {
+            let scope = scopes[(next() % 3) as usize];
+            let h = hlc(next() % 50);
+            let entity = Id::new([(next() % 7) as u8; 32]);
+            let payload = match next() % 3 {
+                0 => OpPayload::Put {
+                    entity,
+                    value: (next() % 256).to_le_bytes().to_vec(),
+                },
+                1 => OpPayload::Delete { entity },
+                _ => OpPayload::SetWriters {
+                    object: entity,
+                    writers: [(PublicKey::from([(next() % 5) as u8; 32]), OpMask::FULL)]
+                        .into_iter()
+                        .collect(),
+                },
+            };
+            let id = Op::compute_id(scope, &[], &author, &h, &payload);
+            ops.push(Op {
+                id,
+                scope,
+                parents: vec![],
+                author,
+                hlc: h,
+                payload,
+                expected_scope_root: [0u8; 32],
+                signature: [0u8; 64],
+            });
+        }
+
+        // The model must converge + isolate across many delivery orders.
+        for seed in 0..16u64 {
+            assert_converges_and_isolates(seed, &membership, &ops);
+        }
+
+        // Self-check the harness actually *detects* violations: hand a replica
+        // a root for a scope it isn't a member of → isolation must fail; and
+        // two divergent roots for the same scope → convergence must fail.
+        let leak = vec![ReplicaView {
+            member_of: BTreeSet::new(),
+            roots: [(scopes[0], [7u8; 32])].into_iter().collect(),
+        }];
+        assert!(
+            check(&leak).is_err(),
+            "harness must flag a non-member holding a scope root (isolation)"
+        );
+        let diverge = vec![
+            ReplicaView {
+                member_of: [scopes[0]].into_iter().collect(),
+                roots: [(scopes[0], [1u8; 32])].into_iter().collect(),
+            },
+            ReplicaView {
+                member_of: [scopes[0]].into_iter().collect(),
+                roots: [(scopes[0], [2u8; 32])].into_iter().collect(),
+            },
+        ];
+        assert!(
+            check(&diverge).is_err(),
+            "harness must flag two members disagreeing on a scope root (convergence)"
+        );
+        // And confirm an honest single replica passes.
+        let _ = simulate(0, &membership, &ops);
     }
 
     #[test]
