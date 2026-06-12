@@ -19,7 +19,7 @@
 
 use calimero_context::group_store::{
     MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
-    SigningKeysRepository, UpgradesRepository,
+    SigningKeysRepository, UpgradeLadderRepository, UpgradesRepository,
 };
 use std::time::Duration;
 
@@ -682,4 +682,241 @@ async fn cascade_dispatch_e2e_migration_under_automatic_descendant_rejected() {
             hex::encode(gid.to_bytes())
         );
     }
+}
+
+/// Minimal in-memory bundle: gz tar with an UNSIGNED manifest.json (every
+/// node-side read path goes through `extract_manifest_allow_unsigned`) and
+/// one `app.wasm` carrying an embedded ABI. Same shape the bundle
+/// installation tests build on disk.
+fn build_bundle_blob(package: &str, app_version: &str, wasm: &[u8]) -> Vec<u8> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+
+    let manifest = serde_json::json!({
+        "version": "1.0",
+        "package": package,
+        "appVersion": app_version,
+        "minRuntimeVersion": "0.1.0",
+        "wasm": { "path": "app.wasm", "size": wasm.len() },
+        "migrations": [],
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest json");
+
+    let mut tar = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
+    let mut header = tar::Header::new_gnu();
+    header.set_path("manifest.json").expect("path");
+    header.set_size(manifest_bytes.len() as u64);
+    header.set_cksum();
+    tar.append(&header, manifest_bytes.as_slice())
+        .expect("append manifest");
+    let mut header = tar::Header::new_gnu();
+    header.set_path("app.wasm").expect("path");
+    header.set_size(wasm.len() as u64);
+    header.set_cksum();
+    tar.append(&header, wasm).expect("append wasm");
+    tar.into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gz")
+}
+
+/// Three bundle releases of ONE package (version-stable application id):
+/// state v1, v2 (edge 1->2) and v3 (edge 2->3).
+struct LadderBlobs {
+    v1: [u8; 32],
+    v2: [u8; 32],
+    v3: [u8; 32],
+}
+
+async fn seed_ladder_bundles(node: &crate::local_governance_node_e2e::TestNode) -> LadderBlobs {
+    use calimero_wasm_abi::embed::write_embedded_state_schema;
+    use calimero_wasm_abi::schema::{Manifest, MigrationEdgeAbi};
+
+    async fn add(node: &crate::local_governance_node_e2e::TestNode, bytes: Vec<u8>) -> [u8; 32] {
+        let (blob_id, _) = node
+            .node_client
+            .add_blob(&bytes[..], None, None)
+            .await
+            .expect("seed bundle blob");
+        *blob_id.as_ref()
+    }
+
+    let abi_wasm = |sv: u32, edge: Option<(&str, u32)>| {
+        let mut m = Manifest::new();
+        m.state_version = Some(sv);
+        if let Some((method, from)) = edge {
+            m.migrations = vec![MigrationEdgeAbi {
+                method: method.to_owned(),
+                from_version: from,
+            }];
+        }
+        write_embedded_state_schema(&EMPTY_WASM, &m).expect("embed ABI")
+    };
+
+    LadderBlobs {
+        v1: add(
+            node,
+            build_bundle_blob("cascade-test-pkg", "0.1.0", &abi_wasm(1, None)),
+        )
+        .await,
+        v2: add(
+            node,
+            build_bundle_blob(
+                "cascade-test-pkg",
+                "0.2.0",
+                &abi_wasm(2, Some(("migrate_v1_to_v2", 1))),
+            ),
+        )
+        .await,
+        v3: add(
+            node,
+            build_bundle_blob(
+                "cascade-test-pkg",
+                "0.3.0",
+                &abi_wasm(3, Some(("migrate_v2_to_v3", 2))),
+            ),
+        )
+        .await,
+    }
+}
+
+/// Multi-hop emit: a LazyOnAccess group two state versions behind the
+/// installed row upgrades in ONE admin action. The handler discovers the
+/// locally retained intermediate (still referenced by a sibling group),
+/// emits one op pair per rung, and the fold captures the ladder behind
+/// contexts replay. `meta.migration` ends as the LAST hop's method.
+#[tokio::test]
+async fn lazy_upgrade_emits_multi_hop_ladder() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let blobs = seed_ladder_bundles(&node).await;
+
+    let app_id = app_id_v1();
+    // The shared row holds the LATEST release (v3) — bundle ids are
+    // version-stable, so the row is where a same-id upgrade targets.
+    install_application(&node.store, app_id, blobs.v3, "0.3.0");
+
+    let gid = ContextGroupId::from([0x71; 32]);
+    provision_group(
+        &node.store,
+        &gid,
+        admin_pk,
+        blobs.v1,
+        app_id,
+        UpgradePolicy::LazyOnAccess,
+    );
+    register_context_for(&node.store, &gid, ContextId::from([0xC5; 32]), app_id);
+    // A sibling group still running 0.2.0 keeps the intermediate blob
+    // referenced — that's what makes it discoverable as a rung.
+    let sibling = ContextGroupId::from([0x72; 32]);
+    provision_group(
+        &node.store,
+        &sibling,
+        admin_pk,
+        blobs.v2,
+        app_id,
+        UpgradePolicy::LazyOnAccess,
+    );
+    SigningKeysRepository::new(&node.store)
+        .store_key(&gid, &admin_pk, &admin_sk)
+        .expect("store signing key");
+
+    let response = node
+        .context_client
+        .upgrade_group(UpgradeGroupRequest {
+            group_id: gid,
+            target_application_id: app_id,
+            requester: Some(admin_pk),
+            cascade: false,
+        })
+        .await
+        .expect("multi-hop lazy upgrade should succeed");
+    assert_eq!(response.group_id, gid);
+
+    let meta = MetaRepository::new(&node.store)
+        .load(&gid)
+        .expect("load meta")
+        .expect("meta exists");
+    assert_eq!(meta.app_key, blobs.v3, "group must land on the target blob");
+    assert_eq!(
+        meta.migration,
+        Some(b"migrate_v2_to_v3".to_vec()),
+        "group hint must be the LAST hop's method"
+    );
+
+    let rungs = UpgradeLadderRepository::new(&node.store)
+        .load(&gid)
+        .expect("load ladder");
+    assert_eq!(
+        rungs.iter().map(|r| r.app_key).collect::<Vec<_>>(),
+        vec![blobs.v2, blobs.v3],
+        "ladder must record the intermediate then the target, in order"
+    );
+    assert!(
+        rungs.iter().all(|r| r.application_id == app_id),
+        "version-stable bundle id on every rung"
+    );
+}
+
+/// Multi-hop emit with NO retained intermediate: the upgrade must reject
+/// up front (no ops emitted, group untouched) and the error must name the
+/// missing state version — the support-floor message the operator acts on.
+#[tokio::test]
+async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let blobs = seed_ladder_bundles(&node).await;
+
+    let app_id = app_id_v1();
+    install_application(&node.store, app_id, blobs.v3, "0.3.0");
+
+    let gid = ContextGroupId::from([0x73; 32]);
+    provision_group(
+        &node.store,
+        &gid,
+        admin_pk,
+        blobs.v1,
+        app_id,
+        UpgradePolicy::LazyOnAccess,
+    );
+    register_context_for(&node.store, &gid, ContextId::from([0xC6; 32]), app_id);
+    SigningKeysRepository::new(&node.store)
+        .store_key(&gid, &admin_pk, &admin_sk)
+        .expect("store signing key");
+
+    let err = node
+        .context_client
+        .upgrade_group(UpgradeGroupRequest {
+            group_id: gid,
+            target_application_id: app_id,
+            requester: Some(admin_pk),
+            cascade: false,
+        })
+        .await
+        .expect_err("missing intermediate must reject");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("state v2"),
+        "error must name the missing state version, got: {msg}"
+    );
+
+    let meta = MetaRepository::new(&node.store)
+        .load(&gid)
+        .expect("load meta")
+        .expect("meta exists");
+    assert_eq!(
+        meta.app_key, blobs.v1,
+        "rejected upgrade must not move the group"
+    );
+    assert!(
+        UpgradeLadderRepository::new(&node.store)
+            .load(&gid)
+            .expect("load ladder")
+            .is_empty(),
+        "no rung may be recorded on rejection"
+    );
 }

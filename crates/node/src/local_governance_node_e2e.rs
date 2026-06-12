@@ -88,6 +88,11 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             NetworkMessage::Publish { outcome, .. } => {
                 let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
             }
+            // Lazy upgrades announce each rung blob on the DHT; the stub
+            // acknowledges so the awaiting client future completes.
+            NetworkMessage::AnnounceBlob { outcome, .. } => {
+                let _ = outcome.send(Ok(()));
+            }
             _ => {}
         }
     }
