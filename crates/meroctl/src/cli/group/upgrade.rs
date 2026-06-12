@@ -48,9 +48,6 @@ pub struct TriggerUpgradeCommand {
     )]
     pub requester: Option<PublicKey>,
 
-    #[clap(long, help = "Optional migration method name to call on each context")]
-    pub migrate_method: Option<String>,
-
     #[clap(
         long,
         help = "Emit a cascade upgrade that fans out to every descendant subgroup whose \
@@ -64,7 +61,6 @@ impl TriggerUpgradeCommand {
         let request = UpgradeGroupApiRequest {
             target_application_id: self.target_application_id,
             requester: self.requester,
-            migrate_method: self.migrate_method,
             cascade: self.cascade,
         };
 

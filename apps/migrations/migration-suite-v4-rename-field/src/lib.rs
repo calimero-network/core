@@ -6,11 +6,10 @@ use calimero_storage::collections::{LwwRegister, UnorderedMap};
 const SCHEMA_VERSION_V3: &str = "3.0.0";
 const SCHEMA_VERSION_V4: &str = "4.0.0";
 
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(version = 4, emits = for<'a> Event<'a>)]
 #[derive(app::Migrate)]
 #[migrate(
     from = MigrationSuiteV3,
-    method = migrate_v3_to_v4,
     emit = Event::Migrated { from_version: SCHEMA_VERSION_V3, to_version: SCHEMA_VERSION_V4 }
 )]
 pub struct MigrationSuiteV4RenameField {

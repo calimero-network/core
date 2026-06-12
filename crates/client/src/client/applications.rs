@@ -3,7 +3,8 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
     GetApplicationResponse, InstallApplicationRequest, InstallApplicationResponse,
-    InstallDevApplicationRequest, ListApplicationsResponse, UninstallApplicationResponse,
+    InstallDevApplicationRequest, ListApplicationVersionsResponse, ListApplicationsResponse,
+    UninstallApplicationResponse,
 };
 use eyre::Result;
 
@@ -47,6 +48,20 @@ where
 
     pub async fn list_applications(&self) -> Result<ListApplicationsResponse> {
         let response = self.connection.get("admin-api/applications").await?;
+        Ok(response)
+    }
+
+    /// Every locally-retained bytecode version of the application's package
+    /// (the row's latest install plus any older blobs still referenced by
+    /// groups or context activation markers).
+    pub async fn list_application_versions(
+        &self,
+        app_id: &ApplicationId,
+    ) -> Result<ListApplicationVersionsResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/applications/{app_id}/versions"))
+            .await?;
         Ok(response)
     }
 

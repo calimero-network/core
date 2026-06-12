@@ -44,13 +44,17 @@ impl Report for GetContextResponse {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Context ID").fg(Color::Blue),
+            Cell::new("Name").fg(Color::Blue),
             Cell::new("Application ID").fg(Color::Blue),
+            Cell::new("Version").fg(Color::Blue),
             Cell::new("Root Hash").fg(Color::Blue),
         ]);
 
         let _ = table.add_row(vec![
             context.id.to_string(),
+            context.name.clone().unwrap_or_default(),
             context.application_id.to_string(),
+            context.application_version.clone().unwrap_or_default(),
             format!("{:?}", context.root_hash),
         ]);
 
@@ -145,14 +149,22 @@ impl Report for GetContextsResponse {
             let mut table = Table::new();
             let _ = table.set_header(vec![
                 Cell::new("Context ID").fg(Color::Blue),
+                Cell::new("Name").fg(Color::Blue),
                 Cell::new("Application ID").fg(Color::Blue),
+                Cell::new("Version").fg(Color::Blue),
                 Cell::new("Root Hash").fg(Color::Blue),
             ]);
 
             for entry in &self.data.contexts {
                 let _ = table.add_row(vec![
                     entry.context.id.to_string(),
+                    entry.context.name.clone().unwrap_or_default(),
                     entry.context.application_id.to_string(),
+                    entry
+                        .context
+                        .application_version
+                        .clone()
+                        .unwrap_or_default(),
                     format!("{:?}", entry.context.root_hash),
                 ]);
             }

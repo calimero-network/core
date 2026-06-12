@@ -330,6 +330,50 @@ impl Parse for StateArgs {
     }
 }
 
+/// Re-emit `version = N` where `#[derive(app::Migrate)]` can see it. The
+/// `#[app::state]` attribute is consumed before the derive expands (rustc
+/// orders macro attributes ahead of derives), so without this the derive
+/// could never learn the version: it would name its export a bare `migrate`
+/// while the embedded ABI declares the versioned `migrate_v{N-1}_to_v{N}`,
+/// and the node-resolved migration would fail with a missing export.
+/// Appended after the derive so the helper attr is introduced before use
+/// (`legacy_derive_helpers` rejects helper attrs ahead of their derive).
+pub fn inject_migrate_state_version(item: &mut StructOrEnumItem, args: &StateArgs) {
+    let Some(version) = args.version else { return };
+    let attrs = match item {
+        StructOrEnumItem::Struct(item) => &mut item.attrs,
+        StructOrEnumItem::Enum(item) => &mut item.attrs,
+    };
+    if !has_migrate_derive(attrs) {
+        return;
+    }
+    let lit = proc_macro2::Literal::u32_unsuffixed(version);
+    attrs.push(syn::parse_quote! { #[migrate(state_version = #lit)] });
+}
+
+/// Whether any `#[derive(...)]` on the item names a `Migrate` derive — by
+/// last path segment, so `app::Migrate` and a bare `Migrate` both match.
+fn has_migrate_derive(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+        .any(|attr| {
+            let mut found = false;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|seg| seg.ident == "Migrate")
+                {
+                    found = true;
+                }
+                Ok(())
+            });
+            found
+        })
+}
+
 pub struct StateImplInput<'a> {
     pub item: &'a StructOrEnumItem,
     pub args: &'a StateArgs,
@@ -1442,6 +1486,59 @@ mod tests {
         assert!(
             rendered.contains("const SCHEMA_VERSION : u32 = 2"),
             "version=2 must emit the SCHEMA_VERSION const, got:\n{rendered}",
+        );
+    }
+
+    #[test]
+    fn version_injected_as_migrate_helper_only_with_migrate_derive() {
+        // With a Migrate derive present, `version = 2` must surface as a
+        // `#[migrate(state_version = 2)]` helper, placed AFTER the derive
+        // (helper attrs ahead of their derive trip `legacy_derive_helpers`).
+        let args: StateArgs = syn::parse_quote! { version = 2 };
+        let mut item = StructOrEnumItem::Struct(parse_quote! {
+            #[derive(app::Migrate)]
+            #[migrate(from = OldState)]
+            pub struct S { x: u32 }
+        });
+        inject_migrate_state_version(&mut item, &args);
+        let rendered = item.to_token_stream().to_string();
+        assert!(
+            rendered.contains("state_version = 2"),
+            "expected injected helper in:\n{rendered}",
+        );
+        let derive_pos = rendered.find("derive").expect("derive in output");
+        let helper_pos = rendered.find("state_version").expect("helper in output");
+        assert!(
+            helper_pos > derive_pos,
+            "helper must follow the derive in:\n{rendered}",
+        );
+
+        // Without a Migrate derive, nothing is injected — an unconsumed
+        // `#[migrate]` attr on the re-emitted struct would be a compile error.
+        let mut plain = StructOrEnumItem::Struct(parse_quote! { pub struct P { x: u32 } });
+        inject_migrate_state_version(&mut plain, &args);
+        assert!(
+            !plain
+                .to_token_stream()
+                .to_string()
+                .contains("state_version"),
+            "must not inject without a Migrate derive",
+        );
+
+        // Without a declared version, nothing is injected even with the derive.
+        let unversioned: StateArgs = syn::parse_quote! {};
+        let mut derived = StructOrEnumItem::Struct(parse_quote! {
+            #[derive(app::Migrate)]
+            #[migrate(from = OldState)]
+            pub struct D { x: u32 }
+        });
+        inject_migrate_state_version(&mut derived, &unversioned);
+        assert!(
+            !derived
+                .to_token_stream()
+                .to_string()
+                .contains("state_version"),
+            "must not inject without a declared version",
         );
     }
 

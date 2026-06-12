@@ -4,7 +4,6 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::{GroupUpgradeStatus, UpgradeGroupRequest};
-use calimero_context_client::messages::MigrationParams;
 use calimero_server_primitives::admin::{
     UpgradeGroupApiRequest, UpgradeGroupApiResponse, UpgradeGroupApiResponseData,
 };
@@ -33,15 +32,12 @@ pub async fn handler(
     // prevent authorization bypass via a spoofed public key in the request body.
     let requester = auth_key.map(|Extension(k)| k.0).or(req.requester);
 
-    let migration = req.migrate_method.map(|method| MigrationParams { method });
-
     let result = state
         .ctx_client
         .upgrade_group(UpgradeGroupRequest {
             group_id,
             target_application_id: req.target_application_id,
             requester,
-            migration,
             cascade: req.cascade,
         })
         .await

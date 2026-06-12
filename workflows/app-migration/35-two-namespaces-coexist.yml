@@ -1,0 +1,291 @@
+name: 35 — Two namespaces coexist on different versions (1-node)
+description: >
+  Per-context bytecode binding (multi-version coexistence). One node
+  hosts TWO namespaces created from the same v1 bundle (migration-suite,
+  version-stable ApplicationId). Installing v2 and upgrading only
+  namespace A's subgroup must NOT change what namespace B executes:
+  the application row is a download-cache pointer; each context loads
+  the bytecode its group's app_key / activation marker points at.
+
+  Pre-binding this fails: the second install (and the lazy upgrade's
+  in-place reinstall) flipped the shared row, so B's context compiled
+  the v2 binary against its v1-shaped state ("Not all bytes read"
+  deserialization failure on the next B call). Post-binding, B keeps
+  answering the v1 schema — even after fresh writes on B — until B is
+  upgraded itself, after which both namespaces answer v2.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-coexist
+  base_port: 9670
+  base_rpc_port: 9770
+
+steps:
+  # Phase 1: Install v1 and build namespace A (subgroup + context).
+  - name: Install migration-suite-v1
+    type: install_application
+    node: app-migration-coexist-1
+    path: apps/migrations/migration-suite-v1/res/migration-suite-1.0.0.mpk
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Create namespace A
+    type: create_namespace
+    node: app-migration-coexist-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_a: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-coexist-1
+    namespace_id: "{{namespace_a}}"
+    outputs:
+      admin_key_a: publicKey
+
+  - name: Create subgroup in namespace A
+    type: create_group_in_namespace
+    node: app-migration-coexist-1
+    namespace_id: "{{namespace_a}}"
+    group_name: "coexist-a"
+    outputs:
+      group_a: groupId
+
+  - name: Create context in subgroup A (v1)
+    type: create_context
+    node: app-migration-coexist-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_a}}"
+    outputs:
+      ctx_a: contextId
+
+  # Phase 2: Namespace B (subgroup + context) on the SAME v1 install.
+  - name: Create namespace B
+    type: create_namespace
+    node: app-migration-coexist-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_b: namespaceId
+
+  - name: Capture namespace B admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-coexist-1
+    namespace_id: "{{namespace_b}}"
+    outputs:
+      admin_key_b: publicKey
+
+  - name: Create subgroup in namespace B
+    type: create_group_in_namespace
+    node: app-migration-coexist-1
+    namespace_id: "{{namespace_b}}"
+    group_name: "coexist-b"
+    outputs:
+      group_b: groupId
+
+  - name: Create context in subgroup B (v1)
+    type: create_context
+    node: app-migration-coexist-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_b}}"
+    outputs:
+      ctx_b: contextId
+
+  # Phase 3: Distinct v1 state in each namespace.
+  - name: Write v1 state in A
+    type: call
+    node: app-migration-coexist-1
+    context_id: "{{ctx_a}}"
+    method: set_description
+    args:
+      description: "namespace-a"
+
+  - name: Write v1 state in B
+    type: call
+    node: app-migration-coexist-1
+    context_id: "{{ctx_b}}"
+    method: set_description
+    args:
+      description: "namespace-b"
+
+  - name: Read v1 schema in A (sanity)
+    type: call
+    node: app-migration-coexist-1
+    context_id: "{{ctx_a}}"
+    method: schema_info
+    outputs:
+      a_schema_v1: result
+
+  - name: Read v1 schema in B (sanity)
+    type: call
+    node: app-migration-coexist-1
+    context_id: "{{ctx_b}}"
+    method: schema_info
+    outputs:
+      b_schema_v1: result
+
+  - name: Assert both namespaces start on v1
+    type: json_assert
+    statements:
+      - 'json_subset({{a_schema_v1}}, {"output": {"schema_version": "1.0.0", "description": "namespace-a"}})'
+      - 'json_subset({{b_schema_v1}}, {"output": {"schema_version": "1.0.0", "description": "namespace-b"}})'
+
+  # Phase 4: Install v2 (same version-stable application id), upgrade
+  # ONLY namespace A's subgroup. The node resolves migrate_v1_to_v2
+  # from the target bundle's embedded ABI.
+  - name: Set lazy-on-access policy on subgroup A
+    type: update_group_settings
+    node: app-migration-coexist-1
+    group_id: "{{group_a}}"
+    upgrade_policy: lazy_on_access
+
+  - name: Set lazy-on-access policy on subgroup B
+    type: update_group_settings
+    node: app-migration-coexist-1
+    group_id: "{{group_b}}"
+    upgrade_policy: lazy_on_access
+
+  - name: Install migration-suite-v2-add-field
+    type: install_application
+    node: app-migration-coexist-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration-suite-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Assert both versions share one application id (bundle same-id)
+    type: json_assert
+    statements:
+      - 'equal("{{app_v1}}", "{{app_v2}}")'
+
+  - name: Upgrade ONLY subgroup A to v2
+    type: upgrade_group
+    node: app-migration-coexist-1
+    group_id: "{{group_a}}"
+    target_application_id: "{{app_v2}}"
+
+  - name: Wait for upgrade to apply
+    type: wait
+    seconds: 10
+
+  # Phase 5: A answers v2 (lazy migration on first read); B must keep
+  # answering v1 — including AFTER fresh activity on B.
+  - name: Read schema in A (triggers A's lazy migration)
+    type: call
+    node: app-migration-coexist-1
+    context_id: "{{ctx_a}}"
+    method: schema_info
+    outputs:
+      a_schema_v2: result
+
+  - name: Assert A migrated to v2 with data preserved
+    type: json_assert
+    statements:
+      - 'json_subset({{a_schema_v2}}, {"output": {"schema_version": "2.0.0", "description": "namespace-a"}})'
+      - 'json_subset({{a_schema_v2}}, {"output": {"notes": "added in v2"}})'
+
+  - name: Activity on B after A's upgrade (v1 write must still work)
+    type: call
+    node: app-migration-coexist-1
+    context_id: "{{ctx_b}}"
+    method: increment_counter
+
+  - name: Read schema in B after activity
+    type: call
+    node: app-migration-coexist-1
+    context_id: "{{ctx_b}}"
+    method: schema_info
+    outputs:
+      b_schema_after_a_upgrade: result
+
+  - name: Assert B still executes v1 (the row flip must not leak into B)
+    type: json_assert
+    statements:
+      - 'json_subset({{b_schema_after_a_upgrade}}, {"output": {"schema_version": "1.0.0", "description": "namespace-b", "counter": "1"}})'
+
+  # Phase 6: Upgrade B too; both namespaces now answer v2.
+  - name: Upgrade subgroup B to v2
+    type: upgrade_group
+    node: app-migration-coexist-1
+    group_id: "{{group_b}}"
+    target_application_id: "{{app_v2}}"
+
+  - name: Wait for B's upgrade to apply
+    type: wait
+    seconds: 10
+
+  - name: Read schema in B (triggers B's lazy migration)
+    type: call
+    node: app-migration-coexist-1
+    context_id: "{{ctx_b}}"
+    method: schema_info
+    outputs:
+      b_schema_v2: result
+
+  - name: Assert B migrated to v2 with its own data preserved
+    type: json_assert
+    statements:
+      - 'json_subset({{b_schema_v2}}, {"output": {"schema_version": "2.0.0", "description": "namespace-b", "counter": "1"}})'
+      - 'json_subset({{b_schema_v2}}, {"output": {"notes": "added in v2"}})'
+
+  - name: Re-read schema in A (A unaffected by B's upgrade)
+    type: call
+    node: app-migration-coexist-1
+    context_id: "{{ctx_a}}"
+    method: schema_info
+    outputs:
+      a_schema_final: result
+
+  - name: Assert A still v2 with its own data
+    type: json_assert
+    statements:
+      - 'json_subset({{a_schema_final}}, {"output": {"schema_version": "2.0.0", "description": "namespace-a"}})'
+
+  # Phase 7: Teardown.
+  - name: Delete context A
+    type: delete_context
+    node: app-migration-coexist-1
+    context_id: "{{ctx_a}}"
+    requester: "{{admin_key_a}}"
+
+  - name: Delete subgroup A
+    type: delete_group
+    node: app-migration-coexist-1
+    group_id: "{{group_a}}"
+    requester: "{{admin_key_a}}"
+
+  - name: Delete namespace A
+    type: delete_namespace
+    node: app-migration-coexist-1
+    namespace_id: "{{namespace_a}}"
+    requester: "{{admin_key_a}}"
+
+  - name: Delete context B
+    type: delete_context
+    node: app-migration-coexist-1
+    context_id: "{{ctx_b}}"
+    requester: "{{admin_key_b}}"
+
+  - name: Delete subgroup B
+    type: delete_group
+    node: app-migration-coexist-1
+    group_id: "{{group_b}}"
+    requester: "{{admin_key_b}}"
+
+  - name: Delete namespace B
+    type: delete_namespace
+    node: app-migration-coexist-1
+    namespace_id: "{{namespace_b}}"
+    requester: "{{admin_key_b}}"
+
+  - name: Uninstall application
+    type: uninstall_application
+    node: app-migration-coexist-1
+    application_id: "{{app_v1}}"
+
+stop_all_nodes: false

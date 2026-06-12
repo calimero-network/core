@@ -7,7 +7,7 @@ use calimero_storage::collections::{AuthoredMap, LwwRegister, UnorderedMap};
 /// to a plain `UnorderedMap`, dropping authorship network-wide. This is
 /// intentionally UNSAFE — it exists only as the fixture the `calimero-abi diff`
 /// CI guard must catch (`UNSAFE_IDENTITY_DOWNGRADE`). It is NOT run by merobox.
-#[app::state]
+#[app::state(version = 2)]
 pub struct ScenarioIdentityDowngradeV2 {
     wiki: UnorderedMap<String, LwwRegister<String>>,
 }

@@ -155,6 +155,7 @@ fn parse_struct_args(input: &DeriveInput) -> syn::Result<StructArgs> {
     let mut from_type: Option<Type> = None;
     let mut method: Option<Ident> = None;
     let mut emit: Option<Expr> = None;
+    let mut state_version: Option<u32> = None;
 
     for attr in &input.attrs {
         if !attr.path().is_ident("migrate") {
@@ -167,6 +168,13 @@ fn parse_struct_args(input: &DeriveInput) -> syn::Result<StructArgs> {
                 method = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("emit") {
                 emit = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("state_version") {
+                // Internal channel: `#[app::state(version = N)]` is consumed
+                // before this derive expands (rustc orders macro attributes
+                // ahead of derives), so the state macro re-emits the version
+                // as this helper key. Not part of the user-facing surface.
+                let lit: syn::LitInt = meta.value()?.parse()?;
+                state_version = Some(lit.base10_parse::<u32>()?);
             } else {
                 return Err(meta.error(
                     "unknown `#[migrate(...)]` option on the struct (expected `from`, `method`, \
@@ -184,13 +192,17 @@ fn parse_struct_args(input: &DeriveInput) -> syn::Result<StructArgs> {
              borsh layout of the previous version",
         )
     })?;
-    // Default the export name to a VERSIONED form when `#[app::state(version =
-    // N)]` is declared: `migrate_v{N-1}_to_v{N}`. A bare `migrate` default
-    // collides across releases — a context's old applied-marker for release
-    // K's `migrate` would read as applied for release K+1's `migrate`, and two
+    // Default the export name to a VERSIONED form when the state declares a
+    // version: `migrate_v{N-1}_to_v{N}`. A bare `migrate` default collides
+    // across releases — a context's old applied-marker for release K's
+    // `migrate` would read as applied for release K+1's `migrate`, and two
     // derives in one module collide at compile time. Falls back to `migrate`
     // only for unversioned states (single-edge world, nothing to confuse).
-    let method = method.unwrap_or_else(|| match app_state_version(&input.attrs) {
+    // The version arrives via the injected `state_version` helper (the
+    // `#[app::state]` attr itself is consumed before this derive expands);
+    // the direct-attr scan remains for inputs not routed through the macro.
+    let version = state_version.or_else(|| app_state_version(&input.attrs));
+    let method = method.unwrap_or_else(|| match version {
         Some(to) if to > 1 => Ident::new(
             &format!("migrate_v{}_to_v{}", to - 1, to),
             input.ident.span(),
@@ -395,6 +407,37 @@ mod tests {
         assert!(
             out.contains("fn migrate ("),
             "default method name `migrate`: {out}"
+        );
+    }
+
+    #[test]
+    fn state_version_helper_defaults_method_to_versioned_name() {
+        // `#[app::state(version = N)]` is consumed before this derive expands
+        // (rustc orders macro attributes ahead of derives), so `#[app::state]`
+        // re-emits the version as a `#[migrate(state_version = N)]` helper.
+        // The generated export must take the versioned default so it matches
+        // the edge name the wasm-abi emitter declares in the embedded ABI.
+        let out = expand(quote! {
+            #[migrate(from = AppV1)]
+            #[migrate(state_version = 2)]
+            struct AppV2 { items: u64 }
+        });
+        assert!(
+            out.contains("fn migrate_v1_to_v2 ("),
+            "versioned default export expected: {out}"
+        );
+    }
+
+    #[test]
+    fn state_version_one_keeps_bare_migrate_default() {
+        let out = expand(quote! {
+            #[migrate(from = AppV1)]
+            #[migrate(state_version = 1)]
+            struct AppV2 { items: u64 }
+        });
+        assert!(
+            out.contains("fn migrate ("),
+            "version 1 has no prior edge to disambiguate: {out}"
         );
     }
 

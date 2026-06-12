@@ -26,7 +26,7 @@ pub const GROUP_SIGNING_KEY_PREFIX: u8 = 0x25;
 pub const GROUP_MEMBER_CAPABILITY_PREFIX: u8 = 0x26;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
 pub const GROUP_SUBGROUP_VIS_PREFIX: u8 = 0x2A;
-pub const GROUP_CONTEXT_LAST_MIGRATION_PREFIX: u8 = 0x2B;
+// 0x2B retired (was GROUP_CONTEXT_LAST_MIGRATION, pre-v2 migration markers).
 /// Legacy single-`u64` applied-nonce high-water mark per `(group_id, signer)`.
 /// Superseded by [`GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX`]; retained read-only so
 /// pre-window databases migrate their floor on first load. See
@@ -680,77 +680,6 @@ impl Debug for GroupSubgroupVis {
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupSubgroupVisValue {
     pub mode: u8,
-}
-
-/// Key for tracking the last migration applied to a specific context in a group:
-/// prefix + group_id + context_id.
-///
-/// The value is the migration method name that was last successfully applied.
-/// Used by `maybe_lazy_upgrade` to avoid re-running a migration that already
-/// completed for this context.
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupContextLastMigration(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
-
-impl GroupContextLastMigration {
-    #[must_use]
-    pub fn new(group_id: [u8; 32], context_id: PrimitiveContextId) -> Self {
-        Self(Key(GenericArray::from([
-            GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
-        ])
-        .concat(GenericArray::from(group_id))
-        .concat(GenericArray::from(*context_id))))
-    }
-
-    #[must_use]
-    pub fn group_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
-        id
-    }
-
-    #[must_use]
-    pub fn context_id(&self) -> PrimitiveContextId {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..65]);
-        id.into()
-    }
-}
-
-impl AsKeyParts for GroupContextLastMigration {
-    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
-
-    fn column() -> Column {
-        Column::Group
-    }
-
-    fn as_key(&self) -> &Key<Self::Components> {
-        &self.0
-    }
-}
-
-impl FromKeyParts for GroupContextLastMigration {
-    type Error = Infallible;
-
-    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
-        Ok(Self(parts))
-    }
-}
-
-impl Debug for GroupContextLastMigration {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupContextLastMigration")
-            .field("group_id", &self.group_id())
-            .field("context_id", &self.context_id())
-            .finish()
-    }
-}
-
-/// Value for [`GroupContextLastMigration`] — the migration method name that was last applied.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupContextLastMigrationValue {
-    pub method: String,
 }
 
 pub const GROUP_CONTEXT_METADATA_PREFIX: u8 = 0x2F;
@@ -2284,7 +2213,6 @@ mod tests {
             GROUP_MEMBER_CAPABILITY_PREFIX,
             GROUP_DEFAULT_CAPS_PREFIX,
             GROUP_SUBGROUP_VIS_PREFIX,
-            GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
             GROUP_LOCAL_GOV_NONCE_PREFIX,
             GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
             GROUP_MEMBER_METADATA_PREFIX,

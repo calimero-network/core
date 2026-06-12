@@ -101,28 +101,29 @@ pub fn should_fence(
     )
 }
 
-/// Resolve the **loaded reader** app_key for a context: the bytecode blob_id of
-/// the `ApplicationMeta` the context currently has installed locally.
+/// Resolve the **loaded reader** app_key for a context: the bytecode blob the
+/// context actually executes right now — distinct from the replicated
+/// `GroupMeta.app_key` (the migration target) under LazyOnAccess, where the
+/// target advances ahead of the local activation.
 ///
-/// This is the schema-version discriminator the receiver can actually read
-/// right now — distinct from the replicated `GroupMeta.app_key` (the migration
-/// target) under LazyOnAccess, where the target advances ahead of the loaded
-/// binary.
+/// Resolution mirrors execution's per-context binding: the activation marker
+/// (set when a migration commits or a code-only swap activates) → the
+/// application row's `bytecode.blob_id()` (a context that never activated an
+/// upgrade executes its installed row; on receivers the row is only a
+/// download cache and may lag the marker) → `GroupMeta.app_key`.
 ///
-/// Resolution: `ContextMeta.application` (the loaded `ApplicationMeta` key) →
-/// load that row → `bytecode.blob_id()`. This is the same blob_id
-/// `upgrade_group.rs` writes as `GroupMeta.app_key`, so no extra marker row is
-/// needed. Falls back to `GroupMeta.app_key` only when the loaded `ContextMeta`
-/// / `ApplicationMeta` row is missing.
-///
-/// Returns `None` for non-group contexts (no owning group) and when neither the
-/// loaded application nor the group meta can supply a key. Store errors are
-/// propagated as `Err`.
+/// Returns `None` for non-group contexts (no owning group) and when no source
+/// can supply a key. Store errors are propagated as `Err`.
 pub fn loaded_reader_app_key(
     store: &Store,
     context_id: &ContextId,
 ) -> eyre::Result<Option<[u8; 32]>> {
-    // Primary: the locally-loaded application's bytecode blob_id.
+    // Primary: the per-context activation marker — what this context executes.
+    if let Some(blob) = crate::activation::activated_blob(store, context_id) {
+        return Ok(Some(blob));
+    }
+
+    // No activation yet: the installed application row is what executes.
     if let Some(ctx_meta) = store.handle().get(&key::ContextMeta::new(*context_id))? {
         if let Some(app_meta) = store.handle().get(&ctx_meta.application)? {
             return Ok(Some(*app_meta.bytecode.blob_id().as_ref()));

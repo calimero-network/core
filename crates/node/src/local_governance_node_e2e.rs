@@ -119,6 +119,9 @@ pub(crate) struct TestNode {
     _tmp: TempDir,
     pub(crate) store: Store,
     pub(crate) context_client: ContextClient,
+    /// Blob/network client for tests that need to seed real blob bytes
+    /// (e.g. the cascade tests' ABI-bearing bytecode fixtures).
+    pub(crate) node_client: NodeClient,
     /// Address of the running `NodeManager` actor. Lets a test deliver a
     /// synthesized `NetworkEvent` straight to the production
     /// `Handler<NetworkEvent>` dispatch (the same entrypoint a real
@@ -226,7 +229,7 @@ pub(crate) async fn boot_test_node() -> TestNode {
         blob_store,
         sync_manager,
         context_client.clone(),
-        node_client,
+        node_client.clone(),
         store.clone(),
         node_state,
         state_delta_tx,
@@ -262,6 +265,7 @@ pub(crate) async fn boot_test_node() -> TestNode {
         _tmp: tmp,
         store,
         context_client,
+        node_client,
         node_addr,
     }
 }

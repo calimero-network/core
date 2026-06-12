@@ -148,7 +148,7 @@ steps:
     node: app-migration-authored-count-1
     group_id: "{{namespace_id}}"
     target_application_id: "{{app_v2}}"
-    migrate_method: migrate_v1_to_v2
+    # The node resolves the migration from the target bundle's embedded ABI.
     cascade: true
 
   - name: Wait for the cascade + migration to apply

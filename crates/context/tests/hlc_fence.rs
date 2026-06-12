@@ -258,6 +258,39 @@ fn does_not_fence_for_ungrouped_context() {
 // exercising the resolver's primary store-level branch directly.
 // ---------------------------------------------------------------------------
 
+/// Regression (workflow 01): after a lazy migration commits, the activation
+/// marker is the per-context truth — the application row is only a download
+/// cache on receivers and may still point at the OLD blob. The resolver must
+/// prefer the marker, or post-migration peers' v2 leaves stay buffered in the
+/// absorb buffer forever ("reader" never advances) and state sync wedges.
+#[test]
+fn loaded_reader_prefers_activation_marker_over_stale_row() {
+    let (store, _, ctx_id) = setup(APP_KEY_2, Some(HybridTimestamp::zero()), true);
+    let app_id = ApplicationId::from(LOADED_APP_ID);
+    // The row still holds v1 bytecode (receiver never installed v2)...
+    install_application(&store, app_id, APP_KEY_1);
+    install_context_meta(&store, ctx_id, app_id);
+    // ...but the context has ACTIVATED v2 (lazy migration committed).
+    calimero_context::activation::record_activation(&store, &ctx_id, APP_KEY_2);
+
+    let loaded =
+        loaded_reader_app_key(&store, &ctx_id).expect("loaded_reader_app_key must not error");
+    assert_eq!(
+        loaded,
+        Some(APP_KEY_2),
+        "an activated context reads at its marker's blob, not the stale row"
+    );
+
+    // A v2 delta must now Apply — buffering it would wedge post-migration sync.
+    let apply = delta_fence_decision(&store, &ctx_id, APP_KEY_2, hlc_after_zero())
+        .expect("delta_fence_decision must not error");
+    assert_eq!(
+        apply,
+        FenceDecision::Apply,
+        "v2 delta to a v2-activated reader must Apply"
+    );
+}
+
 /// The resolver must return the LOADED application's bytecode blob_id
 /// (APP_KEY_1), NOT the replicated `GroupMeta.app_key` (APP_KEY_2). This is the
 /// core of O3: under LazyOnAccess the governance target advances ahead of the

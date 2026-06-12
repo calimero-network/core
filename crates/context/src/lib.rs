@@ -19,6 +19,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_dag::DagStore;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
 use either::Either;
@@ -424,15 +425,11 @@ pub struct ContextManager {
     applications: BoundedCache<ApplicationId, Application>,
 
     /// In-memory cache of compiled WASM modules, keyed by
-    /// `(application_id, service_name)`. Populated on the first
-    /// `get_module` call for a given key; reused on every subsequent
-    /// execute. Cheap to clone (Arc-backed inside wasmer).
-    ///
-    /// Invalidated alongside `applications` on application updates or
-    /// migrations, and replaced when `get_module` has to recompile.
-    /// Without this, every execute request paid ~5% CPU to re-run
-    /// `Engine::from_precompiled` (observed in #2238 follow-up
-    /// profiling).
+    /// `(bytecode_blob_id, service_name)` — the bundle (or raw-wasm) blob,
+    /// content-addressed, so an entry can never go stale: the same blob
+    /// always compiles to the same module. Populated on the first
+    /// `get_module_for_blob` call for a given key; reused on every
+    /// subsequent execute. Cheap to clone (Arc-backed inside wasmer).
     ///
     /// Size-capped to `MAX_CACHED_MODULES` via [`BoundedCache`]. Compiled
     /// modules are 2–10× larger than the source WASM, so we cap to prevent
@@ -440,20 +437,20 @@ pub struct ContextManager {
     /// applications. Eviction is by-key-order rather than true LRU — good
     /// enough as a safety valve; upgrade tracked alongside the `contexts` LRU
     /// TODO above.
-    modules: BoundedCache<(ApplicationId, Option<String>), calimero_runtime::Module>,
+    modules: BoundedCache<(BlobId, Option<String>), calimero_runtime::Module>,
 
-    /// Per-application set of method names declared read-only via `#[app::view]`
+    /// Per-blob set of method names declared read-only via `#[app::view]`
     /// in the module ABI. Used by the execute handler to select a shared read
     /// lock instead of an exclusive write lock for qualifying calls.
     ///
-    /// Keyed by `(ApplicationId, Option<String>)` — the same key as `modules` so
-    /// both caches stay in sync. An absent entry means the app's manifest was not
-    /// parsed yet (cold cache) or the app has no `#[app::view]` methods; in both
-    /// cases the execute path defaults to the write lock (fail-safe). Populated
-    /// alongside the module cache in `get_module`.
+    /// Keyed by `(BlobId, Option<String>)` — the same key as `modules` so
+    /// both caches stay in sync. An absent entry means the blob's manifest was
+    /// not parsed yet (cold cache) or the app has no `#[app::view]` methods; in
+    /// both cases the execute path defaults to the write lock (fail-safe).
+    /// Populated alongside the module cache in `get_module_for_blob`.
     ///
     /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
-    read_only_methods: BoundedCache<(ApplicationId, Option<String>), Arc<HashSet<String>>>,
+    read_only_methods: BoundedCache<(BlobId, Option<String>), Arc<HashSet<String>>>,
 
     /// Cumulative hit/miss counters for the `contexts` hot cache, driving the
     /// periodic effectiveness log (see [`ContextCacheStats`] and
@@ -604,20 +601,16 @@ impl GovernancePreflight {
 }
 
 impl ContextManager {
-    /// Evict every per-application actor cache for `application_id`:
-    /// the application record, compiled modules (all services), and
-    /// read-only method sets. Required whenever the bytecode under an
-    /// application id may have changed (in-place same-id installs,
-    /// migrations) — a stale read_only_methods entry would take a shared
-    /// read lock for methods whose #[app::view] intent changed.
+    /// Evict the cached application record for `application_id` so the next
+    /// resolution re-reads the row. The compiled-module and read-only-method
+    /// caches are keyed by content-addressed blob id (same blob ⇒ same
+    /// module), so their entries can never go stale and need no eviction —
+    /// `BoundedCache` reclaims unused slots under capacity pressure.
     pub(crate) fn evict_application_caches(
         &mut self,
         application_id: calimero_primitives::application::ApplicationId,
     ) {
         let _ = self.applications.remove(&application_id);
-        self.modules.retain(|(id, _), _| *id != application_id);
-        self.read_only_methods
-            .retain(|(id, _), _| *id != application_id);
     }
 
     /// Common preflight for governance mutation handlers.

@@ -22,6 +22,13 @@ pub struct CreateCommand {
 
     #[clap(long, help = "Optional human-readable name for the namespace")]
     pub name: Option<String>,
+
+    #[clap(
+        long,
+        help = "Pin the namespace to a specific installed version (hex bytecode blob id); \
+                defaults to the latest installed"
+    )]
+    pub app_key: Option<String>,
 }
 
 impl CreateCommand {
@@ -32,6 +39,7 @@ impl CreateCommand {
             application_id: self.application_id,
             upgrade_policy,
             name: self.name,
+            app_key: self.app_key,
         };
 
         let client = environment.client()?;

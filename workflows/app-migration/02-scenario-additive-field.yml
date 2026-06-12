@@ -5,9 +5,10 @@ description: >
   struct; `migrate_v1_to_v2` preserves every v1 field and seeds the
   new `notes` field. Topology: namespace + one Open subgroup + one
   context in the subgroup. Upgrade is `upgrade_group(group=subgroup,
-  target=v2, migrate=migrate_v1_to_v2)` — per-context (cascade=false),
-  not namespace-cascade (that's `01`). Acts as the additive row of the
-  per-scenario matrix.
+  target=v2)` — per-context (cascade=false), not namespace-cascade
+  (that's `01`); the node resolves `migrate_v1_to_v2` from the target
+  bundle's embedded ABI. Acts as the additive row of the per-scenario
+  matrix.
 
   Negative assertion: before the upgrade, the v2-only setter
   `set_notes` must NOT be callable (the binary doesn't export it under
@@ -215,7 +216,6 @@ steps:
     node: app-migration-additive-1
     group_id: "{{group_id}}"
     target_application_id: "{{app_v2}}"
-    migrate_method: migrate_v1_to_v2
 
   # Fixed wait, NOT wait_for_sync (see scenario 01 rationale): lets the
   # target+migration meta gossip to node 2 before its lazy read.

@@ -236,10 +236,9 @@ steps:
     node: app-migration-cascade-1
     group_id: "{{namespace_id}}"
     target_application_id: "{{app_v2}}"
-    # migrate_method intentionally omitted: the node resolves the
-    # migration from the target bundle\'s embedded ABI (declared by
-    # #[derive(app::Migrate)]). This workflow is the regression guard
-    # for that resolution path.
+    # The node resolves the migration from the target bundle's embedded
+    # ABI (declared by #[derive(app::Migrate)]). This workflow is the
+    # regression guard for that resolution path.
     cascade: true
 
   # Fixed wait, NOT wait_for_sync: cascade is published async, and

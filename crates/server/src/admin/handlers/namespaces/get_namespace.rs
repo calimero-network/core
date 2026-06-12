@@ -67,22 +67,27 @@ pub async fn handler(
 
     match MetadataRepository::new(&state.store).build_namespace_summary(&group_id, &meta, &node_pk)
     {
-        Ok(Some(ns)) => ApiResponse {
-            payload: calimero_server_primitives::admin::GetNamespaceApiResponse {
-                data: calimero_server_primitives::admin::NamespaceApiResponse {
-                    namespace_id: hex::encode(ns.namespace_id.to_bytes()),
-                    app_key: hex::encode(ns.app_key.to_bytes()),
-                    target_application_id: ns.target_application_id.to_string(),
-                    upgrade_policy: format!("{:?}", ns.upgrade_policy),
-                    created_at: ns.created_at,
-                    name: ns.name,
-                    member_count: ns.member_count,
-                    context_count: ns.context_count,
-                    subgroup_count: ns.subgroup_count,
+        Ok(Some(ns)) => {
+            let app_version =
+                super::namespace_app_version(&state.node_client, ns.app_key.to_bytes()).await;
+            ApiResponse {
+                payload: calimero_server_primitives::admin::GetNamespaceApiResponse {
+                    data: calimero_server_primitives::admin::NamespaceApiResponse {
+                        namespace_id: hex::encode(ns.namespace_id.to_bytes()),
+                        app_key: hex::encode(ns.app_key.to_bytes()),
+                        target_application_id: ns.target_application_id.to_string(),
+                        upgrade_policy: format!("{:?}", ns.upgrade_policy),
+                        created_at: ns.created_at,
+                        name: ns.name,
+                        member_count: ns.member_count,
+                        context_count: ns.context_count,
+                        subgroup_count: ns.subgroup_count,
+                        app_version,
+                    },
                 },
-            },
+            }
+            .into_response()
         }
-        .into_response(),
         Ok(None) => ApiError {
             status_code: StatusCode::NOT_FOUND,
             message: "Namespace not found".to_owned(),

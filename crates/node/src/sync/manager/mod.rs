@@ -3355,12 +3355,10 @@ pub(crate) fn pending_upgrade_info(
     // pending for this context — until the lazy migrate runs on next access,
     // this node's pre-migration state must not reconcile against
     // already-migrated peers. (Code-only swaps carry no schema hazard, so
-    // they never gate.) "Applied" is the unified activation marker — legacy
-    // method/blob markers fold forward on first read.
+    // they never gate.) "Applied" is the per-context activation marker.
     let _migration_present = meta.migration.as_ref()?;
-    let applied = calimero_context::activation::activated_blob_folding_legacy(
-        store, &group_id, context_id, &meta,
-    ) == Some(meta.app_key);
+    let applied =
+        calimero_context::activation::activated_blob(store, context_id) == Some(meta.app_key);
     (!applied).then(|| (target, stage_blob_for(store, &meta)))
 }
 
@@ -3370,7 +3368,6 @@ mod pending_upgrade_tests {
 
     use calimero_context::group_store::{register_context_in_group, MetaRepository};
     use calimero_context_config::types::ContextGroupId;
-    use calimero_governance_store::MigrationsRepository;
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::{ContextId, UpgradePolicy};
     use calimero_primitives::identity::PublicKey;
@@ -3452,17 +3449,16 @@ mod pending_upgrade_tests {
         assert_eq!(pending_upgrade_target_in(&store, &ctx), None);
     }
 
-    // Once the per-context applied marker matches the group's migration,
+    // Once the per-context activation marker matches the group's app_key,
     // the gate lifts (state sync resumes after the lazy migrate).
     #[test]
     fn same_id_with_applied_migration_is_not_pending() {
         let store = store();
         let ctx = ContextId::from([3u8; 32]);
         let app = ApplicationId::from([0xAA; 32]);
-        let gid = seed(&store, ctx, app, app, Some("migrate_v1_to_v2"));
-        MigrationsRepository::new(&store)
-            .set_last_migration(&gid, &ctx, "migrate_v1_to_v2")
-            .expect("record applied migration");
+        let _gid = seed(&store, ctx, app, app, Some("migrate_v1_to_v2"));
+        // seed() stamps the group's app_key as [0x11; 32].
+        calimero_context::activation::record_activation(&store, &ctx, [0x11; 32]);
         assert_eq!(pending_upgrade_target_in(&store, &ctx), None);
     }
 

@@ -9,8 +9,6 @@ use calimero_primitives::metadata::MetadataRecord;
 use calimero_storage::logical_clock::HybridTimestamp;
 use thiserror::Error as ThisError;
 
-use crate::messages::MigrationParams;
-
 pub use calimero_store::key::GroupUpgradeStatus;
 
 /// Snapshot of an in-progress or completed group upgrade, returned by the API.
@@ -201,23 +199,17 @@ impl Message for StoreContextMetadataRequest {
     type Result = eyre::Result<()>;
 }
 
+/// A group upgrade names only the target application — whether and what to
+/// migrate is resolved by the node from the apps' embedded ABIs, never
+/// supplied by the caller.
 #[derive(Debug, Clone)]
 pub struct UpgradeGroupRequest {
     pub group_id: ContextGroupId,
     pub target_application_id: ApplicationId,
     pub requester: Option<PublicKey>,
-    pub migration: Option<MigrationParams>,
-    /// When `true`, the handler emits the single atomic [`GroupOp::CascadeUpgrade`]
-    /// op (carrying `target_application_id`, `app_key`, `migration`, and the
-    /// fence `cascade_hlc`) that fans out to every descendant subgroup whose
-    /// current `app_key` matches the signed group's current `app_key`. When
-    /// `false` (the default for `Default::default()` and for any caller
-    /// that does not explicitly set it), the handler stays on the
-    /// existing single-group path that emits the per-group
-    /// [`GroupOp::TargetApplicationSet`] / [`GroupOp::GroupMigrationSet`]
-    /// ops.
-    ///
-    /// Default: `false` so existing callers stay bit-identical.
+    /// When `true`, emit one atomic [`GroupOp::CascadeUpgrade`] fanning out
+    /// to every descendant subgroup whose `app_key` matches the signed
+    /// group's; when `false` (default), stay on the single-group path.
     pub cascade: bool,
 }
 
@@ -230,13 +222,11 @@ impl UpgradeGroupRequest {
         group_id: ContextGroupId,
         target_application_id: ApplicationId,
         requester: Option<PublicKey>,
-        migration: Option<MigrationParams>,
     ) -> Self {
         Self {
             group_id,
             target_application_id,
             requester,
-            migration,
             cascade: false,
         }
     }
