@@ -397,13 +397,30 @@ impl NodeClient {
             }
             for group_key in group_keys {
                 if let Some(meta) = handle.get(&group_key)? {
-                    let _ = candidates.insert(meta.app_key);
+                    // Only this application's groups: a foreign group's
+                    // app_key would otherwise be fetched + manifest-parsed
+                    // just to be discarded by the package filter below.
+                    if meta.target_application_id == *application_id {
+                        let _ = candidates.insert(meta.app_key);
+                    }
                 }
             }
             let mut iter = handle.iter::<key::ContextActivatedBlob>()?;
+            let mut marker_rows = Vec::new();
             for (k, v) in iter.entries() {
-                let (_, marker) = (k?, v?);
-                let _ = candidates.insert(marker.blob);
+                let (k, marker) = (k?, v?);
+                marker_rows.push((k.context_id(), marker.blob));
+            }
+            for (context_id, blob) in marker_rows {
+                // Same cross-application guard: the marker row carries no app
+                // id, but its context's meta does — one point-get beats a
+                // blob fetch + parse for every foreign context.
+                let same_app = handle
+                    .get(&key::ContextMeta::new(context_id))?
+                    .is_some_and(|c| c.application.application_id() == *application_id);
+                if same_app {
+                    let _ = candidates.insert(blob);
+                }
             }
         }
 

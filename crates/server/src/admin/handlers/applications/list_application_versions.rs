@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use axum::extract::Path;
-use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{ApplicationVersionEntry, ListApplicationVersionsResponse};
 use tracing::{error, info};
+
+use crate::admin::service::parse_api_error;
 
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
@@ -38,7 +39,9 @@ pub async fn handler(
         .into_response(),
         Err(err) => {
             error!(application_id=%application_id, error=?err, "Failed to list application versions");
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+            // Structured ApiError like every other admin handler — a raw
+            // err.to_string() body leaks store/internal detail to API callers.
+            parse_api_error(err).into_response()
         }
     }
 }
