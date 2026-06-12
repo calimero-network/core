@@ -44,9 +44,9 @@ use calimero_sdk::app;
 use calimero_sdk::borsh::BorshDeserialize;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 
-#[app::state]
+#[app::state(version = 2)]
 #[derive(app::Migrate)]
-#[migrate(from = DocV1Data, method = migrate_v1_to_v2)]
+#[migrate(from = DocV1Data)]
 pub struct DocV2 {
     entries: UnorderedMap<String, LwwRegister<String>>,  // carried automatically
     title:   LwwRegister<String>,                         // carried automatically
@@ -100,8 +100,11 @@ the old type") — it can't silently misbuild. A *dropped* field, by contrast, i
 silent (that's the remove case), so review your new field list against the old
 one deliberately.
 
-`method` defaults to `migrate`; give each derive an explicit `method = …` when a
-module has more than one (e.g. a `v1→v2` and a `v2→v3`).
+`method` defaults to the versioned name `migrate_v{N-1}_to_v{N}` derived from
+`#[app::state(version = N)]` (plain `migrate` only for unversioned states), so
+omitting it is the norm — names stay unique across releases and across multiple
+derives in one module. Explicit `method = …` remains supported and resolves
+identically.
 
 ---
 
@@ -543,16 +546,25 @@ workflow. See `workflows/app-migration/README.md` ("Running locally":
 
 ## 9. Shipping a migration
 
-Migrations run only under `UpgradePolicy::LazyOnAccess`. Trigger the upgrade:
+Migrations run only under `UpgradePolicy::LazyOnAccess`. Trigger the upgrade —
+note there is **no method name to pass**; the node resolves the migration from
+the version + edge your app's build embeds in its ABI:
 
 ```text
 upgrade_group(
-    target_application = <v2 blob id>,
-    migrate_method     = "migrate_v1_to_v2",   // must match your exported fn name
-    policy             = LazyOnAccess,
-    cascade            = true,                  // optional: fan out across a namespace subtree
+    target_application = <new bundle's application id>,
+    cascade            = true,   // optional: fan out across a namespace subtree
 )
 ```
+
+Per service, the node compares the state version of the bytecode the group
+currently runs against the target's and decides: equal → code-only swap
+(nothing runs); one ahead with a declared edge → run that edge's migrate;
+version bump with NO edge, more than one hop, or an older target → the
+upgrade is **rejected with an actionable error** instead of silently shipping
+new code onto old-layout state. `migrateMethod` is still accepted as a
+deprecated escape hatch — passing it skips ABI resolution entirely (needed
+only for apps built with pre-v2 SDKs).
 
 Each node self-migrates on its next context access (logged as `Executing
 migration` → `Migrated state written successfully`; the extra `performing lazy
@@ -565,6 +577,148 @@ If the app has **identity-gated** state (`AuthoredMap`/`AuthoredVector`),
 declare the new binary's schema target with `#[app::state(version = N)]` so the
 post-migrate owner-driven convert (§5) has a target to compare against — see
 [§5](#5-the-three-data-categories).
+
+### 9.1 The policy prerequisite: create groups as `LazyOnAccess`
+
+Migrations run **only** under `UpgradePolicy::LazyOnAccess`; an
+`upgrade_group` carrying a migrate method is **rejected at emit time** under
+`Automatic` or `Coordinated`. The trap: if your app creates its namespace with
+`upgradePolicy: 'Automatic'` (a tempting-sounding default), every migration
+you ever ship to that workspace fails at the upgrade call. Either create
+groups as `LazyOnAccess` from day one, or heal before upgrading:
+
+```text
+PATCH /admin-api/groups/:group_id   { "upgradePolicy": "LazyOnAccess" }
+```
+
+### 9.2 Bundle apps: the id never changes — the blob does
+
+A bundle (`.mpk`) derives `ApplicationId = hash(package, signer)` — it is
+**version-stable**. v1 and v2 of the same package share one id; installing v2
+overwrites the blob *in place* under that id. Consequences:
+
+* **Never key "is an update available / applied" off the ApplicationId
+  changing.** It won't. The version discriminator is the bytecode blob id,
+  recorded on the group as `appKey` at upgrade time.
+* **Download ≠ apply.** Installing the new bundle (registry download) flips
+  the *local node's* installed version immediately — but the workspace group
+  still targets the old bytecode until `upgrade_group` runs. A UI that only
+  compares "installed version vs registry latest" reads **"up to date" in the
+  downloaded-but-never-migrated state** and strands the admin. The ground
+  truth for "has this workspace been migrated" is:
+  `group.appKey == installed_application.blob.bytecode` (note: `appKey` is
+  hex on the admin API, blob ids are base58 — decode before comparing).
+* Single-wasm apps content-address the id per version, so the old
+  id-comparison instinct works there — bundles are the exception that ships
+  to real users.
+
+### 9.2b The node resolves the method — callers carry nothing
+
+Your build embeds `state_version` and the declared migration edges
+(`migrations: [{method, fromVersion}]`) in each service's ABI, and the node
+reads them at upgrade time. Updater UIs/CLIs never carry a method name; the
+typo/omission class of failure is structurally gone. The export name is
+generated (`migrate_v{N-1}_to_v{N}`) unless you pass `method = …` explicitly
+in the derive — explicit names remain supported and resolve identically.
+The only callers that still pass `migrateMethod` are those upgrading apps
+built with pre-v2 SDKs (no embedded version info to resolve from).
+
+### 9.2c Multi-service bundles: per-service version arithmetic
+
+A multi-service bundle (e.g. a registry service + a data service) upgrades as
+one unit, but the node judges **each service by its own declared state
+version**:
+
+* a service whose version is unchanged is code-only **by arithmetic** — no
+  wasm probing, no fake failure, nothing to declare;
+* a service one version ahead with a declared edge runs its own migrate;
+* a service that bumps its version without declaring an edge rejects the
+  whole upgrade at emit time (mis-built bundle).
+
+So each service simply declares its own truth and the release composes:
+"only service A changed", "only B", and "both" all work with zero
+coordination. One current restriction: if two services declare *different*
+explicit method names for the same release, the upgrade is rejected (the
+wire carries one method for pre-v2 receivers) — omit `method = …` or use the
+same name; full per-service actuation lifts this later.
+
+### 9.3 Reaching every context: `cascade: true`
+
+`upgrade_group` without `cascade` upgrades **only the target group**. If your
+app puts data in subgroup contexts (per-folder/per-channel child contexts),
+they stay on the old schema forever and the UI on top of them keeps reading
+v1. Pass `cascade: true` to fan the upgrade out across the namespace subtree
+as one atomic op.
+
+### 9.4 What each member's node does (and when)
+
+After the admin's `upgrade_group`, peers converge lazily:
+
+1. the upgrade replicates via the group op stream; a peer's **sync gate**
+   detects the pending upgrade (id change, or same-id `appKey` divergence for
+   bundles) and pre-stages the new blob over BlobShare;
+2. the node **migrates on its next access** to each context — reads count, so
+   merely opening the app advances it; an idle node stays on v1 until then
+   (write your UI copy accordingly: "updates next time you use it", not
+   "updates automatically");
+3. while a migration is in flight, writes are refused with
+   `upgrade in progress … writes refused until migration completes` — handle
+   this error in the frontend as a status ("workspace updating"), not a raw
+   failure;
+4. on completion the node emits the `AppVersionChanged` SSE event — subscribe
+   to flip version displays live (`mero.events.onAppVersionChanged`).
+
+### 9.5 Frontend checklist (the part nobody tests until a real user does)
+
+* Show the installed version to **every member**, not just admins; pair it
+  with honest LazyOnAccess copy.
+* Detect the **downloaded-but-not-applied** state via the `appKey`-vs-blob
+  comparison (§9.2) and keep offering the apply step — it must survive a page
+  reload (the bundle id is stable, so the group's `targetApplicationId` still
+  addresses the downloaded bytecode).
+* Map the upgrade-gate write refusal (§9.4.3) to an "updating…" banner.
+* Subscribe to `AppVersionChanged` for the completion signal.
+* Browser-test the full admin flow once per release: CLI clients skip CORS,
+  so a missing preflight method (e.g. PATCH for `updateGroupSettings`)
+  surfaces only in browsers, as an opaque `HTTP 0` network error.
+
+### 9.6 Verifying propagation by hand
+
+```bash
+# the group's target bytecode (hex appKey) — same on every member after sync
+meroctl --output-format json --node <n> namespace ls
+
+# what's actually installed under the (stable) application id
+meroctl --node <n> app ls          # check the Source/Blob columns' version
+
+# poke a context to trigger the lazy migrate (reads count)
+meroctl --node <n> call <any_read_method> --context <ctx_id>
+```
+
+`appKey` equal everywhere + each node's installed blob matching it + the call
+returning post-migration data = the migration has fully landed.
+
+### 9.7 Multiple versions on one node
+
+A context executes the bytecode **its own group points at** — not whatever was
+downloaded last. Installing a newer bundle never changes what existing
+workspaces run: each migrates when its own admin upgrades it. Consequences you
+can rely on:
+
+* two workspaces on one node can run different versions of the same app
+  indefinitely;
+* `createNamespace` accepts an optional `appKey` to pin a new workspace to any
+  installed version (default: latest);
+* the admin API lists every retained version of a package
+  (`GET /admin-api/applications/:id/versions`) and namespace DTOs carry a
+  per-workspace `appVersion` — display that, never the shared installed
+  version.
+
+**Coming next** (not yet shipped): members more than one version behind get a
+guided recovery (state resync from an up-to-date peer) and then chained
+migrations (retained edges walked in order, local edits preserved). Until
+then, such upgrades are rejected with a clear error — upgrade one version at
+a time.
 
 ---
 
