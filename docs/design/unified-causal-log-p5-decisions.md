@@ -145,20 +145,13 @@ P2-only or through-P4-only. (Chosen 2026-06-12.)
 redeploy, no mixed-version cluster. (The P2–P4 wire breaks already landed on
 this basis in #2745.)
 
-**Open — needs a product answer:** must existing **user data** survive the
-one-time re-projection (old state → re-derived `Op` log), or can current
-clusters be **wiped + re-synced**?
-
-- **Recommendation (pending confirmation): wipe + re-sync** if there is no
-  production deployment carrying durable user data yet — simplest, removes the
-  re-projection migration entirely.
-- If production data must survive: a one-time, offline re-projection that reads
-  each scope's current materialized state and emits the equivalent `Op` log
-  (a `SetWriters` for the resolved writers, `MemberAdded` per member, `Put` per
-  entity), then boots the new engine from it. Larger, but mechanical and
-  one-shot.
-- **This is the one decision I cannot default — it depends on deployment
-  reality only the team knows.**
+**✅ RESOLVED 2026-06-12: wipe + re-sync — NO re-projection, no backwards
+compatibility.** ("I don't care about backwards compatibility.") The P5
+migration ships as a clean flag-day: nodes re-bootstrap on the new engine; no
+data-preservation/re-projection step is built. This matches the norm already
+in effect — #2745 itself changed the on-disk format (rotation-log side-store →
+`UnorderedMap` children; `GovernancePosition` borsh layout; Shared-anchor
+hashing), so a re-bootstrap across this line of work is already required.
 
 ---
 
