@@ -16,7 +16,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// converges with no owner/identity stamp. The new doc's hash is recorded in
 /// `migration_hash` (raw bytes) and fetched back via `get_migration_doc()` — no
 /// hash crosses a workflow variable and no encode/decode codec is needed.
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(version = 2, emits = for<'a> Event<'a>)]
 pub struct ScenarioFrozenStorageV2 {
     documents: FrozenStorage<String>,
     title: LwwRegister<String>,

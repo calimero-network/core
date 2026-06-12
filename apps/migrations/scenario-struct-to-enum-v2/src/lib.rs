@@ -17,11 +17,10 @@ pub enum Status {
     Inactive(String),
 }
 
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(version = 2, emits = for<'a> Event<'a>)]
 #[derive(app::Migrate)]
 #[migrate(
     from = ScenarioStructToEnumV1,
-    method = migrate_v1_to_v2,
     emit = Event::Migrated { from_version: SCHEMA_VERSION_V1, to_version: SCHEMA_VERSION_V2 }
 )]
 pub struct ScenarioStructToEnumV2 {

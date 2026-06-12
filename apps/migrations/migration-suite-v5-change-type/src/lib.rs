@@ -6,11 +6,10 @@ use calimero_storage::collections::{LwwRegister, UnorderedMap};
 const SCHEMA_VERSION_V4: &str = "4.0.0";
 const SCHEMA_VERSION_V5: &str = "5.0.0";
 
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(version = 5, emits = for<'a> Event<'a>)]
 #[derive(app::Migrate)]
 #[migrate(
     from = MigrationSuiteV4,
-    method = migrate_v4_to_v5,
     emit = Event::Migrated {
         from_version: SCHEMA_VERSION_V4,
         to_version: SCHEMA_VERSION_V5,

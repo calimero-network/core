@@ -16,11 +16,10 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// migrate would seed each node's OWN executor id (migrate runs independently
 /// per node under LazyOnAccess), diverging the writer sets. Carrying the
 /// wrapper preserves the v1 writer set byte-for-byte, so every node converges.
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(version = 2, emits = for<'a> Event<'a>)]
 #[derive(app::Migrate)]
 #[migrate(
     from = ScenarioSharedStorageV1,
-    method = migrate_v1_to_v2,
     emit = Event::Migrated {
         from_version: SCHEMA_VERSION_V1,
         to_version: SCHEMA_VERSION_V2,

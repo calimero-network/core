@@ -7,7 +7,7 @@ use calimero_storage::collections::{LwwRegister, UnorderedMap};
 const SCHEMA_VERSION_V1: &str = "1.0.0";
 const SCHEMA_VERSION_V2: &str = "2.0.0";
 
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(version = 2, emits = for<'a> Event<'a>)]
 pub struct ScenarioFieldRemoveArchiveV2 {
     name: LwwRegister<String>,
     counter: LwwRegister<u64>,

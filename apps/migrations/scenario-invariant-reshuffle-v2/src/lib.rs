@@ -22,7 +22,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 // Inline fields rather than a nested `Stats` substruct: `#[app::state]`
 // requires every top-level field to be `Mergeable`, which collection
 // types satisfy but a plain struct of collections does not.
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(version = 2, emits = for<'a> Event<'a>)]
 pub struct ScenarioInvariantReshuffleV2 {
     total: LwwRegister<u64>,
     per_item: UnorderedMap<String, LwwRegister<u64>>,

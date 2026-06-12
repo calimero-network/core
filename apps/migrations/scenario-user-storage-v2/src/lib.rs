@@ -18,7 +18,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 #[derive(app::Migrate)]
 #[migrate(
     from = ScenarioUserStorageV1,
-    method = migrate_v1_to_v2,
     emit = Event::Migrated {
         from_version: SCHEMA_VERSION_V1,
         to_version: SCHEMA_VERSION_V2,
