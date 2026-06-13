@@ -1,0 +1,332 @@
+name: 36 — Chained catch-up via the upgrade ladder (v2 → v3 → v4, 2-node)
+description: >
+  A member left behind for SEVERAL releases catches up in one access by
+  replaying the group's upgrade ladder — each hop in THAT release's own
+  bytecode, methods resolved per hop from the two blobs' embedded ABIs.
+
+  Both nodes activate v2 once (their contexts gain the v2 activation
+  marker). The admin then upgrades the subgroup v2 -> v3 -> v4 while NO
+  context is accessed anywhere: every context is now two rungs below the
+  group. A single read on each node must run migrate_v2_to_v3 inside the
+  v3 binary and then migrate_v3_to_v4 inside the v4 binary — never the
+  group-level (last-hop) method against v2 state — landing on the v4
+  schema with all data carried through the chain. Node 2 never installs
+  anything: it pulls each rung's blob over BlobShare as it replays.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-chained
+  base_port: 9690
+  base_rpc_port: 9790
+
+steps:
+  # Phase 1: Install v1 on the ADMIN node only; build namespace + Open
+  # subgroup + context (same realistic-distribution shape as scenario 02).
+  - name: Install migration-suite-v1 on node 1
+    type: install_application
+    node: app-migration-chained-1
+    path: apps/migrations/migration-suite-v1/res/migration-suite-1.0.0.mpk
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Create namespace (v1) on node 1
+    type: create_namespace
+    node: app-migration-chained-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-chained-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-chained-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "chained-catchup-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-chained-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-chained-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 2: Node 2 joins namespace -> subgroup -> context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-chained-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-chained-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-chained-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-chained-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 3: Seed v1 state and let node 2 converge on it.
+  - name: Write v1 description
+    type: call
+    node: app-migration-chained-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "chained-catchup"
+
+  - name: Increment counter (1/2)
+    type: call
+    node: app-migration-chained-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Increment counter (2/2)
+    type: call
+    node: app-migration-chained-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Write item to v1 map
+    type: call
+    node: app-migration-chained-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k1"
+      value: "v1-value"
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-chained-1
+      - app-migration-chained-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-chained-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Phase 4: v1 -> v2, and ACTIVATE on both nodes: each context's read
+  # runs its own lazy migration and records the v2 activation marker —
+  # the rung the chained replay below resumes from.
+  - name: Install migration-suite-v2 on node 1
+    type: install_application
+    node: app-migration-chained-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration-suite-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Upgrade subgroup v1 -> v2
+    type: upgrade_group
+    node: app-migration-chained-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+
+  - name: Wait for v2 upgrade meta to gossip to node 2
+    type: wait
+    seconds: 15
+
+  - name: Activate v2 on node 1
+    type: call
+    node: app-migration-chained-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node1: result
+
+  - name: Activate v2 on node 2
+    type: call
+    node: app-migration-chained-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  - name: Assert both nodes activated v2
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0"}})'
+
+  # Phase 5: v2 -> v3 -> v4 with NO context access anywhere — every
+  # context falls two rungs behind the group.
+  - name: Install migration-suite-v3 on node 1
+    type: install_application
+    node: app-migration-chained-1
+    path: apps/migrations/migration-suite-v3-remove-field/res/migration-suite-3.0.0.mpk
+    dev: true
+    outputs:
+      app_v3: applicationId
+
+  - name: Upgrade subgroup v2 -> v3 (no access follows)
+    type: upgrade_group
+    node: app-migration-chained-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v3}}"
+
+  - name: Wait for v3 upgrade meta to gossip
+    type: wait
+    seconds: 10
+
+  - name: Install migration-suite-v4 on node 1
+    type: install_application
+    node: app-migration-chained-1
+    path: apps/migrations/migration-suite-v4-rename-field/res/migration-suite-4.0.0.mpk
+    dev: true
+    outputs:
+      app_v4: applicationId
+
+  - name: Upgrade subgroup v3 -> v4 (no access follows)
+    type: upgrade_group
+    node: app-migration-chained-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v4}}"
+
+  - name: Wait for v4 upgrade meta to gossip to node 2
+    type: wait
+    seconds: 15
+
+  # Phase 6: ONE read per node triggers the chained replay v2 -> v3 -> v4.
+  - name: Single read on node 2 chains both hops
+    type: call
+    node: app-migration-chained-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v4_schema_node2: result
+
+  - name: Single read on node 1 chains both hops
+    type: call
+    node: app-migration-chained-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v4_schema_node1: result
+
+  - name: Assert v4 schema with data carried through the chain
+    # `description` was carried v2 -> v3 and renamed to `details` by the
+    # v4 hop; the counter survived all three schemas.
+    type: json_assert
+    statements:
+      - 'json_subset({{v4_schema_node2}}, {"output": {"schema_version": "4.0.0", "details": "chained-catchup", "counter": "2"}})'
+      - 'json_subset({{v4_schema_node1}}, {"output": {"schema_version": "4.0.0", "details": "chained-catchup", "counter": "2"}})'
+
+  - name: Assert map data survived the chain on node 2
+    type: call
+    node: app-migration-chained-2
+    context_id: "{{ctx_id}}"
+    method: get_item
+    args:
+      key: "k1"
+    outputs:
+      item_node2: result
+
+  - name: Assert item value
+    type: json_assert
+    statements:
+      - 'json_subset({{item_node2}}, {"output": "v1-value"})'
+
+  # Each node replayed TWO ladder hops, each migration executed in its
+  # own release's binary.
+  - name: Assert chained replay ran on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-chained-1
+    patterns:
+      - "replaying upgrade ladder hop"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 2
+
+  - name: Assert chained replay ran on node 2
+    type: assert_log_present
+    nodes:
+      - app-migration-chained-2
+    patterns:
+      - "replaying upgrade ladder hop"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 2
+
+  # Phase 7: post-catch-up convergence — writes still flow both ways.
+  - name: Write post-catchup item on node 1
+    type: call
+    node: app-migration-chained-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k2"
+      value: "post-catchup"
+
+  - name: Wait for post-catchup sync
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-chained-1
+      - app-migration-chained-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Read post-catchup item on node 2
+    type: call
+    node: app-migration-chained-2
+    context_id: "{{ctx_id}}"
+    method: get_item
+    args:
+      key: "k2"
+    outputs:
+      item2_node2: result
+
+  - name: Assert post-catchup convergence
+    type: json_assert
+    statements:
+      - 'json_subset({{item2_node2}}, {"output": "post-catchup"})'
+
+  # Teardown guard: the suite's standard end-state checks.
+  - name: Assert no deserialization failures anywhere
+    type: assert_log_absent
+    nodes:
+      - app-migration-chained-1
+      - app-migration-chained-2
+    patterns:
+      - "Not all bytes read"
+      - "failed to deserialize"

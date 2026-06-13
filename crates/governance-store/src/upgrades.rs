@@ -11,8 +11,7 @@ use super::collect_keys_with_prefix;
 ///
 /// Holds a single `GroupUpgradeValue` per group (save/load/delete)
 /// plus a workspace-wide scan for in-progress upgrades (used by
-/// crash-recovery on startup). See [`MigrationsRepository`] for
-/// the Repository pattern's rationale — same shape.
+/// crash-recovery on startup).
 ///
 /// Issue #2303 / epic #2300.
 pub struct UpgradesRepository<'a> {

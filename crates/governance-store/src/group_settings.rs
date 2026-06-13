@@ -1,10 +1,10 @@
-use crate::{CapabilitiesRepository, MetaRepository};
+use crate::{CapabilitiesRepository, MetaRepository, UpgradeLadderRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::GroupMetaValue;
+use calimero_store::key::{GroupMetaValue, LadderRung};
 use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
 
@@ -54,7 +54,17 @@ impl<'a> GroupSettingsService<'a> {
         let mut meta = self.load_required_meta()?;
         meta.app_key = *app_key;
         meta.target_application_id = *target_application_id;
-        MetaRepository::new(self.store).save(&self.group_id, &meta)
+        MetaRepository::new(self.store).save(&self.group_id, &meta)?;
+        // Every op arm that advances the group's bytecode funnels through
+        // here, so this is the one capture point for the upgrade ladder a
+        // behind context replays rung by rung.
+        UpgradeLadderRepository::new(self.store).append(
+            &self.group_id,
+            LadderRung {
+                app_key: *app_key,
+                application_id: *target_application_id,
+            },
+        )
     }
 
     pub fn set_subgroup_visibility(

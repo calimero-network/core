@@ -216,6 +216,7 @@ jobs:
           - 32-authored-migrate-ux
           - 33-authored-remaining-count
           - 35-two-namespaces-coexist
+          - 36-chained-catchup
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:

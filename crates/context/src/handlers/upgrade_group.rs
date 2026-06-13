@@ -147,31 +147,53 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 .map(|m| *m.bytecode.blob_id().as_ref());
             return ActorResponse::r#async(
                 async move {
-                    // Resolve the upgrade from the apps' embedded ABIs (every
-                    // service of the bundle); the wire carries the one
-                    // resolved method for receivers' lazy actuation.
-                    let migration = {
+                    // Resolve the emission ladder from the apps' embedded
+                    // ABIs (every service, every hop). One rung for code-only
+                    // and one-hop upgrades; a multi-version target discovers
+                    // installed intermediates so the group moves rung by rung
+                    // and behind members replay the same sequence.
+                    let rungs = {
                         let target_blob = target_blob_bytes
                             .ok_or_else(|| eyre::eyre!("target application not found"))?;
-                        resolve_upgrade_from_abis(&node_client, current_app_key, target_blob)
-                            .await?
+                        let target_size = app_meta_for_contract
+                            .as_ref()
+                            .map(|m| m.size)
+                            .unwrap_or_default();
+                        plan_emit_ladder(
+                            &node_client,
+                            &target_application_id,
+                            current_app_key,
+                            target_blob,
+                            target_size,
+                        )
+                        .await?
                     };
-                    let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
-                    let has_migration = migration.is_some();
-                    // L1 identity-downgrade gate: a migration upgrade may not strip
-                    // identity from a top-level state field. Runs BEFORE any group op
-                    // is emitted so a forbidden downgrade never reaches the network.
-                    // Fail-open when either app lacks an embedded ABI section.
-                    if has_migration {
-                        let old = resolve_pre_upgrade_schema(
+                    let migration_bytes = rungs
+                        .last()
+                        .and_then(|r| r.migration.as_ref())
+                        .map(|m| m.method.as_bytes().to_vec());
+                    // L1 identity-downgrade gate, per rung: a migration hop may
+                    // not strip identity from a top-level state field. Runs
+                    // BEFORE any group op is emitted so a forbidden downgrade
+                    // never reaches the network. Fail-open when either side
+                    // lacks an embedded ABI section.
+                    {
+                        let mut prev_schema = resolve_pre_upgrade_schema(
                             &node_client,
                             current_app_key,
                             &current_application_id,
                         )
                         .await;
-                        let new =
-                            resolve_embedded_schema(&node_client, &target_application_id).await;
-                        verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;
+                        for rung in &rungs {
+                            let next_schema = resolve_blob_schema(&node_client, rung.app_key).await;
+                            if rung.migration.is_some() {
+                                verify_no_identity_downgrade(
+                                    prev_schema.as_ref(),
+                                    next_schema.as_ref(),
+                                )?;
+                            }
+                            prev_schema = next_schema;
+                        }
                     }
                     {
                         let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
@@ -179,41 +201,45 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                                 "local group upgrade requires a signing key for the requester"
                             )
                         })?);
-                        let app_meta = app_meta_for_contract
-                            .as_ref()
-                            .ok_or_else(|| eyre::eyre!("target application not found"))?;
-                        let app_key = *app_meta.bytecode.blob_id().as_ref();
-                        let report = calimero_governance_store::sign_apply_and_publish(
-                            &datastore,
-                            &node_client,
-                            &ack_router_for_lazy,
-                            &group_id,
-                            &sk,
-                            GroupOp::TargetApplicationSet {
-                                app_key,
-                                target_application_id,
-                            },
-                        )
-                        .await?;
-                        report.observe("upgrade_group", "TargetApplicationSet");
-                        // Unconditional: a code-only upgrade (migration None)
-                        // must CLEAR any method left by an earlier migration
-                        // upgrade — a stale Some(method) makes the same-id
-                        // lazy trigger take the migration arm and short-circuit
-                        // on its applied marker, so the new bytecode would
-                        // never activate.
-                        let report = calimero_governance_store::sign_apply_and_publish(
-                            &datastore,
-                            &node_client,
-                            &ack_router_for_lazy,
-                            &group_id,
-                            &sk,
-                            GroupOp::GroupMigrationSet {
-                                migration: migration_bytes.clone(),
-                            },
-                        )
-                        .await?;
-                        report.observe("upgrade_group", "GroupMigrationSet");
+                        // One op pair per rung, in ladder order: the applies
+                        // (local and on every receiver) append the upgrade
+                        // ladder behind contexts replay. The migration set is
+                        // unconditional per rung: a code-only rung (migration
+                        // None) must CLEAR any method left by an earlier
+                        // migration upgrade — a stale Some(method) makes the
+                        // same-id lazy trigger take the migration arm and
+                        // short-circuit on its applied marker, so the new
+                        // bytecode would never activate.
+                        for rung in &rungs {
+                            let report = calimero_governance_store::sign_apply_and_publish(
+                                &datastore,
+                                &node_client,
+                                &ack_router_for_lazy,
+                                &group_id,
+                                &sk,
+                                GroupOp::TargetApplicationSet {
+                                    app_key: rung.app_key,
+                                    target_application_id,
+                                },
+                            )
+                            .await?;
+                            report.observe("upgrade_group", "TargetApplicationSet");
+                            let report = calimero_governance_store::sign_apply_and_publish(
+                                &datastore,
+                                &node_client,
+                                &ack_router_for_lazy,
+                                &group_id,
+                                &sk,
+                                GroupOp::GroupMigrationSet {
+                                    migration: rung
+                                        .migration
+                                        .as_ref()
+                                        .map(|m| m.method.as_bytes().to_vec()),
+                                },
+                            )
+                            .await?;
+                            report.observe("upgrade_group", "GroupMigrationSet");
+                        }
                     }
 
                     let mut meta = MetaRepository::new(&datastore)
@@ -253,16 +279,17 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         usize::MAX,
                     )?;
 
-                    // Announce target app blob on DHT for each group context so
-                    // peer nodes can discover and fetch it during group sync.
-                    if let Some(ref app_meta) = app_meta_for_contract {
-                        let blob_id = app_meta.bytecode.blob_id();
+                    // Announce every rung blob on DHT for each group context
+                    // so peer nodes can discover and fetch intermediates while
+                    // replaying the ladder.
+                    for rung in &rungs {
+                        let blob_id = calimero_primitives::blobs::BlobId::from(rung.app_key);
                         for context_id in &contexts {
                             if let Err(err) = node_client
-                                .announce_blob_to_network(&blob_id, context_id, app_meta.size)
+                                .announce_blob_to_network(&blob_id, context_id, rung.size)
                                 .await
                             {
-                                warn!(%err, "failed to announce target app blob");
+                                warn!(%err, "failed to announce upgrade rung blob");
                             }
                         }
                     }
@@ -597,7 +624,184 @@ async fn resolve_pre_upgrade_schema(
 /// needs a migration but declares no edge, a group more than one hop behind
 /// (chaining not shipped yet), or a version-changing upgrade whose ABIs are
 /// unreadable.
-async fn resolve_upgrade_from_abis(
+/// One emission step of a (possibly multi-hop) lazy group upgrade.
+struct EmitRung {
+    app_key: [u8; 32],
+    size: u64,
+    migration: Option<MigrationParams>,
+}
+
+/// Max `state_version` across the blob's services, from its embedded ABIs.
+/// `None` when no service exposes an ABI — single-hop rules own that case.
+async fn blob_max_state_version(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    blob: [u8; 32],
+) -> Option<u32> {
+    use calimero_primitives::blobs::BlobId;
+    use calimero_wasm_abi::embed::read_embedded_state_schema;
+
+    let blob_id = BlobId::from(blob);
+    let services = node_client.bundle_service_names(&blob_id).await.ok()??;
+    let mut max_sv = None;
+    for service in services {
+        let Ok(Some(bytes)) = node_client
+            .application_bytes_from_blob(&blob_id, service.as_deref())
+            .await
+        else {
+            continue;
+        };
+        if let Some(m) = read_embedded_state_schema(&bytes) {
+            let sv = m.state_version_or_default();
+            max_sv = Some(max_sv.map_or(sv, |c: u32| c.max(sv)));
+        }
+    }
+    max_sv
+}
+
+/// The blob's embedded manifest (single/first service), for the per-rung
+/// identity-downgrade gate.
+async fn resolve_blob_schema(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    blob: [u8; 32],
+) -> Option<Manifest> {
+    use calimero_primitives::blobs::BlobId;
+
+    let bytes = node_client
+        .application_bytes_from_blob(&BlobId::from(blob), None)
+        .await
+        .ok()??;
+    calimero_wasm_abi::embed::read_embedded_state_schema(&bytes)
+}
+
+/// Resolve the full emission ladder current -> target. Code-only, one-hop
+/// and unknowable-version upgrades return ONE rung (today's behavior,
+/// decided by the single-hop rules). A target more than one state version
+/// ahead discovers one installed release per intermediate state version
+/// and validates every consecutive pair with the same single-hop rules, so
+/// an admin moves a group several versions in one action while behind
+/// members replay the identical rung sequence.
+async fn plan_emit_ladder(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    application_id: &ApplicationId,
+    current_app_key: [u8; 32],
+    target_blob: [u8; 32],
+    target_size: u64,
+) -> eyre::Result<Vec<EmitRung>> {
+    let from_sv = blob_max_state_version(node_client, current_app_key).await;
+    let to_sv = blob_max_state_version(node_client, target_blob).await;
+    let multi_hop = matches!((from_sv, to_sv), (Some(f), Some(t)) if t > f + 1);
+    if !multi_hop {
+        let migration =
+            resolve_upgrade_from_abis(node_client, current_app_key, target_blob).await?;
+        return Ok(vec![EmitRung {
+            app_key: target_blob,
+            size: target_size,
+            migration,
+        }]);
+    }
+    let (from_sv, to_sv) = (from_sv.unwrap_or_default(), to_sv.unwrap_or_default());
+
+    let inventory = node_client
+        .list_application_versions(application_id)
+        .await?;
+    let mut candidates = Vec::new();
+    for info in &inventory {
+        let blob = *info.blob_id.as_ref();
+        if blob == target_blob || blob == current_app_key {
+            continue;
+        }
+        if let Some(sv) = blob_max_state_version(node_client, blob).await {
+            candidates.push(ChainCandidate {
+                state_version: sv,
+                version: info.version.clone(),
+                app_key: blob,
+                size: info.size,
+            });
+        }
+    }
+    let intermediates = select_intermediate_rungs(from_sv, to_sv, &candidates)?;
+
+    let mut rungs = Vec::new();
+    let mut prev = current_app_key;
+    for (blob, size) in intermediates {
+        let migration = resolve_upgrade_from_abis(node_client, prev, blob).await?;
+        rungs.push(EmitRung {
+            app_key: blob,
+            size,
+            migration,
+        });
+        prev = blob;
+    }
+    let migration = resolve_upgrade_from_abis(node_client, prev, target_blob).await?;
+    rungs.push(EmitRung {
+        app_key: target_blob,
+        size: target_size,
+        migration,
+    });
+    Ok(rungs)
+}
+
+/// An installed release considered for an intermediate rung of a multi-hop
+/// upgrade, keyed by the max state version its embedded ABIs declare.
+#[derive(Debug, Clone)]
+pub(crate) struct ChainCandidate {
+    pub state_version: u32,
+    /// Manifest semver — the tie-break when two installed releases declare
+    /// the same state version (highest wins).
+    pub version: String,
+    pub app_key: [u8; 32],
+    pub size: u64,
+}
+
+/// Pick one installed blob per intermediate state version (`from+1..to`,
+/// exclusive of the target itself). The error names the first missing state
+/// version — the support-floor message an operator acts on.
+pub(crate) fn select_intermediate_rungs(
+    from_sv: u32,
+    to_sv: u32,
+    candidates: &[ChainCandidate],
+) -> eyre::Result<Vec<([u8; 32], u64)>> {
+    use std::collections::BTreeMap;
+
+    let mut best: BTreeMap<u32, &ChainCandidate> = BTreeMap::new();
+    for cand in candidates {
+        if cand.state_version <= from_sv || cand.state_version >= to_sv {
+            continue;
+        }
+        let wins = best.get(&cand.state_version).is_none_or(|cur| {
+            match (
+                semver::Version::parse(&cand.version),
+                semver::Version::parse(&cur.version),
+            ) {
+                (Ok(a), Ok(b)) => a > b,
+                // Unparseable versions lose to parseable ones; between two
+                // unparseable, fall back to a deterministic string compare.
+                (Ok(_), Err(_)) => true,
+                (Err(_), Ok(_)) => false,
+                (Err(_), Err(_)) => cand.version > cur.version,
+            }
+        });
+        if wins {
+            let _ = best.insert(cand.state_version, cand);
+        }
+    }
+
+    let mut rungs = Vec::new();
+    for sv in (from_sv + 1)..to_sv {
+        let Some(cand) = best.get(&sv) else {
+            eyre::bail!(
+                "target is {} state versions ahead (v{from_sv} -> v{to_sv}) and no installed \
+                 release declares state v{sv} — install a version with state v{sv} first (any \
+                 installed version can be an upgrade target), or upgrade one version at a time",
+                to_sv - from_sv,
+            );
+        };
+        rungs.push((cand.app_key, cand.size));
+    }
+    Ok(rungs)
+}
+
+pub(crate) async fn resolve_upgrade_from_abis(
     node_client: &calimero_node_primitives::client::NodeClient,
     current_app_key: [u8; 32],
     target_blob: [u8; 32],
@@ -1638,7 +1842,9 @@ fn ensure_cascade_migration_policies_supported(
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_cascade_migration_policies_supported;
+    use super::{
+        ensure_cascade_migration_policies_supported, select_intermediate_rungs, ChainCandidate,
+    };
     use calimero_context_config::types::ContextGroupId;
     use calimero_primitives::context::UpgradePolicy;
 
@@ -1709,5 +1915,55 @@ mod tests {
     fn cascade_migration_empty_descendants_is_allowed() {
         ensure_cascade_migration_policies_supported(&[])
             .expect("an empty descendant set is vacuously allowed");
+    }
+
+    fn cand(sv: u32, ver: &str, byte: u8) -> ChainCandidate {
+        ChainCandidate {
+            state_version: sv,
+            version: ver.to_owned(),
+            app_key: [byte; 32],
+            size: u64::from(byte),
+        }
+    }
+
+    #[test]
+    fn chain_selects_one_blob_per_intermediate_state_version_in_order() {
+        let candidates = [cand(2, "0.2.0", 0x02), cand(3, "0.3.0", 0x03)];
+        let rungs = select_intermediate_rungs(1, 4, &candidates).unwrap();
+        assert_eq!(rungs, vec![([0x02; 32], 2), ([0x03; 32], 3)]);
+    }
+
+    #[test]
+    fn chain_tie_breaks_by_highest_semver_not_lexicographic() {
+        // "0.10.0" > "0.9.0" — a lexicographic compare would invert this.
+        let candidates = [cand(2, "0.9.0", 0x09), cand(2, "0.10.0", 0x0A)];
+        let rungs = select_intermediate_rungs(1, 3, &candidates).unwrap();
+        assert_eq!(rungs, vec![([0x0A; 32], 10)]);
+    }
+
+    #[test]
+    fn chain_missing_state_version_names_the_gap() {
+        let candidates = [cand(3, "0.3.0", 0x03)];
+        let err = select_intermediate_rungs(1, 4, &candidates).expect_err("missing v2 must reject");
+        let msg = err.to_string();
+        assert!(msg.contains("state v2"), "should name the gap, got: {msg}");
+        assert!(
+            msg.contains("install"),
+            "should tell the operator the recovery, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn chain_ignores_candidates_outside_the_open_range() {
+        // from itself, the target's own version, and anything beyond are
+        // not intermediates — only v2 belongs to (1, 3).
+        let candidates = [
+            cand(1, "0.1.0", 0x01),
+            cand(2, "0.2.0", 0x02),
+            cand(3, "0.3.0", 0x03),
+            cand(5, "0.5.0", 0x05),
+        ];
+        let rungs = select_intermediate_rungs(1, 3, &candidates).unwrap();
+        assert_eq!(rungs, vec![([0x02; 32], 2)]);
     }
 }

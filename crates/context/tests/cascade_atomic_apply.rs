@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 
-use calimero_context::group_store::{apply_local_signed_group_op, UpgradesRepository};
+use calimero_context::group_store::{
+    apply_local_signed_group_op, UpgradeLadderRepository, UpgradesRepository,
+};
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
@@ -120,6 +122,12 @@ fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_casca
             .unwrap()
             .expect("upgrade record");
         assert_eq!(up.cascade_hlc, Some(fence));
+        // The op also appends an upgrade-ladder rung per matched descendant
+        // — the sequence a behind context replays to catch up.
+        let rungs = UpgradeLadderRepository::new(&store).load(gid).unwrap();
+        assert_eq!(rungs.len(), 1);
+        assert_eq!(rungs[0].app_key, APP_KEY_2);
+        assert_eq!(rungs[0].application_id, app_id_2());
     }
 }
 
