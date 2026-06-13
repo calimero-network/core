@@ -131,6 +131,7 @@ impl ProtocolSelector {
     /// Bottom line: `stream` should be treated as consumed after this
     /// call returns regardless of variant — the caller's drop runs
     /// after the function returns and closes it cleanly either way.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute<D: ProtocolDispatch>(
         &self,
         dispatch: &D,
@@ -140,6 +141,9 @@ impl ProtocolSelector {
         our_identity: PublicKey,
         local_root_hash: &Hash,
         peer_root_hash: &Hash,
+        // Remote peer's attributable member identity, forwarded to the
+        // HC / LevelWise initiator configs to gate authorless leaves.
+        session_peer: Option<PublicKey>,
         stream: &mut Stream,
     ) -> Result<Option<SyncProtocol>> {
         match selection.protocol {
@@ -221,6 +225,7 @@ impl ProtocolSelector {
                 let config = HashComparisonConfig {
                     remote_root_hash: root_hash,
                     context_client: Some(self.context_client.clone()),
+                    session_peer,
                 };
 
                 match HashComparisonProtocol::run_initiator(
@@ -360,6 +365,7 @@ impl ProtocolSelector {
                     remote_root_hash: **peer_root_hash,
                     max_depth,
                     context_client: Some(self.context_client.clone()),
+                    session_peer,
                 };
 
                 match LevelWiseProtocol::run_initiator(

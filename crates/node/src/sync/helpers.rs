@@ -191,6 +191,22 @@ pub fn is_leaf_currently_authorized(
     }
 }
 
+/// Resolve a peer's hosted identities to one `session_peer` for an authorless
+/// leaf gate: an authorized identity if the peer hosts one, else any hosted one
+/// (so the downstream check drops the leaf), else `None` (peer hosts none →
+/// unattributable, historical allow).
+pub(crate) fn select_attributable_peer_identity(
+    hosted: &std::collections::BTreeSet<PublicKey>,
+    is_authorized: impl Fn(&PublicKey) -> bool,
+) -> Option<PublicKey> {
+    if let Some(authorized) = hosted.iter().find(|id| is_authorized(id)) {
+        return Some(*authorized);
+    }
+    // Peer hosts identities but none authorized: return any so the gate drops
+    // it. Empty set → None → unattributable (historical allow).
+    hosted.iter().next().copied()
+}
+
 /// Detect the synthetic "opaque" CRDT type sync senders attach to leaves
 /// whose stored metadata has no `crdt_type` (typically the `Root<T>`
 /// entry for apps that don't use `#[app::state]`, plus test fixtures).
@@ -989,6 +1005,40 @@ mod tests {
 
     use calimero_storage::entities::{SignatureData, StorageType};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn select_peer_identity_prefers_an_authorized_member() {
+        // Peer hosts two identities; `b` sorts first but is unauthorized,
+        // `a` is authorized. The authorized one must be chosen so a peer
+        // hosting several identities (some stale) is not wrongly blocked.
+        let a = PublicKey::from([0xAA; 32]);
+        let b = PublicKey::from([0x01; 32]); // sorts before `a`
+        let hosted = BTreeSet::from([a, b]);
+        assert_eq!(
+            select_attributable_peer_identity(&hosted, |id| *id == a),
+            Some(a)
+        );
+    }
+
+    #[test]
+    fn select_peer_identity_returns_a_member_when_none_authorized_so_gate_drops_it() {
+        // A revoked peer hosts only unauthorized identities. We must still
+        // return `Some(_)`: passing `None` to `is_leaf_currently_authorized`
+        // would ALLOW the authorless leaf (the no-attribution path). Returning
+        // a now-unauthorized identity makes that gate drop the leaf.
+        let b = PublicKey::from([0x02; 32]);
+        let hosted = BTreeSet::from([b]);
+        assert_eq!(
+            select_attributable_peer_identity(&hosted, |_| false),
+            Some(b)
+        );
+    }
+
+    #[test]
+    fn select_peer_identity_is_none_when_peer_hosts_no_identities() {
+        let hosted: BTreeSet<PublicKey> = BTreeSet::new();
+        assert_eq!(select_attributable_peer_identity(&hosted, |_| true), None);
+    }
 
     #[test]
     fn extract_author_user_returns_owner() {
