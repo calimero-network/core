@@ -104,6 +104,10 @@ pub struct HashComparisonConfig {
     /// delta merge in the executor. `None` in the single-threaded sync-sim
     /// harness, where no executor runs alongside the protocol.
     pub context_client: Option<ContextClient>,
+    /// Remote peer's attributable member identity, used to gate authorless
+    /// (Public) leaves on the peer's current membership. `None` when
+    /// unattributable (e.g. sync-sim harness) → historical allow.
+    pub session_peer: Option<PublicKey>,
 }
 
 /// Data from the first `TreeNodeRequest` for responder dispatch.
@@ -179,6 +183,7 @@ impl SyncProtocolExecutor for HashComparisonProtocol {
             identity,
             config.remote_root_hash,
             config.context_client.as_ref(),
+            config.session_peer,
         )
         .await
     }
@@ -213,6 +218,7 @@ async fn run_initiator_impl<T: SyncTransport>(
     identity: PublicKey,
     remote_root_hash: [u8; 32],
     context_client: Option<&ContextClient>,
+    session_peer: Option<PublicKey>,
 ) -> Result<HashComparisonStats> {
     info!(%context_id, "Starting HashComparison sync (initiator)");
 
@@ -347,17 +353,12 @@ async fn run_initiator_impl<T: SyncTransport>(
                         "Merging leaf entity"
                     );
 
-                    // Authorization gate, parity with `handle_entity_push`.
-                    // Without this, the initiator's per-leaf merge in the
-                    // DFS would re-import entities whose claimed author has
-                    // been removed from the context's group — the same back
-                    // door batched EntityPush had before the helper-level
-                    // filter landed. Skipping silently here is fine because
-                    // the leaf will simply remain "missing locally," and
-                    // `root_hash_verified` will report `false` so the
-                    // session is treated as a partial merge rather than a
-                    // successful convergence.
-                    if !is_leaf_currently_authorized(store, &context_id, leaf_data, None) {
+                    // Drop leaves whose author (or, for authorless leaves, the
+                    // pushing `session_peer`) is no longer a member — mirrors the
+                    // gossip path's author check, which HC's raw-state merge would
+                    // otherwise bypass. Skipped leaves stay missing and leave
+                    // `root_hash_verified == false` (partial merge).
+                    if !is_leaf_currently_authorized(store, &context_id, leaf_data, session_peer) {
                         warn!(
                             %context_id,
                             key = %hex::encode(leaf_data.key),
@@ -1624,6 +1625,7 @@ mod tests {
         let config = HashComparisonConfig {
             remote_root_hash: [1u8; 32],
             context_client: None,
+            session_peer: None,
         };
         assert_eq!(config.remote_root_hash, [1u8; 32]);
     }
