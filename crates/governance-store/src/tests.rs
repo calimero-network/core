@@ -1,6 +1,6 @@
 use super::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
-    MetadataRepository, MigrationsRepository, NamespaceRepository, SigningKeysRepository,
+    MetadataRepository, NamespaceRepository, SigningKeysRepository, UpgradeLadderRepository,
     UpgradesRepository,
 };
 use calimero_context_config::types::ContextGroupId;
@@ -180,6 +180,44 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
             .as_deref(),
         Some("group-main")
     );
+}
+
+#[test]
+fn set_target_application_appends_upgrade_ladder_rung() {
+    // The ladder is captured at the single choke point every upgrade op
+    // passes through, in the order targets were applied; re-applying the
+    // same target (op replay) must not double a rung.
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x21; 32]);
+
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+
+    let settings = GroupSettingsService::new(&store, gid);
+    let app_v2 = ApplicationId::from([0xD2; 32]);
+    let app_v3 = ApplicationId::from([0xD3; 32]);
+
+    settings
+        .set_target_application(&admin, &[0x02; 32], &app_v2)
+        .unwrap();
+    settings
+        .set_target_application(&admin, &[0x02; 32], &app_v2)
+        .unwrap();
+    settings
+        .set_target_application(&admin, &[0x03; 32], &app_v3)
+        .unwrap();
+
+    let rungs = UpgradeLadderRepository::new(&store).load(&gid).unwrap();
+    assert_eq!(rungs.len(), 2);
+    assert_eq!(rungs[0].app_key, [0x02; 32]);
+    assert_eq!(rungs[0].application_id, app_v2);
+    assert_eq!(rungs[1].app_key, [0x03; 32]);
+    assert_eq!(rungs[1].application_id, app_v3);
 }
 
 #[test]
@@ -1969,53 +2007,6 @@ fn delete_defaults_and_member_capabilities_clears_values() {
         .is_empty());
 }
 
-#[test]
-fn migration_tracking_roundtrip_and_cleanup() {
-    let store = test_store();
-    let gid = test_group_id();
-    let context_a = ContextId::from([0x51; 32]);
-    let context_b = ContextId::from([0x52; 32]);
-
-    assert!(MigrationsRepository::new(&store)
-        .last_migration(&gid, &context_a)
-        .unwrap()
-        .is_none());
-
-    MigrationsRepository::new(&store)
-        .set_last_migration(&gid, &context_a, "migrate_v2")
-        .unwrap();
-    MigrationsRepository::new(&store)
-        .set_last_migration(&gid, &context_b, "migrate_v3")
-        .unwrap();
-
-    assert_eq!(
-        MigrationsRepository::new(&store)
-            .last_migration(&gid, &context_a)
-            .unwrap()
-            .as_deref(),
-        Some("migrate_v2")
-    );
-    assert_eq!(
-        MigrationsRepository::new(&store)
-            .last_migration(&gid, &context_b)
-            .unwrap()
-            .as_deref(),
-        Some("migrate_v3")
-    );
-
-    MigrationsRepository::new(&store)
-        .delete_all_for_group(&gid)
-        .unwrap();
-    assert!(MigrationsRepository::new(&store)
-        .last_migration(&gid, &context_a)
-        .unwrap()
-        .is_none());
-    assert!(MigrationsRepository::new(&store)
-        .last_migration(&gid, &context_b)
-        .unwrap()
-        .is_none());
-}
-
 // -----------------------------------------------------------------------
 // Auto-group: node identity as admin (regression test for fix)
 // -----------------------------------------------------------------------
@@ -2151,9 +2142,6 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
             },
         )
         .unwrap();
-    MigrationsRepository::new(&store)
-        .set_last_migration(&gid, &context, "v2")
-        .unwrap();
 
     MembershipRepository::new(&store)
         .add_member(&gid, &member, GroupMemberRole::Admin)
@@ -2248,10 +2236,6 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
         .enumerate_members(&gid)
         .unwrap()
         .is_empty());
-    assert!(MigrationsRepository::new(&store)
-        .last_migration(&gid, &context)
-        .unwrap()
-        .is_none());
     assert!(get_local_gov_nonce(&store, &gid, &member)
         .unwrap()
         .is_none());

@@ -26,7 +26,7 @@ pub const GROUP_SIGNING_KEY_PREFIX: u8 = 0x25;
 pub const GROUP_MEMBER_CAPABILITY_PREFIX: u8 = 0x26;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
 pub const GROUP_SUBGROUP_VIS_PREFIX: u8 = 0x2A;
-pub const GROUP_CONTEXT_LAST_MIGRATION_PREFIX: u8 = 0x2B;
+// 0x2B retired (was GROUP_CONTEXT_LAST_MIGRATION, pre-v2 migration markers).
 /// Legacy single-`u64` applied-nonce high-water mark per `(group_id, signer)`.
 /// Superseded by [`GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX`]; retained read-only so
 /// pre-window databases migrate their floor on first load. See
@@ -38,6 +38,12 @@ pub const GROUP_LOCAL_GOV_NONCE_PREFIX: u8 = 0x2C;
 /// precedence over the legacy [`GROUP_LOCAL_GOV_NONCE_PREFIX`] floor on load.
 /// See `calimero-governance-store::nonce_window`.
 pub const GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX: u8 = 0x3C;
+/// Per-group upgrade ladder: the ordered upgrade targets the group has moved
+/// through, captured as fold state when an upgrade op advances
+/// `GroupMeta.app_key`. A behind context replays these rungs in order, each
+/// in that release's own bytecode. (0x3F is reserved for the context-resync
+/// marker.)
+pub const GROUP_UPGRADE_LADDER_PREFIX: u8 = 0x3E;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GroupPrefix;
@@ -437,6 +443,54 @@ impl Debug for GroupUpgradeKey {
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupUpgradeLadder(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupUpgradeLadder {
+    #[must_use]
+    pub fn new(group_id: [u8; 32]) -> Self {
+        Self(Key(
+            GenericArray::from([GROUP_UPGRADE_LADDER_PREFIX]).concat(GenericArray::from(group_id))
+        ))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupUpgradeLadder {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupUpgradeLadder {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupUpgradeLadder {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupUpgradeLadder")
+            .field("group_id", &self.group_id())
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupSigningKey(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
 
 impl GroupSigningKey {
@@ -680,77 +734,6 @@ impl Debug for GroupSubgroupVis {
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupSubgroupVisValue {
     pub mode: u8,
-}
-
-/// Key for tracking the last migration applied to a specific context in a group:
-/// prefix + group_id + context_id.
-///
-/// The value is the migration method name that was last successfully applied.
-/// Used by `maybe_lazy_upgrade` to avoid re-running a migration that already
-/// completed for this context.
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupContextLastMigration(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
-
-impl GroupContextLastMigration {
-    #[must_use]
-    pub fn new(group_id: [u8; 32], context_id: PrimitiveContextId) -> Self {
-        Self(Key(GenericArray::from([
-            GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
-        ])
-        .concat(GenericArray::from(group_id))
-        .concat(GenericArray::from(*context_id))))
-    }
-
-    #[must_use]
-    pub fn group_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
-        id
-    }
-
-    #[must_use]
-    pub fn context_id(&self) -> PrimitiveContextId {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..65]);
-        id.into()
-    }
-}
-
-impl AsKeyParts for GroupContextLastMigration {
-    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
-
-    fn column() -> Column {
-        Column::Group
-    }
-
-    fn as_key(&self) -> &Key<Self::Components> {
-        &self.0
-    }
-}
-
-impl FromKeyParts for GroupContextLastMigration {
-    type Error = Infallible;
-
-    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
-        Ok(Self(parts))
-    }
-}
-
-impl Debug for GroupContextLastMigration {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupContextLastMigration")
-            .field("group_id", &self.group_id())
-            .field("context_id", &self.context_id())
-            .finish()
-    }
-}
-
-/// Value for [`GroupContextLastMigration`] — the migration method name that was last applied.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupContextLastMigrationValue {
-    pub method: String,
 }
 
 pub const GROUP_CONTEXT_METADATA_PREFIX: u8 = 0x2F;
@@ -1482,6 +1465,26 @@ impl BorshDeserialize for GroupUpgradeValue {
             cascade_seq,
         })
     }
+}
+
+/// One rung of a group's upgrade ladder: the bytecode blob (`app_key`) and
+/// application id an upgrade op targeted. Stored in causal-application order
+/// inside [`UpgradeLadderValue`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct LadderRung {
+    pub app_key: [u8; 32],
+    pub application_id: ApplicationId,
+}
+
+/// Stored against [`GroupUpgradeLadder`]. Append-only fold state: every op
+/// that advances `GroupMeta.app_key` appends its target here, so a context
+/// behind the group can replay the exact sequence of upgrades — each rung in
+/// that release's own bytecode.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct UpgradeLadderValue {
+    pub rungs: Vec<LadderRung>,
 }
 
 /// State machine for a group upgrade operation.
@@ -2262,6 +2265,15 @@ mod tests {
     }
 
     #[test]
+    fn group_upgrade_ladder_key_roundtrip() {
+        let gid = [0x47; 32];
+        let key = GroupUpgradeLadder::new(gid);
+        assert_eq!(key.group_id(), gid);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_UPGRADE_LADDER_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 33);
+    }
+
+    #[test]
     fn group_signing_key_roundtrip() {
         let gid = [0x55; 32];
         let pk = PrimitivePublicKey::from([0x66; 32]);
@@ -2284,9 +2296,9 @@ mod tests {
             GROUP_MEMBER_CAPABILITY_PREFIX,
             GROUP_DEFAULT_CAPS_PREFIX,
             GROUP_SUBGROUP_VIS_PREFIX,
-            GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
             GROUP_LOCAL_GOV_NONCE_PREFIX,
             GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
+            GROUP_UPGRADE_LADDER_PREFIX,
             GROUP_MEMBER_METADATA_PREFIX,
             GROUP_METADATA_PREFIX,
             GROUP_CONTEXT_METADATA_PREFIX,

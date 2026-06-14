@@ -16,7 +16,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// the mismatch makes it return `false`, so the runtime **logically aborts** —
 /// the staged child writes are dropped, the v1 root is never mutated, and the
 /// context keeps serving v1 state with **zero residue**.
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(version = 2, emits = for<'a> Event<'a>)]
 pub struct ScenarioMigrationCheckFailV2 {
     items: UnorderedMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,

@@ -414,6 +414,7 @@ async fn create_namespace() {
             application_id: ApplicationId::from([0u8; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             name: None,
+            app_key: None,
         })
         .await
         .unwrap();
@@ -567,6 +568,29 @@ async fn list_namespace_groups() {
     assert!(resp.data.is_empty());
 }
 
+#[tokio::test]
+async fn list_application_versions() {
+    let server = MockServer::start().await;
+    let app_id = ApplicationId::from([0u8; 32]);
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/applications/{app_id}/versions")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [
+                {"version": "2.0.0", "blobId": "blob-v2", "size": 2048, "package": "com.test.app"},
+                {"version": "1.0.0", "blobId": "blob-v1", "size": 1024, "package": "com.test.app"}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client.list_application_versions(&app_id).await.unwrap();
+    assert_eq!(resp.data.len(), 2);
+    assert_eq!(resp.data[0].version, "2.0.0");
+    assert_eq!(resp.data[1].blob_id, "blob-v1");
+}
+
 // ---- Upgrade ----
 
 #[tokio::test]
@@ -594,7 +618,6 @@ async fn upgrade_group() {
             UpgradeGroupApiRequest {
                 target_application_id: ApplicationId::from([0u8; 32]),
                 requester: None,
-                migrate_method: None,
                 cascade: false,
             },
         )
@@ -839,6 +862,7 @@ async fn create_namespace_returns_err_on_server_error() {
             application_id: ApplicationId::from([0u8; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             name: None,
+            app_key: None,
         })
         .await;
 

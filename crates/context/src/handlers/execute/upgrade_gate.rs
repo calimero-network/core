@@ -9,22 +9,10 @@ use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_store::Store;
 use tracing::{debug, info};
 
-/// Returns `true` when a group-upgrade status should block ALL writes
-/// (both user calls and state-op writes such as `__calimero_sync_next`).
-///
-/// Only `GroupUpgradeStatus::InProgress` blocks.  `Completed` (with or
-/// without a timestamp) never blocks.  This is the single source of truth
-/// for the cascade-upgrade write-gate decision.
-///
-/// # Safety invariants
-///
-/// * `LazyOnAccess` upgrades write `Completed` directly (never `InProgress`),
-///   so this fn never returns `true` during a lazy migration.
-/// * The eager propagator's own writes go through `UpdateApplicationRequest`
-///   → `handlers::update_application`, which bypasses the execute gate
-///   entirely — no deadlock is possible.
-/// * Sync-pipeline (`__calimero_sync_next`) failures during `InProgress` are
-///   retried by the periodic sync cycle once the upgrade reaches `Completed`.
+/// `true` when a group-upgrade status blocks ALL writes (user calls and
+/// state-ops alike): only `GroupUpgradeStatus::InProgress` blocks. Lazy
+/// upgrades write `Completed` directly and the eager propagator bypasses the
+/// execute gate, so neither can deadlock on this.
 pub(super) fn upgrade_blocks_write(status: &calimero_store::key::GroupUpgradeStatus) -> bool {
     matches!(
         status,
@@ -53,27 +41,36 @@ pub(super) fn upgrade_rejects_committed_write(block_writes: bool, produced_write
     block_writes && produced_write
 }
 
-/// Checks if a context belongs to a group with LazyOnAccess policy and
-/// needs an upgrade or migration.
-///
-/// Returns `(target_application_id, migrate_method, group_id, target_app_key)`
-/// when an upgrade should be performed.  The `group_id` is included so the
-/// caller can record a per-context migration marker after a successful run.
-/// `target_app_key` is the group's blob-derived app key (the target bytecode
-/// blob id, stamped by the upgrade): bundle apps keep a version-stable
-/// `ApplicationId`, so the caller must compare this against the blob actually
-/// installed under `target_application_id` and fetch it first when they
-/// differ — otherwise the migrate would load the OLD bytecode.
+/// What the lazy-upgrade path should do for a stale context under a
+/// LazyOnAccess group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum LazyUpgradeAction {
+    /// Context has no activation marker (never activated anything): a
+    /// single jump to the group's current target, method from the
+    /// group-level hint. Sound ONLY for marker-less contexts — the hint
+    /// describes the group's most recent hop, which may not be a marker-ed
+    /// context's next one.
+    SingleJump {
+        target_application_id: ApplicationId,
+        migrate_method: Option<String>,
+        target_app_key: [u8; 32],
+    },
+    /// Context has an activation marker: replay the group's upgrade ladder
+    /// from that bound blob, each hop's method resolved from the two
+    /// blobs' embedded ABIs. The group-level migration hint is never
+    /// executed on this arm.
+    Replay { bound: [u8; 32] },
+}
+
+/// Whether this context, under a LazyOnAccess group, needs an upgrade or
+/// migration, and via which mode. The caller must load bytecode by blob
+/// key (bundle ids are version-stable) — the application row may still
+/// hold the OLD wasm.
 pub(super) fn maybe_lazy_upgrade(
     datastore: &Store,
     context_id: &ContextId,
     current_application_id: &ApplicationId,
-) -> Option<(
-    ApplicationId,
-    Option<String>,
-    calimero_context_config::types::ContextGroupId,
-    [u8; 32],
-)> {
+) -> Option<LazyUpgradeAction> {
     use calimero_governance_store;
 
     // 1. Check if context belongs to a group
@@ -101,29 +98,19 @@ pub(super) fn maybe_lazy_upgrade(
         return None;
     }
 
-    // 4. Extract migration method from group meta (set during upgrade)
-    let migrate_method = meta
-        .migration
-        .as_ref()
-        .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
+    // 4. The activation marker decides both staleness and the mode below.
+    let activated = crate::activation::activated_blob(datastore, context_id);
 
     // 5. Compare current vs target application
     if *current_application_id == meta.target_application_id {
         // IDs match — bundle ids are version-stable, so this is either a
         // pending migration or a pending code-only bytecode bump. One rule
         // covers both: the context is up to date iff its activation marker
-        // (legacy markers folded forward) equals the group's recorded target
-        // blob. A zero app_key (legacy randomly-seeded groups) carries no
-        // bytecode signal, so a code-only bump can never be detected there —
-        // but a recorded MIGRATION still must fire (the fold reproduces the
-        // legacy marker-matches-method rule for the zero case), so only the
-        // no-migration shape is exempted.
-        if meta.app_key == [0u8; 32] && meta.migration.is_none() {
+        // equals the group's recorded target blob. A zero app_key carries no
+        // bytecode signal to compare against, so nothing can be detected.
+        if meta.app_key == [0u8; 32] {
             return None;
         }
-        let activated = crate::activation::activated_blob_folding_legacy(
-            datastore, &group_id, context_id, &meta,
-        );
         if activated == Some(meta.app_key) {
             return None; // bytecode + migration current — context is up to date
         }
@@ -135,30 +122,27 @@ pub(super) fn maybe_lazy_upgrade(
         ?group_id,
         %current_application_id,
         target_app=%meta.target_application_id,
+        marker = activated.is_some(),
         "lazy upgrade triggered for context"
     );
 
-    Some((
-        meta.target_application_id,
-        migrate_method,
-        group_id,
-        meta.app_key,
-    ))
+    Some(match activated {
+        Some(bound) => LazyUpgradeAction::Replay { bound },
+        None => LazyUpgradeAction::SingleJump {
+            target_application_id: meta.target_application_id,
+            migrate_method: meta
+                .migration
+                .as_ref()
+                .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
+            target_app_key: meta.app_key,
+        },
+    })
 }
 
-/// The blob-derived app key the sender is executing under — `GroupMeta.app_key`
-/// for the context's owning group (`app_key = blob_id(bytecode)` at group
-/// creation / upgrade time).  This is the schema-version discriminator that
-/// changes on every app upgrade; `application_id` is version-stable and
-/// cannot distinguish v1 from v2 of the same application.
-///
-/// Returns `Some(app_key)` for group-context deltas; `None` for non-group
-/// contexts (no owning group) or when the group meta row cannot be loaded
-/// (store error is propagated to the caller as `Err`).
-///
-/// Stamped onto the state-delta broadcast so receivers can fence
-/// stale-schema deltas after a cascade migration.  The fence itself lives
-/// in Tasks 8/9 — this function is the testable store-boundary helper.
+/// The blob-derived app key the sender executes under (`GroupMeta.app_key`
+/// of the owning group) — the schema discriminator stamped onto state-delta
+/// broadcasts so receivers can fence stale-schema deltas. `None` for
+/// non-group contexts.
 pub(super) fn resolve_producing_app_key(
     datastore: &Store,
     context_id: &ContextId,
@@ -171,10 +155,112 @@ pub(super) fn resolve_producing_app_key(
         .map(|m| m.app_key))
 }
 
-/// Per-context marker recording that the group's target bytecode (`app_key`)
-/// has been activated (caches evicted, row verified). Stored via the
-/// migration-marker repository under a synthetic method name; the `blob:`
-/// prefix cannot collide with a real `#[app::migrate]` method.
-pub(super) fn activation_marker(app_key: &[u8; 32]) -> String {
-    format!("blob:{}", hex::encode(app_key))
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::GroupMetaValue;
+
+    use super::*;
+
+    const APP_KEY_OLD: [u8; 32] = [0x01; 32];
+    const APP_KEY_NEW: [u8; 32] = [0x02; 32];
+
+    fn store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    fn target_app() -> ApplicationId {
+        ApplicationId::from([0xAA; 32])
+    }
+
+    fn seed_group(store: &Store, ctx: &ContextId, policy: UpgradePolicy) -> ContextGroupId {
+        let gid = ContextGroupId::from([0x60; 32]);
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextGroupRef::new((**ctx).into()),
+                &gid.to_bytes(),
+            )
+            .unwrap();
+        let admin = calimero_primitives::identity::PublicKey::from([0x07; 32]);
+        calimero_governance_store::MetaRepository::new(store)
+            .save(
+                &gid,
+                &GroupMetaValue {
+                    app_key: APP_KEY_NEW,
+                    target_application_id: target_app(),
+                    upgrade_policy: policy,
+                    created_at: 0,
+                    admin_identity: admin,
+                    owner_identity: admin,
+                    migration: Some(b"migrate_v2_to_v3".to_vec()),
+                    auto_join: false,
+                },
+            )
+            .unwrap();
+        gid
+    }
+
+    // The wrong-hop hole (PR-4 regression guard): a marker-ed context must
+    // NEVER receive the group-level migration method — the hint describes
+    // the group's most recent hop, while this context may be several rungs
+    // below it. Running that method against older state mis-decodes or
+    // corrupts. Marker-ed contexts replay the ladder instead.
+    #[test]
+    fn marker_ed_context_replays_and_never_carries_the_group_method() {
+        let store = store();
+        let ctx = ContextId::from([0x50; 32]);
+        let _gid = seed_group(&store, &ctx, UpgradePolicy::LazyOnAccess);
+        crate::activation::record_activation(&store, &ctx, APP_KEY_OLD);
+
+        let action = maybe_lazy_upgrade(&store, &ctx, &target_app()).expect("stale -> fires");
+        assert_eq!(action, LazyUpgradeAction::Replay { bound: APP_KEY_OLD });
+    }
+
+    #[test]
+    fn marker_less_context_keeps_the_single_jump() {
+        let store = store();
+        let ctx = ContextId::from([0x51; 32]);
+        let _gid = seed_group(&store, &ctx, UpgradePolicy::LazyOnAccess);
+
+        let action = maybe_lazy_upgrade(&store, &ctx, &target_app()).expect("stale -> fires");
+        assert_eq!(
+            action,
+            LazyUpgradeAction::SingleJump {
+                target_application_id: target_app(),
+                migrate_method: Some("migrate_v2_to_v3".to_owned()),
+                target_app_key: APP_KEY_NEW,
+            }
+        );
+    }
+
+    #[test]
+    fn up_to_date_marker_returns_none() {
+        let store = store();
+        let ctx = ContextId::from([0x52; 32]);
+        let _gid = seed_group(&store, &ctx, UpgradePolicy::LazyOnAccess);
+        crate::activation::record_activation(&store, &ctx, APP_KEY_NEW);
+
+        assert_eq!(maybe_lazy_upgrade(&store, &ctx, &target_app()), None);
+    }
+
+    #[test]
+    fn non_lazy_policy_returns_none() {
+        let store = store();
+        let ctx = ContextId::from([0x53; 32]);
+        let _gid = seed_group(&store, &ctx, UpgradePolicy::Automatic);
+        crate::activation::record_activation(&store, &ctx, APP_KEY_OLD);
+
+        assert_eq!(maybe_lazy_upgrade(&store, &ctx, &target_app()), None);
+    }
+
+    #[test]
+    fn non_group_context_returns_none() {
+        let store = store();
+        let ctx = ContextId::from([0x54; 32]);
+        assert_eq!(maybe_lazy_upgrade(&store, &ctx, &target_app()), None);
+    }
 }

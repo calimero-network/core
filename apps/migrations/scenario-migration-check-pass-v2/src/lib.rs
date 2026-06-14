@@ -14,7 +14,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// `notes` field. The `#[app::migration_check]` predicate uses the built-in
 /// [`entity_count_parity`] helper over the v1 and produced-v2 item sets: a
 /// faithful 1:1 carry passes, so the runtime commits the migration.
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(version = 2, emits = for<'a> Event<'a>)]
 pub struct ScenarioMigrationCheckPassV2 {
     items: UnorderedMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,

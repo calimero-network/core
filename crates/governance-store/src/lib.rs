@@ -53,7 +53,6 @@ mod local_state;
 mod membership;
 mod meta;
 mod metadata;
-mod migrations;
 mod namespace;
 pub mod nonce_window;
 mod ops;
@@ -61,6 +60,7 @@ mod pending_self_purge;
 mod permission_checker;
 mod signing_keys;
 mod tee;
+mod upgrade_ladder;
 mod upgrades;
 use self::local_state::{op_log_contains_content_hash, persist_group_governance_progress};
 
@@ -96,8 +96,6 @@ pub use self::meta::MetaRepository;
 
 pub use self::metadata::MetadataRepository;
 
-pub use self::migrations::MigrationsRepository;
-
 pub use self::namespace::NamespaceRepository;
 pub use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
@@ -115,6 +113,7 @@ pub use self::signing_keys::SigningKeysRepository;
 pub use self::tee::{
     is_quote_hash_used, is_tee_admitted_identity, read_tee_admission_policy, TeeAdmissionPolicy,
 };
+pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;
 
 #[cfg(test)]
@@ -579,18 +578,6 @@ impl<'a> GroupHandle<'a> {
         &self,
     ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
         NamespaceRepository::new(self.store).get_or_create_identity(&self.group_id)
-    }
-
-    // --- Migration tracking ---
-    pub fn get_context_last_migration(&self, context_id: &ContextId) -> EyreResult<Option<String>> {
-        MigrationsRepository::new(self.store).last_migration(&self.group_id, context_id)
-    }
-    pub fn set_context_last_migration(
-        &self,
-        context_id: &ContextId,
-        method: &str,
-    ) -> EyreResult<()> {
-        MigrationsRepository::new(self.store).set_last_migration(&self.group_id, context_id, method)
     }
 
     // --- Per-context capabilities ---

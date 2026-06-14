@@ -39,31 +39,32 @@ fn test_schema_validation_basic() {
 }
 
 #[test]
-fn test_schema_validation_migration_descriptor() {
-    // A manifest carrying the optional `migration` descriptor must validate:
-    // the root is `additionalProperties: false`, so the schema would reject
-    // `migration` unless it describes the field (the gap this guards).
+fn test_schema_validation_migration_edges() {
+    // A manifest carrying state_version + migration edges must validate: the
+    // root is `additionalProperties: false`, so the schema would reject the
+    // fields unless it describes them (the gap this guards).
     let schema_json = include_str!("../wasm-abi.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = JSONSchema::compile(&schema_value).unwrap();
 
     let manifest = calimero_wasm_abi::schema::Manifest {
         schema_version: "wasm-abi/1".to_string(),
-        migration: Some(calimero_wasm_abi::schema::MigrationAbi {
-            method: "migrate".to_string(),
-            to_schema_version: 2,
-        }),
+        state_version: Some(2),
+        migrations: vec![calimero_wasm_abi::schema::MigrationEdgeAbi {
+            method: "migrate_v1_to_v2".to_string(),
+            from_version: 1,
+        }],
         ..Default::default()
     };
 
     let manifest_json = serde_json::to_value(&manifest).unwrap();
-    // Serializes as camelCase `toSchemaVersion` — the schema must match.
-    assert_eq!(manifest_json["migration"]["toSchemaVersion"], 2);
+    // Serializes as camelCase `fromVersion` — the schema must match.
+    assert_eq!(manifest_json["migrations"][0]["fromVersion"], 1);
 
     let validation_result = schema.validate(&manifest_json);
     assert!(
         validation_result.is_ok(),
-        "migration-bearing manifest must validate against wasm-abi.schema.json: {:?}",
+        "edge-bearing manifest must validate against wasm-abi.schema.json: {:?}",
         validation_result.err().map(|e| e.collect::<Vec<_>>())
     );
 }

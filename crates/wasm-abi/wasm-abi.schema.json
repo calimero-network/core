@@ -37,26 +37,6 @@
       "type": "string",
       "description": "Name of the type that represents the application state"
     },
-    "migration": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "method",
-        "toSchemaVersion"
-      ],
-      "properties": {
-        "method": {
-          "type": "string",
-          "description": "The migrate entrypoint export to invoke"
-        },
-        "toSchemaVersion": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "The app-state schema version (#[app::state(version = N)]) this bundle migrates to"
-        }
-      },
-      "description": "Present when the app declares a migration (#[app::migrate] / #[derive(app::Migrate)])"
-    },
     "state_version": {
       "type": "integer",
       "minimum": 1,

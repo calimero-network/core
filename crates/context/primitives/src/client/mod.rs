@@ -252,6 +252,18 @@ impl ContextRegistry {
             .get(&meta.application)?
             .map(|app| app.version.to_string());
 
+        // Human-readable name from the owning group's per-context metadata
+        // record, when set.
+        let name = handle
+            .get(&key::ContextGroupRef::new((*context_id).into()))?
+            .and_then(|gid: [u8; 32]| {
+                handle
+                    .get(&key::GroupContextMetadata::new(gid, (*context_id).into()))
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|record| record.name);
+
         let context = Context::with_service(
             *context_id,
             meta.application.application_id(),
@@ -259,7 +271,8 @@ impl ContextRegistry {
             meta.dag_heads.clone(),
             meta.service_name.as_deref().map(String::from),
         )
-        .with_application_version(application_version);
+        .with_application_version(application_version)
+        .with_name(name);
 
         tracing::debug!(
             %context_id,
@@ -1159,6 +1172,35 @@ impl ContextClient {
     /// Checks if a context's metadata exists in the local datastore.
     pub fn has_context(&self, context_id: &ContextId) -> eyre::Result<bool> {
         self.registry.has_context(context_id)
+    }
+
+    /// The version of the blob this context actually EXECUTES, when it
+    /// differs from the application row's. The activation marker is the
+    /// per-context truth; the row is a download cache holding the latest
+    /// install, so under multi-version coexistence the two diverge.
+    /// `None` ⇒ the row's version already tells the truth.
+    pub async fn executing_application_version(&self, context_id: &ContextId) -> Option<String> {
+        let marker = {
+            let handle = self.registry.datastore.handle();
+            let marker = handle
+                .get(&key::ContextActivatedBlob::new(*context_id))
+                .ok()
+                .flatten()?
+                .blob;
+            let row_blob = handle
+                .get(&key::ContextMeta::new(*context_id))
+                .ok()
+                .flatten()
+                .and_then(|m| handle.get(&m.application).ok().flatten())
+                .map(|app| *app.bytecode.blob_id().as_ref());
+            if row_blob == Some(marker) {
+                return None;
+            }
+            marker
+        };
+        self.node_client
+            .blob_app_version(&calimero_primitives::blobs::BlobId::from(marker))
+            .await
     }
 
     /// Retrieves a context metadata from the local datastore.
@@ -2238,5 +2280,58 @@ mod get_context_version_tests {
             .expect("get_context ok")
             .expect("context present");
         assert_eq!(ctx.application_version, None);
+    }
+
+    // get_context resolves the human-readable name from the owning group's
+    // per-context metadata record; absent rows leave it None.
+    #[test]
+    fn get_context_carries_group_metadata_name() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let app_key = key::ApplicationMeta::new(ApplicationId::from([0xCC; 32]));
+        let cid = ContextId::from([0x09; 32]);
+        let gid = [0x42u8; 32];
+        let ctx_meta = types::ContextMeta::new(app_key, [0u8; 32], vec![], None);
+        {
+            let mut handle = store.handle();
+            handle
+                .put(&key::ContextMeta::new(cid), &ctx_meta)
+                .expect("seed ctx meta");
+            handle
+                .put(&key::ContextGroupRef::new(cid.into()), &gid)
+                .expect("seed group ref");
+            handle
+                .put(
+                    &key::GroupContextMetadata::new(gid, cid.into()),
+                    &calimero_primitives::metadata::MetadataRecord {
+                        name: Some("docs-workspace".to_owned()),
+                        ..Default::default()
+                    },
+                )
+                .expect("seed context metadata");
+        }
+
+        let registry = ContextRegistry::new(store.clone());
+        let ctx = registry
+            .get_context(&cid)
+            .expect("get_context ok")
+            .expect("context present");
+        assert_eq!(ctx.name.as_deref(), Some("docs-workspace"));
+
+        // No metadata record → name stays None.
+        let bare = ContextId::from([0x0A; 32]);
+        {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &key::ContextMeta::new(bare),
+                    &types::ContextMeta::new(app_key, [0u8; 32], vec![], None),
+                )
+                .expect("seed bare ctx meta");
+        }
+        let ctx = registry
+            .get_context(&bare)
+            .expect("get_context ok")
+            .expect("context present");
+        assert_eq!(ctx.name, None);
     }
 }

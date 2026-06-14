@@ -2,8 +2,8 @@ use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{AbortMigrationRequest, AbortMigrationResponse};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    enumerate_group_contexts, MembershipRepository, MetaRepository, MigrationsRepository,
-    NamespaceRepository, UpgradesRepository,
+    enumerate_group_contexts, MembershipRepository, MetaRepository, NamespaceRepository,
+    UpgradesRepository,
 };
 use calimero_store::key;
 use eyre::bail;
@@ -11,44 +11,13 @@ use tracing::info;
 
 use crate::ContextManager;
 
-/// Logically abort an in-flight namespace migration (Task 6d.4).
-///
-/// Flips the group's pending migration target **back** to the pre-migration
-/// application id and drops the pending `migration` marker so any not-yet-applied
-/// lazy context stops migrating on its next access — `maybe_lazy_upgrade` no
-/// longer triggers because there is no pending migration and the target matches
-/// the contexts' current application id again.
-///
-/// This is a **logical** abort: there is NO byte snapshot and NO restore — the
-/// v1 root was never mutated for not-yet-applied contexts, so nothing needs
-/// un-doing. An already-committed v2 context is **not** recalled (that would be
-/// the replicated-delta recall this train explicitly does not do — spec §7
-/// invariant 5); this RPC only stops the rollout going forward.
-///
-/// A **namespace cascade** migration (`GroupOp::CascadeUpgrade` /
-/// `CascadeGroupMigrationSet`) applies the same pending migration to every
-/// matched DESCENDANT subgroup, not just the requested root. The walk matches a
-/// descendant when its `GroupMeta.app_key` equals the cascade's `from_app_key`
-/// (the root group's `app_key`) — see
-/// `governance_store::cascade::walk_for_predicate` and the
-/// `CascadeGroupMigrationSet` apply arm. So aborting the root alone would leave
-/// every descendant still carrying its pending migration → they keep
-/// lazy-migrating and the abort is incomplete.
-///
-/// This function therefore walks the namespace subtree (root +
-/// [`NamespaceRepository::collect_descendants`], mirroring the read-side
-/// `collect_cascade_status`) and applies the identical logical abort to the root
-/// and to **each descendant that carries the same pending migration** (matched on
-/// the cascade predicate `descendant.app_key == root.app_key`, AND having a
-/// pending migration of its own). Each matched group gets the same treatment:
-/// flip `target_application_id` back to its pre-migration app id, clear
-/// `meta.migration`, delete its `UpgradesRepository` record, and clear its
-/// `MigrationsRepository` per-context markers.
-///
-/// Pure (store read/write only) so it can be exercised without standing up an
-/// actor. Idempotent: a subtree with no pending migration anywhere is a no-op
-/// `Ok` with `aborted: false`, never an error. Already-committed v2 contexts are
-/// **not** recalled.
+/// Logically abort an in-flight namespace migration: flip each affected
+/// group's target back to the pre-migration app id, clear `meta.migration`,
+/// and drop its pending upgrade record. No snapshot, no restore —
+/// already-committed contexts are NOT recalled. A cascade applied the same
+/// migration to descendants matched on `app_key == from_app_key`, so the
+/// abort walks the subtree and aborts each matched descendant too.
+/// Pure store I/O; idempotent (`aborted: false` when nothing is pending).
 pub fn abort_group_migration(
     store: &calimero_store::Store,
     namespace_id: &ContextGroupId,
@@ -152,12 +121,11 @@ fn abort_single_group(
 
     // Drop the pending upgrade record (the migration marker) so a future
     // `get_migration_status` / lazy-upgrade pass sees no in-flight migration.
+    // Per-context activation markers stay: the up-to-date rule is
+    // `marker == group.app_key`, so a re-issued upgrade (which moves the
+    // app_key forward again) re-fires on every not-yet-activated context,
+    // while already-committed contexts stay correctly suppressed.
     upgrades_repo.delete(group_id)?;
-
-    // Clear per-context "last migration" markers for the group so a later,
-    // intentional re-issue of the same migration is not suppressed as
-    // already-applied.
-    MigrationsRepository::new(store).delete_all_for_group(group_id)?;
 
     info!(
         ?group_id,
@@ -197,8 +165,7 @@ mod tests {
 
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
-        register_context_in_group, MetaRepository, MigrationsRepository, NamespaceRepository,
-        UpgradesRepository,
+        register_context_in_group, MetaRepository, NamespaceRepository, UpgradesRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::{ContextId, UpgradePolicy};
@@ -305,13 +272,6 @@ mod tests {
         UpgradesRepository::new(&store)
             .save(&group_id, &upgrade_value(Some(b"migrate_v1_v2".to_vec())))
             .expect("save upgrade");
-        // A per-context marker exists (e.g. from an earlier run of the same
-        // migration on a sibling context). Abort must clear it so a deliberate
-        // re-issue of the migration is not suppressed as already-applied. Without
-        // this write the final `is_none()` assertion would be vacuous.
-        MigrationsRepository::new(&store)
-            .set_last_migration(&group_id, &context_id, "migrate_v1_v2")
-            .expect("set last migration");
 
         let resp = abort_group_migration(&store, &group_id).expect("abort");
         assert!(
@@ -339,11 +299,6 @@ mod tests {
                 .is_none(),
             "pending upgrade record must be cleared"
         );
-        // The per-context marker is cleared so a deliberate re-issue is not suppressed.
-        assert!(MigrationsRepository::new(&store)
-            .last_migration(&group_id, &context_id)
-            .unwrap()
-            .is_none());
     }
 
     /// In a partially-migrated (mixed-state) group — one context already committed
@@ -469,14 +424,6 @@ mod tests {
         upgrades_repo
             .save(&child_id, &upgrade_value(Some(b"migrate_v1_v2".to_vec())))
             .expect("save child upgrade");
-        // Per-context markers on both groups.
-        let migrations_repo = MigrationsRepository::new(&store);
-        migrations_repo
-            .set_last_migration(&root_id, &root_ctx, "migrate_v1_v2")
-            .expect("set root last migration");
-        migrations_repo
-            .set_last_migration(&child_id, &child_ctx, "migrate_v1_v2")
-            .expect("set child last migration");
 
         // Abort the ROOT only.
         let resp = abort_group_migration(&store, &root_id).expect("abort root");
@@ -506,13 +453,6 @@ mod tests {
         assert!(
             upgrades_repo.load(&child_id).unwrap().is_none(),
             "descendant pending upgrade record must ALSO be cleared"
-        );
-        assert!(
-            migrations_repo
-                .last_migration(&child_id, &child_ctx)
-                .unwrap()
-                .is_none(),
-            "descendant per-context marker must ALSO be cleared"
         );
     }
 

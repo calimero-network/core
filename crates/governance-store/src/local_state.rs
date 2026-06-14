@@ -1,6 +1,6 @@
 use crate::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
-    MetadataRepository, MigrationsRepository, SigningKeysRepository, UpgradesRepository,
+    MetadataRepository, SigningKeysRepository, UpgradeLadderRepository, UpgradesRepository,
 };
 use calimero_context_client::local_governance::SignedGroupOp;
 use calimero_context_config::types::ContextGroupId;
@@ -475,8 +475,8 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     CapabilitiesRepository::new(store).delete_default(group_id)?;
     CapabilitiesRepository::new(store).delete_subgroup_visibility(group_id)?;
     MetadataRepository::new(store).delete_group(group_id)?;
-    MigrationsRepository::new(store).delete_all_for_group(group_id)?;
     UpgradesRepository::new(store).delete(group_id)?;
+    UpgradeLadderRepository::new(store).delete(group_id)?;
     SigningKeysRepository::new(store).delete_all_for_group(group_id)?;
     DenyListRepository::new(store).clear_all_for_group(group_id)?;
     delete_op_log_and_head(store, group_id)?;

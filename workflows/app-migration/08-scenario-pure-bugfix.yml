@@ -5,7 +5,7 @@ description: >
   types, order) — only the body of an exported method (`sum_all_values`)
   differs: v1 has an off-by-one bug that adds 1 to the total, v2 fixes
   it. Because the state struct is unchanged, no `#[app::migrate]` is
-  needed and the upgrade carries no `migrate_method`; existing v1 state
+  needed and the ABI declares no edge; existing v1 state
   bytes decode as v2 directly.
 
   Topology: namespace + one Open subgroup + one context in the subgroup.
@@ -191,8 +191,8 @@ steps:
     upgrade_policy: lazy_on_access
 
   # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
-  # Pure-bugfix: state struct is byte-identical, so no migrate_method is
-  # supplied. Existing v1 state bytes must decode as v2 directly.
+  # Pure-bugfix: state struct is byte-identical, so the ABI declares no
+  # edge. Existing v1 state bytes must decode as v2 directly.
   - name: Install scenario-pure-bugfix-v2 on node 1
     type: install_application
     node: app-migration-bugfix-1

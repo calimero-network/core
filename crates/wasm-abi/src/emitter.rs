@@ -6,8 +6,8 @@ use syn::{Item, ItemEnum, ItemImpl, ItemStruct, Type};
 
 use crate::normalize::{normalize_type, ResolvedLocal, TypeResolver};
 use crate::schema::{
-    Event, Field, Manifest, Method, MethodIntent, MigrationAbi, MigrationEdgeAbi, Parameter,
-    ScalarType, TypeDef, TypeRef, Variant,
+    Event, Field, Manifest, Method, MethodIntent, MigrationEdgeAbi, Parameter, ScalarType, TypeDef,
+    TypeRef, Variant,
 };
 
 /// ABI emitter that processes Rust source code
@@ -790,11 +790,9 @@ pub fn emit_manifest_from_crate(
     // Create the manifest
     // State version from `#[app::state(version = N)]` (default 1 — always
     // recorded so version comparison is total even on code-only releases).
-    // Migration method from `#[migrate(method = …)]` (derive form, which
-    // defaults to `migrate` when omitted — mirrored by the derive macro) or a
-    // free `#[app::migrate] fn`. The single `migration` field stays emitted as
-    // a deprecated alias of the edge list.
-    let mut migration = None;
+    // Migration method from `#[migrate(method = …)]` (derive form, whose
+    // versioned default mirrors the derive macro) or a free
+    // `#[app::migrate] fn`; declared as the `from_version = N-1` edge.
     let mut state_version = None;
     let mut migrations = Vec::new();
     for file in &files {
@@ -808,14 +806,10 @@ pub fn emit_manifest_from_crate(
                     if let Some(method) = method {
                         if to > 1 {
                             migrations.push(MigrationEdgeAbi {
-                                method: method.clone(),
+                                method,
                                 from_version: to - 1,
                             });
                         }
-                        migration = Some(MigrationAbi {
-                            method,
-                            to_schema_version: to,
-                        });
                     }
                 }
             }
@@ -828,7 +822,6 @@ pub fn emit_manifest_from_crate(
         methods: emitter.methods,
         events: emitter.events,
         state_root: emitter.state_type,
-        migration,
         state_version,
         migrations,
     };
@@ -890,7 +883,7 @@ mod migration_tests {
     use super::*;
 
     #[test]
-    fn emits_migration_for_derive_form() {
+    fn emits_migration_edge_for_derive_form() {
         let lib = r#"
             #[app::state(version = 2, emits = Event)]
             #[derive(app::Migrate)]
@@ -900,13 +893,13 @@ mod migration_tests {
             impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
         "#;
         let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
-        let mig = m.migration.expect("migration emitted");
-        assert_eq!(mig.method, "migrate_v1_to_v2");
-        assert_eq!(mig.to_schema_version, 2);
+        let edge = m.edge_from(1).expect("edge emitted");
+        assert_eq!(edge.method, "migrate_v1_to_v2");
+        assert_eq!(m.state_version_or_default(), 2);
     }
 
     #[test]
-    fn emits_migration_for_free_fn_form() {
+    fn emits_migration_edge_for_free_fn_form() {
         let lib = r#"
             #[app::state(version = 3)]
             pub struct State { x: u32 }
@@ -916,15 +909,14 @@ mod migration_tests {
             impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
         "#;
         let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
-        let mig = m.migration.expect("migration emitted");
-        assert_eq!(mig.method, "migrate_v2_to_v3");
-        assert_eq!(mig.to_schema_version, 3);
+        let edge = m.edge_from(2).expect("edge emitted");
+        assert_eq!(edge.method, "migrate_v2_to_v3");
+        assert_eq!(m.state_version_or_default(), 3);
     }
 
-    // Omitted `method = …` defaults to the VERSIONED name when the state
-    // declares a version (mirrors the derive macro): a bare `migrate` would
-    // collide across releases at the applied-marker layer. Unversioned
-    // states keep the legacy `migrate` default.
+    // Omitted `method = …` defaults to the VERSIONED name (mirrors the derive
+    // macro): a bare `migrate` would collide across releases and between two
+    // derives in one module.
     #[test]
     fn derive_without_explicit_method_defaults_to_versioned_name() {
         let lib = r#"
@@ -936,20 +928,10 @@ mod migration_tests {
             impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
         "#;
         let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
-        let mig = m.migration.expect("migration emitted");
-        assert_eq!(mig.method, "migrate_v1_to_v2");
-        assert_eq!(mig.to_schema_version, 2);
-
-        let lib = r#"
-            #[app::state]
-            #[derive(app::Migrate)]
-            #[migrate(from = OldState)]
-            pub struct State { x: u32 }
-            #[app::logic]
-            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
-        "#;
-        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
-        assert_eq!(m.migration.expect("migration emitted").method, "migrate");
+        assert_eq!(
+            m.edge_from(1).expect("edge emitted").method,
+            "migrate_v1_to_v2"
+        );
     }
 
     #[test]
@@ -964,14 +946,15 @@ mod migration_tests {
             impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
         "#;
         let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
-        let mig = m.migration.expect("migration emitted");
-        assert_eq!(mig.method, "migrate_v4_to_v5");
-        assert_eq!(mig.to_schema_version, 5);
+        assert_eq!(m.state_version, Some(5));
+        assert_eq!(
+            m.edge_from(4).expect("edge emitted").method,
+            "migrate_v4_to_v5"
+        );
     }
 
     // `state_version` is always emitted (default 1) so the upgrade decision
-    // table can compare versions even across code-only releases, and the edge
-    // list mirrors the legacy single `migration` for from = N-1.
+    // table can compare versions even across code-only releases.
     #[test]
     fn state_version_and_edges_always_emitted() {
         // Versioned migration build: version + one edge.
@@ -1001,9 +984,12 @@ mod migration_tests {
         assert_eq!(m.state_version, Some(2));
         assert!(m.migrations.is_empty());
 
-        // Unversioned `#[app::state]`: defaults to 1.
+        // Unversioned `#[app::state]`: defaults to 1, no edges even with a
+        // declared migrate (there is no prior version to hop from).
         let lib = r#"
             #[app::state]
+            #[derive(app::Migrate)]
+            #[migrate(from = OldState)]
             pub struct State { x: u32 }
             #[app::logic]
             impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
@@ -1022,6 +1008,6 @@ mod migration_tests {
             impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
         "#;
         let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
-        assert!(m.migration.is_none());
+        assert!(m.migrations.is_empty());
     }
 }

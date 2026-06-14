@@ -110,8 +110,13 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // pre-cascade alignment upgrade. A randomly-seeded app_key, which
         // is what this used to do, made every cascade silently skip the
         // descendant subtree.
-        let app_key =
-            app_key.unwrap_or_else(|| AppKey::from(*app_meta.bytecode.blob_id().as_ref()));
+        //
+        // A caller-provided app_key pins the group to a specific version;
+        // it is verified inside the async block below (blob present locally
+        // + manifest package matches the row's package).
+        let row_blob = *app_meta.bytecode.blob_id().as_ref();
+        let app_package = app_meta.package.clone();
+        let requested_app_key = app_key;
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
@@ -129,6 +134,15 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
+                let app_key = match requested_app_key {
+                    Some(requested) => {
+                        verify_requested_app_key(&node_client, &requested, row_blob, &app_package)
+                            .await?;
+                        requested
+                    }
+                    None => AppKey::from(row_blob),
+                };
+
                 // Local cache write
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -263,4 +277,36 @@ fn load_app_meta(
     handle
         .get(&key)?
         .ok_or_else(|| eyre::eyre!("application '{application_id}' not found"))
+}
+
+/// A caller-chosen `app_key` must point at locally-present bytecode of the
+/// SAME package as the group's application row — otherwise the group would
+/// bind to bytecode the node cannot execute, or to another app entirely.
+async fn verify_requested_app_key(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    app_key: &AppKey,
+    row_blob: [u8; 32],
+    expected_package: &str,
+) -> eyre::Result<()> {
+    let key_bytes = app_key.to_bytes();
+    if key_bytes == [0u8; 32] {
+        eyre::bail!("app_key must not be zero");
+    }
+    if key_bytes == row_blob {
+        return Ok(()); // the row's own blob is trivially valid
+    }
+    let blob_id = calimero_primitives::blobs::BlobId::from(key_bytes);
+    if !node_client.has_blob(&blob_id)? {
+        eyre::bail!("app_key blob '{blob_id}' is not present locally; install that version first");
+    }
+    let Some(manifest) = node_client.bundle_manifest_for_blob(&blob_id).await? else {
+        eyre::bail!("app_key blob '{blob_id}' is not an application bundle");
+    };
+    if manifest.package != expected_package {
+        eyre::bail!(
+            "app_key blob '{blob_id}' belongs to package '{}', expected '{expected_package}'",
+            manifest.package
+        );
+    }
+    Ok(())
 }

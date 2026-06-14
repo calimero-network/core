@@ -6,7 +6,7 @@ description: >
   unchanged under v2 — no migration function is required. v1's `Status`
   has {Active=0, Paused=1}; v2's `Status` is {Active=0, Paused=1,
   Archived=2}. The upgrade is `upgrade_group(group=subgroup, target=v2)`
-  with NO `migrate_method`. Topology: namespace + one Open subgroup +
+  (no caller-supplied method exists). Topology: namespace + one Open subgroup +
   one context in the subgroup.
 
   Negative assertion: before the upgrade, the v2-only setter

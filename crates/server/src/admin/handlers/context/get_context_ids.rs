@@ -29,7 +29,16 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
 
         match state.ctx_client.get_context(&context_id) {
             Ok(None) => {}
-            Ok(Some(context)) => {
+            Ok(Some(mut context)) => {
+                // Per-context executing version (activation marker) wins over
+                // the application row's latest-installed version.
+                if let Some(v) = state
+                    .ctx_client
+                    .executing_application_version(&context_id)
+                    .await
+                {
+                    context.application_version = Some(v);
+                }
                 let group_id = match state
                     .ctx_client
                     .get_group_for_context(GetGroupForContextRequest { context_id })

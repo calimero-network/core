@@ -1,18 +1,15 @@
 //! The per-context activation marker: which bytecode blob this context last
-//! ACTIVATED (a migration commit, or a code-only swap). One fact replaces the
-//! two legacy markers — the method-name row written after a migrate and the
-//! `blob:<hex>` synthetic row written after a code-only activation — so the
-//! sync gate, the lazy trigger, and the migration rollup all share a single
+//! ACTIVATED (a migration commit, or a code-only swap). One fact shared by
+//! the sync gate, the lazy trigger, and the migration rollup, with a single
 //! up-to-date rule: `marker == group.app_key`.
 
-use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::MigrationsRepository;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
-use calimero_store::key::GroupMetaValue;
+use calimero_store::key::LadderRung;
 use calimero_store::Store;
 use tracing::debug;
 
-/// The blob this context last activated, if the v2 marker is set.
+/// The blob this context last activated, if the marker is set.
 pub fn activated_blob(store: &Store, context_id: &ContextId) -> Option<[u8; 32]> {
     store
         .handle()
@@ -35,55 +32,31 @@ pub fn record_activation(store: &Store, context_id: &ContextId, blob: [u8; 32]) 
     }
 }
 
-/// The legacy `blob:<hex>` synthetic marker value for code-only activations
-/// (pre-v2 shape, kept for one release so mixed fleets converge).
-pub fn legacy_blob_marker(app_key: &[u8; 32]) -> String {
-    format!("blob:{}", hex::encode(app_key))
-}
-
-/// Activation state for a context, folding legacy markers forward on first
-/// read: returns the activated blob, consulting (in order) the v2 marker,
-/// then the legacy per-context migration row — which counts as "activated at
-/// the group's current app_key" when it matches either the group's recorded
-/// migrate method or the legacy `blob:` marker for the current app_key.
-/// A successful fold WRITES the v2 marker so subsequent reads are one get.
-///
-/// Zero `app_key` (legacy randomly-seeded groups): a matching legacy marker
-/// still answers `Some([0;32])` — callers compare against the same zero
-/// `meta.app_key`, reproducing the pre-v2 "marker matches method ⇒ applied"
-/// gate semantics exactly — but the zero value is never persisted (it carries
-/// no blob identity for the blob-keyed loading that builds on this marker).
-pub fn activated_blob_folding_legacy(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-    meta: &GroupMetaValue,
-) -> Option<[u8; 32]> {
-    if let Some(blob) = activated_blob(store, context_id) {
-        return Some(blob);
+/// The next upgrade rung a context bound to `bound` must replay from the
+/// group's ladder, or `None` when it is already at the group's current
+/// bytecode. The LAST occurrence of `bound` positions the context (an
+/// A→B→A re-pin means the group currently sits at the later A). A bound
+/// blob the ladder never recorded (creation version, or a pre-ladder
+/// upgrade target) starts from the first rung; an empty or stale ladder
+/// degrades to a single synthesized jump to the group's current target —
+/// exactly the pre-ladder behavior.
+pub fn next_rung(
+    ladder: &[LadderRung],
+    bound: [u8; 32],
+    group_app_key: [u8; 32],
+    group_target: ApplicationId,
+) -> Option<LadderRung> {
+    if bound == group_app_key {
+        return None;
     }
-    let legacy = MigrationsRepository::new(store)
-        .last_migration(group_id, context_id)
-        .ok()
-        .flatten()?;
-    let matches_method = meta
-        .migration
-        .as_ref()
-        .and_then(|bytes| core::str::from_utf8(bytes).ok())
-        .is_some_and(|method| legacy == method);
-    let matches_blob = legacy == legacy_blob_marker(&meta.app_key);
-    if matches_method || matches_blob {
-        // Return the equality answer either way, but never PERSIST a zero
-        // marker: a legacy randomly-seeded/zero app_key carries no real blob
-        // identity, and a stored zero would later read as "executes blob 0".
-        if meta.app_key != [0u8; 32] {
-            record_activation(store, context_id, meta.app_key);
-        }
-        return Some(meta.app_key);
+    let single_jump = LadderRung {
+        app_key: group_app_key,
+        application_id: group_target,
+    };
+    match ladder.iter().rposition(|r| r.app_key == bound) {
+        Some(i) => Some(ladder.get(i + 1).cloned().unwrap_or(single_jump)),
+        None => Some(ladder.first().cloned().unwrap_or(single_jump)),
     }
-    // A stale legacy marker (older method / older blob) carries no usable
-    // blob information — the context predates the current upgrade.
-    None
 }
 
 #[cfg(test)]
@@ -98,20 +71,86 @@ mod tests {
         Store::new(Arc::new(InMemoryDB::owned()))
     }
 
-    fn meta(app_key: [u8; 32], migration: Option<&str>) -> GroupMetaValue {
-        use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::UpgradePolicy;
-        use calimero_primitives::identity::PublicKey;
-        GroupMetaValue {
-            app_key,
-            target_application_id: ApplicationId::from([0xEE; 32]),
-            upgrade_policy: UpgradePolicy::LazyOnAccess,
-            created_at: 1_700_000_000,
-            admin_identity: PublicKey::from([0xAD; 32]),
-            owner_identity: PublicKey::from([0xAD; 32]),
-            migration: migration.map(|s| s.as_bytes().to_vec()),
-            auto_join: true,
+    fn rung(byte: u8) -> LadderRung {
+        LadderRung {
+            app_key: [byte; 32],
+            application_id: ApplicationId::from([byte; 32]),
         }
+    }
+
+    const TARGET: [u8; 32] = [0x09; 32];
+
+    fn target_id() -> ApplicationId {
+        ApplicationId::from(TARGET)
+    }
+
+    #[test]
+    fn up_to_date_returns_none() {
+        // Even with a populated ladder, bound == group app_key is terminal.
+        let ladder = vec![rung(0x01), rung(0x09)];
+        assert_eq!(next_rung(&ladder, TARGET, TARGET, target_id()), None);
+    }
+
+    #[test]
+    fn mid_ladder_returns_next() {
+        let ladder = vec![rung(0x01), rung(0x02), rung(0x09)];
+        assert_eq!(
+            next_rung(&ladder, [0x01; 32], TARGET, target_id()),
+            Some(rung(0x02))
+        );
+        assert_eq!(
+            next_rung(&ladder, [0x02; 32], TARGET, target_id()),
+            Some(rung(0x09))
+        );
+    }
+
+    #[test]
+    fn bound_not_in_ladder_starts_at_first_rung() {
+        // A context still at its creation version: the ladder only records
+        // upgrade targets, so the creation blob is never in it.
+        let ladder = vec![rung(0x02), rung(0x09)];
+        assert_eq!(
+            next_rung(&ladder, [0x77; 32], TARGET, target_id()),
+            Some(rung(0x02))
+        );
+    }
+
+    #[test]
+    fn empty_ladder_synthesizes_single_jump() {
+        // Pre-ladder group: degrade to today's one-jump-to-target behavior.
+        assert_eq!(
+            next_rung(&[], [0x77; 32], TARGET, target_id()),
+            Some(LadderRung {
+                app_key: TARGET,
+                application_id: target_id(),
+            })
+        );
+    }
+
+    #[test]
+    fn last_occurrence_positions_the_context() {
+        // A→B→A→C: a context bound at A sits at the LATER A (the group
+        // re-pinned A as its third upgrade), so its next hop is C.
+        let ladder = vec![rung(0x01), rung(0x02), rung(0x01), rung(0x09)];
+        assert_eq!(
+            next_rung(&ladder, [0x01; 32], TARGET, target_id()),
+            Some(rung(0x09))
+        );
+    }
+
+    #[test]
+    fn stale_ladder_top_synthesizes_single_jump() {
+        // Bound is the ladder's last rung but the group meta already points
+        // past it (fold raced ahead of the ladder, or pre-ladder upgrade):
+        // degrade to the single jump rather than walking nowhere.
+        let ladder = vec![rung(0x01), rung(0x02)];
+        assert_eq!(
+            next_rung(&ladder, [0x02; 32], TARGET, target_id()),
+            Some(LadderRung {
+                app_key: TARGET,
+                application_id: target_id(),
+            })
+        );
     }
 
     #[test]
@@ -124,54 +163,5 @@ mod tests {
         // Moves forward on re-activation.
         record_activation(&store, &ctx, [8u8; 32]);
         assert_eq!(activated_blob(&store, &ctx), Some([8u8; 32]));
-    }
-
-    #[test]
-    fn folds_legacy_method_marker_forward() {
-        let store = store();
-        let gid = ContextGroupId::from([2u8; 32]);
-        let ctx = ContextId::from([3u8; 32]);
-        let m = meta([9u8; 32], Some("migrate_v1_to_v2"));
-        MigrationsRepository::new(&store)
-            .set_last_migration(&gid, &ctx, "migrate_v1_to_v2")
-            .expect("set legacy marker");
-
-        assert_eq!(
-            activated_blob_folding_legacy(&store, &gid, &ctx, &m),
-            Some([9u8; 32])
-        );
-        // Fold persisted the v2 marker.
-        assert_eq!(activated_blob(&store, &ctx), Some([9u8; 32]));
-    }
-
-    #[test]
-    fn folds_legacy_blob_marker_forward() {
-        let store = store();
-        let gid = ContextGroupId::from([4u8; 32]);
-        let ctx = ContextId::from([5u8; 32]);
-        let m = meta([0xAB; 32], None);
-        MigrationsRepository::new(&store)
-            .set_last_migration(&gid, &ctx, &legacy_blob_marker(&[0xAB; 32]))
-            .expect("set legacy marker");
-
-        assert_eq!(
-            activated_blob_folding_legacy(&store, &gid, &ctx, &m),
-            Some([0xAB; 32])
-        );
-    }
-
-    #[test]
-    fn stale_legacy_marker_does_not_fold() {
-        let store = store();
-        let gid = ContextGroupId::from([6u8; 32]);
-        let ctx = ContextId::from([7u8; 32]);
-        // Group has moved on: method recorded is the OLD release's.
-        let m = meta([0xCD; 32], Some("migrate_v2_to_v3"));
-        MigrationsRepository::new(&store)
-            .set_last_migration(&gid, &ctx, "migrate_v1_to_v2")
-            .expect("set legacy marker");
-
-        assert_eq!(activated_blob_folding_legacy(&store, &gid, &ctx, &m), None);
-        assert_eq!(activated_blob(&store, &ctx), None);
     }
 }

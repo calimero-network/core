@@ -3,7 +3,7 @@ use std::collections::{btree_map, BTreeMap};
 use std::mem;
 use std::sync::Arc;
 
-use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
+use actix::{ActorFutureExt, ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_client::messages::{CreateContextRequest, CreateContextResponse};
@@ -90,7 +90,35 @@ impl Handler<CreateContextRequest> for ContextManager {
         let mut context_meta = context.meta.clone();
         context_meta.service_name = service_name;
 
-        let module_task = self.get_module(application.id, context_meta.service_name.clone());
+        // Per-context binding from birth: a group pinned to a version (its
+        // app_key differs from the row blob) must run `init` with THAT
+        // bytecode, or the new context's state would start on a schema its
+        // group never targeted. Zero/legacy keys and absent blobs fall back
+        // to the application row.
+        let pinned_blob = MetaRepository::new(&self.datastore)
+            .load(&group_id)
+            .ok()
+            .flatten()
+            .map(|m| m.app_key)
+            .filter(|k| *k != [0u8; 32])
+            .map(calimero_primitives::blobs::BlobId::from)
+            .filter(|b| self.node_client.has_blob(b).unwrap_or(false));
+        // The blob this context inits with — recorded as its birth activation
+        // marker on success, so every new context is positioned on its
+        // group's upgrade ladder from day one (a marker-less context can only
+        // take the legacy single-jump lazy path).
+        let birth_blob: [u8; 32] = pinned_blob
+            .as_ref()
+            .map(|b| *b.as_ref())
+            .unwrap_or_else(|| *application.blob.bytecode.as_ref());
+        let module_task = match pinned_blob {
+            Some(blob) => self
+                .get_module_for_blob(blob, context_meta.service_name.clone())
+                .boxed_local(),
+            None => self
+                .get_module(application.id, context_meta.service_name.clone())
+                .boxed_local(),
+        };
 
         let context_meta_for_map_ok = context_meta.clone();
         let context_meta_for_map_err = context_meta.clone();
@@ -119,6 +147,11 @@ impl Handler<CreateContextRequest> for ContextManager {
                     .into_actor(act)
                 })
                 .map_ok(move |root_hash, act, _ctx| {
+                    crate::activation::record_activation(
+                        &act.datastore,
+                        &context_meta_for_map_ok.id,
+                        birth_blob,
+                    );
                     if let Some(meta) = act.contexts.get_mut(&context_meta_for_map_ok.id) {
                         // this should almost always exist, but with an LruCache, it
                         // may not. And if it's been evicted, the next execution will

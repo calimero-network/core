@@ -58,6 +58,33 @@ impl Report for InstallApplicationResponse {
     }
 }
 
+impl Report for calimero_server_primitives::admin::ListApplicationVersionsResponse {
+    fn report(&self) {
+        if self.data.is_empty() {
+            println!("No locally retained versions found");
+            return;
+        }
+        let mut table = Table::new();
+        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
+        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        let _ = table.set_header(vec![
+            Cell::new("Version").fg(Color::Blue),
+            Cell::new("Package").fg(Color::Blue),
+            Cell::new("Blob").fg(Color::Blue),
+            Cell::new("Size").fg(Color::Blue),
+        ]);
+        for entry in &self.data {
+            let _ = table.add_row(vec![
+                &entry.version,
+                &entry.package,
+                &entry.blob_id,
+                &entry.size.to_string(),
+            ]);
+        }
+        println!("{table}");
+    }
+}
+
 impl Report for ListApplicationsResponse {
     fn report(&self) {
         if self.data.apps.is_empty() {

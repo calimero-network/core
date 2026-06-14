@@ -82,13 +82,6 @@ impl<K: Ord + Clone + Debug, V: Evictable> BoundedCache<K, V> {
         self.map.remove(key)
     }
 
-    /// Drop every entry for which `keep` returns `false`. Used for bulk
-    /// invalidation (e.g. dropping all compiled modules of an updated
-    /// application), which is independent of the size cap.
-    pub(crate) fn retain(&mut self, keep: impl FnMut(&K, &mut V) -> bool) {
-        self.map.retain(keep);
-    }
-
     /// Raw entry access, for the one caller (`create_context`) that needs a
     /// `VacantEntry` to satisfy a borrow-checker workaround.
     ///

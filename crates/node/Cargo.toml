@@ -55,6 +55,7 @@ calimero-utils-actix.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+calimero-wasm-abi.workspace = true
 calimero-dag = { workspace = true, features = ["testing"] }
 # `test-utils` pulls in `Stream::test_pair()` so the sync mocks can
 # script a successful `open_stream` (`Ok(Stream)`). Dev-only edge:

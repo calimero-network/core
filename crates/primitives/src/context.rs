@@ -124,6 +124,11 @@ pub struct Context {
     /// serde-default so older payloads deserialize unchanged.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub application_version: Option<String>,
+    /// Human-readable context name from the owning group's metadata record,
+    /// when one was set. Optional + serde-default so older payloads
+    /// deserialize unchanged.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
 }
 
 impl Context {
@@ -143,6 +148,7 @@ impl Context {
             root_hash,
             dag_heads: Vec::new(),
             application_version: None,
+            name: None,
         }
     }
 
@@ -161,6 +167,7 @@ impl Context {
             root_hash,
             dag_heads,
             application_version: None,
+            name: None,
         }
     }
 
@@ -180,12 +187,18 @@ impl Context {
             root_hash,
             dag_heads,
             application_version: None,
+            name: None,
         }
     }
 
     /// Sets the resolved application semver (builder-style; `Context` is
     /// `#[non_exhaustive]`, so callers in other crates set it via this method).
     #[must_use]
+    pub fn with_name(mut self, name: Option<String>) -> Self {
+        self.name = name;
+        self
+    }
+
     pub fn with_application_version(mut self, application_version: Option<String>) -> Self {
         self.application_version = application_version;
         self

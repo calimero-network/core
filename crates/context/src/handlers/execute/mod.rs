@@ -1,5 +1,5 @@
 use calimero_governance_store::{
-    CapabilitiesRepository, GroupKeyring, MigrationsRepository, NamespaceRepository,
+    CapabilitiesRepository, GroupKeyring, MetaRepository, NamespaceRepository,
 };
 use std::borrow::Cow;
 // Removed: NonZeroUsize (replaced with CausalDelta)
@@ -43,14 +43,12 @@ use calimero_wasm_abi::schema::MethodIntent;
 use either::Either;
 use eyre::{bail, WrapErr};
 use futures_util::future::TryFutureExt;
-use futures_util::io::Cursor;
 use memchr::memmem;
 use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::update_application::{
-    clear_executing_blob_pin, create_storage_callbacks, update_application_id,
-    update_application_with_migration,
+    create_storage_callbacks, update_application_id, update_application_with_migration,
 };
 use crate::ContextManager;
 use calimero_governance_store::metrics::ExecutionLabels;
@@ -64,8 +62,8 @@ use governance_position::compute_governance_position_for_context;
 pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions};
 use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
 use upgrade_gate::{
-    activation_marker, maybe_lazy_upgrade, resolve_producing_app_key, should_block,
-    upgrade_blocks_write, upgrade_rejects_committed_write,
+    maybe_lazy_upgrade, resolve_producing_app_key, should_block, upgrade_blocks_write,
+    upgrade_rejects_committed_write, LazyUpgradeAction,
 };
 
 impl Handler<ExecuteRequest> for ContextManager {
@@ -125,8 +123,19 @@ impl Handler<ExecuteRequest> for ContextManager {
             let Some(cm) = self.contexts.get(&context_id) else {
                 break 'ro false; // not cached yet — conservative write lock
             };
-            let key = (cm.meta.application_id, cm.meta.service_name.clone());
-            let Some(set) = self.read_only_methods.get(&key).cloned() else {
+            let application_id = cm.meta.application_id;
+            let service_name = cm.meta.service_name.clone();
+            // Blob-keyed lookup: the read-only sets are keyed by the executing
+            // bytecode blob (per-context binding), with the cached row blob as
+            // fallback. A miss defaults to the write lock (fail-safe).
+            let Some(blob) = self.executing_blob_for_context(&context_id).or_else(|| {
+                self.applications
+                    .get(&application_id)
+                    .map(|app| app.blob.bytecode)
+            }) else {
+                break 'ro false;
+            };
+            let Some(set) = self.read_only_methods.get(&(blob, service_name)).cloned() else {
                 break 'ro false;
             };
             set.contains(method.as_str())
@@ -461,83 +470,72 @@ impl Handler<ExecuteRequest> for ContextManager {
         // context_task future can call update_application_id / update_application_with_migration
         // directly without routing through the actor mailbox (which would deadlock while an
         // ActorFuture is in flight on the same actor).
-        let lazy_upgrade_task = guard_task.map(move |guard, act, _ctx| {
-            if let Some((target_app_id, migrate_method, group_id, target_app_key)) =
-                lazy_upgrade_params
-            {
-                info!(
-                    %context_id,
-                    %target_app_id,
-                    %executor,
-                    "performing lazy upgrade before execution"
-                );
-                let datastore = act.datastore.clone();
-                let node_client = act.node_client.clone();
-                let context_client = act.context_client.clone();
-                let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
-                let application = act.applications.get(&target_app_id).cloned();
-                return Ok(Either::Right((
-                    guard,
-                    datastore,
-                    node_client,
-                    context_client,
-                    context_id,
-                    target_app_id,
-                    context_meta,
-                    application,
-                    migrate_method,
-                    group_id,
-                    target_app_key,
-                )));
+        let lazy_upgrade_task = guard_task.map(move |guard, _act, _ctx| {
+            if let Some(action) = lazy_upgrade_params {
+                info!(%context_id, %executor, "performing lazy upgrade before execution");
+                return Ok(Either::Right((guard, action)));
             }
             Ok(Either::Left(guard))
         });
 
         let context_task = lazy_upgrade_task.and_then(move |either, act, _ctx| {
-            match either {
-                Either::Left(guard) => async move { Ok(guard) }.into_actor(act).boxed_local(),
-                Either::Right((
-                    guard,
-                    datastore,
-                    node_client,
-                    context_client,
-                    cid,
-                    target_app,
-                    context_meta,
-                    application,
-                    migrate,
-                    group_id,
+            let (guard, action) = match either {
+                Either::Left(guard) => {
+                    return async move { Ok(guard) }.into_actor(act).boxed_local()
+                }
+                Either::Right(parts) => parts,
+            };
+            match action {
+                // Marker-ed context: replay the group's upgrade ladder hop by
+                // hop, re-resolving after each committed hop. The per-access
+                // budget bounds a pathological marker-write failure loop; a
+                // longer ladder resumes on the next access from the last
+                // committed rung.
+                LazyUpgradeAction::Replay { .. } => {
+                    act.replay_upgrade_ladder(
+                        guard,
+                        context_id,
+                        executor,
+                        ContextManager::LADDER_HOP_BUDGET,
+                    )
+                }
+                // Marker-less context: the pre-ladder single jump to the
+                // group's current target, method from the group-level hint.
+                LazyUpgradeAction::SingleJump {
+                    target_application_id: target_app,
+                    migrate_method: migrate,
                     target_app_key,
-                )) => {
+                } => {
+                    let datastore = act.datastore.clone();
+                    let node_client = act.node_client.clone();
+                    let context_client = act.context_client.clone();
+                    let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
+                    let application = act.applications.get(&target_app).cloned();
+                    let cid = context_id;
                     if let Some(method) = migrate {
                         let migration_params = MigrationParams { method: method.clone() };
                         let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
-                        // Bundle apps keep a version-stable ApplicationId, so the
-                        // bytecode installed under `target_app` can still be the OLD
-                        // version. Fetch + install the group's target blob first;
-                        // otherwise get_module would compile v1 and the migrate
-                        // would no-op/fail.
+                        // The migrate must execute the TARGET bytecode. Load it
+                        // straight from the group's recorded target blob
+                        // (fetching from peers when absent) — the application
+                        // row is a download cache and may still hold the
+                        // previous version.
                         let blob_node_client = node_client.clone();
                         async move {
-                            ensure_target_blob_installed(
-                                &blob_node_client,
-                                &cid,
-                                &target_app,
-                                target_app_key,
-                            )
-                            .await
+                            ensure_blob_local(&blob_node_client, &cid, target_app_key).await
                         }
                         .into_actor(act)
-                        .then(move |_row_holds_target, act, _ctx| {
-                            // The target id is version-stable for bundles, so the
-                            // (application_id, service)-keyed caches may hold the
-                            // PREVIOUS version's module — whether the new bytecode
-                            // arrived via the fetch above or an earlier in-place
-                            // admin install. Evict unconditionally: a lazy
-                            // migration runs once per context, so one recompile
-                            // is irrelevant.
-                            act.evict_application_caches(target_app);
-                            act.get_module(target_app, service_name)
+                        .then(move |blob_local, act, _ctx| {
+                            if blob_local {
+                                act.get_module_for_blob(target_app_key.into(), service_name)
+                                    .boxed_local()
+                            } else {
+                                // Legacy groups (randomly-seeded app_key that
+                                // resolves to no blob) and failed fetches: the
+                                // row's bytecode is the only available truth.
+                                act.evict_application_caches(target_app);
+                                act.get_module(target_app, service_name).boxed_local()
+                            }
                         })
                             .then(move |module_result, act, _ctx| {
                                 // Re-read cached values; they may have been refreshed during load
@@ -566,23 +564,12 @@ impl Handler<ExecuteRequest> for ContextManager {
                                                 Ok(_) => {
                                                     // Unified activation marker: the single
                                                     // up-to-date signal for the gate, the lazy
-                                                    // trigger, and the rollup. The legacy
-                                                    // method-name marker is still written for one
-                                                    // release so pre-v2 peers' gates converge.
+                                                    // trigger, and the rollup.
                                                     crate::activation::record_activation(
                                                         &datastore,
                                                         &cid,
                                                         target_app_key,
                                                     );
-                                                    if let Err(err) =
-                                                        MigrationsRepository::new(&datastore).set_last_migration(&group_id, &cid, &method, )
-                                                    {
-                                                        warn!(
-                                                            %cid,
-                                                            %err,
-                                                            "failed to record migration marker"
-                                                        );
-                                                    }
                                                 }
                                                 Err(err) => {
                                                     warn!(
@@ -609,59 +596,29 @@ impl Handler<ExecuteRequest> for ContextManager {
                             })
                             .boxed_local()
                     } else {
-                        // No migration. A same-id (bundle) code-only bump must
-                        // first activate the target bytecode: fetch it if
-                        // needed (sync pre-stages it, but a peer can also
-                        // serve it on demand), install it in place under the
-                        // unchanged id, and drop stale caches. `true` only
-                        // when the row verifiably holds the target blob — a
-                        // failed fetch/install must NOT record the activation
-                        // marker, or the lazy trigger would stop retrying
-                        // while the node still runs the old build.
+                        // No migration. A same-id (bundle) code-only bump
+                        // activates by marker move alone: fetch the target
+                        // blob if absent (sync pre-stages it, but a peer can
+                        // also serve it on demand) and record the activation.
+                        // The application row is never reinstalled — the
+                        // per-context binding decides what executes. A failed
+                        // fetch must NOT record the marker, or the lazy
+                        // trigger would stop retrying while the node still
+                        // runs the old build.
                         let blob_node_client = node_client.clone();
                         async move {
-                            ensure_target_blob_installed(
-                                &blob_node_client,
-                                &cid,
-                                &target_app,
-                                target_app_key,
-                            )
-                            .await
+                            ensure_blob_local(&blob_node_client, &cid, target_app_key).await
                         }
                         .into_actor(act)
                         .then(move |blob_available, act, _ctx| {
                             if blob_available {
-                                // Activate: the row now holds the target
-                                // bytecode — drop the stale caches so the next
-                                // load compiles it (an in-place install may
-                                // have flipped the row long before this
-                                // upgrade), release any executing-blob pin,
-                                // and record the per-context marker that stops
-                                // the lazy trigger from re-firing. A missing
-                                // blob (not yet staged, or a legacy random
-                                // app_key that never resolves) changes
-                                // nothing — caches stay warm.
+                                // Drop the cached application row so the
+                                // update below re-reads it fresh.
                                 act.evict_application_caches(target_app);
-                                clear_executing_blob_pin(&act.datastore, cid);
-                                crate::activation::record_activation(
-                                    &act.datastore,
-                                    &cid,
-                                    target_app_key,
-                                );
-                                // Legacy blob: marker still written for one release so
-                                // pre-v2 peers' gates converge.
-                                if let Err(err) = MigrationsRepository::new(&act.datastore)
-                                    .set_last_migration(
-                                        &group_id,
-                                        &cid,
-                                        &activation_marker(&target_app_key),
-                                    )
-                                {
-                                    warn!(%cid, %err, "failed to record activation marker");
-                                }
                             }
+                            let marker_datastore = act.datastore.clone();
                             async move {
-                                if let Err(err) = update_application_id(
+                                match update_application_id(
                                     datastore,
                                     node_client,
                                     context_client,
@@ -673,12 +630,28 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 )
                                 .await
                                 {
-                                    warn!(
-                                        %cid,
-                                        %target_app,
-                                        %err,
-                                        "lazy upgrade failed, proceeding with current application"
-                                    );
+                                    Ok(_) if blob_available => {
+                                        // Marker AFTER the flip: the update
+                                        // records the row's blob, which for a
+                                        // same-id bump may still be the
+                                        // previous version — the group target
+                                        // (what this context executes now)
+                                        // must win.
+                                        crate::activation::record_activation(
+                                            &marker_datastore,
+                                            &cid,
+                                            target_app_key,
+                                        );
+                                    }
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        warn!(
+                                            %cid,
+                                            %target_app,
+                                            %err,
+                                            "lazy upgrade failed, proceeding with current application"
+                                        );
+                                    }
                                 }
                                 Ok(guard)
                             }
@@ -702,23 +675,14 @@ impl Handler<ExecuteRequest> for ContextManager {
             });
 
         let module_task = context_task.and_then(move |(guard, context), act, _ctx| {
-            // A logically-aborted migration leaves this context's state on
-            // the OLD schema while the (version-stable bundle id) application
-            // row may already hold the NEW bytecode — honor the executing-blob
-            // pin so reads keep running the code the state was written under.
-            // Per-execution cost: one point-get on a dedicated, near-empty
-            // column family (pins exist only between an abort and the next
-            // successful migrate) — bloom-filtered to a memtable miss, noise
-            // next to the wasm call it precedes.
-            let pinned = act
-                .datastore
-                .handle()
-                .get(&calimero_store::key::ContextExecutingBlob::new(context.id))
-                .ok()
-                .flatten();
-            let module_fut = match pinned {
-                Some(pin) => act
-                    .get_pinned_module(pin.blob, context.service_name.clone())
+            // Per-context bytecode binding: a context executes the blob its
+            // activation marker points at, else the blob its group's
+            // `app_key` points at, else the application row (non-group
+            // contexts, legacy groups). Cost: a couple of bloom-filtered
+            // point-gets, noise next to the wasm call they precede.
+            let module_fut = match act.executing_blob_for_context(&context.id) {
+                Some(blob) => act
+                    .get_module_for_blob(blob, context.service_name.clone())
                     .boxed_local(),
                 None => act
                     .get_module(context.application_id, context.service_name.clone())
@@ -741,17 +705,26 @@ impl Handler<ExecuteRequest> for ContextManager {
             // The module load just above populated `xcall_methods` on the
             // fresh-compile path, so a PRESENT set reliably means the app opted
             // in — deny any method not in it. An ABSENT set means the app declared
-            // none, OR the set was not parsed for this load (the precompiled-
-            // artifact path and the executing-blob pin path don't re-read the wasm
-            // ABI section) or was evicted; L3 then cannot decide and falls through
-            // to the always-on L1 namespace boundary. L3 is opt-in defence-in-depth,
-            // not the primary trust boundary.
+            // none, OR the set was not parsed for this load (the cached-module
+            // path doesn't re-read the wasm ABI section); L3 then cannot decide
+            // and falls through to the always-on L1 namespace boundary. L3 is
+            // opt-in defence-in-depth, not the primary trust boundary.
+            //
+            // Keyed by the executing bytecode blob (per-context binding), with
+            // the cached application row blob as fallback — mirrors the
+            // read-only lookup above and the module cache key exactly.
+            let xcall_blob = act.executing_blob_for_context(&context.id).or_else(|| {
+                act.applications
+                    .get(&context.application_id)
+                    .map(|app| app.blob.bytecode)
+            });
             let xcall_denied = xcall_origin.is_some()
                 && !is_state_op
-                && act
-                    .xcall_methods
-                    .get(&(context.application_id, context.service_name.clone()))
-                    .is_some_and(|set| !set.contains(method.as_str()));
+                && xcall_blob.is_some_and(|blob| {
+                    act.xcall_methods
+                        .get(&(blob, context.service_name.clone()))
+                        .is_some_and(|set| !set.contains(method.as_str()))
+                });
 
             // Cheap (Arc-backed) clone kept past internal_execute (which moves
             // `datastore`) so a post-call migrate_my_entries can refresh the
@@ -1219,311 +1192,229 @@ impl Handler<ExecuteRequest> for ContextManager {
 }
 
 impl ContextManager {
+    /// Load the module for `application_id` via its row: resolve the row's
+    /// top-level bytecode blob (the bundle blob for bundles, the raw wasm
+    /// blob otherwise) and delegate to [`Self::get_module_for_blob`]. The
+    /// row is a download-cache pointer ("latest fetched") — contexts bound
+    /// to a specific version load through their blob directly.
+    /// Max ladder hops one access replays — bounds a pathological
+    /// marker-write failure loop; ladders are realistically 1-3 rungs and a
+    /// longer one resumes on the next access from the last committed rung.
+    const LADDER_HOP_BUDGET: u8 = 8;
+
+    /// Replay the group's upgrade ladder for one context: each rung runs in
+    /// that release's own bytecode, with its method resolved from the two
+    /// blobs' embedded ABIs — the group-level migration hint is never
+    /// executed here, since it describes only the group's most recent hop.
+    /// A blocked or failed hop stops the walk and the call proceeds on the
+    /// context's current version; activation is recorded per committed hop,
+    /// so the next access resumes from a real version. `budget` bounds one
+    /// access's hops (a longer ladder simply resumes on the next access).
+    fn replay_upgrade_ladder(
+        &mut self,
+        guard: ContextGuard,
+        context_id: ContextId,
+        executor: PublicKey,
+        budget: u8,
+    ) -> actix::fut::LocalBoxActorFuture<Self, eyre::Result<ContextGuard>> {
+        use calimero_governance_store::{get_group_for_context, UpgradeLadderRepository};
+
+        let datastore = self.datastore.clone();
+        let next = get_group_for_context(&datastore, &context_id)
+            .ok()
+            .flatten()
+            .and_then(|gid| {
+                let meta = MetaRepository::new(&datastore).load(&gid).ok().flatten()?;
+                let bound = crate::activation::activated_blob(&datastore, &context_id)?;
+                let ladder = UpgradeLadderRepository::new(&datastore)
+                    .load(&gid)
+                    .unwrap_or_default();
+                crate::activation::next_rung(
+                    &ladder,
+                    bound,
+                    meta.app_key,
+                    meta.target_application_id,
+                )
+                .map(|rung| (rung, bound))
+            });
+
+        let Some((rung, bound)) = next else {
+            return async move { Ok(guard) }.into_actor(self).boxed_local();
+        };
+        if budget == 0 {
+            warn!(%context_id, "ladder hop budget exhausted; resuming on next access");
+            return async move { Ok(guard) }.into_actor(self).boxed_local();
+        }
+
+        let rung_app_key = rung.app_key;
+        let rung_application_id = rung.application_id;
+
+        info!(
+            %context_id,
+            from = %hex::encode(bound),
+            to = %hex::encode(rung_app_key),
+            "replaying upgrade ladder hop"
+        );
+
+        let node_client = self.node_client.clone();
+        async move {
+            // Binding a marker to an absent blob would wedge the context, so
+            // the blob must be local (fetched from peers if needed) before
+            // anything else.
+            if !ensure_blob_local(&node_client, &context_id, rung_app_key).await {
+                eyre::bail!("rung bytecode blob not available locally or from peers");
+            }
+            crate::handlers::upgrade_group::resolve_upgrade_from_abis(
+                &node_client,
+                bound,
+                rung_app_key,
+            )
+            .await
+        }
+        .into_actor(self)
+        .then(move |resolved, act, _ctx| {
+            let migration = match resolved {
+                Ok(m) => m,
+                Err(err) => {
+                    warn!(
+                        %context_id, %err,
+                        "ladder hop blocked; proceeding with current application"
+                    );
+                    return async move { Ok(guard) }.into_actor(act).boxed_local();
+                }
+            };
+            let datastore = act.datastore.clone();
+            let node_client = act.node_client.clone();
+            let context_client = act.context_client.clone();
+            let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
+
+            if let Some(params) = migration {
+                let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
+                let migration_v2 = act.config.migration_v2;
+                act.get_module_for_blob(rung_app_key.into(), service_name)
+                    .then(move |module_result, act, _ctx| {
+                        // Re-read cached values; they may have been refreshed
+                        // during the module load.
+                        let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
+                        let application = act.applications.get(&rung_application_id).cloned();
+                        async move {
+                            let module = module_result?;
+                            let _ = update_application_with_migration(
+                                datastore.clone(),
+                                node_client,
+                                context_client,
+                                context_id,
+                                context_meta,
+                                rung_application_id,
+                                application,
+                                executor,
+                                Some(params),
+                                module,
+                                migration_v2,
+                            )
+                            .await?;
+                            crate::activation::record_activation(
+                                &datastore,
+                                &context_id,
+                                rung_app_key,
+                            );
+                            Ok(())
+                        }
+                        .into_actor(act)
+                        .then(move |hop: eyre::Result<()>, act, _ctx| match hop {
+                            Ok(()) => {
+                                act.replay_upgrade_ladder(guard, context_id, executor, budget - 1)
+                            }
+                            Err(err) => {
+                                warn!(
+                                    %context_id, %err,
+                                    "ladder hop failed, proceeding with current application"
+                                );
+                                async move { Ok(guard) }.into_actor(act).boxed_local()
+                            }
+                        })
+                        .boxed_local()
+                    })
+                    .boxed_local()
+            } else {
+                // Code-only rung: no wasm runs — flip the application id and
+                // move the marker.
+                act.evict_application_caches(rung_application_id);
+                let application = act.applications.get(&rung_application_id).cloned();
+                async move {
+                    let _ = update_application_id(
+                        datastore.clone(),
+                        node_client,
+                        context_client,
+                        context_id,
+                        context_meta,
+                        rung_application_id,
+                        application,
+                        executor,
+                    )
+                    .await?;
+                    crate::activation::record_activation(&datastore, &context_id, rung_app_key);
+                    Ok(())
+                }
+                .into_actor(act)
+                .then(move |hop: eyre::Result<()>, act, _ctx| match hop {
+                    Ok(()) => act.replay_upgrade_ladder(guard, context_id, executor, budget - 1),
+                    Err(err) => {
+                        warn!(
+                            %context_id, %err,
+                            "ladder hop failed, proceeding with current application"
+                        );
+                        async move { Ok(guard) }.into_actor(act).boxed_local()
+                    }
+                })
+                .boxed_local()
+            }
+        })
+        .boxed_local()
+    }
+
     pub fn get_module(
         &self,
         application_id: ApplicationId,
         service_name: Option<String>,
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
-        let service_name_for_bytes = service_name.clone();
-        let service_name_for_cache = service_name.clone();
-        let blob_task = async {}.into_actor(self).map(move |_, act, _ctx| {
-            // Fast path: a compiled module is already cached for this
-            // (application_id, service_name) key. Every `get_module`
-            // call previously paid ~5% CPU to run
-            // `Engine::from_precompiled` (wasmer artifact deserialize)
-            // even though the same bytes were being deserialized. Serve
-            // the cached Module (cheap Arc clone) and skip the entire
-            // blob-fetch / deserialize path. Cache entries are
-            // invalidated in `update_application` / migration sites.
-            if let Some(cached) = act
-                .modules
-                .get(&(application_id, service_name_for_cache.clone()))
-            {
-                return Ok(CachedOrBlob::Cached(cached.clone()));
-            }
-
-            // Fetch on a cache miss *before* inserting (so a not-installed app
-            // never wastes an eviction); `insert_new` caps the cache. This
-            // `get_module` path is the dominant `applications` insert site on a
-            // long-running node, so it must honour the cap too.
-            if !act.applications.contains_key(&application_id) {
-                let Some(app) = act.node_client.get_application(&application_id)? else {
-                    bail!(ExecuteError::ApplicationNotInstalled { application_id });
-                };
-                let _ = act.applications.insert_new(application_id, app);
-            }
-            let app = act
-                .applications
-                .get(&application_id)
-                .expect("application just inserted or already cached");
-
-            let blob = app
-                .resolve_service_blob(service_name.as_deref())
-                .ok_or_else(|| {
-                    eyre::eyre!(
-                        "service '{}' not found in application {} (available: {})",
-                        service_name.as_deref().unwrap_or("<none>"),
-                        application_id,
-                        if app.services.is_empty() {
-                            "<single-service>".to_owned()
-                        } else {
-                            app.services
-                                .keys()
-                                .map(String::as_str)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        }
-                    )
-                })?;
-
-            Ok(CachedOrBlob::Blob(blob))
-        });
-
-        let module_task = blob_task.and_then(move |cached_or_blob, act, _ctx| {
-            let node_client = act.node_client.clone();
-            // Operator-configured limits, baked into the engine that compiles
-            // or deserializes the module here and applied at execution time.
-            let vm_limits = act.vm_limits;
-
-            async move {
-                let mut blob = match cached_or_blob {
-                    // Fast path: cache hit. Skip blob fetch + deserialize
-                    // + compile. `blob_info = None` signals the post-task
-                    // closure below that there's nothing new to write
-                    // back into `applications` or the module cache.
-                    CachedOrBlob::Cached(module) => return Ok((module, None)),
-                    CachedOrBlob::Blob(blob) => blob,
-                };
-
-                // Staleness anchor for the `map_ok` below. Captures the
-                // blob_id we loaded from *before* any recompile rewrites
-                // `blob.compiled`. A concurrent `update_application`
-                // migration between now and `map_ok` would evict and
-                // repopulate `applications[app_id]` with a different
-                // blob_id — the post-task closure compares against this
-                // anchor and drops both the blob writeback and the
-                // module cache insert when they disagree.
-                let original_blob_id = blob.compiled;
-
-                if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled, None).await? {
-                    let module = unsafe {
-                        calimero_runtime::Engine::headless_with_limits(vm_limits)
-                            .from_precompiled(&compiled)
+        async {}
+            .into_actor(self)
+            .map(move |_, act, _ctx| {
+                // Fetch on a cache miss *before* inserting (so a not-installed
+                // app never wastes an eviction); `insert_new` caps the cache.
+                if !act.applications.contains_key(&application_id) {
+                    let Some(app) = act.node_client.get_application(&application_id)? else {
+                        bail!(ExecuteError::ApplicationNotInstalled { application_id });
                     };
-
-                    match module {
-                        Ok(module) => {
-                            return Ok((
-                                module,
-                                // Precompiled path: raw bytecode isn't re-fetched,
-                                // so neither the read-only nor the xcall set is
-                                // parsed here (both `None` → cache stays absent).
-                                Some((blob, service_name_for_bytes, original_blob_id, None, None)),
-                            ));
-                        }
-                        Err(err) => {
-                            debug!(
-                                ?err,
-                                %application_id,
-                                blob_id=%blob.compiled,
-                                "failed to load precompiled module, recompiling.."
-                            );
-                        }
-                    }
+                    let _ = act.applications.insert_new(application_id, app);
                 }
+                let app = act
+                    .applications
+                    .get(&application_id)
+                    .expect("application just inserted or already cached");
 
-                debug!(
-                    %application_id,
-                    blob_id=%blob.compiled,
-                    "no usable precompiled module found, compiling.."
-                );
-
-                // Use get_application_bytes instead of get_blob_bytes for bytecode
-                // because get_application_bytes knows how to extract WASM from bundles
-                let Some(bytecode) = node_client
-                    .get_application_bytes(&application_id, service_name_for_bytes.as_deref())
-                    .await?
-                else {
-                    bail!(ExecuteError::ApplicationNotInstalled { application_id });
-                };
-
-                // Extract the read-only and xcall entry-point method sets from
-                // the embedded ABI manifest before moving `bytecode` into the
-                // blocking compile task. A missing/unparseable manifest is not
-                // an error — read-only defaults to the write lock (fail-safe);
-                // an absent xcall set means the L3 gate falls through to L1.
-                let read_only_set = extract_read_only_set(&bytecode);
-                let xcall_set = extract_xcall_set(&bytecode);
-
-                // Compile WASM in a blocking task to avoid blocking the async executor.
-                // Note: panics during compilation will surface as JoinError.
-                let module = global_runtime()
-                    .spawn_blocking(move || {
-                        calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
-                    })
-                    .await
-                    .wrap_err("WASM compilation task failed")? // JoinError (task panicked/cancelled)
-                    ?; // Compilation error
-
-                let compiled = Cursor::new(module.to_bytes()?);
-
-                let (blob_id, _ignored) = node_client.add_blob(compiled, None, None).await?;
-
-                blob.compiled = blob_id;
-
-                node_client.update_compiled_app(
-                    &application_id,
-                    &blob_id,
-                    service_name_for_bytes.as_deref(),
-                )?;
-
-                Ok((
-                    module,
-                    Some((
-                        blob,
-                        service_name_for_bytes,
-                        original_blob_id,
-                        read_only_set,
-                        xcall_set,
-                    )),
-                ))
-            }
-            .into_actor(act)
-        });
-
-        module_task
-            .map_ok(move |(module, blob_info), act, _ctx| {
-                if let Some((blob, svc_name, original_blob_id, read_only_set, xcall_set)) = blob_info
-                {
-                    // The `applications` map is the source of truth for
-                    // whether this app is still live. Tie both the blob
-                    // writeback and the module cache update to the same
-                    // guard, plus a staleness check on `original_blob_id`.
-                    //
-                    // Three cases we need to handle correctly:
-                    //
-                    // 1. App still present with the same blob_id we
-                    //    loaded from → our module is current, write
-                    //    back and cache.
-                    // 2. App evicted (`get_mut` → None) — an
-                    //    `update_application` migration ran and hasn't
-                    //    repopulated yet → our work is stale, drop.
-                    // 3. App repopulated with a different blob_id —
-                    //    another `get_module` call beat us to it with
-                    //    fresher data → our work is stale, drop both
-                    //    writeback and module cache insert so we don't
-                    //    stomp the fresh state.
-                    if let Some(app) = act.applications.get_mut(&application_id) {
-                        // Both the staleness lookup and the writeback
-                        // must mirror `Application::resolve_service_blob`
-                        // exactly — that's where `blob` came from at
-                        // load time. For single-service bundles called
-                        // with `svc_name = None`, `resolve_service_blob`
-                        // returns `services.values().next()`, *not*
-                        // `app.blob`. Reading `app.blob.compiled` for
-                        // the staleness check would fail every time on
-                        // such bundles (the two blob_ids would never
-                        // match), defeating both the cache and the
-                        // recompile writeback.
-                        let current_blob_id = match svc_name.as_deref() {
-                            None if app.services.is_empty() => Some(app.blob.compiled),
-                            None if app.services.len() == 1 => {
-                                app.services.values().next().map(|b| b.compiled)
-                            }
-                            // Multi-service with no name is ambiguous —
-                            // `resolve_service_blob` returns None so we
-                            // never get here via the happy path. Treat
-                            // as stale.
-                            None => None,
-                            Some(name) => app.services.get(name).map(|b| b.compiled),
-                        };
-
-                        if current_blob_id == Some(original_blob_id) {
-                            // Writeback target must match the same
-                            // resolution. `services.len() == 1` with
-                            // `svc_name = None` means the single
-                            // service entry is the owner — pull its
-                            // key so we can `get_mut` into it without
-                            // iterating twice.
-                            let target_service_key =
-                                if svc_name.is_none() && app.services.len() == 1 {
-                                    app.services.keys().next().cloned()
-                                } else {
-                                    svc_name.clone()
-                                };
-                            match target_service_key.as_deref() {
-                                Some(name) => {
-                                    if let Some(svc_blob) = app.services.get_mut(name) {
-                                        *svc_blob = blob;
-                                    }
-                                }
-                                None => {
-                                    app.blob = blob;
-                                }
-                            }
-
-                            // `BoundedCache::insert` caps the map: replacing an
-                            // already-cached (recompiled) key overwrites in
-                            // place, while a new key evicts a by-key-order
-                            // victim first when at capacity.
-                            let cache_key = (application_id, svc_name);
-                            let _ = act.modules.insert(cache_key.clone(), module.clone());
-                            // Populate the read-only method set only when we
-                            // successfully parsed the embedded ABI (fresh-compile
-                            // path). When `read_only_set` is None (precompiled
-                            // path where raw bytecode is not re-fetched), skip the
-                            // insert so a subsequent fresh compile can populate it
-                            // correctly. An absent entry in `read_only_methods`
-                            // falls back to the write lock (fail-safe).
-                            if let Some(set) = read_only_set {
-                                let _ = act.read_only_methods.insert(cache_key.clone(), set);
-                            }
-                            // Same lifecycle for the xcall entry-point set: only
-                            // populated on the fresh-compile path. Absent ⇒ the
-                            // L3 gate falls through to L1 for this module.
-                            if let Some(set) = xcall_set {
-                                let _ = act.xcall_methods.insert(cache_key, set);
-                            }
-                        } else {
-                            debug!(
-                                %application_id,
-                                loaded_blob = %original_blob_id,
-                                current_blob = ?current_blob_id,
-                                "module load result stale — applications was repopulated while loading, dropping"
-                            );
-                        }
-                    }
-                }
-
-                module
+                Ok(app.blob.bytecode)
             })
-            .map_err(|err, _act, _ctx| {
-                error!(?err, "failed to initialize module for execution");
-
-                err
-            })
+            .and_then(move |blob, act, _ctx| act.get_module_for_blob(blob, service_name))
     }
 
-    /// Load the module for a context PINNED to a bytecode blob the
-    /// application row no longer references (post-abort, version-stable
-    /// bundle id overwritten in place). Compiles from the raw blob bytes —
-    /// the displaced version has no row to carry a precompiled artifact.
+    /// Load (compile + cache) the module for a content-addressed bytecode
+    /// blob — THE module-loading path: contexts execute the blob their
+    /// activation marker / group `app_key` points at, independent of what
+    /// the shared application row currently holds. For bundle blobs,
+    /// `service_name` selects the service wasm inside the bundle.
     ///
-    /// Cached in `modules` under a pseudo application id derived from the
-    /// pinned blob: pins are rare (they only exist after a migration abort),
-    /// blob ids and application ids are both opaque 32-byte hashes, and a
-    /// collision would only alias two cache slots, never corrupt execution.
-    /// `update_application`'s per-id eviction never targets pseudo keys; that
-    /// is fine — the entry is content-addressed (same blob ⇒ same module, so
-    /// reuse is always correct) and `modules` is a BoundedCache, which
-    /// reclaims the slot under capacity pressure.
-    pub fn get_pinned_module(
+    /// Cached in `modules` under `(blob_id, service_name)`; content
+    /// addressing makes reuse always sound (same blob ⇒ same module), so
+    /// entries never need eviction. The read-only method set is populated
+    /// alongside from the embedded ABI.
+    pub fn get_module_for_blob(
         &self,
-        pinned_blob: [u8; 32],
+        blob_id: calimero_primitives::blobs::BlobId,
         service_name: Option<String>,
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
-        let pseudo_id = calimero_primitives::application::ApplicationId::from(pinned_blob);
-        let cache_key = (pseudo_id, service_name.clone());
+        let cache_key = (blob_id, service_name.clone());
         let lookup_key = cache_key.clone();
 
         async {}
@@ -1541,130 +1432,144 @@ impl ContextManager {
                     }
                     Either::Right(parts) => parts,
                 };
-                let blob_id = calimero_primitives::blobs::BlobId::from(pinned_blob);
                 async move {
                     let Some(bytecode) = node_client
                         .application_bytes_from_blob(&blob_id, service_name.as_deref())
                         .await?
                     else {
-                        bail!("pinned bytecode blob {} not found in blobstore", blob_id);
+                        bail!("bytecode blob {} not found in blobstore", blob_id);
                     };
-                    calimero_utils_actix::global_runtime()
+                    // Extract the read-only and xcall entry-point method sets
+                    // from the embedded ABI before the bytes move into the
+                    // blocking compile task. A missing/unparseable manifest is
+                    // not an error — read-only defaults to the write lock
+                    // (fail-safe); an absent xcall set means the L3 gate falls
+                    // through to the L1 namespace boundary for this module.
+                    let read_only_set = extract_read_only_set(&bytecode);
+                    let xcall_set = extract_xcall_set(&bytecode);
+                    let module = calimero_utils_actix::global_runtime()
                         .spawn_blocking(move || {
                             calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
                         })
-                        .await?
-                        .map_err(Into::into)
+                        .await
+                        .wrap_err("WASM compilation task failed")??;
+                    Ok((module, read_only_set, xcall_set))
                 }
                 .into_actor(act)
-                .map_ok(move |module: calimero_runtime::Module, act, _ctx| {
-                    let _ = act.modules.insert(cache_key, module.clone());
-                    module
-                })
+                .map_ok(
+                    move |(module, read_only_set, xcall_set): (calimero_runtime::Module, _, _),
+                          act,
+                          _ctx| {
+                        let _ = act.modules.insert(cache_key.clone(), module.clone());
+                        if let Some(set) = read_only_set {
+                            let _ = act.read_only_methods.insert(cache_key.clone(), set);
+                        }
+                        // Same content-addressed lifecycle as read_only_methods:
+                        // keyed by (blob_id, service_name), so the entry can
+                        // never go stale (same blob ⇒ same ABI) and needs no
+                        // eviction. Absent ⇒ the L3 gate falls through to L1.
+                        if let Some(set) = xcall_set {
+                            let _ = act.xcall_methods.insert(cache_key, set);
+                        }
+                        module
+                    },
+                )
                 .boxed_local()
+            })
+            .map_err(|err, _act, _ctx| {
+                error!(?err, "failed to initialize module for execution");
+
+                err
             })
     }
 }
 
-/// Result of the blob-resolution / cache-lookup phase inside
-/// [`ContextManager::get_module`]. Either we already have the compiled
-/// module (fast path — skip deserialize), or we have the blob metadata
-/// pointing at where the compiled bytes live and need to fetch +
-/// deserialize.
-enum CachedOrBlob {
-    Cached(calimero_runtime::Module),
-    Blob(calimero_primitives::application::ApplicationBlob),
-}
-
-/// Ensure the bytecode installed under `target_app` is the group's target
-/// blob (`target_app_key`) before the lazy migrate loads its module.
-///
-/// Bundle apps derive `ApplicationId = hash(package, signer)`, so a version
-/// bump leaves the id unchanged and only moves the blob — without this step
-/// the migrate would compile the OLD bytecode (which lacks the migrate
-/// export) and no-op. Fetches the blob via DHT/peer download (it is
-/// announced at upgrade time) and installs it in place under the same id.
-///
-/// Returns `true` when the application row holds the target bytecode on
-/// return — either it already matched or a fresh in-place install succeeded
-/// (callers evict the `target_app`-keyed caches unconditionally; reuse of an
-/// already-current module is a cheap recompile at most). All failures warn
-/// and return `false` — the upgrade proceeds against the current bytecode
-/// and the next access retries.
-async fn ensure_target_blob_installed(
+/// Ensure the bytecode blob is present in the local blobstore, fetching it
+/// from peers (it is announced at upgrade time; the sync gate leaves
+/// BlobShare open for exactly this) when absent. Pure byte movement — the
+/// application row is never touched; per-context binding decides what
+/// executes. `false` ⇒ unavailable (zero/legacy key, fetch failure): the
+/// caller falls back and the next access retries.
+async fn ensure_blob_local(
     node_client: &NodeClient,
     context_id: &ContextId,
-    target_app: &calimero_primitives::application::ApplicationId,
-    target_app_key: [u8; 32],
+    blob: [u8; 32],
 ) -> bool {
-    if target_app_key == [0u8; 32] {
+    if blob == [0u8; 32] {
         return false;
     }
-    let installed = match node_client.get_application(target_app) {
-        Ok(Some(app)) => app,
-        // Not installed under this id at all: the distinct-id machinery
-        // (stub row + blob share) owns that case.
-        Ok(None) => return false,
+    let blob_id = calimero_primitives::blobs::BlobId::from(blob);
+    match node_client.has_blob(&blob_id) {
+        Ok(true) => return true,
+        Ok(false) => {}
         Err(err) => {
-            warn!(%context_id, %target_app, %err, "lazy upgrade: failed to read installed application");
+            warn!(%context_id, %blob_id, %err, "lazy upgrade: blobstore lookup failed");
             return false;
         }
-    };
-    let target_blob = calimero_primitives::blobs::BlobId::from(target_app_key);
-    if installed.blob.bytecode == target_blob {
-        return true;
     }
-    info!(
-        %context_id,
-        %target_app,
-        %target_blob,
-        installed_blob = %installed.blob.bytecode,
-        "lazy upgrade: fetching target bytecode (version-stable application id)"
-    );
-    let bytes = match node_client
-        .get_blob_bytes(&target_blob, Some(context_id))
-        .await
-    {
-        Ok(Some(bytes)) => bytes,
+    info!(%context_id, %blob_id, "lazy upgrade: fetching target bytecode blob");
+    // A successful peer fetch persists the blob into the local blobstore,
+    // so the subsequent module load finds it.
+    match node_client.get_blob_bytes(&blob_id, Some(context_id)).await {
+        Ok(Some(_)) => true,
         Ok(None) => {
-            warn!(%context_id, %target_blob, "lazy upgrade: target blob not available locally or from peers");
-            return false;
+            warn!(%context_id, %blob_id, "lazy upgrade: target blob not available locally or from peers");
+            false
         }
         Err(err) => {
-            warn!(%context_id, %target_blob, %err, "lazy upgrade: target blob fetch failed");
-            return false;
+            warn!(%context_id, %blob_id, %err, "lazy upgrade: target blob fetch failed");
+            false
         }
-    };
-    if !NodeClient::is_bundle_blob(&bytes) {
-        // Same-id blob swaps only occur for bundles (raw-wasm ids are
-        // content-addressed, so their upgrades change the id); anything else
-        // here is unexpected — leave it to the sync machinery.
-        warn!(%context_id, %target_blob, "lazy upgrade: target blob is not a bundle; skipping in-place install");
-        return false;
     }
-    match node_client
-        .install_application_from_bundle_blob(&target_blob, &installed.source)
-        .await
-    {
-        Ok(installed_id) if installed_id == *target_app => {
-            info!(%context_id, %target_app, %target_blob, "lazy upgrade: installed target bundle in place");
-            true
+}
+
+/// Store-level executing-blob resolution for a context: its activation
+/// marker (the blob it last activated), else its owning group's recorded
+/// target blob. The `bool` is `true` when the blob came from the group
+/// `app_key` (callers gate that branch on local blob presence — legacy
+/// groups carry randomly-seeded keys that resolve to nothing). `None` ⇒
+/// fall back to the application row.
+/// Where a context's bound bytecode blob was resolved from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundBlobSource {
+    /// The per-context activation marker — already executed locally.
+    ActivationMarker,
+    /// The group's recorded target blob — may not be fetched yet.
+    GroupKey,
+}
+
+pub(crate) fn bound_blob_for_context(
+    store: &Store,
+    context_id: &ContextId,
+) -> Option<([u8; 32], BoundBlobSource)> {
+    if let Some(blob) = crate::activation::activated_blob(store, context_id) {
+        return Some((blob, BoundBlobSource::ActivationMarker));
+    }
+    let group_id = calimero_governance_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
+    (meta.app_key != [0u8; 32]).then_some((meta.app_key, BoundBlobSource::GroupKey))
+}
+
+impl ContextManager {
+    /// The bytecode blob this context executes (per-context binding):
+    /// activation marker → group target blob (when locally present) →
+    /// `None` (callers fall back to the application row).
+    pub(crate) fn executing_blob_for_context(
+        &self,
+        context_id: &ContextId,
+    ) -> Option<calimero_primitives::blobs::BlobId> {
+        let (blob, source) = bound_blob_for_context(&self.datastore, context_id)?;
+        let blob_id = calimero_primitives::blobs::BlobId::from(blob);
+        if source == BoundBlobSource::GroupKey
+            && !self.node_client.has_blob(&blob_id).unwrap_or(false)
+        {
+            // Legacy randomly-seeded app_key (or not-yet-fetched target):
+            // nothing to execute under that key — use the row.
+            return None;
         }
-        Ok(installed_id) => {
-            // The bundle resolves to a different id (package/signer changed)
-            // — not the in-place case; the id-keyed path owns it.
-            warn!(
-                %context_id,
-                %target_app,
-                %installed_id,
-                "lazy upgrade: fetched bundle installed under a different application id"
-            );
-            false
-        }
-        Err(err) => {
-            warn!(%context_id, %target_blob, %err, "lazy upgrade: in-place bundle install failed");
-            false
-        }
+        Some(blob_id)
     }
 }
 
@@ -2645,5 +2550,71 @@ mod tests {
             !should_block(false, &GroupUpgradeStatus::Completed { completed_at: None }),
             "Completed never blocks, regardless of the flag"
         );
+    }
+
+    // Per-context bytecode binding: the executing blob resolves marker →
+    // group app_key → None (row fallback). Two contexts sharing one
+    // application id but holding different markers must resolve different
+    // blobs — the coexistence invariant the module cache re-key enables.
+
+    #[test]
+    fn bound_blob_two_contexts_different_markers_resolve_different_blobs() {
+        let store = fresh_store();
+        let group_id = ContextGroupId::from([0xB0; 32]);
+        let ctx_a = ContextId::from([0xB1; 32]);
+        let ctx_b = ContextId::from([0xB2; 32]);
+
+        register_context_in_group(&store, &group_id, &ctx_a).expect("register a");
+        register_context_in_group(&store, &group_id, &ctx_b).expect("register b");
+        MetaRepository::new(&store)
+            .save(&group_id, &group_meta_with_app_key([0x33; 32]))
+            .expect("save group meta");
+
+        crate::activation::record_activation(&store, &ctx_a, [0x11; 32]);
+        crate::activation::record_activation(&store, &ctx_b, [0x22; 32]);
+
+        assert_eq!(
+            super::bound_blob_for_context(&store, &ctx_a),
+            Some(([0x11; 32], super::BoundBlobSource::ActivationMarker))
+        );
+        assert_eq!(
+            super::bound_blob_for_context(&store, &ctx_b),
+            Some(([0x22; 32], super::BoundBlobSource::ActivationMarker))
+        );
+    }
+
+    #[test]
+    fn bound_blob_falls_back_to_group_app_key_without_marker() {
+        let store = fresh_store();
+        let group_id = ContextGroupId::from([0xB3; 32]);
+        let ctx = ContextId::from([0xB4; 32]);
+
+        register_context_in_group(&store, &group_id, &ctx).expect("register");
+        MetaRepository::new(&store)
+            .save(&group_id, &group_meta_with_app_key([0x44; 32]))
+            .expect("save group meta");
+
+        assert_eq!(
+            super::bound_blob_for_context(&store, &ctx),
+            Some(([0x44; 32], super::BoundBlobSource::GroupKey))
+        );
+    }
+
+    #[test]
+    fn bound_blob_none_for_zero_app_key_or_non_group_context() {
+        let store = fresh_store();
+        let group_id = ContextGroupId::from([0xB5; 32]);
+        let ctx = ContextId::from([0xB6; 32]);
+
+        register_context_in_group(&store, &group_id, &ctx).expect("register");
+        MetaRepository::new(&store)
+            .save(&group_id, &group_meta_with_app_key([0u8; 32]))
+            .expect("save group meta");
+
+        // Zero app_key (legacy) carries no blob identity — row fallback.
+        assert_eq!(super::bound_blob_for_context(&store, &ctx), None);
+        // Non-group context — row fallback.
+        let lone = ContextId::from([0xB7; 32]);
+        assert_eq!(super::bound_blob_for_context(&store, &lone), None);
     }
 }
