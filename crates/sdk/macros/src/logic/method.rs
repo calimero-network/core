@@ -402,6 +402,12 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                 ParseError::XCallAndInitConflict,
             ));
         }
+        if is_view && is_xcall {
+            errors.subsume(SynError::new_spanned(
+                input.item,
+                ParseError::XCallAndViewConflict,
+            ));
+        }
 
         match (&input.item.vis, is_init) {
             (Visibility::Public(_), _) => {}

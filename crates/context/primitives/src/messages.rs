@@ -79,8 +79,7 @@ pub struct ExecuteRequest {
     pub aliases: Vec<Alias<PublicKey>>,
     pub atomic: Option<ContextAtomic>,
     /// Source context when this execution is dispatched via `xcall`; `None`
-    /// for direct/RPC calls. Surfaced to the guest via `env::xcall_origin()`
-    /// and used by the node's L3 entry-point gate.
+    /// for direct/RPC calls. Surfaced to the guest via `env::xcall_origin()`.
     pub xcall_origin: Option<ContextId>,
 }
 
@@ -182,11 +181,9 @@ pub enum ExecuteError {
         "context upgrade in progress for group {group_id:?}; writes refused until migration completes"
     )]
     UpgradeInProgress { group_id: ContextGroupId },
-    /// An `xcall` targeted a method that the target application's ABI does not
-    /// declare as a cross-context entry point (`#[app::xcall]`). The node's L3
-    /// gate refuses it before execution. Only raised for modules that declared
-    /// at least one entry point; apps that declare none are not gated here.
-    /// (The offending method name is logged at the dispatch site.)
+    /// An `xcall` targeted a method not marked `#[app::xcall]`, refused before
+    /// execution. Only raised for modules that declare at least one entry point;
+    /// apps that declare none are not gated.
     #[error(
         "xcall on context '{context_id}' denied: target method is not an #[app::xcall] entry point"
     )]

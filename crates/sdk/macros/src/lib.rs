@@ -181,21 +181,20 @@ pub fn init(_args: TokenStream, input: TokenStream) -> TokenStream {
 
 /// Marks a method as a cross-context (`xcall`) entry point.
 ///
-/// A marker attribute consumed by `#[app::logic]` (recorded in the compiled
-/// ABI as `Method.xcall_callable`); on its own it does not modify the method.
-/// The node uses the ABI flag to restrict `xcall` dispatch to declared entry
-/// points (defence-in-depth on top of the namespace boundary).
+/// A marker consumed by `#[app::logic]` and recorded in the ABI as
+/// `Method.xcall_callable`; on its own it does not modify the method. The node
+/// uses the flag to restrict `xcall` dispatch to declared entry points.
 ///
-/// NOTE: unlike `#[app::view]` (whose intent is read syntactically by the ABI
-/// emitter but which is *not* registered as a marker here), `xcall` MUST be a
-/// real attribute so it resolves at the method site — `#[app::logic]` re-emits
-/// the original impl verbatim, including this attribute. Registering `view`
-/// likewise is a separate, pre-existing gap tracked outside this change.
+/// Must be a registered attribute (not just read syntactically like
+/// `#[app::view]`) so it resolves at the method site when `#[app::logic]`
+/// re-emits the impl verbatim.
 ///
 /// # Usage
 ///
 /// Apply `#[app::xcall]` to a public logic method to allow other contexts in
-/// the same namespace to invoke it via `env::xcall`.
+/// the same namespace to invoke it via `env::xcall`. Mutually exclusive with
+/// `#[app::init]` and `#[app::view]` (xcall is fire-and-forget, so a read-only
+/// target's return value would go nowhere).
 #[proc_macro_attribute]
 pub fn xcall(_args: TokenStream, input: TokenStream) -> TokenStream {
     // this is a no-op, the attribute is just a marker

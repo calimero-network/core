@@ -139,11 +139,9 @@ pub struct Method {
     /// (write lock) by the node.
     #[serde(skip_serializing_if = "MethodIntent::is_unspecified", default)]
     pub intent: MethodIntent,
-    /// App-declared cross-context entry point (`#[app::xcall]`). Orthogonal to
-    /// `intent` — an xcall entry point may still be mutating. When any method
-    /// in a module sets this, the node enforces (L3) that only such methods are
-    /// reachable via `xcall`; modules with none are not gated (fall through to
-    /// the L1 namespace boundary). Absent/false on every pre-existing manifest.
+    /// App-declared cross-context entry point (`#[app::xcall]`). When any method
+    /// in a module sets this, the node only allows `xcall` to reach such methods;
+    /// modules with none are not gated. Absent/false on pre-existing manifests.
     #[serde(default, skip_serializing_if = "is_false")]
     pub xcall_callable: bool,
 }

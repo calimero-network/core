@@ -75,9 +75,8 @@ pub struct VMContext<'a> {
     /// cut?"
     pub governance_position: Option<GovernanceParentEdge>,
     /// Source context when this execution was dispatched via `xcall`; `None`
-    /// for direct/RPC calls. Set by the node from the calling context — never
-    /// from guest memory — so the target may trust it as caller provenance
-    /// (exposed to the guest via `env::xcall_origin()`).
+    /// for direct/RPC calls. Set by the node, never from guest memory, so the
+    /// target can trust it. Exposed to the guest via `env::xcall_origin()`.
     pub xcall_origin: Option<[u8; DIGEST_SIZE]>,
 }
 

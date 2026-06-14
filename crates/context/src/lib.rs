@@ -453,16 +453,12 @@ pub struct ContextManager {
     /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
     read_only_methods: BoundedCache<(BlobId, Option<String>), Arc<HashSet<String>>>,
 
-    /// Per-blob set of method names declared cross-context entry points via
-    /// `#[app::xcall]` in the module ABI. The xcall dispatch L3 gate denies any
-    /// `xcall` whose target function is not in this set — but only when the set
-    /// is present and non-empty. An absent entry means the module declared no
-    /// `#[app::xcall]` methods (or its manifest is not parsed yet); the gate
-    /// then no-ops and the call falls through to the L1 namespace boundary.
+    /// Per-blob set of method names declared `#[app::xcall]` in the module ABI.
+    /// An xcall to a method outside this set is denied; an absent entry (module
+    /// declares none, or not parsed yet) leaves the method ungated.
     ///
-    /// Keyed by `(BlobId, Option<String>)` — the same key as `modules` and
-    /// `read_only_methods`, so it is content-addressed and never goes stale.
-    /// Populated alongside the module cache in `get_module_for_blob`.
+    /// Keyed by `(BlobId, Option<String>)` like `modules` / `read_only_methods`
+    /// (content-addressed, never stale), populated in `get_module_for_blob`.
     /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
     xcall_methods: BoundedCache<(BlobId, Option<String>), Arc<HashSet<String>>>,
 

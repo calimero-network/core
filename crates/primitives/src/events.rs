@@ -31,10 +31,9 @@ pub enum ContextEventPayload {
     /// applied). Lets a frontend react live to bundle skew (spec skew #2)
     /// instead of polling. `contextId` rides on the flattened [`ContextEvent`].
     AppVersionChanged(AppVersionChangedPayload),
-    /// Emitted once per cross-context call dispatched from a source execution —
-    /// on success, denial (an L1/L3 gate), or target execution error. Gives the
-    /// fire-and-forget xcall path an out-of-band feedback channel (#2137).
-    /// `contextId` on the wrapper is the *source* context.
+    /// Emitted once per cross-context call — on success, denial, or target
+    /// execution error — giving the fire-and-forget xcall path a feedback
+    /// channel (#2137). `contextId` on the wrapper is the *source* context.
     XCall(XCallPayload),
 }
 
@@ -105,8 +104,8 @@ pub struct XCallPayload {
 pub enum XCallOutcome {
     /// Dispatched and the target execution returned `Ok`.
     Ok,
-    /// Refused before dispatch by a node-enforced gate (L1 namespace boundary,
-    /// L3 entry-point check, or no owned member of the target).
+    /// Refused before dispatch (wrong namespace, not an `#[app::xcall]` entry
+    /// point, or no owned member of the target). `reason` says which.
     Denied { reason: String },
     /// Dispatched but the target execution returned an error.
     ExecError { message: String },

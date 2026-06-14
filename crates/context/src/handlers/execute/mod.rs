@@ -699,20 +699,9 @@ impl Handler<ExecuteRequest> for ContextManager {
             let node_client = act.node_client.clone();
             let context_client = act.context_client.clone();
 
-            // --- L3: xcall entry-point gate (decided here, while we hold `act`) ---
-            // When this run was dispatched via `xcall` (origin set), restrict the
-            // callable surface to methods the target app declared `#[app::xcall]`.
-            // The module load just above populated `xcall_methods` on the
-            // fresh-compile path, so a PRESENT set reliably means the app opted
-            // in — deny any method not in it. An ABSENT set means the app declared
-            // none, OR the set was not parsed for this load (the cached-module
-            // path doesn't re-read the wasm ABI section); L3 then cannot decide
-            // and falls through to the always-on L1 namespace boundary. L3 is
-            // opt-in defence-in-depth, not the primary trust boundary.
-            //
-            // Keyed by the executing bytecode blob (per-context binding), with
-            // the cached application row blob as fallback — mirrors the
-            // read-only lookup above and the module cache key exactly.
+            // For an xcall, deny any method the target app didn't mark
+            // `#[app::xcall]`. No declared set ⇒ not gated. Keyed by the
+            // executing blob, like the read-only lookup above.
             let xcall_blob = act.executing_blob_for_context(&context.id).or_else(|| {
                 act.applications
                     .get(&context.application_id)
@@ -879,7 +868,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let node_client = act.node_client.clone();
                 let context_client = act.context_client.clone();
-                // Store snapshot for the xcall L1 namespace gate (read-only).
+                // Read-only snapshot for the xcall namespace check below.
                 let xcall_datastore = act.datastore.clone();
                 // `datastore_for_broadcast` used to recompute the
                 // governance position at broadcast time — that recompute
@@ -943,10 +932,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                             }));
                         };
 
-                        // ── L1: namespace trust boundary (fail-closed) ──
                         // A context may only xcall a target in its own namespace.
-                        // Any resolution error, or an unresolved namespace on
-                        // either side, denies the call.
+                        // A resolution error or unresolved namespace denies.
                         let same_namespace = (|| -> eyre::Result<bool> {
                             let src = resolve_namespace_for_context(&xcall_datastore, &context_id)?;
                             let tgt =
@@ -998,12 +985,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                             "Found owned member for target context"
                         );
 
-                        // ── L3 gate (#[app::xcall] entry point) inserted HERE in Phase 2 (Task 9) ──
-
-                        // Execute the cross-context call as the target's member,
-                        // tagging it with the source context (L2a provenance) so
-                        // the target can read `env::xcall_origin()`. The origin is
-                        // set here by the node — never from guest memory.
+                        // Execute as the target's member, tagging the call with
+                        // the source context so the target can read it via
+                        // `env::xcall_origin()`. The node sets the origin here —
+                        // never from guest memory. The target's handler rejects
+                        // non-`#[app::xcall]` methods with XCallNotPermitted.
                         let xcall_result = context_client
                             .execute_with_origin(
                                 &target_context_id,
@@ -1026,9 +1012,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 );
                                 emit(XCallOutcome::Ok);
                             }
-                            // An L3 denial surfaces as the typed
-                            // `XCallNotPermitted`; report it as a gate Denial,
-                            // not an execution error.
+                            // A rejected entry point is a denial, not an exec error.
                             Err(ExecuteError::XCallNotPermitted { .. }) => {
                                 warn!(
                                     %context_id,
@@ -1439,12 +1423,10 @@ impl ContextManager {
                     else {
                         bail!("bytecode blob {} not found in blobstore", blob_id);
                     };
-                    // Extract the read-only and xcall entry-point method sets
-                    // from the embedded ABI before the bytes move into the
-                    // blocking compile task. A missing/unparseable manifest is
-                    // not an error — read-only defaults to the write lock
-                    // (fail-safe); an absent xcall set means the L3 gate falls
-                    // through to the L1 namespace boundary for this module.
+                    // Extract the read-only and xcall method sets from the ABI
+                    // before the bytes move into the compile task. A missing
+                    // manifest is fine: read-only defaults to the write lock,
+                    // and an absent xcall set just leaves the method ungated.
                     let read_only_set = extract_read_only_set(&bytecode);
                     let xcall_set = extract_xcall_set(&bytecode);
                     let module = calimero_utils_actix::global_runtime()
@@ -1464,10 +1446,7 @@ impl ContextManager {
                         if let Some(set) = read_only_set {
                             let _ = act.read_only_methods.insert(cache_key.clone(), set);
                         }
-                        // Same content-addressed lifecycle as read_only_methods:
-                        // keyed by (blob_id, service_name), so the entry can
-                        // never go stale (same blob ⇒ same ABI) and needs no
-                        // eviction. Absent ⇒ the L3 gate falls through to L1.
+                        // Cached like read_only_methods, keyed by the same blob.
                         if let Some(set) = xcall_set {
                             let _ = act.xcall_methods.insert(cache_key, set);
                         }
@@ -2204,12 +2183,9 @@ fn extract_read_only_set(bytecode: &[u8]) -> Option<Arc<HashSet<String>>> {
     Some(Arc::new(set))
 }
 
-/// Extract the set of `#[app::xcall]` entry-point method names from a module's
-/// embedded ABI. Returns `None` when the manifest is absent/unparseable **or**
-/// declares zero xcall methods — in both cases the L3 gate no-ops and an xcall
-/// falls through to the L1 namespace boundary. `Some(set)` (always non-empty)
-/// only when the app opted in with at least one `#[app::xcall]`, at which point
-/// the node restricts xcall dispatch on this module to exactly that set.
+/// The `#[app::xcall]` method names declared in a module's embedded ABI, or
+/// `None` if the manifest is absent/unparseable or declares none (the method is
+/// then left ungated). A returned set is always non-empty.
 fn extract_xcall_set(bytecode: &[u8]) -> Option<Arc<HashSet<String>>> {
     let manifest = calimero_wasm_abi::embed::read_embedded_state_schema(bytecode)?;
     let set: HashSet<String> = manifest
@@ -2225,10 +2201,9 @@ fn extract_xcall_set(bytecode: &[u8]) -> Option<Arc<HashSet<String>>> {
     }
 }
 
-/// Resolve a context to its namespace root group, or `None` if the context is
-/// not registered in any group. Backs the xcall L1 gate: a cross-context call
-/// is allowed only when source and target resolve to the same namespace.
-/// Fail-closed — callers treat an `Err` (or a `None` on either side) as deny.
+/// Resolve a context to its namespace root group, or `None` if it is not
+/// registered in any group. An xcall is allowed only when source and target
+/// resolve to the same namespace; callers treat `Err`/`None` as deny.
 fn resolve_namespace_for_context(
     store: &calimero_store::Store,
     context_id: &ContextId,
@@ -2355,7 +2330,7 @@ mod tests {
 
     #[test]
     fn extract_xcall_set_none_on_non_wasm() {
-        // No embedded ABI manifest ⇒ None ⇒ L3 gate falls through to L1.
+        // No embedded ABI manifest ⇒ None (method left ungated).
         assert!(extract_xcall_set(b"not a wasm module").is_none());
         assert!(extract_xcall_set(&[]).is_none());
     }

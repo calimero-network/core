@@ -7,9 +7,9 @@ use calimero_storage::collections::Counter;
 pub struct XCallExample {
     /// Bumped by `pong` — the declared `#[app::xcall]` entry point.
     counter: Counter,
-    /// Bumped by `secret` — a method that is deliberately NOT an xcall entry
-    /// point. Stays at zero when targeted by an xcall (the node's L3 gate
-    /// denies it); only a direct call can move it.
+    /// Bumped by `secret` — deliberately NOT an xcall entry point. An xcall
+    /// targeting it is denied by the node, so it stays at zero unless reached
+    /// by a direct call.
     secret_counter: Counter,
 }
 
@@ -42,21 +42,19 @@ impl XCallExample {
         self.xcall_to(target_context, "pong")
     }
 
-    /// Send a ping that targets an arbitrary method on `target_context`. Used to
-    /// exercise the L3 entry-point gate (e.g. targeting `secret`, which is not
-    /// `#[app::xcall]`, must be denied by the node before it executes).
+    /// Send a ping that targets an arbitrary method on `target_context`. Used
+    /// to show the node denying an xcall to a non-`#[app::xcall]` method (e.g.
+    /// `secret`) before it runs.
     pub fn ping_to(&mut self, target_context: ContextId, method: String) -> app::Result<()> {
         self.xcall_to(target_context, &method)
     }
 
-    /// Receive a pong via `xcall`. Marked `#[app::xcall]`, so the node permits
-    /// other contexts to invoke it (subject to the namespace boundary).
+    /// Receive a pong via `xcall`. Marked `#[app::xcall]` so other contexts in
+    /// the same namespace may invoke it.
     ///
-    /// Demonstrates caller provenance (L2a): `env::xcall_origin()` is set by the
-    /// node from the calling context and cannot be forged by the caller, so this
-    /// method (a) rejects direct/RPC calls that carry no origin, and (b) verifies
-    /// the node-set origin matches the caller's self-reported `from_context` — a
-    /// mismatch means a spoofed argument and is refused.
+    /// `env::xcall_origin()` is set by the node and can't be forged, so this
+    /// method rejects direct calls (no origin) and refuses any call where the
+    /// origin doesn't match the self-reported `from_context`.
     #[app::xcall]
     pub fn pong(&mut self, from_context: ContextId) -> app::Result<()> {
         let origin = calimero_sdk::env::xcall_origin().map(ContextId::from);
@@ -89,10 +87,9 @@ impl XCallExample {
         Ok(())
     }
 
-    /// A method that is intentionally NOT an `#[app::xcall]` entry point. A
-    /// direct call works, but an `xcall` targeting it must be denied by the
-    /// node's L3 gate before execution — so `secret_counter` stays at zero
-    /// whenever it is reached via `xcall`.
+    /// Intentionally NOT an `#[app::xcall]` entry point. A direct call works,
+    /// but an `xcall` targeting it is denied by the node before it runs, so
+    /// `secret_counter` only moves on a direct call.
     pub fn secret(&mut self, from_context: ContextId) -> app::Result<()> {
         let _ = from_context;
         self.secret_counter.increment()?;
