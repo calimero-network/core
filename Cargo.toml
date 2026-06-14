@@ -102,6 +102,7 @@ members = [
     "./crates/op",
     "./crates/authz",
     "./crates/projection",
+    "./crates/op-adapter",
     "./crates/prelude",
     "./crates/primitives",
     "./crates/runtime",

@@ -1545,6 +1545,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-op-adapter"
+version = "0.0.0"
+dependencies = [
+ "calimero-op",
+ "calimero-primitives",
+ "calimero-projection",
+ "calimero-storage",
+]
+
+[[package]]
 name = "calimero-prelude"
 version = "0.0.0"
 dependencies = [
