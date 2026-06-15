@@ -93,14 +93,14 @@ impl std::fmt::Display for NoPeersAvailable {
 
 impl std::error::Error for NoPeersAvailable {}
 
-/// Parent-pull budget exhausted with DAG parents still missing from the whole
-/// mesh. Typed so the per-peer retry can distinguish it from peer-specific
-/// failures and stop rather than re-run the pipeline for the same miss.
+/// Parent-pull tried every mesh peer and DAG parents are still missing. Typed
+/// so the per-peer retry stops instead of re-running the pipeline for the same
+/// miss; emitted only on a fully-swept mesh, not a capped/timed-out pull.
 #[derive(Debug, Clone, Copy)]
-pub struct PendingParentsUnresolved {
-    pub context_id: ContextId,
-    pub remaining: usize,
-    pub attempts: usize,
+pub(crate) struct PendingParentsUnresolved {
+    pub(crate) context_id: ContextId,
+    pub(crate) remaining: usize,
+    pub(crate) attempts: usize,
 }
 
 impl std::fmt::Display for PendingParentsUnresolved {
@@ -116,9 +116,10 @@ impl std::fmt::Display for PendingParentsUnresolved {
 impl std::error::Error for PendingParentsUnresolved {}
 
 /// Whether the `perform_interval_sync` loop should stop trying peers. Only
-/// `PendingParentsUnresolved` stops it (the parent-pull loop already swept the
+/// `PendingParentsUnresolved` stops it (the parent-pull loop swept the whole
 /// mesh); other errors are peer-specific and the loop advances. Downcasts
-/// through eyre context so it matches after `handle_dag_sync`'s `wrap_err`.
+/// through eyre's context chain, so it matches under the `wrap_err` layers
+/// added between the error origin and `perform_interval_sync`.
 fn should_stop_peer_retry(err: &eyre::Error) -> bool {
     err.downcast_ref::<PendingParentsUnresolved>().is_some()
 }
@@ -2206,6 +2207,10 @@ impl SyncManager {
                     self.sync_config.parent_pull_budget,
                 );
                 let mut mesh_peers = self.sync_network.subscribed_peers(topic.clone()).await;
+                // True only if every mesh peer was tried (NoMorePeers); a
+                // cap/time-budget stop leaves untried peers. Only a fully-swept
+                // mesh makes retrying another peer pointless.
+                let mut mesh_exhausted = false;
 
                 loop {
                     let after = delta_store_ref.get_missing_parents().await;
@@ -2221,6 +2226,8 @@ impl SyncManager {
                             match budget.next(&mesh_peers) {
                                 super::parent_pull::NextPeer::Peer(p) => p,
                                 other => {
+                                    mesh_exhausted =
+                                        matches!(other, super::parent_pull::NextPeer::NoMorePeers);
                                     debug!(
                                         %context_id,
                                         ?other,
@@ -2237,8 +2244,11 @@ impl SyncManager {
                             );
                             break;
                         }
-                        super::parent_pull::NextPeer::MaxPeersReached
-                        | super::parent_pull::NextPeer::NoMorePeers => break,
+                        super::parent_pull::NextPeer::MaxPeersReached => break,
+                        super::parent_pull::NextPeer::NoMorePeers => {
+                            mesh_exhausted = true;
+                            break;
+                        }
                     };
 
                     budget.record_attempt(next_peer);
@@ -2280,13 +2290,25 @@ impl SyncManager {
                         %context_id,
                         remaining = final_missing.missing_ids.len(),
                         peer_attempts = budget.total_attempts(),
+                        mesh_exhausted,
                         "DAG sync ended with unresolved missing parents"
                     );
-                    return Err(eyre::Error::new(PendingParentsUnresolved {
+                    // Typed (caller short-circuits) only when the whole mesh
+                    // was swept; a cap/time-budget stop leaves untried peers, so
+                    // a plain error lets the caller's loop try the next peer.
+                    if mesh_exhausted {
+                        return Err(eyre::Error::new(PendingParentsUnresolved {
+                            context_id,
+                            remaining: final_missing.missing_ids.len(),
+                            attempts: budget.total_attempts(),
+                        }));
+                    }
+                    bail!(
+                        "pending parents unresolved for context {}: {} remaining after {} peer attempt(s)",
                         context_id,
-                        remaining: final_missing.missing_ids.len(),
-                        attempts: budget.total_attempts(),
-                    }));
+                        final_missing.missing_ids.len(),
+                        budget.total_attempts(),
+                    );
                 }
 
                 // Success: DAG is fully resolved.

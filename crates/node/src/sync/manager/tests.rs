@@ -425,22 +425,21 @@ mod pending_parents_short_circuit {
     }
 
     #[test]
-    fn budget_exhausted_parent_pull_stops_the_peer_loop() {
+    fn mesh_swept_parent_pull_stops_the_peer_loop() {
+        // Emitted only when the whole mesh was swept — another peer is pointless.
         let err = eyre::Error::new(PendingParentsUnresolved {
             context_id: ctx(),
             remaining: 3,
             attempts: 4,
         });
-        assert!(
-            should_stop_peer_retry(&err),
-            "budget-exhausted parent pull is unsatisfiable by another peer"
-        );
+        assert!(should_stop_peer_retry(&err));
     }
 
     #[test]
-    fn detection_survives_wrap_err() {
-        // handle_dag_sync wraps the error before it reaches the retry loop;
-        // if downcast didn't traverse the chain the fix would be a no-op.
+    fn detection_survives_nested_wrap_err() {
+        // Production wraps twice (handle_dag_sync + initiate_sync_inner) before
+        // the retry loop; if downcast didn't traverse the whole eyre chain the
+        // fix would be a silent no-op.
         use eyre::WrapErr as _;
         let wrapped = Err::<(), _>(eyre::Error::new(PendingParentsUnresolved {
             context_id: ctx(),
@@ -448,6 +447,7 @@ mod pending_parents_short_circuit {
             attempts: 2,
         }))
         .wrap_err("request DAG heads and sync")
+        .wrap_err("DAG sync")
         .unwrap_err();
         assert!(should_stop_peer_retry(&wrapped));
     }
