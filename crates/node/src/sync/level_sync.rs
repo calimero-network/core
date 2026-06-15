@@ -96,6 +96,9 @@ pub struct LevelWiseConfig {
     /// initiator's host-side leaf/tombstone applies (split-brain guard). `None`
     /// in the single-threaded sync-sim harness.
     pub context_client: Option<ContextClient>,
+    /// Remote peer's attributable member identity — gates authorless leaves on
+    /// the peer's current membership. See `HashComparisonConfig::session_peer`.
+    pub session_peer: Option<PublicKey>,
 }
 
 /// Data from the first `LevelWiseRequest` for responder dispatch.
@@ -185,6 +188,7 @@ impl SyncProtocolExecutor for LevelWiseProtocol {
             config.remote_root_hash,
             config.max_depth,
             config.context_client.as_ref(),
+            config.session_peer,
         )
         .await
     }
@@ -213,6 +217,7 @@ impl SyncProtocolExecutor for LevelWiseProtocol {
 // Initiator Implementation
 // =============================================================================
 
+#[allow(clippy::too_many_arguments)]
 async fn run_initiator_impl<T: SyncTransport>(
     transport: &mut T,
     store: &Store,
@@ -221,6 +226,7 @@ async fn run_initiator_impl<T: SyncTransport>(
     remote_root_hash: [u8; 32],
     max_depth: u32,
     context_client: Option<&ContextClient>,
+    session_peer: Option<PublicKey>,
 ) -> Result<LevelWiseStats> {
     info!(
         %context_id,
@@ -438,14 +444,10 @@ async fn run_initiator_impl<T: SyncTransport>(
                         "Merging leaf entity"
                     );
 
-                    // Authorization gate, parity with HashComparison's
-                    // per-leaf check. LevelWise is a fallback the manager
-                    // selects when HC isn't a good fit (wide/shallow
-                    // trees), and it walks the same leaf-merge path —
-                    // without this check, a revoked author's writes that
-                    // gossip rejected could re-enter via LevelWise the
-                    // same way they did via HC.
-                    if !is_leaf_currently_authorized(store, &context_id, leaf_data, None) {
+                    // Same per-leaf membership gate as the HashComparison
+                    // initiator (LevelWise walks the same merge path); drops a
+                    // revoked author's / revoked peer's leaves.
+                    if !is_leaf_currently_authorized(store, &context_id, leaf_data, session_peer) {
                         warn!(
                             %context_id,
                             key = %hex::encode(leaf_data.key),
@@ -1097,6 +1099,7 @@ mod tests {
             remote_root_hash: [1u8; 32],
             max_depth: 2,
             context_client: None,
+            session_peer: None,
         };
         assert_eq!(config.remote_root_hash, [1u8; 32]);
         assert_eq!(config.max_depth, 2);
