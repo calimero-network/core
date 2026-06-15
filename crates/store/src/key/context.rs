@@ -166,6 +166,54 @@ impl Debug for ContextMigrationFailed {
     }
 }
 
+/// Node-local marker that an operator requested a full-state resync of this
+/// context (the recovery for a stranded `NoMigrationPath` context). Its own
+/// `ContextResyncRequested` column; presence is the signal, absence means no
+/// resync pending. NOT synchronized.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextResyncRequested(Key<ContextId>);
+
+impl ContextResyncRequested {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId) -> Self {
+        Self(Key((*context_id).into()))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
+    }
+}
+
+impl AsKeyParts for ContextResyncRequested {
+    type Components = (ContextId,);
+
+    fn column() -> Column {
+        Column::ContextResyncRequested
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
+    }
+}
+
+impl FromKeyParts for ContextResyncRequested {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(*<&_>::from(&parts)))
+    }
+}
+
+impl Debug for ContextResyncRequested {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextResyncRequested")
+            .field("id", &self.context_id())
+            .finish()
+    }
+}
+
 /// Node-local pin to the bytecode blob this context's committed state runs
 /// under, written when a logically-aborted migration leaves the context on
 /// its pre-upgrade state while the application row (version-stable bundle id)

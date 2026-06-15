@@ -68,6 +68,13 @@ pub enum Column {
     /// in `Application`. NOT synchronized; auto-created from `Column::iter()`
     /// (no DB migration).
     ApplicationPreviousBlob,
+    /// Node-local per-context marker that an operator requested a full-state
+    /// resync (the recovery for a stranded `NoMigrationPath` context). Presence
+    /// is the signal — it admits a snapshot full-state replacement and is
+    /// cleared once the snapshot completes. Own column for the same
+    /// `context_id`-only collision reason as the markers above. NOT
+    /// synchronized; auto-created from `Column::iter()` (no DB migration).
+    ContextResyncRequested,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {

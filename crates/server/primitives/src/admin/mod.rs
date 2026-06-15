@@ -2017,6 +2017,31 @@ pub struct AbortMigrationApiResponse {
     pub aborted: bool,
 }
 
+/// Request body for resyncing a stranded context from a peer. A resync
+/// overwrites local state with a peer's, discarding any local DAG heads, so
+/// `force` must be set when the context still holds them.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResyncContextApiRequest {
+    #[serde(default)]
+    pub force: bool,
+}
+
+impl Validate for ResyncContextApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResyncContextApiResponse {
+    /// Hex-encoded 32-byte context id the resync targeted.
+    pub context_id: String,
+    /// `true` when the resync marker was set and a sync was triggered.
+    pub resync_started: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupUpgradeStatusApiData {

@@ -944,6 +944,31 @@ pub struct AbortMigrationResponse {
     pub aborted: bool,
 }
 
+/// Request a full-state resync of one context — the recovery for a stranded
+/// `NoMigrationPath` context that cannot replay its next upgrade-ladder rung.
+///
+/// Marks the context for a snapshot full-state replacement and triggers a sync.
+/// Destructive: any local state not present on the peer it syncs from is
+/// discarded, so it refuses when the context holds local DAG heads unless
+/// `force` is set. The context must belong to a group.
+#[derive(Clone, Copy, Debug)]
+pub struct ResyncContextRequest {
+    pub context_id: ContextId,
+    pub force: bool,
+}
+
+impl Message for ResyncContextRequest {
+    type Result = eyre::Result<ResyncContextResponse>;
+}
+
+/// Outcome of a [`ResyncContextRequest`].
+#[derive(Clone, Copy, Debug)]
+pub struct ResyncContextResponse {
+    pub context_id: ContextId,
+    /// `true` when the resync marker was set and a sync was triggered.
+    pub resync_started: bool,
+}
+
 /// Request the migration-status rollup for a namespace subtree (Task 6c.9).
 ///
 /// Resolves the pinned-cohort expected members (the inherited-membership
