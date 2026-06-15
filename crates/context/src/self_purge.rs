@@ -1781,9 +1781,11 @@ mod tests {
         // `stale_clear_failed`. Happy path: a present marker clears and the
         // function reports success, leaving no marker. (A failing clear can't
         // be cheaply provoked with the InMemoryDB — `clear` is an idempotent
-        // delete that returns Ok even on an absent key — so we cover the
-        // success path here; the false branch is exercised in the metrics
-        // recorder test `self_purge_reconcile_register_and_encode`.)
+        // delete that returns Ok even on an absent key — so `clear_marker`'s
+        // `false` return is not directly exercised here. The `stale_clear_failed`
+        // reconcile *outcome* that a false return feeds into is covered
+        // separately in the metrics recorder test
+        // `self_purge_reconcile_register_and_encode`.)
         let store = empty_store();
         let ns_id = ContextGroupId::from([0x55u8; 32]);
         PendingSelfPurgeRepository::new(&store)
