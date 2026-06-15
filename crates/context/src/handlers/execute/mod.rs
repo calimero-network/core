@@ -47,9 +47,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::update_application::{
-    create_storage_callbacks, update_application_id, update_application_with_migration,
+    clear_migration_failed, create_storage_callbacks, persist_migration_failed,
+    update_application_id, update_application_with_migration,
 };
 use crate::ContextManager;
+use calimero_context_client::group::MigrationFailureKind;
 use calimero_governance_store::metrics::ExecutionLabels;
 
 mod governance_position;
@@ -1170,6 +1172,14 @@ impl ContextManager {
             let migration = match resolved {
                 Ok(m) => m,
                 Err(err) => {
+                    // Rung blob unobtainable or its ABI unreadable: the context
+                    // stays on its current real version and surfaces as stranded
+                    // for operator resync. Retried on next access.
+                    persist_migration_failed(
+                        &act.datastore,
+                        context_id,
+                        MigrationFailureKind::NoMigrationPath,
+                    );
                     warn!(
                         %context_id, %err,
                         "ladder hop blocked; proceeding with current application"
@@ -1248,6 +1258,7 @@ impl ContextManager {
                     )
                     .await?;
                     crate::activation::record_activation(&datastore, &context_id, rung_app_key);
+                    clear_migration_failed(&datastore, context_id);
                     Ok(())
                 }
                 .into_actor(act)
