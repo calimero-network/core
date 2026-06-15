@@ -1090,7 +1090,22 @@ impl SyncManager {
             );
         }
 
-        if is_uninitialized || has_incomplete_sync {
+        // An operator resync request must take the full-state snapshot path:
+        // incremental sync would absorb-buffer the peer's newer-schema deltas
+        // (the fence drops them against the stranded local version), never
+        // replacing the state.
+        let has_resync_requested = self
+            .context_client
+            .datastore_handle()
+            .get(&calimero_store::key::ContextResyncRequested::new(
+                context_id.into(),
+            ))?
+            .is_some();
+        if has_resync_requested {
+            warn!(%context_id, "Operator resync requested, forcing snapshot sync");
+        }
+
+        if is_uninitialized || has_incomplete_sync || has_resync_requested {
             info!(
                 %context_id,
                 %chosen_peer,
