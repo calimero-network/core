@@ -701,14 +701,17 @@ impl Handler<ExecuteRequest> for ContextManager {
 
             // For an xcall, deny any method the target app didn't mark
             // `#[app::xcall]`. No declared set ⇒ not gated. Keyed by the
-            // executing blob, like the read-only lookup above.
+            // executing blob, like the read-only lookup above. Applies to every
+            // xcall-dispatched run, including internal methods like
+            // `__calimero_sync_next` — a guest must not reach those via xcall
+            // (they are never `#[app::xcall]`); the sync path itself carries no
+            // origin, so legitimate state ops are unaffected.
             let xcall_blob = act.executing_blob_for_context(&context.id).or_else(|| {
                 act.applications
                     .get(&context.application_id)
                     .map(|app| app.blob.bytecode)
             });
             let xcall_denied = xcall_origin.is_some()
-                && !is_state_op
                 && xcall_blob.is_some_and(|blob| {
                     act.xcall_methods
                         .get(&(blob, context.service_name.clone()))
@@ -1003,15 +1006,32 @@ impl Handler<ExecuteRequest> for ContextManager {
                             .await;
 
                         match xcall_result {
-                            Ok(_) => {
-                                info!(
-                                    %context_id,
-                                    target_context = ?target_context_id,
-                                    function = %xcall.function,
-                                    "Cross-context call executed successfully"
-                                );
-                                emit(XCallOutcome::Ok);
-                            }
+                            // A normally-finished run returns `Ok(ExecuteResponse)`
+                            // even when the target *method* errored — that failure
+                            // lives in `returns`, so inspect it before reporting Ok.
+                            Ok(response) => match &response.returns {
+                                Ok(_) => {
+                                    info!(
+                                        %context_id,
+                                        target_context = ?target_context_id,
+                                        function = %xcall.function,
+                                        "Cross-context call executed successfully"
+                                    );
+                                    emit(XCallOutcome::Ok);
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        %context_id,
+                                        target_context = ?target_context_id,
+                                        function = %xcall.function,
+                                        %err,
+                                        "Cross-context call target method returned an error"
+                                    );
+                                    emit(XCallOutcome::ExecError {
+                                        message: err.to_string(),
+                                    });
+                                }
+                            },
                             // A rejected entry point is a denial, not an exec error.
                             Err(ExecuteError::XCallNotPermitted { .. }) => {
                                 warn!(
