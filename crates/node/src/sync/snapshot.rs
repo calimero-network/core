@@ -350,7 +350,7 @@ impl SyncManager {
         info!(%context_id, root_hash = %boundary.boundary_root_hash, "Received boundary");
 
         let applied_records = self
-            .request_and_apply_snapshot_pages(context_id, &boundary, &mut stream)
+            .request_and_apply_snapshot_pages(context_id, &boundary, force, &mut stream)
             .await?;
 
         // Verify snapshot integrity by computing the actual root hash from storage (I7).
@@ -486,6 +486,11 @@ impl SyncManager {
         &self,
         context_id: ContextId,
         boundary: &SnapshotBoundary,
+        // `true` for an operator resync (force): adopt the peer's state wholesale,
+        // bypassing the per-entity schema fence below. A stranded context's
+        // loaded reader is its OLD bound blob, so fencing here would decline the
+        // peer's current-schema entities and recover nothing.
+        force: bool,
         stream: &mut Stream,
     ) -> Result<usize> {
         use calimero_node_primitives::sync::InitPayload;
@@ -538,13 +543,20 @@ impl SyncManager {
         // reader). A snapshot `Entity` whose sender stamped a newer
         // `schema_app_key` is declined+buffered rather than `handle.put`-stored.
         // `None` (non-group context / unresolvable meta) ⇒ no gate — apply as
-        // today (parity with the leaf path's `handle_entity_push`).
-        let loaded_app_key = calimero_context::hlc_fence::loaded_reader_app_key(
-            self.context_client.datastore(),
-            &context_id,
-        )
-        .ok()
-        .flatten();
+        // today (parity with the leaf path's `handle_entity_push`). A forced
+        // resync also disables the gate (None): it is an authorized full-state
+        // replacement to the peer's current schema, and the stale local marker
+        // would otherwise decline every current-schema entity.
+        let loaded_app_key = if force {
+            None
+        } else {
+            calimero_context::hlc_fence::loaded_reader_app_key(
+                self.context_client.datastore(),
+                &context_id,
+            )
+            .ok()
+            .flatten()
+        };
 
         // `SharedMember` entities are verified in a SECOND pass, after every
         // page has been applied. A member carries no inline writer set — its

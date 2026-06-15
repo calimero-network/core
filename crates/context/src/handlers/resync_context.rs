@@ -2,7 +2,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{ResyncContextRequest, ResyncContextResponse};
 use calimero_governance_store::get_group_for_context;
 use calimero_store::key;
-use eyre::bail;
+use eyre::{bail, WrapErr};
 use tracing::info;
 
 use crate::ContextManager;
@@ -44,10 +44,14 @@ impl Handler<ResyncContextRequest> for ContextManager {
                     bail!("context {context_id}: {refusal}");
                 }
 
-                datastore
-                    .handle()
-                    .put(&key::ContextResyncRequested::new(context_id.into()), &())?;
-                node_client.sync(Some(&context_id), None).await?;
+                let marker = key::ContextResyncRequested::new(context_id.into());
+                datastore.handle().put(&marker, &())?;
+                // Roll the marker back if the sync can't even be enqueued, so a
+                // failed request can't leave the context stuck forcing snapshots.
+                if let Err(err) = node_client.sync(Some(&context_id), None).await {
+                    let _ = datastore.handle().delete(&marker);
+                    return Err(err).wrap_err("failed to trigger resync");
+                }
                 info!(%context_id, force, "context resync requested");
                 Ok(ResyncContextResponse {
                     context_id,
