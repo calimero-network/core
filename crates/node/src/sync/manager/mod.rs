@@ -93,6 +93,36 @@ impl std::fmt::Display for NoPeersAvailable {
 
 impl std::error::Error for NoPeersAvailable {}
 
+/// Parent-pull budget exhausted with DAG parents still missing from the whole
+/// mesh. Typed so the per-peer retry can distinguish it from peer-specific
+/// failures and stop rather than re-run the pipeline for the same miss.
+#[derive(Debug, Clone, Copy)]
+pub struct PendingParentsUnresolved {
+    pub context_id: ContextId,
+    pub remaining: usize,
+    pub attempts: usize,
+}
+
+impl std::fmt::Display for PendingParentsUnresolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "pending parents unresolved for context {}: {} remaining after {} peer attempt(s)",
+            self.context_id, self.remaining, self.attempts
+        )
+    }
+}
+
+impl std::error::Error for PendingParentsUnresolved {}
+
+/// Whether the `perform_interval_sync` loop should stop trying peers. Only
+/// `PendingParentsUnresolved` stops it (the parent-pull loop already swept the
+/// mesh); other errors are peer-specific and the loop advances. Downcasts
+/// through eyre context so it matches after `handle_dag_sync`'s `wrap_err`.
+fn should_stop_peer_retry(err: &eyre::Error) -> bool {
+    err.downcast_ref::<PendingParentsUnresolved>().is_some()
+}
+
 /// Network synchronization manager.
 ///
 /// Orchestrates sync protocols: full resync, delta sync, state sync.
@@ -671,8 +701,15 @@ impl SyncManager {
             );
         }
         for peer_id in &shuffled {
-            if let Ok(result) = self.initiate_sync(context_id, *peer_id).await {
-                return Ok(result);
+            match self.initiate_sync(context_id, *peer_id).await {
+                Ok(result) => return Ok(result),
+                Err(err) => {
+                    // Stop if the mesh genuinely lacks the parents; otherwise
+                    // the failure is peer-specific, so try the next peer.
+                    if should_stop_peer_retry(&err) {
+                        return Err(err);
+                    }
+                }
             }
         }
 
@@ -2245,12 +2282,11 @@ impl SyncManager {
                         peer_attempts = budget.total_attempts(),
                         "DAG sync ended with unresolved missing parents"
                     );
-                    bail!(
-                        "pending parents unresolved for context {}: {} remaining after {} peer attempt(s)",
+                    return Err(eyre::Error::new(PendingParentsUnresolved {
                         context_id,
-                        final_missing.missing_ids.len(),
-                        budget.total_attempts(),
-                    );
+                        remaining: final_missing.missing_ids.len(),
+                        attempts: budget.total_attempts(),
+                    }));
                 }
 
                 // Success: DAG is fully resolved.

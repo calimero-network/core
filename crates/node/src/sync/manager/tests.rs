@@ -412,3 +412,54 @@ mod key_recovery_trigger {
             .is_empty());
     }
 }
+
+// `should_stop_peer_retry` stops `perform_interval_sync` only for the
+// unsatisfiable PendingParentsUnresolved, not peer-specific failures.
+mod pending_parents_short_circuit {
+    use calimero_primitives::context::ContextId;
+
+    use super::super::{should_stop_peer_retry, NoPeersAvailable, PendingParentsUnresolved};
+
+    fn ctx() -> ContextId {
+        ContextId::from([7u8; 32])
+    }
+
+    #[test]
+    fn budget_exhausted_parent_pull_stops_the_peer_loop() {
+        let err = eyre::Error::new(PendingParentsUnresolved {
+            context_id: ctx(),
+            remaining: 3,
+            attempts: 4,
+        });
+        assert!(
+            should_stop_peer_retry(&err),
+            "budget-exhausted parent pull is unsatisfiable by another peer"
+        );
+    }
+
+    #[test]
+    fn detection_survives_wrap_err() {
+        // handle_dag_sync wraps the error before it reaches the retry loop;
+        // if downcast didn't traverse the chain the fix would be a no-op.
+        use eyre::WrapErr as _;
+        let wrapped = Err::<(), _>(eyre::Error::new(PendingParentsUnresolved {
+            context_id: ctx(),
+            remaining: 1,
+            attempts: 2,
+        }))
+        .wrap_err("request DAG heads and sync")
+        .unwrap_err();
+        assert!(should_stop_peer_retry(&wrapped));
+    }
+
+    #[test]
+    fn peer_specific_errors_keep_iterating() {
+        // A different peer can still succeed, so these must not short-circuit.
+        assert!(!should_stop_peer_retry(&eyre::eyre!(
+            "connection reset by peer"
+        )));
+        assert!(!should_stop_peer_retry(&eyre::Error::new(
+            NoPeersAvailable { context_id: ctx() }
+        )));
+    }
+}
