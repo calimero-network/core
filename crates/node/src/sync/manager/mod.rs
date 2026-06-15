@@ -121,6 +121,7 @@ impl std::error::Error for PendingParentsUnresolved {}
 /// through eyre's context chain, so it matches under the `wrap_err` layers
 /// added between the error origin and `perform_interval_sync`.
 fn should_stop_peer_retry(err: &eyre::Error) -> bool {
+    // Whitelist by type: NoPeersAvailable and transport errors fall through on purpose.
     err.downcast_ref::<PendingParentsUnresolved>().is_some()
 }
 

@@ -464,6 +464,17 @@ mod pending_parents_short_circuit {
     }
 
     #[test]
+    fn non_swept_path_message_alone_does_not_short_circuit() {
+        // The cap/time-budget path bail!s the same wording untyped; only the
+        // type stops the loop, so a message-identical plain error must not.
+        let plain = eyre::eyre!(
+            "pending parents unresolved for context {}: 3 remaining after 4 peer attempt(s)",
+            ctx()
+        );
+        assert!(!should_stop_peer_retry(&plain));
+    }
+
+    #[test]
     fn display_pins_operator_log_format() {
         // The non-swept path bail!s via this Display, so keep the operator-facing
         // line stable regardless of which path produced it.
