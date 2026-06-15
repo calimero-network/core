@@ -35,19 +35,21 @@ impl<'a> NamespaceMembershipService<'a> {
         let group_id = inv.group_id;
 
         self.verify_member_join_signature(signer, member, signed_invitation)?;
-        let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
-        self.require_inviter_permission(&group_id, &inviter_pk)?;
 
         // Deterministic expiry gate: reject when the joiner's signed
-        // claimed join time is past the invitation's expiry. Compared
-        // against the op's own field (not a local clock) so every node
-        // reaches the same verdict regardless of when it applies the op.
+        // claimed join time is past expiry, comparing the op's own field
+        // (not a local clock) so every node reaches the same verdict.
+        // Runs after signature verification (so `expiration` is authentic)
+        // but before the permission lookup, to reject expired ops cheaply.
         if let Some(joined_at) = joined_at {
             let expiration = inv.expiration_timestamp;
             if expiration != 0 && joined_at > expiration {
                 bail!("invitation expired: joined_at {joined_at} > expiration {expiration}");
             }
         }
+
+        let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
+        self.require_inviter_permission(&group_id, &inviter_pk)?;
 
         // Direct-row dedup: a `MemberJoined` op materializes the joiner's
         // direct membership row. An identity that already inherits
