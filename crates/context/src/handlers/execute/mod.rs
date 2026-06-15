@@ -1230,6 +1230,15 @@ impl ContextManager {
                                 act.replay_upgrade_ladder(guard, context_id, executor, budget - 1)
                             }
                             Err(err) => {
+                                // Rung resolved but its migrate failed to apply:
+                                // surface ApplyFailed (not the stale resolve-time
+                                // NoMigrationPath). Stuck on current; retried on
+                                // next access, marker self-clears on success.
+                                persist_migration_failed(
+                                    &act.datastore,
+                                    context_id,
+                                    MigrationFailureKind::ApplyFailed,
+                                );
                                 warn!(
                                     %context_id, %err,
                                     "ladder hop failed, proceeding with current application"
@@ -1265,6 +1274,13 @@ impl ContextManager {
                 .then(move |hop: eyre::Result<()>, act, _ctx| match hop {
                     Ok(()) => act.replay_upgrade_ladder(guard, context_id, executor, budget - 1),
                     Err(err) => {
+                        // Code-only rung swap failed: surface ApplyFailed so the
+                        // context reports its real failure mode, not a stale one.
+                        persist_migration_failed(
+                            &act.datastore,
+                            context_id,
+                            MigrationFailureKind::ApplyFailed,
+                        );
                         warn!(
                             %context_id, %err,
                             "ladder hop failed, proceeding with current application"

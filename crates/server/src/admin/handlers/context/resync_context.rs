@@ -2,12 +2,12 @@ use core::str::FromStr;
 use std::sync::Arc;
 
 use axum::extract::Path;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::ResyncContextRequest;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{ResyncContextApiRequest, ResyncContextApiResponse};
-use reqwest::StatusCode;
 use tracing::{error, info};
 
 use crate::admin::handlers::validation::ValidatedJson;

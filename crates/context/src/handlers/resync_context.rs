@@ -3,7 +3,7 @@ use calimero_context_client::group::{ResyncContextRequest, ResyncContextResponse
 use calimero_governance_store::get_group_for_context;
 use calimero_store::key;
 use eyre::{bail, WrapErr};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::ContextManager;
 
@@ -49,7 +49,9 @@ impl Handler<ResyncContextRequest> for ContextManager {
                 // Roll the marker back if the sync can't even be enqueued, so a
                 // failed request can't leave the context stuck forcing snapshots.
                 if let Err(err) = node_client.sync(Some(&context_id), None).await {
-                    let _ = datastore.handle().delete(&marker);
+                    if let Err(del) = datastore.handle().delete(&marker) {
+                        warn!(%context_id, %del, "failed to roll back resync marker");
+                    }
                     return Err(err).wrap_err("failed to trigger resync");
                 }
                 info!(%context_id, force, "context resync requested");
