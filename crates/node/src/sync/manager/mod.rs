@@ -2226,7 +2226,8 @@ impl SyncManager {
                             match budget.next(&mesh_peers) {
                                 super::parent_pull::NextPeer::Peer(p) => p,
                                 other => {
-                                    mesh_exhausted =
+                                    // Sticky: once swept, stay swept.
+                                    mesh_exhausted |=
                                         matches!(other, super::parent_pull::NextPeer::NoMorePeers);
                                     debug!(
                                         %context_id,
@@ -2293,22 +2294,17 @@ impl SyncManager {
                         mesh_exhausted,
                         "DAG sync ended with unresolved missing parents"
                     );
-                    // Typed (caller short-circuits) only when the whole mesh
-                    // was swept; a cap/time-budget stop leaves untried peers, so
-                    // a plain error lets the caller's loop try the next peer.
-                    if mesh_exhausted {
-                        return Err(eyre::Error::new(PendingParentsUnresolved {
-                            context_id,
-                            remaining: final_missing.missing_ids.len(),
-                            attempts: budget.total_attempts(),
-                        }));
-                    }
-                    bail!(
-                        "pending parents unresolved for context {}: {} remaining after {} peer attempt(s)",
+                    let unresolved = PendingParentsUnresolved {
                         context_id,
-                        final_missing.missing_ids.len(),
-                        budget.total_attempts(),
-                    );
+                        remaining: final_missing.missing_ids.len(),
+                        attempts: budget.total_attempts(),
+                    };
+                    // Typed only on a fully-swept mesh (caller short-circuits);
+                    // else a plain error lets the caller try remaining peers.
+                    if mesh_exhausted {
+                        return Err(eyre::Error::new(unresolved));
+                    }
+                    bail!("{unresolved}");
                 }
 
                 // Success: DAG is fully resolved.
