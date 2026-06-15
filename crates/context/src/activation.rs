@@ -3,7 +3,9 @@
 //! the sync gate, the lazy trigger, and the migration rollup, with a single
 //! up-to-date rule: `marker == group.app_key`.
 
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_store::key::LadderRung;
 use calimero_store::Store;
 use tracing::debug;
 
@@ -30,6 +32,33 @@ pub fn record_activation(store: &Store, context_id: &ContextId, blob: [u8; 32]) 
     }
 }
 
+/// The next upgrade rung a context bound to `bound` must replay from the
+/// group's ladder, or `None` when it is already at the group's current
+/// bytecode. The LAST occurrence of `bound` positions the context (an
+/// A→B→A re-pin means the group currently sits at the later A). A bound
+/// blob the ladder never recorded (creation version, or a pre-ladder
+/// upgrade target) starts from the first rung; an empty or stale ladder
+/// degrades to a single synthesized jump to the group's current target —
+/// exactly the pre-ladder behavior.
+pub fn next_rung(
+    ladder: &[LadderRung],
+    bound: [u8; 32],
+    group_app_key: [u8; 32],
+    group_target: ApplicationId,
+) -> Option<LadderRung> {
+    if bound == group_app_key {
+        return None;
+    }
+    let single_jump = LadderRung {
+        app_key: group_app_key,
+        application_id: group_target,
+    };
+    match ladder.iter().rposition(|r| r.app_key == bound) {
+        Some(i) => Some(ladder.get(i + 1).cloned().unwrap_or(single_jump)),
+        None => Some(ladder.first().cloned().unwrap_or(single_jump)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -40,6 +69,88 @@ mod tests {
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    fn rung(byte: u8) -> LadderRung {
+        LadderRung {
+            app_key: [byte; 32],
+            application_id: ApplicationId::from([byte; 32]),
+        }
+    }
+
+    const TARGET: [u8; 32] = [0x09; 32];
+
+    fn target_id() -> ApplicationId {
+        ApplicationId::from(TARGET)
+    }
+
+    #[test]
+    fn up_to_date_returns_none() {
+        // Even with a populated ladder, bound == group app_key is terminal.
+        let ladder = vec![rung(0x01), rung(0x09)];
+        assert_eq!(next_rung(&ladder, TARGET, TARGET, target_id()), None);
+    }
+
+    #[test]
+    fn mid_ladder_returns_next() {
+        let ladder = vec![rung(0x01), rung(0x02), rung(0x09)];
+        assert_eq!(
+            next_rung(&ladder, [0x01; 32], TARGET, target_id()),
+            Some(rung(0x02))
+        );
+        assert_eq!(
+            next_rung(&ladder, [0x02; 32], TARGET, target_id()),
+            Some(rung(0x09))
+        );
+    }
+
+    #[test]
+    fn bound_not_in_ladder_starts_at_first_rung() {
+        // A context still at its creation version: the ladder only records
+        // upgrade targets, so the creation blob is never in it.
+        let ladder = vec![rung(0x02), rung(0x09)];
+        assert_eq!(
+            next_rung(&ladder, [0x77; 32], TARGET, target_id()),
+            Some(rung(0x02))
+        );
+    }
+
+    #[test]
+    fn empty_ladder_synthesizes_single_jump() {
+        // Pre-ladder group: degrade to today's one-jump-to-target behavior.
+        assert_eq!(
+            next_rung(&[], [0x77; 32], TARGET, target_id()),
+            Some(LadderRung {
+                app_key: TARGET,
+                application_id: target_id(),
+            })
+        );
+    }
+
+    #[test]
+    fn last_occurrence_positions_the_context() {
+        // A→B→A→C: a context bound at A sits at the LATER A (the group
+        // re-pinned A as its third upgrade), so its next hop is C.
+        let ladder = vec![rung(0x01), rung(0x02), rung(0x01), rung(0x09)];
+        assert_eq!(
+            next_rung(&ladder, [0x01; 32], TARGET, target_id()),
+            Some(rung(0x09))
+        );
+    }
+
+    #[test]
+    fn stale_ladder_top_synthesizes_single_jump() {
+        // Bound is the ladder's last rung but the group meta already points
+        // past it (fold raced ahead of the ladder, or pre-ladder upgrade):
+        // degrade to the single jump rather than walking nowhere.
+        let ladder = vec![rung(0x01), rung(0x02)];
+        assert_eq!(
+            next_rung(&ladder, [0x02; 32], TARGET, target_id()),
+            Some(LadderRung {
+                app_key: TARGET,
+                application_id: target_id(),
+            })
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use super::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
-    MetadataRepository, NamespaceRepository, SigningKeysRepository, UpgradesRepository,
+    MetadataRepository, NamespaceRepository, SigningKeysRepository, UpgradeLadderRepository,
+    UpgradesRepository,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
@@ -179,6 +180,44 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
             .as_deref(),
         Some("group-main")
     );
+}
+
+#[test]
+fn set_target_application_appends_upgrade_ladder_rung() {
+    // The ladder is captured at the single choke point every upgrade op
+    // passes through, in the order targets were applied; re-applying the
+    // same target (op replay) must not double a rung.
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x21; 32]);
+
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+
+    let settings = GroupSettingsService::new(&store, gid);
+    let app_v2 = ApplicationId::from([0xD2; 32]);
+    let app_v3 = ApplicationId::from([0xD3; 32]);
+
+    settings
+        .set_target_application(&admin, &[0x02; 32], &app_v2)
+        .unwrap();
+    settings
+        .set_target_application(&admin, &[0x02; 32], &app_v2)
+        .unwrap();
+    settings
+        .set_target_application(&admin, &[0x03; 32], &app_v3)
+        .unwrap();
+
+    let rungs = UpgradeLadderRepository::new(&store).load(&gid).unwrap();
+    assert_eq!(rungs.len(), 2);
+    assert_eq!(rungs[0].app_key, [0x02; 32]);
+    assert_eq!(rungs[0].application_id, app_v2);
+    assert_eq!(rungs[1].app_key, [0x03; 32]);
+    assert_eq!(rungs[1].application_id, app_v3);
 }
 
 #[test]

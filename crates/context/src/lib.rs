@@ -105,6 +105,7 @@ pub mod group_store {
         NamespaceRepository,
         SigningKeysError,
         SigningKeysRepository,
+        UpgradeLadderRepository,
         UpgradesRepository,
     };
 }

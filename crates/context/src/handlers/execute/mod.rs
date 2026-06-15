@@ -62,7 +62,7 @@ pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions};
 use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
 use upgrade_gate::{
     maybe_lazy_upgrade, resolve_producing_app_key, should_block, upgrade_blocks_write,
-    upgrade_rejects_committed_write,
+    upgrade_rejects_committed_write, LazyUpgradeAction,
 };
 
 impl Handler<ExecuteRequest> for ContextManager {
@@ -468,50 +468,48 @@ impl Handler<ExecuteRequest> for ContextManager {
         // context_task future can call update_application_id / update_application_with_migration
         // directly without routing through the actor mailbox (which would deadlock while an
         // ActorFuture is in flight on the same actor).
-        let lazy_upgrade_task = guard_task.map(move |guard, act, _ctx| {
-            if let Some((target_app_id, migrate_method, target_app_key)) = lazy_upgrade_params {
-                info!(
-                    %context_id,
-                    %target_app_id,
-                    %executor,
-                    "performing lazy upgrade before execution"
-                );
-                let datastore = act.datastore.clone();
-                let node_client = act.node_client.clone();
-                let context_client = act.context_client.clone();
-                let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
-                let application = act.applications.get(&target_app_id).cloned();
-                return Ok(Either::Right((
-                    guard,
-                    datastore,
-                    node_client,
-                    context_client,
-                    context_id,
-                    target_app_id,
-                    context_meta,
-                    application,
-                    migrate_method,
-                    target_app_key,
-                )));
+        let lazy_upgrade_task = guard_task.map(move |guard, _act, _ctx| {
+            if let Some(action) = lazy_upgrade_params {
+                info!(%context_id, %executor, "performing lazy upgrade before execution");
+                return Ok(Either::Right((guard, action)));
             }
             Ok(Either::Left(guard))
         });
 
         let context_task = lazy_upgrade_task.and_then(move |either, act, _ctx| {
-            match either {
-                Either::Left(guard) => async move { Ok(guard) }.into_actor(act).boxed_local(),
-                Either::Right((
-                    guard,
-                    datastore,
-                    node_client,
-                    context_client,
-                    cid,
-                    target_app,
-                    context_meta,
-                    application,
-                    migrate,
+            let (guard, action) = match either {
+                Either::Left(guard) => {
+                    return async move { Ok(guard) }.into_actor(act).boxed_local()
+                }
+                Either::Right(parts) => parts,
+            };
+            match action {
+                // Marker-ed context: replay the group's upgrade ladder hop by
+                // hop, re-resolving after each committed hop. The per-access
+                // budget bounds a pathological marker-write failure loop; a
+                // longer ladder resumes on the next access from the last
+                // committed rung.
+                LazyUpgradeAction::Replay { .. } => {
+                    act.replay_upgrade_ladder(
+                        guard,
+                        context_id,
+                        executor,
+                        ContextManager::LADDER_HOP_BUDGET,
+                    )
+                }
+                // Marker-less context: the pre-ladder single jump to the
+                // group's current target, method from the group-level hint.
+                LazyUpgradeAction::SingleJump {
+                    target_application_id: target_app,
+                    migrate_method: migrate,
                     target_app_key,
-                )) => {
+                } => {
+                    let datastore = act.datastore.clone();
+                    let node_client = act.node_client.clone();
+                    let context_client = act.context_client.clone();
+                    let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
+                    let application = act.applications.get(&target_app).cloned();
+                    let cid = context_id;
                     if let Some(method) = migrate {
                         let migration_params = MigrationParams { method: method.clone() };
                         let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
@@ -1093,6 +1091,182 @@ impl ContextManager {
     /// blob otherwise) and delegate to [`Self::get_module_for_blob`]. The
     /// row is a download-cache pointer ("latest fetched") — contexts bound
     /// to a specific version load through their blob directly.
+    /// Max ladder hops one access replays — bounds a pathological
+    /// marker-write failure loop; ladders are realistically 1-3 rungs and a
+    /// longer one resumes on the next access from the last committed rung.
+    const LADDER_HOP_BUDGET: u8 = 8;
+
+    /// Replay the group's upgrade ladder for one context: each rung runs in
+    /// that release's own bytecode, with its method resolved from the two
+    /// blobs' embedded ABIs — the group-level migration hint is never
+    /// executed here, since it describes only the group's most recent hop.
+    /// A blocked or failed hop stops the walk and the call proceeds on the
+    /// context's current version; activation is recorded per committed hop,
+    /// so the next access resumes from a real version. `budget` bounds one
+    /// access's hops (a longer ladder simply resumes on the next access).
+    fn replay_upgrade_ladder(
+        &mut self,
+        guard: ContextGuard,
+        context_id: ContextId,
+        executor: PublicKey,
+        budget: u8,
+    ) -> actix::fut::LocalBoxActorFuture<Self, eyre::Result<ContextGuard>> {
+        use calimero_governance_store::{get_group_for_context, UpgradeLadderRepository};
+
+        let datastore = self.datastore.clone();
+        let next = get_group_for_context(&datastore, &context_id)
+            .ok()
+            .flatten()
+            .and_then(|gid| {
+                let meta = MetaRepository::new(&datastore).load(&gid).ok().flatten()?;
+                let bound = crate::activation::activated_blob(&datastore, &context_id)?;
+                let ladder = UpgradeLadderRepository::new(&datastore)
+                    .load(&gid)
+                    .unwrap_or_default();
+                crate::activation::next_rung(
+                    &ladder,
+                    bound,
+                    meta.app_key,
+                    meta.target_application_id,
+                )
+                .map(|rung| (rung, bound))
+            });
+
+        let Some((rung, bound)) = next else {
+            return async move { Ok(guard) }.into_actor(self).boxed_local();
+        };
+        if budget == 0 {
+            warn!(%context_id, "ladder hop budget exhausted; resuming on next access");
+            return async move { Ok(guard) }.into_actor(self).boxed_local();
+        }
+
+        let rung_app_key = rung.app_key;
+        let rung_application_id = rung.application_id;
+
+        info!(
+            %context_id,
+            from = %hex::encode(bound),
+            to = %hex::encode(rung_app_key),
+            "replaying upgrade ladder hop"
+        );
+
+        let node_client = self.node_client.clone();
+        async move {
+            // Binding a marker to an absent blob would wedge the context, so
+            // the blob must be local (fetched from peers if needed) before
+            // anything else.
+            if !ensure_blob_local(&node_client, &context_id, rung_app_key).await {
+                eyre::bail!("rung bytecode blob not available locally or from peers");
+            }
+            crate::handlers::upgrade_group::resolve_upgrade_from_abis(
+                &node_client,
+                bound,
+                rung_app_key,
+            )
+            .await
+        }
+        .into_actor(self)
+        .then(move |resolved, act, _ctx| {
+            let migration = match resolved {
+                Ok(m) => m,
+                Err(err) => {
+                    warn!(
+                        %context_id, %err,
+                        "ladder hop blocked; proceeding with current application"
+                    );
+                    return async move { Ok(guard) }.into_actor(act).boxed_local();
+                }
+            };
+            let datastore = act.datastore.clone();
+            let node_client = act.node_client.clone();
+            let context_client = act.context_client.clone();
+            let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
+
+            if let Some(params) = migration {
+                let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
+                let migration_v2 = act.config.migration_v2;
+                act.get_module_for_blob(rung_app_key.into(), service_name)
+                    .then(move |module_result, act, _ctx| {
+                        // Re-read cached values; they may have been refreshed
+                        // during the module load.
+                        let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
+                        let application = act.applications.get(&rung_application_id).cloned();
+                        async move {
+                            let module = module_result?;
+                            let _ = update_application_with_migration(
+                                datastore.clone(),
+                                node_client,
+                                context_client,
+                                context_id,
+                                context_meta,
+                                rung_application_id,
+                                application,
+                                executor,
+                                Some(params),
+                                module,
+                                migration_v2,
+                            )
+                            .await?;
+                            crate::activation::record_activation(
+                                &datastore,
+                                &context_id,
+                                rung_app_key,
+                            );
+                            Ok(())
+                        }
+                        .into_actor(act)
+                        .then(move |hop: eyre::Result<()>, act, _ctx| match hop {
+                            Ok(()) => {
+                                act.replay_upgrade_ladder(guard, context_id, executor, budget - 1)
+                            }
+                            Err(err) => {
+                                warn!(
+                                    %context_id, %err,
+                                    "ladder hop failed, proceeding with current application"
+                                );
+                                async move { Ok(guard) }.into_actor(act).boxed_local()
+                            }
+                        })
+                        .boxed_local()
+                    })
+                    .boxed_local()
+            } else {
+                // Code-only rung: no wasm runs — flip the application id and
+                // move the marker.
+                act.evict_application_caches(rung_application_id);
+                let application = act.applications.get(&rung_application_id).cloned();
+                async move {
+                    let _ = update_application_id(
+                        datastore.clone(),
+                        node_client,
+                        context_client,
+                        context_id,
+                        context_meta,
+                        rung_application_id,
+                        application,
+                        executor,
+                    )
+                    .await?;
+                    crate::activation::record_activation(&datastore, &context_id, rung_app_key);
+                    Ok(())
+                }
+                .into_actor(act)
+                .then(move |hop: eyre::Result<()>, act, _ctx| match hop {
+                    Ok(()) => act.replay_upgrade_ladder(guard, context_id, executor, budget - 1),
+                    Err(err) => {
+                        warn!(
+                            %context_id, %err,
+                            "ladder hop failed, proceeding with current application"
+                        );
+                        async move { Ok(guard) }.into_actor(act).boxed_local()
+                    }
+                })
+                .boxed_local()
+            }
+        })
+        .boxed_local()
+    }
+
     pub fn get_module(
         &self,
         application_id: ApplicationId,
