@@ -5,8 +5,9 @@ use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, DeleteContextApiRequest, DeleteContextResponse,
     GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
-    GetContextStorageResponse, GetContextsResponse, SyncContextResponse,
-    UpdateContextApplicationRequest, UpdateContextApplicationResponse,
+    GetContextStorageResponse, GetContextsResponse, ResyncContextApiRequest,
+    ResyncContextApiResponse, SyncContextResponse, UpdateContextApplicationRequest,
+    UpdateContextApplicationResponse,
 };
 use eyre::Result;
 
@@ -110,6 +111,21 @@ where
         let response = self
             .connection
             .post_no_body(&format!("admin-api/contexts/sync/{context_id}"))
+            .await?;
+        Ok(response)
+    }
+
+    /// Resync a stranded context by adopting a peer's full state. Destructive:
+    /// `force` must be set when the context still holds local DAG heads, which
+    /// the resync discards.
+    pub async fn resync_context(
+        &self,
+        context_id: &str,
+        request: ResyncContextApiRequest,
+    ) -> Result<ResyncContextApiResponse> {
+        let response = self
+            .connection
+            .post(&format!("admin-api/contexts/{context_id}/resync"), request)
             .await?;
         Ok(response)
     }
