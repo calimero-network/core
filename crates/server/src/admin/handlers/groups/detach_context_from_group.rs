@@ -11,6 +11,7 @@ use reqwest::StatusCode;
 use tracing::{error, info};
 
 use super::parse_group_id;
+use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::auth::AuthenticatedKey;
@@ -40,12 +41,17 @@ pub async fn handler(
 
     info!(group_id=%group_id_str, context_id=%context_id_str, "Detaching context from group");
 
+    let requester = match resolve_requester(auth_key, req.requester) {
+        Ok(r) => r,
+        Err(err) => return err.into_response(),
+    };
+
     let result = state
         .ctx_client
         .detach_context_from_group(DetachContextFromGroupRequest {
             group_id,
             context_id,
-            requester: auth_key.map(|Extension(k)| k.0).or(req.requester),
+            requester,
         })
         .await
         .map_err(parse_api_error);
