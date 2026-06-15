@@ -149,7 +149,11 @@ impl ServerConfig {
     /// loopback-only bind is always [`AdminExposure::Safe`].
     #[must_use]
     pub fn admin_exposure(&self) -> AdminExposure {
-        if self.admin.is_none() || self.use_embedded_auth() {
+        // Mirror the admin mount gate in `admin::service::setup`: admin is only
+        // served when `admin` is present AND `enabled`. A present-but-disabled
+        // config mounts no admin routes, so it is not an exposure.
+        let admin_enabled = self.admin.as_ref().is_some_and(|cfg| cfg.enabled);
+        if !admin_enabled || self.use_embedded_auth() {
             return AdminExposure::Safe;
         }
         let exposed: Vec<Multiaddr> = self
@@ -264,6 +268,24 @@ mod tests {
             vec![ma("/ip4/0.0.0.0/tcp/2528")],
             AuthMode::Proxy,
             false,
+            false,
+        );
+        assert_eq!(c.admin_exposure(), AdminExposure::Safe);
+    }
+
+    #[test]
+    fn admin_present_but_disabled_is_safe_even_when_exposed() {
+        // `admin` config present but `enabled = false` mounts no admin routes
+        // (see admin::service::setup), so a non-loopback proxy bind is Safe.
+        let c = ServerConfig::with_auth(
+            vec![ma("/ip4/0.0.0.0/tcp/2528")],
+            Keypair::generate_ed25519(),
+            Some(AdminConfig::new(false)),
+            None,
+            None,
+            None,
+            AuthMode::Proxy,
+            None,
             false,
         );
         assert_eq!(c.admin_exposure(), AdminExposure::Safe);
