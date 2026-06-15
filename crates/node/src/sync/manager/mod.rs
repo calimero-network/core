@@ -1077,6 +1077,12 @@ impl SyncManager {
         context: &calimero_primitives::context::Context,
         chosen_peer: PeerId,
         our_identity: PublicKey,
+        // Resolved once by the caller (it also bypasses the upgrade gate on it):
+        // an operator resync request takes the full-state snapshot path with
+        // `force`, since incremental sync would absorb-buffer the peer's
+        // newer-schema deltas against the stranded local version and never
+        // replace the state.
+        has_resync_requested: bool,
         stream: &mut Stream,
     ) -> eyre::Result<Option<SyncProtocol>> {
         let is_uninitialized = *context.root_hash == [0; 32];
@@ -1090,7 +1096,11 @@ impl SyncManager {
             );
         }
 
-        if is_uninitialized || has_incomplete_sync {
+        if has_resync_requested {
+            warn!(%context_id, "Operator resync requested, forcing snapshot sync");
+        }
+
+        if is_uninitialized || has_incomplete_sync || has_resync_requested {
             info!(
                 %context_id,
                 %chosen_peer,
@@ -1115,10 +1125,12 @@ impl SyncManager {
                     );
 
                     // Note: request_snapshot_sync opens its own stream, existing stream
-                    // will be closed when this function returns
-                    // force=false: This is bootstrap for uninitialized nodes
+                    // will be closed when this function returns. `force` is set
+                    // only for an operator resync (authorized full-state replace
+                    // of an initialized context); bootstrap/crash recovery pass
+                    // false and rely on the I5 safety check.
                     match self
-                        .request_snapshot_sync(context_id, chosen_peer, false)
+                        .request_snapshot_sync(context_id, chosen_peer, has_resync_requested)
                         .await
                         .wrap_err("snapshot sync")
                     {
@@ -1428,9 +1440,24 @@ impl SyncManager {
         // state our own LazyOnAccess migration must read as input. Skip
         // as a clean no-op; we self-migrate on next access, after which
         // the gate lifts. See `pending_upgrade_target`.
+        // An operator resync (the recovery for a stranded context) is by
+        // definition behind the group target, so the pending-upgrade gate below
+        // would always fire and skip it. Resolve the marker once here: it
+        // bypasses the gate AND routes `handle_dag_sync` into a forced
+        // full-state snapshot.
+        let has_resync_requested = self
+            .context_client
+            .datastore_handle()
+            .get(&calimero_store::key::ContextResyncRequested::new(
+                context_id.into(),
+            ))?
+            .is_some();
+
         let store_for_gate = self.context_client.datastore_handle().into_inner();
-        if let Some((target, gate_stage_blob)) = pending_upgrade_info(&store_for_gate, &context_id)
-        {
+        if let (false, Some((target, gate_stage_blob))) = (
+            has_resync_requested,
+            pending_upgrade_info(&store_for_gate, &context_id),
+        ) {
             info!(
                 %context_id,
                 %chosen_peer,
@@ -1598,7 +1625,14 @@ impl SyncManager {
         // Phase 3: DAG synchronization (if needed — uninitialized or incomplete DAG)
         let phase_start = Instant::now();
         if let Some(result) = self
-            .handle_dag_sync(context_id, &context, chosen_peer, our_identity, &mut stream)
+            .handle_dag_sync(
+                context_id,
+                &context,
+                chosen_peer,
+                our_identity,
+                has_resync_requested,
+                &mut stream,
+            )
             .await
             .wrap_err("DAG sync")?
         {

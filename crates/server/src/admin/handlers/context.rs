@@ -10,5 +10,6 @@ pub mod get_contexts_with_executors_for_application;
 pub mod invite_specialized_node;
 pub mod join_context;
 pub mod leave_context;
+pub mod resync_context;
 pub mod sync;
 pub mod update_context_application;
