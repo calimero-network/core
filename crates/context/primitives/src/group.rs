@@ -944,6 +944,31 @@ pub struct AbortMigrationResponse {
     pub aborted: bool,
 }
 
+/// Request a full-state resync of one context — the recovery for a stranded
+/// `NoMigrationPath` context that cannot replay its next upgrade-ladder rung.
+///
+/// Marks the context for a snapshot full-state replacement and triggers a sync.
+/// Destructive: any local state not present on the peer it syncs from is
+/// discarded, so it refuses when the context holds local DAG heads unless
+/// `force` is set. The context must belong to a group.
+#[derive(Clone, Copy, Debug)]
+pub struct ResyncContextRequest {
+    pub context_id: ContextId,
+    pub force: bool,
+}
+
+impl Message for ResyncContextRequest {
+    type Result = eyre::Result<ResyncContextResponse>;
+}
+
+/// Outcome of a [`ResyncContextRequest`].
+#[derive(Clone, Copy, Debug)]
+pub struct ResyncContextResponse {
+    pub context_id: ContextId,
+    /// `true` when the resync marker was set and a sync was triggered.
+    pub resync_started: bool,
+}
+
 /// Request the migration-status rollup for a namespace subtree (Task 6c.9).
 ///
 /// Resolves the pinned-cohort expected members (the inherited-membership
@@ -1042,6 +1067,12 @@ pub enum MigrationFailureKind {
     CheckAborted,
     /// The migrate apply itself errored (e.g. the target wasm could not run).
     ApplyFailed,
+    /// The context is behind and cannot replay its next upgrade-ladder rung:
+    /// the rung's bytecode blob is unobtainable (gone from peers/registry) or
+    /// its embedded ABI is unreadable. The context stays on its current real
+    /// version; recovery is an operator-initiated state resync from a peer, or
+    /// reinstalling the missing intermediate version (stepwise upgrade).
+    NoMigrationPath,
 }
 
 impl MigrationFailureKind {
@@ -1051,25 +1082,29 @@ impl MigrationFailureKind {
         match self {
             Self::CheckAborted => "check_aborted",
             Self::ApplyFailed => "apply_failed",
+            Self::NoMigrationPath => "no_migration_path",
         }
     }
 
-    /// Map a wire discriminant byte back to a kind (`1`/`2`); other values None.
+    /// Map a wire discriminant byte back to a kind (`1`/`2`/`3`); other values None.
     #[must_use]
     pub const fn from_u8(b: u8) -> Option<Self> {
         match b {
             1 => Some(Self::CheckAborted),
             2 => Some(Self::ApplyFailed),
+            3 => Some(Self::NoMigrationPath),
             _ => None,
         }
     }
 
     /// The wire discriminant byte (`0` = none is handled by the caller).
+    /// Higher = more severe (the rollup keeps the highest on a tie).
     #[must_use]
     pub const fn to_u8(self) -> u8 {
         match self {
             Self::CheckAborted => 1,
             Self::ApplyFailed => 2,
+            Self::NoMigrationPath => 3,
         }
     }
 }
@@ -1344,6 +1379,43 @@ mod migration_status_tests {
         assert!(!st.rollup.all_migrated);
         let failed = st.members.iter().find(|m| m.peer == pb).unwrap();
         assert_eq!(failed.state, MemberMigrationState::Failed);
+    }
+
+    #[test]
+    fn no_migration_path_member_surfaces_as_failed() {
+        // A context that cannot replay its next ladder rung (blob unobtainable
+        // / ABI unreadable) reports NoMigrationPath and must surface as failed,
+        // exactly like the other failure kinds.
+        let pa = pk(0xA1);
+        let pb = pk(0xB2);
+        let st = compute_migration_status_rollup(2, None, None, &[pa, pb], |peer| {
+            if *peer == pa {
+                Some(report(2, 0, 0))
+            } else {
+                Some(report_failed(MigrationFailureKind::NoMigrationPath))
+            }
+        });
+        assert_eq!(st.rollup.failed, 1);
+        let failed = st.members.iter().find(|m| m.peer == pb).unwrap();
+        assert_eq!(failed.state, MemberMigrationState::Failed);
+    }
+
+    #[test]
+    fn no_migration_path_round_trips_and_is_most_severe() {
+        assert_eq!(
+            MigrationFailureKind::NoMigrationPath.as_str(),
+            "no_migration_path"
+        );
+        assert_eq!(MigrationFailureKind::NoMigrationPath.to_u8(), 3);
+        assert_eq!(
+            MigrationFailureKind::from_u8(3),
+            Some(MigrationFailureKind::NoMigrationPath)
+        );
+        // Highest discriminant ⇒ wins the severity tie-break in the rollup.
+        assert!(
+            MigrationFailureKind::NoMigrationPath.to_u8()
+                > MigrationFailureKind::ApplyFailed.to_u8()
+        );
     }
 
     /// Build the DISPLAY-only HLC fence (`cascade_hlc`) the way the initiator

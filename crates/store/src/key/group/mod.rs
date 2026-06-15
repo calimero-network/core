@@ -41,8 +41,8 @@ pub const GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX: u8 = 0x3C;
 /// Per-group upgrade ladder: the ordered upgrade targets the group has moved
 /// through, captured as fold state when an upgrade op advances
 /// `GroupMeta.app_key`. A behind context replays these rungs in order, each
-/// in that release's own bytecode. (0x3F is reserved for the context-resync
-/// marker.)
+/// in that release's own bytecode. (The context-resync marker lives in its own
+/// `Column::ContextResyncRequested`, not in this group-prefix space.)
 pub const GROUP_UPGRADE_LADDER_PREFIX: u8 = 0x3E;
 
 #[derive(Clone, Copy, Debug)]

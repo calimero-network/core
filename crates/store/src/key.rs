@@ -30,7 +30,7 @@ use component::KeyComponents;
 pub use context::{
     ContextActivatedBlob, ContextAuthoredRemaining, ContextConfig, ContextDagDelta,
     ContextExecutingBlob, ContextIdentity, ContextLeftMarker, ContextMeta, ContextMigrationFailed,
-    ContextPrivateState, ContextState,
+    ContextPrivateState, ContextResyncRequested, ContextState,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{
