@@ -35,6 +35,7 @@ use calimero_server_primitives::admin::JoinGroupApiRequest;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::ReparentGroupApiRequest;
+use calimero_server_primitives::admin::ResyncContextApiRequest;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
@@ -684,6 +685,59 @@ async fn retry_group_upgrade() {
         .unwrap();
 
     assert_eq!(resp.data.group_id, GID);
+}
+
+#[tokio::test]
+async fn get_migration_status() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/groups/{GID}/migration-status")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "targetVersion": 2,
+            "expectedMembers": 1,
+            "rollup": {
+                "migrated": 1,
+                "inProgress": 0,
+                "unknown": 0,
+                "failed": 0,
+                "total": 1,
+                "allMigrated": true,
+                "membersPendingSignature": 0
+            },
+            "members": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client.get_migration_status(GID).await.unwrap();
+
+    assert_eq!(resp.target_version, 2);
+    assert!(resp.rollup.all_migrated);
+}
+
+#[tokio::test]
+async fn resync_context() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/admin-api/contexts/{CID}/resync")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "contextId": CID,
+            "resyncStarted": true
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client
+        .resync_context(CID, ResyncContextApiRequest { force: true })
+        .await
+        .unwrap();
+
+    assert_eq!(resp.context_id, CID);
+    assert!(resp.resync_started);
 }
 
 // ---- Sync & Signing Key ----
