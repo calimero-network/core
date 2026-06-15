@@ -4,8 +4,9 @@
 //! [`AuthenticatedKey`]), that identity is authoritative: a body-supplied
 //! `requester` is accepted only if it matches, and a mismatch is rejected so a
 //! caller cannot drive an operation as a different identity. When the request
-//! is unauthenticated (Proxy auth mode, no embedded guard), the body
-//! `requester` is used as-is, preserving the external-auth deployment model.
+//! When no authenticated identity is present (e.g. external/proxy auth, or no
+//! auth guard configured), the body `requester` is used as-is, preserving the
+//! external-auth deployment model.
 
 use axum::http::StatusCode;
 use axum::Extension;
@@ -61,6 +62,7 @@ mod tests {
         let err =
             resolve_requester(Some(Extension(AuthenticatedKey(pk(1)))), Some(pk(2))).unwrap_err();
         assert_eq!(err.status_code, StatusCode::FORBIDDEN);
+        assert!(err.message.contains("does not match"));
     }
 
     #[test]
