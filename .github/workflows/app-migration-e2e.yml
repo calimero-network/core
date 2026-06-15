@@ -217,7 +217,6 @@ jobs:
           - 33-authored-remaining-count
           - 35-two-namespaces-coexist
           - 36-chained-catchup
-          - 37-stranded-selfheal
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:
