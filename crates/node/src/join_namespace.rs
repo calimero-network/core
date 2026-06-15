@@ -358,9 +358,22 @@ pub async fn await_namespace_ready(
     my_sk_bytes.zeroize();
 
     // step 3: publish MemberJoined via three-phase contract.
-    let op = NamespaceOp::Root(RootOp::MemberJoined {
+    // Local fast-fail on an already-expired invitation; the
+    // authoritative deterministic expiry gate runs on apply.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let expiration = invitation.invitation.expiration_timestamp;
+    if expiration != 0 && now_secs > expiration {
+        return Err(ReadyError::InvalidInvitation(
+            "invitation expired".to_string(),
+        ));
+    }
+    let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
         member: my_pk,
         signed_invitation: invitation,
+        joined_at: now_secs,
     });
     let report = NamespaceGovernance::new(store, namespace_id)
         .sign_and_publish_without_apply(node_client, ack_router, &signing_key, op, None)

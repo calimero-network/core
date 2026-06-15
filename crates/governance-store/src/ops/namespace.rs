@@ -60,7 +60,12 @@ pub(crate) fn dispatch_root_op(
         RootOp::MemberJoined {
             member,
             signed_invitation,
-        } => member_joined::apply(ctx, op, member, signed_invitation),
+        } => member_joined::apply(ctx, op, member, signed_invitation, None),
+        RootOp::MemberJoinedAt {
+            member,
+            signed_invitation,
+            joined_at,
+        } => member_joined::apply(ctx, op, member, signed_invitation, Some(*joined_at)),
         RootOp::MemberJoinedOpen { member, group_id } => {
             member_joined_open::apply(ctx, op, *member, *group_id)
         }

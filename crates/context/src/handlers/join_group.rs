@@ -41,15 +41,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let group_id = invitation.invitation.group_id;
         let invited_role = invitation.invitation.invited_role;
         let expiration = invitation.invitation.expiration_timestamp;
-
-        if expiration != 0 {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            if now > expiration {
-                return ActorResponse::reply(Err(eyre::eyre!("invitation expired")));
-            }
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if expiration != 0 && now_secs > expiration {
+            return ActorResponse::reply(Err(eyre::eyre!("invitation expired")));
         }
 
         let (ns_id, joiner_identity, sk_bytes, _) =
@@ -311,9 +308,10 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // a recognised member from the receiver's view until the
                 // op applies), so `required_signers = None` here — any
                 // ack from any current member is fine.
-                let member_joined_op = NamespaceOp::Root(RootOp::MemberJoined {
+                let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
                     member: joiner_identity,
                     signed_invitation: invitation.clone(),
+                    joined_at: now_secs,
                 });
                 match calimero_governance_store::sign_and_publish_namespace_op(
                     &datastore,

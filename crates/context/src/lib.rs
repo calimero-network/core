@@ -101,6 +101,7 @@ pub mod group_store {
         NamespaceDagService,
         NamespaceError,
         NamespaceGovernance,
+        NamespaceMembershipService,
         NamespaceOpLogService,
         NamespaceRepository,
         SigningKeysError,

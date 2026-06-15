@@ -29,6 +29,7 @@ impl<'a> NamespaceMembershipService<'a> {
         signer: &PublicKey,
         member: &PublicKey,
         signed_invitation: &SignedGroupOpenInvitation,
+        joined_at: Option<u64>,
     ) -> EyreResult<()> {
         let inv = &signed_invitation.invitation;
         let group_id = inv.group_id;
@@ -36,6 +37,17 @@ impl<'a> NamespaceMembershipService<'a> {
         self.verify_member_join_signature(signer, member, signed_invitation)?;
         let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
         self.require_inviter_permission(&group_id, &inviter_pk)?;
+
+        // Deterministic expiry gate: reject when the joiner's signed
+        // claimed join time is past the invitation's expiry. Compared
+        // against the op's own field (not a local clock) so every node
+        // reaches the same verdict regardless of when it applies the op.
+        if let Some(joined_at) = joined_at {
+            let expiration = inv.expiration_timestamp;
+            if expiration != 0 && joined_at > expiration {
+                bail!("invitation expired: joined_at {joined_at} > expiration {expiration}");
+            }
+        }
 
         // Direct-row dedup: a `MemberJoined` op materializes the joiner's
         // direct membership row. An identity that already inherits
@@ -72,6 +84,37 @@ impl<'a> NamespaceMembershipService<'a> {
         Ok(())
     }
 
+    /// Validate an open invitation for the responder key-delivery path:
+    /// inviter signature, namespace ownership, inviter permission, and
+    /// expiry against `now_secs`. Reads a wall clock (supplied by the
+    /// caller) rather than an op field because key delivery is
+    /// point-to-point, not folded governance state, so responders
+    /// disagreeing cannot diverge membership.
+    pub fn validate_open_invitation(
+        &self,
+        signed_invitation: &SignedGroupOpenInvitation,
+        now_secs: u64,
+    ) -> EyreResult<()> {
+        let inv = &signed_invitation.invitation;
+        let group_id = inv.group_id;
+
+        self.verify_inviter_signature(signed_invitation)?;
+
+        let resolved_ns = NamespaceRepository::new(self.store).resolve(&group_id)?;
+        if resolved_ns.to_bytes() != self.namespace_id {
+            bail!("group does not belong to this namespace");
+        }
+
+        let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
+        self.require_inviter_permission(&group_id, &inviter_pk)?;
+
+        let expiration = inv.expiration_timestamp;
+        if expiration != 0 && now_secs > expiration {
+            bail!("invitation expired: now {now_secs} > expiration {expiration}");
+        }
+        Ok(())
+    }
+
     fn verify_member_join_signature(
         &self,
         signer: &PublicKey,
@@ -85,7 +128,13 @@ impl<'a> NamespaceMembershipService<'a> {
                 member
             );
         }
+        self.verify_inviter_signature(signed_invitation)
+    }
 
+    fn verify_inviter_signature(
+        &self,
+        signed_invitation: &SignedGroupOpenInvitation,
+    ) -> EyreResult<()> {
         let inv = &signed_invitation.invitation;
         let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
         let invitation_bytes = borsh::to_vec(inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;

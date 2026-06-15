@@ -425,10 +425,11 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         use calimero_context::group_store::enumerate_group_contexts;
+        use calimero_context::group_store::NamespaceMembershipService;
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::types::SignedGroupOpenInvitation;
 
-        let _invitation: SignedGroupOpenInvitation = match borsh::from_slice(invitation_bytes) {
+        let invitation: SignedGroupOpenInvitation = match borsh::from_slice(invitation_bytes) {
             Ok(inv) => inv,
             Err(err) => {
                 let msg = StreamMessage::Message {
@@ -460,6 +461,29 @@ impl SyncManager {
                 return Ok(());
             }
         };
+
+        // Validate the invitation against this responder's local clock
+        // before releasing the group key or pre-registering the joiner.
+        // A wall-clock check is sound here because key delivery is
+        // point-to-point, not folded governance state, so responders
+        // disagreeing cannot diverge membership.
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if let Err(err) = NamespaceMembershipService::new(&store, namespace_id)
+            .validate_open_invitation(&invitation, now_secs)
+        {
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: format!("invitation rejected: {err}"),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
 
         let key_envelope_bytes = match GroupKeyring::new(&store, group_id).load_current_key()? {
             Some((_key_id, group_key)) => {

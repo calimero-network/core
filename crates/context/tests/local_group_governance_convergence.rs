@@ -36,6 +36,31 @@ fn sample_group_id() -> ContextGroupId {
     ContextGroupId::from([0x77u8; 32])
 }
 
+fn sign_invitation(
+    admin_sk: &PrivateKey,
+    group_id: ContextGroupId,
+    expiration_timestamp: u64,
+    invited_role: u8,
+) -> SignedGroupOpenInvitation {
+    let invitation = GroupInvitationFromAdmin {
+        inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
+        group_id,
+        expiration_timestamp,
+        secret_salt: [0x42; 32],
+        invited_role,
+    };
+    let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
+    let inv_sig = admin_sk
+        .sign(&Sha256::digest(&inv_bytes))
+        .expect("sign invitation");
+    SignedGroupOpenInvitation {
+        invitation,
+        inviter_signature: hex::encode(inv_sig.to_bytes()),
+        application_id: None,
+        app_key: None,
+    }
+}
+
 /// `MemberRemoved` with placeholder cross-DAG claims for tests that
 /// only exercise convergence on the membership-row mutation. The
 /// hashes intentionally don't match real post-apply state — these
@@ -302,6 +327,200 @@ fn two_nodes_converge_on_namespace_member_joined() {
             .is_member(&gid, &joiner_pk)
             .unwrap()
     );
+}
+
+#[test]
+fn member_joined_at_rejects_expired_invitation() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let ns_id = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner_pk = joiner_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let signed_invitation = sign_invitation(&admin_sk, gid, 1_000_000, 1);
+
+    let ns_op = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: joiner_pk,
+            signed_invitation,
+            joined_at: 2_000_000,
+        }),
+    )
+    .expect("sign MemberJoinedAt");
+
+    let result = group_store::apply_signed_namespace_op(&store, &ns_op);
+    assert!(
+        result.is_err(),
+        "expired MemberJoinedAt must be rejected on apply"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&gid, &joiner_pk)
+            .unwrap(),
+        "joiner with an expired invitation must not be recorded as a member"
+    );
+}
+
+#[test]
+fn member_joined_at_accepts_in_window_invitation() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let ns_id = gid.to_bytes();
+    let store_a = empty_store();
+    let store_b = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner_pk = joiner_sk.public_key();
+
+    for store in [&store_a, &store_b] {
+        MetaRepository::new(store)
+            .save(&gid, &sample_meta(admin_pk))
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+    }
+
+    let signed_invitation = sign_invitation(&admin_sk, gid, 9_999_999_999, 1);
+    let ns_op = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: joiner_pk,
+            signed_invitation,
+            joined_at: 1_000_000,
+        }),
+    )
+    .expect("sign MemberJoinedAt");
+
+    group_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
+    group_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
+
+    for store in [&store_a, &store_b] {
+        assert!(MembershipRepository::new(store)
+            .is_member(&gid, &joiner_pk)
+            .unwrap());
+    }
+}
+
+#[test]
+fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let ns_id = gid.to_bytes();
+    let store_a = empty_store();
+    let store_b = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner_pk = joiner_sk.public_key();
+
+    for store in [&store_a, &store_b] {
+        MetaRepository::new(store)
+            .save(&gid, &sample_meta(admin_pk))
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+    }
+
+    // Expiry is in 1970, far before any real wall clock, but the joiner's
+    // claimed `joined_at` is still within the window. A local-clock check
+    // would reject this on every node; the deterministic gate accepts it,
+    // so two independently-applying nodes converge instead of split-brain.
+    let signed_invitation = sign_invitation(&admin_sk, gid, 1_000_000, 1);
+    let ns_op = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: joiner_pk,
+            signed_invitation,
+            joined_at: 999_999,
+        }),
+    )
+    .expect("sign MemberJoinedAt");
+
+    group_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
+    group_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
+
+    for store in [&store_a, &store_b] {
+        assert!(MembershipRepository::new(store)
+            .is_member(&gid, &joiner_pk)
+            .unwrap());
+    }
+}
+
+#[test]
+fn member_joined_at_ignores_zero_expiration() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let ns_id = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner_pk = joiner_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let signed_invitation = sign_invitation(&admin_sk, gid, 0, 1);
+    let ns_op = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: joiner_pk,
+            signed_invitation,
+            joined_at: u64::MAX,
+        }),
+    )
+    .expect("sign MemberJoinedAt");
+
+    group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    assert!(MembershipRepository::new(&store)
+        .is_member(&gid, &joiner_pk)
+        .unwrap());
 }
 
 #[test]

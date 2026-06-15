@@ -302,10 +302,17 @@ fn prefix_walk_membership(
 
     for (_, signed_op) in &walked {
         match &signed_op.op {
-            NamespaceOp::Root(RootOp::MemberJoined {
-                member,
-                signed_invitation,
-            }) => {
+            NamespaceOp::Root(
+                RootOp::MemberJoined {
+                    member,
+                    signed_invitation,
+                }
+                | RootOp::MemberJoinedAt {
+                    member,
+                    signed_invitation,
+                    ..
+                },
+            ) => {
                 if member != signer
                     || signed_invitation.invitation.group_id.to_bytes() != group_id.to_bytes()
                 {
