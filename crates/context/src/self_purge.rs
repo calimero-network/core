@@ -179,9 +179,11 @@ async fn run(store: Store, node_client: NodeClient) {
                 );
                 // #2686: surface the silent-residue count as a metric so
                 // operators can alert on it — the `warn!` above is not
-                // machine-queryable. Counts BY the broadcast-reported skip,
-                // since each dropped `TeeMemberRemoved` is a separate
-                // un-reconcilable eviction.
+                // machine-queryable. `skipped` is the broadcast's total dropped
+                // count across ALL `OpEvent` variants; the channel does not
+                // report which were dropped, so this is an upper bound on dropped
+                // `TeeMemberRemoved` evictions, not an exact count (see the
+                // metric help string in governance-store).
                 record_events_dropped(skipped);
                 continue;
             }

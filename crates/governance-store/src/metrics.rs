@@ -296,18 +296,24 @@ impl Metrics {
         );
 
         // #2686: count of self-purge op-events dropped by the broadcast
-        // `Lagged` arm. A dropped `TeeMemberRemoved` writes no
-        // pending-self-purge marker, so the marker-gated reconcile cannot
-        // recover it — silent residue. A nonzero rate means the self-purge
-        // subscriber fell >1024 events behind (the broadcast capacity) and
-        // some evictions may have left un-reconcilable on-disk residue
-        // (bounded; not a forward-secrecy hole — FS is held by key rotation).
+        // `Lagged` arm. The broadcast reports a single total of dropped
+        // events across EVERY `OpEvent` variant (MemberAdded, ContextRegistered,
+        // …) — it does not tell us which were dropped, so this is an UPPER
+        // BOUND on dropped `TeeMemberRemoved` evictions, not an exact count. A
+        // dropped `TeeMemberRemoved` writes no pending-self-purge marker, so the
+        // marker-gated reconcile cannot recover it — silent residue. A nonzero
+        // rate means the self-purge subscriber fell >1024 events behind (the
+        // broadcast capacity) and some evictions may have left un-reconcilable
+        // on-disk residue (bounded; not a forward-secrecy hole — FS is held by
+        // key rotation).
         let self_purge_events_dropped = Counter::default();
         group_store_registry.register(
             "self_purge_events_dropped_total",
-            "Self-purge op-events dropped by the broadcast Lagged arm; a \
-             dropped TeeMemberRemoved writes no reconcile marker (un-recoverable \
-             residue, bounded)",
+            "All self-purge op-events dropped by the broadcast Lagged arm \
+             (across every OpEvent variant — the broadcast does not report which \
+             were dropped); an upper bound on dropped TeeMemberRemoved evictions, \
+             each of which writes no reconcile marker (un-recoverable residue, \
+             bounded)",
             self_purge_events_dropped.clone(),
         );
 
