@@ -462,4 +462,25 @@ mod pending_parents_short_circuit {
             NoPeersAvailable { context_id: ctx() }
         )));
     }
+
+    #[test]
+    fn display_pins_operator_log_format() {
+        // The non-swept path bail!s via this Display, so keep the operator-facing
+        // line stable regardless of which path produced it.
+        let shown = format!(
+            "{}",
+            PendingParentsUnresolved {
+                context_id: ctx(),
+                remaining: 3,
+                attempts: 4,
+            }
+        );
+        assert_eq!(
+            shown,
+            format!(
+                "pending parents unresolved for context {}: 3 remaining after 4 peer attempt(s)",
+                ctx()
+            )
+        );
+    }
 }
