@@ -1314,6 +1314,24 @@ impl SyncManager {
                 "Protocol selected"
             );
 
+            // Resolve the peer's attributable identity so the HC / LevelWise
+            // initiator can gate authorless leaves on the peer's current
+            // membership (the pull-side mirror of the gossip author check).
+            let session_peer = self
+                .state_access
+                .peer_identities(&chosen_peer)
+                .and_then(|hosted| {
+                    let store = self.context_client.datastore_handle().into_inner();
+                    super::helpers::select_attributable_peer_identity(&hosted, |id| {
+                        calimero_context::group_store::is_currently_authorized_for_context(
+                            &store,
+                            &context_id,
+                            id,
+                        )
+                        .unwrap_or(false)
+                    })
+                });
+
             return self
                 .protocol_selector
                 .execute(
@@ -1324,6 +1342,7 @@ impl SyncManager {
                     our_identity,
                     &context.root_hash,
                     &peer_root_hash,
+                    session_peer,
                     stream,
                 )
                 .await;
