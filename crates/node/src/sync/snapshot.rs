@@ -319,17 +319,11 @@ impl SyncManager {
         // NOTE: force=true is reserved for exceptional cases like test fixtures;
         // divergence recovery must NOT bypass this check (see I5).
         let is_crash_recovery = self.check_sync_in_progress(context_id)?.is_some();
-        // An operator-requested resync (the recovery for a stranded
-        // NoMigrationPath context) admits a full-state replacement too — it is
-        // an explicit, force-gated request to adopt a peer's current state.
-        let is_resync_requested = self
-            .context_client
-            .datastore_handle()
-            .get(&calimero_store::key::ContextResyncRequested::new(
-                context_id.into(),
-            ))?
-            .is_some();
-        if !force && !is_crash_recovery && !is_resync_requested {
+        // An operator resync passes `force` (it routes here from
+        // `handle_dag_sync` for a `ContextResyncRequested` context), so it
+        // bypasses this check without a separate marker term — keeping the I5
+        // gate a pure function of `force` + crash-recovery.
+        if !force && !is_crash_recovery {
             // Check both state keys and context metadata to determine initialization.
             // A context is considered initialized if:
             // 1. It has state keys, OR
@@ -1912,35 +1906,54 @@ fn collect_context_state_keys<L: calimero_store::layer::ReadLayer>(
     Ok(keys)
 }
 
-/// Settle a context's per-context binding after a full-state snapshot.
+/// Settle a context's per-context binding after a full-state snapshot — ONLY
+/// for an operator resync (a `ContextResyncRequested` context).
 ///
-/// The snapshot adopts a peer's CURRENT state, so the context now runs the
-/// group's target schema: record the activation marker at the group's
-/// `app_key` and drop any stranded/resync markers. Run for EVERY snapshot
-/// completion (not just resync) so a fresh joiner also gets its first marker —
-/// without it the lazy gate would treat the just-synced state as stale and try
-/// to re-migrate it. Best-effort and group-only; a non-group context or zero
-/// `app_key` carries no version to bind.
+/// Resync is an explicit, force-gated request to adopt a peer's state as the
+/// current version, so it advances the activation marker to the group's
+/// `app_key` and drops the stranded/resync markers. It is deliberately scoped
+/// to resync: a bootstrap or crash-recovery snapshot may pull state from a peer
+/// that is itself BEHIND the group target, and binding the marker to the target
+/// there would tell the lazy gate "up to date" over old-schema state and
+/// silently skip the migration the gate exists to run. Those snapshots are a
+/// no-op here (pre-resync behavior — the lazy gate still re-evaluates them).
+///
+/// The resync marker is cleared unconditionally (even for a zero `app_key`
+/// group), so the one-shot request can never get stuck forcing snapshots; the
+/// activation marker is only advanced when there is a real `app_key` to bind.
 fn settle_snapshot_activation(store: &calimero_store::Store, context_id: ContextId) {
     use calimero_context::group_store::{get_group_for_context, MetaRepository};
 
-    let app_key = match get_group_for_context(store, &context_id) {
-        Ok(Some(gid)) => match MetaRepository::new(store).load(&gid) {
-            Ok(Some(meta)) if meta.app_key != [0u8; 32] => meta.app_key,
-            _ => return,
-        },
-        _ => return,
-    };
-
-    calimero_context::activation::record_activation(store, &context_id, app_key);
     let mut handle = store.handle();
-    let _ = handle.delete(&calimero_store::key::ContextMigrationFailed::new(
+    let resync_key = calimero_store::key::ContextResyncRequested::new(context_id.into());
+    // Non-resync snapshots (bootstrap, crash recovery) leave the binding to the
+    // lazy gate — see the doc above.
+    if !matches!(handle.get(&resync_key), Ok(Some(()))) {
+        return;
+    }
+
+    // Clear the one-shot resync marker + any stranded marker FIRST, so neither
+    // a missing group app_key below nor a failed activation write can leave the
+    // context stuck forcing snapshots / reporting failed.
+    if let Err(err) = handle.delete(&resync_key) {
+        warn!(%context_id, %err, "failed to clear resync marker after snapshot");
+    }
+    if let Err(err) = handle.delete(&calimero_store::key::ContextMigrationFailed::new(
         context_id.into(),
-    ));
-    let _ = handle.delete(&calimero_store::key::ContextResyncRequested::new(
-        context_id.into(),
-    ));
-    debug!(%context_id, "snapshot activation settled; markers cleared");
+    )) {
+        warn!(%context_id, %err, "failed to clear migration-failed marker after resync");
+    }
+
+    // Advance the activation marker to the group's current target. The operator
+    // asserts (via the force-gated resync) that the chosen peer carries it.
+    if let Ok(Some(gid)) = get_group_for_context(store, &context_id) {
+        if let Ok(Some(meta)) = MetaRepository::new(store).load(&gid) {
+            if meta.app_key != [0u8; 32] {
+                calimero_context::activation::record_activation(store, &context_id, meta.app_key);
+            }
+        }
+    }
+    debug!(%context_id, "resync snapshot settled; markers cleared");
 }
 
 #[cfg(test)]
@@ -2622,6 +2635,52 @@ mod tests {
         assert_eq!(
             calimero_context::activation::activated_blob(&store, &ctx),
             None
+        );
+    }
+
+    #[test]
+    fn settle_snapshot_activation_noop_without_resync_marker() {
+        // Regression guard: a bootstrap / crash-recovery snapshot (NO resync
+        // marker) must NOT advance the activation marker to the group target —
+        // the synced state may be from a peer behind the target, and binding it
+        // to the target would tell the lazy gate "up to date" over old-schema
+        // state and silently skip the migration.
+        use calimero_context::group_store::{register_context_in_group, MetaRepository};
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::context::UpgradePolicy;
+        use calimero_primitives::identity::PublicKey;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key;
+        use calimero_store::Store;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let gid = ContextGroupId::from([0x61; 32]);
+        let ctx = ContextId::from([0x52; 32]);
+        MetaRepository::new(&store)
+            .save(
+                &gid,
+                &key::GroupMetaValue {
+                    app_key: [0x2B; 32],
+                    target_application_id: ApplicationId::from([0xAB; 32]),
+                    upgrade_policy: UpgradePolicy::LazyOnAccess,
+                    created_at: 0,
+                    admin_identity: PublicKey::from([0x07; 32]),
+                    owner_identity: PublicKey::from([0x07; 32]),
+                    migration: None,
+                    auto_join: false,
+                },
+            )
+            .unwrap();
+        register_context_in_group(&store, &gid, &ctx).unwrap();
+
+        // No ContextResyncRequested marker set.
+        settle_snapshot_activation(&store, ctx);
+
+        assert_eq!(
+            calimero_context::activation::activated_blob(&store, &ctx),
+            None,
+            "a non-resync snapshot must not bind the activation marker"
         );
     }
 }

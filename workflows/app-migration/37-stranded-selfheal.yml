@@ -196,10 +196,12 @@ steps:
       - 'json_subset({{v3_schema_node1}}, {"output": {"schema_version": "3.0.0", "description": "selfheal", "counter": "2"}})'
 
   # Let node-2 learn target=v3 + fold the ladder over governance gossip WITHOUT
-  # accessing its context (so it stays bound at v1).
+  # accessing its context (so it stays bound at v1). Generous margin: node-2
+  # must have folded the [v2,v3] ladder before node-1 goes down, else it can't
+  # resolve a next rung to strand on.
   - name: Wait for v3 upgrade meta + ladder to gossip to node 2
     type: wait
-    seconds: 18
+    seconds: 25
 
   # Phase 5: stop the only v2-blob holder, then poke node-2 → strand.
   - name: Stop node 1 (the only v2/v3 blob holder)
@@ -246,9 +248,11 @@ steps:
     wait_for_ready: true
     wait_timeout: 45
 
+  # Generous margin: the self-heal access needs node-1 rediscovered on the mesh
+  # so BlobShare can serve the v2/v3 rung blobs on demand.
   - name: Wait for mesh + blob discovery to re-stabilise
     type: wait
-    seconds: 20
+    seconds: 35
 
   - name: Access node 2 again (self-heals v1 -> v2 -> v3)
     type: call
@@ -263,12 +267,16 @@ steps:
     statements:
       - 'json_subset({{healed_schema_node2}}, {"output": {"schema_version": "3.0.0", "description": "selfheal", "counter": "2"}})'
 
-  - name: Assert the ladder replay ran on node 2
+  # Require the actual migrate-commit line, NOT "replaying upgrade ladder hop"
+  # — the latter is logged even on the earlier blocked attempt (before the
+  # blob-fetch bail), so it would pass spuriously. "Migrated state written
+  # successfully" is emitted only on a real commit, which only the self-heal
+  # produces (the strand attempt bailed before committing).
+  - name: Assert the ladder migration actually committed on node 2
     type: assert_log_present
     nodes:
       - app-migration-stranded-2
     patterns:
-      - "replaying upgrade ladder hop"
       - "Migrated state written successfully"
     min_matches: 1
 
