@@ -15,6 +15,7 @@ use calimero_server_primitives::admin::GetCascadeStatusApiResponse;
 use calimero_server_primitives::admin::GetGroupUpgradeStatusApiResponse;
 use calimero_server_primitives::admin::GetMemberCapabilitiesApiResponse;
 use calimero_server_primitives::admin::GetMetadataApiResponse;
+use calimero_server_primitives::admin::GetMigrationStatusApiResponse;
 use calimero_server_primitives::admin::GetTeeAdmissionPolicyApiResponse;
 use calimero_server_primitives::admin::GroupInfoApiResponse;
 use calimero_server_primitives::admin::JoinContextApiResponse;
@@ -247,6 +248,20 @@ where
         let response = self
             .connection
             .get(&format!("admin-api/groups/{namespace_id}/cascade-status"))
+            .await?;
+        Ok(response)
+    }
+
+    /// Pinned-cohort migration rollup for a namespace: per-member migration
+    /// state (`migrated`/`in_progress`/`unknown`/`failed`) and the `all_migrated`
+    /// flag. Observability only — never gates a write or apply.
+    pub async fn get_migration_status(
+        &self,
+        namespace_id: &str,
+    ) -> Result<GetMigrationStatusApiResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/groups/{namespace_id}/migration-status"))
             .await?;
         Ok(response)
     }
