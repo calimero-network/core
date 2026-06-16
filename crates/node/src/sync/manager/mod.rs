@@ -2773,9 +2773,12 @@ impl SyncManager {
         context_id: ContextId,
         their_identity: PublicKey,
         stream: &mut Stream,
-    ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
+    ) -> eyre::Result<(
+        Option<calimero_primitives::context::Context>,
+        Option<calimero_context_config::types::ContextGroupId>,
+    )> {
         if let Some(ctx) = self.context_client.get_context(&context_id)? {
-            return Ok(Some(ctx));
+            return Ok((Some(ctx), None));
         }
 
         // Race window: the dialer can trigger context-level sync as
@@ -2820,61 +2823,75 @@ impl SyncManager {
         const MATERIALIZATION_POLL: time::Duration = time::Duration::from_millis(200);
 
         let deadline = Instant::now() + MATERIALIZATION_WINDOW;
-        let mut dialer_verified = false;
-        let mut materialised: Option<_> = None;
 
-        loop {
-            if !dialer_verified {
-                if let Some(group_id) =
-                    calimero_context::group_store::get_group_for_context(store, &context_id)?
-                {
-                    if MembershipRepository::new(store).is_member(&group_id, &their_identity)? {
-                        dialer_verified = true;
+        // Resolved once the dialer is confirmed a member; threaded out so the
+        // caller's `verify_inbound_member` need not re-resolve it.
+        let mut resolved_group: Option<calimero_context_config::types::ContextGroupId> = None;
+        let mut dialer_verified = false;
+
+        let outcome =
+            await_materialization_or_close(stream, deadline, MATERIALIZATION_POLL, || {
+                if !dialer_verified {
+                    if let Some(group_id) =
+                        calimero_context::group_store::get_group_for_context(store, &context_id)?
+                    {
+                        let is_member = MembershipRepository::new(store)
+                            .is_member(&group_id, &their_identity)?;
+                        if is_member {
+                            resolved_group = Some(group_id);
+                            dialer_verified = true;
+                        }
                     }
                 }
-            }
 
-            if dialer_verified {
-                if let Some(ctx) = self.context_client.get_context(&context_id)? {
-                    materialised = Some(ctx);
-                    break;
+                if dialer_verified {
+                    if let Some(ctx) = self.context_client.get_context(&context_id)? {
+                        return Ok(MaterializationProbe::Ready(ctx));
+                    }
                 }
-            }
 
-            if Instant::now() >= deadline {
-                break;
-            }
-            time::sleep(MATERIALIZATION_POLL).await;
-        }
+                Ok(MaterializationProbe::Waiting { dialer_verified })
+            })
+            .await?;
 
-        if !dialer_verified {
-            // Genuinely unknown context (or cross-namespace stream
-            // leak per #2198), or namespace governance op never
-            // landed within the window. Close cleanly so unrelated
-            // sync activity is unaffected.
-            warn!(
-                %context_id,
-                ?their_identity,
-                "inbound stream for unknown context, closing cleanly"
-            );
-
-            if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
-                error!(%err, %context_id, "failed to send OpaqueError for unknown context");
-            }
-
-            return Ok(None);
-        }
-
-        match materialised {
-            Some(ctx) => {
+        match outcome {
+            MaterializationOutcome::Ready(ctx) => {
                 debug!(
                     %context_id,
                     ?their_identity,
                     "context materialised during join race window, proceeding with inbound sync"
                 );
-                Ok(Some(ctx))
+                Ok((Some(ctx), resolved_group))
             }
-            None => {
+            MaterializationOutcome::PeerGone => {
+                // The dialer disconnected mid-wait. No close message to send —
+                // the peer is already gone; it retries on its next sync interval.
+                debug!(
+                    %context_id,
+                    ?their_identity,
+                    "dialer disconnected during materialisation wait, abandoning"
+                );
+                Ok((None, None))
+            }
+            MaterializationOutcome::Elapsed {
+                dialer_verified: false,
+            } => {
+                // Genuinely unknown context (or cross-namespace stream leak per
+                // #2198), or namespace governance op never landed within the
+                // window. Close cleanly so unrelated sync activity is unaffected.
+                warn!(
+                    %context_id,
+                    ?their_identity,
+                    "inbound stream for unknown context, closing cleanly"
+                );
+                if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
+                    error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+                }
+                Ok((None, None))
+            }
+            MaterializationOutcome::Elapsed {
+                dialer_verified: true,
+            } => {
                 debug!(
                     %context_id,
                     ?their_identity,
@@ -2890,7 +2907,7 @@ impl SyncManager {
                         "failed to send NotMaterialized for non-materialised context"
                     );
                 }
-                Ok(None)
+                Ok((None, None))
             }
         }
     }
@@ -3064,7 +3081,7 @@ impl SyncManager {
             return Ok(Some(()));
         }
 
-        let Some(context) = self
+        let (Some(context), group_hint) = self
             .resolve_inbound_context(context_id, their_identity, stream)
             .await?
         else {
