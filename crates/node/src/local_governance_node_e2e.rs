@@ -544,6 +544,22 @@ fn provision_tee_owner(node: &TestNode, gid: &ContextGroupId, rng: &mut OsRng) -
         .add_member(gid, &owner_pk, GroupMemberRole::Admin)
         .expect("add owner admin");
 
+    // Faithful to the production namespace-root creation path
+    // (`create_group`/`store_group_meta` both call this): a namespace root's
+    // default capabilities include `CAN_JOIN_OPEN_SUBGROUPS`, so non-admin
+    // members added to the root — including a `ReadOnlyTee` admitted via the
+    // announce path — inherit the bit that gates membership-by-inheritance into
+    // Open descendant subgroups. Without this, this shim would diverge from
+    // production and a root TEE node would (incorrectly) fail to read Open
+    // subgroups. `add_member` reads these defaults at add time, so it must be
+    // set before any non-admin member is admitted.
+    calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+        .set_default_capabilities(
+            gid,
+            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+        )
+        .expect("set namespace-root default capabilities");
+
     // The namespace identity is what `admit_tee_node` uses as the verifier
     // identity AND signing key. Without it the handler bails with
     // "node has no configured group identity for TEE admission".
@@ -639,6 +655,45 @@ async fn create_restricted_subgroup(
     resp.group_id
 }
 
+/// Create an **Open** subgroup nested under `parent_ns`.
+///
+/// Mirrors [`create_restricted_subgroup`] (same real `ContextClient::create_group`
+/// path, same `sample_meta`-derived application row), but then flips the
+/// subgroup's visibility to `Open` via the production
+/// `ContextClient::set_subgroup_visibility` path — a `GroupOp::SubgroupVisibilitySet`
+/// applied through `sign_apply_and_publish`, admin-signed by `admin_pk`.
+///
+/// Visibility is NOT a field on `CreateGroupRequest`: a freshly-created subgroup
+/// defaults to `Restricted` (see `CapabilitiesRepository::subgroup_visibility`).
+/// To make the chain `sub → ns` genuinely Open
+/// (`is_open_chain_to_namespace(&sub, &ns) == true`) we must apply the visibility
+/// op after create, which is what this helper does.
+///
+/// Returns the new subgroup's `ContextGroupId`.
+async fn create_open_subgroup(
+    node: &TestNode,
+    parent_ns: &ContextGroupId,
+    admin_pk: &PublicKey,
+    rng: &mut OsRng,
+) -> ContextGroupId {
+    // Reuse the Restricted-create plumbing (seeds app meta, mints the key,
+    // applies `RootOp::GroupCreated`); the only difference is visibility.
+    let sub_gid = create_restricted_subgroup(node, parent_ns, admin_pk, rng).await;
+
+    node.context_client
+        .set_subgroup_visibility(
+            calimero_context_client::group::SetSubgroupVisibilityRequest {
+                group_id: sub_gid,
+                subgroup_visibility: calimero_context_config::VisibilityMode::Open,
+                requester: Some(*admin_pk),
+            },
+        )
+        .await
+        .expect("set_subgroup_visibility(Open)");
+
+    sub_gid
+}
+
 /// Poll `cond` until it returns true or the deadline elapses. The admission
 /// path is spawned onto the actor's context and crosses an actor boundary
 /// (`NodeManager` → `ContextManager`), so the store write lands asynchronously.
@@ -724,6 +779,90 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
             .expect("count after admit"),
         2,
         "member_count must increment to 2 (owner + admitted TEE node)"
+    );
+}
+
+/// Precondition proof for the "Open-is-free" property: a TEE node admitted at the
+/// namespace ROOT must be able to read Open subgroups WITHOUT any per-subgroup
+/// admission. That holds only if the root `ReadOnlyTee` row carries
+/// `CAN_JOIN_OPEN_SUBGROUPS`, because the inheritance walk in
+/// `membership::check_group_membership_path` requires that capability for a
+/// non-admin member to count as an inherited member of an Open descendant.
+///
+/// Structure: admit a TEE node at root via the announce path, create an **Open**
+/// subgroup, then assert the root TEE node has NO direct row in the subgroup yet
+/// IS an inherited member of it. If the `is_member` assertion fails, the root
+/// admission is not granting `CAN_JOIN_OPEN_SUBGROUPS` and the Open-is-free
+/// scoping decision (only Restricted subgroups need explicit TEE admission) would
+/// be unsound.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn root_admitted_tee_is_member_of_open_subgroup() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x95u8; 32]);
+    let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // 1) Admit a TEE node at the namespace root via the announce path.
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let nonce = [0x7Du8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+    assert!(
+        wait_until(
+            || calimero_context::group_store::MembershipRepository::new(&node.store)
+                .is_member(&ns_gid, &tee_pk)
+                .unwrap_or(false)
+        )
+        .await,
+        "TEE node must be admitted at the namespace root first"
+    );
+
+    // Shut the process-global `tee_subgroup_admit` subscriber down before
+    // creating the subgroup. We are proving the *inheritance* path (Open is
+    // free), so no per-subgroup direct admission must run: the subgroup is
+    // created Restricted-by-default and only flipped to Open afterward, so a
+    // live subscriber would race in a direct `ReadOnlyTee` row on the
+    // momentarily-Restricted subgroup and mask the inheritance we assert on.
+    calimero_context::tee_subgroup_admit::shutdown();
+
+    // 2) Create an OPEN subgroup nested under the namespace.
+    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+
+    // Sanity: the subgroup chain to the namespace is genuinely Open.
+    assert!(
+        calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+            .is_open_chain_to_namespace(&open_sub, &ns_gid)
+            .expect("is_open_chain_to_namespace"),
+        "the created subgroup must be Open all the way to the namespace root"
+    );
+
+    // 3) The root TEE node must be an inherited member of the Open subgroup
+    //    WITHOUT any direct row in it.
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&node.store)
+            .has_direct_member(&open_sub, &tee_pk)
+            .unwrap(),
+        "no direct row expected in the Open subgroup"
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .is_member(&open_sub, &tee_pk)
+            .unwrap(),
+        "root TEE node must be an inherited member of the Open subgroup \
+         (requires CAN_JOIN_OPEN_SUBGROUPS on the root ReadOnlyTee row)"
     );
 }
 
