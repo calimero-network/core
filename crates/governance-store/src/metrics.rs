@@ -100,6 +100,29 @@ pub(crate) struct SelfPurgeFailureLabels {
     pub(crate) class: &'static str,
 }
 
+/// Labels for self-purge reconcile-sweep outcomes (#2686).
+///
+/// `outcome` is one per marked namespace the startup sweep processes, one
+/// of:
+///   - `"reconciled"`: marker present + still-evicted, and the namespace
+///     purge fully completed.
+///   - `"retained"`: marker present + still-evicted, but the purge returned
+///     false (signing-key failure); the marker is kept for the next restart.
+///   - `"cleared_stale"`: the marker was stale (already purged / re-admitted)
+///     and the clear succeeded.
+///   - `"stale_clear_failed"`: the marker was stale but the clear itself
+///     failed (the next restart re-evaluates and retries the clear).
+///   - `"skipped"`: a read error made the decision uncertain; the marker is
+///     kept (never purge on uncertainty) for the next restart.
+///
+/// As with [`SelfPurgeFailureLabels`], `outcome` is a `&'static str` sourced
+/// from the closed [`ReconcileOutcome`] enum via [`ReconcileOutcome::as_label`],
+/// so the label set allocates nothing per `record_reconcile_outcome` call.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct SelfPurgeReconcileLabels {
+    pub(crate) outcome: &'static str,
+}
+
 #[derive(Clone, Debug)]
 struct GroupStoreMetricSink {
     namespace_retry_events: Family<NamespaceRetryLabels, Counter>,
@@ -109,6 +132,8 @@ struct GroupStoreMetricSink {
     governance_handler_delivery_total: Family<GovernanceHandlerDeliveryLabels, Counter>,
     governance_handler_delivery_seconds: Family<GovernanceHandlerDeliveryLabels, Histogram>,
     self_purge_failures: Family<SelfPurgeFailureLabels, Counter>,
+    self_purge_reconcile: Family<SelfPurgeReconcileLabels, Counter>,
+    self_purge_events_dropped: Counter,
 }
 
 static GROUP_STORE_METRICS: OnceLock<GroupStoreMetricSink> = OnceLock::new();
@@ -251,6 +276,47 @@ impl Metrics {
             self_purge_failures.clone(),
         );
 
+        // #2686: reconcile-sweep outcomes. One increment per marked
+        // namespace the startup sweep processes, sliced by `outcome`. The
+        // `outcome="retained"` series is the operator alerting signal — a
+        // namespace stuck `retained` across restarts means a signing-key
+        // purge keeps failing and forward-secrecy residue lingers on disk.
+        // `outcome="stale_clear_failed"` flags markers the sweep could not
+        // clear (benign — re-evaluated next restart). The reconcile read-
+        // uncertainty cases land in `outcome="skipped"` (NOT in
+        // `self_purge_failures_total`, which is reserved for genuine
+        // purge-step delete failures).
+        let self_purge_reconcile = Family::<SelfPurgeReconcileLabels, Counter>::default();
+        group_store_registry.register(
+            "self_purge_reconcile_total",
+            "Self-purge startup reconcile-sweep outcomes, one per marked \
+             namespace processed, sliced by outcome (reconciled / retained / \
+             cleared_stale / stale_clear_failed / skipped)",
+            self_purge_reconcile.clone(),
+        );
+
+        // #2686: count of self-purge op-events dropped by the broadcast
+        // `Lagged` arm. The broadcast reports a single total of dropped
+        // events across EVERY `OpEvent` variant (MemberAdded, ContextRegistered,
+        // …) — it does not tell us which were dropped, so this is an UPPER
+        // BOUND on dropped `TeeMemberRemoved` evictions, not an exact count. A
+        // dropped `TeeMemberRemoved` writes no pending-self-purge marker, so the
+        // marker-gated reconcile cannot recover it — silent residue. A nonzero
+        // rate means the self-purge subscriber fell >1024 events behind (the
+        // broadcast capacity) and some evictions may have left un-reconcilable
+        // on-disk residue (bounded; not a forward-secrecy hole — FS is held by
+        // key rotation).
+        let self_purge_events_dropped = Counter::default();
+        group_store_registry.register(
+            "self_purge_events_dropped_total",
+            "All self-purge op-events dropped by the broadcast Lagged arm \
+             (across every OpEvent variant — the broadcast does not report which \
+             were dropped); an upper bound on dropped TeeMemberRemoved evictions, \
+             each of which writes no reconcile marker (un-recoverable residue, \
+             bounded)",
+            self_purge_events_dropped.clone(),
+        );
+
         let _ = GROUP_STORE_METRICS.set(GroupStoreMetricSink {
             namespace_retry_events: namespace_retry_events.clone(),
             namespace_decode_events: namespace_decode_events.clone(),
@@ -259,6 +325,8 @@ impl Metrics {
             governance_handler_delivery_total: governance_handler_delivery_total.clone(),
             governance_handler_delivery_seconds: governance_handler_delivery_seconds.clone(),
             self_purge_failures: self_purge_failures.clone(),
+            self_purge_reconcile: self_purge_reconcile.clone(),
+            self_purge_events_dropped: self_purge_events_dropped.clone(),
         });
 
         Self {
@@ -424,6 +492,71 @@ pub fn record_purge_failure(branch: PurgeBranch, class: PurgeFailureClass) {
         .inc();
 }
 
+/// The outcome of processing a single marked namespace in the self-purge
+/// startup reconcile sweep (#2686). Exactly one is recorded per marked
+/// namespace the sweep visits. Distinct from [`PurgeFailureClass`]: these
+/// are sweep-level outcomes, NOT purge-step (delete) failures — read-error
+/// uncertainty lands in [`ReconcileOutcome::Skipped`], not in
+/// `self_purge_failures_total`.
+#[derive(Clone, Copy, Debug)]
+pub enum ReconcileOutcome {
+    /// Marker present + still-evicted, and the namespace purge fully
+    /// completed.
+    Reconciled,
+    /// Marker present + still-evicted, but the purge returned false
+    /// (signing-key failure); the marker is kept for the next restart.
+    Retained,
+    /// The marker was stale (already purged / re-admitted) and the clear
+    /// succeeded.
+    ClearedStale,
+    /// The marker was stale but the clear itself failed (re-evaluated and
+    /// retried on the next restart).
+    StaleClearFailed,
+    /// A read error made the decision uncertain — the marker is kept (never
+    /// purge on uncertainty) for the next restart.
+    Skipped,
+}
+
+impl ReconcileOutcome {
+    fn as_label(self) -> &'static str {
+        match self {
+            ReconcileOutcome::Reconciled => "reconciled",
+            ReconcileOutcome::Retained => "retained",
+            ReconcileOutcome::ClearedStale => "cleared_stale",
+            ReconcileOutcome::StaleClearFailed => "stale_clear_failed",
+            ReconcileOutcome::Skipped => "skipped",
+        }
+    }
+}
+
+/// Record a self-purge reconcile-sweep outcome for one marked namespace.
+/// No-op until [`Metrics::new`] has installed the process-global sink.
+///
+/// Called from `calimero-context`'s `self_purge::reconcile_sweep` (#2686),
+/// exactly once per marked namespace processed.
+pub fn record_reconcile_outcome(outcome: ReconcileOutcome) {
+    let Some(metrics) = GROUP_STORE_METRICS.get() else {
+        return;
+    };
+    metrics
+        .self_purge_reconcile
+        .get_or_create(&SelfPurgeReconcileLabels {
+            outcome: outcome.as_label(),
+        })
+        .inc();
+}
+
+/// Record `n` self-purge op-events dropped by the broadcast `Lagged` arm
+/// (#2686). No-op until [`Metrics::new`] has installed the process-global
+/// sink. Called from `calimero-context`'s `self_purge::run` `Lagged` arm
+/// with the broadcast-reported skip count.
+pub fn record_events_dropped(n: u64) {
+    let Some(metrics) = GROUP_STORE_METRICS.get() else {
+        return;
+    };
+    metrics.self_purge_events_dropped.inc_by(n);
+}
+
 #[cfg(test)]
 mod tests {
     use prometheus_client::encoding::text::encode;
@@ -515,5 +648,89 @@ mod tests {
         // And the public recorder must not panic whether or not the global
         // sink is installed.
         record_purge_failure(PurgeBranch::Subgroup, PurgeFailureClass::SigningKey);
+    }
+
+    /// The `self_purge_reconcile_total` family registers against a fresh
+    /// registry and ALL `outcome` labels round-trip through the text encoder.
+    ///
+    /// As with `self_purge_failures_register_and_encode`, we build the family
+    /// + registry locally rather than going through the process-global
+    /// `GROUP_STORE_METRICS` sink (a `OnceLock` another test may have set), so
+    /// the assertion targets *this* registry. The label-building logic
+    /// (`ReconcileOutcome::as_label`) is what we assert on; the
+    /// no-op-without-sink behaviour of the public recorder is covered by the
+    /// early-return and exercised below.
+    #[test]
+    fn self_purge_reconcile_register_and_encode() {
+        let mut registry = Registry::default();
+        let family = Family::<SelfPurgeReconcileLabels, Counter>::default();
+        registry.register(
+            "self_purge_reconcile",
+            "Self-purge reconcile-sweep outcomes by outcome",
+            family.clone(),
+        );
+
+        for outcome in [
+            ReconcileOutcome::Reconciled,
+            ReconcileOutcome::Retained,
+            ReconcileOutcome::ClearedStale,
+            ReconcileOutcome::StaleClearFailed,
+            ReconcileOutcome::Skipped,
+        ] {
+            family
+                .get_or_create(&SelfPurgeReconcileLabels {
+                    outcome: outcome.as_label(),
+                })
+                .inc();
+        }
+
+        let mut out = String::new();
+        encode(&mut out, &registry).expect("encode registry");
+
+        for label in [
+            "reconciled",
+            "retained",
+            "cleared_stale",
+            "stale_clear_failed",
+            "skipped",
+        ] {
+            assert!(
+                out.contains(&format!("outcome=\"{label}\"")),
+                "missing reconcile outcome label {label}:\n{out}"
+            );
+        }
+
+        // The public recorder must not panic whether or not the global sink
+        // is installed.
+        record_reconcile_outcome(ReconcileOutcome::Reconciled);
+        record_reconcile_outcome(ReconcileOutcome::StaleClearFailed);
+    }
+
+    /// The `self_purge_events_dropped_total` counter registers against a
+    /// fresh registry and `inc_by` round-trips through the text encoder.
+    /// Also asserts the public recorder is a safe no-op without/with a sink.
+    #[test]
+    fn self_purge_events_dropped_register_and_encode() {
+        let mut registry = Registry::default();
+        let counter = Counter::<u64>::default();
+        registry.register(
+            "self_purge_events_dropped",
+            "Self-purge op-events dropped by the broadcast Lagged arm",
+            counter.clone(),
+        );
+
+        counter.inc_by(5);
+
+        let mut out = String::new();
+        encode(&mut out, &registry).expect("encode registry");
+        assert!(
+            out.contains("self_purge_events_dropped_total 5"),
+            "missing dropped-events counter:\n{out}"
+        );
+
+        // Public recorder must not panic whether or not the global sink is
+        // installed (including the n=0 edge).
+        record_events_dropped(0);
+        record_events_dropped(3);
     }
 }
