@@ -486,12 +486,21 @@ impl Handler<ExecuteRequest> for ContextManager {
                 Either::Right(parts) => parts,
             };
             match action {
-                // Marker-ed context: replay the group's upgrade ladder hop by
-                // hop, re-resolving after each committed hop. The per-access
-                // budget bounds a pathological marker-write failure loop; a
-                // longer ladder resumes on the next access from the last
-                // committed rung.
-                LazyUpgradeAction::Replay { .. } => {
+                // Replay the group's upgrade ladder hop by hop, re-resolving
+                // after each committed hop. The per-access budget bounds a
+                // pathological marker-write failure loop; a longer ladder
+                // resumes on the next access from the last committed rung.
+                //
+                // A marker-less context (a fresh joiner whose group has since
+                // advanced) is routed here with `bound` = its current row
+                // version. Seed the activation marker to it so the replay starts
+                // from the real version AND execution binds to it — without the
+                // seed, a blocked hop would fall through to the group-target
+                // bytecode and run new code on un-migrated state.
+                LazyUpgradeAction::Replay { bound } => {
+                    if crate::activation::activated_blob(&act.datastore, &context_id).is_none() {
+                        crate::activation::record_activation(&act.datastore, &context_id, bound);
+                    }
                     act.replay_upgrade_ladder(
                         guard,
                         context_id,

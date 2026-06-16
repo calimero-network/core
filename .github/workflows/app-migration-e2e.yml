@@ -217,14 +217,7 @@ jobs:
           - 33-authored-remaining-count
           - 35-two-namespaces-coexist
           - 36-chained-catchup
-          # 37-stranded-resync is intentionally NOT in the CI matrix: reliably
-          # staging a strand needs node 2 to NEVER obtain node 1's newer state,
-          # but a live 2-node group syncs node 1's committed v3 root (and
-          # pre-stages its blobs over BlobShare) before `delete_blob_on_disk`
-          # can run — so node 2 reaches v3 instead of stranding. Staging it
-          # deterministically needs a network partition across node 1's advance
-          # (partition_peers/heal_peers) and is tracked as a follow-up. The
-          # workflow file is kept as a documented, locally-runnable scenario.
+          - 37-stranded-resync
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:
