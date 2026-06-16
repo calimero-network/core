@@ -72,6 +72,7 @@ pub mod group_store {
         sign_and_publish_namespace_op,
         sign_apply_and_publish,
         sign_apply_and_publish_namespace_op,
+        tee_admission_record,
         // Absorb buffer (PR-6b straggler safety).
         AbsorbRecord,
         AbsorbRepository,
