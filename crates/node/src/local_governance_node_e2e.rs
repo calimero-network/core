@@ -822,6 +822,145 @@ async fn restricted_subgroup_created_admits_existing_tee_member() {
     );
 }
 
+/// End-to-end join-into-existing path (proposal.md §12d, Phase 1): a
+/// **Restricted** subgroup already exists on this node (it holds the subgroup
+/// key) when a TEE node is then admitted at the namespace root. An
+/// `OpEvent::TeeMemberAdmitted` at the root drives the `tee_subgroup_admit`
+/// subscriber's `handle_new_tee_member` (Task 4) to fan the new root TEE member
+/// into every descendant Restricted subgroup whose key this node holds — here,
+/// the pre-existing subgroup. This complements the create-time path proven by
+/// `restricted_subgroup_created_admits_existing_tee_member`.
+///
+/// Determinism note: `handle_new_tee_member` reuses the root admission verdict
+/// via `tee_admission_record`, which scans the namespace governance op-log. That
+/// op-log entry is recorded *after* `apply_group_op_mutations` fires the
+/// `TeeMemberAdmitted` event (see `apply_local_signed_group_op`), so the event
+/// emitted *during* root admission races the op-log write. In production the
+/// design tolerates this — "a later SubgroupCreated/TeeMemberAdmitted or the
+/// joiner-side key pull" recovers it (see `tee_subgroup_admit::run`). This test
+/// exercises exactly that recovery: it lets the root admission op-log fully
+/// settle, then emits a fresh `TeeMemberAdmitted` for the root, deterministically
+/// driving `handle_new_tee_member` against settled state.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x94u8; 32]);
+    let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // 1) A RESTRICTED subgroup exists FIRST, before any TEE member is admitted at
+    //    the root. Going through the real create handler mints + stores the
+    //    subgroup key locally, so THIS node is the key-holder that
+    //    `handle_new_tee_member` needs to fan a later root TEE member into it.
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+
+    // Sanity: the subgroup key is held on this node (the fan-in delivers under it).
+    assert!(
+        calimero_context::group_store::GroupKeyring::new(&node.store, sub_gid)
+            .load_current_key()
+            .expect("load key")
+            .is_some(),
+        "creator node must hold the pre-existing subgroup key before root admission"
+    );
+
+    // 2) Admit a TEE node at the namespace ROOT via the announce path, exactly
+    //    like the sibling tests (mock quote on the `ns/<hex>` topic). The
+    //    subscriber is intentionally NOT yet rebound to this node, so the
+    //    root admission's own `TeeMemberAdmitted` is not the trigger under test;
+    //    we drive a fresh, settled one in step 4.
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let nonce = [0x7Cu8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+
+    // Root admission must land first (it is what emits TeeMemberAdmitted).
+    let admitted_root = wait_until(|| {
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .member_value(&ns_gid, &tee_pk)
+            .ok()
+            .flatten()
+            .map(|v| v.role == GroupMemberRole::ReadOnlyTee)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        admitted_root,
+        "TEE node must be admitted as a ReadOnlyTee at the namespace root first"
+    );
+
+    // 3) Wait for the root admission's governance op-log entry to settle — this
+    //    is what `handle_new_tee_member` reuses (`tee_admission_record`). The
+    //    membership row above is written inside `apply_group_op_mutations`, which
+    //    runs BEFORE the op-log entry is recorded, so the row appearing does not
+    //    yet guarantee the record is queryable. Gate on the record directly.
+    let record_settled = wait_until(|| {
+        calimero_context::group_store::tee_admission_record(&node.store, &ns_gid, &tee_pk)
+            .ok()
+            .flatten()
+            .is_some()
+    })
+    .await;
+    assert!(
+        record_settled,
+        "root TEE admission op-log record must be queryable before the fan-in event"
+    );
+
+    // 4) Rebind the PROCESS-GLOBAL `tee_subgroup_admit` subscriber to THIS node's
+    //    store/client, then emit a fresh `TeeMemberAdmitted` for the root. With
+    //    the op-log settled, `handle_new_tee_member` reuses the recorded verdict
+    //    and fans the member into the pre-existing Restricted subgroup. (`shutdown`
+    //    + `spawn` because `spawn` alone is first-wins and won't rebind.)
+    calimero_context::tee_subgroup_admit::shutdown();
+    calimero_context::tee_subgroup_admit::spawn(node.store.clone(), node.context_client.clone());
+    // Give the freshly-spawned subscriber a moment to subscribe before the event.
+    sleep(Duration::from_millis(50)).await;
+    calimero_governance_store::op_events::notify(
+        calimero_governance_store::op_events::OpEvent::TeeMemberAdmitted {
+            group_id: ns_gid.to_bytes(),
+            member: tee_pk,
+        },
+    );
+
+    // 5) The root admission must fan into the pre-existing Restricted subgroup
+    //    (Task 4: OpEvent::TeeMemberAdmitted at root → handle_new_tee_member →
+    //    admit into descendants we hold keys for).
+    let fanned_in = wait_until(|| {
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .member_value(&sub_gid, &tee_pk)
+            .ok()
+            .flatten()
+            .map(|v| v.role == GroupMemberRole::ReadOnlyTee)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        fanned_in,
+        "root TEE admission must fan into the pre-existing Restricted subgroup"
+    );
+
+    // 5) The creator node still holds the subgroup key (fan-in delivers under it).
+    assert!(
+        calimero_context::group_store::GroupKeyring::new(&node.store, sub_gid)
+            .load_current_key()
+            .expect("load key")
+            .is_some(),
+        "subgroup must still have a current key on this (creator) node after fan-in"
+    );
+}
+
 /// Negative guard locking in the fix: a `TeeAttestationAnnounce` arriving on a
 /// legacy `group/<hex>` topic must NOT be routed into namespace admission. This
 /// is the precise shape of the #2096 bug — if the dispatcher ever resurrects
