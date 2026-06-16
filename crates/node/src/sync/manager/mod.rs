@@ -2763,11 +2763,15 @@ impl SyncManager {
     /// join/registration race window if the context isn't materialised
     /// locally yet.
     ///
-    /// Returns `Ok(Some(ctx))` once resolved. Returns `Ok(None)` — after
-    /// sending `OpaqueError` (unknown context / unverified dialer) or
-    /// `NotMaterialized` (verified member, context not yet materialised) on
-    /// `stream` — when the caller should stop and close the stream. See the
-    /// race-window rationale inline below.
+    /// Returns `Ok((Some(ctx), group_hint))` once resolved, where `group_hint`
+    /// is the locally-resolved owning group (threaded to `verify_inbound_member`
+    /// to avoid a duplicate lookup). Returns `Ok((None, None))` when the caller
+    /// should stop and close the stream:
+    /// - after sending `OpaqueError` (unknown context / unverified dialer) or
+    ///   `NotMaterialized` (verified member, context not yet materialised); or
+    /// - silently, with NO close message, when the dialer disconnected during
+    ///   the wait (the peer is already gone).
+    /// See the race-window rationale inline below.
     async fn resolve_inbound_context(
         &self,
         context_id: ContextId,

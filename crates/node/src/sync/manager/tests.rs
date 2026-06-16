@@ -587,4 +587,32 @@ mod materialization_wait {
 
         assert!(matches!(outcome, MaterializationOutcome::Ready(42)));
     }
+
+    #[tokio::test]
+    async fn times_out_unverified_dialer() {
+        // Dialer stays connected but is never verified as a member: the wait
+        // runs to the deadline and reports the unverified outcome (which the
+        // caller turns into an `OpaqueError` close).
+        let (mut responder, _dialer) = Stream::test_pair();
+
+        let outcome = await_materialization_or_close::<(), _>(
+            &mut responder,
+            Instant::now() + Duration::from_millis(120),
+            Duration::from_millis(20),
+            || {
+                Ok(MaterializationProbe::Waiting {
+                    dialer_verified: false,
+                })
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            MaterializationOutcome::Elapsed {
+                dialer_verified: false
+            }
+        ));
+    }
 }
