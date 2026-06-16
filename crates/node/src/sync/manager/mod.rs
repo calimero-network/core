@@ -2923,6 +2923,12 @@ impl SyncManager {
         context_id: ContextId,
         their_identity: PublicKey,
         peer_id: PeerId,
+        // The group locally bound to `context_id`, already resolved by the
+        // caller (`resolve_inbound_context`) to skip a duplicate lookup. MUST
+        // be a locally-resolved binding, never a peer-supplied value: it is
+        // the group membership is checked against. `None` means "resolve it
+        // here", which is identical to the pre-optimisation path.
+        group_hint: Option<calimero_context_config::types::ContextGroupId>,
     ) -> eyre::Result<bool> {
         let mut _updated = None;
 
@@ -2933,10 +2939,15 @@ impl SyncManager {
         // to here at the node layer.
         let is_inherited_member = || -> eyre::Result<bool> {
             let store = self.context_client.datastore();
-            let Some(group_id) =
-                calimero_context::group_store::get_group_for_context(store, &context_id)?
-            else {
-                return Ok(false);
+            let group_id = match group_hint {
+                Some(group_id) => group_id,
+                None => {
+                    match calimero_context::group_store::get_group_for_context(store, &context_id)?
+                    {
+                        Some(group_id) => group_id,
+                        None => return Ok(false),
+                    }
+                }
             };
             MembershipRepository::new(store).is_member(&group_id, &their_identity)
         };
@@ -3089,7 +3100,7 @@ impl SyncManager {
         };
 
         if !self
-            .verify_inbound_member(context_id, their_identity, peer_id)
+            .verify_inbound_member(context_id, their_identity, peer_id, group_hint)
             .await?
         {
             return Ok(Some(()));
