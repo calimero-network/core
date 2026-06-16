@@ -93,6 +93,38 @@ impl std::fmt::Display for NoPeersAvailable {
 
 impl std::error::Error for NoPeersAvailable {}
 
+/// Parent-pull tried every mesh peer and DAG parents are still missing. Typed
+/// so the per-peer retry stops instead of re-running the pipeline for the same
+/// miss; emitted only on a fully-swept mesh, not a capped/timed-out pull.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PendingParentsUnresolved {
+    pub(crate) context_id: ContextId,
+    pub(crate) remaining: usize,
+    pub(crate) attempts: usize,
+}
+
+impl std::fmt::Display for PendingParentsUnresolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "pending parents unresolved for context {}: {} remaining after {} peer attempt(s)",
+            self.context_id, self.remaining, self.attempts
+        )
+    }
+}
+
+impl std::error::Error for PendingParentsUnresolved {}
+
+/// Whether the `perform_interval_sync` loop should stop trying peers. Only
+/// `PendingParentsUnresolved` stops it (the parent-pull loop swept the whole
+/// mesh); other errors are peer-specific and the loop advances. Downcasts
+/// through eyre's context chain, so it matches under the `wrap_err` layers
+/// added between the error origin and `perform_interval_sync`.
+fn should_stop_peer_retry(err: &eyre::Error) -> bool {
+    // Whitelist by type: NoPeersAvailable and transport errors fall through on purpose.
+    err.downcast_ref::<PendingParentsUnresolved>().is_some()
+}
+
 /// Network synchronization manager.
 ///
 /// Orchestrates sync protocols: full resync, delta sync, state sync.
@@ -671,8 +703,15 @@ impl SyncManager {
             );
         }
         for peer_id in &shuffled {
-            if let Ok(result) = self.initiate_sync(context_id, *peer_id).await {
-                return Ok(result);
+            match self.initiate_sync(context_id, *peer_id).await {
+                Ok(result) => return Ok(result),
+                Err(err) => {
+                    // Stop if the mesh genuinely lacks the parents; otherwise
+                    // the failure is peer-specific, so try the next peer.
+                    if should_stop_peer_retry(&err) {
+                        return Err(err);
+                    }
+                }
             }
         }
 
@@ -1077,6 +1116,12 @@ impl SyncManager {
         context: &calimero_primitives::context::Context,
         chosen_peer: PeerId,
         our_identity: PublicKey,
+        // Resolved once by the caller (it also bypasses the upgrade gate on it):
+        // an operator resync request takes the full-state snapshot path with
+        // `force`, since incremental sync would absorb-buffer the peer's
+        // newer-schema deltas against the stranded local version and never
+        // replace the state.
+        has_resync_requested: bool,
         stream: &mut Stream,
     ) -> eyre::Result<Option<SyncProtocol>> {
         let is_uninitialized = *context.root_hash == [0; 32];
@@ -1090,7 +1135,11 @@ impl SyncManager {
             );
         }
 
-        if is_uninitialized || has_incomplete_sync {
+        if has_resync_requested {
+            warn!(%context_id, "Operator resync requested, forcing snapshot sync");
+        }
+
+        if is_uninitialized || has_incomplete_sync || has_resync_requested {
             info!(
                 %context_id,
                 %chosen_peer,
@@ -1115,10 +1164,12 @@ impl SyncManager {
                     );
 
                     // Note: request_snapshot_sync opens its own stream, existing stream
-                    // will be closed when this function returns
-                    // force=false: This is bootstrap for uninitialized nodes
+                    // will be closed when this function returns. `force` is set
+                    // only for an operator resync (authorized full-state replace
+                    // of an initialized context); bootstrap/crash recovery pass
+                    // false and rely on the I5 safety check.
                     match self
-                        .request_snapshot_sync(context_id, chosen_peer, false)
+                        .request_snapshot_sync(context_id, chosen_peer, has_resync_requested)
                         .await
                         .wrap_err("snapshot sync")
                     {
@@ -1428,9 +1479,24 @@ impl SyncManager {
         // state our own LazyOnAccess migration must read as input. Skip
         // as a clean no-op; we self-migrate on next access, after which
         // the gate lifts. See `pending_upgrade_target`.
+        // An operator resync (the recovery for a stranded context) is by
+        // definition behind the group target, so the pending-upgrade gate below
+        // would always fire and skip it. Resolve the marker once here: it
+        // bypasses the gate AND routes `handle_dag_sync` into a forced
+        // full-state snapshot.
+        let has_resync_requested = self
+            .context_client
+            .datastore_handle()
+            .get(&calimero_store::key::ContextResyncRequested::new(
+                context_id.into(),
+            ))?
+            .is_some();
+
         let store_for_gate = self.context_client.datastore_handle().into_inner();
-        if let Some((target, gate_stage_blob)) = pending_upgrade_info(&store_for_gate, &context_id)
-        {
+        if let (false, Some((target, gate_stage_blob))) = (
+            has_resync_requested,
+            pending_upgrade_info(&store_for_gate, &context_id),
+        ) {
             info!(
                 %context_id,
                 %chosen_peer,
@@ -1598,7 +1664,14 @@ impl SyncManager {
         // Phase 3: DAG synchronization (if needed — uninitialized or incomplete DAG)
         let phase_start = Instant::now();
         if let Some(result) = self
-            .handle_dag_sync(context_id, &context, chosen_peer, our_identity, &mut stream)
+            .handle_dag_sync(
+                context_id,
+                &context,
+                chosen_peer,
+                our_identity,
+                has_resync_requested,
+                &mut stream,
+            )
             .await
             .wrap_err("DAG sync")?
         {
@@ -2169,6 +2242,10 @@ impl SyncManager {
                     self.sync_config.parent_pull_budget,
                 );
                 let mut mesh_peers = self.sync_network.subscribed_peers(topic.clone()).await;
+                // True only if every mesh peer was tried (NoMorePeers); a
+                // cap/time-budget stop leaves untried peers. Only a fully-swept
+                // mesh makes retrying another peer pointless.
+                let mut mesh_exhausted = false;
 
                 loop {
                     let after = delta_store_ref.get_missing_parents().await;
@@ -2184,6 +2261,9 @@ impl SyncManager {
                             match budget.next(&mesh_peers) {
                                 super::parent_pull::NextPeer::Peer(p) => p,
                                 other => {
+                                    // Sticky: once swept, stay swept.
+                                    mesh_exhausted |=
+                                        matches!(other, super::parent_pull::NextPeer::NoMorePeers);
                                     debug!(
                                         %context_id,
                                         ?other,
@@ -2200,8 +2280,11 @@ impl SyncManager {
                             );
                             break;
                         }
-                        super::parent_pull::NextPeer::MaxPeersReached
-                        | super::parent_pull::NextPeer::NoMorePeers => break,
+                        super::parent_pull::NextPeer::MaxPeersReached => break,
+                        super::parent_pull::NextPeer::NoMorePeers => {
+                            mesh_exhausted = true;
+                            break;
+                        }
                     };
 
                     budget.record_attempt(next_peer);
@@ -2243,14 +2326,20 @@ impl SyncManager {
                         %context_id,
                         remaining = final_missing.missing_ids.len(),
                         peer_attempts = budget.total_attempts(),
+                        mesh_exhausted,
                         "DAG sync ended with unresolved missing parents"
                     );
-                    bail!(
-                        "pending parents unresolved for context {}: {} remaining after {} peer attempt(s)",
+                    let unresolved = PendingParentsUnresolved {
                         context_id,
-                        final_missing.missing_ids.len(),
-                        budget.total_attempts(),
-                    );
+                        remaining: final_missing.missing_ids.len(),
+                        attempts: budget.total_attempts(),
+                    };
+                    // Typed only on a fully-swept mesh (caller short-circuits);
+                    // else a plain error lets the caller try remaining peers.
+                    if mesh_exhausted {
+                        return Err(eyre::Error::new(unresolved));
+                    }
+                    bail!("{unresolved}");
                 }
 
                 // Success: DAG is fully resolved.

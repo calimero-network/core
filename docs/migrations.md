@@ -711,11 +711,44 @@ can rely on:
   per-workspace `appVersion` — display that, never the shared installed
   version.
 
-**Coming next** (not yet shipped): members more than one version behind get a
-guided recovery (state resync from an up-to-date peer) and then chained
-migrations (retained edges walked in order, local edits preserved). Until
-then, such upgrades are rejected with a clear error — upgrade one version at
-a time.
+### 9.8 Catching up several versions behind
+
+A context behind its group by **more than one** version catches up by
+replaying the group's recorded **upgrade ladder** hop by hop — each hop runs in
+**that release's own bytecode**, not the latest. The node fetches each rung's
+blob from peers as needed and runs that version's own migrate. Because every
+member runs the same frozen bytes for a given hop, the result is identical
+across the group by construction (no cross-node divergence). A single access
+on a stale context walks all pending hops in order and lands on the current
+version; nothing is run eagerly.
+
+An admin can also move a group several versions in one action: the upgrade
+plans a rung per intermediate **state version** (a release that doesn't change
+state adds no rung) from the versions installed on the node, and the group
+advances rung by rung.
+
+### 9.9 Support window and recovering a stranded member
+
+The versions whose blobs remain obtainable (from peers or the registry) define
+which upgrades chain directly. A member below that window — an intermediate
+blob is gone everywhere, or it was offline across several releases and never
+fetched one — is **detected, not silently wedged**: it stays on its current
+real version and reports `failed` with `no_migration_path` in the migration
+rollup. It never runs a later hop's migrate against older state.
+
+Two recoveries, both operator-initiated:
+
+* **Stepwise reinstall** — install an intermediate version from the registry.
+  Any installed version can be an upgrade target (§9.7), so the gap becomes a
+  single hop and the next access finishes the chain.
+* **Resync** — `POST /admin-api/contexts/{id}/resync` adopts an up-to-date
+  peer's state wholesale (a full-state snapshot), bypassing replay. This is
+  **destructive**: any local edits the context hasn't broadcast are discarded,
+  so it refuses with the local-head count unless you pass `{"force": true}`.
+  After it completes the member is back at the current version.
+
+A self-heal needs no action: if the missing blob simply arrives later, the next
+access resolves the hop, migrates, and clears the `failed` marker.
 
 ---
 
@@ -729,3 +762,4 @@ a time.
 | `sort()` before building a `Vector` from a map/set | Change an identity-gated type to a plain one (refused) |
 | Prove convergence with `assert_migrate_converges` | Assume single-node tests prove cross-node determinism |
 | `panic!` on bad input (non-destructive abort) | Expect a `Result` from the migrate fn |
+| Keep old version blobs obtainable so behind members can chain | Drop an intermediate version and expect members below it to auto-upgrade (they strand → reinstall or resync) |

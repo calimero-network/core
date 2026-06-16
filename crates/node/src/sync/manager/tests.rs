@@ -412,3 +412,86 @@ mod key_recovery_trigger {
             .is_empty());
     }
 }
+
+// `should_stop_peer_retry` stops `perform_interval_sync` only for the
+// unsatisfiable PendingParentsUnresolved, not peer-specific failures.
+mod pending_parents_short_circuit {
+    use calimero_primitives::context::ContextId;
+
+    use super::super::{should_stop_peer_retry, NoPeersAvailable, PendingParentsUnresolved};
+
+    fn ctx() -> ContextId {
+        ContextId::from([7u8; 32])
+    }
+
+    #[test]
+    fn mesh_swept_parent_pull_stops_the_peer_loop() {
+        // Emitted only when the whole mesh was swept — another peer is pointless.
+        let err = eyre::Error::new(PendingParentsUnresolved {
+            context_id: ctx(),
+            remaining: 3,
+            attempts: 4,
+        });
+        assert!(should_stop_peer_retry(&err));
+    }
+
+    #[test]
+    fn detection_survives_nested_wrap_err() {
+        // Production wraps twice (handle_dag_sync + initiate_sync_inner) before
+        // the retry loop; if downcast didn't traverse the whole eyre chain the
+        // fix would be a silent no-op.
+        use eyre::WrapErr as _;
+        let wrapped = Err::<(), _>(eyre::Error::new(PendingParentsUnresolved {
+            context_id: ctx(),
+            remaining: 1,
+            attempts: 2,
+        }))
+        .wrap_err("request DAG heads and sync")
+        .wrap_err("DAG sync")
+        .unwrap_err();
+        assert!(should_stop_peer_retry(&wrapped));
+    }
+
+    #[test]
+    fn peer_specific_errors_keep_iterating() {
+        // A different peer can still succeed, so these must not short-circuit.
+        assert!(!should_stop_peer_retry(&eyre::eyre!(
+            "connection reset by peer"
+        )));
+        assert!(!should_stop_peer_retry(&eyre::Error::new(
+            NoPeersAvailable { context_id: ctx() }
+        )));
+    }
+
+    #[test]
+    fn non_swept_path_message_alone_does_not_short_circuit() {
+        // The cap/time-budget path bail!s the same wording untyped; only the
+        // type stops the loop, so a message-identical plain error must not.
+        let plain = eyre::eyre!(
+            "pending parents unresolved for context {}: 3 remaining after 4 peer attempt(s)",
+            ctx()
+        );
+        assert!(!should_stop_peer_retry(&plain));
+    }
+
+    #[test]
+    fn display_pins_operator_log_format() {
+        // The non-swept path bail!s via this Display, so keep the operator-facing
+        // line stable regardless of which path produced it.
+        let shown = format!(
+            "{}",
+            PendingParentsUnresolved {
+                context_id: ctx(),
+                remaining: 3,
+                attempts: 4,
+            }
+        );
+        assert_eq!(
+            shown,
+            format!(
+                "pending parents unresolved for context {}: 3 remaining after 4 peer attempt(s)",
+                ctx()
+            )
+        );
+    }
+}

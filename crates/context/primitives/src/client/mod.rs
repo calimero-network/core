@@ -40,14 +40,14 @@ use crate::group::{
     LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, MigrationStatus, NamespaceSummary, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
-    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
-    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
-    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
-    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
-    UpgradeGroupResponse,
+    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest,
+    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
+    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
+    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
+    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
+    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -1884,6 +1884,12 @@ impl ContextClient {
         AbortMigration,
         AbortMigrationRequest,
         eyre::Result<AbortMigrationResponse>
+    );
+    forward_to_actor!(
+        resync_context,
+        ResyncContext,
+        ResyncContextRequest,
+        eyre::Result<ResyncContextResponse>
     );
 
     // --- Methods with custom parameter handling (not suitable for forward_to_actor!) ---

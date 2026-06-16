@@ -59,6 +59,52 @@ pub fn next_rung(
     }
 }
 
+/// The `ApplicationId` the upgrade ladder pairs with bytecode blob `schema`,
+/// or the group target when `schema` is the group's current `app_key`. `None`
+/// when the ladder never recorded `schema`, so a caller leaves the existing
+/// binding untouched. Used by the resync settle to reconcile a context's bound
+/// id to the schema its synced state actually carries (single-wasm apps key a
+/// distinct id per version; bundle apps share one, so this is a no-op there).
+pub fn application_for_schema(
+    ladder: &[LadderRung],
+    schema: [u8; 32],
+    group_app_key: [u8; 32],
+    group_target: ApplicationId,
+) -> Option<ApplicationId> {
+    if schema == group_app_key {
+        return Some(group_target);
+    }
+    ladder
+        .iter()
+        .rev()
+        .find(|r| r.app_key == schema)
+        .map(|r| r.application_id)
+}
+
+/// Reconcile a context's bound `ApplicationId` (`ContextMeta.application`) after
+/// a resync adopts a peer's state. Without this a single-wasm context whose
+/// per-version id differs from its stale binding would keep tripping the
+/// pending-upgrade gate even though its state now matches the target. Best
+/// effort: a read miss or write error leaves the binding as-is.
+pub fn reconcile_context_application(
+    store: &Store,
+    context_id: &ContextId,
+    application_id: ApplicationId,
+) {
+    let key = calimero_store::key::ContextMeta::new(*context_id);
+    let mut handle = store.handle();
+    let Ok(Some(mut meta)) = handle.get(&key) else {
+        return;
+    };
+    if meta.application.application_id() == application_id {
+        return;
+    }
+    meta.application = calimero_store::key::ApplicationMeta::new(application_id);
+    if let Err(err) = handle.put(&key, &meta) {
+        debug!(%context_id, %err, "failed to reconcile context application after resync");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -151,6 +197,53 @@ mod tests {
                 application_id: target_id(),
             })
         );
+    }
+
+    #[test]
+    fn application_for_schema_resolves_target_ladder_and_unknown() {
+        let ladder = vec![rung(0x01), rung(0x02), rung(0x09)];
+        // The group target app_key maps to the group target id.
+        assert_eq!(
+            application_for_schema(&ladder, TARGET, TARGET, target_id()),
+            Some(target_id())
+        );
+        // An intermediate schema maps to that rung's id.
+        assert_eq!(
+            application_for_schema(&ladder, [0x02; 32], TARGET, target_id()),
+            Some(ApplicationId::from([0x02; 32]))
+        );
+        // A schema the ladder never recorded leaves the binding untouched.
+        assert_eq!(
+            application_for_schema(&ladder, [0x77; 32], TARGET, target_id()),
+            None
+        );
+    }
+
+    #[test]
+    fn reconcile_context_application_updates_binding() {
+        use calimero_store::key::{ApplicationMeta, ContextMeta as ContextMetaKey};
+        use calimero_store::types::ContextMeta;
+
+        let store = store();
+        let ctx = ContextId::from([0x33; 32]);
+        let old = ApplicationId::from([0x01; 32]);
+        let new = ApplicationId::from([0x09; 32]);
+        store
+            .handle()
+            .put(
+                &ContextMetaKey::new(ctx),
+                &ContextMeta::new(ApplicationMeta::new(old), [0u8; 32], vec![], None),
+            )
+            .unwrap();
+
+        reconcile_context_application(&store, &ctx, new);
+
+        let meta = store
+            .handle()
+            .get(&ContextMetaKey::new(ctx))
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.application.application_id(), new);
     }
 
     #[test]
