@@ -40,7 +40,7 @@ pub mod hlc_fence;
 mod lifecycle;
 pub mod migration_plan;
 pub mod self_purge;
-mod tee_subgroup_admit;
+pub mod tee_subgroup_admit;
 
 pub(crate) use cache::{BoundedCache, Evictable};
 
@@ -757,6 +757,12 @@ impl Actor for ContextManager {
         // existing rejoin codepaths can re-establish state. Mirrors
         // auto_follow's listener pattern. Idempotent across restarts.
         self_purge::spawn(self.datastore.clone(), self.node_client.clone());
+
+        // Transparent per-subgroup TEE admission (proposal.md §12d, Phase 1).
+        // Reacts to SubgroupCreated / TeeMemberAdmitted to admit entitled TEE
+        // members into Restricted subgroups this node holds keys for. Open
+        // subgroups need no admission. Mirrors the self_purge listener pattern.
+        tee_subgroup_admit::spawn(self.datastore.clone(), self.context_client.clone());
     }
 }
 

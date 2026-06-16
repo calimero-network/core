@@ -9,11 +9,17 @@
 use std::sync::Mutex;
 
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::group::AdmitTeeNodeRequest;
+use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
+use calimero_governance_store::{
+    tee_admission_record, CapabilitiesRepository, GroupKeyring, MembershipRepository,
+};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use tokio::task::AbortHandle;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum AdmitTrigger {
@@ -120,13 +126,113 @@ async fn run(store: Store, context_client: ContextClient) {
     }
 }
 
-// Stubs — implemented in Tasks 3 and 4.
-async fn handle_new_subgroup(
-    _store: &Store,
-    _context_client: &ContextClient,
-    _namespace_id: [u8; 32],
-    _child_group_id: [u8; 32],
+/// Admit `member` (an entitled TEE identity) into `subgroup`, reusing the
+/// verdict recorded at its namespace-root admission. Idempotent and best-effort:
+/// logs and continues on any error. Delivery of the per-subgroup key happens
+/// inside `admit_tee_node` and succeeds because the caller holds the key.
+async fn admit_member_into_subgroup(
+    store: &Store,
+    context_client: &ContextClient,
+    namespace_gid: &ContextGroupId,
+    subgroup_gid: &ContextGroupId,
+    member: &PublicKey,
 ) {
+    // Idempotency: skip if already a direct member of the subgroup.
+    match MembershipRepository::new(store).has_direct_member(subgroup_gid, member) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(e) => {
+            error!(?e, "tee-subgroup-admit: has_direct_member check failed");
+            return;
+        }
+    }
+
+    let record = match tee_admission_record(store, namespace_gid, member) {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            // Member is not a root TEE member (or its admission op isn't local
+            // yet). Nothing to reuse; the key pull / a later event will recover.
+            return;
+        }
+        Err(e) => {
+            error!(?e, "tee-subgroup-admit: reading admission record failed");
+            return;
+        }
+    };
+
+    if record.role != GroupMemberRole::ReadOnlyTee {
+        return;
+    }
+
+    let req = AdmitTeeNodeRequest {
+        group_id: *subgroup_gid,
+        member: *member,
+        quote_hash: record.quote_hash,
+        mrtd: record.mrtd,
+        rtmr0: record.rtmr0,
+        rtmr1: record.rtmr1,
+        rtmr2: record.rtmr2,
+        rtmr3: record.rtmr3,
+        tcb_status: record.tcb_status,
+        // Production TEE admissions are real; the op-log record carries no
+        // is_mock flag. Mock-quote test paths admit via the allowlisted mock
+        // MRTD regardless (accept_mock + allowed_mrtd), so false is correct here.
+        is_mock: false,
+    };
+
+    if let Err(e) = context_client.admit_tee_node(req).await {
+        error!(
+            ?e,
+            "tee-subgroup-admit: admit_tee_node into subgroup failed (key pull is the fallback)"
+        );
+    }
+}
+
+async fn handle_new_subgroup(
+    store: &Store,
+    context_client: &ContextClient,
+    namespace_id: [u8; 32],
+    child_group_id: [u8; 32],
+) {
+    let namespace_gid = ContextGroupId::from(namespace_id);
+    let child_gid = ContextGroupId::from(child_group_id);
+
+    // Only act for Restricted subgroups — Open subgroups are already readable
+    // by a root-admitted TEE node (inherited membership + namespace key).
+    match CapabilitiesRepository::new(store).is_open_chain_to_namespace(&child_gid, &namespace_gid)
+    {
+        Ok(true) => return, // Open → skip
+        Ok(false) => {}     // Restricted → proceed
+        Err(e) => {
+            error!(?e, "tee-subgroup-admit: open-chain check failed");
+            return;
+        }
+    }
+
+    // Only the key-holder (the creator) can deliver the per-subgroup key.
+    match GroupKeyring::new(store, child_gid).load_current_key() {
+        Ok(Some(_)) => {}   // we hold the key → we can admit + deliver
+        Ok(None) => return, // not the key-holder → leave it to the creator / pull
+        Err(e) => {
+            error!(?e, "tee-subgroup-admit: load_current_key failed");
+            return;
+        }
+    }
+
+    // Admit every existing root-level ReadOnlyTee member into the new subgroup.
+    let members = match MembershipRepository::new(store).list(&namespace_gid, 0, usize::MAX) {
+        Ok(m) => m,
+        Err(e) => {
+            error!(?e, "tee-subgroup-admit: listing root members failed");
+            return;
+        }
+    };
+    for (member, role) in members {
+        if role == GroupMemberRole::ReadOnlyTee {
+            admit_member_into_subgroup(store, context_client, &namespace_gid, &child_gid, &member)
+                .await;
+        }
+    }
 }
 
 async fn handle_new_tee_member(
