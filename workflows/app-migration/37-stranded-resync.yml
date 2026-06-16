@@ -1,3 +1,9 @@
+# NOTE: not in the app-migration-e2e CI matrix. Reliably staging a strand needs
+# node 2 to never obtain node 1's newer state, but a live 2-node group syncs
+# node 1's committed v3 root (and pre-stages its blobs over BlobShare) before
+# delete_blob_on_disk runs — so node 2 reaches v3 instead of stranding.
+# Deterministic staging needs a network partition across node 1's advance
+# (partition_peers/heal_peers); tracked as a follow-up. Runnable locally as-is.
 name: 37 — Stranded context recovers via resync (intermediate blob unobtainable, 2-node)
 description: >
   A behind member is STRANDED when an upgrade-ladder rung's bytecode is
