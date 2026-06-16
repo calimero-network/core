@@ -30,6 +30,7 @@ use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use prometheus_client::registry::Registry;
 use rand::rngs::OsRng;
+use serial_test::serial;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
@@ -283,7 +284,11 @@ pub(crate) async fn boot_test_node() -> TestNode {
     }
 }
 
+// These `boot_test_node`-based e2e tests share process-global state (the
+// `calimero_context::tee_subgroup_admit` subscriber singleton + the
+// `op_events` broadcast channel), so they must not run concurrently.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn apply_signed_group_op_via_context_client() {
     let node = boot_test_node().await;
 
@@ -361,6 +366,7 @@ async fn apply_signed_group_op_via_context_client() {
 /// `group_store::tests::auto_follow_tests` (12 cases including admin-set,
 /// self-set, non-admin-rejected, and non-member-target variants).
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn set_member_auto_follow_handler_error_paths() {
     let node = boot_test_node().await;
 
@@ -654,6 +660,7 @@ async fn wait_until<F: Fn() -> bool>(cond: F) -> bool {
 /// the `ns/` topic, so `count_group_members` would stay at 1 and no
 /// `ReadOnlyTee` row would ever appear; this test would time out.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn ns_announce_admits_announcer_as_read_only_tee_member() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
@@ -729,6 +736,7 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
 /// `tee_subgroup_admit` subscriber (spawned in `ContextManager::started`) to
 /// admit the existing root TEE member into the new Restricted subgroup.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn restricted_subgroup_created_admits_existing_tee_member() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
@@ -822,6 +830,7 @@ async fn restricted_subgroup_created_admits_existing_tee_member() {
 /// quote, allowlisted MRTD), so the ONLY thing keeping the announcer out is the
 /// topic-prefix routing decision under test.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn group_topic_announce_is_not_routed_as_namespace_admission() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
