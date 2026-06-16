@@ -5,6 +5,15 @@
 //! member(s) into Restricted subgroups, reusing the verified verdict from the
 //! namespace-root op log. Open subgroups are skipped (a root-admitted TEE node
 //! reads them via inherited membership + the namespace key). See proposal.md §12d.
+//!
+//! Race note: the apply path emits `OpEvent::TeeMemberAdmitted` *before* it
+//! persists the op-log entry, with no enclosing transaction (see the
+//! "atomic batch deferred" note in `governance-store/src/local_state.rs`). A
+//! subscriber reacting to that event can therefore observe `tee_admission_record`
+//! returning `None` for a member it just learned about. `handle_new_tee_member`
+//! works around this with a bounded wake-then-reread retry. The durable fix —
+//! emitting events only after the op-log entry is persisted (ideally in one
+//! atomic batch) in the apply path — is a deferred follow-up.
 
 use std::sync::Mutex;
 
@@ -14,7 +23,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
     tee_admission_record, CapabilitiesRepository, GroupKeyring, MembershipRepository,
-    NamespaceRepository,
+    NamespaceRepository, TeeAdmissionRecord,
 };
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
@@ -127,16 +136,21 @@ async fn run(store: Store, context_client: ContextClient) {
     }
 }
 
-/// Admit `member` (an entitled TEE identity) into `subgroup`, reusing the
-/// verdict recorded at its namespace-root admission. Idempotent and best-effort:
-/// logs and continues on any error. Delivery of the per-subgroup key happens
-/// inside `admit_tee_node` and succeeds because the caller holds the key.
+/// Admit `member` (an entitled TEE identity) into `subgroup_gid`, reusing the
+/// already-fetched `record` from its namespace-root admission. Idempotent and
+/// best-effort: logs and continues on any error. Delivery of the per-subgroup
+/// key happens inside `admit_tee_node` and succeeds because the caller holds the
+/// key.
+///
+/// The caller fetches the [`TeeAdmissionRecord`] once and may reuse it across
+/// multiple subgroups, so this borrows it and clones the `String` fields when
+/// building the request.
 async fn admit_member_into_subgroup(
-    store: &Store,
     context_client: &ContextClient,
-    namespace_gid: &ContextGroupId,
+    store: &Store,
     subgroup_gid: &ContextGroupId,
     member: &PublicKey,
+    record: &TeeAdmissionRecord,
 ) {
     // Idempotency: skip if already a direct member of the subgroup.
     match MembershipRepository::new(store).has_direct_member(subgroup_gid, member) {
@@ -148,19 +162,6 @@ async fn admit_member_into_subgroup(
         }
     }
 
-    let record = match tee_admission_record(store, namespace_gid, member) {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            // Member is not a root TEE member (or its admission op isn't local
-            // yet). Nothing to reuse; the key pull / a later event will recover.
-            return;
-        }
-        Err(e) => {
-            error!(?e, "tee-subgroup-admit: reading admission record failed");
-            return;
-        }
-    };
-
     if record.role != GroupMemberRole::ReadOnlyTee {
         return;
     }
@@ -169,12 +170,12 @@ async fn admit_member_into_subgroup(
         group_id: *subgroup_gid,
         member: *member,
         quote_hash: record.quote_hash,
-        mrtd: record.mrtd,
-        rtmr0: record.rtmr0,
-        rtmr1: record.rtmr1,
-        rtmr2: record.rtmr2,
-        rtmr3: record.rtmr3,
-        tcb_status: record.tcb_status,
+        mrtd: record.mrtd.clone(),
+        rtmr0: record.rtmr0.clone(),
+        rtmr1: record.rtmr1.clone(),
+        rtmr2: record.rtmr2.clone(),
+        rtmr3: record.rtmr3.clone(),
+        tcb_status: record.tcb_status.clone(),
         // Production TEE admissions are real; the op-log record carries no
         // is_mock flag. Mock-quote test paths admit via the allowlisted mock
         // MRTD regardless (accept_mock + allowed_mrtd), so false is correct here.
@@ -229,10 +230,20 @@ async fn handle_new_subgroup(
         }
     };
     for (member, role) in members {
-        if role == GroupMemberRole::ReadOnlyTee {
-            admit_member_into_subgroup(store, context_client, &namespace_gid, &child_gid, &member)
-                .await;
+        if role != GroupMemberRole::ReadOnlyTee {
+            continue;
         }
+        // No retry needed here: the root admission long predates this subgroup
+        // creation, so its op-log entry is already persisted and readable.
+        let record = match tee_admission_record(store, &namespace_gid, &member) {
+            Ok(Some(r)) => r,
+            Ok(None) => continue, // not a root TEE member / no verdict to reuse
+            Err(e) => {
+                error!(?e, "tee-subgroup-admit: reading admission record failed");
+                continue;
+            }
+        };
+        admit_member_into_subgroup(context_client, store, &child_gid, &member, &record).await;
     }
 }
 
@@ -258,6 +269,34 @@ async fn handle_new_tee_member(
     if namespace_gid != group_gid {
         return; // subgroup admission echo → ignore
     }
+
+    // The TeeMemberAdmitted event is emitted before the op-log entry is
+    // persisted (apply path emits pre-persist; see join_group.rs for the same
+    // wake-then-reread idiom). Retry briefly so the just-admitted member's
+    // verdict becomes readable. The triggering event GUARANTEES the record will
+    // exist imminently (it is the very admission that fired this event); the real
+    // gap is microseconds, so 20×50ms = 1s is a generous upper bound.
+    let mut record = None;
+    for _ in 0..20 {
+        match tee_admission_record(store, &namespace_gid, &member) {
+            Ok(Some(r)) => {
+                record = Some(r);
+                break;
+            }
+            Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            Err(e) => {
+                error!(?e, "tee-subgroup-admit: reading admission record failed");
+                return;
+            }
+        }
+    }
+    let Some(record) = record else {
+        warn!(
+            member = ?member,
+            "tee-subgroup-admit: verdict not visible after retry; relying on later events / key pull"
+        );
+        return;
+    };
 
     // Enumerate Restricted subgroups of the namespace that this node holds keys
     // for, and admit the new member into each.
@@ -296,7 +335,7 @@ async fn handle_new_tee_member(
                 continue;
             }
         }
-        admit_member_into_subgroup(store, context_client, &namespace_gid, &sub, &member).await;
+        admit_member_into_subgroup(context_client, store, &sub, &member, &record).await;
     }
 }
 
