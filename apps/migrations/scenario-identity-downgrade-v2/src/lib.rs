@@ -5,8 +5,10 @@ use calimero_storage::collections::{AuthoredMap, LwwRegister, UnorderedMap};
 
 /// v2 DOWNGRADES `wiki` from an `AuthoredMap` (identity-gated, per-entry author)
 /// to a plain `UnorderedMap`, dropping authorship network-wide. This is
-/// intentionally UNSAFE — it exists only as the fixture the `calimero-abi diff`
-/// CI guard must catch (`UNSAFE_IDENTITY_DOWNGRADE`). It is NOT run by merobox.
+/// intentionally UNSAFE — it is the fixture the `calimero-abi diff` CI guard must
+/// catch (`UNSAFE_IDENTITY_DOWNGRADE`). merobox workflow 22 also exercises it as a
+/// negative-path test: the upgrade is expected to be REJECTED by the emitter-side
+/// gate, so the v2 migrate body never runs.
 #[app::state(version = 2)]
 pub struct ScenarioIdentityDowngradeV2 {
     wiki: UnorderedMap<String, LwwRegister<String>>,

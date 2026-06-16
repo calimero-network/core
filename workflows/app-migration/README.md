@@ -36,6 +36,30 @@ and the namespace-cascade additions designed in
 | `12-scenario-field-remove-archive.yml` | **Remove with archive** — v2 drops `legacy_note` but stashes the value in `archived_legacy: UnorderedMap<String, String>` under key `"latest"`. Companion to `03` (which discards). | Yes |
 | `13-scenario-invariant-reshuffle.yml` | **Invariant reshuffle** — v1 has denormalized `global_count` + `per_item_counts` (invariant easy to violate via two independent setters). v2 funnels both updates through a single `record()` method; migrate re-derives `total` from the per-item map (does NOT trust v1's `global_count`). | Yes |
 
+### Collection-coverage + engine-feature workflows (14–37)
+
+| File | What it covers |
+| --- | --- |
+| `14-cascade-status-rpc.yml` | `get_cascade_status` + `assert_cascade_complete` (2-node). |
+| `15-scenario-authored-map.yml` | `AuthoredMap` carry-through across a migrate (per-entry owner stamps survive). |
+| `16-scenario-user-storage.yml` | `UserStorage` carry-through. |
+| `17-scenario-frozen-storage.yml` | `FrozenStorage` real content-rewrite during migrate. |
+| `18-scenario-shared-storage.yml` | `SharedStorage` (writer-set-guarded) carry-through. |
+| `19-scenario-authored-vector.yml` | `AuthoredVector` carry-through. |
+| `20-scenario-unordered-set.yml` | `UnorderedSet` built during migrate (deterministic re-key). |
+| `21-reads-available-during-upgrade.yml` | Reads served from the current root while an upgrade is in progress (#2539 step 1). |
+| `22-scenario-identity-downgrade.yml` | Negative path: the L1 identity-downgrade gate REJECTS an `AuthoredMap → UnorderedMap` upgrade (1-node). |
+| `26-owner-driven-authored.yml` | Owner-driven identity-gated re-write (`migrate_my_entries`). |
+| `28-get-migration-status.yml` | `get_migration_status` rollup substrate. |
+| `29-migration-check-pass.yml` | `migration_check` passes → migration commits. |
+| `30-migration-check-fail-abort.yml` | `migration_check` fails → zero-residue logical abort, v1 still served. |
+| `31-admin-abort-logical.yml` | Admin logical abort drops the pending marker. |
+| `32-authored-migrate-ux.yml` | One-tap `migrate_my_entries`. |
+| `33-authored-remaining-count.yml` | `count_my_pending` drives the `authored_remaining` rollup. |
+| `35-two-namespaces-coexist.yml` | Two namespaces coexist on different versions on one node. |
+| `36-chained-catchup.yml` | Chained catch-up via the upgrade ladder (`v2 → v3 → v4`, 2-node). |
+| `37-namespace-invite-join-regression.yml` | Namespace invite/join regression guard. |
+
 ### Out of scope (not in this PR)
 
 * `serde-default-field` — borsh-backed state ignores `#[serde(default)]`, so this scenario from the original matrix doesn't have a meaningful borsh-level shape. Could be added later as an ABI-response scenario, not a state-migration one.

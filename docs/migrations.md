@@ -357,7 +357,7 @@ Subscribe to context events via the node's SSE endpoint and react to this event 
 **`authored_remaining` in the migration status endpoint** — tracks how many members in the cohort still have uncoverted identity-gated entries:
 
 ```text
-GET /admin-api/groups/{namespace_id}/migration/status
+GET /admin-api/groups/{namespace_id}/migration-status
 → { ..., "authored_remaining": 3 }   # 3 cohort members still have stale entries
 ```
 

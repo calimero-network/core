@@ -1,0 +1,386 @@
+name: 37 — Stranded context recovers via resync (intermediate blob unobtainable, 2-node)
+description: >
+  A behind member is STRANDED when an upgrade-ladder rung's bytecode is
+  unobtainable, and recovers via an operator-initiated state resync — the
+  headline "nobody stranded" path (migrations-v2 PR-4b).
+
+  node-1 advances a context v1 -> v2 -> v3 (activating each rung in its own
+  binary), so it holds v3 state and all three blobs. node-2 joins at v1, syncs
+  v1 state, learns of the v3 target, but never accesses — it stays at v1. The
+  v2 (INTERMEDIATE) blob is then deleted on every holder (node-1 + node-2's
+  pre-stage) with `delete_blob_on_disk`; the v3 blob stays intact on node-1.
+
+  When node-2 first accesses the context its lazy ladder replay reaches the
+  v1 -> v2 hop, cannot fetch the v2 bytecode from any peer, and hits
+  NoMigrationPath: the access SUCCEEDS serving the current (v1) application
+  (logged "ladder hop blocked; proceeding with current application"), and the
+  context surfaces as `state: "failed"` / `migration_failed: "no_migration_path"`
+  in the migration-status rollup. It is stranded — v1 -> v2 -> v3 is impassable
+  because v2 is gone.
+
+  Recovery: `resync_context force=true` on node-2 adopts node-1's full v3-state
+  snapshot (the v3 blob is intact, so node-2 can fetch and run it), clearing the
+  stranded marker. A post-resync read returns the v3 schema with v1 data carried
+  through, and the rollup converges to all-migrated.
+
+  The strand assertion uses the TERMINAL signals (the "ladder hop blocked" warn
+  + the migration-status rollup), NOT the "replaying upgrade ladder hop" line
+  which also fires on the blocked attempt.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-strand
+  base_port: 10250
+  base_rpc_port: 10350
+
+steps:
+  # Phase 1: install v1 on the admin node; namespace + Open subgroup + context.
+  - name: Install migration-suite-v1 on node 1
+    type: install_application
+    node: app-migration-strand-1
+    path: apps/migrations/migration-suite-v1/res/migration-suite-1.0.0.mpk
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Create namespace (v1) on node 1
+    type: create_namespace
+    node: app-migration-strand-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-strand-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-strand-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "stranded-resync-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-strand-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-strand-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 2: node 2 joins namespace -> subgroup -> context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-strand-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-strand-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-strand-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-strand-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 3: seed v1 state; node 2 converges on it (passive sync — no access,
+  # so node 2 never triggers a migration and stays at v1).
+  - name: Write v1 description
+    type: call
+    node: app-migration-strand-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "stranded-resync"
+
+  - name: Increment counter (1/2)
+    type: call
+    node: app-migration-strand-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Increment counter (2/2)
+    type: call
+    node: app-migration-strand-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Write item to v1 map
+    type: call
+    node: app-migration-strand-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k1"
+      value: "v1-value"
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-strand-1
+      - app-migration-strand-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-strand-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Phase 4: install v2, capture its blob id WHILE v2 is the row's latest
+  # (same-package bundles share one applicationId, so the blob id is the only
+  # per-version handle), upgrade v1 -> v2, activate v2 on node 1 ONLY.
+  - name: Install migration-suite-v2 on node 1
+    type: install_application
+    node: app-migration-strand-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration-suite-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Capture the v2 bytecode blob id (v2 is the row's latest right now)
+    type: get_application
+    node: app-migration-strand-1
+    application_id: "{{app_v2}}"
+    outputs:
+      v2_version: application.version
+      v2_blob_id: application.blob.bytecode
+
+  - name: Assert get_application returned the v2 row
+    type: json_assert
+    statements:
+      - 'equal("{{v2_version}}", "2.0.0")'
+
+  - name: Upgrade subgroup v1 -> v2
+    type: upgrade_group
+    node: app-migration-strand-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+
+  - name: Wait for v2 upgrade meta to gossip to node 2
+    type: wait
+    seconds: 15
+
+  - name: Activate v2 on node 1 only (node 2 stays at v1 — never accessed)
+    type: call
+    node: app-migration-strand-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node1: result
+
+  - name: Assert node 1 activated v2
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0"}})'
+
+  # Phase 5: install v3, upgrade v2 -> v3, activate v3 on node 1 ONLY. node 1
+  # now holds v3 state (replayed v1->v2->v3 with all blobs intact); node 2
+  # remains at v1 and learns the v3 target via gossip.
+  - name: Install migration-suite-v3 on node 1
+    type: install_application
+    node: app-migration-strand-1
+    path: apps/migrations/migration-suite-v3-remove-field/res/migration-suite-3.0.0.mpk
+    dev: true
+    outputs:
+      app_v3: applicationId
+
+  - name: Upgrade subgroup v2 -> v3
+    type: upgrade_group
+    node: app-migration-strand-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v3}}"
+
+  - name: Wait for v3 upgrade meta to gossip to node 2
+    type: wait
+    seconds: 15
+
+  - name: Activate v3 on node 1 only
+    type: call
+    node: app-migration-strand-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v3_schema_node1: result
+
+  - name: Assert node 1 reached v3
+    type: json_assert
+    statements:
+      - 'json_subset({{v3_schema_node1}}, {"output": {"schema_version": "3.0.0"}})'
+
+  # Phase 6: STRAND — delete the v2 intermediate blob on every holder. node 1
+  # is past v2 (at v3) so it no longer needs it; node 2 may have pre-staged it
+  # over BlobShare (missing_ok covers the case it did not). The v3 blob on
+  # node 1 stays intact for recovery.
+  - name: Delete the v2 blob on node 1 (it is at v3, no longer needs v2)
+    type: delete_blob_on_disk
+    node: app-migration-strand-1
+    blob_id: "{{v2_blob_id}}"
+
+  - name: Delete the v2 blob on node 2 (drops any pre-staged copy)
+    type: delete_blob_on_disk
+    node: app-migration-strand-2
+    blob_id: "{{v2_blob_id}}"
+    missing_ok: true
+
+  # Phase 7: node 2's FIRST access triggers the lazy ladder replay; the
+  # v1 -> v2 hop can't fetch v2 from anyone -> NoMigrationPath. The access
+  # SUCCEEDS serving v1 (it does NOT error), and the context strands.
+  - name: First access on node 2 hits the missing v2 rung (serves v1)
+    type: call
+    node: app-migration-strand-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    expected_failure: false
+    outputs:
+      strand_schema_node2: result
+
+  - name: Assert node 2 still serves v1 (the ladder hop was blocked)
+    type: json_assert
+    statements:
+      - 'json_subset({{strand_schema_node2}}, {"output": {"schema_version": "1.0.0"}})'
+
+  # Terminal strand signal — the blocked hop fell back to the current app.
+  # (NOT "replaying upgrade ladder hop", which also fires on the attempt.)
+  - name: Assert node 2 logged the blocked ladder hop
+    type: assert_log_present
+    nodes:
+      - app-migration-strand-2
+    patterns:
+      - "ladder hop blocked; proceeding with current application"
+    min_matches: 1
+
+  # Let node 2 emit a migration heartbeat carrying its stranded marker so the
+  # rollup reflects the failure (heartbeat is interval-driven; see scenario 28).
+  - name: Settle for node 2's stranded heartbeat
+    type: wait
+    seconds: 40
+
+  - name: Read migration-status rollup on node 2
+    type: get_migration_status
+    node: app-migration-strand-2
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      strand_failed: failed
+
+  - name: Assert exactly node 2 surfaces as failed in the rollup
+    # node 2 reports its own NoMigrationPath marker (local — no gossip wait);
+    # node 1 is at v3 (migrated). Mirrors scenario 14's numeric rollup asserts.
+    type: json_assert
+    statements:
+      - "equal({{strand_failed}}, 1)"
+
+  # Phase 8: RECOVER — resync node 2 from a peer. force=true because node 2
+  # still holds local DAG heads (its v1 state) that the snapshot discards.
+  - name: Resync node 2 from a peer (adopts node 1's v3-state snapshot)
+    type: resync_context
+    node: app-migration-strand-2
+    context_id: "{{ctx_id}}"
+    force: true
+    outputs:
+      resync_started: resyncStarted
+
+  - name: Assert resync was started
+    type: json_assert
+    statements:
+      - 'equal("{{resync_started}}", "true")'
+
+  - name: Assert node 2 logged the resync request
+    type: assert_log_present
+    nodes:
+      - app-migration-strand-2
+    patterns:
+      - "context resync requested"
+    min_matches: 1
+
+  - name: Wait for the snapshot to settle on node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-strand-1
+      - app-migration-strand-2
+    timeout: 120
+    trigger_sync: true
+
+  # Behavioural recovery proof: node 2 now serves the v3 schema (it fetched the
+  # intact v3 blob and adopted the v3 snapshot), with the v1 data carried.
+  - name: Read schema on node 2 after resync
+    type: call
+    node: app-migration-strand-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      recovered_schema_node2: result
+
+  - name: Assert node 2 recovered to v3 with data carried through
+    type: json_assert
+    statements:
+      - 'json_subset({{recovered_schema_node2}}, {"output": {"schema_version": "3.0.0", "counter": "2"}})'
+
+  - name: Assert the v1 map item survived the resync on node 2
+    type: call
+    node: app-migration-strand-2
+    context_id: "{{ctx_id}}"
+    method: get_item
+    args:
+      key: "k1"
+    outputs:
+      item_node2: result
+
+  - name: Assert item value carried through to v3
+    type: json_assert
+    statements:
+      - 'json_subset({{item_node2}}, {"output": "v1-value"})'
+
+  # Structured recovery proof: the rollup converges to all-migrated (node 2's
+  # stranded marker was cleared and it now reports the v3 schema with zero
+  # residue). Polls past the heartbeat interval.
+  - name: Assert the cohort converges to all-migrated after recovery
+    type: assert_migration_complete
+    node: app-migration-strand-2
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
+
+  # Teardown guard: no deserialization failures anywhere across the run.
+  - name: Assert no deserialization failures anywhere
+    type: assert_log_absent
+    nodes:
+      - app-migration-strand-1
+      - app-migration-strand-2
+    patterns:
+      - "Not all bytes read"
+      - "failed to deserialize"
+
+stop_all_nodes: false

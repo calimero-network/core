@@ -224,15 +224,11 @@ pub struct ContextConfigParams {
 /// Controls how application upgrades propagate across contexts in a group.
 ///
 /// A migration-carrying upgrade is only valid under `LazyOnAccess` (receivers
-/// run the migrate on next access); `Automatic` is for code-only upgrades. The
-/// former `Coordinated` variant (borsh tag `2`) was removed — it did nothing
-/// `Automatic` didn't and its `deadline` was never enforced. Tag `2` is now
-/// rejected on deserialize (see the borsh impl below).
+/// run the migrate on next access); `Automatic` is for code-only upgrades.
 ///
-/// `#[non_exhaustive]` is retained deliberately even though only two variants
-/// remain: future policies (e.g. an eager migrating `Automatic`) can be added
-/// without it being a breaking change for downstream matchers. Any new variant
-/// MUST also be assigned a borsh tag in the manual impl below.
+/// `#[non_exhaustive]` is retained so future policies can be added without
+/// breaking downstream matchers. Any new variant MUST also claim a borsh tag in
+/// the manual impl below.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum UpgradePolicy {

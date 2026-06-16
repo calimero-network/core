@@ -27,6 +27,7 @@ use calimero_storage::store::{Key, MainStorage};
 use calimero_storage::Interface;
 use calimero_store::{key, types};
 use calimero_utils_actix::global_runtime;
+use either::Either;
 use eyre::bail;
 use tracing::{debug, error, info, warn};
 
@@ -109,9 +110,22 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                 let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
                 let application = act.applications.get(&application_id).cloned();
                 let migration_v2 = act.config.migration_v2;
+                // Hold the per-context write guard across migrate -> check ->
+                // commit, mirroring the lazy/execute path. Without it an
+                // app-method execute could interleave with this admin-driven
+                // migration's read-old -> compute -> commit sequence. The
+                // module load above touches no state, so acquiring the guard
+                // here (after the load) still serialises the whole
+                // state-mutating sequence against a concurrent op.
+                let guard_either = act.contexts.get(&context_id).map(|c| c.lock());
 
                 async move {
-                    update_application_with_migration(
+                    let _guard = match guard_either {
+                        Some(Either::Left(guard)) => Some(guard),
+                        Some(Either::Right(fut)) => Some(fut.await),
+                        None => None,
+                    };
+                    let result = update_application_with_migration(
                         datastore,
                         node_client,
                         context_client,
@@ -124,7 +138,9 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                         module,
                         migration_v2,
                     )
-                    .await
+                    .await;
+                    drop(_guard);
+                    result
                 }
                 .into_actor(act)
             });
@@ -773,6 +789,18 @@ fn commit_or_abort_migration(
         // restore needed). The root is also untouched (`write_migration_state`
         // never runs). The caller's `?` propagates this out, skipping
         // `finalize_application_update`.
+        //
+        // KNOWN GAP (deferred hardening, tracked as "SortedIndex transactional
+        // staging"): if the aborted migrate wrote a `SortedMap`/`SortedSet`, its
+        // ordered-index rows went straight to the non-synced `Column::SortedIndex`
+        // (not this buffer) and survive the drop. The index validity marker is
+        // state-store-backed, so it rolls back in lockstep with the entities and
+        // (mis)reads as current against the restored v1 state — meaning the
+        // ordinary `ensure_index` self-heal does NOT reconcile the residue. The
+        // authoritative entity set is still correct (v1); only the ordered-read
+        // index can be stale until it is next forced to rebuild. A full fix
+        // (index writes inside the migration transaction, or an abort hook that
+        // invalidates the touched collections' markers) is deferred.
         drop(storage);
         clear_pending_delta();
         // Record the abort so the heartbeat surfaces this member as `failed`

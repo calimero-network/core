@@ -60,15 +60,27 @@ where
         if self.inner.id() == new_id {
             return; // already deterministic — idempotent
         }
-        let elements: Vec<V> = self.iter().expect("read set elements for re-key").collect();
+        // Snapshot `(value, storage_type)` so a guarded set's per-entry writer
+        // stamp survives the clear+reinsert, and re-insert through the same
+        // storage-type-preserving path the map uses (no divergent hand-rolled
+        // re-inherit).
+        let elements = self
+            .inner
+            .entries_with_storage_type()
+            .expect("read set elements for re-key");
         self.inner.clear().expect("clear set for re-key");
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__set",
             CrdtType::unordered_set(std::any::type_name::<V>()),
         );
-        for v in elements {
-            let _ = self.insert(v).expect("re-insert set element during re-key");
+        let parent = self.inner.id();
+        for (v, storage_type) in elements {
+            let id = super::compute_id(parent, v.as_ref());
+            let _ = self
+                .inner
+                .insert_with_storage_type(Some(id), v, storage_type)
+                .expect("re-insert set element during re-key");
         }
     }
 }

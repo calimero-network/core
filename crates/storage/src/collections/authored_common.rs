@@ -1,22 +1,9 @@
-//! Shared author-tracking primitives for [`AuthoredMap`](super::authored_map::AuthoredMap)
-//! and [`AuthoredVector`](super::authored_vector::AuthoredVector).
-//!
-//! Both collections stamp each entry with the current executor identity at
-//! write time and reject non-owner mutations. The signatures of the
-//! collection-specific methods differ enough (map vs sequence) that a single
-//! generic wrapper would still need bespoke impl blocks per shape — keying
-//! by `K` vs by index, reject-on-collision vs auto-slot-return, physical
-//! delete vs in-place tombstone with `V: Default` — so the right factoring
-//! is to extract the *author-tracking mechanics* (executor lookup, owner
-//! stamp construction, owner-equality check) into this shared helper module
-//! while the public method shapes stay distinct.
-//!
-//! This module owns the **identical** part: how the owner is sourced, how
-//! the stamp is constructed, and how the owner-gate check decides accept vs
-//! reject. The collection-specific methods (`AuthoredMap::insert` rejects on
-//! collision; `AuthoredVector::push` returns the assigned slot; `tombstone`
-//! is slot-preserving) stay in their respective files because their shapes
-//! cannot collapse.
+//! Shared author-tracking mechanics for [`AuthoredMap`](super::authored_map::AuthoredMap)
+//! and [`AuthoredVector`](super::authored_vector::AuthoredVector): sourcing the
+//! current executor as the owner, constructing the per-entry owner stamp, and
+//! the owner-gate accept/reject check. The collection-specific method shapes
+//! (key vs index, reject-on-collision vs slot-return, delete vs tombstone) live
+//! in each collection's own file.
 
 use calimero_primitives::identity::PublicKey;
 
