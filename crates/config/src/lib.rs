@@ -403,13 +403,6 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub embedded_auth: Option<AuthConfig>,
-
-    /// Acknowledge that an external authenticating proxy fronts this node, so
-    /// it is safe to serve the admin API without node-side authentication on a
-    /// network-reachable address. With `auth_mode = proxy` and a non-loopback
-    /// bind, the node refuses to start unless this is `true`.
-    #[serde(default)]
-    pub allow_unauthenticated_admin: bool,
 }
 
 impl ServerConfig {
@@ -429,12 +422,10 @@ impl ServerConfig {
             sse,
             auth_mode: AuthMode::Proxy,
             embedded_auth: None,
-            allow_unauthenticated_admin: false,
         }
     }
 
     #[must_use]
-    #[allow(clippy::too_many_arguments, reason = "full server config constructor")]
     pub const fn with_auth(
         listen: Vec<Multiaddr>,
         admin: Option<AdminConfig>,
@@ -443,7 +434,6 @@ impl ServerConfig {
         sse: Option<SseConfig>,
         auth_mode: AuthMode,
         embedded_auth: Option<AuthConfig>,
-        allow_unauthenticated_admin: bool,
     ) -> Self {
         Self {
             listen,
@@ -453,7 +443,6 @@ impl ServerConfig {
             sse,
             auth_mode,
             embedded_auth,
-            allow_unauthenticated_admin,
         }
     }
 

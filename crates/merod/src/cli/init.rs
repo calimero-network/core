@@ -88,14 +88,6 @@ pub struct InitCommand {
     #[clap(long, value_name = "PATH")]
     pub auth_storage_path: Option<PathBuf>,
 
-    /// Acknowledge that an external authenticating proxy fronts this node,
-    /// allowing the admin API to be served without node-side auth on a
-    /// network-reachable address. Without this, a proxy-mode node bound to a
-    /// non-loopback address refuses to start. Only set this when a proxy is
-    /// actually in front.
-    #[clap(long)]
-    pub allow_unauthenticated_admin: bool,
-
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
     #[clap(overrides_with("no_mdns"))]
@@ -276,7 +268,6 @@ impl InitCommand {
             Some(SseConfig::new(true)),
             auth_mode,
             embedded_auth,
-            self.allow_unauthenticated_admin,
         );
 
         let config = ConfigFile::new(

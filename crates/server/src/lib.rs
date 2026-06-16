@@ -8,7 +8,7 @@ use axum::{Extension, Router};
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
-use config::{AdminExposure, ServerConfig};
+use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
 use multiaddr::Protocol;
 use prometheus_client::registry::Registry;
@@ -97,35 +97,6 @@ pub async fn start(
         }
     }
     config.listen = addrs;
-
-    // Fail closed before serving anything: in `Proxy` auth mode the node does
-    // not authenticate requests itself, so an admin API bound to a
-    // network-reachable address would expose unauthenticated admin/governance
-    // operations to anyone who can reach it. Refuse unless the operator has
-    // acknowledged that an authenticating proxy fronts the node.
-    match config.admin_exposure() {
-        AdminExposure::Safe => {}
-        AdminExposure::AllowedWithWarning(exposed) => {
-            warn!(
-                ?exposed,
-                "admin API is served WITHOUT node-side authentication on network-reachable \
-                 address(es) (auth_mode=proxy, allow_unauthenticated_admin=true) — anyone who \
-                 can reach these addresses can drive admin/governance operations; ensure an \
-                 authenticating proxy fronts this node",
-            );
-        }
-        AdminExposure::Refuse(exposed) => {
-            bail!(
-                "refusing to start: the admin API would be served WITHOUT authentication on \
-                 network-reachable address(es) {exposed:?} (auth_mode=proxy means the node does \
-                 not authenticate requests itself). Resolve one of:\n  \
-                 - set auth_mode=embedded to authenticate requests at the node, or\n  \
-                 - bind the server to loopback (127.0.0.1 / ::1), or\n  \
-                 - if an authenticating proxy fronts this node, set \
-                 server.allow_unauthenticated_admin=true to acknowledge the risk",
-            );
-        }
-    }
 
     let mut app = Router::new();
 

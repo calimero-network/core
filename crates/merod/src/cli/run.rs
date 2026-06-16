@@ -129,7 +129,6 @@ impl RunCommand {
             server_source.sse,
             server_source.auth_mode,
             server_source.embedded_auth,
-            server_source.allow_unauthenticated_admin,
         );
 
         // Create store config with optional encryption
