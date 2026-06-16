@@ -276,6 +276,78 @@ impl Clone for SyncManager {
 // (`dispatch_recently_attempted`, `session_dispatch_wedged`) and the
 // nested `apply_session_result` helper now live alongside that struct.
 
+/// One probe of the inbound materialisation poll loop.
+///
+/// `Ready` carries the materialised value (the dialer is verified and the
+/// context entry now exists locally); `Waiting` reports whether the dialer
+/// has been verified as a member so far, so the timeout path can pick the
+/// right close message.
+enum MaterializationProbe<T> {
+    Ready(T),
+    Waiting { dialer_verified: bool },
+}
+
+/// Result of [`await_materialization_or_close`].
+enum MaterializationOutcome<T> {
+    /// The probe reported the context materialised within the window.
+    Ready(T),
+    /// The window elapsed without materialisation. `dialer_verified` selects
+    /// the close message (`OpaqueError` vs `NotMaterialized`).
+    Elapsed { dialer_verified: bool },
+    /// The dialing peer closed (or errored, or sent an unexpected frame)
+    /// before materialising — abandon the wait immediately.
+    PeerGone,
+}
+
+/// Run a bounded materialisation poll while watching the inbound stream for
+/// the dialer disconnecting.
+///
+/// `probe` is invoked synchronously each cycle until it returns `Ready`, the
+/// `deadline` passes, or the dialing peer goes away. Watching the stream is
+/// what stops a bailed dialer from pinning the stream handle + task slot for
+/// the full window: any resolution of `stream.next()` — `None` (EOF),
+/// `Some(Err(_))` (transport/codec error), or `Some(Ok(_))` (an unexpected
+/// inbound frame; the dialer should be silently awaiting our reply) — means
+/// the peer is no longer waiting, so we stop. `Framed` buffers internally, so
+/// dropping the losing `next()` future each cycle is cancel-safe.
+///
+/// Deadline precision is one `poll` interval: a cycle that begins before the
+/// deadline always sleeps a full `poll` before the next deadline check.
+async fn await_materialization_or_close<T, F>(
+    stream: &mut Stream,
+    deadline: Instant,
+    poll: time::Duration,
+    mut probe: F,
+) -> eyre::Result<MaterializationOutcome<T>>
+where
+    F: FnMut() -> eyre::Result<MaterializationProbe<T>>,
+{
+    let mut dialer_verified = false;
+    loop {
+        match probe()? {
+            MaterializationProbe::Ready(value) => {
+                return Ok(MaterializationOutcome::Ready(value));
+            }
+            MaterializationProbe::Waiting {
+                dialer_verified: dv,
+            } => dialer_verified = dv,
+        }
+
+        if Instant::now() >= deadline {
+            return Ok(MaterializationOutcome::Elapsed { dialer_verified });
+        }
+
+        tokio::select! {
+            biased;
+            event = stream.next() => {
+                let _ = event; // None=EOF, Some(Err)=transport err, Some(Ok)=unexpected frame
+                return Ok(MaterializationOutcome::PeerGone);
+            }
+            () = time::sleep(poll) => {}
+        }
+    }
+}
+
 impl SyncManager {
     pub(crate) fn new(
         sync_config: SyncConfig,
