@@ -521,21 +521,25 @@ mod materialization_wait {
         // Dialer gives up: dropping its end yields EOF on the responder's read.
         drop(dialer);
 
-        let start = Instant::now();
-        let outcome = await_materialization_or_close::<(), _>(
-            &mut responder,
-            Instant::now() + Duration::from_secs(10),
-            Duration::from_millis(200),
-            never_ready,
+        // Deadline an hour out: cancellation is the ONLY path that returns
+        // promptly, so a prompt return is itself the proof. Bounding the call
+        // with a generous `timeout` (rather than asserting a tight elapsed)
+        // means a slow CI scheduler can't make this flaky — the 1h deadline is
+        // never the thing we race against.
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(30),
+            await_materialization_or_close::<(), _>(
+                &mut responder,
+                Instant::now() + Duration::from_secs(3600),
+                Duration::from_millis(200),
+                never_ready,
+            ),
         )
         .await
+        .expect("must abort on disconnect, not block until the deadline")
         .unwrap();
 
         assert!(matches!(outcome, MaterializationOutcome::PeerGone));
-        assert!(
-            start.elapsed() < Duration::from_secs(1),
-            "must abort on disconnect, not run the full 10s window"
-        );
     }
 
     #[tokio::test]
