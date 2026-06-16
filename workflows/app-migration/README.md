@@ -58,7 +58,7 @@ and the namespace-cascade additions designed in
 | `33-authored-remaining-count.yml` | `count_my_pending` drives the `authored_remaining` rollup. |
 | `35-two-namespaces-coexist.yml` | Two namespaces coexist on different versions on one node. |
 | `36-chained-catchup.yml` | Chained catch-up via the upgrade ladder (`v2 → v3 → v4`, 2-node). |
-| `37-namespace-invite-join-regression.yml` | Namespace invite/join regression guard. |
+| `37-stranded-resync.yml` | Stranded context recovers via resync — an intermediate upgrade-ladder rung's blob is deleted on every holder, the behind member hits `NoMigrationPath`, and `resync_context force=true` adopts a peer's full-state snapshot (2-node). |
 
 ### Out of scope (not in this PR)
 

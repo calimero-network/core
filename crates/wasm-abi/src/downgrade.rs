@@ -88,6 +88,11 @@ fn label(ty: &TypeRef, manifest: &Manifest) -> String {
     }
 }
 
+/// True when `ty`'s top level cannot be resolved (cycle / dangling / unknown).
+fn is_unresolvable(ty: &TypeRef, manifest: &Manifest) -> bool {
+    matches!(resolve_top_level(ty, manifest, 0), Resolution::Unresolvable)
+}
+
 fn root_fields(m: &Manifest) -> &[Field] {
     m.state_root
         .as_deref()
@@ -115,11 +120,23 @@ pub fn identity_downgrades(old: &Manifest, new: &Manifest) -> Vec<IdentityDowngr
                 from: label(&f.type_, old),
                 to: "(removed)".to_owned(),
             }),
-            Some(nf) if !new_still_gated(&nf.type_, new) => out.push(IdentityDowngrade {
-                field: f.name.clone(),
-                from: label(&f.type_, old),
-                to: label(&nf.type_, new),
-            }),
+            // Carry-through carve-out: when BOTH old and new are unresolvable,
+            // the field is unchanged-and-unknowable (e.g. a legacy app that has
+            // always had a dangling `$ref` and never used identity-gated state).
+            // Nothing downgraded, so don't fail-closed on it. A genuine
+            // alias-target downgrade keeps the ref name stable but resolves
+            // old→gated / new→plain, so it is NOT both-unresolvable and still
+            // flags. An unresolvable→plain transition also still flags.
+            Some(nf)
+                if !new_still_gated(&nf.type_, new)
+                    && !(is_unresolvable(&f.type_, old) && is_unresolvable(&nf.type_, new)) =>
+            {
+                out.push(IdentityDowngrade {
+                    field: f.name.clone(),
+                    from: label(&f.type_, old),
+                    to: label(&nf.type_, new),
+                })
+            }
             Some(_) => {}
         }
     }
@@ -248,10 +265,25 @@ mod tests {
     }
 
     #[test]
-    fn unresolvable_carried_through_unchanged_fails_closed() {
-        // Even carried-through-unchanged, a broken (dangling) ref fails closed
-        // rather than silently passing — matching the L2 diff lint's stance.
+    fn unresolvable_carried_through_unchanged_is_not_downgrade() {
+        // A field that is unresolvable in BOTH old and new (e.g. a legacy app
+        // that has always had a dangling `$ref` and never used identity-gated
+        // state) is unchanged — nothing downgraded — so it must NOT be flagged.
+        // Fail-closed applies to the directions that could *lose* gating
+        // (gated→plain, unresolvable→plain), not to an unchanged unknowable field.
         let m = manifest(r#"[{"name":"wiki","type":{"$ref":"Missing"}}]"#);
-        assert_eq!(identity_downgrades(&m, &m).len(), 1);
+        assert!(identity_downgrades(&m, &m).is_empty());
+    }
+
+    #[test]
+    fn unresolvable_old_to_resolvable_plain_still_fails_closed() {
+        // The dangerous direction is preserved: an unresolvable old field moving
+        // to a resolvably-plain new type can't be ruled out as a downgrade, so it
+        // is still flagged (not exempted by the carry-through carve-out).
+        let old = manifest(r#"[{"name":"wiki","type":{"$ref":"Missing"}}]"#);
+        let new = manifest(&format!("[{UNORDERED_MAP}]"));
+        let d = identity_downgrades(&old, &new);
+        assert_eq!(d.len(), 1, "unresolvable old → plain new must fail closed");
+        assert_eq!(d[0].from, "(unresolved)");
     }
 }
