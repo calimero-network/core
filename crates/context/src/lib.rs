@@ -40,6 +40,7 @@ pub mod hlc_fence;
 mod lifecycle;
 pub mod migration_plan;
 pub mod self_purge;
+mod tee_subgroup_admit;
 
 pub(crate) use cache::{BoundedCache, Evictable};
 
