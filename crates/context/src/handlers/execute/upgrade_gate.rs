@@ -142,9 +142,14 @@ pub(super) fn maybe_lazy_upgrade(
             Ok(Some(current)) if current != meta.app_key => {
                 LazyUpgradeAction::Replay { bound: current }
             }
-            // Current version unresolvable (no row), or it already equals the
-            // target: degrade to the historical single jump — sound for a
-            // genuinely one-hop-behind or pre-ladder context.
+            // Resolvable current version already equals the target: the context
+            // executes the target bytecode, so there is no version gap and
+            // nothing to migrate. A code-only swap stamps a marker, so a
+            // marker-less context here is a fresh install/join at the target —
+            // single-jumping would run the group hint as a spurious migrate.
+            Ok(Some(_)) => return None,
+            // Current version unresolvable (store read failed): degrade to the
+            // historical single jump as a last-resort fallback.
             _ => LazyUpgradeAction::SingleJump {
                 target_application_id: meta.target_application_id,
                 migrate_method: meta
@@ -289,23 +294,32 @@ mod tests {
         assert_eq!(action, LazyUpgradeAction::Replay { bound: APP_KEY_OLD });
     }
 
+    // A marker-less context whose current version already equals the group
+    // target executes the target bytecode and has no version gap, so the gate
+    // is a no-op (NOT a spurious single-jump migrate). Covers a fresh
+    // install/join directly at the latest version.
     #[test]
-    fn marker_less_context_without_resolvable_row_keeps_the_single_jump() {
-        // No application row → current version unresolvable → degrade to the
-        // historical single jump (sound for a one-hop-behind / pre-ladder ctx).
+    fn marker_less_context_at_target_version_is_a_no_op() {
+        let store = store();
+        let ctx = ContextId::from([0x55; 32]);
+        let _gid = seed_group(&store, &ctx, UpgradePolicy::LazyOnAccess);
+        // Row blob == the group target blob (APP_KEY_NEW).
+        seed_app_row(&store, &ctx, target_app(), APP_KEY_NEW);
+
+        assert_eq!(maybe_lazy_upgrade(&store, &ctx, &target_app()), None);
+    }
+
+    #[test]
+    fn marker_less_context_without_resolvable_row_is_a_no_op() {
+        // No application row → `loaded_reader_app_key` falls back to the group
+        // target → current == target → no detectable version gap → no-op. (A
+        // context with old state to migrate necessarily has a row, so a
+        // row-less context is fresh and has nothing to migrate.)
         let store = store();
         let ctx = ContextId::from([0x51; 32]);
         let _gid = seed_group(&store, &ctx, UpgradePolicy::LazyOnAccess);
 
-        let action = maybe_lazy_upgrade(&store, &ctx, &target_app()).expect("stale -> fires");
-        assert_eq!(
-            action,
-            LazyUpgradeAction::SingleJump {
-                target_application_id: target_app(),
-                migrate_method: Some("migrate_v2_to_v3".to_owned()),
-                target_app_key: APP_KEY_NEW,
-            }
-        );
+        assert_eq!(maybe_lazy_upgrade(&store, &ctx, &target_app()), None);
     }
 
     #[test]

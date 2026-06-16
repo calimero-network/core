@@ -1,4 +1,11 @@
 name: 37 — Stranded context recovers via resync (intermediate blob unobtainable, 2-node)
+# NOT in the app-migration-e2e CI matrix yet: staging the strand needs the v2
+# rung's bytecode made genuinely unobtainable, but `delete_blob_on_disk` is a
+# no-op for chunked blobs (it `rm`s the base58 PARENT id, which is RocksDB-only
+# metadata — the bytes live in a chunk file named by an unexposed chunk hash).
+# The correct delete is the admin API (`DELETE admin-api/blobs/{id}`, which
+# cascades parent+chunks+metadata); re-enable this scenario once merobox grows a
+# step that calls it (swap the two `delete_blob_on_disk` steps in Phase 6 for it).
 description: >
   A behind member is STRANDED when an upgrade-ladder rung's bytecode is
   unobtainable, and recovers via an operator-initiated state resync — the

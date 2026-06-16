@@ -217,7 +217,17 @@ jobs:
           - 33-authored-remaining-count
           - 35-two-namespaces-coexist
           - 36-chained-catchup
-          - 37-stranded-resync
+          # 37-stranded-resync is intentionally excluded: staging the strand
+          # needs the v2 rung's bytecode made genuinely unobtainable, but
+          # `delete_blob_on_disk` (filesystem `rm` of the base58 *parent* blob
+          # id) is a no-op — blobs are content-chunked, so the parent id is
+          # RocksDB-only metadata and the bytes live in a chunk file named by an
+          # unexposed chunk hash. The correct delete is the admin API
+          # (`DELETE admin-api/blobs/{id}` → cascades parent+chunks+metadata),
+          # which merobox has no step for yet. Re-enable once that step ships.
+          # The engine path it exercises (marker-less multi-version ladder
+          # replay + NoMigrationPath strand) is covered by 36-chained-catchup +
+          # upgrade_gate unit tests. See follow-up issue.
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:
