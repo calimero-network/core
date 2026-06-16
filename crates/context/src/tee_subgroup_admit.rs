@@ -14,6 +14,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
     tee_admission_record, CapabilitiesRepository, GroupKeyring, MembershipRepository,
+    NamespaceRepository,
 };
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
@@ -236,11 +237,67 @@ async fn handle_new_subgroup(
 }
 
 async fn handle_new_tee_member(
-    _store: &Store,
-    _context_client: &ContextClient,
-    _group_id: [u8; 32],
-    _member: PublicKey,
+    store: &Store,
+    context_client: &ContextClient,
+    group_id: [u8; 32],
+    member: PublicKey,
 ) {
+    let group_gid = ContextGroupId::from(group_id);
+
+    // Resolve the namespace root. React ONLY to root admissions — a subgroup
+    // admission (which this very handler causes via admit_tee_node →
+    // TeeMemberAdmitted) also fires TeeMemberAdmitted; ignoring non-root
+    // admissions prevents an infinite fan-out loop.
+    let namespace_gid = match NamespaceRepository::new(store).resolve(&group_gid) {
+        Ok(ns) => ns,
+        Err(e) => {
+            error!(?e, "tee-subgroup-admit: namespace resolve failed");
+            return;
+        }
+    };
+    if namespace_gid != group_gid {
+        return; // subgroup admission echo → ignore
+    }
+
+    // Enumerate Restricted subgroups of the namespace that this node holds keys
+    // for, and admit the new member into each.
+    let descendants = match NamespaceRepository::new(store).collect_descendants(&namespace_gid) {
+        Ok(d) => d,
+        Err(e) => {
+            error!(?e, "tee-subgroup-admit: collect_descendants failed");
+            return;
+        }
+    };
+
+    let caps = CapabilitiesRepository::new(store);
+    for sub in descendants {
+        // Restricted only — Open subgroups are already readable by a
+        // root-admitted TEE node (inherited membership + namespace key).
+        match caps.is_open_chain_to_namespace(&sub, &namespace_gid) {
+            Ok(true) => continue, // Open → skip
+            Ok(false) => {}       // Restricted → proceed
+            Err(e) => {
+                error!(
+                    ?e,
+                    "tee-subgroup-admit: open-chain check failed (descendant)"
+                );
+                continue;
+            }
+        }
+        // Only if we hold this subgroup's key can we admit + deliver it.
+        match GroupKeyring::new(store, sub).load_current_key() {
+            Ok(Some(_)) => {}
+            Ok(None) => continue,
+            Err(e) => {
+                error!(
+                    ?e,
+                    "tee-subgroup-admit: load_current_key failed (descendant)"
+                );
+                continue;
+            }
+        }
+        admit_member_into_subgroup(store, context_client, &namespace_gid, &sub, &member).await;
+    }
 }
 
 #[cfg(test)]
