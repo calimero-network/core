@@ -47,9 +47,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::update_application::{
-    create_storage_callbacks, update_application_id, update_application_with_migration,
+    clear_migration_failed, create_storage_callbacks, persist_migration_failed,
+    update_application_id, update_application_with_migration,
 };
 use crate::ContextManager;
+use calimero_context_client::group::MigrationFailureKind;
 use calimero_governance_store::metrics::ExecutionLabels;
 
 mod governance_position;
@@ -1170,6 +1172,14 @@ impl ContextManager {
             let migration = match resolved {
                 Ok(m) => m,
                 Err(err) => {
+                    // Rung blob unobtainable or its ABI unreadable: the context
+                    // stays on its current real version and surfaces as stranded
+                    // for operator resync. Retried on next access.
+                    persist_migration_failed(
+                        &act.datastore,
+                        context_id,
+                        MigrationFailureKind::NoMigrationPath,
+                    );
                     warn!(
                         %context_id, %err,
                         "ladder hop blocked; proceeding with current application"
@@ -1220,6 +1230,15 @@ impl ContextManager {
                                 act.replay_upgrade_ladder(guard, context_id, executor, budget - 1)
                             }
                             Err(err) => {
+                                // Rung resolved but its migrate failed to apply:
+                                // surface ApplyFailed (not the stale resolve-time
+                                // NoMigrationPath). Stuck on current; retried on
+                                // next access, marker self-clears on success.
+                                persist_migration_failed(
+                                    &act.datastore,
+                                    context_id,
+                                    MigrationFailureKind::ApplyFailed,
+                                );
                                 warn!(
                                     %context_id, %err,
                                     "ladder hop failed, proceeding with current application"
@@ -1248,12 +1267,20 @@ impl ContextManager {
                     )
                     .await?;
                     crate::activation::record_activation(&datastore, &context_id, rung_app_key);
+                    clear_migration_failed(&datastore, context_id);
                     Ok(())
                 }
                 .into_actor(act)
                 .then(move |hop: eyre::Result<()>, act, _ctx| match hop {
                     Ok(()) => act.replay_upgrade_ladder(guard, context_id, executor, budget - 1),
                     Err(err) => {
+                        // Code-only rung swap failed: surface ApplyFailed so the
+                        // context reports its real failure mode, not a stale one.
+                        persist_migration_failed(
+                            &act.datastore,
+                            context_id,
+                            MigrationFailureKind::ApplyFailed,
+                        );
                         warn!(
                             %context_id, %err,
                             "ladder hop failed, proceeding with current application"

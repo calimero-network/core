@@ -80,6 +80,11 @@ impl PredefinedEntry for key::ContextMigrationFailed {
     type DataType<'a> = ContextMigrationFailed;
 }
 
+impl PredefinedEntry for key::ContextResyncRequested {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextConfig {
