@@ -10,7 +10,7 @@ use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context::group_store::{apply_local_signed_group_op, get_local_gov_nonce};
 use calimero_context::ContextManager;
 use calimero_context_client::client::ContextClient;
-use calimero_context_client::group::SetMemberAutoFollowRequest;
+use calimero_context_client::group::{CreateGroupRequest, SetMemberAutoFollowRequest};
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_network_primitives::client::NetworkClient;
@@ -25,6 +25,7 @@ use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
+use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use prometheus_client::registry::Registry;
@@ -87,6 +88,13 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             }
             NetworkMessage::Publish { outcome, .. } => {
                 let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
+            }
+            // The create-group path subscribes to the namespace governance
+            // topic before publishing GroupCreated; echo the requested topic
+            // back so `NetworkClient::subscribe` resolves instead of panicking
+            // on a dropped mailbox.
+            NetworkMessage::Subscribe { request, outcome } => {
+                let _ = outcome.send(Ok(request.0));
             }
             // Lazy upgrades announce each rung blob on the DHT; the stub
             // acknowledges so the awaiting client future completes.
@@ -560,6 +568,71 @@ fn provision_tee_owner(node: &TestNode, gid: &ContextGroupId, rng: &mut OsRng) -
     owner_pk
 }
 
+/// Create a **Restricted** subgroup nested under `parent_ns` via the production
+/// create-group entrypoint (`ContextClient::create_group`), signed by the
+/// namespace admin (`admin_pk`, provisioned by `provision_tee_owner`).
+///
+/// Going through the real handler is load-bearing for this test: it (a) mints
+/// and stores the subgroup's `GroupKeyring` key locally (so this node is the
+/// key-holder), and (b) applies `RootOp::GroupCreated`, which fires
+/// `OpEvent::SubgroupCreated` — the event the `tee_subgroup_admit` subscriber
+/// reacts to. We deliberately do NOT hand-roll the op or hand-insert the key.
+///
+/// Subgroups have no explicit visibility field on `CreateGroupRequest`; subgroup
+/// visibility defaults to `Restricted` when unset (see
+/// `CapabilitiesRepository::subgroup_visibility`), so a freshly-created subgroup
+/// is Restricted, which is exactly what this path exercises.
+///
+/// Returns the new subgroup's `ContextGroupId`.
+async fn create_restricted_subgroup(
+    node: &TestNode,
+    parent_ns: &ContextGroupId,
+    _admin_pk: &PublicKey,
+    rng: &mut OsRng,
+) -> ContextGroupId {
+    // The create handler resolves the target application from the parent's
+    // `target_application_id` and reads back its `ApplicationMeta` row (to
+    // derive the group's `app_key` from the bytecode blob id). `sample_meta`
+    // pins that id to `[0xCC; 32]`; seed a well-formed meta row for it so
+    // `load_app_meta` succeeds. No real blob bytes are needed on the
+    // caller-omits-app_key path (only `verify_requested_app_key` touches blobs).
+    let app_id = ApplicationId::from([0xCCu8; 32]);
+    let app_meta = ApplicationMetaValue::new(
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0xDDu8; 32])),
+        0,
+        "test://app".into(),
+        Box::new([]),
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0xDDu8; 32])),
+        "test-package".into(),
+        "0.0.0".into(),
+        "test-signer".into(),
+    );
+    node.store
+        .handle()
+        .put(
+            &calimero_store::key::ApplicationMeta::new(app_id),
+            &app_meta,
+        )
+        .expect("seed application meta");
+
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(rng).public_key());
+
+    let resp = node
+        .context_client
+        .create_group(CreateGroupRequest {
+            group_id: Some(sub_gid),
+            app_key: None,
+            application_id: app_id,
+            upgrade_policy: UpgradePolicy::Automatic,
+            name: Some("restricted-sub".to_owned()),
+            parent_group_id: Some(*parent_ns),
+        })
+        .await
+        .expect("create_group");
+
+    resp.group_id
+}
+
 /// Poll `cond` until it returns true or the deadline elapses. The admission
 /// path is spawned onto the actor's context and crosses an actor boundary
 /// (`NodeManager` → `ContextManager`), so the store write lands asynchronously.
@@ -644,6 +717,100 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
             .expect("count after admit"),
         2,
         "member_count must increment to 2 (owner + admitted TEE node)"
+    );
+}
+
+/// End-to-end create-time path (proposal.md §12d, Phase 1): with a TEE node
+/// already admitted at the namespace root, creating a **Restricted** subgroup on
+/// the same node must transparently give that TEE node a direct `ReadOnlyTee`
+/// row in the subgroup AND the subgroup's key. The subgroup is created through
+/// the production `ContextClient::create_group` path, so the subgroup key is
+/// minted locally and `OpEvent::SubgroupCreated` fires — driving the
+/// `tee_subgroup_admit` subscriber (spawned in `ContextManager::started`) to
+/// admit the existing root TEE member into the new Restricted subgroup.
+#[tokio::test]
+async fn restricted_subgroup_created_admits_existing_tee_member() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x93u8; 32]);
+    let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // 1) Admit a TEE node at the namespace root via the announce path, exactly
+    //    like `ns_announce_admits_announcer_as_read_only_tee_member`.
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let nonce = [0x7Bu8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+
+    let admitted_root = wait_until(|| {
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .member_value(&ns_gid, &tee_pk)
+            .ok()
+            .flatten()
+            .map(|v| v.role == GroupMemberRole::ReadOnlyTee)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        admitted_root,
+        "TEE node must be admitted as a ReadOnlyTee at the namespace root first"
+    );
+
+    // The `tee_subgroup_admit` subscriber is a PROCESS-GLOBAL singleton
+    // (`OnceLock` op-events notifier + a `Mutex<Option<_>>` spawn guard), bound
+    // to whichever node booted first in the test binary. Other e2e tests in this
+    // crate (`cascade_dispatch_e2e`) also `boot_test_node`, so by the time this
+    // test runs the subscriber may be operating on a *different* node's store and
+    // would never see THIS node's key — defeating the create-time admission.
+    // Rebind the global subscriber to this test's store/client right before the
+    // subgroup create so it acts on the same store we assert on. (`shutdown` +
+    // `spawn` because `spawn` alone is first-wins and won't rebind.)
+    calimero_context::tee_subgroup_admit::shutdown();
+    calimero_context::tee_subgroup_admit::spawn(node.store.clone(), node.context_client.clone());
+    // Give the freshly-spawned subscriber a moment to subscribe before the op
+    // fires (it must subscribe before the event, or it misses it).
+    sleep(Duration::from_millis(50)).await;
+
+    // 2) Create a RESTRICTED subgroup on this node (mints + holds its key, fires
+    //    OpEvent::SubgroupCreated).
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+
+    // 3) The subscriber must admit the existing root TEE member into the new
+    //    Restricted subgroup.
+    let admitted_sub = wait_until(|| {
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .member_value(&sub_gid, &tee_pk)
+            .ok()
+            .flatten()
+            .map(|v| v.role == GroupMemberRole::ReadOnlyTee)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        admitted_sub,
+        "TEE node must gain a ReadOnlyTee row in the Restricted subgroup after creation"
+    );
+
+    // 4) And the creator node must hold the subgroup key (minted at create time
+    //    and used by `admit_tee_node` to deliver to the admitted member).
+    assert!(
+        calimero_context::group_store::GroupKeyring::new(&node.store, sub_gid)
+            .load_current_key()
+            .expect("load key")
+            .is_some(),
+        "subgroup must have a current key on this (creator) node"
     );
 }
 
