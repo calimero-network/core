@@ -11,9 +11,13 @@
 //! "atomic batch deferred" note in `governance-store/src/local_state.rs`). A
 //! subscriber reacting to that event can therefore observe `tee_admission_record`
 //! returning `None` for a member it just learned about. `handle_new_tee_member`
-//! works around this with a bounded wake-then-reread retry. The durable fix —
-//! emitting events only after the op-log entry is persisted (ideally in one
-//! atomic batch) in the apply path — is a deferred follow-up.
+//! works around this with a bounded wake-then-reread retry. So that this retry
+//! (up to ~1s) never stalls the receive loop — which would let the bounded
+//! `op_events` broadcast overflow and silently drop an unrelated
+//! `SubgroupCreated`/`TeeMemberAdmitted` — `run` dispatches each event onto its
+//! own task. The durable fix — emitting events only after the op-log entry is
+//! persisted (ideally in one atomic batch) in the apply path — is a deferred
+//! follow-up.
 
 use std::sync::Mutex;
 
@@ -22,8 +26,8 @@ use calimero_context_client::group::AdmitTeeNodeRequest;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
-    tee_admission_record, CapabilitiesRepository, GroupKeyring, MembershipRepository,
-    NamespaceRepository, TeeAdmissionRecord,
+    tee_admission_record, tee_admission_records, CapabilitiesRepository, GroupKeyring,
+    MembershipRepository, NamespaceRepository, TeeAdmissionRecord,
 };
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
@@ -123,16 +127,32 @@ async fn run(store: Store, context_client: ContextClient) {
             }
         };
 
-        match admit_trigger(&event) {
-            Some(AdmitTrigger::NewSubgroup {
-                namespace_id,
-                child_group_id,
-            }) => handle_new_subgroup(&store, &context_client, namespace_id, child_group_id).await,
-            Some(AdmitTrigger::NewTeeMember { group_id, member }) => {
-                handle_new_tee_member(&store, &context_client, group_id, member).await
+        let Some(trigger) = admit_trigger(&event) else {
+            continue;
+        };
+
+        // Dispatch each event on its own task so a handler's bounded
+        // wake-then-reread retry (`handle_new_tee_member` can sleep up to ~1s
+        // waiting out the emit-before-persist race) never blocks the receive
+        // loop. A blocked loop would let the bounded `op_events` broadcast
+        // overflow and drop an unrelated event. Handlers are idempotent and
+        // best-effort, so a late task (e.g. still running past a `shutdown`) is
+        // harmless. `Store` and `ContextClient` are cheap, shared-backing clones.
+        let store = store.clone();
+        let context_client = context_client.clone();
+        let _ = tokio::spawn(async move {
+            match trigger {
+                AdmitTrigger::NewSubgroup {
+                    namespace_id,
+                    child_group_id,
+                } => {
+                    handle_new_subgroup(&store, &context_client, namespace_id, child_group_id).await
+                }
+                AdmitTrigger::NewTeeMember { group_id, member } => {
+                    handle_new_tee_member(&store, &context_client, group_id, member).await
+                }
             }
-            None => {}
-        }
+        });
     }
 }
 
@@ -229,21 +249,24 @@ async fn handle_new_subgroup(
             return;
         }
     };
+    // One scan of the root op log for all verdicts, rather than re-scanning it
+    // per member. No retry needed here: the root admission long predates this
+    // subgroup creation, so its op-log entries are already persisted and readable.
+    let records = match tee_admission_records(store, &namespace_gid) {
+        Ok(r) => r,
+        Err(e) => {
+            error!(?e, "tee-subgroup-admit: reading admission records failed");
+            return;
+        }
+    };
     for (member, role) in members {
         if role != GroupMemberRole::ReadOnlyTee {
             continue;
         }
-        // No retry needed here: the root admission long predates this subgroup
-        // creation, so its op-log entry is already persisted and readable.
-        let record = match tee_admission_record(store, &namespace_gid, &member) {
-            Ok(Some(r)) => r,
-            Ok(None) => continue, // not a root TEE member / no verdict to reuse
-            Err(e) => {
-                error!(?e, "tee-subgroup-admit: reading admission record failed");
-                continue;
-            }
+        let Some(record) = records.get(&member) else {
+            continue; // not a root TEE member / no verdict to reuse
         };
-        admit_member_into_subgroup(context_client, store, &child_gid, &member, &record).await;
+        admit_member_into_subgroup(context_client, store, &child_gid, &member, record).await;
     }
 }
 

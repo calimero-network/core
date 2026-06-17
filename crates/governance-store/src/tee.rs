@@ -177,6 +177,53 @@ pub fn tee_admission_record(
     Ok(None)
 }
 
+/// Like [`tee_admission_record`] but returns the verdict for *every* TEE
+/// member admitted into `group_id`, from a SINGLE op-log scan.
+///
+/// A caller that needs many members' verdicts (e.g. admitting all root TEE
+/// members into a newly-created subgroup) would otherwise call
+/// [`tee_admission_record`] once per member, re-scanning the same op log each
+/// time — O(members × log). This folds them in one pass. First-write-wins per
+/// member, matching [`tee_admission_record`]'s "return the first matching op"
+/// semantics (a re-admission after removal keeps the original verdict).
+pub fn tee_admission_records(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<std::collections::BTreeMap<PublicKey, TeeAdmissionRecord>> {
+    let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
+    let mut out = std::collections::BTreeMap::new();
+
+    for (_seq, bytes) in &entries {
+        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
+            if let GroupOp::MemberJoinedViaTeeAttestation {
+                member,
+                quote_hash,
+                mrtd,
+                rtmr0,
+                rtmr1,
+                rtmr2,
+                rtmr3,
+                tcb_status,
+                role,
+            } = op.op
+            {
+                out.entry(member).or_insert(TeeAdmissionRecord {
+                    quote_hash,
+                    mrtd,
+                    rtmr0,
+                    rtmr1,
+                    rtmr2,
+                    rtmr3,
+                    tcb_status,
+                    role,
+                });
+            }
+        }
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
@@ -184,9 +231,37 @@ mod tests {
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::{PrivateKey, PublicKey};
 
-    use super::tee_admission_record;
+    use super::{tee_admission_record, tee_admission_records};
     use crate::local_state::append_op_log_entry;
     use crate::test_fixtures::test_store;
+
+    fn tee_join_op(
+        signer_sk: &PrivateKey,
+        ns_gid: ContextGroupId,
+        nonce: u64,
+        member: PublicKey,
+        quote_hash: [u8; 32],
+    ) -> SignedGroupOp {
+        SignedGroupOp::sign(
+            signer_sk,
+            ns_gid.to_bytes(),
+            vec![],
+            [0u8; 32],
+            nonce,
+            GroupOp::MemberJoinedViaTeeAttestation {
+                member,
+                quote_hash,
+                mrtd: "m1".to_owned(),
+                rtmr0: "r0".to_owned(),
+                rtmr1: "r1".to_owned(),
+                rtmr2: "r2".to_owned(),
+                rtmr3: "r3".to_owned(),
+                tcb_status: "UpToDate".to_owned(),
+                role: GroupMemberRole::ReadOnlyTee,
+            },
+        )
+        .unwrap()
+    }
 
     #[test]
     fn record_returns_stored_verdict_for_admitted_member() {
@@ -234,5 +309,54 @@ mod tests {
         assert!(tee_admission_record(&store, &ns_gid, &unknown)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn records_returns_all_verdicts_in_one_scan() {
+        let store = test_store();
+        let mut rng = rand::thread_rng();
+        let ns_gid = ContextGroupId::from([0xAA; 32]);
+        let tee_a = PublicKey::from([0x42; 32]);
+        let tee_b = PublicKey::from([0x44; 32]);
+        let signer_sk = PrivateKey::random(&mut rng);
+
+        append_op_log_entry(
+            &store,
+            &ns_gid,
+            1,
+            &borsh::to_vec(&tee_join_op(&signer_sk, ns_gid, 1, tee_a, [0x07; 32])).unwrap(),
+        )
+        .unwrap();
+        append_op_log_entry(
+            &store,
+            &ns_gid,
+            2,
+            &borsh::to_vec(&tee_join_op(&signer_sk, ns_gid, 2, tee_b, [0x08; 32])).unwrap(),
+        )
+        .unwrap();
+        // A re-admission op for tee_a — first-write-wins keeps the original verdict.
+        append_op_log_entry(
+            &store,
+            &ns_gid,
+            3,
+            &borsh::to_vec(&tee_join_op(&signer_sk, ns_gid, 3, tee_a, [0x09; 32])).unwrap(),
+        )
+        .unwrap();
+
+        let records = tee_admission_records(&store, &ns_gid).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[&tee_a].quote_hash, [0x07; 32], "first-write-wins");
+        assert_eq!(records[&tee_b].quote_hash, [0x08; 32]);
+
+        // Each entry matches what the single-member read returns.
+        for member in [tee_a, tee_b] {
+            assert_eq!(
+                tee_admission_record(&store, &ns_gid, &member)
+                    .unwrap()
+                    .unwrap()
+                    .quote_hash,
+                records[&member].quote_hash
+            );
+        }
     }
 }
