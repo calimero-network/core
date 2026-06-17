@@ -9,8 +9,20 @@
 <div class="main">
 <div class="content">
 <div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>TEE Mode</span></div>
-<h1>TEE <em>Mode</em></h1>
-<p class="page-subtitle">Trusted Execution Environment operation</p>
+<h1>TEE <em>Mode</em> <span class="page-subtitle" style="display:inline;">(storage key / KMS)</span></h1>
+<p class="page-subtitle">Trusted Execution Environment operation — the node's storage/disk encryption key</p>
+
+<div class="card gd">
+<h2>Which key this page is about</h2>
+<p>
+This page covers the <strong>node's storage / disk encryption key obtained from the KMS</strong> —
+a <em>per-node</em>, MRTD-gated key fetched at startup and used to encrypt the local datastore and
+blobstore. It is <strong>distinct</strong> from the <strong>per-group <code>GroupKeyring</code>
+encryption keys</strong> delivered via <code>KeyDelivery</code>, which protect fleet-HA application
+data shared across a group. The two are unrelated mechanisms — do not conflate them. For the
+fleet / per-group key story, see <a href="tee-fleet-ha.html">TEE Fleet HA</a>.
+</p>
+</div>
 
 <div class="card ga">
 <h2>Overview</h2>
