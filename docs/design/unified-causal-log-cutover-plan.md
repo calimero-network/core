@@ -51,9 +51,12 @@ plumbing once the projection is authoritative for the signal. The decision cut
 scope_root = SHA-256( entities_root ‖ acl_hash ‖ governance_hash )
 ```
 
-— each input a fixed 32-byte hash, concatenated (no length prefix needed since
-all three are fixed-width), as implemented by `calimero_op::scope_root` and
-`ScopeState::scope_root_with_entities` (already on master from #2775).
+— where each input is a fixed **32-byte** value (`entities_root` is the storage
+Merkle root; `acl_hash` and `governance_hash` are SHA-256 outputs). The plain
+concatenation is collision-free **only because all three are fixed-width**; this
+invariant is load-bearing (see the risk register). Implemented by
+`calimero_op::scope_root` and `ScopeState::scope_root_with_entities` (already on
+master from #2775).
 `entities_root` stays the **existing, proven storage Merkle `root_hash`** — we
 do not re-hash entities. `acl_hash` and `governance_hash` (membership + admin +
 policy + live subgroups) come from the projection.
@@ -105,9 +108,14 @@ path (local ops) and the wire decode path (remote ops).
 - Persistence: one keyspace for `Op` rows keyed `[ContextId ‖ OpId]` (repurpose
   `Column::Delta`). `dag_heads` (in `Column::Config`) now tracks the unified DAG.
   From this slice on, the old governance-op and rotation keyspaces are **no
-  longer written**; their on-disk **column removal** is deferred to C5 (with the
-  code that reads them), so a single flag-day redeploy + `resync_context` clears
-  the old data — no in-place migration.
+  longer written** *and no longer read* (C2+ code reads only the unified op-log);
+  their on-disk **column removal** is deferred to C5 (with the code that
+  references them). So stale old-format rows left by pre-C2 code are **inert** —
+  never read, just dead bytes until C5 drops the column. A node that missed the
+  flag-day redeploy (e.g. offline during it) has *no* unified op-log and must
+  run `resync_context` to rebuild it before it can participate; its stale old
+  columns are ignored, not interpreted. There is no path where C2+ code mixes
+  old-column data with the unified op-log.
 - `load_persisted_deltas` / `persist_cascaded_deltas_and_update_heads`
   (delta_store) operate on `Op`.
 
@@ -166,10 +174,22 @@ Once nothing reads them, in dependency order:
    `crates/node/src/sync/rotation_log_reader.rs`,
    `crates/context/src/governance_dag.rs`, `apply_local_signed_group_op`,
    `apply_signed_namespace_op`, `membership_status_at`-as-fold.
-3. **The `op-adapter` crate** (its job — proving equivalence — is done): delete
-   `crates/op-adapter`, **and** remove it from the workspace `members` list in
-   the root `Cargo.toml` and from `deny.toml` (otherwise `cargo build` fails on a
-   missing member).
+3. **The `op-adapter` crate**: delete `crates/op-adapter`, **and** remove it from
+   the workspace `members` list in the root `Cargo.toml` and from `deny.toml`
+   (otherwise `cargo build` fails on a missing member).
+
+**On losing the equivalence proofs.** The fold-equivalence tests are inherently
+*transitional*: they assert "the new projection resolves the same writer set /
+membership as the **old resolver**." Once C5 deletes the old resolvers
+(`resolve_local`, `membership_status_at`), there is nothing left to compare
+against, so those tests retire *with* the code they compare to — keeping them
+would not even compile. The durable post-cutover safety net is **not** these
+proofs but the **convergence + scope-isolation property harness** in
+`calimero-projection` (`testing` feature), which is independent of the old
+resolvers and is **not** deleted. Before deleting `op-adapter`, confirm that
+harness still covers the properties the equivalence tests were guarding (it
+does today: per-scope convergence + non-member isolation); if any unique case is
+only in an `op-adapter` test, port it into the projection harness first.
 
 group-remove (#19) closes here structurally.
 
@@ -190,6 +210,13 @@ before starting.
   `scope_root_with_entities` must be called with the storage Merkle root, **not**
   `ScopeState`'s own entity hash — the type system can't distinguish two
   `[u8; 32]`s, so this is a documented caller contract.)
+- **`scope_root` concatenation assumes fixed-width inputs.** `SHA-256(a ‖ b ‖ c)`
+  is only collision-free because `a`/`b`/`c` are each exactly 32 bytes — there is
+  no length prefix or separator. Any future change that makes a component
+  variable-length (a truncated/extended hash, a different digest) silently breaks
+  collision-resistance. Enforce the widths at the `calimero_op::scope_root`
+  boundary (it takes `[u8; 32]` arguments — keep it that way) and re-check this if
+  the digest ever changes.
 - **Concurrent equal-HLC rotation tiebreak.** `ScopeState` uses `op_id`
   (content-addressed → identical on all nodes → deterministic convergence, proven
   by the harness). The old `resolve_local` signer-digest tiebreak dies with it in
