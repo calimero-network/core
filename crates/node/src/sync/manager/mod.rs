@@ -338,6 +338,8 @@ where
         }
 
         tokio::select! {
+            // biased: poll the stream first so a disconnected (or misbehaving)
+            // peer is detected immediately rather than after a full poll tick.
             biased;
             event = stream.next() => {
                 let _ = event; // None=EOF, Some(Err)=transport err, Some(Ok)=unexpected frame

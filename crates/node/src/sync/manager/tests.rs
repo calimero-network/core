@@ -542,7 +542,9 @@ mod materialization_wait {
         assert!(matches!(outcome, MaterializationOutcome::PeerGone));
     }
 
-    #[tokio::test]
+    // `start_paused` drives the poll/deadline on tokio's virtual clock, so the
+    // loop advances deterministically regardless of real CI scheduler latency.
+    #[tokio::test(start_paused = true)]
     async fn runs_to_deadline_while_dialer_stays_connected() {
         // Keep both ends alive so the read stays pending and only the poll
         // timer drives the loop to its deadline.
@@ -592,7 +594,8 @@ mod materialization_wait {
         assert!(matches!(outcome, MaterializationOutcome::Ready(42)));
     }
 
-    #[tokio::test]
+    // Virtual clock (see `runs_to_deadline_*`): deterministic, no real-time race.
+    #[tokio::test(start_paused = true)]
     async fn times_out_unverified_dialer() {
         // Dialer stays connected but is never verified as a member: the wait
         // runs to the deadline and reports the unverified outcome (which the
