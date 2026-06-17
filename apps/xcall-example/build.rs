@@ -11,7 +11,15 @@ fn main() {
     let src_content = fs::read_to_string(src_path).expect("Failed to read src/lib.rs");
 
     // Generate ABI manifest using the emitter
-    let manifest = emit_manifest(&src_content).expect("Failed to emit ABI manifest");
+    let mut manifest = emit_manifest(&src_content).expect("Failed to emit ABI manifest");
+
+    // The emitter lists methods/events in source order, but this is the one app
+    // that embeds the *full* abi.json (to carry `xcall_callable`), and the node's
+    // reader runs `validate_manifest`, which requires lexicographically sorted
+    // method and event names — otherwise it discards the section as invalid and
+    // the L3 xcall gate silently never arms. Sort here so the embed validates.
+    manifest.methods.sort_by(|a, b| a.name.cmp(&b.name));
+    manifest.events.sort_by(|a, b| a.name.cmp(&b.name));
 
     // Serialize the manifest to JSON
     let json = serde_json::to_string_pretty(&manifest).expect("Failed to serialize manifest");

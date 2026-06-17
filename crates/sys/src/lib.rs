@@ -14,6 +14,9 @@ wasm_imports! {
         // --
         fn context_id(register_id: RegisterId);
         fn executor_id(register_id: RegisterId);
+        // Source context of an xcall dispatch; writes the register and returns
+        // true only when this execution was invoked via `xcall`.
+        fn xcall_origin(register_id: RegisterId) -> Bool;
         // --
         fn input(register_id: RegisterId);
         fn value_return(value: Ref<ValueReturn<'_>>);

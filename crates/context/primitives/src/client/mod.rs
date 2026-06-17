@@ -1334,6 +1334,24 @@ impl ContextClient {
         aliases: Vec<Alias<PublicKey>>,
         atomic: Option<ContextAtomic>,
     ) -> Result<ExecuteResponse, ExecuteError> {
+        self.execute_with_origin(context_id, executor, method, payload, aliases, atomic, None)
+            .await
+    }
+
+    /// Like [`execute`](Self::execute), but tags the run with the source
+    /// context that dispatched it via `xcall`, surfaced to the guest as
+    /// `env::xcall_origin()`. Pass `None` for a direct/RPC call.
+    #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
+    pub async fn execute_with_origin(
+        &self,
+        context_id: &ContextId,
+        executor: &PublicKey,
+        method: String,
+        payload: Vec<u8>,
+        aliases: Vec<Alias<PublicKey>>,
+        atomic: Option<ContextAtomic>,
+        xcall_origin: Option<ContextId>,
+    ) -> Result<ExecuteResponse, ExecuteError> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
@@ -1345,6 +1363,7 @@ impl ContextClient {
                     payload,
                     aliases,
                     atomic,
+                    xcall_origin,
                 },
                 outcome: sender,
             })

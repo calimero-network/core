@@ -313,6 +313,7 @@ mod tests {
             returns_nullable: None,
             errors: vec![],
             intent: MethodIntent::Unspecified,
+            xcall_callable: false,
         });
 
         assert!(validate_manifest(&manifest).is_ok());
@@ -338,6 +339,7 @@ mod tests {
             returns_nullable: None,
             errors: vec![],
             intent: MethodIntent::Unspecified,
+            xcall_callable: false,
         });
 
         assert!(validate_manifest(&manifest).is_err());
