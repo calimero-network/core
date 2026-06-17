@@ -486,52 +486,73 @@ get_group_signing_key(store, &amp;current, public_key) <span class="comment">// 
   <line x1="430" y1="80" x2="280" y2="130" stroke="#10b981" stroke-width="1.5" marker-end="url(#dg)"/>
   <line x1="530" y1="80" x2="535" y2="130" stroke="#10b981" stroke-width="1.5" marker-end="url(#dg)"/>
 
+  <!-- New crates row (op, authz, projection) -->
+  <!-- op -->
+  <rect x="30" y="240" width="120" height="42" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1"/>
+  <text x="90" y="265" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">op</text>
+
+  <!-- authz -->
+  <rect x="170" y="240" width="120" height="42" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1"/>
+  <text x="230" y="265" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">authz</text>
+
+  <!-- projection -->
+  <rect x="310" y="240" width="140" height="42" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1"/>
+  <text x="380" y="265" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">projection</text>
+
   <!-- External deps row -->
   <!-- store -->
-  <rect x="30" y="240" width="140" height="42" rx="8" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.2"/>
-  <text x="100" y="265" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">store</text>
+  <rect x="490" y="240" width="140" height="42" rx="8" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.2"/>
+  <text x="560" y="265" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">store</text>
 
   <!-- dag -->
-  <rect x="200" y="240" width="120" height="42" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1"/>
-  <text x="260" y="265" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">dag</text>
+  <rect x="660" y="240" width="120" height="42" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1"/>
+  <text x="720" y="265" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">dag</text>
 
   <!-- node-primitives -->
-  <rect x="350" y="240" width="180" height="42" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.2"/>
-  <text x="440" y="265" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">node-primitives</text>
+  <rect x="810" y="240" width="180" height="42" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="900" y="265" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">node-primitives</text>
 
-  <!-- network-primitives -->
-  <rect x="560" y="240" width="200" height="42" rx="8" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.2"/>
-  <text x="660" y="265" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">network-primitives</text>
-
-  <!-- primitives -->
-  <rect x="790" y="240" width="140" height="42" rx="8" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.2"/>
-  <text x="860" y="265" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">primitives</text>
+  <!-- context → new crates -->
+  <line x1="420" y1="80" x2="90" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="450" y1="80" x2="380" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
 
   <!-- context → external deps -->
-  <line x1="420" y1="80" x2="100" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
-  <line x1="450" y1="80" x2="260" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
-  <line x1="530" y1="80" x2="440" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
-  <line x1="600" y1="80" x2="660" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="480" y1="80" x2="560" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="510" y1="80" x2="720" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="560" y1="80" x2="900" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
 
-  <!-- primitives → primitives (bottom) -->
-  <line x1="220" y1="180" x2="860" y2="240" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
-  <line x1="535" y1="180" x2="860" y2="240" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <!-- op → storage chain -->
+  <line x1="90" y1="282" x2="560" y2="310" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+
+  <!-- authz → op, projection, storage -->
+  <line x1="230" y1="282" x2="90" y2="310" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="250" y1="282" x2="380" y2="310" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="270" y1="282" x2="560" y2="310" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+
+  <!-- projection → op, storage -->
+  <line x1="380" y1="282" x2="90" y2="310" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="420" y1="282" x2="560" y2="310" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+
+  <!-- primitives -->
+  <rect x="1000" y="240" width="140" height="42" rx="8" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="1070" y="265" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">primitives</text>
+
+  <!-- primitives dependencies -->
+  <line x1="220" y1="180" x2="1070" y2="240" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="535" y1="180" x2="1070" y2="240" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
 
   <!-- External crate deps -->
-  <rect x="200" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
-  <text x="260" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">actix</text>
+  <rect x="560" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
+  <text x="620" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">actix</text>
 
-  <rect x="350" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
-  <text x="410" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">tokio</text>
+  <rect x="710" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
+  <text x="770" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">tokio</text>
 
-  <rect x="500" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
-  <text x="560" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">borsh</text>
+  <rect x="860" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
+  <text x="920" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">borsh</text>
 
-  <rect x="650" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
-  <text x="710" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">ed25519-dalek</text>
-
-  <rect x="800" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
-  <text x="860" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">serde</text>
+  <rect x="1010" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
+  <text x="1070" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">sha2</text>
 </svg>
 
 <div class="legend">
