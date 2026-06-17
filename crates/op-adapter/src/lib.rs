@@ -2,102 +2,29 @@
 //! migration). Additive: nothing depends on this crate yet; it (and the legacy
 //! source types it reads) is deleted once the migration completes.
 //!
-//! Two roles:
+//! **Encoders** — map the legacy per-plane operation types onto the one
+//! [`OpPayload`], so the migration can prove the unified projection faithfully
+//! represents the current system across all four planes: data (`Action` →
+//! `Put`/`Delete`), access-control (`RotationLogEntry` → `SetWriters`),
+//! membership (`GroupOp` → `MemberAdded`/`MemberRemoved`), and admin (`RootOp`
+//! → `AdminChanged`/`PolicyUpdated`/`SubgroupCreated`/open-join). In-model vs
+//! out-of-model coverage is documented per encoder.
 //!
-//! - **Encoders** — map the legacy per-plane operation types onto the one
-//!   [`OpPayload`], so the migration can prove the unified projection
-//!   faithfully represents the current system across all four planes: data
-//!   (`Action` → `Put`/`Delete`), access-control (`RotationLogEntry` →
-//!   `SetWriters`), membership (`GroupOp` → `MemberAdded`/`MemberRemoved`), and
-//!   admin (`RootOp` → `AdminChanged`/`PolicyUpdated`/`SubgroupCreated`/open-join).
-//!   Coverage gaps (ops with no current `OpPayload` arm) are documented per
-//!   encoder as migration inputs.
-//!
-//! - **Shadow comparison** ([`shadow_data_delta`]) — the slice-2 cutover aid:
-//!   compare the unified `authorize` decision to the legacy one, off the
-//!   current resolvers, so the live path can run both behind a divergence
-//!   metric and act on the old decision until divergence is proven zero.
+//! (An earlier `shadow_data_delta` comparison helper was removed: the live
+//! single-site `authorize` shadow it served proved tautological and half-blind
+//! — the data-write decision is split across the membership gate and the
+//! per-object writer gate, so no one site sees both halves. Deterministic
+//! fold-equivalence — `acl_plane_matches_resolve_local_*` here plus the
+//! membership-fold property test in `calimero-governance-store` — is the
+//! meaningful pre-cutover signal instead.)
 
-use std::collections::BTreeMap;
-
-use calimero_authz::AclView;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::{GroupOp, RootOp};
 use calimero_op::{OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
-use calimero_storage::entities::OpMask;
 use calimero_storage::rotation_log::RotationLogEntry;
-
-/// Result of comparing the legacy per-delta authorization to the unified
-/// per-write [`authorize`](calimero_authz::authorize) in **shadow mode**
-/// (slice-2 S2.2). The caller runs both, records a [`Diverge`](ShadowVerdict::Diverge)
-/// behind a metric, and ACTS ON the old decision until the divergence metric is
-/// proven zero across e2e — only then cutting over.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShadowVerdict {
-    /// Old and new agree — the unified `authorize` is behaviorally identical
-    /// here.
-    Agree,
-    /// They disagree. Expected only where the unified model is *finer* than the
-    /// old coarse gate (e.g. a context member writing a restricted object it
-    /// isn't a listed writer of — new denies, old allowed); any other
-    /// divergence is a bug to investigate before cutover.
-    Diverge { old_allows: bool, new_allows: bool },
-}
-
-/// Compare the legacy per-delta auth (`old_allows`) to the unified per-write
-/// `AclView::may` for a data delta, building the [`AclView`] from the
-/// **current resolvers'** output (slice-2 S2.2 — shadow off current state, no
-/// dependency on the live `ScopeState` yet).
-///
-/// The live caller (in `delta_store`, where the resolved writers + decoded
-/// actions are both available) supplies:
-/// - `author` + `member_at_cut`: from the membership resolution
-///   (`acl_view_at`).
-/// - `restricted_acl`: explicit writer sets for the restricted entities the
-///   delta touches (from `writers_at_authenticated`); empty ⇒ all entities are
-///   non-restricted (default-write = membership, S2.1).
-/// - `writes`: the `(entity, required mask)` each action performs.
-///
-/// Returns [`ShadowVerdict`]; the caller metrics/logs `Diverge` and acts on
-/// `old_allows`.
-#[must_use]
-pub fn shadow_data_delta(
-    author: &PublicKey,
-    member_at_cut: bool,
-    restricted_acl: &BTreeMap<Id, BTreeMap<PublicKey, OpMask>>,
-    writes: &[(Id, OpMask)],
-    old_allows: bool,
-) -> ShadowVerdict {
-    let mut groups = BTreeMap::new();
-    if member_at_cut {
-        // Any group keying `author` as a member makes `is_scope_member` true —
-        // that's all `default-write` (S2.1) consults for non-restricted writes.
-        let _ = groups.insert(
-            ContextGroupId::from([0u8; 32]),
-            [(*author, GroupMemberRole::Member)].into_iter().collect(),
-        );
-    }
-    let view = AclView {
-        acl: restricted_acl.clone(),
-        groups,
-        root_admin: None,
-    };
-    let new_allows = writes
-        .iter()
-        .all(|(entity, mask)| view.may(author, *entity, *mask));
-    if new_allows == old_allows {
-        ShadowVerdict::Agree
-    } else {
-        ShadowVerdict::Diverge {
-            old_allows,
-            new_allows,
-        }
-    }
-}
 
 /// Encode a storage data [`Action`] as an [`OpPayload`].
 ///
@@ -684,61 +611,6 @@ mod tests {
             groups2.get(&group).and_then(|g| g.get(&m)),
             None,
             "final removal drops the member"
-        );
-    }
-
-    // ---- slice-2 S2.2: shadow-decision comparison ----
-
-    #[test]
-    fn shadow_agrees_for_member_default_write() {
-        // Member writes ordinary keys (no restricted ACL); old gate allowed →
-        // unified also allows → Agree (the common case; divergence stays 0).
-        let bob = PublicKey::from([0xB0; 32]);
-        let writes = [
-            (Id::new([1; 32]), OpMask::WRITE),
-            (Id::new([2; 32]), OpMask::WRITE),
-        ];
-        assert_eq!(
-            shadow_data_delta(&bob, true, &BTreeMap::new(), &writes, true),
-            ShadowVerdict::Agree
-        );
-    }
-
-    #[test]
-    fn shadow_agrees_for_non_member_rejection() {
-        let carol = PublicKey::from([0xC0; 32]);
-        let writes = [(Id::new([1; 32]), OpMask::WRITE)];
-        // Non-member: old rejected, unified also rejects (not a scope member).
-        assert_eq!(
-            shadow_data_delta(&carol, false, &BTreeMap::new(), &writes, false),
-            ShadowVerdict::Agree
-        );
-    }
-
-    #[test]
-    fn shadow_diverges_when_member_writes_restricted_nonwriter() {
-        // The S2.1 tightening: a context member writes a restricted object it
-        // isn't a listed writer of. Old coarse gate allowed (member); unified
-        // denies (explicit ACL). The shadow surfaces this expected divergence.
-        let bob = PublicKey::from([0xB0; 32]);
-        let alice = PublicKey::from([0xA1; 32]);
-        let secret = Id::new([0x5E; 32]);
-        let restricted: BTreeMap<Id, BTreeMap<PublicKey, OpMask>> =
-            [(secret, [(alice, OpMask::FULL)].into_iter().collect())]
-                .into_iter()
-                .collect();
-        let writes = [(secret, OpMask::WRITE)];
-        assert_eq!(
-            shadow_data_delta(&bob, true, &restricted, &writes, true),
-            ShadowVerdict::Diverge {
-                old_allows: true,
-                new_allows: false,
-            }
-        );
-        // The listed writer agrees (old + new both allow).
-        assert_eq!(
-            shadow_data_delta(&alice, true, &restricted, &writes, true),
-            ShadowVerdict::Agree
         );
     }
 }

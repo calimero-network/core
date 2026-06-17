@@ -42,8 +42,9 @@ fn wins(incoming: Stamp, current: Option<&Stamp>) -> bool {
 }
 
 /// Set an LWW register `slot` to `value` iff `stamp` beats the stored stamp.
+/// Shares the single comparison rule with [`wins`] so the two cannot diverge.
 fn lww_set<T>(slot: &mut Option<(Stamp, T)>, stamp: Stamp, value: T) {
-    if slot.as_ref().is_none_or(|(seen, _)| stamp > *seen) {
+    if wins(stamp, slot.as_ref().map(|(seen, _)| seen)) {
         *slot = Some((stamp, value));
     }
 }
@@ -135,6 +136,17 @@ impl ScopeState {
                 if wins(stamp, self.member_clock.get(&key)) {
                     if let Some(members) = self.groups.get_mut(group) {
                         let _ = members.remove(member);
+                        // Drop the group entry once empty so "group never
+                        // existed" and "all members removed" are the SAME
+                        // materialized state — otherwise a phantom empty map
+                        // would perturb `governance_hash` and break
+                        // convergence between nodes that reached the empty
+                        // group via different op orders. The per-member LWW
+                        // bookkeeping in `member_clock` is retained so a later
+                        // re-add still has to beat this removal.
+                        if members.is_empty() {
+                            let _ = self.groups.remove(group);
+                        }
                     }
                     let _ = self.member_clock.insert(key, stamp);
                 }
@@ -183,12 +195,23 @@ impl ScopeState {
     }
 
     /// Resolve the [`AclView`] at the causal cut named by `parents` over
-    /// `log` — the **causal-honor** view: fold only the ops in the ancestry of
-    /// `parents` (transitive closure of `parents`), never ops causally after
-    /// the cut. So a pre-revocation write resolves against the pre-revocation
-    /// ACL even on a node that has already applied the revocation — the
-    /// forward-only property P4's `acl_view_at` provided, generalized to the
-    /// whole projection.
+    /// `log` — the **causal-honor** view: fold the ops named by `parents` and
+    /// their transitive ancestors (the cut is inclusive of `parents`, since an
+    /// op's parents causally precede it), never ops causally after the cut. So
+    /// a pre-revocation write resolves against the pre-revocation ACL even on a
+    /// node that has already applied the revocation — the forward-only property
+    /// P4's `acl_view_at` provided, generalized to the whole projection.
+    ///
+    /// **Precondition (caller's responsibility):** `log` must contain every
+    /// ancestor of `parents` within this scope. A parent id not found in `log`
+    /// is skipped — correct for a legitimately out-of-slice **cross-scope**
+    /// parent edge (design §3.3), but if a *same-scope* ancestor is missing the
+    /// returned view is silently computed over a truncated ancestry, which in a
+    /// security context could authorize against a stale ACL. The live apply
+    /// path guarantees completeness before authorizing: the DAG buffers an op
+    /// as `Pending` until all its parents are present (the `Buffer { needed }`
+    /// path of `authorize_delta_at_edge`), so `authorize` only ever runs on a
+    /// fully-materialized ancestry.
     #[must_use]
     pub fn acl_view_at(log: &[Op], parents: &[[u8; 32]]) -> AclView {
         let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id, op)).collect();
@@ -213,7 +236,28 @@ impl ScopeState {
     /// groups). See [`calimero_op::scope_root`].
     #[must_use]
     pub fn root(&self) -> [u8; 32] {
-        scope_root(self.entities_hash(), self.acl_hash(), self.groups_hash())
+        scope_root(
+            self.entities_hash(),
+            self.acl_hash(),
+            self.governance_hash(),
+        )
+    }
+
+    /// Compose this scope's convergence root from an **externally supplied**
+    /// `entities_root` and this projection's ACL + groups hashes.
+    ///
+    /// This is the cutover building block (plan C1): the storage layer keeps
+    /// its proven Merkle `root_hash` as `entities_root`, and the projection
+    /// folds authorization (writer sets + membership + admin/policy/subgroups)
+    /// in on top. Shipping THIS as the wire convergence signal — instead of the
+    /// bare entity root — is what makes a hash-neutral writer/membership
+    /// rotation (identical entities, different ACL) a *different* root, so sync
+    /// can never declare "converged" while authorization disagrees. The
+    /// projection never re-hashes entity state; `entities_root` is authoritative
+    /// for the data plane.
+    #[must_use]
+    pub fn scope_root_with_entities(&self, entities_root: [u8; 32]) -> [u8; 32] {
+        scope_root(entities_root, self.acl_hash(), self.governance_hash())
     }
 
     fn entities_hash(&self) -> [u8; 32] {
@@ -238,9 +282,22 @@ impl ScopeState {
         hasher.finalize().into()
     }
 
-    fn groups_hash(&self) -> [u8; 32] {
+    /// Hash of the whole **governance** plane: group memberships, the scope's
+    /// root admin, its policy, and its live subgroups. Named `governance_hash`
+    /// (not `groups_hash`) because it covers admin/policy/subgroups too — it is
+    /// the third `scope_root` component (`scope_root(entities, acl,
+    /// governance)`); anyone splitting a field out of here must keep
+    /// `scope_root` folding all of it in.
+    fn governance_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         for (group, members) in &self.groups {
+            // Skip empty groups so the materialized membership state hashes
+            // identically regardless of how it was reached (defensive: `apply`
+            // already drops emptied groups). A phantom empty group must never
+            // perturb the convergence root.
+            if members.is_empty() {
+                continue;
+            }
             hasher.update(group.to_bytes());
             for (member, role) in members {
                 hasher.update(AsRef::<[u8; 32]>::as_ref(member));
@@ -378,6 +435,55 @@ mod tests {
         let b = ScopeState::from_ops([&newer, &older]);
         assert_eq!(a.root(), b.root());
         assert_eq!(a.entities.get(&entity), Some(&vec![0xBB]));
+    }
+
+    #[test]
+    fn scope_root_with_entities_detects_hash_neutral_acl_and_membership_changes() {
+        // The cutover security property (plan C1): with the SAME entity root,
+        // an ACL or membership change must still move the convergence signal.
+        let entities_root = [0x42u8; 32];
+        let pk = PublicKey::from([9u8; 32]);
+        let group = ContextGroupId::from([3u8; 32]);
+
+        let empty = ScopeState::from_ops::<[&Op; 0]>([]);
+        let base = empty.scope_root_with_entities(entities_root);
+
+        // A writer-set rotation (hash-neutral on entities) moves the root.
+        let rotated = ScopeState::from_ops([&op(
+            10,
+            OpPayload::SetWriters {
+                object: Id::new([2u8; 32]),
+                writers: [(pk, OpMask::FULL)].into_iter().collect(),
+            },
+        )])
+        .scope_root_with_entities(entities_root);
+        assert_ne!(
+            base, rotated,
+            "a writer-set rotation must move scope_root even with identical entities"
+        );
+
+        // A membership change (also hash-neutral on entities) moves the root.
+        let member_added = ScopeState::from_ops([&op(
+            10,
+            OpPayload::MemberAdded {
+                group,
+                member: pk,
+                role: GroupMemberRole::Member,
+            },
+        )])
+        .scope_root_with_entities(entities_root);
+        assert_ne!(
+            base, member_added,
+            "a membership change must move scope_root even with identical entities"
+        );
+
+        // The entities component still matters: same projection, different
+        // storage root ⇒ different scope_root.
+        assert_ne!(
+            empty.scope_root_with_entities([0x42u8; 32]),
+            empty.scope_root_with_entities([0x43u8; 32]),
+            "the storage entities root remains authoritative for the data plane"
+        );
     }
 
     #[test]

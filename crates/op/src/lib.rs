@@ -68,10 +68,24 @@ pub struct Op {
     /// The change itself (ciphertext at rest under the scope key for data arms
     /// once encryption lands; cleartext in this scaffold).
     pub payload: OpPayload,
-    /// The author's expected `scope_root` after applying this op — the
-    /// convergence assertion peers check.
+    /// The author's expected `scope_root` after applying this op — a
+    /// convergence **assertion**, not a trusted input. Deliberately NOT part of
+    /// the [`compute_id`](Op::compute_id) preimage (so it is unsigned), exactly
+    /// like the existing data DAG's `CausalDelta::expected_root_hash`: peers
+    /// **recompute** their own `scope_root` from their projection and compare,
+    /// rather than trusting the author's number. A tampered value cannot grant
+    /// authority — at worst it flags a divergence the recompute would catch
+    /// anyway. Security never depends on this field.
     pub expected_scope_root: [u8; 32],
-    /// Ed25519 signature by `author` over the id preimage.
+    /// Ed25519 signature by `author` over the [`compute_id`](Op::compute_id)
+    /// preimage (i.e. over `id`). The signature is intentionally NOT folded
+    /// back into `id` (it signs the id, which would be circular).
+    ///
+    /// **Callers MUST verify this signature against `author` before trusting an
+    /// `Op`.** `calimero-projection`/`calimero-authz` assume already-verified
+    /// ops: they fold/authorize on content alone and perform no signature
+    /// check. Feeding an unverified op into the projection bypasses
+    /// authentication entirely.
     pub signature: [u8; 64],
 }
 
@@ -145,6 +159,12 @@ impl Op {
 
         let mut hasher = Sha256::new();
         hasher.update(scope.as_bytes());
+        // Length-prefix the parent list so the boundary between the (variable
+        // count of) parents and the author that follows is unambiguous — i.e.
+        // `parents=[A,B], author=C` can never hash-collide with
+        // `parents=[A,B,C], author=…`. All other fields are fixed-size or
+        // borsh-length-prefixed.
+        hasher.update((sorted.len() as u64).to_le_bytes());
         for parent in &sorted {
             hasher.update(parent);
         }

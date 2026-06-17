@@ -77,9 +77,14 @@ pub fn simulate(seed: u64, membership: &[BTreeSet<ScopeId>], ops: &[Op]) -> Vec<
                     let mut scope_ops = per_scope.remove(scope).unwrap_or_default();
                     // Per-replica order independence: a unique seed per
                     // (seed, replica, scope) so no two folds share an order.
+                    // Mix the first 8 bytes of the ScopeId (not just byte 0) so
+                    // scopes that share a leading byte still get independent
+                    // delivery orders.
+                    let scope_seed =
+                        u64::from_le_bytes(scope.as_bytes()[..8].try_into().expect("32 >= 8"));
                     shuffle(
                         seed.wrapping_add((replica as u64).wrapping_mul(0x9E37_79B9))
-                            .wrapping_add(u64::from(scope.as_bytes()[0])),
+                            .wrapping_add(scope_seed),
                         &mut scope_ops,
                     );
                     (*scope, ScopeState::from_ops(scope_ops).root())
