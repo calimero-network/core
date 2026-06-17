@@ -68,6 +68,7 @@ pub mod group_store {
         is_currently_authorized_for_context,
         namespace_groups_awaiting_key,
         now_millis,
+        now_secs,
         read_op_log_after,
         read_tee_admission_policy,
         register_context_in_group,

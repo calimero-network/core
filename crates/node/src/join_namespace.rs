@@ -13,7 +13,7 @@
 //! callable from any holder of those Arcs (server handlers, tests,
 //! [`NodeManager`] internals).
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use calimero_context::governance_broadcast::ns_topic;
 use calimero_context::group_store::{self, NamespaceGovernance};
@@ -125,14 +125,8 @@ pub async fn join_namespace(
     // step 1: validate invitation expiration locally.
     let group_id = invitation.invitation.group_id;
     let expiration = invitation.invitation.expiration_timestamp;
-    if expiration != 0 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        if now > expiration {
-            return Err(JoinError::InvalidInvitation("invitation expired".into()));
-        }
+    if expiration != 0 && calimero_context::group_store::now_secs() > expiration {
+        return Err(JoinError::InvalidInvitation("invitation expired".into()));
     }
 
     // step 2: provision identity (mark_membership_pending equivalent —
@@ -360,10 +354,7 @@ pub async fn await_namespace_ready(
     // step 3: publish MemberJoined via three-phase contract.
     // Local fast-fail on an already-expired invitation; the
     // authoritative deterministic expiry gate runs on apply.
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now_secs = calimero_context::group_store::now_secs();
     let expiration = invitation.invitation.expiration_timestamp;
     if expiration != 0 && now_secs > expiration {
         return Err(ReadyError::InvalidInvitation(

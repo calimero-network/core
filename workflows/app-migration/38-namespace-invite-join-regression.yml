@@ -1,4 +1,4 @@
-name: 37 — Namespace invite + join (MemberJoinedAt wire regression, 2-node)
+name: 38 — Namespace invite + join (MemberJoinedAt wire regression, 2-node)
 description: >
   Regression guard for the invitation-expiry enforcement change. Node 1
   (admin) creates a namespace + one Open descendant subgroup + one

@@ -113,9 +113,15 @@ fn validate_open_invitation_rejects_expired() {
         svc.validate_open_invitation(&signed, 999_999).is_ok(),
         "in-window invitation must be accepted"
     );
+    // Boundary: the gate is `now > expiration`, so now exactly at expiry is
+    // accepted and one second past is rejected.
     assert!(
-        svc.validate_open_invitation(&signed, 0).is_ok(),
-        "now=0 must be accepted"
+        svc.validate_open_invitation(&signed, 1_000_000).is_ok(),
+        "now == expiry must be accepted (gate is `>`, not `>=`)"
+    );
+    assert!(
+        svc.validate_open_invitation(&signed, 1_000_001).is_err(),
+        "one second past expiry must be rejected"
     );
 }
 

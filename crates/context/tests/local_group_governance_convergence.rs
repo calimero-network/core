@@ -366,10 +366,11 @@ fn member_joined_at_rejects_expired_invitation() {
     )
     .expect("sign MemberJoinedAt");
 
-    let result = group_store::apply_signed_namespace_op(&store, &ns_op);
+    let err = group_store::apply_signed_namespace_op(&store, &ns_op)
+        .expect_err("expired MemberJoinedAt must be rejected on apply");
     assert!(
-        result.is_err(),
-        "expired MemberJoinedAt must be rejected on apply"
+        format!("{err:#}").contains("expired"),
+        "rejection must come from the expiry gate, not another check: {err:#}"
     );
     assert!(
         !MembershipRepository::new(&store)
@@ -403,7 +404,9 @@ fn member_joined_at_accepts_in_window_invitation() {
             .unwrap();
     }
 
-    let signed_invitation = sign_invitation(&admin_sk, gid, 9_999_999_999, 1);
+    // Boundary: joined_at exactly equals expiry. The gate is
+    // `joined_at > expiration`, so the boundary must be accepted (not `>=`).
+    let signed_invitation = sign_invitation(&admin_sk, gid, 1_000_000, 1);
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id,
@@ -426,6 +429,58 @@ fn member_joined_at_accepts_in_window_invitation() {
             .is_member(&gid, &joiner_pk)
             .unwrap());
     }
+}
+
+#[test]
+fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    // Pins the accepted residual: `joined_at` is self-attested by the joiner
+    // (signature-covered but not corroborated), so a custom client can backdate
+    // it to fold a membership row past expiry. The authoritative backstop is
+    // the responder key-delivery gate (`validate_open_invitation`, exercised in
+    // governance-store tests), which uses the responder's own clock. Fully
+    // closing this would need an admin co-signature at redemption (out of scope).
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let ns_id = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner_pk = joiner_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    // Invitation expired at t=1_000_000, but the joiner backdates joined_at to 0.
+    let signed_invitation = sign_invitation(&admin_sk, gid, 1_000_000, 1);
+    let ns_op = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: joiner_pk,
+            signed_invitation,
+            joined_at: 0,
+        }),
+    )
+    .expect("sign MemberJoinedAt");
+
+    group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&gid, &joiner_pk)
+            .unwrap(),
+        "apply gate accepts a backdated joined_at (residual); responder key gate is the backstop"
+    );
 }
 
 #[test]

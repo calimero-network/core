@@ -228,6 +228,7 @@ jobs:
           # The engine path it exercises (marker-less multi-version ladder
           # replay + NoMigrationPath strand) is covered by 36-chained-catchup +
           # upgrade_gate unit tests. See follow-up issue.
+          - 38-namespace-invite-join-regression
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:

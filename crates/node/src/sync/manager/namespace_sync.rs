@@ -467,10 +467,7 @@ impl SyncManager {
         // A wall-clock check is sound here because key delivery is
         // point-to-point, not folded governance state, so responders
         // disagreeing cannot diverge membership.
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now_secs = calimero_context::group_store::now_secs();
         if let Err(err) = NamespaceMembershipService::new(&store, namespace_id)
             .validate_open_invitation(&invitation, now_secs)
         {

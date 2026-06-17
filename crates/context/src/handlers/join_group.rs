@@ -41,10 +41,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let group_id = invitation.invitation.group_id;
         let invited_role = invitation.invitation.invited_role;
         let expiration = invitation.invitation.expiration_timestamp;
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now_secs = calimero_governance_store::now_secs();
         if expiration != 0 && now_secs > expiration {
             return ActorResponse::reply(Err(eyre::eyre!("invitation expired")));
         }
