@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{NamespaceDagService, NamespaceOpLogService};
 use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::{payload_from_root_op, set_writers_payload};
@@ -34,6 +35,9 @@ use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 use calimero_storage::store::{Key as StorageKey, MainStorage};
 use calimero_store::key::ContextState;
+use calimero_store::Store;
+
+use crate::governance_dag::signed_namespace_op_to_delta;
 
 /// Assemble an [`Op`] that **mirrors a source-DAG op**: its `id` and `parents`
 /// are the source delta's own id/parents, *not* a fresh [`Op::compute_id`]. This
@@ -287,6 +291,61 @@ impl ScopeProjections {
     ) -> Option<calimero_authz::AclView> {
         let log = self.logs.get(scope)?;
         Some(ScopeState::acl_view_at(log, parents))
+    }
+
+    /// Rebuild this namespace's governance scopes from **persisted** source
+    /// state — the startup/backfill path, so a just-restarted node's projection
+    /// isn't empty (an empty projection can't be authoritative). The projection
+    /// is a *derived* view, so we replay the authoritative persisted governance
+    /// op-log rather than persisting a parallel copy (which could diverge).
+    ///
+    /// Walks the namespace governance DAG from its heads via `parent_op_hashes`,
+    /// re-deriving each op's delta coordinates (`signed_namespace_op_to_delta`)
+    /// so the ingested ops carry the same ids/parents as the live feed (see
+    /// [`op_from_signed_namespace_op`]). Idempotent — `ingest_op` dedups by id,
+    /// so a backfill after some live feed (or a repeated backfill) is a no-op
+    /// for already-seen ops. ACL (rotation) scopes are backfilled separately via
+    /// [`op_from_rotation_entry`] + [`load_rotation_log_direct`] at the call site
+    /// (the anchors are known there).
+    pub fn backfill_namespace(&mut self, store: &Store, namespace_id: [u8; 32]) {
+        let dag = NamespaceDagService::new(store, namespace_id);
+        let heads = match dag.read_head_record() {
+            Ok(head) => head.parent_hashes,
+            Err(err) => {
+                tracing::warn!(namespace = ?namespace_id, %err, "projection backfill: governance head unreadable");
+                return;
+            }
+        };
+
+        let op_log = NamespaceOpLogService::new(store, namespace_id);
+        let mut visited: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue: std::collections::VecDeque<[u8; 32]> = heads.into_iter().collect();
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id) {
+                continue;
+            }
+            let signed = match op_log.get_signed_op(id) {
+                Ok(Some(signed)) => signed,
+                // A referenced parent not present locally is a normal partial
+                // frontier (backfill what we have); only a store error is noise.
+                Ok(None) => continue,
+                Err(err) => {
+                    tracing::warn!(namespace = ?namespace_id, op = ?id, %err, "projection backfill: op read failed");
+                    continue;
+                }
+            };
+            for parent in &signed.parent_op_hashes {
+                queue.push_back(*parent);
+            }
+            let Ok(delta) = signed_namespace_op_to_delta(&signed) else {
+                continue;
+            };
+            if let Some(op) =
+                op_from_signed_namespace_op(&signed, delta.id, delta.hlc, &delta.parents)
+            {
+                self.ingest_op(&op);
+            }
+        }
     }
 
     /// The role the projection records for `member` in `group` within `scope`,
