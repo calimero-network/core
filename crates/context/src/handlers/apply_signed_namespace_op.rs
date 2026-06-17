@@ -18,6 +18,9 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
         let namespace_id = op.namespace_id;
         let dag = self.get_or_create_namespace_dag(&namespace_id);
         let datastore = self.datastore.clone();
+        // Separate handle for the shadow-compare (the one above is moved into
+        // the applier).
+        let compare_store = self.datastore.clone();
 
         let delta = match signed_namespace_op_to_delta(&op) {
             Ok(d) => d,
@@ -50,6 +53,48 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                     if let Some(op) = &shadow_op {
                         if let Ok(mut projections) = scope_projections.lock() {
                             projections.ingest_op(op);
+                        }
+
+                        // Shadow-compare (additive, log-only): the membership op
+                        // we just fed must leave the projection agreeing with the
+                        // live resolver for the member it touched. Per-member (not
+                        // full-set) so a partially-fed projection — e.g. right
+                        // after restart — can't false-positive. Conservative gate:
+                        // only flag when the live resolver has a DIRECT row the
+                        // projection disagrees with; skip inherited / open-join
+                        // members the live system doesn't store directly but the
+                        // projection models as direct (an expected model
+                        // difference, not a feed bug). This is the projection's
+                        // first reader — the precursor to authorizing against it.
+                        let membership = match &op.payload {
+                            calimero_op::OpPayload::MemberAdded { group, member, .. }
+                            | calimero_op::OpPayload::MemberRemoved { group, member } => {
+                                Some((*group, *member))
+                            }
+                            _ => None,
+                        };
+                        if let Some((group, member)) = membership {
+                            let projected = scope_projections
+                                .lock()
+                                .ok()
+                                .and_then(|p| p.role_of(&op.scope, &group, &member));
+                            let live = calimero_governance_store::MembershipRepository::new(
+                                &compare_store,
+                            )
+                            .role_of(&group, &member)
+                            .ok()
+                            .flatten();
+                            if live.is_some() && projected != live {
+                                tracing::warn!(
+                                    marker = "unified_projection_divergence",
+                                    plane = "membership",
+                                    ?group,
+                                    %member,
+                                    ?projected,
+                                    ?live,
+                                    "unified-op projection disagrees with live membership resolver"
+                                );
+                            }
                         }
                     }
                 }

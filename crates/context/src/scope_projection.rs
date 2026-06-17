@@ -19,10 +19,11 @@
 use std::collections::HashMap;
 
 use calimero_context_client::client::ContextClient;
+use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::{payload_from_action, payload_from_root_op, set_writers_payload};
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
 use calimero_storage::action::Action;
@@ -247,6 +248,26 @@ impl ScopeProjections {
     #[must_use]
     pub fn get(&self, scope: &ScopeId) -> Option<&ScopeState> {
         self.states.get(scope)
+    }
+
+    /// The role the projection records for `member` in `group` within `scope`,
+    /// or `None` if absent (member not present, or the scope hasn't been fed).
+    /// Used by the shadow-compare to check a freshly-applied membership op
+    /// against the live resolver, one member at a time.
+    #[must_use]
+    pub fn role_of(
+        &self,
+        scope: &ScopeId,
+        group: &ContextGroupId,
+        member: &PublicKey,
+    ) -> Option<GroupMemberRole> {
+        self.states
+            .get(scope)?
+            .acl_view()
+            .groups
+            .get(group)?
+            .get(member)
+            .cloned()
     }
 }
 
