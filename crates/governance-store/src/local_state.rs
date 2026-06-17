@@ -1,5 +1,5 @@
 use crate::{
-    CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
+    CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository,
     MetadataRepository, SigningKeysRepository, UpgradeLadderRepository, UpgradesRepository,
 };
 use calimero_context_client::local_governance::SignedGroupOp;
@@ -478,6 +478,23 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     UpgradesRepository::new(store).delete(group_id)?;
     UpgradeLadderRepository::new(store).delete(group_id)?;
     SigningKeysRepository::new(store).delete_all_for_group(group_id)?;
+    // Forward secrecy: also drop the AES group *encryption* keys. Like the
+    // signing-key delete above, a failure here propagates via `?`, so the
+    // cascade classifies it as a per-group purge failure and keeps the
+    // namespace identity + pending-self-purge marker as a retry anchor — the
+    // startup reconcile sweep (#2721) re-runs this idempotently until the keys
+    // are gone. (The cascade's `signing_key_purge_failed` flag also covers this
+    // AES-key failure path despite its signing-key-centric name.)
+    //
+    // CORRECTNESS: `delete_all_for_group` scans then deletes on separate store
+    // handles (non-atomic). That is race-free here only because this function
+    // removes the group's membership rows *above* (see `remove_member` loop)
+    // before this point — the sole writer of `GroupKeyEntry` is the
+    // membership-gated key-delivery/rotation pipeline, so once membership is
+    // gone no new key can be written for this group during the scan→delete
+    // window. The method is `pub(crate)` so no external path can skip this
+    // membership-removal precondition.
+    GroupKeyring::new(store, *group_id).delete_all_for_group()?;
     DenyListRepository::new(store).clear_all_for_group(group_id)?;
     delete_op_log_and_head(store, group_id)?;
     MetaRepository::new(store).delete(group_id)?;
