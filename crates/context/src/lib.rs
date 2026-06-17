@@ -762,6 +762,13 @@ impl Actor for ContextManager {
         // Reacts to SubgroupCreated / TeeMemberAdmitted to admit entitled TEE
         // members into Restricted subgroups this node holds keys for. Open
         // subgroups need no admission. Mirrors the self_purge listener pattern.
+        //
+        // `shutdown` before `spawn`: the handler is a process-global singleton,
+        // and a plain `spawn` no-ops while a prior handler still runs. If this
+        // actor is restarted with a *different* `Store`/`ContextClient`, that
+        // would leave the subscriber bound to the stale handles. Aborting first
+        // guarantees we (re)bind to this instance's current store/client.
+        tee_subgroup_admit::shutdown();
         tee_subgroup_admit::spawn(self.datastore.clone(), self.context_client.clone());
     }
 }

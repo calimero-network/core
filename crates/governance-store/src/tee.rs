@@ -137,12 +137,20 @@ pub struct TeeAdmissionRecord {
 /// the identity joined via a `MemberJoinedViaTeeAttestation` op. Scans the
 /// same op log as [`is_tee_admitted_identity`] but destructures all recorded
 /// fields. Returns `None` for an unknown member.
+///
+/// Returns the **latest** matching op, not the first: after a removal and
+/// re-admission an identity has multiple join ops, and the most recent one is
+/// the live verdict (e.g. a newer TCB/measurement set). This mirrors
+/// [`read_tee_admission_policy`], which also takes the last write. Reusing a
+/// stale earlier verdict for subgroup fan-out would re-admit against outdated
+/// attestation data.
 pub fn tee_admission_record(
     store: &Store,
     group_id: &ContextGroupId,
     identity: &PublicKey,
 ) -> EyreResult<Option<TeeAdmissionRecord>> {
     let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
+    let mut latest = None;
 
     for (_seq, bytes) in &entries {
         if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
@@ -159,7 +167,7 @@ pub fn tee_admission_record(
             } = op.op
             {
                 if member == *identity {
-                    return Ok(Some(TeeAdmissionRecord {
+                    latest = Some(TeeAdmissionRecord {
                         quote_hash,
                         mrtd,
                         rtmr0,
@@ -168,13 +176,13 @@ pub fn tee_admission_record(
                         rtmr3,
                         tcb_status,
                         role,
-                    }));
+                    });
                 }
             }
         }
     }
 
-    Ok(None)
+    Ok(latest)
 }
 
 /// Like [`tee_admission_record`] but returns the verdict for *every* TEE
@@ -183,9 +191,9 @@ pub fn tee_admission_record(
 /// A caller that needs many members' verdicts (e.g. admitting all root TEE
 /// members into a newly-created subgroup) would otherwise call
 /// [`tee_admission_record`] once per member, re-scanning the same op log each
-/// time — O(members × log). This folds them in one pass. First-write-wins per
-/// member, matching [`tee_admission_record`]'s "return the first matching op"
-/// semantics (a re-admission after removal keeps the original verdict).
+/// time — O(members × log). This folds them in one pass. Last-write-wins per
+/// member, matching [`tee_admission_record`]'s "latest matching op" semantics
+/// (a re-admission after removal supersedes the earlier verdict).
 pub fn tee_admission_records(
     store: &Store,
     group_id: &ContextGroupId,
@@ -207,16 +215,20 @@ pub fn tee_admission_records(
                 role,
             } = op.op
             {
-                out.entry(member).or_insert(TeeAdmissionRecord {
-                    quote_hash,
-                    mrtd,
-                    rtmr0,
-                    rtmr1,
-                    rtmr2,
-                    rtmr3,
-                    tcb_status,
-                    role,
-                });
+                // Last-write-wins: a later re-admission supersedes the earlier verdict.
+                let _ = out.insert(
+                    member,
+                    TeeAdmissionRecord {
+                        quote_hash,
+                        mrtd,
+                        rtmr0,
+                        rtmr1,
+                        rtmr2,
+                        rtmr3,
+                        tcb_status,
+                        role,
+                    },
+                );
             }
         }
     }
@@ -334,7 +346,8 @@ mod tests {
             &borsh::to_vec(&tee_join_op(&signer_sk, ns_gid, 2, tee_b, [0x08; 32])).unwrap(),
         )
         .unwrap();
-        // A re-admission op for tee_a — first-write-wins keeps the original verdict.
+        // A re-admission op for tee_a (e.g. after removal + re-admit) — the
+        // latest verdict supersedes the earlier one.
         append_op_log_entry(
             &store,
             &ns_gid,
@@ -345,10 +358,10 @@ mod tests {
 
         let records = tee_admission_records(&store, &ns_gid).unwrap();
         assert_eq!(records.len(), 2);
-        assert_eq!(records[&tee_a].quote_hash, [0x07; 32], "first-write-wins");
+        assert_eq!(records[&tee_a].quote_hash, [0x09; 32], "last-write-wins");
         assert_eq!(records[&tee_b].quote_hash, [0x08; 32]);
 
-        // Each entry matches what the single-member read returns.
+        // Each entry matches what the single-member read returns (also latest).
         for member in [tee_a, tee_b] {
             assert_eq!(
                 tee_admission_record(&store, &ns_gid, &member)
@@ -358,5 +371,39 @@ mod tests {
                 records[&member].quote_hash
             );
         }
+    }
+
+    #[test]
+    fn record_returns_latest_verdict_after_readmit() {
+        let store = test_store();
+        let mut rng = rand::thread_rng();
+        let ns_gid = ContextGroupId::from([0xAB; 32]);
+        let tee_pk = PublicKey::from([0x42; 32]);
+        let signer_sk = PrivateKey::random(&mut rng);
+
+        // Original admission, then a later re-admission with a fresh quote.
+        append_op_log_entry(
+            &store,
+            &ns_gid,
+            1,
+            &borsh::to_vec(&tee_join_op(&signer_sk, ns_gid, 1, tee_pk, [0x07; 32])).unwrap(),
+        )
+        .unwrap();
+        append_op_log_entry(
+            &store,
+            &ns_gid,
+            2,
+            &borsh::to_vec(&tee_join_op(&signer_sk, ns_gid, 2, tee_pk, [0x09; 32])).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            tee_admission_record(&store, &ns_gid, &tee_pk)
+                .unwrap()
+                .unwrap()
+                .quote_hash,
+            [0x09; 32],
+            "must reuse the most recent admission verdict, not the stale first one"
+        );
     }
 }

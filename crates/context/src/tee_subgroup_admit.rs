@@ -79,16 +79,25 @@ static HANDLE: Mutex<Option<HandleState>> = Mutex::new(None);
 /// Spawn the tee-subgroup-admit handler. Returns immediately; the handler runs
 /// as a detached tokio task for the process lifetime.
 ///
+/// Subscribes to `op_events` **synchronously, before** spawning the task, so
+/// that once this returns no subsequently-emitted event can be missed. (If the
+/// task subscribed lazily on its first poll, an event fired between `spawn`
+/// returning and that poll would be lost — the race the e2e tests previously
+/// papered over with a sleep.)
+///
 /// Idempotent: subsequent calls (e.g. after an Actix actor restart) are no-ops
-/// unless [`shutdown`] is called first.
+/// while a handler is still running; [`shutdown`] first to rebind to a new
+/// store/client. Re-spawning is safe regardless because admission is idempotent
+/// (`has_direct_member` guards duplicate rows) and best-effort.
 pub fn spawn(store: Store, context_client: ContextClient) {
     let mut slot = HANDLE.lock().expect("tee-subgroup-admit HANDLE poisoned");
     if slot.as_ref().is_some_and(|h| !h.abort.is_finished()) {
         debug!("tee-subgroup-admit handler already running; skipping re-spawn");
         return;
     }
+    let rx = op_events::subscribe();
     let abort = tokio::spawn(async move {
-        run(store, context_client).await;
+        run(rx, store, context_client).await;
     })
     .abort_handle();
     *slot = Some(HandleState { abort });
@@ -107,8 +116,11 @@ pub fn shutdown() {
     }
 }
 
-async fn run(store: Store, context_client: ContextClient) {
-    let mut rx = op_events::subscribe();
+async fn run(
+    mut rx: tokio::sync::broadcast::Receiver<OpEvent>,
+    store: Store,
+    context_client: ContextClient,
+) {
     info!("tee-subgroup-admit handler started");
     loop {
         let event = match rx.recv().await {
@@ -219,6 +231,14 @@ async fn handle_new_subgroup(
     let namespace_gid = ContextGroupId::from(namespace_id);
     let child_gid = ContextGroupId::from(child_group_id);
 
+    // Note on the same emit-before-persist race: unlike `handle_new_tee_member`,
+    // the two store reads below need no retry. `SubgroupCreated` only fires on
+    // the creator (it ran `create_group`), which mints the subgroup key and
+    // writes its rows before the op is applied — so `load_current_key` already
+    // sees it. And subgroup visibility defaults to Restricted in the absence of
+    // a row, so `is_open_chain_to_namespace` fails safe (treats a not-yet-written
+    // subgroup as Restricted → we proceed) rather than wrongly skipping it.
+
     // Only act for Restricted subgroups — Open subgroups are already readable
     // by a root-admitted TEE node (inherited membership + namespace key).
     match CapabilitiesRepository::new(store).is_open_chain_to_namespace(&child_gid, &namespace_gid)
@@ -241,7 +261,7 @@ async fn handle_new_subgroup(
         }
     }
 
-    // Admit every existing root-level ReadOnlyTee member into the new subgroup.
+    // Collect the root-level ReadOnlyTee members to admit into the new subgroup.
     let members = match MembershipRepository::new(store).list(&namespace_gid, 0, usize::MAX) {
         Ok(m) => m,
         Err(e) => {
@@ -249,6 +269,15 @@ async fn handle_new_subgroup(
             return;
         }
     };
+    let tee_members: Vec<PublicKey> = members
+        .into_iter()
+        .filter(|(_, role)| *role == GroupMemberRole::ReadOnlyTee)
+        .map(|(member, _)| member)
+        .collect();
+    if tee_members.is_empty() {
+        return; // nothing to admit — skip the op-log scan entirely
+    }
+
     // One scan of the root op log for all verdicts, rather than re-scanning it
     // per member. No retry needed here: the root admission long predates this
     // subgroup creation, so its op-log entries are already persisted and readable.
@@ -259,12 +288,9 @@ async fn handle_new_subgroup(
             return;
         }
     };
-    for (member, role) in members {
-        if role != GroupMemberRole::ReadOnlyTee {
-            continue;
-        }
+    for member in tee_members {
         let Some(record) = records.get(&member) else {
-            continue; // not a root TEE member / no verdict to reuse
+            continue; // no verdict to reuse (membership row without a join op)
         };
         admit_member_into_subgroup(context_client, store, &child_gid, &member, record).await;
     }
@@ -314,9 +340,16 @@ async fn handle_new_tee_member(
         }
     }
     let Some(record) = record else {
-        warn!(
+        // Exhausting the retry budget is not expected (the verdict gap is
+        // normally microseconds). If the store write is delayed past ~1s (heavy
+        // load, disk pressure, compaction), the fan-in is dropped here and only
+        // the joiner-side key pull recovers it. Log at error so operators can
+        // detect the degraded path; the durable fix (emit events post-persist)
+        // is #2770.
+        error!(
             member = ?member,
-            "tee-subgroup-admit: verdict not visible after retry; relying on later events / key pull"
+            "tee-subgroup-admit: verdict not visible after retry budget; \
+             fan-in deferred to the joiner-side key pull (see #2770)"
         );
         return;
     };

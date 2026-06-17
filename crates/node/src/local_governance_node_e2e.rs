@@ -923,12 +923,11 @@ async fn restricted_subgroup_created_admits_existing_tee_member() {
     // would never see THIS node's key — defeating the create-time admission.
     // Rebind the global subscriber to this test's store/client right before the
     // subgroup create so it acts on the same store we assert on. (`shutdown` +
-    // `spawn` because `spawn` alone is first-wins and won't rebind.)
+    // `spawn` because `spawn` alone is first-wins and won't rebind.) `spawn`
+    // subscribes synchronously before returning, so no sleep is needed: the
+    // subscriber is guaranteed registered before the op below fires.
     calimero_context::tee_subgroup_admit::shutdown();
     calimero_context::tee_subgroup_admit::spawn(node.store.clone(), node.context_client.clone());
-    // Give the freshly-spawned subscriber a moment to subscribe before the op
-    // fires (it must subscribe before the event, or it misses it).
-    sleep(Duration::from_millis(50)).await;
 
     // 2) Create a RESTRICTED subgroup on this node (mints + holds its key, fires
     //    OpEvent::SubgroupCreated).
@@ -1008,10 +1007,10 @@ async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
     //    `TeeMemberAdmitted` event is the trigger under test — the production
     //    immediate path, not a manually-driven recovery. (`shutdown` + `spawn`
     //    because `spawn` alone is first-wins and won't rebind.)
+    // `spawn` subscribes synchronously before returning, so the subscriber is
+    // registered before the announce below — no sleep needed.
     calimero_context::tee_subgroup_admit::shutdown();
     calimero_context::tee_subgroup_admit::spawn(node.store.clone(), node.context_client.clone());
-    // Give the freshly-spawned subscriber a moment to subscribe before the op fires.
-    sleep(Duration::from_millis(50)).await;
 
     // 3) Admit a TEE node at the namespace ROOT via the announce path, exactly
     //    like the sibling tests (mock quote on the `ns/<hex>` topic). This emits
