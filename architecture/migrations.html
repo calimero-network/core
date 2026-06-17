@@ -610,6 +610,47 @@ passes → the migration commits) and <code>30-migration-check-fail-abort.yml</c
 zero-residue logical abort, v1 still served). Model new check scenarios on those.
 </p>
 
+<h3>merobox step types for migrations</h3>
+<p>
+A merobox workflow is a YAML list of steps run against a throwaway multi-node cluster
+(<code>merobox bootstrap run workflows/app-migration/&lt;name&gt;.yml</code>). The migration-relevant step
+types — every one of these is used by a real <code>scenario-*</code> workflow you can copy:
+</p>
+<table class="prim-table">
+  <thead><tr><th>Step</th><th>Does</th><th>Key fields</th></tr></thead>
+  <tbody>
+    <tr><td class="pt-code">install_application</td><td class="pt-desc">install a bundle/wasm on a node</td><td class="pt-code">node, path, dev, outputs:&nbsp;{app_v1: applicationId}</td></tr>
+    <tr><td class="pt-code">update_group_settings</td><td class="pt-desc">set the upgrade policy — migrations need <code>lazy_on_access</code></td><td class="pt-code">node, group_id, upgrade_policy: lazy_on_access</td></tr>
+    <tr><td class="pt-code">upgrade_group</td><td class="pt-desc">trigger the upgrade; the node resolves the migrate from the target's ABI</td><td class="pt-code">node, group_id, target_application_id, cascade</td></tr>
+    <tr><td class="pt-code">call</td><td class="pt-desc">invoke a method — a read counts, so it triggers the lazy migrate</td><td class="pt-code">node, context_id, method, args</td></tr>
+    <tr><td class="pt-code">get_migration_status / assert_migration_complete</td><td class="pt-desc">read / poll the cohort rollup — <strong>admin node only</strong></td><td class="pt-code">node, namespace_id [, timeout_seconds, poll_interval]</td></tr>
+    <tr><td class="pt-code">get_cascade_status / assert_cascade_complete</td><td class="pt-desc">per-subgroup cascade rollup</td><td class="pt-code">node, namespace_id [, timeout_seconds]</td></tr>
+    <tr><td class="pt-code">resync_context</td><td class="pt-desc">recover a stranded member (destructive)</td><td class="pt-code">node, context_id, force: true</td></tr>
+    <tr><td class="pt-code">abort_migration</td><td class="pt-desc">admin stop of a rolling migration</td><td class="pt-code">node, namespace_id</td></tr>
+    <tr><td class="pt-code">assert_log_present / assert_log_absent</td><td class="pt-desc">assert a node log line did / didn't fire</td><td class="pt-code">nodes: [...], patterns: [...]</td></tr>
+  </tbody>
+</table>
+<p>The canonical shape — install v1, write data, set LazyOnAccess, install v2, upgrade, poke each peer to migrate, assert:</p>
+<pre class="code">steps:
+  - { type: install_application, node: n1, dev: true,
+      path: apps/migrations/migration-suite-v1/res/migration-suite-1.0.0.mpk,
+      outputs: { app_v1: applicationId } }
+  # ... create_namespace / create_context / node-2 joins / write v1 data via `call` ...
+  - { type: update_group_settings, node: n1, group_id: "{{group_id}}",
+      upgrade_policy: lazy_on_access }
+  - { type: install_application, node: n1, dev: true,
+      path: apps/migrations/migration-suite-v2/res/migration-suite-2.0.0.mpk,
+      outputs: { app_v2: applicationId } }
+  - { type: upgrade_group, node: n1, group_id: "{{namespace_id}}",
+      target_application_id: "{{app_v2}}", cascade: true }
+  - { type: call, node: n2, context_id: "{{ctx}}", method: get_something }  # read ⇒ lazy migrate
+  - { type: assert_log_present, nodes: [n2], patterns: ["Migration completed successfully"] }
+  - { type: assert_migration_complete, node: n1, namespace_id: "{{namespace_id}}" }</pre>
+<p>
+See <code>workflows/app-migration/README.md</code> for running locally, and any
+<code>scenario-*.yml</code> for one complete, copy-pastable workflow per migration shape.
+</p>
+
 <h3>Worked examples</h3>
 <ul>
   <li><code>apps/migration-harness-example/</code> — <code>#[derive(Migrate)]</code> + <code>TestHost</code>
@@ -832,10 +873,80 @@ migrates, and clears the <code>failed</code> marker.
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
-     10. QUICK REFERENCE
+     10. CLIENT INTEGRATION
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>10. Wiring it into your app — <code>mero-js</code> &amp; <code>mero-react</code></h2>
+<p>
+The node exposes the migration surface over its admin + RPC + SSE APIs. The JS SDK
+(<code>@calimero-network/mero-js</code>) and React bindings (<code>mero-react</code>) — both on the
+migrations-v2 <code>3.0.0</code> line — wrap those so a frontend can drive and observe an upgrade
+without hand-rolling HTTP.
+</p>
+
+<h3>mero-js</h3>
+<table class="prim-table">
+  <thead><tr><th>Call</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td class="pt-code">admin.upgradeGroup(groupId, { targetApplicationId, cascade })</td><td class="pt-desc">trigger the upgrade (§9); <code>cascade</code> fans out the subtree (§9.3).</td></tr>
+    <tr><td class="pt-code">admin.getMigrationStatus(namespaceId)</td><td class="pt-desc">cohort rollup — migrated / in-progress / unknown / failed, <code>allMigrated</code>, <code>authoredRemaining</code> (§5).</td></tr>
+    <tr><td class="pt-code">admin.getCascadeStatus(namespaceId)</td><td class="pt-desc">per-subgroup cascade rollup.</td></tr>
+    <tr><td class="pt-code">admin.listApplicationVersions(applicationId)</td><td class="pt-desc">every retained version of a package — feeds a version picker (§9.7).</td></tr>
+    <tr><td class="pt-code">admin.resyncContext(contextId, { force })</td><td class="pt-desc">recover a stranded member (§9.9) — destructive, needs <code>force</code>.</td></tr>
+    <tr><td class="pt-code">rpc.migrateMyEntries(contextId)</td><td class="pt-desc">owner one-tap convert of identity-gated data → <code>{ converted, remaining }</code> (§5).</td></tr>
+    <tr><td class="pt-code">events.onAppVersionChanged(handler)</td><td class="pt-desc">SSE subscription; fires <code>{ contextId, fromVersion, toVersion }</code> when a context's version flips (§9.4).</td></tr>
+  </tbody>
+</table>
+<pre class="code">// trigger + observe an upgrade
+await mero.admin.upgradeGroup(groupId, { targetApplicationId: v2Id, cascade: true });
+const unsub = mero.events.onAppVersionChanged(({ toVersion }) =&gt; setVersion(toVersion));
+
+// owner converts their own identity-gated entries after the upgrade
+let { remaining } = await mero.rpc.migrateMyEntries(contextId);
+// (call again until remaining === 0 to drain everything in one sitting)
+
+// recover a member stuck with no_migration_path
+await mero.admin.resyncContext(contextId, { force: true });</pre>
+<div class="note">
+<strong>Bundle skew.</strong> Never infer "already updated" from installed-version-vs-registry-latest:
+for a bundle the application id is version-stable (§9.2). Drive the UI off
+<code>getMigrationStatus</code> / <code>AppVersionChanged</code>, never the id.
+</div>
+
+<h3>mero-react hooks</h3>
+<table class="prim-table">
+  <thead><tr><th>Hook</th><th>For</th></tr></thead>
+  <tbody>
+    <tr><td class="pt-code">useUpgradeGroup()</td><td class="pt-desc">an admin "apply update" action → <code>upgradeGroup</code> with loading/error.</td></tr>
+    <tr><td class="pt-code">useGroupUpgradeStatus(groupId)</td><td class="pt-desc">live cohort upgrade rollup (<code>upgradeStatus</code>) for a progress UI.</td></tr>
+    <tr><td class="pt-code">useMigrationStatus(namespaceId)</td><td class="pt-desc">the full migration-status rollup (per-member states + <code>authoredRemaining</code>).</td></tr>
+    <tr><td class="pt-code">useAppVersion(contextId, expected)</td><td class="pt-desc">context's installed version + <code>isStale</code> vs the app's build constant; auto-updates on <code>AppVersionChanged</code> ("reload to update").</td></tr>
+    <tr><td class="pt-code">useMyAuthoredMigration(contextId)</td><td class="pt-desc"><code>pending</code> + <code>authorize()</code> — the per-user "migrate my data" tap (wraps <code>migrate_my_entries</code>).</td></tr>
+    <tr><td class="pt-code">useResyncContext()</td><td class="pt-desc"><code>resyncContext</code> (force), for a "recover this member" action.</td></tr>
+    <tr><td class="pt-code">useRetryGroupUpgrade()</td><td class="pt-desc">re-drive a stalled cohort upgrade.</td></tr>
+    <tr><td class="pt-code">useLatestVersion(applicationId)</td><td class="pt-desc">registry latest + retained versions for a picker.</td></tr>
+  </tbody>
+</table>
+<pre class="code">function WorkspaceBanner({ contextId }) {
+  const { appVersion, isStale } = useAppVersion(contextId, BUILD_VERSION);
+  const { pending, authorize } = useMyAuthoredMigration(contextId);
+
+  if (isStale) return &lt;Banner&gt;Update available — reload to use v{appVersion}&lt;/Banner&gt;;
+  if (pending) return &lt;Button onClick={authorize}&gt;Migrate my data&lt;/Button&gt;;
+  return null;   // up to date, nothing of mine left to convert
+}</pre>
+<div class="note">
+Exact response/return field names track each repo's typings
+(<code>mero-js/src/admin-api/admin-types.ts</code>, <code>mero-react/src/hooks/index.ts</code>) — the
+canonical source if a field is renamed in a later release.
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     11. QUICK REFERENCE
      ═══════════════════════════════════════════════════════════════════ -->
 <div class="card gb">
-<h2>10. Quick reference</h2>
+<h2>11. Quick reference</h2>
 <table class="prim-table">
   <thead><tr><th>Do</th><th>Don't</th></tr></thead>
   <tbody>
