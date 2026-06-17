@@ -12,13 +12,13 @@
 ## Sequencing & dependencies
 
 ```
-#2770 (PR-1)  ─────────────┐
-#2776 (open, merge-ready) ──┴──▶ #2726 (PR-2)
-#2772 (open, merge-ready) ──────▶ #2771 (PR-3)
+#2770 (PR-1) ──────────────── independent (apply-path: group + namespace)
+#2776 (open, merge-ready) ──▶ #2726 (PR-2)   ← only hard dep; runs in parallel with PR-1
+#2772 (open, merge-ready) ──▶ #2771 (PR-3)
 ```
 
-- **PR-1 (#2770)** is independent (governance-store apply path) — lands first; it removes a race class the others would otherwise have to work around.
-- **PR-2 (#2726)** depends on **both** #2770 (race-free apply / closes the self_purge "delete op-log while apply still writing it" window) **and** #2776 (its residue check must look for the AES `GroupKeyEntry` rows that #2776 made the purge delete).
+- **PR-1 (#2770)** is independent (governance-store apply path); it removes a pre-existing race and can land any time.
+- **PR-2 (#2726)** hard-depends **only on #2776** (its residue check looks for the AES `GroupKeyEntry` rows #2776's purge deletes). It does **not** hard-depend on PR-1 — research confirmed the "delete op-log while apply still writing it" window is **pre-existing and orthogonal** (the namespace purge path already lives with it), so PR-2 inherits whatever apply ordering the base provides. **PR-1 and PR-2 can proceed in parallel.**
 - **PR-3 (#2771)** depends on **#2772** (the `tee_subgroup_admit` subscriber + the create/visibility surface it builds on).
 
 ---
@@ -37,7 +37,9 @@
 
 **Must NOT move:** `GroupKeyDelivered` (`governance.rs:~1029`, the `apply_received_group_key` path) — it's not a per-op-dispatch emit, has no op-log append to gate on, and its `join_group` wake-then-reread is latency-sensitive. Leave it exactly as a direct `notify`.
 
-**Namespace path:** `SubgroupCreated`/`SubgroupReparented` (`ops/namespace/*`, `NamespaceApplyCtx`, which has no sink today) run under the RootOp path that dedups *before* emit, so they are not racy in the #2770 sense. **Confirm the RootOp persist ordering during implementation**; only thread a sink there if the confirmation shows an emit-before-persist gap. Default expectation: no change needed on the namespace path.
+**Namespace path — IN SCOPE (confirmed racy).** Research traced `apply_signed_op`: the RootOp emit happens in `dispatch_root_op` (`governance.rs:240`) but the op-log entry persists later at `store_operation` (`governance.rs:425`) — same emit-before-persist race as the group path. So PR-1 must **also** thread a sink through `NamespaceApplyCtx` (currently sink-less) + `dispatch_root_op`, and drain after `store_operation`. **Three namespace emit sites:** `SubgroupCreated` (`ops/namespace/group_created.rs:121`), `SubgroupReparented` (`ops/namespace/group_reparented.rs:22`), and `MemberJoined`/`MemberJoinedOpen` → `emit_auto_follow_set_if_enabled` (`namespace/membership.rs:71`). The RootOp path's own dedup is *before* emit (`governance.rs:227`), so it doesn't double-emit on replay — only the persist-ordering needs fixing.
+
+**Replay semantics (observable, document it):** append-gated drain also stops re-emitting on duplicate/backfill/retry of an already-logged op (today it re-emits). No *first* apply loses its event (every emit-worthy op also appends on first apply); the change only removes spurious replay re-emits — a net improvement worth a changelog note.
 
 **Follow-up (not in PR-1):** once both PR-1 and #2772 are merged, remove the now-redundant bounded wake-then-reread in `tee_subgroup_admit::handle_new_tee_member` (fold into PR-2 or a tiny standalone cleanup). Add a doc note on `GroupApplyCtx.pending_events`: future group handlers must `queue_event`, never `notify` directly, or they reintroduce the race.
 
@@ -56,16 +58,16 @@
 2. **Marker storage A1** (confirmed over A2): a **new `calimero-store` key prefix + `PendingSubgroupPurge` key type + `PendingSubgroupPurgeRepository`**, each a 1:1 copy of `PendingSelfPurge`/`PendingSelfPurgeRepository`. Rationale: the marker key is `[prefix][32-byte id]` with a `()` value, so reusing the namespace marker type (A2) makes subgroup markers **byte-indistinguishable** from namespace markers — and disambiguating by re-resolving the namespace is impossible exactly in the failure case (the subgroup's tree edges are already deleted). A1 gives the sweep a disjoint, unambiguous enumerator. Pick the next free prefix byte (verify against the `*_PREFIX` list; `0x3F` appears free).
    - **Mark before purge** on the `PurgeAction::Subgroup` arm (`self_purge.rs:694`, symmetric to the namespace arm at `:707`); clear on `Ok`, leave on `Err`.
 
-3. **Extend `reconcile_sweep`** with a subgroup pass over the new marker repo, applying a **3-state predicate** (checking the **subgroup `gid`**, not root — and it cannot reuse the namespace "identity-gone" signal since identity is namespace-scoped):
+3. **Extend `reconcile_sweep`** with a **second loop** over the new marker repo, **run after the existing namespace pass** (namespace-first: any subgroup under a just-namespace-purged subtree then hits the already-purged predicate and clears its stale marker for free). No marker-precedence logic is needed — research confirmed a namespace-root TEE eviction emits a *single* root `TeeMemberRemoved` (the `cascade_remove_member_from_group_tree` cascade is silent / ContextIdentity-only), so concurrent namespace+subgroup markers for one node don't arise from a root eviction. The subgroup pass applies a **3-state predicate** (checking the **subgroup `gid`**, not root — and it cannot reuse the namespace "identity-gone" signal since identity is namespace-scoped):
    - **healthy** — `MembershipRepository::role_of(gid, self_pk).is_some()` (direct role) → clear marker, don't purge.
    - **evicted-with-residue** — no role **and** residue present → re-run `purge_subgroup_for_self` (idempotent).
    - **already-purged** — no role **and** no residue → clear marker, don't purge.
    - **Residue = dual-family (the #2776 interaction):** `GroupKeyring::load_current_key_record(gid).is_some()` (AES `GroupKeyEntry`) **OR** `SigningKeysRepository::get_key(gid, self_pk).is_some()` (signing key). #2776 made `delete_group_local_rows` delete both, non-atomically with a first-error return, so a partial failure can leave "signing gone / AES present" — checking only signing keys would miss it.
    - Reuse `PurgeBranch::Subgroup` + extend `ReconcileOutcome` for metrics.
 
-**Startup-only** sweep (periodic is a deferred follow-up). **Effort ~5–7 dev-days.**
+**Startup-only** sweep (periodic is a deferred follow-up). **Effort ~5–7 dev-days.** `purge_subgroup_for_self` has only 2 callers (the live arm + one test) and the namespace cascade uses a different path, so the `Result`-refactor is isolated. Group-key deletion runs **only** via the public `delete_group_local_rows` (the `delete_all_for_group` helpers are `pub(crate)`); the residue *probes* (`load_current_key_record`, `get_key`) are public, so reading residue from `calimero-context` is fine.
 
-**Tests:** mark-before-purge symmetry; `Result` drives clear/leave; reconcile re-runs a failed subgroup purge; the 3rd already-purged state clears without re-purging; residue detection covers both key families (incl. the signing-gone/AES-present case); no false-purge of a re-admitted subgroup member. Match #2725 coverage.
+**Tests:** mark-before-purge symmetry; `Result` drives clear/leave; the 3-state predicate (residue-present → purge; already-purged → clear; healthy → clear), with residue covering both key families incl. the signing-gone/AES-present case; namespace-first ordering clears a subgroup marker under a purged namespace; no false-purge of a re-admitted subgroup member. **Test caveat:** `InMemoryDB` deletes always succeed, so we can't inject a real `delete_group_local_rows` failure — follow the existing namespace tests' pattern (unit-test the pure decision functions + hand-seed the post-failure "marker + residue present" store state + drive the happy-path cascade on a clean store), not a fault-injecting `Store` mock. Match #2725 coverage.
 
 ---
 
@@ -75,9 +77,13 @@
 
 **Why not prune after the flip (rejected).** A silent local delete of the redundant row **breaks convergence**: `hash_group_state` hashes every `GroupMember` row, so a local-only delete diverges the subgroup state hash across peers → permanent governance desync. An op-based prune is disproportionate (a new replicated op in a security-sensitive path that would emit `TeeMemberRemoved` → trigger `self_purge` → strip the keys, the opposite of intent).
 
-**Fix (structural): initial visibility on create.** Add an optional `visibility` to `CreateGroupRequest` (default Restricted, backward-compatible) and apply it atomically in the `GroupCreated` apply, so a subgroup intended to be Open is **born Open**. Then `is_open_chain_to_namespace` is already true when `SubgroupCreated` fires, the create-time subscriber correctly **skips** it (Open subgroups need no admission), and the redundant row + recurring wasted key delivery never happen. This eliminates the window rather than papering over it.
+**Fix (structural): born-Open create — Option C (no wire-format break).** Add an optional `visibility` (default Restricted) to the create request, and when Open is requested, have the create-group **handler** establish Open *before* the create's `SubgroupCreated` event reaches the subscriber — by emitting the existing replicated **`SubgroupVisibilitySet { Open }` op** as part of the create flow (Option C), rather than adding a `visibility` field to the borsh-serialized `RootOp::GroupCreated` (Option A — rejected: it's a replicated-op wire-format break that changes op-log hashes, breaks un-upgraded peers, and touches `op-adapter`/`governance-types`).
 
-**Scope note:** touches `CreateGroupRequest` (`context/primitives`), the create-group handler, and the `GroupCreated` apply to set initial visibility; callers that want Open pass it. Lives in `create_group` (#2772-adjacent). No change to the visibility-flip path.
+Why C is sufficient: the only node that does the redundant admission is the **creator** (it runs `tee_subgroup_admit` + holds the keys). C closes the window on the creator (visibility row Open before the subscriber's `is_open_chain_to_namespace` check), so it never self-admits; remote peers converge via the replicated visibility op and never self-admit anyway. **The make-or-break:** the Open visibility row must be committed **before** `notify_op_event(SubgroupCreated)` so the subscriber sees Open and skips.
+
+**Keep key minting unconditional** — do NOT skip the per-subgroup key mint for born-Open: it's load-bearing for the subscriber's key-holder check *and* for a later flip-to-Restricted. (So PR-3 adds no conditional-minting logic — simpler.)
+
+**Scope:** the wire `CreateGroupApiRequest` (`server/primitives`, backward-compatible optional field) **and** the namespace-subgroup path `CreateGroupInNamespaceBody` (the path meroctl actually uses) both need the field for end-to-end born-Open; plus the internal `CreateGroupRequest` (free to extend) and ~5 constructor sites (all default to Restricted). No change to the `SubgroupVisibilitySet` apply itself. No published-contract / mero-tee impact.
 
 **Tests:** a subgroup created with `visibility: Open` is Open immediately (no flip); `tee_subgroup_admit` does NOT admit the TEE node into it (no redundant row, no key delivery); default (no visibility) stays Restricted (unchanged behavior); existing create-then-flip still works.
 
@@ -86,6 +92,6 @@
 ## Non-goals / out of scope
 
 - Periodic reconcile sweep (PR-2 is startup-only; periodic is a later follow-up).
-- The namespace-path emit refactor unless PR-1's ordering check shows a gap there.
-- Any change to `GroupKeyDelivered` semantics.
+- Adding `visibility` to the borsh `RootOp::GroupCreated` (PR-3 Option A — rejected; use the second-op approach to avoid a replicated-op wire break).
+- Any change to `GroupKeyDelivered` semantics (stays a direct, pre-persist-safe notify).
 - mdma / mero-tee — these are core-only changes; no contract-crate (`calimero-server-primitives`, `calimero-tee-attestation`) public-surface change, so no mero-tee rev bump.
