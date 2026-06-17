@@ -41,6 +41,25 @@ fn wins(incoming: Stamp, current: Option<&Stamp>) -> bool {
     current.is_none_or(|cur| incoming > *cur)
 }
 
+/// Set an LWW register `slot` to `value` iff `stamp` beats the stored stamp.
+fn lww_set<T>(slot: &mut Option<(Stamp, T)>, stamp: Stamp, value: T) {
+    if slot.as_ref().is_none_or(|(seen, _)| stamp > *seen) {
+        *slot = Some((stamp, value));
+    }
+}
+
+/// A subgroup scope's state, each field an independent LWW register keyed on
+/// `(hlc, op_id)` so create / reparent / delete converge order-independently:
+/// `parent` (set by create + reparent), `restricted` (set by create),
+/// `exists` (create → true, delete → false). A scope is live iff its latest
+/// `exists` is `true`.
+#[derive(Clone, Debug, Default)]
+struct SubgroupSlot {
+    parent: Option<(Stamp, ScopeId)>,
+    restricted: Option<(Stamp, bool)>,
+    exists: Option<(Stamp, bool)>,
+}
+
 /// The deterministic projection of one scope's op-log: values + ACL + groups,
 /// each slot resolved last-writer-wins by `(hlc, op_id)`.
 #[derive(Clone, Debug, Default)]
@@ -59,7 +78,7 @@ pub struct ScopeState {
     admin_clock: Option<Stamp>,
     policy: Vec<u8>,
     policy_clock: Option<Stamp>,
-    subgroups: BTreeMap<ScopeId, bool>,
+    subgroups: BTreeMap<ScopeId, SubgroupSlot>,
 }
 
 impl ScopeState {
@@ -132,9 +151,23 @@ impl ScopeState {
                     self.policy_clock = Some(stamp);
                 }
             }
-            OpPayload::SubgroupCreated { child, restricted } => {
-                // Create-only and idempotent — no LWW slot needed.
-                let _ = self.subgroups.insert(*child, *restricted);
+            OpPayload::SubgroupCreated {
+                child,
+                parent,
+                restricted,
+            } => {
+                let slot = self.subgroups.entry(*child).or_default();
+                lww_set(&mut slot.parent, stamp, *parent);
+                lww_set(&mut slot.restricted, stamp, *restricted);
+                lww_set(&mut slot.exists, stamp, true);
+            }
+            OpPayload::SubgroupReparented { child, new_parent } => {
+                let slot = self.subgroups.entry(*child).or_default();
+                lww_set(&mut slot.parent, stamp, *new_parent);
+            }
+            OpPayload::SubgroupDeleted { scope } => {
+                let slot = self.subgroups.entry(*scope).or_default();
+                lww_set(&mut slot.exists, stamp, false);
             }
         }
     }
@@ -222,9 +255,16 @@ impl ScopeState {
         }
         hasher.update((self.policy.len() as u64).to_le_bytes());
         hasher.update(&self.policy);
-        for (child, restricted) in &self.subgroups {
-            hasher.update(child.as_bytes());
-            hasher.update([u8::from(*restricted)]);
+        for (child, slot) in &self.subgroups {
+            // Only live subgroups (latest `exists` is true) contribute, with
+            // their resolved parent + restricted flag.
+            if slot.exists.as_ref().is_some_and(|(_, live)| *live) {
+                hasher.update(child.as_bytes());
+                if let Some((_, parent)) = &slot.parent {
+                    hasher.update(parent.as_bytes());
+                }
+                hasher.update([u8::from(slot.restricted.as_ref().is_some_and(|(_, r)| *r))]);
+            }
         }
         hasher.finalize().into()
     }
@@ -471,6 +511,52 @@ mod tests {
         assert!(
             !post.is_owner(&owner, object),
             "post-revoke cut drops the owner"
+        );
+    }
+
+    #[test]
+    fn scope_tree_create_reparent_delete_is_order_independent() {
+        let scope = ScopeId::from([0u8; 32]);
+        let child = ScopeId::from([0xC1; 32]);
+        let p1 = ScopeId::from([0x11; 32]);
+        let p2 = ScopeId::from([0x22; 32]);
+
+        // create(child under p1, restricted)@10 → reparent to p2 @20.
+        let ops = vec![
+            op(
+                10,
+                OpPayload::SubgroupCreated {
+                    child,
+                    parent: p1,
+                    restricted: true,
+                },
+            ),
+            op(
+                20,
+                OpPayload::SubgroupReparented {
+                    child,
+                    new_parent: p2,
+                },
+            ),
+        ];
+        let fwd = ScopeState::from_ops(&ops);
+        let mut rev = ops.clone();
+        rev.reverse();
+        let bwd = ScopeState::from_ops(&rev);
+        assert_eq!(
+            fwd.root(),
+            bwd.root(),
+            "create + reparent converge regardless of order (parent LWW = p2)"
+        );
+
+        // Deleting the child @30 drops it from the root entirely.
+        let mut with_delete = ops;
+        with_delete.push(op(30, OpPayload::SubgroupDeleted { scope: child }));
+        let deleted_root = ScopeState::from_ops(&with_delete).root();
+        assert_ne!(
+            deleted_root,
+            fwd.root(),
+            "a deleted subgroup no longer contributes to scope_root"
         );
     }
 }

@@ -174,7 +174,9 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
         }
         OpPayload::AdminChanged { .. }
         | OpPayload::PolicyUpdated { .. }
-        | OpPayload::SubgroupCreated { .. } => {
+        | OpPayload::SubgroupCreated { .. }
+        | OpPayload::SubgroupReparented { .. }
+        | OpPayload::SubgroupDeleted { .. } => {
             if acl_at_cut.is_root_admin(&op.author) {
                 Ok(())
             } else {

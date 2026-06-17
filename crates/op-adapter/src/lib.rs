@@ -165,20 +165,24 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
 
 /// Encode a namespace root governance op ([`RootOp`]) as an [`OpPayload`].
 ///
-/// **Coverage (admin + membership planes):** `AdminChanged` → `AdminChanged`;
-/// `PolicyUpdated` → `PolicyUpdated`; `MemberJoinedOpen` → `MemberAdded`
-/// (open-subgroup self-join grants `Member`); `GroupCreated` →
-/// `SubgroupCreated` (see caveat).
+/// **Coverage (admin + membership + scope-tree planes):** `AdminChanged` →
+/// `AdminChanged`; `PolicyUpdated` → `PolicyUpdated`; `MemberJoinedOpen` →
+/// `MemberAdded` (open-subgroup self-join grants `Member`); `GroupCreated` →
+/// `SubgroupCreated`; `GroupReparented` → `SubgroupReparented`; `GroupDeleted`
+/// → `SubgroupDeleted` (see caveats).
 ///
-/// **Caveat — `GroupCreated`:** the `restricted` flag isn't carried on the op
-/// (it's a policy determination), so this emits `restricted: false`; the live
-/// migration must resolve real restriction from the group's policy.
+/// **Caveats:**
+/// - `GroupCreated`: the `restricted` flag isn't carried on the op (it's a
+///   policy determination), so this emits `restricted: false`; the live
+///   migration resolves real restriction from the group's policy.
+/// - `GroupDeleted`: maps only the `root_group_id`; the op's pre-computed
+///   `cascade_group_ids` mean the live path emits one `SubgroupDeleted` per
+///   cascaded scope.
 ///
 /// **Returns `None`** (tracked gaps): `MemberJoined` (invitation-based — needs
 /// the signed-invitation decode for `group_id`/`invited_role`; handled where
-/// the invitation is already decoded), `GroupReparented`/`GroupDeleted`
-/// (scope-tree structure, not member/admin state — needs `OpPayload`
-/// extension), `KeyDelivery` (key transport, outside the op model — §9.6).
+/// the invitation is already decoded), `KeyDelivery` (key transport, outside
+/// the op model — §9.6).
 #[must_use]
 pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
     match op {
@@ -193,9 +197,23 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
             member: *member,
             role: GroupMemberRole::Member,
         }),
-        RootOp::GroupCreated { group_id, .. } => Some(OpPayload::SubgroupCreated {
+        RootOp::GroupCreated {
+            group_id,
+            parent_id,
+        } => Some(OpPayload::SubgroupCreated {
             child: ScopeId::from(*group_id),
+            parent: ScopeId::from(*parent_id),
             restricted: false,
+        }),
+        RootOp::GroupReparented {
+            child_group_id,
+            new_parent_id,
+        } => Some(OpPayload::SubgroupReparented {
+            child: ScopeId::from(*child_group_id),
+            new_parent: ScopeId::from(*new_parent_id),
+        }),
+        RootOp::GroupDeleted { root_group_id, .. } => Some(OpPayload::SubgroupDeleted {
+            scope: ScopeId::from(*root_group_id),
         }),
         _ => None,
     }
@@ -458,23 +476,38 @@ mod tests {
                 role: GroupMemberRole::Member,
             })
         );
+        let parent = [0x70; 32]; // placeholder parent id
         assert_eq!(
             payload_from_root_op(&RootOp::GroupCreated {
                 group_id: gid,
-                parent_id: [0u8; 32],
+                parent_id: parent,
             }),
             Some(OpPayload::SubgroupCreated {
                 child: ScopeId::from(gid),
+                parent: ScopeId::from(parent),
                 restricted: false,
             })
         );
-        // Scope-tree restructure has no member/admin-plane representation yet.
+        // Scope-tree restructure ops now map to the structural OpPayload arms.
         assert_eq!(
             payload_from_root_op(&RootOp::GroupReparented {
                 child_group_id: gid,
                 new_parent_id: [9u8; 32],
             }),
-            None
+            Some(OpPayload::SubgroupReparented {
+                child: ScopeId::from(gid),
+                new_parent: ScopeId::from([9u8; 32]),
+            })
+        );
+        assert_eq!(
+            payload_from_root_op(&RootOp::GroupDeleted {
+                root_group_id: gid,
+                cascade_group_ids: vec![],
+                cascade_context_ids: vec![],
+            }),
+            Some(OpPayload::SubgroupDeleted {
+                scope: ScopeId::from(gid),
+            })
         );
     }
 

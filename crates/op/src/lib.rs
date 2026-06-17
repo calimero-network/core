@@ -109,9 +109,19 @@ pub enum OpPayload {
     AdminChanged { new_admin: PublicKey },
     /// Replace the scope's policy bytes.
     PolicyUpdated { policy_bytes: Vec<u8> },
-    /// Create a child subgroup scope (restricted ⇒ member-only existence,
-    /// design §3.4).
-    SubgroupCreated { child: ScopeId, restricted: bool },
+    /// Create a child subgroup scope nested under `parent` (restricted ⇒
+    /// member-only existence, design §3.4).
+    SubgroupCreated {
+        child: ScopeId,
+        parent: ScopeId,
+        restricted: bool,
+    },
+    /// Move a subgroup scope under a new parent (the scope-tree restructure
+    /// `RootOp::GroupReparented`).
+    SubgroupReparented { child: ScopeId, new_parent: ScopeId },
+    /// Delete a subgroup scope (and, in the full model, its subtree — the
+    /// caller emits one per cascaded scope; `RootOp::GroupDeleted`).
+    SubgroupDeleted { scope: ScopeId },
 }
 
 impl Op {
