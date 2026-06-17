@@ -355,6 +355,30 @@ impl NodeClient {
         }
     }
 
+    /// Edge-trigger the migration-heartbeat emitter to recompute + re-publish
+    /// this node's facts for `namespace_id`, out of band of the periodic tick.
+    ///
+    /// Best-effort, mirroring [`notify_namespace_op_applied`]: a `try_send`
+    /// failure only means the recompute waits for the next periodic beat — the
+    /// local state is already updated. Used by the resync-heal path so a
+    /// just-recovered member's facts (cleared strand marker + new schema) reach
+    /// the admin rollup promptly instead of lingering as stale `failed`.
+    ///
+    /// [`notify_namespace_op_applied`]: Self::notify_namespace_op_applied
+    pub fn notify_migration_facts_refresh(&self, namespace_id: [u8; 32]) {
+        if let Err(err) = self
+            .node_manager
+            .try_send(NodeMessage::RefreshMigrationFacts { namespace_id })
+        {
+            warn!(
+                ?err,
+                namespace_id = %hex::encode(namespace_id),
+                "failed to enqueue migration-facts refresh — the recovered facts \
+                 will publish on the next periodic heartbeat instead"
+            );
+        }
+    }
+
     pub async fn subscribe(&self, context_id: &ContextId) -> eyre::Result<()> {
         let topic = String::from(context_id);
         self.topic_manager.ensure_subscribed(&topic).await?;

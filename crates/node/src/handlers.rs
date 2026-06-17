@@ -128,6 +128,13 @@ impl Handler<NodeMessage> for NodeManager {
                 // emitter so its periodic keep-alive tick goes live.
                 self.notify_migration_facts(namespace_id);
             }
+            NodeMessage::RefreshMigrationFacts { namespace_id } => {
+                // Edge-trigger a fact recompute + emit-on-change for this
+                // namespace (resync-heal path). Same seam the governance-apply
+                // signal uses, without the readiness side-effect — a resync
+                // applies no governance op.
+                self.notify_migration_facts(namespace_id);
+            }
         }
     }
 }
