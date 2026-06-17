@@ -140,7 +140,17 @@ pub fn load_rotation_log_direct(
         }
     };
 
-    let index = borsh::from_slice::<EntityIndex>(&read(StorageKey::Index(map_id))?).ok()?;
+    let index_bytes = read(StorageKey::Index(map_id))?;
+    let index = match borsh::from_slice::<EntityIndex>(&index_bytes) {
+        Ok(index) => index,
+        Err(err) => {
+            tracing::warn!(
+                %context_id, anchor = ?anchor, %err,
+                "rotation-log index failed to decode; ACL shadow feed skips this anchor"
+            );
+            return None;
+        }
+    };
     let mut entries = Vec::new();
     if let Some(children) = index.children() {
         for child in children {
@@ -219,9 +229,17 @@ impl ScopeProjections {
     }
 
     /// Fold a single op into its own scope's projection and op-log.
+    ///
+    /// A duplicate op (same `id`, e.g. a delta replayed on restart) is skipped
+    /// from the retained log: the fold is already idempotent (LWW by
+    /// `(hlc, op_id)`) and `acl_view_at` dedups by id, but skipping keeps the
+    /// log from accreting duplicates.
     pub fn ingest_op(&mut self, op: &Op) {
         self.states.entry(op.scope).or_default().apply(op);
-        self.logs.entry(op.scope).or_default().push(op.clone());
+        let log = self.logs.entry(op.scope).or_default();
+        if !log.iter().any(|existing| existing.id == op.id) {
+            log.push(op.clone());
+        }
     }
 
     /// The **causal-honor** authorization view of `scope` at the cut named by
@@ -230,6 +248,10 @@ impl ScopeProjections {
     /// fed. This is the view the cutover's `authorize` decides against — the
     /// projection's answer to "was this author permitted *as of its own causal
     /// position*", independent of what the receiver has since applied.
+    ///
+    /// TODO(cutover): this folds the full retained log (O(n) per call) and the
+    /// log is unbounded until eviction lands. Replace with an indexed ancestry
+    /// lookup + bound/persist the log before making this authoritative.
     #[must_use]
     pub fn acl_view_at(
         &self,
