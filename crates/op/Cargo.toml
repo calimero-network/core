@@ -1,0 +1,17 @@
+[package]
+name = "calimero-op"
+version.workspace = true
+description.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+borsh = { workspace = true, features = ["derive"] }
+sha2.workspace = true
+
+calimero-context-config.workspace = true
+calimero-primitives.workspace = true
+calimero-storage.workspace = true
