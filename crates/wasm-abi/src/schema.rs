@@ -139,6 +139,18 @@ pub struct Method {
     /// (write lock) by the node.
     #[serde(skip_serializing_if = "MethodIntent::is_unspecified", default)]
     pub intent: MethodIntent,
+    /// App-declared cross-context entry point (`#[app::xcall]`). When any method
+    /// in a module sets this, the node only allows `xcall` to reach such methods;
+    /// modules with none are not gated. Absent/false on pre-existing manifests.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub xcall_callable: bool,
+}
+
+/// `skip_serializing_if` predicate for a defaulted `bool` field. serde passes
+/// `&bool`, so `core::ops::Not::not` (which takes `bool` by value) can't be
+/// used directly.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Parameter in a method
@@ -725,6 +737,7 @@ mod tests {
             returns_nullable: None,
             errors: Vec::new(),
             intent: MethodIntent::Unspecified,
+            xcall_callable: false,
         });
 
         // Serialize and deserialize
@@ -753,6 +766,7 @@ mod tests {
             returns_nullable: None,
             errors: Vec::new(),
             intent: MethodIntent::Unspecified,
+            xcall_callable: false,
         });
 
         assert_eq!(manifest.schema_version, "wasm-abi/1");
@@ -771,6 +785,7 @@ mod tests {
             returns_nullable: None,
             errors: vec![],
             intent: MethodIntent::ReadOnly,
+            xcall_callable: false,
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("read_only"), "expected 'read_only' in {json}");
@@ -785,6 +800,7 @@ mod tests {
             returns_nullable: None,
             errors: vec![],
             intent: MethodIntent::Mutating,
+            xcall_callable: false,
         };
         let json_mut = serde_json::to_string(&m_mut).unwrap();
         assert!(
@@ -802,6 +818,7 @@ mod tests {
             returns_nullable: None,
             errors: vec![],
             intent: MethodIntent::Unspecified,
+            xcall_callable: false,
         };
         let json2 = serde_json::to_string(&m2).unwrap();
         assert!(
@@ -813,6 +830,44 @@ mod tests {
         let old_json = r#"{"name":"old","params":[]}"#;
         let old: Method = serde_json::from_str(old_json).unwrap();
         assert_eq!(old.intent, MethodIntent::Unspecified);
+    }
+
+    #[test]
+    fn method_xcall_callable_round_trips_and_defaults_false() {
+        // Default false is omitted from JSON — old manifests stay identical.
+        let m = Method {
+            name: "f".to_owned(),
+            params: vec![],
+            returns: None,
+            returns_nullable: None,
+            errors: vec![],
+            intent: MethodIntent::Unspecified,
+            xcall_callable: false,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            !json.contains("xcall_callable"),
+            "default false must be omitted: {json}"
+        );
+
+        // True serialises and round-trips; orthogonal to a Mutating intent.
+        let m2 = Method {
+            xcall_callable: true,
+            intent: MethodIntent::Mutating,
+            ..m.clone()
+        };
+        let json2 = serde_json::to_string(&m2).unwrap();
+        assert!(
+            json2.contains("xcall_callable"),
+            "expected field in {json2}"
+        );
+        let back: Method = serde_json::from_str(&json2).unwrap();
+        assert!(back.xcall_callable);
+        assert_eq!(back.intent, MethodIntent::Mutating);
+
+        // Old JSON without the field deserialises as false.
+        let old: Method = serde_json::from_str(r#"{"name":"f","params":[]}"#).unwrap();
+        assert!(!old.xcall_callable);
     }
 
     // Manifests without state_version / migrations must keep deserializing

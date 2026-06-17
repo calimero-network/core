@@ -248,6 +248,8 @@ impl Module {
         Ok(Vec::into_boxed_slice(bytes.into()))
     }
 
+    /// Run a method with no cross-context origin (direct/RPC call). Thin
+    /// wrapper over [`run_with_origin`](Self::run_with_origin).
     pub fn run<'a>(
         &'a self,
         context: ContextId,
@@ -258,11 +260,40 @@ impl Module {
         private_storage: Option<&'a mut dyn Storage>,
         node_client: Option<NodeClient>,
     ) -> RuntimeResult<Outcome> {
+        self.run_with_origin(
+            context,
+            executor,
+            method,
+            input,
+            storage,
+            private_storage,
+            node_client,
+            None,
+        )
+    }
+
+    /// Run a method, optionally tagged with the source context that dispatched
+    /// it via `xcall`. `xcall_origin` is surfaced to the guest through
+    /// `env::xcall_origin()` so a target can authorize its caller; `None` for
+    /// direct/RPC calls.
+    #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
+    pub fn run_with_origin<'a>(
+        &'a self,
+        context: ContextId,
+        executor: PublicKey,
+        method: &str,
+        input: &'a [u8],
+        storage: &'a mut dyn Storage,
+        private_storage: Option<&'a mut dyn Storage>,
+        node_client: Option<NodeClient>,
+        xcall_origin: Option<ContextId>,
+    ) -> RuntimeResult<Outcome> {
         let context_id = context;
         info!(%context_id, method, "Running WASM method");
         debug!(%context_id, method, input_len = input.len(), "WASM execution input");
 
-        let context = VMContext::new(input.into(), *context_id, *executor);
+        let mut context = VMContext::new(input.into(), *context_id, *executor);
+        context.xcall_origin = xcall_origin.map(|origin| *origin);
 
         let mut logic = VMLogic::new(storage, private_storage, context, &self.limits, node_client);
 

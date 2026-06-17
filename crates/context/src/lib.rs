@@ -457,6 +457,15 @@ pub struct ContextManager {
     /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
     read_only_methods: BoundedCache<(BlobId, Option<String>), Arc<HashSet<String>>>,
 
+    /// Per-blob set of method names declared `#[app::xcall]` in the module ABI.
+    /// An xcall to a method outside this set is denied; an absent entry (module
+    /// declares none, or not parsed yet) leaves the method ungated.
+    ///
+    /// Keyed by `(BlobId, Option<String>)` like `modules` / `read_only_methods`
+    /// (content-addressed, never stale), populated in `get_module_for_blob`.
+    /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
+    xcall_methods: BoundedCache<(BlobId, Option<String>), Arc<HashSet<String>>>,
+
     /// Cumulative hit/miss counters for the `contexts` hot cache, driving the
     /// periodic effectiveness log (see [`ContextCacheStats`] and
     /// [`Self::log_cache_stats`]). Independent of `metrics` so the log line
@@ -531,6 +540,7 @@ impl ContextManager {
             applications: BoundedCache::new(MAX_CACHED_APPLICATIONS, "applications"),
             modules: BoundedCache::new(MAX_CACHED_MODULES, "modules"),
             read_only_methods: BoundedCache::new(MAX_CACHED_MODULES, "read_only_methods"),
+            xcall_methods: BoundedCache::new(MAX_CACHED_MODULES, "xcall_methods"),
             cache_stats: ContextCacheStats::default(),
 
             metrics: prometheus_registry.map(Metrics::new),
@@ -617,10 +627,10 @@ impl GovernancePreflight {
 
 impl ContextManager {
     /// Evict the cached application record for `application_id` so the next
-    /// resolution re-reads the row. The compiled-module and read-only-method
-    /// caches are keyed by content-addressed blob id (same blob ⇒ same
-    /// module), so their entries can never go stale and need no eviction —
-    /// `BoundedCache` reclaims unused slots under capacity pressure.
+    /// resolution re-reads the row. The compiled-module, read-only-method, and
+    /// xcall entry-point caches are keyed by content-addressed blob id (same
+    /// blob ⇒ same module), so their entries can never go stale and need no
+    /// eviction — `BoundedCache` reclaims unused slots under capacity pressure.
     pub(crate) fn evict_application_caches(
         &mut self,
         application_id: calimero_primitives::application::ApplicationId,

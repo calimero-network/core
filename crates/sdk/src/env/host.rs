@@ -187,6 +187,12 @@ pub(crate) fn executor_id() -> [u8; 32] {
     with(|h| h.executor_id)
 }
 
+pub(crate) fn xcall_origin() -> Option<[u8; 32]> {
+    // `TestHost` drives methods directly rather than via xcall dispatch, so a
+    // hosted call has no cross-context origin.
+    None
+}
+
 pub(crate) fn input() -> Option<Vec<u8>> {
     // `TestHost` drives methods directly via closures rather than through the
     // JSON-input WASM entrypoint, so there is no input buffer to serve.
