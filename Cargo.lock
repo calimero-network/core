@@ -1548,6 +1548,8 @@ dependencies = [
 name = "calimero-op-adapter"
 version = "0.0.0"
 dependencies = [
+ "calimero-context-config",
+ "calimero-governance-types",
  "calimero-op",
  "calimero-primitives",
  "calimero-projection",

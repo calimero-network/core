@@ -9,7 +9,10 @@ license.workspace = true
 publish = false
 
 [dependencies]
+calimero-context-config.workspace = true
+calimero-governance-types.workspace = true
 calimero-op.workspace = true
+calimero-primitives.workspace = true
 calimero-storage.workspace = true
 
 [dev-dependencies]

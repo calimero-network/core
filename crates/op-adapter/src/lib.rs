@@ -12,7 +12,10 @@
 //! membership/admin plane (`GroupOp`/`NamespaceOp` → `MemberAdded`/… /
 //! `AdminChanged`/…) lands in the next slice.
 
-use calimero_op::OpPayload;
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_types::{GroupOp, RootOp};
+use calimero_op::{OpPayload, ScopeId};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::rotation_log::RotationLogEntry;
@@ -45,6 +48,77 @@ pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
     OpPayload::SetWriters {
         object,
         writers: entry.new_writers.clone(),
+    }
+}
+
+/// Encode a per-group governance op ([`GroupOp`], already decrypted) as an
+/// [`OpPayload`] for `group`.
+///
+/// **Coverage (membership plane):** `MemberAdded`/`MemberRoleSet` →
+/// `MemberAdded` (a role change is a re-assert; `ScopeState`'s per-`(group,
+/// member)` LWW keeps the latest role); `MemberRemoved`/`MemberLeft` →
+/// `MemberRemoved`.
+///
+/// **Returns `None`** for ops with no current `OpPayload` arm — a tracked
+/// coverage gap for the migration to resolve (either extend `OpPayload` or
+/// handle outside the op model): `Noop`, `MemberCapabilitySet`,
+/// `DefaultCapabilitiesSet`, `UpgradePolicySet`, `TargetApplicationSet`,
+/// `ContextRegistered`, `ContextDetached`.
+#[must_use]
+pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPayload> {
+    match op {
+        GroupOp::MemberAdded { member, role } | GroupOp::MemberRoleSet { member, role } => {
+            Some(OpPayload::MemberAdded {
+                group,
+                member: *member,
+                role: role.clone(),
+            })
+        }
+        GroupOp::MemberRemoved { member, .. } | GroupOp::MemberLeft { member, .. } => {
+            Some(OpPayload::MemberRemoved {
+                group,
+                member: *member,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Encode a namespace root governance op ([`RootOp`]) as an [`OpPayload`].
+///
+/// **Coverage (admin + membership planes):** `AdminChanged` → `AdminChanged`;
+/// `PolicyUpdated` → `PolicyUpdated`; `MemberJoinedOpen` → `MemberAdded`
+/// (open-subgroup self-join grants `Member`); `GroupCreated` →
+/// `SubgroupCreated` (see caveat).
+///
+/// **Caveat — `GroupCreated`:** the `restricted` flag isn't carried on the op
+/// (it's a policy determination), so this emits `restricted: false`; the live
+/// migration must resolve real restriction from the group's policy.
+///
+/// **Returns `None`** (tracked gaps): `MemberJoined` (invitation-based — needs
+/// the signed-invitation decode for `group_id`/`invited_role`; handled where
+/// the invitation is already decoded), `GroupReparented`/`GroupDeleted`
+/// (scope-tree structure, not member/admin state — needs `OpPayload`
+/// extension), `KeyDelivery` (key transport, outside the op model — §9.6).
+#[must_use]
+pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
+    match op {
+        RootOp::AdminChanged { new_admin } => Some(OpPayload::AdminChanged {
+            new_admin: *new_admin,
+        }),
+        RootOp::PolicyUpdated { policy_bytes } => Some(OpPayload::PolicyUpdated {
+            policy_bytes: policy_bytes.clone(),
+        }),
+        RootOp::MemberJoinedOpen { member, group_id } => Some(OpPayload::MemberAdded {
+            group: ContextGroupId::from(*group_id),
+            member: *member,
+            role: GroupMemberRole::Member,
+        }),
+        RootOp::GroupCreated { group_id, .. } => Some(OpPayload::SubgroupCreated {
+            child: ScopeId::from(*group_id),
+            restricted: false,
+        }),
+        _ => None,
     }
 }
 
@@ -236,5 +310,155 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert_eq!(resolved, writers);
+    }
+
+    #[test]
+    fn group_op_encoder_mapping() {
+        let group = ContextGroupId::from([3u8; 32]);
+        let m = PublicKey::from([0x55; 32]);
+
+        assert_eq!(
+            payload_from_group_op(
+                group,
+                &GroupOp::MemberAdded {
+                    member: m,
+                    role: GroupMemberRole::Member,
+                },
+            ),
+            Some(OpPayload::MemberAdded {
+                group,
+                member: m,
+                role: GroupMemberRole::Member,
+            })
+        );
+        // A role change re-asserts membership (ScopeState LWW keeps the latest).
+        assert_eq!(
+            payload_from_group_op(
+                group,
+                &GroupOp::MemberRoleSet {
+                    member: m,
+                    role: GroupMemberRole::Admin,
+                },
+            ),
+            Some(OpPayload::MemberAdded {
+                group,
+                member: m,
+                role: GroupMemberRole::Admin,
+            })
+        );
+        // Non-membership ops have no current OpPayload arm (tracked gap).
+        assert_eq!(payload_from_group_op(group, &GroupOp::Noop), None);
+    }
+
+    #[test]
+    fn root_op_encoder_mapping() {
+        let admin = PublicKey::from([1u8; 32]);
+        let m = PublicKey::from([0x55; 32]);
+        let gid = [3u8; 32];
+
+        assert_eq!(
+            payload_from_root_op(&RootOp::AdminChanged { new_admin: admin }),
+            Some(OpPayload::AdminChanged { new_admin: admin })
+        );
+        assert_eq!(
+            payload_from_root_op(&RootOp::PolicyUpdated {
+                policy_bytes: vec![1, 2, 3],
+            }),
+            Some(OpPayload::PolicyUpdated {
+                policy_bytes: vec![1, 2, 3],
+            })
+        );
+        assert_eq!(
+            payload_from_root_op(&RootOp::MemberJoinedOpen {
+                member: m,
+                group_id: gid,
+            }),
+            Some(OpPayload::MemberAdded {
+                group: ContextGroupId::from(gid),
+                member: m,
+                role: GroupMemberRole::Member,
+            })
+        );
+        assert_eq!(
+            payload_from_root_op(&RootOp::GroupCreated {
+                group_id: gid,
+                parent_id: [0u8; 32],
+            }),
+            Some(OpPayload::SubgroupCreated {
+                child: ScopeId::from(gid),
+                restricted: false,
+            })
+        );
+        // Scope-tree restructure has no member/admin-plane representation yet.
+        assert_eq!(
+            payload_from_root_op(&RootOp::GroupReparented {
+                child_group_id: gid,
+                new_parent_id: [9u8; 32],
+            }),
+            None
+        );
+    }
+
+    /// A membership op sequence folds through `ScopeState` to the same final
+    /// membership the governance state machine (what `membership_status_at`
+    /// resolves) produces: last write wins per member, a removal drops them.
+    #[test]
+    fn membership_plane_fold_add_remove_readd() {
+        let scope = ScopeId::from([0u8; 32]);
+        let group = ContextGroupId::from([3u8; 32]);
+        let admin = PublicKey::from([1u8; 32]);
+        let m = PublicKey::from([0x55; 32]);
+
+        let build = |ns: u64, payload: OpPayload| -> Op {
+            let h = hlc(ns);
+            let id = Op::compute_id(scope, &[], &admin, &h, &payload);
+            Op {
+                id,
+                scope,
+                parents: vec![],
+                author: admin,
+                hlc: h,
+                payload,
+                expected_scope_root: [0u8; 32],
+                signature: [0u8; 64],
+            }
+        };
+
+        // Add(Member)@10 → Remove@20 → Add(Admin)@30 → present as Admin.
+        let ops = vec![
+            build(
+                10,
+                OpPayload::MemberAdded {
+                    group,
+                    member: m,
+                    role: GroupMemberRole::Member,
+                },
+            ),
+            build(20, OpPayload::MemberRemoved { group, member: m }),
+            build(
+                30,
+                OpPayload::MemberAdded {
+                    group,
+                    member: m,
+                    role: GroupMemberRole::Admin,
+                },
+            ),
+        ];
+        let groups = ScopeState::from_ops(&ops).acl_view().groups;
+        assert_eq!(
+            groups.get(&group).and_then(|g| g.get(&m)),
+            Some(&GroupMemberRole::Admin),
+            "re-add after remove wins with the new role"
+        );
+
+        // Same set ending in Remove@40 → member absent.
+        let mut ops2 = ops;
+        ops2.push(build(40, OpPayload::MemberRemoved { group, member: m }));
+        let groups2 = ScopeState::from_ops(&ops2).acl_view().groups;
+        assert_eq!(
+            groups2.get(&group).and_then(|g| g.get(&m)),
+            None,
+            "final removal drops the member"
+        );
     }
 }
