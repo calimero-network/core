@@ -9,6 +9,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+calimero-authz.workspace = true
 calimero-context-config.workspace = true
 calimero-governance-types.workspace = true
 calimero-op.workspace = true
