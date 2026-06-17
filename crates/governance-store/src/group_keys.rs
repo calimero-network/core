@@ -90,6 +90,24 @@ impl<'a> GroupKeyring<'a> {
         Ok(best.map(|(record, _)| record))
     }
 
+    /// Delete every stored group encryption key (`GroupKeyEntry`) for this
+    /// group. Used by the purge/leave cascade for forward-secrecy hygiene —
+    /// mirrors `SigningKeysRepository::delete_all_for_group`. Idempotent.
+    pub fn delete_all_for_group(&self) -> EyreResult<()> {
+        let gid = self.group_id.to_bytes();
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupKeyEntry::new(gid, [0u8; 32]),
+            GROUP_KEY_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+        let mut handle = self.store.handle();
+        for key in keys {
+            handle.delete(&key)?;
+        }
+        Ok(())
+    }
+
     /// Backward-compatible tuple view of [`StoredGroupKey`].
     pub fn load_current_key(&self) -> EyreResult<Option<([u8; 32], [u8; 32])>> {
         Ok(self
@@ -217,5 +235,50 @@ impl<'a> GroupKeyring<'a> {
             new_key_id,
             envelopes,
         })
+    }
+}
+
+#[cfg(test)]
+mod delete_tests {
+    use std::sync::Arc;
+
+    use calimero_store::db::InMemoryDB;
+
+    use super::*;
+
+    fn test_store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    #[test]
+    fn delete_all_for_group_removes_all_keys_and_is_scoped() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0x42u8; 32]);
+        let ring = GroupKeyring::new(&store, gid);
+
+        let id1 = ring.store_key(&[0x01u8; 32]).unwrap();
+        let _id2 = ring.store_key(&[0x02u8; 32]).unwrap();
+        assert!(ring.load_current_key().unwrap().is_some());
+        assert!(ring.load_key_by_id(&id1).unwrap().is_some());
+
+        // Seed a different group; it must survive the targeted delete.
+        let other = ContextGroupId::from([0x99u8; 32]);
+        let other_ring = GroupKeyring::new(&store, other);
+        let _ = other_ring.store_key(&[0x03u8; 32]).unwrap();
+
+        ring.delete_all_for_group().unwrap();
+
+        assert!(
+            ring.load_current_key().unwrap().is_none(),
+            "all group encryption keys for the target group must be gone"
+        );
+        assert!(ring.load_key_by_id(&id1).unwrap().is_none());
+        assert!(
+            other_ring.load_current_key().unwrap().is_some(),
+            "another group's keys must NOT be deleted"
+        );
+
+        // Idempotent: deleting again is a no-op.
+        ring.delete_all_for_group().unwrap();
     }
 }
