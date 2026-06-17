@@ -65,10 +65,10 @@ jobs:
       # "Allow GitHub Actions to create and approve pull requests" setting,
       # so `ai-reviewer update-docs` can actually open the doc PR.
       - name: Create GitHub App token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
         id: app-token
         with:
-          app-id: "2793509"
+          app-id: ${{ vars.MERO_REVIEWER_APP_ID }}
           private-key: ${{ secrets.MERO_REVIEWER_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: |
