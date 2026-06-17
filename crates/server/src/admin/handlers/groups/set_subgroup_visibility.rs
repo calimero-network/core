@@ -12,6 +12,7 @@ use reqwest::StatusCode;
 use tracing::{error, info};
 
 use super::parse_group_id;
+use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::auth::AuthenticatedKey;
@@ -42,12 +43,17 @@ pub async fn handler(
 
     info!(group_id=%group_id_str, ?mode, "Setting subgroup visibility");
 
+    let requester = match resolve_requester(auth_key, req.requester) {
+        Ok(r) => r,
+        Err(err) => return err.into_response(),
+    };
+
     let result = state
         .ctx_client
         .set_subgroup_visibility(SetSubgroupVisibilityRequest {
             group_id,
             subgroup_visibility: mode,
-            requester: auth_key.map(|Extension(k)| k.0).or(req.requester),
+            requester,
         })
         .await
         .map_err(parse_api_error);

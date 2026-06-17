@@ -11,6 +11,7 @@ use calimero_server_primitives::admin::{ReparentGroupApiRequest, ReparentGroupAp
 use tracing::{error, info};
 
 use super::parse_group_id;
+use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::auth::AuthenticatedKey;
@@ -38,7 +39,10 @@ pub async fn handler(
     };
 
     // Prefer the authenticated identity over the caller-supplied requester.
-    let requester = auth_key.map(|Extension(k)| k.0).or(req.requester);
+    let requester = match resolve_requester(auth_key, req.requester) {
+        Ok(r) => r,
+        Err(err) => return err.into_response(),
+    };
 
     // Resolve the namespace this group belongs to. Reparent is only valid on
     // a child that has a parent — i.e. NOT the namespace root — so the walk
