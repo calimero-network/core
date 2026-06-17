@@ -36,6 +36,7 @@ use calimero_store::key::{
 use calimero_store::types::{ApplicationMeta, ContextMeta};
 use calimero_store::Store;
 use rand::rngs::OsRng;
+use serial_test::serial;
 use tokio::time::sleep;
 
 use crate::local_governance_node_e2e::boot_test_node;
@@ -330,7 +331,11 @@ async fn wait_until<F: Fn() -> bool>(cond: F) -> bool {
 /// Together this confirms walk → permission pre-scan → cleartext
 /// publish (apply-side) → per-descendant InProgress save → propagator
 /// spawn happened end-to-end.
+// These `boot_test_node`-based e2e tests share process-global state (the
+// `calimero_context::tee_subgroup_admit` subscriber singleton + the
+// `op_events` broadcast channel), so they must not run concurrently.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn cascade_dispatch_e2e_single_node_emitter() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
@@ -461,6 +466,7 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
 /// read-allowed / write-refused behavior is covered by the
 /// `upgrade_rejects_committed_write` unit tests in `calimero-context`.)
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
@@ -540,6 +546,7 @@ async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
 ///     `dispatch_cascade` per-descendant loop only writes status for
 ///     matched descendants.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
@@ -630,6 +637,7 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
 /// policy error BEFORE any op is emitted — so no descendant's `app_key`
 /// rotates and no `GroupUpgradeValue` row is written.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn cascade_dispatch_e2e_migration_under_automatic_descendant_rejected() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
@@ -786,6 +794,7 @@ async fn seed_ladder_bundles(node: &crate::local_governance_node_e2e::TestNode) 
 /// emits one op pair per rung, and the fold captures the ladder behind
 /// contexts replay. `meta.migration` ends as the LAST hop's method.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn lazy_upgrade_emits_multi_hop_ladder() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
@@ -864,6 +873,7 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
 /// up front (no ops emitted, group untouched) and the error must name the
 /// missing state version — the support-floor message the operator acts on.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
     let node = boot_test_node().await;
     let mut rng = OsRng;

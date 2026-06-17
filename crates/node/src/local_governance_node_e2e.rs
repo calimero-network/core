@@ -10,7 +10,7 @@ use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context::group_store::{apply_local_signed_group_op, get_local_gov_nonce};
 use calimero_context::ContextManager;
 use calimero_context_client::client::ContextClient;
-use calimero_context_client::group::SetMemberAutoFollowRequest;
+use calimero_context_client::group::{CreateGroupRequest, SetMemberAutoFollowRequest};
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_network_primitives::client::NetworkClient;
@@ -25,10 +25,12 @@ use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
+use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use prometheus_client::registry::Registry;
 use rand::rngs::OsRng;
+use serial_test::serial;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
@@ -87,6 +89,13 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             }
             NetworkMessage::Publish { outcome, .. } => {
                 let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
+            }
+            // The create-group path subscribes to the namespace governance
+            // topic before publishing GroupCreated; echo the requested topic
+            // back so `NetworkClient::subscribe` resolves instead of panicking
+            // on a dropped mailbox.
+            NetworkMessage::Subscribe { request, outcome } => {
+                let _ = outcome.send(Ok(request.0));
             }
             // Lazy upgrades announce each rung blob on the DHT; the stub
             // acknowledges so the awaiting client future completes.
@@ -275,7 +284,11 @@ pub(crate) async fn boot_test_node() -> TestNode {
     }
 }
 
+// These `boot_test_node`-based e2e tests share process-global state (the
+// `calimero_context::tee_subgroup_admit` subscriber singleton + the
+// `op_events` broadcast channel), so they must not run concurrently.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn apply_signed_group_op_via_context_client() {
     let node = boot_test_node().await;
 
@@ -353,6 +366,7 @@ async fn apply_signed_group_op_via_context_client() {
 /// `group_store::tests::auto_follow_tests` (12 cases including admin-set,
 /// self-set, non-admin-rejected, and non-member-target variants).
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn set_member_auto_follow_handler_error_paths() {
     let node = boot_test_node().await;
 
@@ -530,6 +544,22 @@ fn provision_tee_owner(node: &TestNode, gid: &ContextGroupId, rng: &mut OsRng) -
         .add_member(gid, &owner_pk, GroupMemberRole::Admin)
         .expect("add owner admin");
 
+    // Faithful to the production namespace-root creation path
+    // (`create_group`/`store_group_meta` both call this): a namespace root's
+    // default capabilities include `CAN_JOIN_OPEN_SUBGROUPS`, so non-admin
+    // members added to the root — including a `ReadOnlyTee` admitted via the
+    // announce path — inherit the bit that gates membership-by-inheritance into
+    // Open descendant subgroups. Without this, this shim would diverge from
+    // production and a root TEE node would (incorrectly) fail to read Open
+    // subgroups. `add_member` reads these defaults at add time, so it must be
+    // set before any non-admin member is admitted.
+    calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+        .set_default_capabilities(
+            gid,
+            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+        )
+        .expect("set namespace-root default capabilities");
+
     // The namespace identity is what `admit_tee_node` uses as the verifier
     // identity AND signing key. Without it the handler bails with
     // "node has no configured group identity for TEE admission".
@@ -560,6 +590,110 @@ fn provision_tee_owner(node: &TestNode, gid: &ContextGroupId, rng: &mut OsRng) -
     owner_pk
 }
 
+/// Create a **Restricted** subgroup nested under `parent_ns` via the production
+/// create-group entrypoint (`ContextClient::create_group`), signed by the
+/// namespace admin (`admin_pk`, provisioned by `provision_tee_owner`).
+///
+/// Going through the real handler is load-bearing for this test: it (a) mints
+/// and stores the subgroup's `GroupKeyring` key locally (so this node is the
+/// key-holder), and (b) applies `RootOp::GroupCreated`, which fires
+/// `OpEvent::SubgroupCreated` — the event the `tee_subgroup_admit` subscriber
+/// reacts to. We deliberately do NOT hand-roll the op or hand-insert the key.
+///
+/// Subgroups have no explicit visibility field on `CreateGroupRequest`; subgroup
+/// visibility defaults to `Restricted` when unset (see
+/// `CapabilitiesRepository::subgroup_visibility`), so a freshly-created subgroup
+/// is Restricted, which is exactly what this path exercises.
+///
+/// Returns the new subgroup's `ContextGroupId`.
+async fn create_restricted_subgroup(
+    node: &TestNode,
+    parent_ns: &ContextGroupId,
+    _admin_pk: &PublicKey,
+    rng: &mut OsRng,
+) -> ContextGroupId {
+    // The create handler resolves the target application from the parent's
+    // `target_application_id` and reads back its `ApplicationMeta` row (to
+    // derive the group's `app_key` from the bytecode blob id). `sample_meta`
+    // pins that id to `[0xCC; 32]`; seed a well-formed meta row for it so
+    // `load_app_meta` succeeds. No real blob bytes are needed on the
+    // caller-omits-app_key path (only `verify_requested_app_key` touches blobs).
+    let app_id = ApplicationId::from([0xCCu8; 32]);
+    let app_meta = ApplicationMetaValue::new(
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0xDDu8; 32])),
+        0,
+        "test://app".into(),
+        Box::new([]),
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0xDDu8; 32])),
+        "test-package".into(),
+        "0.0.0".into(),
+        "test-signer".into(),
+    );
+    node.store
+        .handle()
+        .put(
+            &calimero_store::key::ApplicationMeta::new(app_id),
+            &app_meta,
+        )
+        .expect("seed application meta");
+
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(rng).public_key());
+
+    let resp = node
+        .context_client
+        .create_group(CreateGroupRequest {
+            group_id: Some(sub_gid),
+            app_key: None,
+            application_id: app_id,
+            upgrade_policy: UpgradePolicy::Automatic,
+            name: Some("restricted-sub".to_owned()),
+            parent_group_id: Some(*parent_ns),
+        })
+        .await
+        .expect("create_group");
+
+    resp.group_id
+}
+
+/// Create an **Open** subgroup nested under `parent_ns`.
+///
+/// Mirrors [`create_restricted_subgroup`] (same real `ContextClient::create_group`
+/// path, same `sample_meta`-derived application row), but then flips the
+/// subgroup's visibility to `Open` via the production
+/// `ContextClient::set_subgroup_visibility` path — a `GroupOp::SubgroupVisibilitySet`
+/// applied through `sign_apply_and_publish`, admin-signed by `admin_pk`.
+///
+/// Visibility is NOT a field on `CreateGroupRequest`: a freshly-created subgroup
+/// defaults to `Restricted` (see `CapabilitiesRepository::subgroup_visibility`).
+/// To make the chain `sub → ns` genuinely Open
+/// (`is_open_chain_to_namespace(&sub, &ns) == true`) we must apply the visibility
+/// op after create, which is what this helper does.
+///
+/// Returns the new subgroup's `ContextGroupId`.
+async fn create_open_subgroup(
+    node: &TestNode,
+    parent_ns: &ContextGroupId,
+    admin_pk: &PublicKey,
+    rng: &mut OsRng,
+) -> ContextGroupId {
+    // Reuse the Restricted-create plumbing (seeds app meta, mints the key,
+    // applies `RootOp::GroupCreated`); the only difference is visibility.
+    let sub_gid = create_restricted_subgroup(node, parent_ns, admin_pk, rng).await;
+
+    node.context_client
+        .set_subgroup_visibility(
+            calimero_context_client::group::SetSubgroupVisibilityRequest {
+                group_id: sub_gid,
+                subgroup_visibility: calimero_context_config::VisibilityMode::Open,
+                requester: Some(*admin_pk),
+            },
+        )
+        .await
+        .expect("set_subgroup_visibility(Open)");
+
+    sub_gid
+}
+
 /// Poll `cond` until it returns true or the deadline elapses. The admission
 /// path is spawned onto the actor's context and crosses an actor boundary
 /// (`NodeManager` → `ContextManager`), so the store write lands asynchronously.
@@ -581,6 +715,7 @@ async fn wait_until<F: Fn() -> bool>(cond: F) -> bool {
 /// the `ns/` topic, so `count_group_members` would stay at 1 and no
 /// `ReadOnlyTee` row would ever appear; this test would time out.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn ns_announce_admits_announcer_as_read_only_tee_member() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
@@ -647,6 +782,284 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
     );
 }
 
+/// Precondition proof for the "Open-is-free" property: a TEE node admitted at the
+/// namespace ROOT must be able to read Open subgroups WITHOUT any per-subgroup
+/// admission. That holds only if the root `ReadOnlyTee` row carries
+/// `CAN_JOIN_OPEN_SUBGROUPS`, because the inheritance walk in
+/// `membership::check_group_membership_path` requires that capability for a
+/// non-admin member to count as an inherited member of an Open descendant.
+///
+/// Structure: admit a TEE node at root via the announce path, create an **Open**
+/// subgroup, then assert the root TEE node has NO direct row in the subgroup yet
+/// IS an inherited member of it. If the `is_member` assertion fails, the root
+/// admission is not granting `CAN_JOIN_OPEN_SUBGROUPS` and the Open-is-free
+/// scoping decision (only Restricted subgroups need explicit TEE admission) would
+/// be unsound.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn root_admitted_tee_is_member_of_open_subgroup() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x95u8; 32]);
+    let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // 1) Admit a TEE node at the namespace root via the announce path.
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let nonce = [0x7Du8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+    assert!(
+        wait_until(
+            || calimero_context::group_store::MembershipRepository::new(&node.store)
+                .is_member(&ns_gid, &tee_pk)
+                .unwrap_or(false)
+        )
+        .await,
+        "TEE node must be admitted at the namespace root first"
+    );
+
+    // Shut the process-global `tee_subgroup_admit` subscriber down before
+    // creating the subgroup. We are proving the *inheritance* path (Open is
+    // free), so no per-subgroup direct admission must run: the subgroup is
+    // created Restricted-by-default and only flipped to Open afterward, so a
+    // live subscriber would race in a direct `ReadOnlyTee` row on the
+    // momentarily-Restricted subgroup and mask the inheritance we assert on.
+    calimero_context::tee_subgroup_admit::shutdown();
+
+    // 2) Create an OPEN subgroup nested under the namespace.
+    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+
+    // Sanity: the subgroup chain to the namespace is genuinely Open.
+    assert!(
+        calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+            .is_open_chain_to_namespace(&open_sub, &ns_gid)
+            .expect("is_open_chain_to_namespace"),
+        "the created subgroup must be Open all the way to the namespace root"
+    );
+
+    // 3) The root TEE node must be an inherited member of the Open subgroup
+    //    WITHOUT any direct row in it.
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&node.store)
+            .has_direct_member(&open_sub, &tee_pk)
+            .unwrap(),
+        "no direct row expected in the Open subgroup"
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .is_member(&open_sub, &tee_pk)
+            .unwrap(),
+        "root TEE node must be an inherited member of the Open subgroup \
+         (requires CAN_JOIN_OPEN_SUBGROUPS on the root ReadOnlyTee row)"
+    );
+}
+
+/// End-to-end create-time path (proposal.md §12d, Phase 1): with a TEE node
+/// already admitted at the namespace root, creating a **Restricted** subgroup on
+/// the same node must transparently give that TEE node a direct `ReadOnlyTee`
+/// row in the subgroup AND the subgroup's key. The subgroup is created through
+/// the production `ContextClient::create_group` path, so the subgroup key is
+/// minted locally and `OpEvent::SubgroupCreated` fires — driving the
+/// `tee_subgroup_admit` subscriber (spawned in `ContextManager::started`) to
+/// admit the existing root TEE member into the new Restricted subgroup.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn restricted_subgroup_created_admits_existing_tee_member() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x93u8; 32]);
+    let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // 1) Admit a TEE node at the namespace root via the announce path, exactly
+    //    like `ns_announce_admits_announcer_as_read_only_tee_member`.
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let nonce = [0x7Bu8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+
+    let admitted_root = wait_until(|| {
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .member_value(&ns_gid, &tee_pk)
+            .ok()
+            .flatten()
+            .map(|v| v.role == GroupMemberRole::ReadOnlyTee)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        admitted_root,
+        "TEE node must be admitted as a ReadOnlyTee at the namespace root first"
+    );
+
+    // The `tee_subgroup_admit` subscriber is a PROCESS-GLOBAL singleton
+    // (`OnceLock` op-events notifier + a `Mutex<Option<_>>` spawn guard), bound
+    // to whichever node booted first in the test binary. Other e2e tests in this
+    // crate (`cascade_dispatch_e2e`) also `boot_test_node`, so by the time this
+    // test runs the subscriber may be operating on a *different* node's store and
+    // would never see THIS node's key — defeating the create-time admission.
+    // Rebind the global subscriber to this test's store/client right before the
+    // subgroup create so it acts on the same store we assert on. (`shutdown` +
+    // `spawn` because `spawn` alone is first-wins and won't rebind.) `spawn`
+    // subscribes synchronously before returning, so no sleep is needed: the
+    // subscriber is guaranteed registered before the op below fires.
+    calimero_context::tee_subgroup_admit::shutdown();
+    calimero_context::tee_subgroup_admit::spawn(node.store.clone(), node.context_client.clone());
+
+    // 2) Create a RESTRICTED subgroup on this node (mints + holds its key, fires
+    //    OpEvent::SubgroupCreated).
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+
+    // 3) The subscriber must admit the existing root TEE member into the new
+    //    Restricted subgroup.
+    let admitted_sub = wait_until(|| {
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .member_value(&sub_gid, &tee_pk)
+            .ok()
+            .flatten()
+            .map(|v| v.role == GroupMemberRole::ReadOnlyTee)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        admitted_sub,
+        "TEE node must gain a ReadOnlyTee row in the Restricted subgroup after creation"
+    );
+
+    // 4) And the creator node must hold the subgroup key (minted at create time
+    //    and used by `admit_tee_node` to deliver to the admitted member).
+    assert!(
+        calimero_context::group_store::GroupKeyring::new(&node.store, sub_gid)
+            .load_current_key()
+            .expect("load key")
+            .is_some(),
+        "subgroup must have a current key on this (creator) node"
+    );
+}
+
+/// End-to-end join-into-existing path (proposal.md §12d, Phase 1): a
+/// **Restricted** subgroup already exists on this node (it holds the subgroup
+/// key) when a TEE node is then admitted at the namespace root. An
+/// `OpEvent::TeeMemberAdmitted` at the root drives the `tee_subgroup_admit`
+/// subscriber's `handle_new_tee_member` (Task 4) to fan the new root TEE member
+/// into every descendant Restricted subgroup whose key this node holds — here,
+/// the pre-existing subgroup. This complements the create-time path proven by
+/// `restricted_subgroup_created_admits_existing_tee_member`.
+///
+/// Race note: `handle_new_tee_member` reuses the root admission verdict via
+/// `tee_admission_record`, which scans the namespace governance op-log. That
+/// op-log entry is recorded *after* `apply_group_op_mutations` fires the
+/// `TeeMemberAdmitted` event (see `apply_local_signed_group_op`), so the event
+/// emitted *during* root admission races the op-log write. The subscriber
+/// absorbs this with a bounded wake-then-reread retry (see `tee_subgroup_admit`),
+/// so the production IMMEDIATE path works without any manual re-fire: this test
+/// rebinds the subscriber, announces at the root, and asserts the fan-in lands
+/// directly from that single root admission.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x94u8; 32]);
+    let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // 1) A RESTRICTED subgroup exists FIRST, before any TEE member is admitted at
+    //    the root. Going through the real create handler mints + stores the
+    //    subgroup key locally, so THIS node is the key-holder that
+    //    `handle_new_tee_member` needs to fan a later root TEE member into it.
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+
+    // Sanity: the subgroup key is held on this node (the fan-in delivers under it).
+    assert!(
+        calimero_context::group_store::GroupKeyring::new(&node.store, sub_gid)
+            .load_current_key()
+            .expect("load key")
+            .is_some(),
+        "creator node must hold the pre-existing subgroup key before root admission"
+    );
+
+    // 2) Rebind the PROCESS-GLOBAL `tee_subgroup_admit` subscriber to THIS node's
+    //    store/client BEFORE the announce, so the root admission's own
+    //    `TeeMemberAdmitted` event is the trigger under test — the production
+    //    immediate path, not a manually-driven recovery. (`shutdown` + `spawn`
+    //    because `spawn` alone is first-wins and won't rebind.)
+    // `spawn` subscribes synchronously before returning, so the subscriber is
+    // registered before the announce below — no sleep needed.
+    calimero_context::tee_subgroup_admit::shutdown();
+    calimero_context::tee_subgroup_admit::spawn(node.store.clone(), node.context_client.clone());
+
+    // 3) Admit a TEE node at the namespace ROOT via the announce path, exactly
+    //    like the sibling tests (mock quote on the `ns/<hex>` topic). This emits
+    //    `OpEvent::TeeMemberAdmitted` at the root, which the (now-bound)
+    //    subscriber reacts to. Its bounded wake-then-reread retry absorbs the
+    //    emit-before-persist op-log race, so the fan-in lands immediately.
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let nonce = [0x7Cu8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+
+    // 4) The single root admission must fan into the pre-existing Restricted
+    //    subgroup (Task 4: OpEvent::TeeMemberAdmitted at root →
+    //    handle_new_tee_member → admit into descendants we hold keys for).
+    let fanned_in = wait_until(|| {
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .member_value(&sub_gid, &tee_pk)
+            .ok()
+            .flatten()
+            .map(|v| v.role == GroupMemberRole::ReadOnlyTee)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        fanned_in,
+        "root TEE admission must fan into the pre-existing Restricted subgroup"
+    );
+
+    // 5) The creator node still holds the subgroup key (fan-in delivers under it).
+    assert!(
+        calimero_context::group_store::GroupKeyring::new(&node.store, sub_gid)
+            .load_current_key()
+            .expect("load key")
+            .is_some(),
+        "subgroup must still have a current key on this (creator) node after fan-in"
+    );
+}
+
 /// Negative guard locking in the fix: a `TeeAttestationAnnounce` arriving on a
 /// legacy `group/<hex>` topic must NOT be routed into namespace admission. This
 /// is the precise shape of the #2096 bug — if the dispatcher ever resurrects
@@ -655,6 +1068,7 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
 /// quote, allowlisted MRTD), so the ONLY thing keeping the announcer out is the
 /// topic-prefix routing decision under test.
 #[tokio::test]
+#[serial(boot_test_node)]
 async fn group_topic_announce_is_not_routed_as_namespace_admission() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
