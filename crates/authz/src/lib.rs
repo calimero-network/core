@@ -144,6 +144,20 @@ pub fn required_mask_for(payload: &OpPayload) -> Option<OpMask> {
     }
 }
 
+/// `Ok` iff `author` holds `required` on `entity` (the data-plane check).
+fn check_data(
+    acl_at_cut: &AclView,
+    author: &PublicKey,
+    entity: Id,
+    required: OpMask,
+) -> Result<(), Rejected> {
+    if acl_at_cut.may(author, entity, required) {
+        Ok(())
+    } else {
+        Err(Rejected::NotPermitted { required })
+    }
+}
+
 /// Authorize `op` against `acl_at_cut` — the [`AclView`] resolved at
 /// `op.parents`. The **only** causal-auth decision in the unified model.
 ///
@@ -152,16 +166,12 @@ pub fn required_mask_for(payload: &OpPayload) -> Option<OpMask> {
 /// authority the op's payload requires.
 pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
     match &op.payload {
-        OpPayload::Put { entity, .. } | OpPayload::Delete { entity } => {
-            // `required_mask_for` is total over data payloads, and this arm
-            // matches only data payloads, so the mask is always present.
-            let required = required_mask_for(&op.payload).unwrap_or(OpMask::FULL);
-            if acl_at_cut.may(&op.author, *entity, required) {
-                Ok(())
-            } else {
-                Err(Rejected::NotPermitted { required })
-            }
-        }
+        // Split per data op so each carries its literal required mask — no
+        // `Option` to unwrap, so there is no unreachable fallback that could
+        // silently deny (or panic) if the arms ever drift. `required_mask_for`
+        // remains the public helper for external callers.
+        OpPayload::Put { entity, .. } => check_data(acl_at_cut, &op.author, *entity, OpMask::WRITE),
+        OpPayload::Delete { entity } => check_data(acl_at_cut, &op.author, *entity, OpMask::DELETE),
         OpPayload::SetWriters { object, .. } => {
             if acl_at_cut.is_owner(&op.author, *object) {
                 Ok(())
