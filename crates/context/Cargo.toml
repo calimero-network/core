@@ -35,10 +35,14 @@ calimero-context-client.workspace = true
 calimero-governance-store.workspace = true
 calimero-crypto.workspace = true
 calimero-dag.workspace = true
+calimero-governance-types.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
+calimero-op.workspace = true
+calimero-op-adapter.workspace = true
 calimero-prelude.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
+calimero-projection.workspace = true
 calimero-runtime.workspace = true
 calimero-storage.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }

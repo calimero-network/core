@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::messages::{ApplySignedNamespaceOpRequest, NamespaceApplyOutcome};
 use calimero_dag::AddDeltaOutcome;
@@ -24,10 +26,33 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
 
         let applier = NamespaceGovernanceApplier::new(datastore);
 
+        // Shadow unified-op projection (additive — nothing reads it yet): derive
+        // the op this governance delta represents, to fold into its scope's
+        // projection only if the DAG actually applies it. Built before the DAG
+        // call consumes `delta`; `None` for ops not yet in the projection model.
+        let shadow_op = crate::scope_projection::op_from_signed_namespace_op(
+            &delta.payload,
+            delta.hlc,
+            &delta.parents,
+        );
+        let scope_projections = Arc::clone(&self.scope_projections);
+
         ActorResponse::r#async(
             async move {
                 let mut dag = dag.lock().await;
                 let outcome = dag.add_delta_with_outcome(delta, &applier).await;
+
+                // Fold into the shadow projection only on a real apply, mirroring
+                // the divergence-outbox gating below. A poisoned lock is ignored:
+                // the projection is not yet authoritative, so it must never break
+                // the governance apply path.
+                if matches!(outcome, Ok(AddDeltaOutcome::Applied)) {
+                    if let Some(op) = &shadow_op {
+                        if let Ok(mut projections) = scope_projections.lock() {
+                            projections.ingest_op(op);
+                        }
+                    }
+                }
 
                 // Bound this namespace's in-memory governance-DAG history. A hot
                 // namespace that never gets evicted from `namespace_dags` would
