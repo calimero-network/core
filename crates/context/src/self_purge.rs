@@ -1253,7 +1253,8 @@ mod tests {
     use rand::RngCore;
 
     use calimero_governance_store::{
-        MembershipRepository, MetaRepository, PendingSelfPurgeRepository, SigningKeysRepository,
+        GroupKeyring, MembershipRepository, MetaRepository, PendingSelfPurgeRepository,
+        SigningKeysRepository,
     };
 
     use super::*;
@@ -1331,6 +1332,93 @@ mod tests {
         );
 
         (store, ns_id, self_pk)
+    }
+
+    #[test]
+    fn cascade_namespace_state_purges_group_encryption_keys_root_and_subgroups() {
+        // A namespace root + one nested subgroup, each holding an AES group
+        // encryption key. A namespace-root cascade must delete BOTH — an
+        // evicted TEE replica must not retain decryption keys (forward secrecy).
+        let mut rng = OsRng;
+        let store = empty_store();
+
+        let ns_id = ContextGroupId::from([0x70u8; 32]);
+        let sub_id = ContextGroupId::from([0x71u8; 32]);
+
+        let self_sk = PrivateKey::random(&mut rng);
+        let self_pk = self_sk.public_key();
+
+        // Root group.
+        MetaRepository::new(&store)
+            .save(&ns_id, &make_meta(self_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member_with_keys(
+                &ns_id,
+                &self_pk,
+                GroupMemberRole::Admin,
+                Some([0xAA; 32]),
+                Some([0xBB; 32]),
+            )
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .store_identity(&ns_id, &self_pk, &[0xAA; 32], &[0xBB; 32])
+            .unwrap();
+
+        // Nested subgroup under the namespace root.
+        MetaRepository::new(&store)
+            .save(&sub_id, &make_meta(self_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member_with_keys(
+                &sub_id,
+                &self_pk,
+                GroupMemberRole::ReadOnlyTee,
+                Some([0xCC; 32]),
+                Some([0xDD; 32]),
+            )
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&ns_id, &sub_id)
+            .unwrap();
+
+        // Seed an AES group encryption key on BOTH groups.
+        GroupKeyring::new(&store, ns_id)
+            .store_key(&[0x11u8; 32])
+            .unwrap();
+        GroupKeyring::new(&store, sub_id)
+            .store_key(&[0x22u8; 32])
+            .unwrap();
+        assert!(GroupKeyring::new(&store, ns_id)
+            .load_current_key()
+            .unwrap()
+            .is_some());
+        assert!(GroupKeyring::new(&store, sub_id)
+            .load_current_key()
+            .unwrap()
+            .is_some());
+
+        let result = cascade_namespace_state(&store, ns_id);
+        assert!(
+            result.purged_groups >= 2,
+            "root + subgroup must be purged, got {}",
+            result.purged_groups
+        );
+
+        assert!(
+            GroupKeyring::new(&store, ns_id)
+                .load_current_key()
+                .unwrap()
+                .is_none(),
+            "root AES group encryption key MUST be purged"
+        );
+        assert!(
+            GroupKeyring::new(&store, sub_id)
+                .load_current_key()
+                .unwrap()
+                .is_none(),
+            "subgroup AES group encryption key MUST be purged"
+        );
     }
 
     // --- Reconcile sweep (#2721) ---------------------------------------
