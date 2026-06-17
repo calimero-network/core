@@ -92,7 +92,20 @@ impl<'a> GroupKeyring<'a> {
 
     /// Delete every stored group encryption key (`GroupKeyEntry`) for this
     /// group. Used by the purge/leave cascade for forward-secrecy hygiene —
-    /// mirrors `SigningKeysRepository::delete_all_for_group`. Idempotent.
+    /// mirrors `SigningKeysRepository::delete_all_for_group` (the group id is
+    /// taken from `self` rather than a parameter, since the keyring is already
+    /// scoped to one group). Idempotent.
+    ///
+    /// Correctness relies on `GroupKeyEntry` keys being ordered by
+    /// `(group_id, key_id)`, so all of this group's keys are contiguous and the
+    /// prefix scan collects them in a single pass — the same ordering
+    /// assumption as [`load_current_key_record`](Self::load_current_key_record).
+    ///
+    /// The scan and the deletes use separate store handles, so this is not
+    /// atomic against a concurrent writer. That is safe here because the purge
+    /// cascade removes group membership *before* calling this (see
+    /// `delete_group_local_rows`), so no new key can be delivered or rotated
+    /// into the group during the scan→delete window.
     pub fn delete_all_for_group(&self) -> EyreResult<()> {
         let gid = self.group_id.to_bytes();
         let keys = collect_keys_with_prefix(

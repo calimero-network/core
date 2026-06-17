@@ -1399,9 +1399,9 @@ mod tests {
             .is_some());
 
         let result = cascade_namespace_state(&store, ns_id);
-        assert!(
-            result.purged_groups >= 2,
-            "root + subgroup must be purged, got {}",
+        assert_eq!(
+            result.purged_groups, 2,
+            "exactly root + subgroup must be purged, got {}",
             result.purged_groups
         );
 

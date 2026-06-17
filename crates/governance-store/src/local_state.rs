@@ -478,6 +478,13 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     UpgradesRepository::new(store).delete(group_id)?;
     UpgradeLadderRepository::new(store).delete(group_id)?;
     SigningKeysRepository::new(store).delete_all_for_group(group_id)?;
+    // Forward secrecy: also drop the AES group *encryption* keys. Like the
+    // signing-key delete above, a failure here propagates via `?`, so the
+    // cascade classifies it as a per-group purge failure and keeps the
+    // namespace identity + pending-self-purge marker as a retry anchor — the
+    // startup reconcile sweep (#2721) re-runs this idempotently until the keys
+    // are gone. (The cascade's `signing_key_purge_failed` flag also covers this
+    // AES-key failure path despite its signing-key-centric name.)
     GroupKeyring::new(store, *group_id).delete_all_for_group()?;
     DenyListRepository::new(store).clear_all_for_group(group_id)?;
     delete_op_log_and_head(store, group_id)?;
