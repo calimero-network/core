@@ -310,10 +310,15 @@ pub fn executor_id() -> [u8; 32] {
 pub fn xcall_origin() -> Option<[u8; 32]> {
     #[cfg(target_arch = "wasm32")]
     {
-        unsafe { sys::xcall_origin(DATA_REGISTER) }
-            .try_into()
-            .unwrap_or_else(expected_boolean::<bool>)
-            .then(|| read_register_sized(DATA_REGISTER).expect("xcall origin present"))
+        // Bind the presence flag in let position (like `read_register_sized`)
+        // so the `unsafe {}` block is never parsed as a bare statement. The host
+        // writes the origin into the register and returns whether one was set.
+        let present: bool = unsafe {
+            sys::xcall_origin(DATA_REGISTER)
+                .try_into()
+                .unwrap_or_else(expected_boolean)
+        };
+        present.then(|| read_register_sized(DATA_REGISTER).expect("xcall origin present"))
     }
     #[cfg(not(target_arch = "wasm32"))]
     host::xcall_origin()
