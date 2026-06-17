@@ -1230,6 +1230,7 @@ dependencies = [
  "async-trait",
  "borsh",
  "bs58 0.5.1",
+ "calimero-authz",
  "calimero-context-client",
  "calimero-context-config",
  "calimero-crypto",

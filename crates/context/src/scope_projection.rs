@@ -204,12 +204,19 @@ pub fn op_from_signed_namespace_op(
 /// scope, and authorization for a context resolves against its group's scope.
 /// The apply paths feed each op into the scope it belongs to.
 ///
-/// Unbounded for now: only governance ops feed it today, so growth tracks the
-/// (small) number of live scopes; eviction (gated like the other per-context
-/// caches) and persistence come with the broader wiring.
+/// Unbounded for now: only governance/ACL ops feed it today, so growth tracks
+/// the (small) number of live scopes and their op history; eviction (gated like
+/// the other per-context caches) and persistence come with the broader wiring.
 #[derive(Debug, Default)]
 pub struct ScopeProjections {
+    /// Folded current state per scope — the fast path for current-view reads.
     states: HashMap<ScopeId, ScopeState>,
+    /// Retained op-log per scope, enabling causal-cut resolution
+    /// ([`Self::acl_view_at`]) — the **causal-honor** view the cutover's
+    /// `authorize` decides against (the state as of an op's own parents, never
+    /// the receiver's current state). Grows with governance/ACL ops; bounding
+    /// lands with the cutover.
+    logs: HashMap<ScopeId, Vec<Op>>,
 }
 
 impl ScopeProjections {
@@ -218,18 +225,38 @@ impl ScopeProjections {
         Self::default()
     }
 
-    /// Fold `ops` into `scope`'s projection (creating it if absent). Apply is
-    /// per-slot last-writer-wins, so the order ops are ingested doesn't matter.
+    /// Fold `ops` into `scope`'s projection (creating it if absent) and retain
+    /// them in `scope`'s op-log. Apply is per-slot last-writer-wins, so ingest
+    /// order doesn't matter.
     pub fn ingest<'a>(&mut self, scope: ScopeId, ops: impl IntoIterator<Item = &'a Op>) {
         let state = self.states.entry(scope).or_default();
+        let log = self.logs.entry(scope).or_default();
         for op in ops {
             state.apply(op);
+            log.push(op.clone());
         }
     }
 
-    /// Fold a single op into its own scope's projection.
+    /// Fold a single op into its own scope's projection and op-log.
     pub fn ingest_op(&mut self, op: &Op) {
         self.states.entry(op.scope).or_default().apply(op);
+        self.logs.entry(op.scope).or_default().push(op.clone());
+    }
+
+    /// The **causal-honor** authorization view of `scope` at the cut named by
+    /// `parents`: fold only the ops in the ancestry of `parents` (never ops
+    /// after the cut), over the retained op-log. `None` if `scope` hasn't been
+    /// fed. This is the view the cutover's `authorize` decides against — the
+    /// projection's answer to "was this author permitted *as of its own causal
+    /// position*", independent of what the receiver has since applied.
+    #[must_use]
+    pub fn acl_view_at(
+        &self,
+        scope: &ScopeId,
+        parents: &[[u8; 32]],
+    ) -> Option<calimero_authz::AclView> {
+        let log = self.logs.get(scope)?;
+        Some(ScopeState::acl_view_at(log, parents))
     }
 
     /// `scope`'s convergence root: the projection's ACL + governance folded onto
@@ -479,6 +506,61 @@ mod tests {
             ..entry
         };
         assert!(op_from_rotation_entry(object, scope, &unsigned).is_none());
+    }
+
+    #[test]
+    fn acl_view_at_honors_the_causal_cut_over_the_retained_log() {
+        let scope = ScopeId::from([0u8; 32]);
+        let group = ContextGroupId::from([3u8; 32]);
+        let admin = PublicKey::from([1u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+
+        let build = |ns: u64, parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
+            let h = hlc(ns);
+            let id = Op::compute_id(scope, &parents, &admin, &h, &payload);
+            Op {
+                id,
+                scope,
+                parents,
+                author: admin,
+                hlc: h,
+                payload,
+                expected_scope_root: [0u8; 32],
+                signature: [0u8; 64],
+            }
+        };
+
+        let add = build(
+            10,
+            vec![],
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Member,
+            },
+        );
+        let remove = build(20, vec![add.id], OpPayload::MemberRemoved { group, member });
+
+        let mut reg = ScopeProjections::new();
+        reg.ingest_op(&add);
+        reg.ingest_op(&remove);
+
+        // Cut at the add (pre-removal ancestry): the member is present — a write
+        // authored here stays authorized even though we've since seen the remove.
+        let pre = reg.acl_view_at(&scope, &[add.id]).expect("scope fed");
+        assert_eq!(
+            pre.groups.get(&group).and_then(|m| m.get(&member)),
+            Some(&GroupMemberRole::Member),
+        );
+
+        // Cut at the remove (its ancestry includes both): the member is gone.
+        let post = reg.acl_view_at(&scope, &[remove.id]).expect("scope fed");
+        assert_eq!(post.groups.get(&group).and_then(|m| m.get(&member)), None);
+
+        // Unknown scope ⇒ no view.
+        assert!(reg
+            .acl_view_at(&ScopeId::from([0xEE; 32]), &[add.id])
+            .is_none());
     }
 
     #[test]

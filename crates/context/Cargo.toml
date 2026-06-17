@@ -38,6 +38,7 @@ calimero-dag.workspace = true
 calimero-governance-types.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
+calimero-authz.workspace = true
 calimero-op.workspace = true
 calimero-op-adapter.workspace = true
 calimero-prelude.workspace = true
