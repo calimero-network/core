@@ -59,6 +59,124 @@ fn namespace_dag_service_store_operation_rejects_namespace_mismatch() {
     );
 }
 
+fn test_signed_invitation(
+    inviter_sk: &PrivateKey,
+    group_id: ContextGroupId,
+    expiration_timestamp: u64,
+) -> calimero_context_config::types::SignedGroupOpenInvitation {
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use sha2::{Digest, Sha256};
+
+    let invitation = GroupInvitationFromAdmin {
+        inviter_identity: SignerId::from(*inviter_sk.public_key().digest()),
+        group_id,
+        expiration_timestamp,
+        secret_salt: [0x42; 32],
+        invited_role: 1,
+    };
+    let inv_bytes = borsh::to_vec(&invitation).unwrap();
+    let inv_sig = inviter_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
+    SignedGroupOpenInvitation {
+        invitation,
+        inviter_signature: hex::encode(inv_sig.to_bytes()),
+        application_id: None,
+        app_key: None,
+    }
+}
+
+#[test]
+fn validate_open_invitation_rejects_expired() {
+    let mut rng = rand::rngs::OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let gid = test_group_id();
+    let ns_id = gid.to_bytes();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let signed = test_signed_invitation(&admin_sk, gid, 1_000_000);
+    let svc = NamespaceMembershipService::new(&store, ns_id);
+
+    assert!(
+        svc.validate_open_invitation(&signed, 2_000_000).is_err(),
+        "invitation past expiry must be rejected by the responder gate"
+    );
+    assert!(
+        svc.validate_open_invitation(&signed, 999_999).is_ok(),
+        "in-window invitation must be accepted"
+    );
+    // Boundary: the gate is `now > expiration`, so now exactly at expiry is
+    // accepted and one second past is rejected.
+    assert!(
+        svc.validate_open_invitation(&signed, 1_000_000).is_ok(),
+        "now == expiry must be accepted (gate is `>`, not `>=`)"
+    );
+    assert!(
+        svc.validate_open_invitation(&signed, 1_000_001).is_err(),
+        "one second past expiry must be rejected"
+    );
+}
+
+#[test]
+fn validate_open_invitation_rejects_forged_inviter_signature() {
+    let mut rng = rand::rngs::OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let gid = test_group_id();
+    let ns_id = gid.to_bytes();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let mut signed = test_signed_invitation(&admin_sk, gid, 9_999_999_999);
+    signed.inviter_signature = hex::encode([0u8; 64]);
+    let svc = NamespaceMembershipService::new(&store, ns_id);
+
+    assert!(
+        svc.validate_open_invitation(&signed, 1_000).is_err(),
+        "forged inviter signature must be rejected"
+    );
+}
+
+#[test]
+fn validate_open_invitation_rejects_unauthorized_inviter() {
+    let mut rng = rand::rngs::OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let stranger_sk = PrivateKey::random(&mut rng);
+    let gid = test_group_id();
+    let ns_id = gid.to_bytes();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let signed = test_signed_invitation(&stranger_sk, gid, 9_999_999_999);
+    let svc = NamespaceMembershipService::new(&store, ns_id);
+
+    assert!(
+        svc.validate_open_invitation(&signed, 1_000).is_err(),
+        "invitation whose inviter lacks invite permission must be rejected"
+    );
+}
+
 #[test]
 fn namespace_dag_service_advance_dag_head_prunes_parent_hashes() {
     let store = test_store();
