@@ -1,0 +1,135 @@
+name: 38 — Namespace invite + join (MemberJoinedAt wire regression, 2-node)
+description: >
+  Regression guard for the invitation-expiry enforcement change. Node 1
+  (admin) creates a namespace + one Open descendant subgroup + one
+  context, invites node 2, then node 2 joins the namespace via the
+  admin-signed invitation, materialises the inherited subgroup, joins the
+  context, and reads state written by node 1.
+
+  This exercises the accept-path of both halves of the change on the real
+  wire:
+    - the joiner publishes the new `RootOp::MemberJoinedAt` op (carrying
+      `joined_at`); node 1's apply gate must accept the in-window join and
+      fold node 2 into membership (a broken/over-strict gate would drop
+      node 2 from the member set);
+    - the responder's `validate_open_invitation` must accept the valid,
+      unexpired, admin-signed invitation and serve the group key (a
+      broken responder gate would reject it and node 2 would never receive
+      the key, so the final cross-node read would fail).
+
+  Network-level expiry REJECTION is covered by the deterministic apply /
+  responder unit + integration tests; driving a short-lived invitation
+  end-to-end needs a merobox step that forwards an expiration, which is a
+  separate follow-up.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: invite-join-regression
+  base_port: 9240
+  base_rpc_port: 9340
+
+steps:
+  - name: Install migration-suite-v1 on node 1
+    type: install_application
+    node: invite-join-regression-1
+    path: apps/migrations/migration-suite-v1/res/migration-suite-1.0.0.mpk
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Create namespace on node 1
+    type: create_namespace
+    node: invite-join-regression-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create descendant Open subgroup on node 1
+    type: create_group_in_namespace
+    node: invite-join-regression-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "invite-join-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: invite-join-regression-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1
+    type: create_context
+    node: invite-join-regression-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: invite-join-regression-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace (publishes MemberJoinedAt)
+    type: join_namespace
+    node: invite-join-regression-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: invite-join-regression-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: invite-join-regression-2
+    context_id: "{{ctx_id}}"
+
+  - name: Node 1 writes state (description)
+    type: call
+    node: invite-join-regression-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "joined-via-invitation"
+
+  - name: Node 1 increments counter
+    type: call
+    node: invite-join-regression-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Wait for state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - invite-join-regression-1
+      - invite-join-regression-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node 2 reads synced state
+    type: call
+    node: invite-join-regression-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      schema_node2: result
+
+  - name: Assert node 2 joined and decrypted node 1's state
+    type: json_assert
+    statements:
+      - 'json_subset({{schema_node2}}, {"output": {"schema_version": "1.0.0", "description": "joined-via-invitation", "counter": "1"}})'

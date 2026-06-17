@@ -13,10 +13,12 @@ pub(crate) fn apply(
     op: &SignedNamespaceOp,
     member: &PublicKey,
     signed_invitation: &SignedGroupOpenInvitation,
+    joined_at: Option<u64>,
 ) -> EyreResult<()> {
     NamespaceMembershipService::new(ctx.store(), ctx.namespace_id()).apply_member_joined(
         &op.signer,
         member,
         signed_invitation,
+        joined_at,
     )
 }

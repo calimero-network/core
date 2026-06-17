@@ -798,7 +798,7 @@
 <div class="term-row" data-term="xcall">
   <div class="term-name">xcall</div>
   <div class="term-body">
-    Cross-context fire-and-forget call from one context's WASM to another on the same node. Queued during execution, runs after commit. No return value.
+    Cross-context fire-and-forget call from one context's WASM to another in the same namespace on the same node. Queued during execution, runs after commit. No return value, but the outcome — success, denial, or target error — is broadcast as an XCall event. Cross-namespace calls are denied; a target may opt into an entry-point allowlist with #[app::xcall] and read the verified caller via env::xcall_origin().
   </div>
 </div>
 

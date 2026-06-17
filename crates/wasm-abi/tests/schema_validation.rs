@@ -23,6 +23,7 @@ fn test_schema_validation_basic() {
         returns_nullable: None,
         errors: vec![],
         intent: MethodIntent::Unspecified,
+        xcall_callable: false,
     });
 
     // Serialize to JSON
@@ -99,6 +100,7 @@ fn test_schema_validation_shared_storage_crdt_type() {
         returns_nullable: None,
         errors: vec![],
         intent: MethodIntent::Unspecified,
+        xcall_callable: false,
     });
 
     let manifest_json = serde_json::to_value(&manifest).unwrap();

@@ -74,6 +74,10 @@ pub struct VMContext<'a> {
     /// the apply-time membership check: "was the executor a member at this
     /// cut?"
     pub governance_position: Option<GovernanceParentEdge>,
+    /// Source context when this execution was dispatched via `xcall`; `None`
+    /// for direct/RPC calls. Set by the node, never from guest memory, so the
+    /// target can trust it. Exposed to the guest via `env::xcall_origin()`.
+    pub xcall_origin: Option<[u8; DIGEST_SIZE]>,
 }
 
 impl<'a> VMContext<'a> {
@@ -95,6 +99,7 @@ impl<'a> VMContext<'a> {
             context_id,
             executor_public_key,
             governance_position: None,
+            xcall_origin: None,
         }
     }
 }

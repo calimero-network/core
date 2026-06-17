@@ -758,6 +758,19 @@ pub fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Wall-clock seconds since the Unix epoch. Single source for the local
+/// invitation-expiry fast-fail, the responder key-delivery gate, and the
+/// joiner-stamped `joined_at` on `MemberJoinedAt`. Mirrors [`now_millis`];
+/// a clock-failure yields 0, which is safe because the authoritative
+/// expiry enforcement is the deterministic apply gate plus the responder
+/// gate (each reading its own clock) — the fast-fail is advisory only.
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Compare local post-apply state hashes against the values signed
 /// into `MemberRemoved` / `MemberLeft` and emit a structured warn log
 /// on mismatch. Does NOT roll back the apply or return an error — the

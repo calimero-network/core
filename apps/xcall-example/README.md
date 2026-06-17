@@ -6,16 +6,27 @@ This example demonstrates how to use cross-context calls (xcall) in Calimero app
 
 This application shows how one context can call functions on another context. It implements:
 - **ping**: Sends a ping to another context by calling its `pong` function via xcall
-- **pong**: Receives a pong from another context and increments a counter
-- **get_counter**: Returns the current counter value
-- **reset_counter**: Resets the counter to zero
+- **ping_to**: Sends a ping to an arbitrary target method (used to exercise the entry-point gate)
+- **pong**: `#[app::xcall]` entry point — receives a ping and increments a counter. Verifies caller provenance via `env::xcall_origin()` and rejects direct (non-xcall) calls
+- **secret**: a deliberately non-`#[app::xcall]` method — an xcall targeting it is denied by the node
+- **get_counter** / **get_secret_counter**: return the respective counters
 
 ## How it works
 
-1. Deploy this application to two different contexts (Context A and Context B)
+1. Deploy this application to two different contexts **in the same namespace** (Context A and Context B)
 2. From Context A, call `ping` with Context B's ID
 3. The xcall will execute `pong` on Context B after Context A's execution completes
 4. Context B will increment its counter, which can be retrieved using `get_counter`
+
+## Authorization (xcall gating)
+
+Cross-context calls are gated by the node, so an app cannot reach arbitrary contexts:
+
+- **Namespace boundary (L1):** a context may only xcall a target in its **own namespace**. Cross-namespace calls are denied (fail-closed).
+- **Entry points (L3):** only methods declared `#[app::xcall]` are reachable via xcall. Here only `pong` is — an xcall to `secret` is denied.
+- **Provenance (L2a):** the node sets `env::xcall_origin()` to the calling context (it cannot be forged). `pong` uses it to reject direct calls and to verify the caller's self-reported `from_context`.
+
+`workflows/xcall-example.yml` is the same-namespace happy-path demo; `workflows/xcall.yml` is the full authorization test (positive call + cross-namespace denial + non-entry-point denial + direct-call rejection).
 
 ## Example Usage
 

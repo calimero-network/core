@@ -186,8 +186,9 @@
   <div class="detail-body">
     <div class="fr"><div class="fp">emit</div><div class="fd">Emit a typed event (broadcast to subscribed clients)</div></div>
     <div class="fr"><div class="fp">emit_with_handler</div><div class="fd">Emit an event with a named handler method for reactive processing</div></div>
-    <div class="fr"><div class="fp">xcall</div><div class="fd">Cross-context call — invoke a method on another context (async, enqueued)</div></div>
-    <p style="margin-top:10px;">Events are accumulated in the <span class="code">Outcome</span> and broadcast to WebSocket/SSE subscribers after execution completes. Cross-context calls are queued and executed asynchronously.</p>
+    <div class="fr"><div class="fp">xcall</div><div class="fd">Cross-context call — invoke a method on another context in the same namespace (async, enqueued)</div></div>
+    <div class="fr"><div class="fp">xcall_origin</div><div class="fd">Read the verified source context of the current xcall — node-set, absent for direct calls</div></div>
+    <p style="margin-top:10px;">Events are accumulated in the <span class="code">Outcome</span> and broadcast to WebSocket/SSE subscribers after execution completes. Cross-context calls are queued and executed asynchronously; each one&rsquo;s outcome (success, denial, or target error) is broadcast as an <span class="code">XCall</span> event.</p>
   </div>
 </details>
 
