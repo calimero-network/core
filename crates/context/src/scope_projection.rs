@@ -22,11 +22,10 @@ use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
-use calimero_op_adapter::{payload_from_action, payload_from_root_op, set_writers_payload};
+use calimero_op_adapter::{payload_from_root_op, set_writers_payload};
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
-use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::collections::decode_rotation_log_entry_child;
 use calimero_storage::index::EntityIndex;
@@ -55,29 +54,6 @@ fn build_op(
         expected_scope_root: [0u8; 32],
         signature: [0u8; 64],
     }
-}
-
-/// Convert one data delta's worth of storage [`Action`]s into the unified
-/// [`Op`]s representing the same writes, all sharing the delta's causal
-/// coordinates. One op per state-changing action (`Action::Compare` is a sync
-/// hint, dropped). Not fed into the live projection yet (the data plane's
-/// entities come from the storage Merkle); kept for the eventual data-plane
-/// unification.
-#[must_use]
-pub fn actions_to_ops(
-    scope: ScopeId,
-    author: PublicKey,
-    hlc: HybridTimestamp,
-    parents: &[[u8; 32]],
-    actions: &[Action],
-) -> Vec<Op> {
-    actions
-        .iter()
-        .filter_map(|action| {
-            payload_from_action(action)
-                .map(|payload| build_op(scope, author, hlc, parents, payload))
-        })
-        .collect()
 }
 
 /// The scope a [`RootOp`] belongs to, or `None` if it isn't fed into the
@@ -136,8 +112,9 @@ pub fn op_from_rotation_entry(object: Id, scope: ScopeId, entry: &RotationLogEnt
 /// rotation entries (with their signer), the independent source the projection
 /// folds — as opposed to the resolver's already-merged output.
 ///
-/// TODO(consolidate): mirrors `delta_store::load_rotation_log_direct` in the
-/// node crate; both should share one Store-backed reader in `calimero-storage`.
+/// TODO(consolidate): mirrors `load_rotation_log_direct` in
+/// `crates/node/src/delta_store.rs`; both should share one Store-backed reader
+/// in `calimero-storage` before this becomes authoritative at cutover.
 #[must_use]
 pub fn load_rotation_log_direct(
     client: &ContextClient,
@@ -146,27 +123,43 @@ pub fn load_rotation_log_direct(
 ) -> Option<RotationLog> {
     let map_id = Interface::<MainStorage>::rotation_log_child_id(anchor);
     let handle = client.datastore_handle();
+    // Read a state value. A store error is surfaced as a warning (distinct from
+    // a legitimately-absent key) so a transient I/O fault doesn't silently make
+    // the ACL shadow feed skip an anchor's rotations.
     let read = |key: StorageKey| -> Option<Vec<u8>> {
         let state_key = ContextState::new(context_id, key.to_bytes());
-        handle
-            .get(&state_key)
-            .ok()
-            .flatten()
-            .map(|state| state.value.into_boxed().into_vec())
+        match handle.get(&state_key) {
+            Ok(state) => state.map(|s| s.value.into_boxed().into_vec()),
+            Err(err) => {
+                tracing::warn!(
+                    %context_id, anchor = ?anchor, %err,
+                    "rotation-log read failed; ACL shadow feed skips this anchor"
+                );
+                None
+            }
+        }
     };
 
     let index = borsh::from_slice::<EntityIndex>(&read(StorageKey::Index(map_id))?).ok()?;
     let mut entries = Vec::new();
     if let Some(children) = index.children() {
         for child in children {
-            if let Some(bytes) = read(StorageKey::Entry(child.id())) {
-                if let Some(entry) = decode_rotation_log_entry_child(&bytes) {
-                    entries.push(entry);
-                }
+            let Some(bytes) = read(StorageKey::Entry(child.id())) else {
+                continue;
+            };
+            match decode_rotation_log_entry_child(&bytes) {
+                Some(entry) => entries.push(entry),
+                // A child that doesn't decode yields a partial log; warn rather
+                // than skip in silence (matches the node-crate reader).
+                None => tracing::warn!(
+                    %context_id, anchor = ?anchor, child = ?child.id(),
+                    "rotation-log child failed to decode; ACL shadow feed may be incomplete"
+                ),
             }
         }
     }
-    // Canonical order so resolution is insertion-order invariant.
+    // Canonical order; the caller filters to this delta's id, so ordering is not
+    // load-bearing here (it mirrors the node-crate reader's shape).
     entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
     Some(RotationLog {
         snapshot: None,
@@ -225,18 +218,6 @@ impl ScopeProjections {
         Self::default()
     }
 
-    /// Fold `ops` into `scope`'s projection (creating it if absent) and retain
-    /// them in `scope`'s op-log. Apply is per-slot last-writer-wins, so ingest
-    /// order doesn't matter.
-    pub fn ingest<'a>(&mut self, scope: ScopeId, ops: impl IntoIterator<Item = &'a Op>) {
-        let state = self.states.entry(scope).or_default();
-        let log = self.logs.entry(scope).or_default();
-        for op in ops {
-            state.apply(op);
-            log.push(op.clone());
-        }
-    }
-
     /// Fold a single op into its own scope's projection and op-log.
     pub fn ingest_op(&mut self, op: &Op) {
         self.states.entry(op.scope).or_default().apply(op);
@@ -257,24 +238,6 @@ impl ScopeProjections {
     ) -> Option<calimero_authz::AclView> {
         let log = self.logs.get(scope)?;
         Some(ScopeState::acl_view_at(log, parents))
-    }
-
-    /// `scope`'s convergence root: the projection's ACL + governance folded onto
-    /// the supplied storage Merkle `entities_root`. `None` if `scope` has no
-    /// projection yet. `entities_root` MUST be the storage layer's Merkle root
-    /// (see [`ScopeState::scope_root_with_entities`]).
-    #[must_use]
-    pub fn scope_root(&self, scope: &ScopeId, entities_root: [u8; 32]) -> Option<[u8; 32]> {
-        self.states
-            .get(scope)
-            .map(|state| state.scope_root_with_entities(entities_root))
-    }
-
-    /// Read-only access to a scope's projection (for shadow comparison /
-    /// authorization once more of the apply path feeds this).
-    #[must_use]
-    pub fn get(&self, scope: &ScopeId) -> Option<&ScopeState> {
-        self.states.get(scope)
     }
 
     /// The role the projection records for `member` in `group` within `scope`,
@@ -307,7 +270,7 @@ mod tests {
     };
     use calimero_op::OpPayload;
     use calimero_primitives::context::GroupMemberRole;
-    use calimero_storage::entities::{Metadata, OpMask};
+    use calimero_storage::entities::OpMask;
     use calimero_storage::logical_clock::{Timestamp, ID, NTP64};
 
     use super::*;
@@ -330,31 +293,6 @@ mod tests {
             op: NamespaceOp::Root(op),
             signature: [0u8; 64],
         }
-    }
-
-    #[test]
-    fn actions_convert_to_matching_ops() {
-        let scope = ScopeId::from([0u8; 32]);
-        let author = PublicKey::from([1u8; 32]);
-        let e1 = Id::new([0xA1; 32]);
-        let actions = vec![
-            Action::Add {
-                id: e1,
-                data: vec![1, 2, 3],
-                ancestors: Vec::new(),
-                metadata: Metadata::default(),
-            },
-            Action::Compare { id: e1 },
-        ];
-        let ops = actions_to_ops(scope, author, hlc(10), &[], &actions);
-        assert_eq!(ops.len(), 1, "Compare is dropped");
-        assert_eq!(
-            ops[0].payload,
-            OpPayload::Put {
-                entity: e1,
-                value: vec![1, 2, 3]
-            }
-        );
     }
 
     #[test]
@@ -564,12 +502,12 @@ mod tests {
     }
 
     #[test]
-    fn registry_is_per_scope_and_membership_moves_the_root() {
+    fn registry_records_membership_per_scope() {
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let member = PublicKey::from([0x55; 32]);
-        let group = [0x33; 32];
-        let storage_root = [0x42u8; 32];
+        let group = ContextGroupId::from([0x33; 32]);
+        let other_scope = ScopeId::from([0xEE; 32]);
 
         let join = op_from_signed_namespace_op(
             &signed_root(
@@ -577,7 +515,7 @@ mod tests {
                 signer,
                 RootOp::MemberJoinedOpen {
                     member,
-                    group_id: group,
+                    group_id: group.to_bytes(),
                 },
             ),
             hlc(10),
@@ -586,16 +524,15 @@ mod tests {
         .unwrap();
 
         let mut reg = ScopeProjections::new();
-        // Empty group scope first, to compare.
-        assert!(reg
-            .scope_root(&ScopeId::from(group), storage_root)
-            .is_none());
+        // Before the join: no projection for the group scope.
+        assert_eq!(reg.role_of(&join.scope, &group, &member), None);
         reg.ingest_op(&join);
-        let after = reg
-            .scope_root(&ScopeId::from(group), storage_root)
-            .expect("group scope present after join");
-        // The empty-projection root over the same storage root, for contrast.
-        let empty = ScopeState::default().scope_root_with_entities(storage_root);
-        assert_ne!(after, empty, "a membership op moves the scope root");
+        // After: the member is recorded in the group's scope...
+        assert_eq!(
+            reg.role_of(&join.scope, &group, &member),
+            Some(GroupMemberRole::Member),
+        );
+        // ...and only that scope (isolation).
+        assert_eq!(reg.role_of(&other_scope, &group, &member), None);
     }
 }

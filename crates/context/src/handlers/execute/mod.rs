@@ -937,10 +937,18 @@ impl Handler<ExecuteRequest> for ContextManager {
                             }
                         }
                         if !ops.is_empty() {
-                            if let Ok(mut projections) = scope_projections.lock() {
-                                for op in &ops {
-                                    projections.ingest_op(op);
+                            match scope_projections.lock() {
+                                Ok(mut projections) => {
+                                    for op in &ops {
+                                        projections.ingest_op(op);
+                                    }
                                 }
+                                // A poisoned lock skips the shadow feed with a
+                                // warning; it must never affect execution.
+                                Err(err) => tracing::warn!(
+                                    %err,
+                                    "scope-projections lock poisoned; skipping ACL shadow feed"
+                                ),
                             }
                         }
                     }
