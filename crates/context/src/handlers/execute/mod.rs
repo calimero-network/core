@@ -114,19 +114,21 @@ impl Handler<ExecuteRequest> for ContextManager {
         let is_state_op = "__calimero_sync_next" == method;
 
         // Shadow ACL-plane feed (additive — nothing reads the projection yet).
-        // A sync-apply's artifact carries the resolved per-object writer sets;
-        // decode them here while `payload` is still owned (execution moves it),
-        // and fold them into this scope's unified-op projection only after the
-        // apply succeeds (below). `None` for non-`CausalActions` / writer-free
-        // deltas. See [`scope_projection::shadow_set_writers_op`] for why this
-        // resolver-fed form is transitional.
-        let acl_shadow_feed = if is_state_op {
+        // Capture the Shared anchors this sync-apply touches + the delta id,
+        // decoded here while `payload` is still owned (execution moves it). After
+        // the apply succeeds we read back the RAW rotation entries those anchors
+        // recorded for this delta (with their signer) and fold them in — the
+        // independent source, not the resolver's merged output. `None` for
+        // non-`CausalActions` / writer-free deltas.
+        let acl_shadow_objects = if is_state_op {
             match borsh::from_slice::<StorageDelta>(&payload) {
                 Ok(StorageDelta::CausalActions {
                     effective_writers,
-                    delta_hlc,
+                    delta_id,
                     ..
-                }) if !effective_writers.is_empty() => Some((effective_writers, delta_hlc)),
+                }) if !effective_writers.is_empty() => {
+                    Some((effective_writers.into_keys().collect::<Vec<_>>(), delta_id))
+                }
                 _ => None,
             }
         } else {
@@ -908,21 +910,37 @@ impl Handler<ExecuteRequest> for ContextManager {
                         return Ok((guard, context.root_hash, outcome));
                     }
 
-                    // Apply succeeded — fold the resolved writer sets into this
-                    // scope's shadow projection (additive; nothing reads it
-                    // yet). Synchronous, no await under the lock; a poisoned
-                    // lock is ignored so the shadow can never affect execution.
-                    if let Some((writers, delta_hlc)) = &acl_shadow_feed {
+                    // Apply succeeded — recover the RAW rotation entries this
+                    // delta recorded for the touched anchors and fold a
+                    // SetWriters op (authored by the rotation signer) per
+                    // rotation into the scope's shadow projection. Additive;
+                    // nothing reads it yet. Reads are synchronous and happen
+                    // before the lock; a poisoned lock is ignored, so the shadow
+                    // can never affect execution.
+                    if let Some((objects, delta_id)) = &acl_shadow_objects {
                         let scope = calimero_op::ScopeId::from(*context_id.digest());
-                        if let Ok(mut projections) = scope_projections.lock() {
-                            for (object, set) in writers {
-                                let op = crate::scope_projection::shadow_set_writers_op(
-                                    scope,
-                                    *object,
-                                    *delta_hlc,
-                                    set.clone(),
-                                );
-                                projections.ingest_op(&op);
+                        let mut ops = Vec::new();
+                        for object in objects {
+                            let Some(log) = crate::scope_projection::load_rotation_log_direct(
+                                &context_client,
+                                context_id,
+                                *object,
+                            ) else {
+                                continue;
+                            };
+                            for entry in log.entries.iter().filter(|e| e.delta_id == *delta_id) {
+                                if let Some(op) = crate::scope_projection::op_from_rotation_entry(
+                                    *object, scope, entry,
+                                ) {
+                                    ops.push(op);
+                                }
+                            }
+                        }
+                        if !ops.is_empty() {
+                            if let Ok(mut projections) = scope_projections.lock() {
+                                for op in &ops {
+                                    projections.ingest_op(op);
+                                }
                             }
                         }
                     }

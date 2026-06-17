@@ -16,18 +16,24 @@
 //! `signer` is a deterministic cross-node author and whose target scope is
 //! resolvable from the op — applied at the namespace governance handler.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
+use calimero_context_client::client::ContextClient;
 use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::{payload_from_action, payload_from_root_op, set_writers_payload};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
-use calimero_storage::entities::OpMask;
+use calimero_storage::collections::decode_rotation_log_entry_child;
+use calimero_storage::index::EntityIndex;
+use calimero_storage::interface::Interface;
 use calimero_storage::logical_clock::HybridTimestamp;
-use calimero_storage::rotation_log::RotationLogEntry;
+use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
+use calimero_storage::store::{Key as StorageKey, MainStorage};
+use calimero_store::key::ContextState;
 
 /// Build an [`Op`] from its scope, author, and causal coordinates.
 fn build_op(
@@ -121,30 +127,50 @@ pub fn op_from_rotation_entry(object: Id, scope: ScopeId, entry: &RotationLogEnt
     Some(build_op(scope, author, entry.delta_hlc, &[], payload))
 }
 
-/// Build the shadow `SetWriters` op for a per-object writer set as **resolved
-/// by the current resolver** (the data the apply path has on hand —
-/// `effective_writers`).
+/// Read a Shared anchor's rotation log directly from the datastore (no WASM
+/// storage env), by walking its hashed-collection children. `None` if the
+/// anchor has no rotation collection yet (never rotated / not a Shared anchor).
 ///
-/// A fixed placeholder author keeps `op_id` deterministic across nodes: the
-/// resolved set is identical everywhere, and the author doesn't affect the
-/// writer set the projection records (only the LWW tiebreak). This is the
-/// transitional live feed; the cutover replaces it with ops authored from the
-/// raw rotation entries ([`op_from_rotation_entry`]), at which point the
-/// projection — not the resolver — is the source of truth.
+/// This is the post-apply read the live ACL feed uses to recover the **raw**
+/// rotation entries (with their signer), the independent source the projection
+/// folds — as opposed to the resolver's already-merged output.
+///
+/// TODO(consolidate): mirrors `delta_store::load_rotation_log_direct` in the
+/// node crate; both should share one Store-backed reader in `calimero-storage`.
 #[must_use]
-pub fn shadow_set_writers_op(
-    scope: ScopeId,
-    object: Id,
-    hlc: HybridTimestamp,
-    writers: BTreeMap<PublicKey, OpMask>,
-) -> Op {
-    build_op(
-        scope,
-        PublicKey::from([0u8; 32]),
-        hlc,
-        &[],
-        OpPayload::SetWriters { object, writers },
-    )
+pub fn load_rotation_log_direct(
+    client: &ContextClient,
+    context_id: ContextId,
+    anchor: Id,
+) -> Option<RotationLog> {
+    let map_id = Interface::<MainStorage>::rotation_log_child_id(anchor);
+    let handle = client.datastore_handle();
+    let read = |key: StorageKey| -> Option<Vec<u8>> {
+        let state_key = ContextState::new(context_id, key.to_bytes());
+        handle
+            .get(&state_key)
+            .ok()
+            .flatten()
+            .map(|state| state.value.into_boxed().into_vec())
+    };
+
+    let index = borsh::from_slice::<EntityIndex>(&read(StorageKey::Index(map_id))?).ok()?;
+    let mut entries = Vec::new();
+    if let Some(children) = index.children() {
+        for child in children {
+            if let Some(bytes) = read(StorageKey::Entry(child.id())) {
+                if let Some(entry) = decode_rotation_log_entry_child(&bytes) {
+                    entries.push(entry);
+                }
+            }
+        }
+    }
+    // Canonical order so resolution is insertion-order invariant.
+    entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
+    Some(RotationLog {
+        snapshot: None,
+        entries,
+    })
 }
 
 /// Convert a cleartext namespace governance op into the unified [`Op`] for the
