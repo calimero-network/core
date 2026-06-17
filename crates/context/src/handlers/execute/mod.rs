@@ -486,12 +486,21 @@ impl Handler<ExecuteRequest> for ContextManager {
                 Either::Right(parts) => parts,
             };
             match action {
-                // Marker-ed context: replay the group's upgrade ladder hop by
-                // hop, re-resolving after each committed hop. The per-access
-                // budget bounds a pathological marker-write failure loop; a
-                // longer ladder resumes on the next access from the last
-                // committed rung.
-                LazyUpgradeAction::Replay { .. } => {
+                // Replay the group's upgrade ladder hop by hop, re-resolving
+                // after each committed hop. The per-access budget bounds a
+                // pathological marker-write failure loop; a longer ladder
+                // resumes on the next access from the last committed rung.
+                //
+                // A marker-less context (a fresh joiner whose group has since
+                // advanced) is routed here with `bound` = its current row
+                // version. Seed the activation marker to it so the replay starts
+                // from the real version AND execution binds to it — without the
+                // seed, a blocked hop would fall through to the group-target
+                // bytecode and run new code on un-migrated state.
+                LazyUpgradeAction::Replay { bound } => {
+                    if crate::activation::activated_blob(&act.datastore, &context_id).is_none() {
+                        crate::activation::record_activation(&act.datastore, &context_id, bound);
+                    }
                     act.replay_upgrade_ladder(
                         guard,
                         context_id,
@@ -526,7 +535,12 @@ impl Handler<ExecuteRequest> for ContextManager {
                         }
                         .into_actor(act)
                         .then(move |blob_local, act, _ctx| {
-                            if blob_local {
+                            // Carry `blob_local` forward: the migrate runs the
+                            // TARGET bytecode only when the blob was actually
+                            // local. If we fell back to the row's (possibly
+                            // stale) bytecode, the activation marker must NOT be
+                            // recorded below.
+                            let module_fut = if blob_local {
                                 act.get_module_for_blob(target_app_key.into(), service_name)
                                     .boxed_local()
                             } else {
@@ -535,9 +549,13 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 // row's bytecode is the only available truth.
                                 act.evict_application_caches(target_app);
                                 act.get_module(target_app, service_name).boxed_local()
-                            }
+                            };
+                            // `module_fut` is an ActorFuture, so pair `blob_local`
+                            // with its result via ActorFutureExt::map (not a plain
+                            // async block, which can't await an ActorFuture).
+                            module_fut.map(move |m, _act, _ctx| (blob_local, m))
                         })
-                            .then(move |module_result, act, _ctx| {
+                            .then(move |(blob_local, module_result), act, _ctx| {
                                 // Re-read cached values; they may have been refreshed during load
                                 let context_meta =
                                     act.contexts.get(&cid).map(|c| c.meta.clone());
@@ -561,14 +579,27 @@ impl Handler<ExecuteRequest> for ContextManager {
                                             )
                                             .await
                                             {
-                                                Ok(_) => {
+                                                Ok(_) if blob_local => {
                                                     // Unified activation marker: the single
                                                     // up-to-date signal for the gate, the lazy
-                                                    // trigger, and the rollup.
+                                                    // trigger, and the rollup. Recorded only when
+                                                    // the migrate ran the TARGET bytecode.
                                                     crate::activation::record_activation(
                                                         &datastore,
                                                         &cid,
                                                         target_app_key,
+                                                    );
+                                                }
+                                                Ok(_) => {
+                                                    // Migrate ran against the application row
+                                                    // (target blob unavailable). Do NOT record
+                                                    // activation, so the lazy trigger keeps
+                                                    // retrying instead of wedging the context on
+                                                    // old bytecode behind an up-to-date marker.
+                                                    warn!(
+                                                        %cid,
+                                                        %target_app,
+                                                        "lazy migrate ran against the application row (target blob unavailable); not recording activation"
                                                     );
                                                 }
                                                 Err(err) => {

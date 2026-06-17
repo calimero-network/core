@@ -14,7 +14,7 @@ description: >
   the v1 per-item values rather than trusting v1's redundant
   `global_count`, guaranteeing the v2 invariant holds from the first
   byte of v2 state. Topology: namespace + one Open subgroup + one
-  context, coordinated upgrade policy, per-context upgrade
+  context, lazy-on-access upgrade policy, per-context upgrade
   (cascade=false).
 
   Bug-2 cross-node guard: node 2 reads `get_item_count` for each v1

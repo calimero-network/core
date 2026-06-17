@@ -223,10 +223,14 @@ where
         }
 
         // Snapshot all entries before migration (must do this before clearing).
-        let entries: Vec<(K, V)> = self
-            .entries()
-            .expect("failed to read entries for re-key")
-            .collect();
+        // Carry each entry's `StorageType` so per-entry owner stamps
+        // (AuthoredMap / guarded Shared writers) survive the re-key; a plain
+        // `(K, V)` snapshot would re-insert as `Public` and silently strip
+        // ownership.
+        let entries: Vec<((K, V), StorageType)> = self
+            .inner
+            .entries_with_storage_type()
+            .expect("failed to read entries for re-key");
 
         // Clear the collection (removes old entries with old IDs).
         self.inner.clear().expect("failed to clear for re-key");
@@ -236,9 +240,10 @@ where
         self.inner
             .reassign_deterministic_id_under(parent_id, field_name, crdt_type);
 
-        // Re-insert all entries (they will get new IDs based on new parent ID).
-        for (key, value) in entries {
-            self.insert(key, value)
+        // Re-insert all entries (they will get new IDs based on new parent ID),
+        // preserving each entry's original `StorageType`.
+        for ((key, value), storage_type) in entries {
+            self.insert_with_storage_type(key, value, storage_type, None)
                 .expect("failed to re-insert entry during re-key");
         }
     }

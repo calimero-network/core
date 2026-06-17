@@ -63,4 +63,14 @@ if ! jq -e '.types | to_entries | all(.[]; (.value.kind!="map") or (.value.key==
     exit 1
 fi
 
+# Exercise the identity-downgrade lint (the gate's L2 implementation) so a build
+# break or panic in the diff path fails here too. A state schema diffed against
+# itself must report NO unsafe downgrade (exit 0). The positive case — a real
+# AuthoredMap->UnorderedMap downgrade IS caught — is gated on an emitter-produced
+# pair in .github/workflows/app-migration-e2e.yml (schema-downgrade-guard).
+echo "Exercising identity-downgrade lint (self-diff must be clean)..."
+STATE="/tmp/abi_conformance.state.json"
+"$EXTRACTOR" state target/wasm32-unknown-unknown/debug/abi_conformance.wasm -o "$STATE"
+"$EXTRACTOR" diff "$STATE" "$STATE"
+
 echo "ABI verify: OK" 

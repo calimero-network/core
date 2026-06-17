@@ -329,9 +329,19 @@ where
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    #[expect(clippy::len_without_is_empty, reason = "TODO: will be implemented")]
     pub fn len(&self) -> Result<usize, StoreError> {
         self.inner.len()
+    }
+
+    /// Returns `true` if the vector holds no elements.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, or a child
+    /// [`Element`](crate::entities::Element) cannot be found, an error will be
+    /// returned.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
     }
 
     /// Get the value for a key in the vector.

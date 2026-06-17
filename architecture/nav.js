@@ -33,6 +33,7 @@
     { label: 'Sequence Diagrams', href: 'sequence-diagrams.html', dot: '#ec4899' },
     { label: 'Wire Protocol', href: 'wire-protocol.html', dot: '#8b5cf6' },
     { label: 'Storage Schema', href: 'storage-schema.html', dot: '#06b6d4' },
+    { label: 'Migrations', href: 'migrations.html', dot: '#f59e0b' },
     { label: 'Error Flows', href: 'error-flows.html', dot: '#ef4444' },
     { label: 'Metrics Reference', href: 'metrics-reference.html', dot: '#10b981' },
     { label: 'Dependency Explorer', href: 'dependency-explorer.html', dot: '#f59e0b' },

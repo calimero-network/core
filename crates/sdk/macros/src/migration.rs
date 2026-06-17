@@ -205,7 +205,9 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// result (or a trap) lets the runtime logically abort the migration, leaving
 /// the still-untouched v1 root intact.
 ///
-/// The user writes `fn check(old: OldTy, new: NewTy) -> bool { .. }`. This
+/// The user writes `fn check(old: OldTy, new: NewTy) -> bool { .. }`, optionally
+/// with a third parameter that receives the migration witness recorded by
+/// `#[app::migrate]` (`fn check(old, new, witness: W) -> bool`). This
 /// function transforms it into:
 /// - A WASM export (for `wasm32` target) named `__calimero_migration_check`
 ///   that:

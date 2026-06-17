@@ -427,13 +427,22 @@ where
     }
 
     /// The current owner, if any (the single writer).
+    ///
+    /// An `Ownable` must hold at most one writer (construct via `new_owned_by*`).
+    /// A malformed multi-writer cell has no single owner, so we return `None`
+    /// rather than an arbitrary writer — `debug_assert` still flags the
+    /// invariant violation in tests, but release builds fail safe instead of
+    /// returning a non-deterministic owner.
     pub fn owner(&self) -> Option<PublicKey> {
         let mut writers = self.writers().into_iter();
         let first = writers.next();
-        debug_assert!(
-            writers.next().is_none(),
-            "Ownable must hold at most one writer; construct via new_owned_by*"
-        );
+        if writers.next().is_some() {
+            debug_assert!(
+                false,
+                "Ownable must hold at most one writer; construct via new_owned_by*"
+            );
+            return None;
+        }
         first
     }
 
