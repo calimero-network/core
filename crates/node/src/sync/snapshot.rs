@@ -580,7 +580,12 @@ impl SyncManager {
             Id,
             BTreeMap<calimero_primitives::identity::PublicKey, calimero_storage::entities::OpMask>,
         > = HashMap::new();
-        let mut deferred_members: Vec<(Id, Vec<u8>, Vec<u8>)> = Vec::new();
+        // (id, entry blob, index blob, sender's stamped schema_app_key) — the
+        // schema is carried so a context whose entities are ALL SharedMember
+        // still reports an `observed_schema` (pass 1 only sets it from regular
+        // Entity records, so without this the settle would bind to the group
+        // target instead of the schema the synced entities actually carry).
+        let mut deferred_members: Vec<(Id, Vec<u8>, Vec<u8>, Option<[u8; 32]>)> = Vec::new();
 
         loop {
             let msg = StreamMessage::Init {
@@ -732,6 +737,7 @@ impl SyncManager {
                                             id_obj,
                                             entry.clone(),
                                             index.clone(),
+                                            *schema_app_key,
                                         ));
                                         continue;
                                     }
@@ -900,7 +906,9 @@ impl SyncManager {
                                     // — same fail-closed semantics as pass 1.
                                     if !deferred_members.is_empty() {
                                         let mut handle = self.context_client.datastore_handle();
-                                        for (id_obj, entry, index) in deferred_members.drain(..) {
+                                        for (id_obj, entry, index, member_schema) in
+                                            deferred_members.drain(..)
+                                        {
                                             let metadata = match borsh::from_slice::<
                                                 calimero_storage::index::EntityIndex,
                                             >(
@@ -973,6 +981,12 @@ impl SyncManager {
                                             let _ = received_keys.insert(entry_state_key);
                                             let _ = received_keys.insert(index_state_key);
                                             total_applied += 1;
+                                            // Bind observed_schema from members too,
+                                            // so a SharedMember-only context settles
+                                            // to the schema its entities carry.
+                                            if let Some(k) = member_schema {
+                                                observed_schema = Some(k);
+                                            }
                                         }
                                     }
 

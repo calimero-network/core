@@ -1795,19 +1795,6 @@ fn spawn_propagator_for(
     }));
 }
 
-/// Reject a migration-carrying upgrade under any policy other than
-/// [`UpgradePolicy::LazyOnAccess`].
-///
-/// Only `LazyOnAccess` triggers the receiver-side migrate: a receiver runs
-/// the migration via `maybe_lazy_upgrade`, which early-returns for any
-/// non-`LazyOnAccess` policy (`execute/mod.rs`). Under `Automatic` a receiver
-/// swaps its application pointer to the new bytecode but never runs the
-/// migrate, so v2 wasm reads v1 state bytes and panics with a silent borsh
-/// "Not all bytes read". Catch that combination loudly here, before any group
-/// op is emitted, rather than letting it corrupt state on every receiver.
-///
-/// Code-only upgrades (`has_migration == false`) stay allowed under every
-/// policy.
 /// Cascade migration-policy gate.
 ///
 /// Call this only when the cascade carries a migration — the caller gates on

@@ -596,6 +596,84 @@ mod tests {
         }
     }
 
+    /// Fold-equivalence (membership half): resolve the same transition
+    /// sequence through the **unified projection** instead of the membership
+    /// state machine. Each transition becomes the equivalent `OpPayload`
+    /// (`Added`/`RoleSet` → `MemberAdded`, `Removed`/`Left` → `MemberRemoved`)
+    /// on a single linear op chain with strictly increasing HLC, so the
+    /// projection's per-`(group, member)` LWW order equals the sequence order
+    /// — the same order the prefix walk visits ops in.
+    ///
+    /// Returns the projected role for the member, or `None` if absent. The
+    /// projection cannot (and need not) distinguish `Removed` from
+    /// `NeverMember`: both are non-members, and that is exactly what the
+    /// unified `authorize` consumes (`is_scope_member` + role). This is the
+    /// membership-plane analogue of the ACL-plane equivalence proof in
+    /// `calimero-op-adapter` (`acl_plane_matches_resolve_local_*`).
+    fn projection_membership(transitions: &[MembershipTransition]) -> Option<GroupMemberRole> {
+        use core::num::NonZeroU128;
+
+        use calimero_op::{Op, OpPayload, ScopeId};
+        use calimero_projection::ScopeState;
+        use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+
+        let scope = ScopeId::from([0u8; 32]);
+        let group = ContextGroupId::from([3u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+        let author = PublicKey::from([1u8; 32]);
+
+        let mut ops: Vec<Op> = Vec::with_capacity(transitions.len());
+        let mut prev: Option<[u8; 32]> = None;
+        for (i, t) in transitions.iter().enumerate() {
+            let payload = match t {
+                MembershipTransition::Added(role) | MembershipTransition::RoleSet(role) => {
+                    OpPayload::MemberAdded {
+                        group,
+                        member,
+                        role: role.clone(),
+                    }
+                }
+                MembershipTransition::Removed | MembershipTransition::Left => {
+                    OpPayload::MemberRemoved { group, member }
+                }
+            };
+            let hlc = HybridTimestamp::new(Timestamp::new(
+                NTP64((i as u64 + 1) * 10),
+                ID::from(NonZeroU128::new(1).unwrap()),
+            ));
+            let parents: Vec<[u8; 32]> = prev.into_iter().collect();
+            let id = Op::compute_id(scope, &parents, &author, &hlc, &payload);
+            ops.push(Op {
+                id,
+                scope,
+                parents,
+                author,
+                hlc,
+                payload,
+                expected_scope_root: [0u8; 32],
+                signature: [0u8; 64],
+            });
+            prev = Some(id);
+        }
+
+        ScopeState::from_ops(&ops)
+            .acl_view()
+            .groups
+            .get(&group)
+            .and_then(|g| g.get(&member))
+            .cloned()
+    }
+
+    /// The membership verdict the unified `authorize` consumes, reduced from a
+    /// [`MembershipStatus`]: a member maps to its role, everything else to
+    /// `None` (a non-member). `Removed` and `NeverMember` are auth-equivalent.
+    fn member_role(status: &MembershipStatus) -> Option<GroupMemberRole> {
+        match status {
+            MembershipStatus::Member(role) => Some(role.clone()),
+            _ => None,
+        }
+    }
+
     #[test]
     fn prefix_walk_resolution_matches_reference_under_random_inputs() {
         // Property-style test using a small splittable PRNG (xorshift) so
@@ -639,6 +717,13 @@ mod tests {
                 prod, refr,
                 "resolver mismatch on transitions={transitions:?}\nproduction: {prod:?}\nreference: {refr:?}"
             );
+            // Fold-equivalence: the unified projection must agree on the
+            // auth-relevant verdict (member-with-role vs non-member).
+            assert_eq!(
+                projection_membership(&transitions),
+                member_role(&prod),
+                "projection fold disagrees with membership resolver on transitions={transitions:?}\nresolver: {prod:?}"
+            );
         }
     }
 
@@ -668,6 +753,12 @@ mod tests {
                 assert_eq!(
                     prod, refr,
                     "exhaustive mismatch on transitions={transitions:?}"
+                );
+                // Fold-equivalence over every short sequence.
+                assert_eq!(
+                    projection_membership(&transitions),
+                    member_role(&prod),
+                    "projection fold disagrees on exhaustive transitions={transitions:?}\nresolver: {prod:?}"
                 );
             }
         }

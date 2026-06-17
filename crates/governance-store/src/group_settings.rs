@@ -39,6 +39,19 @@ impl<'a> GroupSettingsService<'a> {
         let permissions = self.permissions();
         permissions.require_admin(signer)?;
         let mut meta = self.load_required_meta()?;
+        // A pending migration only runs on receivers under LazyOnAccess.
+        // Flipping away from it while one is pending would leave un-accessed
+        // contexts swapping bytecode without migrating (silent corruption /
+        // stranded state). Reject deterministically — `meta.migration` is
+        // replicated, so every node folds this op to the same decision.
+        if meta.migration.is_some() && !matches!(policy, UpgradePolicy::LazyOnAccess) {
+            return Err(eyre!(
+                "cannot set upgrade policy to {policy:?} while a migration is pending for group \
+                 {:?}; only LazyOnAccess runs the pending migration on receivers — complete or \
+                 abort the migration first",
+                self.group_id
+            ));
+        }
         meta.upgrade_policy = policy.clone();
         MetaRepository::new(self.store).save(&self.group_id, &meta)
     }
@@ -54,17 +67,21 @@ impl<'a> GroupSettingsService<'a> {
         let mut meta = self.load_required_meta()?;
         meta.app_key = *app_key;
         meta.target_application_id = *target_application_id;
-        MetaRepository::new(self.store).save(&self.group_id, &meta)?;
-        // Every op arm that advances the group's bytecode funnels through
-        // here, so this is the one capture point for the upgrade ladder a
-        // behind context replays rung by rung.
+        // Append the ladder rung BEFORE advancing meta. This is the one capture
+        // point for the upgrade ladder a behind context replays rung by rung,
+        // and the ordering matters when the two writes can't be atomic: a
+        // rung-without-advanced-meta (append ok, save fails) is recoverable
+        // (the target still points at the old version, a retry re-appends),
+        // whereas advanced-meta-without-a-rung would strand a behind context
+        // with no hop to replay (NoMigrationPath).
         UpgradeLadderRepository::new(self.store).append(
             &self.group_id,
             LadderRung {
                 app_key: *app_key,
                 application_id: *target_application_id,
             },
-        )
+        )?;
+        MetaRepository::new(self.store).save(&self.group_id, &meta)
     }
 
     pub fn set_subgroup_visibility(

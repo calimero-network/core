@@ -128,13 +128,36 @@ pub(super) fn maybe_lazy_upgrade(
 
     Some(match activated {
         Some(bound) => LazyUpgradeAction::Replay { bound },
-        None => LazyUpgradeAction::SingleJump {
-            target_application_id: meta.target_application_id,
-            migrate_method: meta
-                .migration
-                .as_ref()
-                .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
-            target_app_key: meta.app_key,
+        // No activation marker. The context never migrated (a commit would have
+        // stamped one), so the bytecode blob its application row points at IS
+        // its real current version. Replay the ladder hop-by-hop FROM that
+        // version rather than single-jumping the group's latest-hop edge: a
+        // context several versions behind must run v1->v2 then v2->v3, never the
+        // latest edge (e.g. `migrate_v2_to_v3`) against older state — which
+        // mis-decodes and panics. The call site seeds the activation marker to
+        // this blob before replaying, which also binds execution to it, so a
+        // blocked hop strands the context on its real version instead of running
+        // the target's bytecode on un-migrated state.
+        None => match crate::hlc_fence::loaded_reader_app_key(datastore, context_id) {
+            Ok(Some(current)) if current != meta.app_key => {
+                LazyUpgradeAction::Replay { bound: current }
+            }
+            // Current version unresolvable (no row), or it already equals the
+            // group target. The latter still needs the single jump: the gate
+            // only reaches this arm because activation is pending (no marker at
+            // the target), and for a bundle (stable application id) a local
+            // install bumps the shared application row to the target blob while
+            // the migration is still pending — so `loaded_reader == target`
+            // does NOT mean migrated. Returning None here would run the target
+            // bytecode against un-migrated state.
+            _ => LazyUpgradeAction::SingleJump {
+                target_application_id: meta.target_application_id,
+                migrate_method: meta
+                    .migration
+                    .as_ref()
+                    .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
+                target_app_key: meta.app_key,
+            },
         },
     })
 }
@@ -220,8 +243,65 @@ mod tests {
         assert_eq!(action, LazyUpgradeAction::Replay { bound: APP_KEY_OLD });
     }
 
+    /// Seed a context's application row so `loaded_reader_app_key` resolves the
+    /// context's current bytecode blob to `blob` (an installed-but-never-migrated
+    /// version). `app_id` keys the row; for a bundle it equals the group target.
+    fn seed_app_row(store: &Store, ctx: &ContextId, app_id: ApplicationId, blob: [u8; 32]) {
+        use calimero_store::types::{ApplicationMeta as ApplicationMetaValue, ContextMeta};
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ApplicationMeta::new(app_id),
+                &ApplicationMetaValue::new(
+                    calimero_store::key::BlobMeta::new(blob.into()),
+                    0,
+                    String::new().into_boxed_str(),
+                    Box::new([]),
+                    calimero_store::key::BlobMeta::new([0u8; 32].into()),
+                    String::new().into_boxed_str(),
+                    String::new().into_boxed_str(),
+                    String::new().into_boxed_str(),
+                ),
+            )
+            .unwrap();
+        handle
+            .put(
+                &calimero_store::key::ContextMeta::new(*ctx),
+                &ContextMeta::new(
+                    calimero_store::key::ApplicationMeta::new(app_id),
+                    [0u8; 32].into(),
+                    vec![],
+                    None,
+                ),
+            )
+            .unwrap();
+    }
+
+    // Regression guard for the marker-less multi-version-behind hole: a fresh
+    // joiner (no activation marker) whose group has advanced several versions
+    // must REPLAY the ladder from its current row version, NOT single-jump the
+    // group's latest-hop edge against older state (which mis-decodes + panics).
     #[test]
-    fn marker_less_context_keeps_the_single_jump() {
+    fn marker_less_context_with_current_row_replays_from_its_version() {
+        let store = store();
+        let ctx = ContextId::from([0x51; 32]);
+        let _gid = seed_group(&store, &ctx, UpgradePolicy::LazyOnAccess);
+        // Context installed (never migrated) at APP_KEY_OLD; group target is
+        // APP_KEY_NEW (bundle: same application id, different blob).
+        seed_app_row(&store, &ctx, target_app(), APP_KEY_OLD);
+
+        let action = maybe_lazy_upgrade(&store, &ctx, &target_app()).expect("stale -> fires");
+        assert_eq!(action, LazyUpgradeAction::Replay { bound: APP_KEY_OLD });
+    }
+
+    // A marker-less context whose current version is unresolvable (no row, so
+    // `loaded_reader_app_key` falls back to the group target) keeps the single
+    // jump: the gate only reaches this arm because activation is pending, and
+    // `loaded_reader == target` does NOT prove migration ran (a bundle install
+    // bumps the shared row ahead of the marker). Returning None here would run
+    // target bytecode on un-migrated state.
+    #[test]
+    fn marker_less_context_without_resolvable_row_keeps_the_single_jump() {
         let store = store();
         let ctx = ContextId::from([0x51; 32]);
         let _gid = seed_group(&store, &ctx, UpgradePolicy::LazyOnAccess);

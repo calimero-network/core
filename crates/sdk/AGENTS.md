@@ -140,12 +140,15 @@ pub enum Event<'a> {
 
 ### `#[app::migrate]` — state-migration export
 
-> **App developers:** the user-facing guide is `docs/migrations.md` (when to
-> migrate, `#[derive(Migrate)]`, the convergence rule, testing). This section is
-> the contributor-facing internals.
+> **App developers:** the user-facing guide is the Migrations page in the
+> architecture docs (`architecture/migrations.html`) — when to migrate,
+> `#[derive(Migrate)]`, the convergence rule, testing. This section is the
+> contributor-facing internals.
 
 Marks a stand-alone function as the WASM export the node runtime
-calls during `upgrade_group(target=v2, migrate_method=...)`. The
+calls during a migration upgrade. The node resolves which migrate to
+run from the target binary's embedded ABI descriptor (there is no
+`migrate_method` argument — it was removed in migrations-v2). The
 function reads the old state via `calimero_sdk::state::read_raw()`,
 constructs the new state struct, and returns it; the SDK macro
 wraps it in the same `Root::new(...)` context as `#[app::init]` so

@@ -53,11 +53,8 @@ pub fn normalize_type(
 
             // Check if it's [u8; N]
             if let Type::Path(TypePath { path, .. }) = elem_type {
-                eprintln!("Checking if array element is u8");
                 if is_u8_type(path) {
-                    eprintln!("Array element is u8, extracting length");
                     let size = extract_array_len(len)?;
-                    eprintln!("Array size: {size}");
                     return Ok(TypeRef::bytes_with_size(size, None));
                 }
             }
@@ -80,6 +77,17 @@ pub fn normalize_type(
     }
 }
 
+/// Opaque-placeholder `TypeRef` for a non-generic CRDT wrapper (Counter / RGA):
+/// an empty record carrying only the `crdt_type`, so deserializers know the
+/// format without the internal structure being described in the ABI.
+fn opaque_crdt_placeholder(crdt_type: CrdtCollectionType) -> TypeRef {
+    TypeRef::Collection {
+        collection: CollectionType::Record { fields: vec![] },
+        crdt_type: Some(crdt_type),
+        inner_type: None,
+    }
+}
+
 /// Normalize a path type (e.g., Option<T>, Vec<T>, etc.)
 fn normalize_path_type(
     type_path: &TypePath,
@@ -88,39 +96,21 @@ fn normalize_path_type(
 ) -> Result<TypeRef, NormalizeError> {
     let path = &type_path.path;
 
-    eprintln!("Path segments: {}", path.segments.len());
-    for (i, seg) in path.segments.iter().enumerate() {
-        eprintln!("  Segment {}: {}", i, seg.ident);
-    }
-
     if path.segments.len() == 1 {
         let segment = &path.segments[0];
         let ident = &segment.ident;
 
-        eprintln!(
-            "Processing path type: {} with {} segments",
-            ident,
-            path.segments.len()
-        );
-
         // Handle generic types
         if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-            eprintln!("Found angle-bracketed arguments");
             return normalize_generic_type(ident, args, wasm32, resolver);
         }
 
         // Handle scalar types
-        eprintln!("No angle-bracketed arguments, treating as scalar");
         return normalize_scalar_type(path, wasm32, resolver);
     } else if path.segments.len() == 2 {
         // Handle qualified paths like app::Result
         let first_segment = &path.segments[0];
         let second_segment = &path.segments[1];
-
-        eprintln!(
-            "Processing qualified path: {}::{}",
-            first_segment.ident, second_segment.ident
-        );
 
         // Handle app::Result -> Result
         if first_segment.ident == "app" && second_segment.ident == "Result" {
@@ -148,12 +138,6 @@ fn normalize_generic_type(
     resolver: &dyn TypeResolver,
 ) -> Result<TypeRef, NormalizeError> {
     let ident_str = ident.to_string();
-    eprintln!(
-        "Processing generic type: '{}' (len: {}) with {} args",
-        ident_str,
-        ident_str.len(),
-        args.args.len()
-    );
     match ident_str.as_str() {
         "Option" => {
             // Option<T> -> T (nullable handled at field level)
@@ -308,24 +292,11 @@ fn normalize_generic_type(
                 // Counter and RGA don't have generic args (or are opaque)
                 // Counter -> bytes (but preserve Counter type), RGA -> string (but preserve RGA type)
                 if ident_str == "Counter" {
-                    // Counter serializes as (positive: UnorderedMap<String, u64>, negative?: UnorderedMap<String, u64>)
-                    // We represent it as bytes with CRDT type metadata
-                    return Ok(TypeRef::Collection {
-                        collection: CollectionType::Record {
-                            fields: vec![], // Placeholder - Counter has complex internal structure
-                        },
-                        crdt_type: Some(CrdtCollectionType::Counter),
-                        inner_type: None, // Counter doesn't wrap another type
-                    });
+                    return Ok(opaque_crdt_placeholder(CrdtCollectionType::Counter));
                 } else {
-                    // RGA serializes as a string with CRDT metadata
-                    return Ok(TypeRef::Collection {
-                        collection: CollectionType::Record {
-                            fields: vec![], // Placeholder
-                        },
-                        crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
-                        inner_type: None,
-                    });
+                    return Ok(opaque_crdt_placeholder(
+                        CrdtCollectionType::ReplicatedGrowableArray,
+                    ));
                 }
             }
 
@@ -541,20 +512,10 @@ fn normalize_scalar_type(
         // with the same fixed-size-bytes shape as `PublicKey`.
         "BlobId" | "ContextId" | "ApplicationId" => Ok(TypeRef::bytes_with_size(32, None)),
         // Storage CRDT wrappers – treat as opaque blobs until ABI definitions exist.
-        "Counter" => Ok(TypeRef::Collection {
-            collection: CollectionType::Record {
-                fields: vec![], // Placeholder - Counter has complex internal structure
-            },
-            crdt_type: Some(CrdtCollectionType::Counter),
-            inner_type: None, // Counter doesn't wrap another type
-        }),
-        "ReplicatedGrowableArray" => Ok(TypeRef::Collection {
-            collection: CollectionType::Record {
-                fields: vec![], // Placeholder
-            },
-            crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
-            inner_type: None,
-        }),
+        "Counter" => Ok(opaque_crdt_placeholder(CrdtCollectionType::Counter)),
+        "ReplicatedGrowableArray" => Ok(opaque_crdt_placeholder(
+            CrdtCollectionType::ReplicatedGrowableArray,
+        )),
         // `AccessControl` is a non-generic component backed by a writer-set-
         // guarded `map<string, bool>` registry (role grants). Surface that shape
         // with `crdt_type = SharedStorage` so the writer-ACL is visible, matching
