@@ -1,15 +1,14 @@
-//! The one **op** envelope for the unified causal log (core#2716, Phase 5).
+//! The one **op** envelope for the unified causal log.
 //!
 //! Every change — a data write, a writer-set rotation, a membership change, an
-//! admin/policy change — is the same [`Op`] carried by the existing generic
+//! admin/policy change — is the same [`Op`], carried by the generic
 //! `CausalDelta<T>` / `DagStore<T>` transport. A scope's state is the
 //! deterministic projection of its op-log (see `calimero-projection`); its
 //! single [`scope_root`] is the only convergence signal; authorization is one
 //! fold over the op's causal cut (see `calimero-authz`).
 //!
-//! This crate is the small foundation: the op types + the canonical id and
-//! root hashing. It is **additive scaffolding** — the existing storage,
-//! governance, and sync layers are migrated onto it in later Phase-5/6 stages.
+//! This crate is the small foundation: the op types plus the canonical id and
+//! root hashing.
 
 use std::collections::BTreeMap;
 
@@ -49,29 +48,27 @@ impl From<[u8; 32]> for ScopeId {
 ///
 /// `parents` are the op's causal predecessors **within its scope**, and MAY
 /// also include a cross-scope governance head the op was authored under
-/// (design §3.3 — visibility-respecting: a subgroup op may reference its
-/// ancestor governance scope's head, since subgroup members are ancestor
-/// members). This is the unified successor to the data DAG's `parents` plus
-/// the P4 `GovernanceParentEdge` — one parent set, one causal model.
+/// (visibility-respecting: a subgroup op may reference its ancestor governance
+/// scope's head, since subgroup members are ancestor members). It is one parent
+/// set, one causal model, spanning data and governance.
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct Op {
     /// `compute_id(scope, parents, author, hlc, payload)` — content address.
     pub id: [u8; 32],
     /// The scope this op belongs to.
     pub scope: ScopeId,
-    /// Causal predecessors (may cross scopes, design §3.3).
+    /// Causal predecessors (may cross scopes — see the struct docs).
     pub parents: Vec<[u8; 32]>,
     /// Authoring identity (verified against this scope's ACL at the op's cut).
     pub author: PublicKey,
-    /// Hybrid logical clock at author time (causally monotonic, #2635).
+    /// Hybrid logical clock at author time (causally monotonic).
     pub hlc: HybridTimestamp,
-    /// The change itself (ciphertext at rest under the scope key for data arms
-    /// once encryption lands; cleartext in this scaffold).
+    /// The change itself. Once payload encryption lands, the data arms are
+    /// ciphertext at rest under the scope key.
     pub payload: OpPayload,
     /// The author's expected `scope_root` after applying this op — a
     /// convergence **assertion**, not a trusted input. Deliberately NOT part of
-    /// the [`compute_id`](Op::compute_id) preimage (so it is unsigned), exactly
-    /// like the existing data DAG's `CausalDelta::expected_root_hash`: peers
+    /// the [`compute_id`](Op::compute_id) preimage (so it is unsigned): peers
     /// **recompute** their own `scope_root` from their projection and compare,
     /// rather than trusting the author's number. A tampered value cannot grant
     /// authority — at worst it flags a divergence the recompute would catch
@@ -92,20 +89,20 @@ pub struct Op {
 /// The change an [`Op`] carries, across all four planes folded into one model.
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum OpPayload {
-    // ---- data plane (was StateDelta actions) ----
+    // ---- data plane ----
     /// Write `value` to `entity`.
     Put { entity: Id, value: Vec<u8> },
     /// Delete `entity`.
     Delete { entity: Id },
 
-    // ---- access-control plane (was RotationLogEntry / OpMask grants) ----
+    // ---- access-control plane ----
     /// Set the writer/capability set for `object` (writer-set rotation).
     SetWriters {
         object: Id,
         writers: BTreeMap<PublicKey, OpMask>,
     },
 
-    // ---- membership plane (was SignedGroupOp / GroupOp) ----
+    // ---- membership plane ----
     /// Add `member` to `group` with `role`.
     MemberAdded {
         group: ContextGroupId,
@@ -118,23 +115,22 @@ pub enum OpPayload {
         member: PublicKey,
     },
 
-    // ---- admin / namespace plane (was SignedNamespaceOp / NamespaceOp) ----
+    // ---- admin / namespace plane ----
     /// Change the scope's root admin.
     AdminChanged { new_admin: PublicKey },
     /// Replace the scope's policy bytes.
     PolicyUpdated { policy_bytes: Vec<u8> },
-    /// Create a child subgroup scope nested under `parent` (restricted ⇒
-    /// member-only existence, design §3.4).
+    /// Create a child subgroup scope nested under `parent`. A `restricted`
+    /// subgroup's very existence is hidden from non-members.
     SubgroupCreated {
         child: ScopeId,
         parent: ScopeId,
         restricted: bool,
     },
-    /// Move a subgroup scope under a new parent (the scope-tree restructure
-    /// `RootOp::GroupReparented`).
+    /// Move a subgroup scope under a new parent (a scope-tree restructure).
     SubgroupReparented { child: ScopeId, new_parent: ScopeId },
-    /// Delete a subgroup scope (and, in the full model, its subtree — the
-    /// caller emits one per cascaded scope; `RootOp::GroupDeleted`).
+    /// Delete a subgroup scope. Deleting a subtree is expressed as one
+    /// `SubgroupDeleted` per cascaded scope.
     SubgroupDeleted { scope: ScopeId },
 }
 

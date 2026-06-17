@@ -1,19 +1,14 @@
-//! [`ScopeState`] — the single deterministic projection of a scope's op-log
-//! (core#2716, Phase 5).
+//! [`ScopeState`] — the single deterministic projection of a scope's op-log.
 //!
 //! Same ops, any order, deduped by id → the same `ScopeState` and the same
-//! [`ScopeState::root`]. This is the one materializer that replaces the
-//! parallel storage-apply and governance-apply folds: values, the writer/cap
-//! ACL, and group membership all live in one state with one root.
+//! [`ScopeState::root`]. This is the one materializer for a scope: values, the
+//! writer/cap ACL, and group membership all live in one state with one root.
 //!
 //! [`ScopeState::acl_view_at`] resolves the authorization view at an op's
 //! causal cut (the ancestry of its parents) — the **causal-honor** view
 //! `calimero_authz::authorize` decides against. Convergence comes from
 //! per-slot last-writer-wins keyed on `(hlc, op_id)`, so the fold is
 //! order-independent.
-//!
-//! Additive scaffolding — the live storage/governance apply paths are migrated
-//! onto this in a later Phase-5 stage (gated behind the isolation harness).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -199,18 +194,16 @@ impl ScopeState {
     /// their transitive ancestors (the cut is inclusive of `parents`, since an
     /// op's parents causally precede it), never ops causally after the cut. So
     /// a pre-revocation write resolves against the pre-revocation ACL even on a
-    /// node that has already applied the revocation — the forward-only property
-    /// P4's `acl_view_at` provided, generalized to the whole projection.
+    /// node that has already applied the revocation (the forward-only property).
     ///
     /// **Precondition (caller's responsibility):** `log` must contain every
     /// ancestor of `parents` within this scope. A parent id not found in `log`
     /// is skipped — correct for a legitimately out-of-slice **cross-scope**
-    /// parent edge (design §3.3), but if a *same-scope* ancestor is missing the
-    /// returned view is silently computed over a truncated ancestry, which in a
-    /// security context could authorize against a stale ACL. The live apply
-    /// path guarantees completeness before authorizing: the DAG buffers an op
-    /// as `Pending` until all its parents are present (the `Buffer { needed }`
-    /// path of `authorize_delta_at_edge`), so `authorize` only ever runs on a
+    /// parent edge, but if a *same-scope* ancestor is missing the returned view
+    /// is silently computed over a truncated ancestry, which in a security
+    /// context could authorize against a stale ACL. The live apply path
+    /// guarantees completeness before authorizing: the DAG buffers an op until
+    /// all its parents are present, so `authorize` only ever runs on a
     /// fully-materialized ancestry.
     #[must_use]
     pub fn acl_view_at(log: &[Op], parents: &[[u8; 32]]) -> AclView {
@@ -246,15 +239,14 @@ impl ScopeState {
     /// Compose this scope's convergence root from an **externally supplied**
     /// `entities_root` and this projection's ACL + groups hashes.
     ///
-    /// This is the cutover building block (plan C1): the storage layer keeps
-    /// its proven Merkle `root_hash` as `entities_root`, and the projection
-    /// folds authorization (writer sets + membership + admin/policy/subgroups)
-    /// in on top. Shipping THIS as the wire convergence signal — instead of the
-    /// bare entity root — is what makes a hash-neutral writer/membership
-    /// rotation (identical entities, different ACL) a *different* root, so sync
-    /// can never declare "converged" while authorization disagrees. The
-    /// projection never re-hashes entity state; `entities_root` is authoritative
-    /// for the data plane.
+    /// The storage layer keeps its Merkle `root_hash` as `entities_root`, and
+    /// the projection folds authorization (writer sets + membership +
+    /// admin/policy/subgroups) in on top. Shipping THIS as the wire convergence
+    /// signal — instead of the bare entity root — is what makes a hash-neutral
+    /// writer/membership rotation (identical entities, different ACL) a
+    /// *different* root, so sync can never declare "converged" while
+    /// authorization disagrees. The projection never re-hashes entity state;
+    /// `entities_root` is authoritative for the data plane.
     #[must_use]
     pub fn scope_root_with_entities(&self, entities_root: [u8; 32]) -> [u8; 32] {
         scope_root(entities_root, self.acl_hash(), self.governance_hash())
@@ -439,8 +431,8 @@ mod tests {
 
     #[test]
     fn scope_root_with_entities_detects_hash_neutral_acl_and_membership_changes() {
-        // The cutover security property (plan C1): with the SAME entity root,
-        // an ACL or membership change must still move the convergence signal.
+        // Security property: with the SAME entity root, an ACL or membership
+        // change must still move the convergence signal.
         let entities_root = [0x42u8; 32];
         let pk = PublicKey::from([9u8; 32]);
         let group = ContextGroupId::from([3u8; 32]);

@@ -589,7 +589,7 @@ mod tests {
         }
     }
 
-    /// P5 fold-equivalence (membership half): resolve the same transition
+    /// Fold-equivalence (membership half): resolve the same transition
     /// sequence through the **unified projection** instead of the membership
     /// state machine. Each transition becomes the equivalent `OpPayload`
     /// (`Added`/`RoleSet` → `MemberAdded`, `Removed`/`Left` → `MemberRemoved`)
@@ -710,7 +710,7 @@ mod tests {
                 prod, refr,
                 "resolver mismatch on transitions={transitions:?}\nproduction: {prod:?}\nreference: {refr:?}"
             );
-            // P5 fold-equivalence: the unified projection must agree on the
+            // Fold-equivalence: the unified projection must agree on the
             // auth-relevant verdict (member-with-role vs non-member).
             assert_eq!(
                 projection_membership(&transitions),
@@ -747,7 +747,7 @@ mod tests {
                     prod, refr,
                     "exhaustive mismatch on transitions={transitions:?}"
                 );
-                // P5 fold-equivalence over every short sequence.
+                // Fold-equivalence over every short sequence.
                 assert_eq!(
                     projection_membership(&transitions),
                     member_role(&prod),

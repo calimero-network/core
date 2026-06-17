@@ -1,23 +1,21 @@
-//! Convergence + scope-isolation property harness (core#2716, design §7).
+//! Convergence + scope-isolation property harness.
 //!
-//! This is the gate the design mandates **before** the Phase-5 merge-core
-//! migration: every change to how state is projected or synced must keep two
-//! properties true, and the most dangerous failure (leaking a restricted
-//! subgroup) must be caught here rather than in production.
+//! Every change to how state is projected or synced must keep two properties
+//! true, and the most dangerous failure (leaking a restricted subgroup) must
+//! be caught here rather than in production:
 //!
 //! - **Convergence (per scope):** any two replicas that are both members of a
 //!   scope, having seen the same op-set in any order, compute the *same*
 //!   [`ScopeState::root`]. There is no hash-neutral escape: writers and
 //!   membership are folded into the root.
-//! - **Isolation (Invariant 0 / partial replication):** a replica that is not
-//!   a member of a scope never receives that scope's ops and therefore never
-//!   holds or computes its root. Existence does not leak.
+//! - **Isolation (partial replication):** a replica that is not a member of a
+//!   scope never receives that scope's ops and therefore never holds or
+//!   computes its root. Existence does not leak.
 //!
 //! The harness models **partial-replication delivery**: each replica folds
 //! only the ops in the scopes it belongs to, in its own shuffled order. It
-//! does not model the network — it pins the *model's* properties so the live
-//! migration (which plugs real delivery + the real projection in) has a
-//! regression net.
+//! does not model the network — it pins the *model's* properties so that code
+//! plugging in real delivery and the real projection has a regression net.
 
 use std::collections::{BTreeMap, BTreeSet};
 

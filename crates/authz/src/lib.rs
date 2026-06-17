@@ -1,22 +1,16 @@
-//! The **one** authorization fold for the unified causal log (core#2716,
-//! Phase 5).
+//! The **one** authorization fold for the unified causal log.
 //!
-//! [`authorize`] is the single security boundary. It replaces the three
-//! causal-auth folds the old model smeared across the codebase — `writers_at`
-//! (writer-set), `membership_status_at` (group membership), and the
-//! `GovernancePosition` / `GroupIdCheck` chain — with one match over
-//! [`OpPayload`] arms against an [`AclView`] resolved at the op's causal cut.
+//! [`authorize`] is the single security boundary: one match over [`OpPayload`]
+//! arms against an [`AclView`] resolved at the op's causal cut. It unifies what
+//! were three separate causal-auth checks — writer-set resolution, group
+//! membership resolution, and the per-delta governance-position gate.
 //!
-//! **Causal-honor semantics** (the decision recorded for §9.1): an op is
-//! authorized against the ACL/membership *as of its own causal parents*, never
-//! the receiver's current state. So a write authored before a revocation, in
-//! causal order, stays valid regardless of the order a receiver observes the
-//! revocation — the forward-only property the P4 `acl_view_at` already
-//! provides. The caller produces the [`AclView`] via
-//! `ScopeState::acl_view_at(op.parents)` (see `calimero-projection`); this
-//! crate is the pure decision over that view.
-//!
-//! Additive scaffolding — not yet wired into the live apply path.
+//! **Causal-honor semantics:** an op is authorized against the ACL/membership
+//! *as of its own causal parents*, never the receiver's current state. So a
+//! write authored before a revocation, in causal order, stays valid regardless
+//! of the order a receiver observes the revocation (the forward-only property).
+//! The caller produces the [`AclView`] via `ScopeState::acl_view_at(op.parents)`
+//! (see `calimero-projection`); this crate is the pure decision over that view.
 
 use std::collections::BTreeMap;
 
@@ -29,8 +23,8 @@ use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 
-/// Why an op was refused. One rejection type for every plane — the caller no
-/// longer has to know which of three folds said no.
+/// Why an op was refused. One rejection type for every plane — the caller
+/// doesn't have to know which plane said no.
 #[derive(Clone, Debug, PartialEq, Eq, ThisError)]
 pub enum Rejected {
     /// Author lacks the required capability on a data entity.
@@ -53,35 +47,31 @@ pub enum Rejected {
 /// (that's the projection's job), keeping the decision pure and unit-testable.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AclView {
-    /// Writer/capability set per object (the writer plane — was the rotation
-    /// log resolved by `writers_at` / `resolve_local`).
+    /// Writer/capability set per object (the writer plane).
     pub acl: BTreeMap<Id, BTreeMap<PublicKey, OpMask>>,
-    /// Group memberships at the cut (the membership plane — was
-    /// `membership_status_at`'s walk result).
+    /// Group memberships at the cut (the membership plane).
     pub groups: BTreeMap<ContextGroupId, BTreeMap<PublicKey, GroupMemberRole>>,
     /// The scope's root admin at the cut (the admin plane).
     pub root_admin: Option<PublicKey>,
 }
 
 /// Capabilities a scope **member** implicitly holds on a non-restricted
-/// entity (§9.2 / slice-2 S2.1 decision: `default-write = membership`):
-/// `WRITE` + `DELETE`, but **not** `ADMIN` — rotating an object's writer set
-/// still requires an explicit ACL grant (ownership), so a plain member can't
-/// lock others out of a default entity.
+/// entity (`default-write = membership`): `WRITE` + `DELETE`, but **not**
+/// `ADMIN` — rotating an object's writer set still requires an explicit ACL
+/// grant (ownership), so a plain member can't lock others out of a default
+/// entity.
 const DEFAULT_MEMBER_MASK: OpMask = OpMask::WRITE.union(OpMask::DELETE);
 
 impl AclView {
     /// Does `author` hold at least `required` on `entity`?
     ///
-    /// Two-tier (S2.1 `default-write = membership`):
+    /// Two-tier (`default-write = membership`):
     /// 1. **Restricted entity** — an explicit per-object ACL entry exists:
-    ///    `author` must be listed with a mask covering `required`. This is the
-    ///    writer plane (was `writers_at` / `resolve_local`); a member who isn't
-    ///    a listed writer is denied (strictly finer than the old per-delta
-    ///    membership gate).
+    ///    `author` must be listed with a mask covering `required`. A member who
+    ///    isn't a listed writer is denied.
     /// 2. **Non-restricted entity** — no explicit ACL: any scope member holds
-    ///    [`DEFAULT_MEMBER_MASK`] (`WRITE`+`DELETE`). This reproduces today's
-    ///    "members can write" for ordinary contexts (e.g. kv-store) without
+    ///    [`DEFAULT_MEMBER_MASK`] (`WRITE`+`DELETE`). This gives "members can
+    ///    write" for ordinary contexts (e.g. a key-value store) without
     ///    enumerating a per-entity writer set for every key.
     #[must_use]
     pub fn may(&self, author: &PublicKey, entity: Id, required: OpMask) -> bool {
@@ -108,8 +98,8 @@ impl AclView {
 
     /// Is `author` the owner of `object` — permitted to rotate its writer set?
     ///
-    /// Default (§9.2, owner = capability holder): the `ADMIN` bit on the object
-    /// confers ownership. Refine here if `owner` becomes distinct from
+    /// The `ADMIN` bit on the object confers ownership (owner = capability
+    /// holder). Refine here if `owner` ever becomes distinct from
     /// `writer`/`admin`.
     #[must_use]
     pub fn is_owner(&self, author: &PublicKey, object: Id) -> bool {
@@ -333,7 +323,7 @@ mod tests {
         assert!(authorize(&op_ok, &view).is_ok());
     }
 
-    // ---- S2.1: default-write = membership (the slice-2 example scenarios) ----
+    // ---- default-write = membership ----
 
     fn membership_view(group: ContextGroupId, member: PublicKey, role: GroupMemberRole) -> AclView {
         let mut groups = BTreeMap::new();

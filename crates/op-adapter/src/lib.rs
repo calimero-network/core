@@ -1,22 +1,19 @@
-//! Transitional adapter for the unified causal log (core#2716, Phase 5
-//! migration). Additive: nothing depends on this crate yet; it (and the legacy
-//! source types it reads) is deleted once the migration completes.
+//! Transitional adapter that bridges the per-plane operation types onto the
+//! unified causal log. It (and the per-plane source types it reads) is deleted
+//! once everything runs on the unified [`OpPayload`].
 //!
-//! **Encoders** — map the legacy per-plane operation types onto the one
-//! [`OpPayload`], so the migration can prove the unified projection faithfully
-//! represents the current system across all four planes: data (`Action` →
-//! `Put`/`Delete`), access-control (`RotationLogEntry` → `SetWriters`),
-//! membership (`GroupOp` → `MemberAdded`/`MemberRemoved`), and admin (`RootOp`
-//! → `AdminChanged`/`PolicyUpdated`/`SubgroupCreated`/open-join). In-model vs
+//! **Encoders** map each per-plane operation onto the one [`OpPayload`], so we
+//! can prove the unified projection faithfully represents the current system
+//! across all four planes: data (`Action` → `Put`/`Delete`), access-control
+//! (`RotationLogEntry` → `SetWriters`), membership (`GroupOp` →
+//! `MemberAdded`/`MemberRemoved`), and admin (`RootOp` →
+//! `AdminChanged`/`PolicyUpdated`/`SubgroupCreated`/open-join). In-model vs
 //! out-of-model coverage is documented per encoder.
 //!
-//! (An earlier `shadow_data_delta` comparison helper was removed: the live
-//! single-site `authorize` shadow it served proved tautological and half-blind
-//! — the data-write decision is split across the membership gate and the
-//! per-object writer gate, so no one site sees both halves. Deterministic
-//! fold-equivalence — `acl_plane_matches_resolve_local_*` here plus the
-//! membership-fold property test in `calimero-governance-store` — is the
-//! meaningful pre-cutover signal instead.)
+//! The proof of faithfulness is deterministic **fold-equivalence**: the unified
+//! projection resolves the same writer set and the same membership as the
+//! current resolvers over the same op sequence (`acl_plane_matches_resolve_local_*`
+//! here, plus the membership-fold property test in `calimero-governance-store`).
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::{GroupOp, RootOp};
@@ -58,9 +55,8 @@ pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
 }
 
 /// Map an invitation's `invited_role` byte (0 = Admin, 2 = ReadOnly, else
-/// Member) to a [`GroupMemberRole`] — the same mapping as governance-store's
-/// `role_from_invited_role` (reimplemented here so the adapter doesn't depend
-/// on a `pub(crate)` helper; both are deleted together post-migration).
+/// Member) to a [`GroupMemberRole`] — the same mapping governance-store uses
+/// (reimplemented here so the adapter doesn't depend on a `pub(crate)` helper).
 fn role_from_invited_role(value: u8) -> GroupMemberRole {
     match value {
         0 => GroupMemberRole::Admin,
@@ -79,32 +75,32 @@ fn role_from_invited_role(value: u8) -> GroupMemberRole {
 /// - `MemberJoinedViaTeeAttestation` → `MemberAdded` (a hardware-attested TEE
 ///   node becomes a member with the granted role; the attestation evidence is
 ///   consumed by the admission gate, not the membership projection).
-/// - `TransferOwnership` → `AdminChanged` (owner ⇔ ADMIN, design §9.2; the op
-///   is authored in the *group's* scope, so it sets that scope's root admin).
+/// - `TransferOwnership` → `AdminChanged` (owner ⇔ ADMIN; the op is authored in
+///   the *group's* scope, so it sets that scope's root admin).
 ///
 /// **Out-of-model (`None`, by design — not gaps).** Everything else, because
 /// the unified `authorize` decision is **role**-based (`is_group_admin` ⇔
-/// `role == Admin`, `is_owner` ⇔ root admin) — exactly like today's cross-DAG
-/// `membership_status_at` check. Ops that never enter that decision don't
-/// belong in the auth projection (`scope_root`):
+/// `role == Admin`, `is_owner` ⇔ root admin) — exactly like today's membership
+/// check. Ops that never enter that decision don't belong in the auth
+/// projection (`scope_root`):
 /// - capability refinement (`MemberCapabilitySet`, `DefaultCapabilitiesSet`,
 ///   `ContextCapabilityGranted`/`Revoked`) — a separate, deferred permission
-///   layer (design §9.3 keeps the simple lattice);
+///   layer that keeps the simple role lattice unchanged;
 /// - app / upgrade / migration config (`UpgradePolicySet`,
 ///   `TargetApplicationSet`, `GroupMigrationSet`, the `Cascade*` ops) — owned by
-///   the app-version / migrations-v2 machinery;
+///   the app-version machinery;
 /// - metadata (`GroupMetadataSet`, `MemberMetadataSet`, `ContextMetadataSet`),
 ///   subgroup-visibility and TEE-admission *policy* (`SubgroupVisibilitySet`,
 ///   `TeeAdmissionPolicySet`), auto-follow (`MemberSetAutoFollow`);
 /// - the context↔group binding (`ContextRegistered`/`ContextDetached`,
 ///   `GroupDelete`) — `authorize` derives a context's group from that binding
-///   *at auth time* (the P4 context→group lookup), so it lives in that index,
-///   not inside a scope's `ScopeState`.
+///   *at auth time* (the context→group lookup), so it lives in that index, not
+///   inside a scope's `ScopeState`.
 ///
 /// A `_` catch-all (rather than an exhaustive match) keeps this transitional
-/// adapter compiling as master grows `GroupOp`; any genuinely auth-relevant new
-/// variant must be armed explicitly above (and the migration's coverage tests
-/// would catch a divergence if one slipped through).
+/// adapter compiling as `GroupOp` grows; any genuinely auth-relevant new
+/// variant must be armed explicitly above, and the fold-equivalence coverage
+/// tests would catch a divergence if one slipped through.
 #[must_use]
 pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPayload> {
     match op {
@@ -140,8 +136,8 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
 ///
 /// **Caveats:**
 /// - `GroupCreated`: the `restricted` flag isn't carried on the op (it's a
-///   policy determination), so this emits `restricted: false`; the live
-///   migration resolves real restriction from the group's policy.
+///   policy determination), so this emits `restricted: false`; the live path
+///   resolves real restriction from the group's policy.
 /// - `GroupDeleted`: maps only the `root_group_id`; the op's pre-computed
 ///   `cascade_group_ids` mean the live path emits one `SubgroupDeleted` per
 ///   cascaded scope.
@@ -151,8 +147,8 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
 /// joiner cannot escalate — the role is under the admin's signature), so we
 /// decode both straight off it.
 ///
-/// **Returns `None`** (out-of-model by design): `KeyDelivery` (key transport,
-/// outside the op model — §9.6).
+/// **Returns `None`** (out-of-model by design): `KeyDelivery` — key transport,
+/// which rides its own channel and never enters the auth projection.
 #[must_use]
 pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
     match op {
@@ -264,13 +260,14 @@ mod tests {
 
     /// Build a `SetWriters` op chain from a rotation log and assert the unified
     /// projection resolves the **same writer set** the current
-    /// `rotation_log::resolve_local` does — the equivalence that de-risks
-    /// routing the live ACL resolution through `ScopeState` in a later slice.
+    /// `rotation_log::resolve_local` does — the equivalence that lets the live
+    /// ACL resolution route through `ScopeState`.
     ///
     /// Scope: sequential rotations (strictly increasing HLC), the common case.
     /// Genuinely-concurrent (equal-HLC) rotations tie-break by `op_id` in
-    /// `ScopeState` vs signer-digest in `resolve_local`; aligning that tiebreak
-    /// is a tracked migration detail, exercised once the live path is wired.
+    /// `ScopeState` vs signer-digest in `resolve_local`; once `resolve_local` is
+    /// gone the `op_id` tiebreak is canonical and identical on every node, so
+    /// there is nothing to align.
     #[test]
     fn acl_plane_matches_resolve_local_for_sequential_rotations() {
         let object = Id::new([0xA0; 32]);
