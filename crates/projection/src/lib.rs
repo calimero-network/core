@@ -247,6 +247,16 @@ impl ScopeState {
     /// *different* root, so sync can never declare "converged" while
     /// authorization disagrees. The projection never re-hashes entity state;
     /// `entities_root` is authoritative for the data plane.
+    ///
+    /// **Caller contract:** `entities_root` MUST be the **storage layer's
+    /// Merkle root**, not this projection's own [`entities_hash`](Self) — they
+    /// are different functions (the storage Merkle vs a SHA-256 over the
+    /// projection's `BTreeMap`) and the type system can't tell two `[u8; 32]`s
+    /// apart. Passing the projection's own entity hash would produce a
+    /// valid-looking root that doesn't carry the intended cross-layer semantics.
+    /// This is intentionally NOT [`root`](Self::root) (which uses the
+    /// projection's entity hash) — the whole point is to fold authorization onto
+    /// the *storage* root.
     #[must_use]
     pub fn scope_root_with_entities(&self, entities_root: [u8; 32]) -> [u8; 32] {
         scope_root(entities_root, self.acl_hash(), self.governance_hash())
@@ -467,6 +477,29 @@ mod tests {
         assert_ne!(
             base, member_added,
             "a membership change must move scope_root even with identical entities"
+        );
+
+        // An admin change moves the root too (governance_hash folds in
+        // root_admin), so a silent admin takeover can't pass as converged.
+        let admin_changed =
+            ScopeState::from_ops([&op(10, OpPayload::AdminChanged { new_admin: pk })])
+                .scope_root_with_entities(entities_root);
+        assert_ne!(
+            base, admin_changed,
+            "an admin change must move scope_root even with identical entities"
+        );
+
+        // A policy change moves the root (governance_hash folds in policy).
+        let policy_changed = ScopeState::from_ops([&op(
+            10,
+            OpPayload::PolicyUpdated {
+                policy_bytes: vec![1, 2, 3],
+            },
+        )])
+        .scope_root_with_entities(entities_root);
+        assert_ne!(
+            base, policy_changed,
+            "a policy change must move scope_root even with identical entities"
         );
 
         // The entities component still matters: same projection, different
