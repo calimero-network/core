@@ -1382,10 +1382,14 @@ mod tests {
             .nest(&ns_id, &sub_id)
             .unwrap();
 
-        // Seed a signing key on the subgroup too, so `delete_group_local_rows`
-        // exercises the signing-key delete (not just the AES-key delete) for the
-        // subgroup — making `purged_groups == 2` a meaningful guard and matching
-        // the multi-group cascade test's seeding.
+        // Seed a signing key on BOTH groups so `delete_group_local_rows`
+        // exercises the signing-key delete (not just the AES-key delete) for
+        // each, symmetric with the multi-group cascade test's seeding. (The
+        // `purged_groups == 2` count itself comes from both groups having rows
+        // to drop; these seeds make the per-group signing-key delete path real.)
+        SigningKeysRepository::new(&store)
+            .store_key(&ns_id, &self_pk, &[0xEEu8; 32])
+            .unwrap();
         SigningKeysRepository::new(&store)
             .store_key(&sub_id, &self_pk, &[0xFFu8; 32])
             .unwrap();
@@ -1426,6 +1430,13 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "subgroup AES group encryption key MUST be purged"
+        );
+        assert!(
+            SigningKeysRepository::new(&store)
+                .get_key(&ns_id, &self_pk)
+                .unwrap()
+                .is_none(),
+            "root signing key MUST be purged"
         );
         assert!(
             SigningKeysRepository::new(&store)
