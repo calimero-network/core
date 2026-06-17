@@ -63,14 +63,47 @@ pub struct AclView {
     pub root_admin: Option<PublicKey>,
 }
 
+/// Capabilities a scope **member** implicitly holds on a non-restricted
+/// entity (§9.2 / slice-2 S2.1 decision: `default-write = membership`):
+/// `WRITE` + `DELETE`, but **not** `ADMIN` — rotating an object's writer set
+/// still requires an explicit ACL grant (ownership), so a plain member can't
+/// lock others out of a default entity.
+const DEFAULT_MEMBER_MASK: OpMask = OpMask::WRITE.union(OpMask::DELETE);
+
 impl AclView {
     /// Does `author` hold at least `required` on `entity`?
+    ///
+    /// Two-tier (S2.1 `default-write = membership`):
+    /// 1. **Restricted entity** — an explicit per-object ACL entry exists:
+    ///    `author` must be listed with a mask covering `required`. This is the
+    ///    writer plane (was `writers_at` / `resolve_local`); a member who isn't
+    ///    a listed writer is denied (strictly finer than the old per-delta
+    ///    membership gate).
+    /// 2. **Non-restricted entity** — no explicit ACL: any scope member holds
+    ///    [`DEFAULT_MEMBER_MASK`] (`WRITE`+`DELETE`). This reproduces today's
+    ///    "members can write" for ordinary contexts (e.g. kv-store) without
+    ///    enumerating a per-entity writer set for every key.
     #[must_use]
     pub fn may(&self, author: &PublicKey, entity: Id, required: OpMask) -> bool {
-        self.acl
-            .get(&entity)
-            .and_then(|writers| writers.get(author))
-            .is_some_and(|held| held.contains(required))
+        if let Some(writers) = self.acl.get(&entity) {
+            // Restricted object: explicit ACL is authoritative.
+            return writers
+                .get(author)
+                .is_some_and(|held| held.contains(required));
+        }
+        // Non-restricted: default-write = membership.
+        self.is_scope_member(author) && DEFAULT_MEMBER_MASK.contains(required)
+    }
+
+    /// Is `author` a member of this view's scope (a member of any group in the
+    /// view)? An `AclView` resolved for one scope carries that scope's
+    /// membership; this is the predicate behind `default-write` for
+    /// non-restricted entities.
+    #[must_use]
+    pub fn is_scope_member(&self, author: &PublicKey) -> bool {
+        self.groups
+            .values()
+            .any(|members| members.contains_key(author))
     }
 
     /// Is `author` the owner of `object` — permitted to rotate its writer set?
@@ -296,5 +329,126 @@ mod tests {
             },
         );
         assert!(authorize(&op_ok, &view).is_ok());
+    }
+
+    // ---- S2.1: default-write = membership (the slice-2 example scenarios) ----
+
+    fn membership_view(group: ContextGroupId, member: PublicKey, role: GroupMemberRole) -> AclView {
+        let mut groups = BTreeMap::new();
+        groups.insert(group, [(member, role)].into_iter().collect());
+        AclView {
+            groups,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn default_write_lets_a_member_write_a_non_restricted_entity() {
+        // kv-store context: Bob is a member, no per-key ACL. Bob may Put/Delete
+        // any key; Carol (non-member) may not.
+        let group = ContextGroupId::from([0x33; 32]);
+        let bob = PublicKey::from([0xB0; 32]);
+        let carol = PublicKey::from([0xC0; 32]);
+        let view = membership_view(group, bob, GroupMemberRole::Member);
+        let x = Id::new([0x11; 32]);
+
+        assert!(authorize(
+            &op_with(
+                bob,
+                OpPayload::Put {
+                    entity: x,
+                    value: vec![5]
+                }
+            ),
+            &view
+        )
+        .is_ok());
+        assert!(authorize(&op_with(bob, OpPayload::Delete { entity: x }), &view).is_ok());
+        assert_eq!(
+            authorize(
+                &op_with(
+                    carol,
+                    OpPayload::Put {
+                        entity: x,
+                        value: vec![5]
+                    }
+                ),
+                &view
+            ),
+            Err(Rejected::NotPermitted {
+                required: OpMask::WRITE
+            })
+        );
+    }
+
+    #[test]
+    fn default_write_does_not_grant_a_member_setwriters() {
+        // A plain member gets WRITE+DELETE on default entities but NOT ADMIN —
+        // rotating an object's writer set needs an explicit ownership grant.
+        let group = ContextGroupId::from([0x33; 32]);
+        let bob = PublicKey::from([0xB0; 32]);
+        let view = membership_view(group, bob, GroupMemberRole::Member);
+        let x = Id::new([0x11; 32]);
+        assert_eq!(
+            authorize(
+                &op_with(
+                    bob,
+                    OpPayload::SetWriters {
+                        object: x,
+                        writers: BTreeMap::new()
+                    }
+                ),
+                &view
+            ),
+            Err(Rejected::NotOwner)
+        );
+    }
+
+    #[test]
+    fn explicit_acl_overrides_default_write_for_restricted_objects() {
+        // `secret` carries an explicit ACL {Alice: FULL}. Bob is a context
+        // member but NOT a writer of `secret` → denied (the old coarse
+        // per-delta gate would have let him through; the unified check is
+        // strictly tighter). Alice → ok.
+        let group = ContextGroupId::from([0x33; 32]);
+        let alice = PublicKey::from([0xA1; 32]);
+        let bob = PublicKey::from([0xB0; 32]);
+        let secret = Id::new([0x5E; 32]);
+
+        let mut view = membership_view(group, bob, GroupMemberRole::Member);
+        // Both are members; only Alice is a writer of the restricted object.
+        view.groups
+            .get_mut(&group)
+            .unwrap()
+            .insert(alice, GroupMemberRole::Admin);
+        view.acl
+            .insert(secret, [(alice, OpMask::FULL)].into_iter().collect());
+
+        assert!(authorize(
+            &op_with(
+                alice,
+                OpPayload::Put {
+                    entity: secret,
+                    value: vec![1]
+                }
+            ),
+            &view
+        )
+        .is_ok());
+        assert_eq!(
+            authorize(
+                &op_with(
+                    bob,
+                    OpPayload::Put {
+                        entity: secret,
+                        value: vec![1]
+                    }
+                ),
+                &view
+            ),
+            Err(Rejected::NotPermitted {
+                required: OpMask::WRITE
+            })
+        );
     }
 }
