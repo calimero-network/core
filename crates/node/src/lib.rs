@@ -34,6 +34,7 @@ mod state;
 pub(crate) mod state_delta_bridge;
 pub mod sync;
 pub(crate) mod sync_session_bridge;
+pub mod unified_op;
 mod utils;
 
 pub use manager::NodeManager;
