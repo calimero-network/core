@@ -16,7 +16,7 @@
 //! `signer` is a deterministic cross-node author and whose target scope is
 //! resolvable from the op — applied at the namespace governance handler.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
@@ -155,6 +155,13 @@ pub fn load_rotation_log_direct(
     if let Some(children) = index.children() {
         for child in children {
             let Some(bytes) = read(StorageKey::Entry(child.id())) else {
+                // The child is listed in the index but its value is unreadable
+                // (store error — already warned in `read` — or an absent value,
+                // a write-skew). Either way the log is partial; flag it.
+                tracing::warn!(
+                    %context_id, anchor = ?anchor, child = ?child.id(),
+                    "rotation-log child listed but unreadable; ACL shadow feed may be incomplete"
+                );
                 continue;
             };
             match decode_rotation_log_entry_child(&bytes) {
@@ -220,6 +227,9 @@ pub struct ScopeProjections {
     /// the receiver's current state). Grows with governance/ACL ops; bounding
     /// lands with the cutover.
     logs: HashMap<ScopeId, Vec<Op>>,
+    /// Op ids already retained per scope — gives `ingest_op` O(1) dedup of a
+    /// replayed delta instead of an O(n) scan of the log.
+    seen: HashMap<ScopeId, HashSet<[u8; 32]>>,
 }
 
 impl ScopeProjections {
@@ -236,9 +246,9 @@ impl ScopeProjections {
     /// log from accreting duplicates.
     pub fn ingest_op(&mut self, op: &Op) {
         self.states.entry(op.scope).or_default().apply(op);
-        let log = self.logs.entry(op.scope).or_default();
-        if !log.iter().any(|existing| existing.id == op.id) {
-            log.push(op.clone());
+        // O(1) dedup: `insert` is true only for a not-yet-seen id.
+        if self.seen.entry(op.scope).or_default().insert(op.id) {
+            self.logs.entry(op.scope).or_default().push(op.clone());
         }
     }
 
