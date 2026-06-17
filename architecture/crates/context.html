@@ -84,6 +84,7 @@
 <div class="fr"><div class="fp">group_store/context_tree.rs</div><div class="fd">Context-group binding: register, detach, list contexts per group</div></div>
 <div class="fr"><div class="fp">group_store/tests.rs</div><div class="fd">Comprehensive group store tests including namespace identity, governance, key delivery</div></div>
 <div class="fr"><div class="fp">governance_dag.rs</div><div class="fd">DAG bridge &mdash; <span class="code">GroupGovernanceApplier</span> + <span class="code">NamespaceGovernanceApplier</span></div></div>
+<div class="fr"><div class="fp">scope_projection.rs</div><div class="fd">Shadow unified-op projection &mdash; <span class="code">op_from_signed_namespace_op()</span> derives projection ops from namespace governance deltas; folded into scope projections on DAG apply (additive, not yet authoritative)</div></div>
 <div class="fr"><div class="fp">handlers/</div><div class="fd">30+ handler files, one per <span class="code">ContextMessage</span> variant (create, join, delete, execute, namespace ops, etc.)</div></div>
 
 <h3 style="color:#10b981;margin-top:20px;">calimero-context-primitives</h3>
@@ -461,7 +462,7 @@ get_group_signing_key(store, &amp;current, public_key) <span class="comment">// 
 <h2>Dependencies</h2>
 <p style="margin-bottom:18px;">How the three context crates relate to other Calimero crates. Arrows show compile-time dependencies.</p>
 
-<svg viewBox="0 0 1060 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 1060 420" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <marker id="dp" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#6b6b80"/></marker>
     <marker id="dg" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#10b981"/></marker>
@@ -507,6 +508,34 @@ get_group_signing_key(store, &amp;current, public_key) <span class="comment">// 
   <rect x="790" y="240" width="140" height="42" rx="8" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.2"/>
   <text x="860" y="265" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">primitives</text>
 
+  <!-- authz / op / op-adapter / governance-types / projection -->
+  <rect x="30" y="300" width="140" height="42" rx="8" fill="#f9731610" stroke="#f97316" stroke-width="1"/>
+  <text x="100" y="318" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">authz</text>
+  <text x="100" y="333" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">authorization</text>
+
+  <rect x="190" y="300" width="160" height="42" rx="8" fill="#f9731610" stroke="#f97316" stroke-width="1"/>
+  <text x="270" y="318" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">governance-types</text>
+  <text x="270" y="333" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">shared gov types</text>
+
+  <rect x="370" y="300" width="100" height="42" rx="8" fill="#f9731610" stroke="#f97316" stroke-width="1"/>
+  <text x="420" y="318" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">op</text>
+  <text x="420" y="333" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">op types</text>
+
+  <rect x="490" y="300" width="130" height="42" rx="8" fill="#f9731610" stroke="#f97316" stroke-width="1"/>
+  <text x="555" y="318" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">op-adapter</text>
+  <text x="555" y="333" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">op adaptation</text>
+
+  <rect x="640" y="300" width="130" height="42" rx="8" fill="#f9731610" stroke="#f97316" stroke-width="1"/>
+  <text x="705" y="318" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">projection</text>
+  <text x="705" y="333" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">scope projection</text>
+
+  <!-- context → new deps -->
+  <line x1="480" y1="80" x2="100" y2="300" stroke="#f97316" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="500" y1="80" x2="270" y2="300" stroke="#f97316" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="520" y1="80" x2="420" y2="300" stroke="#f97316" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="540" y1="80" x2="555" y2="300" stroke="#f97316" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="560" y1="80" x2="705" y2="300" stroke="#f97316" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+
   <!-- context → external deps -->
   <line x1="420" y1="80" x2="100" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
   <line x1="450" y1="80" x2="260" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
@@ -534,12 +563,13 @@ get_group_signing_key(store, &amp;current, public_key) <span class="comment">// 
   <text x="860" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">serde</text>
 </svg>
 
-<div class="legend">
+  <div class="legend">
   <div class="legend-item"><div class="ld" style="background:#10b981"></div>Context crates</div>
   <div class="legend-item"><div class="ld" style="background:#06b6d4"></div>Storage</div>
   <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>Node</div>
   <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>Network</div>
   <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Primitives</div>
+  <div class="legend-item"><div class="ld" style="background:#f97316"></div>New dependencies (authz, governance-types, op, op-adapter, projection)</div>
   <div class="legend-item"><div class="ld" style="background:#252538"></div>External crates</div>
 </div>
 </div>
