@@ -24,6 +24,7 @@
     { label: 'merod & meroctl', href: 'crates/tools.html', dot: '#f59e0b' },
     { label: 'Config Reference', href: 'config-reference.html', dot: '#f97316' },
     { label: 'TEE Mode', href: 'tee-mode.html', dot: '#ec4899' },
+    { label: 'Fleet HA', href: 'tee-fleet-ha.html', dot: '#a855f7' },
     { label: 'Release Process', href: 'release.html', dot: '#10b981' },
     { label: 'Auth Service', href: 'crates/auth.html', dot: '#84cc16' },
     { section: 'Architecture Deep-Dive' },
