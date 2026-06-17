@@ -1,10 +1,10 @@
 //! Substrate for the unified causal log: convert the live apply stream into
-//! [`Op`]s and maintain one [`ScopeState`] projection per context.
+//! [`Op`]s and maintain one [`ScopeState`] projection per scope.
 //!
 //! This is **additive** — nothing routes a decision or a convergence check
 //! through it yet. It is the building block the apply path feeds once the
 //! unified op-log replaces the separate data / governance / rotation stores:
-//! maintain one projection per context, and derive its convergence root by
+//! maintain one projection per scope, and derive its convergence root by
 //! folding the projection's ACL + governance hashes onto the storage layer's
 //! existing Merkle entities root (so a hash-neutral writer/membership rotation
 //! moves the root). Wiring it into the live appliers, persistence, and bounding
@@ -14,7 +14,6 @@ use std::collections::HashMap;
 
 use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::payload_from_action;
-use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
 use calimero_storage::action::Action;
@@ -71,51 +70,57 @@ fn build_op(
     }
 }
 
-/// In-memory per-context registry of unified-op [`ScopeState`] projections.
+/// In-memory registry of unified-op [`ScopeState`] projections, keyed by
+/// [`ScopeId`].
+///
+/// Keyed by **scope**, not context: a scope is the unit of convergence — a
+/// context's data lives in its own scope, a group's membership in the group's
+/// scope, and authorization for a context resolves against its group's scope.
+/// The apply paths feed each op into the scope it belongs to.
 ///
 /// Additive and unbounded for now: nothing populates it in production yet, so
 /// growth is a non-issue until the apply path feeds it — at which point the
 /// wiring increment adds eviction (gated like the other per-context caches) and
 /// persistence. Kept deliberately small so the wiring is the only moving part.
 #[derive(Default)]
-pub struct ContextProjections {
-    states: HashMap<ContextId, ScopeState>,
+pub struct ScopeProjections {
+    states: HashMap<ScopeId, ScopeState>,
 }
 
-impl ContextProjections {
+impl ScopeProjections {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Fold `ops` into `context`'s projection (creating it if absent). Apply is
+    /// Fold `ops` into `scope`'s projection (creating it if absent). Apply is
     /// per-slot last-writer-wins, so the order ops are ingested doesn't matter.
-    pub fn ingest<'a>(&mut self, context: ContextId, ops: impl IntoIterator<Item = &'a Op>) {
-        let state = self.states.entry(context).or_default();
+    pub fn ingest<'a>(&mut self, scope: ScopeId, ops: impl IntoIterator<Item = &'a Op>) {
+        let state = self.states.entry(scope).or_default();
         for op in ops {
             state.apply(op);
         }
     }
 
-    /// `context`'s convergence root: the projection's ACL + governance folded
-    /// onto the supplied storage Merkle `entities_root`. `None` if `context`
-    /// has no projection yet.
+    /// `scope`'s convergence root: the projection's ACL + governance folded onto
+    /// the supplied storage Merkle `entities_root`. `None` if `scope` has no
+    /// projection yet.
     ///
     /// `entities_root` MUST be the storage layer's Merkle root, not the
     /// projection's own entity hash (see
     /// [`ScopeState::scope_root_with_entities`]).
     #[must_use]
-    pub fn scope_root(&self, context: &ContextId, entities_root: [u8; 32]) -> Option<[u8; 32]> {
+    pub fn scope_root(&self, scope: &ScopeId, entities_root: [u8; 32]) -> Option<[u8; 32]> {
         self.states
-            .get(context)
+            .get(scope)
             .map(|state| state.scope_root_with_entities(entities_root))
     }
 
-    /// Read-only access to a context's projection (for shadow comparison /
+    /// Read-only access to a scope's projection (for shadow comparison /
     /// authorization once the apply path feeds this).
     #[must_use]
-    pub fn get(&self, context: &ContextId) -> Option<&ScopeState> {
-        self.states.get(context)
+    pub fn get(&self, scope: &ScopeId) -> Option<&ScopeState> {
+        self.states.get(scope)
     }
 }
 
@@ -180,15 +185,14 @@ mod tests {
     }
 
     #[test]
-    fn projection_registry_is_per_context_and_folds_acl_into_root() {
-        let scope = ScopeId::from([0u8; 32]);
+    fn projection_registry_is_per_scope_and_folds_acl_into_root() {
+        let scope_a = ScopeId::from([0xAA; 32]);
+        let scope_b = ScopeId::from([0xBB; 32]);
         let author = PublicKey::from([1u8; 32]);
-        let ctx_a = ContextId::from([0xAA; 32]);
-        let ctx_b = ContextId::from([0xBB; 32]);
         let storage_root = [0x42u8; 32];
 
         let put = actions_to_ops(
-            scope,
+            scope_a,
             author,
             hlc(10),
             &[],
@@ -200,18 +204,20 @@ mod tests {
             }],
         );
 
-        let mut reg = ContextProjections::new();
-        reg.ingest(ctx_a, &put);
+        let mut reg = ScopeProjections::new();
+        reg.ingest(scope_a, &put);
 
-        // ctx_b has no projection yet.
-        assert!(reg.scope_root(&ctx_b, storage_root).is_none());
-        let root_a_before = reg.scope_root(&ctx_a, storage_root).expect("ctx_a present");
+        // scope_b has no projection yet.
+        assert!(reg.scope_root(&scope_b, storage_root).is_none());
+        let root_a_before = reg
+            .scope_root(&scope_a, storage_root)
+            .expect("scope_a present");
 
         // Ingest a writer-set rotation (ACL plane) — hash-neutral on entities,
-        // but it must move ctx_a's scope_root.
+        // but it must move scope_a's scope_root.
         let rotation = Op {
             id: [0u8; 32],
-            scope,
+            scope: scope_a,
             parents: vec![],
             author,
             hlc: hlc(20),
@@ -222,8 +228,10 @@ mod tests {
             expected_scope_root: [0u8; 32],
             signature: [0u8; 64],
         };
-        reg.ingest(ctx_a, [&rotation]);
-        let root_a_after = reg.scope_root(&ctx_a, storage_root).expect("ctx_a present");
+        reg.ingest(scope_a, [&rotation]);
+        let root_a_after = reg
+            .scope_root(&scope_a, storage_root)
+            .expect("scope_a present");
 
         assert_ne!(
             root_a_before, root_a_after,
