@@ -292,16 +292,21 @@ steps:
     type: wait
     seconds: 40
 
-  - name: Read migration-status rollup on node 2
+  # Read the rollup on node 1: the migration-status endpoint requires the group
+  # admin (node 1 created the namespace), and the admin's rollup aggregates every
+  # member's heartbeat — so node 2's stranded marker surfaces here once its
+  # heartbeat has gossiped (the settle wait above covers that). Node 2 is an
+  # inherited Open-subgroup member, not an admin, so it cannot read the rollup.
+  - name: Read migration-status rollup on node 1 (admin)
     type: get_migration_status
-    node: app-migration-strand-2
+    node: app-migration-strand-1
     namespace_id: "{{namespace_id}}"
     outputs:
       strand_failed: failed
 
   - name: Assert exactly node 2 surfaces as failed in the rollup
-    # node 2 reports its own NoMigrationPath marker (local — no gossip wait);
-    # node 1 is at v3 (migrated). Mirrors scenario 14's numeric rollup asserts.
+    # Node 1's cohort rollup: node 1 is at v3 (migrated), node 2 is stranded
+    # (NoMigrationPath) -> failed == 1. Mirrors scenario 14's numeric asserts.
     type: json_assert
     statements:
       - "equal({{strand_failed}}, 1)"
@@ -370,10 +375,11 @@ steps:
 
   # Structured recovery proof: the rollup converges to all-migrated (node 2's
   # stranded marker was cleared and it now reports the v3 schema with zero
-  # residue). Polls past the heartbeat interval.
+  # residue). Read on node 1 (admin) like the strand check above; polls past the
+  # heartbeat interval so node 2's recovered heartbeat reaches the admin.
   - name: Assert the cohort converges to all-migrated after recovery
     type: assert_migration_complete
-    node: app-migration-strand-2
+    node: app-migration-strand-1
     namespace_id: "{{namespace_id}}"
     timeout_seconds: 90
     poll_interval: 5
