@@ -1952,6 +1952,18 @@ mod tests {
                 .is_some(),
             "subgroup signing key should exist before purge"
         );
+        // Seed an AES group encryption key on the subgroup so we can assert
+        // the subgroup-ONLY leave path deletes it (forward-secrecy).
+        GroupKeyring::new(&store, sub_id)
+            .store_key(&[0x33u8; 32])
+            .unwrap();
+        assert!(
+            GroupKeyring::new(&store, sub_id)
+                .load_current_key()
+                .unwrap()
+                .is_some(),
+            "subgroup AES group key should exist before purge"
+        );
 
         purge_subgroup_for_self(&store, sub_id);
 
@@ -1984,6 +1996,13 @@ mod tests {
         assert!(
             MetaRepository::new(&store).load(&sub_id).unwrap().is_none(),
             "subgroup meta MUST be purged"
+        );
+        assert!(
+            GroupKeyring::new(&store, sub_id)
+                .load_current_key()
+                .unwrap()
+                .is_none(),
+            "subgroup-only leave MUST delete the subgroup's AES group key"
         );
         assert!(
             NamespaceRepository::new(&store)
