@@ -2771,9 +2771,7 @@ impl SyncManager {
     /// join/registration race window if the context isn't materialised
     /// locally yet.
     ///
-    /// Returns `Ok((Some(ctx), group_hint))` once resolved, where `group_hint`
-    /// is the locally-resolved owning group (threaded to `verify_inbound_member`
-    /// to avoid a duplicate lookup). Returns `Ok((None, None))` when the caller
+    /// Returns `Ok(Some(ctx))` once resolved. Returns `Ok(None)` when the caller
     /// should stop and close the stream:
     /// - after sending `OpaqueError` (unknown context / unverified dialer) or
     ///   `NotMaterialized` (verified member, context not yet materialised); or
@@ -2785,12 +2783,9 @@ impl SyncManager {
         context_id: ContextId,
         their_identity: PublicKey,
         stream: &mut Stream,
-    ) -> eyre::Result<(
-        Option<calimero_primitives::context::Context>,
-        Option<calimero_context_config::types::ContextGroupId>,
-    )> {
+    ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
         if let Some(ctx) = self.context_client.get_context(&context_id)? {
-            return Ok((Some(ctx), None));
+            return Ok(Some(ctx));
         }
 
         // Race window: the dialer can trigger context-level sync as
@@ -2836,9 +2831,6 @@ impl SyncManager {
 
         let deadline = Instant::now() + MATERIALIZATION_WINDOW;
 
-        // Resolved once the dialer is confirmed a member; threaded out so the
-        // caller's `verify_inbound_member` need not re-resolve it.
-        let mut resolved_group: Option<calimero_context_config::types::ContextGroupId> = None;
         let mut dialer_verified = false;
 
         let outcome =
@@ -2847,10 +2839,7 @@ impl SyncManager {
                     if let Some(group_id) =
                         calimero_context::group_store::get_group_for_context(store, &context_id)?
                     {
-                        let is_member = MembershipRepository::new(store)
-                            .is_member(&group_id, &their_identity)?;
-                        if is_member {
-                            resolved_group = Some(group_id);
+                        if MembershipRepository::new(store).is_member(&group_id, &their_identity)? {
                             dialer_verified = true;
                         }
                     }
@@ -2873,7 +2862,7 @@ impl SyncManager {
                     ?their_identity,
                     "context materialised during join race window, proceeding with inbound sync"
                 );
-                Ok((Some(ctx), resolved_group))
+                Ok(Some(ctx))
             }
             MaterializationOutcome::PeerGone => {
                 // The dialer disconnected mid-wait. No close message to send —
@@ -2883,7 +2872,7 @@ impl SyncManager {
                     ?their_identity,
                     "dialer disconnected during materialisation wait, abandoning"
                 );
-                Ok((None, None))
+                Ok(None)
             }
             MaterializationOutcome::Elapsed {
                 dialer_verified: false,
@@ -2899,7 +2888,7 @@ impl SyncManager {
                 if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
                     error!(%err, %context_id, "failed to send OpaqueError for unknown context");
                 }
-                Ok((None, None))
+                Ok(None)
             }
             MaterializationOutcome::Elapsed {
                 dialer_verified: true,
@@ -2919,7 +2908,7 @@ impl SyncManager {
                         "failed to send NotMaterialized for non-materialised context"
                     );
                 }
-                Ok((None, None))
+                Ok(None)
             }
         }
     }
@@ -2935,12 +2924,6 @@ impl SyncManager {
         context_id: ContextId,
         their_identity: PublicKey,
         peer_id: PeerId,
-        // The group locally bound to `context_id`, already resolved by the
-        // caller (`resolve_inbound_context`) to skip a duplicate lookup. MUST
-        // be a locally-resolved binding, never a peer-supplied value: it is
-        // the group membership is checked against. `None` means "resolve it
-        // here", which is identical to the pre-optimisation path.
-        group_hint: Option<calimero_context_config::types::ContextGroupId>,
     ) -> eyre::Result<bool> {
         let mut _updated = None;
 
@@ -2949,17 +2932,17 @@ impl SyncManager {
         // and direct group-membership; the parent-walk for `Open` subgroups
         // lives in `calimero-context::group_store`, which we have access
         // to here at the node layer.
+        //
+        // Resolve the owning group fresh here (not cached from the
+        // materialisation wait): authorization must read current governance
+        // state, since a group reparent during the wait could otherwise be
+        // evaluated against a stale binding.
         let is_inherited_member = || -> eyre::Result<bool> {
             let store = self.context_client.datastore();
-            let group_id = match group_hint {
-                Some(group_id) => group_id,
-                None => {
-                    match calimero_context::group_store::get_group_for_context(store, &context_id)?
-                    {
-                        Some(group_id) => group_id,
-                        None => return Ok(false),
-                    }
-                }
+            let Some(group_id) =
+                calimero_context::group_store::get_group_for_context(store, &context_id)?
+            else {
+                return Ok(false);
             };
             MembershipRepository::new(store).is_member(&group_id, &their_identity)
         };
@@ -3104,7 +3087,7 @@ impl SyncManager {
             return Ok(Some(()));
         }
 
-        let (Some(context), group_hint) = self
+        let Some(context) = self
             .resolve_inbound_context(context_id, their_identity, stream)
             .await?
         else {
@@ -3112,7 +3095,7 @@ impl SyncManager {
         };
 
         if !self
-            .verify_inbound_member(context_id, their_identity, peer_id, group_hint)
+            .verify_inbound_member(context_id, their_identity, peer_id)
             .await?
         {
             return Ok(Some(()));
