@@ -35,6 +35,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
         // call consumes `delta`; `None` for ops not yet in the projection model.
         let shadow_op = crate::scope_projection::op_from_signed_namespace_op(
             &delta.payload,
+            delta.id,
             delta.hlc,
             &delta.parents,
         );

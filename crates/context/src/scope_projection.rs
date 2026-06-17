@@ -35,15 +35,22 @@ use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 use calimero_storage::store::{Key as StorageKey, MainStorage};
 use calimero_store::key::ContextState;
 
-/// Build an [`Op`] from its scope, author, and causal coordinates.
+/// Assemble an [`Op`] that **mirrors a source-DAG op**: its `id` and `parents`
+/// are the source delta's own id/parents, *not* a fresh [`Op::compute_id`]. This
+/// is deliberate — it makes the projection's op graph share an id space with the
+/// source DAGs, so a live decision's cut (e.g. a delta's `governance_dag_heads`,
+/// which are governance-op ids) maps directly onto the projection and
+/// [`ScopeProjections::acl_view_at`] resolves the same ancestry the source DAG
+/// would. The source ids are themselves content-addressed + identical on every
+/// node, so the projection's `(hlc, op_id)` LWW stays deterministic.
 fn build_op(
+    id: [u8; 32],
     scope: ScopeId,
     author: PublicKey,
     hlc: HybridTimestamp,
     parents: &[[u8; 32]],
     payload: OpPayload,
 ) -> Op {
-    let id = Op::compute_id(scope, parents, &author, &hlc, &payload);
     Op {
         id,
         scope,
@@ -86,12 +93,12 @@ fn scope_for_root_op(op: &RootOp, namespace_id: [u8; 32]) -> Option<ScopeId> {
 /// bootstrap entry (no author to attribute it to — those are skipped exactly as
 /// the rotation-log append path skips them).
 ///
-/// The author is the rotation's `signer` (deterministic across nodes) and the
-/// hlc is the rotation's `delta_hlc`. Parents are left empty: the rotation log
-/// is a per-object sequence resolved by `(hlc, signer)` today, and the
-/// projection's per-object `(hlc, op_id)` LWW reproduces that ordering without
-/// needing the causal edges (the equivalence is covered by
-/// `op-adapter::acl_plane_matches_resolve_local_*`).
+/// The op `id` is the rotation's `delta_id` (mirroring the source), the author
+/// is its `signer` (deterministic across nodes), and the hlc is its `delta_hlc`.
+/// Parents are left empty: the rotation log is a per-object sequence resolved by
+/// `(hlc, signer)` today, and the projection's per-object `(hlc, op_id)` LWW
+/// reproduces that ordering without needing the causal edges (the equivalence is
+/// covered by `op-adapter::acl_plane_matches_resolve_local_*`).
 ///
 /// This is the ACL-plane **conversion**; feeding it from the live apply stream
 /// is a later step — the raw rotation entries are produced in the storage
@@ -101,7 +108,14 @@ fn scope_for_root_op(op: &RootOp, namespace_id: [u8; 32]) -> Option<ScopeId> {
 pub fn op_from_rotation_entry(object: Id, scope: ScopeId, entry: &RotationLogEntry) -> Option<Op> {
     let author = entry.signer?;
     let payload = set_writers_payload(object, entry);
-    Some(build_op(scope, author, entry.delta_hlc, &[], payload))
+    Some(build_op(
+        entry.delta_id,
+        scope,
+        author,
+        entry.delta_hlc,
+        &[],
+        payload,
+    ))
 }
 
 /// Read a Shared anchor's rotation log directly from the datastore (no WASM
@@ -187,14 +201,17 @@ pub fn load_rotation_log_direct(
 /// Convert a cleartext namespace governance op into the unified [`Op`] for the
 /// scope it affects, or `None` if it isn't represented in the projection yet.
 ///
-/// The author is the op's `signer` (the same identity on every node, so the
-/// content-addressed `op_id` — and therefore the projection's LWW order — is
-/// deterministic across the cluster). `hlc` and `parents` come from the delta
-/// the op rides. Encrypted group-scoped ops (`NamespaceOp::Group`) are not
-/// represented: their payload is unreadable without the group key.
+/// `id`/`hlc`/`parents` are the governance **delta's own** id, hlc, and parents
+/// (its `parent_op_hashes`) — so the op mirrors the governance DAG and a
+/// data-write's `governance_dag_heads` cut maps onto the projection (see
+/// [`build_op`]). The author is the op's `signer` (the same on every node, so
+/// the projection's LWW order is deterministic). Encrypted group-scoped ops
+/// (`NamespaceOp::Group`) are not represented: their payload is unreadable
+/// without the group key.
 #[must_use]
 pub fn op_from_signed_namespace_op(
     signed: &SignedNamespaceOp,
+    id: [u8; 32],
     hlc: HybridTimestamp,
     parents: &[[u8; 32]],
 ) -> Option<Op> {
@@ -203,7 +220,7 @@ pub fn op_from_signed_namespace_op(
     };
     let scope = scope_for_root_op(root, signed.namespace_id)?;
     let payload = payload_from_root_op(root)?;
-    Some(build_op(scope, signed.signer, hlc, parents, payload))
+    Some(build_op(id, scope, signed.signer, hlc, parents, payload))
 }
 
 /// In-memory registry of unified-op [`ScopeState`] projections, keyed by
@@ -343,11 +360,16 @@ mod tests {
                     group_id: group,
                 },
             ),
+            [0x99; 32],
             hlc(10),
             &[],
         )
         .expect("open-join is in-model");
 
+        assert_eq!(
+            op.id, [0x99; 32],
+            "op id mirrors the source governance delta id (so the cut maps)"
+        );
         assert_eq!(
             op.scope,
             ScopeId::from(group),
@@ -392,6 +414,7 @@ mod tests {
                     signed_invitation,
                 },
             ),
+            [0x99; 32],
             hlc(10),
             &[],
         )
@@ -414,6 +437,7 @@ mod tests {
         let signer = PublicKey::from([1u8; 32]);
         let op = op_from_signed_namespace_op(
             &signed_root(ns, signer, RootOp::AdminChanged { new_admin: signer }),
+            [0x99; 32],
             hlc(10),
             &[],
         )
@@ -440,6 +464,7 @@ mod tests {
                     parent_id: [0x22; 32],
                 },
             ),
+            [0x99; 32],
             hlc(10),
             &[],
         )
@@ -550,6 +575,7 @@ mod tests {
                     group_id: group.to_bytes(),
                 },
             ),
+            [0x99; 32],
             hlc(10),
             &[],
         )
