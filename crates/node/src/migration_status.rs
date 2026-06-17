@@ -371,6 +371,35 @@ fn loaded_context_version(
     parse_major_version(&app_meta.version)
 }
 
+/// Enumerate every context under a namespace's full subgroup tree: the
+/// namespace-root group's direct contexts UNIONed with the contexts of every
+/// descendant subgroup. `NamespaceRepository::collect_descendants` does the
+/// depth-bounded, cycle-guarded DOWN-direction walk over the `GroupChildIndex`
+/// (the down-counterpart of `enumerate_inherited`'s up-walk), so a context a
+/// node joined via an Open subgroup is no longer invisible to the facts builder.
+/// Read-only and best-effort: a per-group enumeration error degrades to skipping
+/// that group rather than dropping the whole namespace's facts.
+fn enumerate_namespace_tree_contexts(
+    datastore: &Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+) -> Vec<calimero_primitives::context::ContextId> {
+    let mut groups = vec![*group_id];
+    groups.extend(
+        calimero_context::group_store::NamespaceRepository::new(datastore)
+            .collect_descendants(group_id)
+            .unwrap_or_default(),
+    );
+
+    let mut contexts = Vec::new();
+    for gid in &groups {
+        contexts.extend(
+            calimero_context::group_store::enumerate_group_contexts(datastore, gid, 0, usize::MAX)
+                .unwrap_or_default(),
+        );
+    }
+    contexts
+}
+
 /// Compute this node's locally-advertised migration facts for `namespace_id`.
 ///
 /// `schema_version` is the node's actually-LOADED reader version — the lowest
@@ -417,17 +446,14 @@ pub fn compute_namespace_migration_facts(
     let group_id = calimero_context_config::types::ContextGroupId::from(namespace_id);
     let target_version = derive_target_version(datastore, &group_id);
 
-    // The namespace's contexts, enumerated via the same group→context index the
-    // `get_migration_status` cohort uses. A context whose loaded reader version
-    // trails the target is an unconverted whole-root (residue_auto); the lowest
-    // loaded version across them is the node's honest advertised schema_version.
-    let contexts = calimero_context::group_store::enumerate_group_contexts(
-        datastore,
-        &group_id,
-        0,
-        usize::MAX,
-    )
-    .unwrap_or_default();
+    // Every context under the namespace, INCLUDING those in descendant
+    // subgroups (a context joined via an Open subgroup is not a direct child of
+    // the namespace-root group, so `enumerate_group_contexts(group_id)` alone
+    // would miss it — leaving a stranded subgroup context's failure/loaded
+    // state silently unreported). A context whose loaded reader version trails
+    // the target is an unconverted whole-root (residue_auto); the lowest loaded
+    // version across them is the node's honest advertised schema_version.
+    let contexts = enumerate_namespace_tree_contexts(datastore, &group_id);
 
     let mut min_loaded: Option<u32> = None;
     let mut residue_auto: u64 = 0;
@@ -1188,6 +1214,23 @@ mod tests {
     /// declares `version`. This is the binary the node has actually swapped to
     /// — the value the facts must report, distinct from the migration target.
     fn install_loaded_context(store: &Store, ns: [u8; 32], ctx: [u8; 32], version: &str) {
+        install_loaded_context_in_group(
+            store,
+            &calimero_context_config::types::ContextGroupId::from(ns),
+            ctx,
+            version,
+        );
+    }
+
+    /// Like [`install_loaded_context`] but registers the context under an
+    /// arbitrary `group_id` rather than the namespace-root group — used to put
+    /// a context in a SUBGROUP so the descendant-tree enumeration is exercised.
+    fn install_loaded_context_in_group(
+        store: &Store,
+        group_id: &calimero_context_config::types::ContextGroupId,
+        ctx: [u8; 32],
+        version: &str,
+    ) {
         use calimero_primitives::application::ApplicationId;
         use calimero_store::key::{
             ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey,
@@ -1223,12 +1266,8 @@ mod tests {
                 ),
             )
             .expect("put ContextMeta");
-        calimero_context::group_store::register_context_in_group(
-            store,
-            &calimero_context_config::types::ContextGroupId::from(ns),
-            &ctx.into(),
-        )
-        .expect("register context in group");
+        calimero_context::group_store::register_context_in_group(store, group_id, &ctx.into())
+            .expect("register context in group");
     }
 
     /// A node whose LOADED binary still reads schema v1, while the group's
@@ -1468,6 +1507,84 @@ mod tests {
             2,
             "residue_identity must INVOKE the scan and count only stale \
              identity-gated entries"
+        );
+    }
+
+    /// A context that lives in a SUBGROUP under the namespace (not a direct
+    /// child of the namespace-root group — the stranded-resync e2e topology
+    /// where a node joins via `join_subgroup_inheritance`) MUST be enumerated
+    /// by the facts builder: its stranded-at-v1 state surfaces as `residue_auto`
+    /// and its persisted `NoMigrationPath` marker as `migration_failed`. Before
+    /// the descendant-tree enumeration, `enumerate_group_contexts(namespace)`
+    /// alone skipped subgroup contexts, so the failure was silently dropped
+    /// (the heartbeat reported `unknown` instead of `failed`).
+    #[test]
+    fn facts_enumerate_context_in_subgroup_and_surface_failure() {
+        use calimero_context::group_store::{NamespaceRepository, UpgradesRepository};
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x7Au8; 32];
+        let subgroup = ContextGroupId::from([0x7Bu8; 32]);
+
+        // The namespace is migrating to v2.
+        UpgradesRepository::new(&store)
+            .save(
+                &ContextGroupId::from(ns),
+                &GroupUpgradeValue {
+                    from_version: "1".to_owned(),
+                    to_version: "2".to_owned(),
+                    migration: None,
+                    initiated_at: 0,
+                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    status: GroupUpgradeStatus::InProgress {
+                        total: 1,
+                        completed: 0,
+                        failed: 0,
+                    },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                },
+            )
+            .unwrap();
+
+        // Nest the subgroup under the namespace-root group, then register a
+        // stranded-at-v1 context in the SUBGROUP (NOT the namespace-root group).
+        NamespaceRepository::new(&store)
+            .nest(&ContextGroupId::from(ns), &subgroup)
+            .unwrap();
+        let ctx = [0xE1u8; 32];
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+
+        // The node stranded at v1 (NoMigrationPath) — the marker is persisted on
+        // the subgroup context.
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextMigrationFailed::new(ctx.into()),
+                &calimero_store::types::ContextMigrationFailed {
+                    kind: MigrationFailureKind::NoMigrationPath.to_u8(),
+                },
+            )
+            .expect("put marker");
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(
+            facts.schema_version, 1,
+            "the subgroup context's loaded v1 must govern the advertised version"
+        );
+        assert_eq!(
+            facts.residue_auto, 1,
+            "the subgroup context trails the target and counts as residue_auto"
+        );
+        assert_eq!(
+            facts.migration_failed,
+            Some(MigrationFailureKind::NoMigrationPath),
+            "a stranded subgroup context's failure marker must surface as failed \
+             (was silently lost when only namespace-root contexts were enumerated)"
         );
     }
 }
