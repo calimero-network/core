@@ -486,14 +486,14 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     // are gone. (The cascade's `signing_key_purge_failed` flag also covers this
     // AES-key failure path despite its signing-key-centric name.)
     //
-    // SAFETY: `delete_all_for_group` scans then deletes on separate store
+    // CORRECTNESS: `delete_all_for_group` scans then deletes on separate store
     // handles (non-atomic). That is race-free here only because this function
     // removes the group's membership rows *above* (see `remove_member` loop)
     // before this point — the sole writer of `GroupKeyEntry` is the
     // membership-gated key-delivery/rotation pipeline, so once membership is
     // gone no new key can be written for this group during the scan→delete
-    // window. Do not call `delete_all_for_group` from a path that has not
-    // already removed membership.
+    // window. The method is `pub(crate)` so no external path can skip this
+    // membership-removal precondition.
     GroupKeyring::new(store, *group_id).delete_all_for_group()?;
     DenyListRepository::new(store).clear_all_for_group(group_id)?;
     delete_op_log_and_head(store, group_id)?;
