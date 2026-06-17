@@ -203,6 +203,13 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         context_recipient.clone(),
     );
 
+    // Shared unified-op projection registry (cutover-flip prerequisite): one
+    // instance fed by the context manager and read by the node at the
+    // data-write decision. Threaded into both below.
+    let scope_projections = std::sync::Arc::new(std::sync::Mutex::new(
+        calimero_context::scope_projection::ScopeProjections::new(),
+    ));
+
     let context_manager = ContextManager::new(
         datastore.clone(),
         node_client.clone(),
@@ -210,14 +217,19 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         Some(&mut registry),
     )
     .with_vm_limits(config.vm_limits)
-    .with_migration_v2(config.context.migration_v2);
+    .with_migration_v2(config.context.migration_v2)
+    .with_scope_projections(std::sync::Arc::clone(&scope_projections));
 
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
         assert!(context_recipient.init(ctx), "failed to initialize");
         context_manager
     });
 
-    let node_state = crate::NodeState::new(config.specialized_node.accept_mock_tee, config.mode);
+    let mut node_state =
+        crate::NodeState::new(config.specialized_node.accept_mock_tee, config.mode);
+    // Share the one registry the context manager feeds, so the node side reads
+    // the same projection at the data-write decision.
+    node_state.scope_projections = std::sync::Arc::clone(&scope_projections);
 
     // Periodic gauge-snapshot tick — once per `METRICS_TICK_INTERVAL`,
     // reads NodeState DashMap sizes and process resource counters and

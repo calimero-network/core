@@ -110,6 +110,12 @@ pub(crate) struct NodeState {
     pub(crate) accept_mock_tee: bool,
     /// Node operation mode (Standard or ReadOnly)
     pub(crate) node_mode: NodeMode,
+    /// Shared unified-op projection registry (cutover-flip prerequisite). The
+    /// same `Arc` the context manager feeds; the node reads it at the
+    /// data-write decision for the authorize-vs-live shadow-compare. Default
+    /// here; node startup replaces it with the instance shared with the manager.
+    pub(crate) scope_projections:
+        Arc<std::sync::Mutex<calimero_context::scope_projection::ScopeProjections>>,
     /// Active sync sessions (for delta buffering during snapshot sync).
     pub(crate) sync_sessions: Arc<DashMap<ContextId, SyncSession>>,
     /// Per-context queue of state deltas whose `governance_position` references
@@ -242,6 +248,9 @@ impl NodeState {
             pending_specialized_node_invites: new_pending_specialized_node_invites(),
             accept_mock_tee,
             node_mode,
+            scope_projections: Arc::new(std::sync::Mutex::new(
+                calimero_context::scope_projection::ScopeProjections::new(),
+            )),
             sync_sessions: Arc::new(DashMap::new()),
             governance_pending: Arc::new(DashMap::new()),
             peer_identities: Arc::new(DashMap::new()),

@@ -565,6 +565,20 @@ impl ContextManager {
         self
     }
 
+    /// Use a **shared** unified-op projection registry instead of the
+    /// internally-created one. Builder-style so node startup can hand the same
+    /// `Arc` to both this manager (which feeds the projection) and the node side
+    /// (which reads it at the data-write decision). Callers that don't set it
+    /// keep their own private registry (tests, any non-node embedder).
+    #[must_use]
+    pub fn with_scope_projections(
+        mut self,
+        projections: Arc<std::sync::Mutex<scope_projection::ScopeProjections>>,
+    ) -> Self {
+        self.scope_projections = projections;
+        self
+    }
+
     /// Override the [`ContextManagerConfig::migration_v2`] master switch.
     /// Builder-style so node startup can thread the operator's
     /// `[context] migration_v2` config through while tests (and any caller that
