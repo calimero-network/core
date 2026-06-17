@@ -495,3 +495,132 @@ mod pending_parents_short_circuit {
         );
     }
 }
+
+// The inbound materialisation wait must abandon the moment the dialing peer
+// disconnects, instead of polling for the full window.
+mod materialization_wait {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use calimero_network_primitives::stream::Stream;
+    use tokio::time::{Duration, Instant};
+
+    use super::super::{
+        await_materialization_or_close, MaterializationOutcome, MaterializationProbe,
+    };
+
+    /// A probe that always reports "verified, but not materialised yet".
+    fn never_ready() -> eyre::Result<MaterializationProbe<()>> {
+        Ok(MaterializationProbe::Waiting {
+            dialer_verified: true,
+        })
+    }
+
+    #[tokio::test]
+    async fn cancels_immediately_when_dialer_closes() {
+        let (mut responder, dialer) = Stream::test_pair();
+        // Dialer gives up: dropping its end yields EOF on the responder's read.
+        drop(dialer);
+
+        // Deadline an hour out: cancellation is the ONLY path that returns
+        // promptly, so a prompt return is itself the proof. Bounding the call
+        // with a generous `timeout` (rather than asserting a tight elapsed)
+        // means a slow CI scheduler can't make this flaky — the 1h deadline is
+        // never the thing we race against.
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(30),
+            await_materialization_or_close::<(), _>(
+                &mut responder,
+                Instant::now() + Duration::from_secs(3600),
+                Duration::from_millis(200),
+                never_ready,
+            ),
+        )
+        .await
+        .expect("must abort on disconnect, not block until the deadline")
+        .unwrap();
+
+        assert!(matches!(outcome, MaterializationOutcome::PeerGone));
+    }
+
+    // `start_paused` drives the poll/deadline on tokio's virtual clock, so the
+    // loop advances deterministically regardless of real CI scheduler latency.
+    #[tokio::test(start_paused = true)]
+    async fn runs_to_deadline_while_dialer_stays_connected() {
+        // Keep both ends alive so the read stays pending and only the poll
+        // timer drives the loop to its deadline.
+        let (mut responder, _dialer) = Stream::test_pair();
+
+        let outcome = await_materialization_or_close::<(), _>(
+            &mut responder,
+            Instant::now() + Duration::from_millis(120),
+            Duration::from_millis(20),
+            never_ready,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            MaterializationOutcome::Elapsed {
+                dialer_verified: true
+            }
+        ));
+    }
+
+    // Virtual clock (see `runs_to_deadline_*`): deterministic, no real-time race.
+    #[tokio::test(start_paused = true)]
+    async fn returns_ready_when_probe_resolves() {
+        let (mut responder, _dialer) = Stream::test_pair();
+        let calls = AtomicUsize::new(0);
+        // Ready on the 2nd poll; Waiting on the 1st.
+        let probe = || {
+            if calls.fetch_add(1, Ordering::SeqCst) >= 1 {
+                Ok(MaterializationProbe::Ready(42u32))
+            } else {
+                Ok(MaterializationProbe::Waiting {
+                    dialer_verified: true,
+                })
+            }
+        };
+
+        let outcome = await_materialization_or_close::<u32, _>(
+            &mut responder,
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_millis(10),
+            probe,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, MaterializationOutcome::Ready(42)));
+    }
+
+    // Virtual clock (see `runs_to_deadline_*`): deterministic, no real-time race.
+    #[tokio::test(start_paused = true)]
+    async fn times_out_unverified_dialer() {
+        // Dialer stays connected but is never verified as a member: the wait
+        // runs to the deadline and reports the unverified outcome (which the
+        // caller turns into an `OpaqueError` close).
+        let (mut responder, _dialer) = Stream::test_pair();
+
+        let outcome = await_materialization_or_close::<(), _>(
+            &mut responder,
+            Instant::now() + Duration::from_millis(120),
+            Duration::from_millis(20),
+            || {
+                Ok(MaterializationProbe::Waiting {
+                    dialer_verified: false,
+                })
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            MaterializationOutcome::Elapsed {
+                dialer_verified: false
+            }
+        ));
+    }
+}
