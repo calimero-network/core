@@ -46,8 +46,8 @@
      1. BROADCAST MESSAGE (GOSSIPSUB)
      ═══════════════════════════════════════════════════════════ -->
 <div class="card ga">
-<h2>BroadcastMessage <span class="transport-badge badge-gossip">gossipsub</span> <span class="variant-count">10 variants</span></h2>
-<p class="section-intro">Top-level enum for all messages published via gossipsub topics. Each variant is Borsh-serialized before being sent as a gossipsub message payload. Context topics use <span class="code">context/&lt;hex&gt;</span>, group topics use <span class="code">group/&lt;hex&gt;</span>, namespace topics use <span class="code">namespace/&lt;hex&gt;</span>.</p>
+<h2>BroadcastMessage <span class="transport-badge badge-gossip">gossipsub</span> <span class="variant-count">11 variants</span></h2>
+<p class="section-intro">Top-level enum for all messages published via gossipsub topics. Each variant is Borsh-serialized before being sent as a gossipsub message payload. Context topics use <span class="code">context/&lt;hex&gt;</span>, group topics use <span class="code">group/&lt;hex&gt;</span>, namespace topics use <span class="code">ns/&lt;hex&gt;</span> (hex of the 32-byte namespace id, which is the root group id).</p>
 
 <details open>
   <summary>StateDelta <span class="variant-count">— application state replication</span></summary>
@@ -97,6 +97,20 @@
     <div class="typedef"><span class="kw">struct</span> <span class="ty">SpecializedNodeJoinConfirmation</span> {
     <span class="field">nonce</span>: <span class="ty">Nonce</span>,  <span class="comment">// matches the discovery nonce</span>
 }</div>
+  </div>
+</details>
+
+<details>
+  <summary>TeeAttestationAnnounce <span class="variant-count">— fleet-join attestation</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">A TEE fleet node announces its TDX attestation to join a namespace as a <span class="code">ReadOnlyTee</span> member. Published on the namespace topic <span class="code">ns/&lt;hex(namespace_id)&gt;</span> and re-announced for up to ~30s until a verifier admits it. The verifier runs <span class="code">verify_attestation</span>, then namespace-scoped <span class="code">admit_tee_node</span> (policy check + quote-hash replay guard). See <a href="tee-fleet-ha.html">TEE Fleet HA</a> and <a href="sequence-diagrams.html">Sequence Diagrams</a>.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">TeeAttestationAnnounce</span> {
+    <span class="field">quote_bytes</span>: <span class="ty">Vec&lt;u8&gt;</span>,            <span class="comment">// TDX attestation quote bytes</span>
+    <span class="field">public_key</span>:  <span class="ty">PublicKey</span>,           <span class="comment">// announcing node's identity public key</span>
+    <span class="field">nonce</span>:       <span class="ty">[u8; 32]</span>,            <span class="comment">// group DAG head hash for freshness binding</span>
+    <span class="field">node_type</span>:   <span class="ty">SpecializedNodeType</span>, <span class="comment">// specialized node type (e.g. ReadOnlyTee)</span>
+}</div>
+    <div class="borsh-note">Published on ns/&lt;hex(namespace_id)&gt; · drives fleet admission in crates/server/src/admin/handlers/tee/fleet_join.rs</div>
   </div>
 </details>
 
@@ -155,7 +169,7 @@
     <span class="field">namespace_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// target namespace (root group)</span>
     <span class="field">payload</span>:      <span class="ty">Vec&lt;u8&gt;</span>,   <span class="comment">// borsh(SignedNamespaceOp)</span>
 }</div>
-    <div class="borsh-note">Payload size capped by MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES &middot; Published on namespace/&lt;hex&gt; topic</div>
+    <div class="borsh-note">Payload size capped by MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES &middot; Published on ns/&lt;hex&gt; topic</div>
   </div>
 </details>
 
@@ -224,7 +238,7 @@
      4. INIT PAYLOAD
      ═══════════════════════════════════════════════════════════ -->
 <div class="card gd">
-<h2>InitPayload <span class="transport-badge badge-stream">stream init</span> <span class="variant-count">13 variants</span></h2>
+<h2>InitPayload <span class="transport-badge badge-stream">stream init</span> <span class="variant-count">14 variants</span></h2>
 <p class="section-intro">Sent as the first message on a new stream. Determines the protocol/purpose of the stream and carries initial handshake data.</p>
 
 <details open>
@@ -350,13 +364,26 @@
 }</div>
   </div>
 </details>
+
+<details>
+  <summary>GroupKeyRequest <span class="variant-count">— pull-based group-key recovery</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Pull-based recovery for a group key the requester is already an admitted member of but does not yet hold locally — the durable replacement for the old on-DAG <span class="code">KeyDelivery</span> push. The joiner sends this each sync round (via <span class="code">recover_missing_group_keys</span>) until it has the key. The responder validates that <span class="code">requester_public_key</span> is a current member of <span class="code">group_id</span>, then ECDH-wraps the group key and replies with <span class="code">GroupKeyResponse</span>.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">GroupKeyRequest</span> {
+    <span class="field">namespace_id</span>:          <span class="ty">[u8; 32]</span>,  <span class="comment">// which namespace</span>
+    <span class="field">group_id</span>:              <span class="ty">[u8; 32]</span>,  <span class="comment">// the group whose key is being recovered</span>
+    <span class="field">requester_public_key</span>:  <span class="ty">PublicKey</span>, <span class="comment">// namespace identity (membership check + ECDH recipient)</span>
+}</div>
+    <div class="borsh-note">Appended at the tail of InitPayload (existing discriminants unchanged) · responder in crates/node/src/sync/manager/namespace_sync.rs</div>
+  </div>
+</details>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════
      5. MESSAGE PAYLOAD
      ═══════════════════════════════════════════════════════════ -->
 <div class="card ga">
-<h2>MessagePayload <span class="transport-badge badge-stream">stream data</span> <span class="variant-count">14 variants</span></h2>
+<h2>MessagePayload <span class="transport-badge badge-stream">stream data</span> <span class="variant-count">15 variants</span></h2>
 <p class="section-intro">Subsequent data frames sent after the initial <span class="code">Init</span> on a stream. The variant matches the stream type established by <span class="code">InitPayload</span>.</p>
 
 <details open>
@@ -503,6 +530,18 @@
     <span class="field">dag_heads</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,  <span class="comment">// DAG heads after sync</span>
     <span class="field">total_entities</span>: <span class="ty">u64</span>,       <span class="comment">// total entities transferred</span>
 }</div>
+  </div>
+</details>
+
+<details>
+  <summary>GroupKeyResponse <span class="variant-count">— pull-based group-key delivery</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Response to <span class="code">GroupKeyRequest</span>. Carries the ECDH-wrapped group-key envelope; <span class="code">key_envelope_bytes</span> is empty when the responder doesn't hold the key or the requester isn't a member (the joiner retries another peer next sync round). <span class="code">responder_identity</span> is the trust anchor a keyless bootstrap joiner uses to seed the namespace admin when it receives the root-group key without an invitation (replaces the old <span class="code">KeyDelivery</span>-signer anchor).</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">GroupKeyResponse</span> {
+    <span class="field">key_envelope_bytes</span>: <span class="ty">Vec&lt;u8&gt;</span>,   <span class="comment">// borsh(KeyEnvelope), ECDH-wrapped; empty ⇒ no key</span>
+    <span class="field">responder_identity</span>: <span class="ty">PublicKey</span>,  <span class="comment">// responder's namespace identity (the wrap sender)</span>
+}</div>
+    <div class="borsh-note">Appended at the tail of MessagePayload (existing discriminants unchanged) · pairs with InitPayload::GroupKeyRequest</div>
   </div>
 </details>
 </div>
