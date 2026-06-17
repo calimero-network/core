@@ -39,6 +39,7 @@ pub mod handlers;
 pub mod hlc_fence;
 mod lifecycle;
 pub mod migration_plan;
+pub mod scope_projection;
 pub mod self_purge;
 pub mod tee_subgroup_admit;
 
@@ -504,6 +505,13 @@ pub struct ContextManager {
     /// Defaults to [`VMLimits::default`]; override via [`Self::with_vm_limits`]
     /// from the node config's `[runtime.limits]` section.
     pub(crate) vm_limits: calimero_runtime::logic::VMLimits,
+
+    /// Per-scope unified-op projections, maintained alongside the existing
+    /// governance apply (additive — nothing reads it yet). The namespace
+    /// governance handler folds each applied op into its scope's projection;
+    /// see [`scope_projection`]. Shared behind a mutex so the apply handler's
+    /// async body can ingest without holding `&mut self` across the await.
+    pub(crate) scope_projections: Arc<std::sync::Mutex<scope_projection::ScopeProjections>>,
 }
 
 /// Creates a new `ContextManager`.
@@ -540,6 +548,9 @@ impl ContextManager {
             ack_router,
             config: ContextManagerConfig::default(),
             vm_limits: calimero_runtime::logic::VMLimits::default(),
+            scope_projections: Arc::new(std::sync::Mutex::new(
+                scope_projection::ScopeProjections::new(),
+            )),
         }
     }
 
