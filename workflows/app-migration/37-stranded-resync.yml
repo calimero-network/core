@@ -324,7 +324,9 @@ steps:
   - name: Assert resync was started
     type: json_assert
     statements:
-      - 'equal("{{resync_started}}", "true")'
+      # merobox renders the response's JSON bool as the Python str "True"
+      # (capital) when templated into a string, so compare against "True".
+      - 'equal("{{resync_started}}", "True")'
 
   - name: Assert node 2 logged the resync request
     type: assert_log_present
