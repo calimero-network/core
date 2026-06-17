@@ -4010,6 +4010,55 @@ fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
     );
 }
 
+#[test]
+fn set_upgrade_policy_admin_gated_and_blocks_flip_while_migration_pending() {
+    use calimero_primitives::context::UpgradePolicy;
+
+    use super::group_settings::GroupSettingsService;
+    use crate::test_fixtures::sample_meta_with_admin;
+    use crate::MetaRepository;
+
+    let store = test_store();
+    let gid = ContextGroupId::from([0xC1; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0x02; 32]);
+
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member, GroupMemberRole::Member)
+        .unwrap();
+
+    let mut meta = sample_meta_with_admin(admin);
+    meta.upgrade_policy = UpgradePolicy::LazyOnAccess;
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+
+    let svc = GroupSettingsService::new(&store, gid);
+
+    // Admin-gate (#27): a non-admin signer is rejected.
+    assert!(svc
+        .set_upgrade_policy(&member, &UpgradePolicy::Automatic)
+        .is_err());
+
+    // No migration pending: an admin may flip in either direction.
+    svc.set_upgrade_policy(&admin, &UpgradePolicy::Automatic)
+        .unwrap();
+    svc.set_upgrade_policy(&admin, &UpgradePolicy::LazyOnAccess)
+        .unwrap();
+
+    // Pending migration (#6): flipping AWAY from LazyOnAccess is rejected (it
+    // would strand un-accessed contexts), but staying LazyOnAccess is allowed.
+    meta.upgrade_policy = UpgradePolicy::LazyOnAccess;
+    meta.migration = Some(vec![1, 2, 3]);
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    assert!(svc
+        .set_upgrade_policy(&admin, &UpgradePolicy::Automatic)
+        .is_err());
+    svc.set_upgrade_policy(&admin, &UpgradePolicy::LazyOnAccess)
+        .unwrap();
+}
+
 // ---------------------------------------------------------------------
 // Fast-path integration tests for `membership_status_at`
 //

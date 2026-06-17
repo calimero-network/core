@@ -155,16 +155,6 @@ where
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get(&self, hash: &Hash) -> Result<Option<T>, StoreError> {
         Ok(self.inner.get(hash)?.map(|fv| fv.into_inner().0))
-        //// Get the Option<FrozenValue<Vec<u8>>>
-        //if let Some(frozen_value_bytes) = self.inner.get(hash)? {
-        //    // `frozen_value_bytes.0` is the Vec<u8>
-        //    // Deserialize the bytes back into T
-        //    let value = T::try_from_slice(&frozen_value_bytes.0)
-        //        .map_err(|e| StoreError::StorageError(StorageError::DeserializationError(e)))?;
-        //    Ok(Some(value))
-        //} else {
-        //    Ok(None)
-        //}
     }
 
     /// Checks if a hash exists in frozen storage.

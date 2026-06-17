@@ -32,12 +32,16 @@ runs:
         #     that keep RPC reachable (merobox#278, 0.6.35), used by
         #     shared-storage-concurrent-rotation-converge, and
         #   * the native `abort_migration` step (merobox#280, 0.6.36) used by
-        #     31-admin-abort-logical.
+        #     31-admin-abort-logical, and
+        #   * the migrations-v2 steps (resync_context / get_migration_status /
+        #     assert_migration_complete, merobox#282; delete_blob_on_disk /
+        #     get_application, merobox#283 — 0.6.38) used by
+        #     37-stranded-resync.
         # Pin the floor so an older build fails loudly rather than skipping
         # steps or collecting empty log artifacts.
-        MIN_MEROBOX="0.6.36"
+        MIN_MEROBOX="0.6.38"
         HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         if [ "$(printf '%s\n%s\n' "$MIN_MEROBOX" "$HAVE_MEROBOX" | sort -V | head -1)" != "$MIN_MEROBOX" ]; then
-          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (abort_migration step, merobox#280)"
+          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (delete_blob_on_disk / get_application steps, merobox#283)"
           exit 1
         fi

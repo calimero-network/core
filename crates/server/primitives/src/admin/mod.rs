@@ -1936,9 +1936,10 @@ pub struct MemberMigrationReportApiData {
     /// Member's self-reported pending-authored count (best-effort; 6f).
     #[serde(default)]
     pub authored_remaining: u64,
-    /// Why this member's migration did not complete: `"check_aborted"` or
-    /// `"apply_failed"`. Absent when the member has no failure on record (its
-    /// `state` is then `"migrated"`/`"in_progress"`/`"unknown"`).
+    /// Why this member's migration did not complete: `"check_aborted"`,
+    /// `"apply_failed"`, or `"no_migration_path"` (the stranded-context reason).
+    /// Absent when the member has no failure on record (its `state` is then
+    /// `"migrated"`/`"in_progress"`/`"unknown"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration_failed: Option<String>,
 }

@@ -1,8 +1,7 @@
-//! Nested Map Helper - Avoid get-modify-put anti-pattern
+//! Nested Map Helper - ergonomic two-level access
 //!
-//! This module provides helpers for modifying nested maps WITHOUT creating copies.
-//! The key insight: the storage layer already handles nesting correctly through IDs,
-//! but the get-modify-put pattern breaks it by creating blobs.
+//! This module provides helpers for modifying nested maps without callers
+//! hand-rolling (and forgetting to complete) the load-mutate-store dance.
 //!
 //! # Merge semantics
 //!
@@ -13,20 +12,14 @@
 //! makes the nested shape converge. `NestedMapOps` is purely an ergonomic
 //! shortcut for two-level access; it adds no merge logic of its own.
 //!
-//! # The Problem
+//! # Implementation note
 //!
-//! The old get-modify-put anti-pattern read the inner map into an owned **copy**,
-//! mutated the copy, and wrote it back as a fresh blob:
-//!
-//! ```text
-//! let mut inner = outer_map.get(&"doc-1")?.unwrap();  // deserialized COPY
-//! inner.insert("title", "New")?;                       // mutates the copy
-//! outer_map.insert("doc-1", inner)?;                   // re-serializes as a blob
-//! ```
-//!
-//! This is no longer expressible: `get` returns a read-only [`ValueRef`] guard
-//! that exposes the value only via `Deref` (no way to mutate it or move it out),
-//! so the "copy" step doesn't compile. Use the helpers below instead.
+//! `get` returns a read-only [`ValueRef`] guard, so a caller can no longer
+//! accidentally mutate a deserialized copy and lose the write. The helpers
+//! below still load the inner map, mutate it, and write it back (a
+//! crate-internal load-mutate-store), but they centralise that sequence so
+//! the write-back can never be forgotten; convergence is preserved by the
+//! recursive `Mergeable` impl, not by avoiding the inner-map copy.
 //!
 //! [`ValueRef`]: super::ValueRef
 //!

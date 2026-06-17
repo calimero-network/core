@@ -3456,6 +3456,12 @@ pub(crate) fn pending_upgrade_info(
     if current_app == zero || target == zero {
         return None;
     }
+    // Distinct-id (single-wasm) upgrade: the gate clears when this context's
+    // bound application advances to `target` — done by the active policy's
+    // actuation (LazyOnAccess: `maybe_lazy_upgrade` on next access; Automatic:
+    // the eager receiver-side swap). It is intentionally policy-agnostic here;
+    // the migration-vs-policy compatibility is enforced upstream at emit time
+    // (`upgrade_group` rejects a migrate target under non-LazyOnAccess).
     if current_app != target {
         return Some((target, stage_blob_for(store, &meta)));
     }

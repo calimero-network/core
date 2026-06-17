@@ -719,4 +719,30 @@ mod tests {
         assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(pk(BOB)));
         assert_eq!(map.len().unwrap(), 2);
     }
+
+    /// Non-vacuous counterpart: building with `new()` (random inner id) forces
+    /// the reassign down the clear+reinsert path — the one that used to drop
+    /// per-entry `StorageType` and downgrade authored entries to `Public`. The
+    /// owner stamps must survive that path.
+    #[test]
+    #[serial]
+    fn reassign_clear_reinsert_path_preserves_owner_stamps() {
+        env::reset_for_testing();
+
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
+        env::set_executor_id(ALICE);
+        map.insert("apple".to_owned(), 1).expect("alice insert");
+        env::set_executor_id(BOB);
+        map.insert("banana".to_owned(), 2).expect("bob insert");
+
+        // Random inner id != deterministic id => real clear+reinsert (not the
+        // no-op fast path the sibling test exercises).
+        map.reassign_deterministic_id("entries");
+
+        assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(1));
+        assert_eq!(map.get(&"banana".to_owned()).unwrap(), Some(2));
+        assert_eq!(map.len().unwrap(), 2);
+        assert_eq!(map.owner_of(&"apple".to_owned()).unwrap(), Some(pk(ALICE)));
+        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(pk(BOB)));
+    }
 }
