@@ -163,3 +163,65 @@ the visibility rule for cross-scope parent edges. §9.6 → the encryption wrap
 boundary. §9.8-sub → whether the migration ships a re-projection step or a
 wipe. With these settled, the P5 migration (task #16) can begin on a fresh PR
 off master, validated against the scope-isolation harness + e2e at each step.
+
+---
+
+# Slice 2 design — wiring `authorize` into the live path
+
+Wiring the one `authorize` in surfaces three semantic questions the per-plane
+folds never had to answer together. Recommended resolutions below; ratify, then
+the implementation is a **shadow → cutover** (run new alongside old, assert
+agreement on live traffic, then flip — never a blind swap of the security
+boundary).
+
+## S2.1 — granularity: per-delta membership gate vs per-op capability
+
+Today two *different* checks run: a **coarse** per-delta gate ("is the author a
+member of the context's group at the cut?", `authorize_delta_at_edge`) **and** a
+per-action signature/writer check (`writers_at_authenticated`). The unified
+`authorize` asks one **finer** question per op: `Put → may(author, entity,
+WRITE)`. These don't trivially match — a member who isn't an entity writer would
+pass the coarse gate but fail `may`.
+
+- **Recommendation: default-write = membership.** A non-restricted context
+  grants every member `WRITE` on its entities; the ACL is *seeded from the
+  member set*. A restricted object carries an explicit `SetWriters`. Then
+  `may(author, entity, WRITE)` reproduces today's "members can write" for
+  default contexts and is strictly finer for restricted ones. The migration
+  seeds each context's ACL from its membership at re-projection (or, under the
+  §9.8 wipe, from genesis membership as contexts re-bootstrap).
+
+## S2.2 — where the `AclView` comes from during shadow
+
+`authorize(op, acl_view_at(parents))` needs an `AclView` at the cut, which
+ultimately comes from a live `ScopeState` (slice 3). But slice 2 can run
+*before* `ScopeState` is the live projection.
+
+- **Recommendation: shadow off the current resolvers.** In slice 2 build the
+  `AclView` from the *existing* resolution (`writers_at_authenticated` → `acl`,
+  `acl_view_at`/membership → `groups`, governance meta → `root_admin`), run
+  `authorize` against it, and **compare** to the current decision behind a
+  divergence metric — acting on the current decision. This validates
+  `authorize ≡ the old folds` on live traffic with zero behavioral risk, and
+  decouples slice 2 from slice 3. Slice 3 then swaps the `AclView` source to
+  `ScopeState::acl_view_at` (same interface).
+
+## S2.3 — OpPayload coverage for the live op stream
+
+Slice 1b found `OpPayload` has no arm for several governance ops. For
+**authorize** (S2) only the auth-relevant planes matter (writers, membership,
+admin) — already covered. The structural/config ops (`GroupReparented`,
+`GroupDeleted`, capability/policy/target/context-registration) matter for the
+**full projection** (slice 3), not the auth decision.
+
+- **Recommendation:** slice 2 proceeds on current coverage (auth planes).
+  Slice 3 resolves the rest: add `OpPayload` arms for the scope-tree structural
+  ops (`SubgroupReparented`/`SubgroupDeleted`) and fold group-config/capability
+  ops into the groups/policy state; keep `KeyDelivery`/`Noop` out-of-model.
+
+## Slice 2 implementation order (once ratified)
+1. `AclView`-from-current-resolvers builder + `authorize` shadow at the
+   gossip-receive site, divergence metric, act-on-current. (Additive-ish.)
+2. Extend shadow to the other auth sites (snapshot-replay, drain, DAG-catchup,
+   manager, writer-plane resolve). e2e: divergence metric stays zero.
+3. Cut over: `authorize` becomes the decision; old folds deleted in slice 5.
