@@ -311,8 +311,14 @@ enum MaterializationOutcome<T> {
 /// the peer is no longer waiting, so we stop. `Framed` buffers internally, so
 /// dropping the losing `next()` future each cycle is cancel-safe.
 ///
-/// Deadline precision is one `poll` interval: a cycle that begins before the
-/// deadline always sleeps a full `poll` before the next deadline check.
+/// `probe` is always called at least once (before the first deadline check),
+/// and once more after each sleep before the deadline is re-checked — so it can
+/// run up to one extra time just past the deadline. That is intentional: it
+/// gives a just-materialised context a final chance to resolve, and the probe
+/// is a cheap local read. Deadline precision is therefore one `poll` interval:
+/// a cycle that begins before the deadline always sleeps a full `poll` first.
+/// `dialer_verified` is latched monotonically (`|=`): once a cycle reports the
+/// dialer verified it never regresses, so the `Elapsed` close message is stable.
 async fn await_materialization_or_close<T, F>(
     stream: &mut Stream,
     deadline: Instant,
@@ -330,7 +336,7 @@ where
             }
             MaterializationProbe::Waiting {
                 dialer_verified: dv,
-            } => dialer_verified = dv,
+            } => dialer_verified |= dv,
         }
 
         if Instant::now() >= deadline {

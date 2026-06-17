@@ -567,7 +567,8 @@ mod materialization_wait {
         ));
     }
 
-    #[tokio::test]
+    // Virtual clock (see `runs_to_deadline_*`): deterministic, no real-time race.
+    #[tokio::test(start_paused = true)]
     async fn returns_ready_when_probe_resolves() {
         let (mut responder, _dialer) = Stream::test_pair();
         let calls = AtomicUsize::new(0);
