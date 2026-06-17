@@ -5,14 +5,19 @@ use calimero_storage::collections::Counter;
 
 #[app::state(emits = Event)]
 pub struct XCallExample {
-    /// Counter for tracking pongs received.
+    /// Bumped by `pong` — the declared `#[app::xcall]` entry point.
     counter: Counter,
+    /// Bumped by `secret` — deliberately NOT an xcall entry point. An xcall
+    /// targeting it is denied by the node, so it stays at zero unless reached
+    /// by a direct call.
+    secret_counter: Counter,
 }
 
 #[app::event]
 pub enum Event {
     PingSent {
         to_context: ContextId,
+        method: String,
     },
     PongReceived {
         from_context: ContextId,
@@ -26,70 +31,44 @@ impl XCallExample {
     pub fn init() -> XCallExample {
         XCallExample {
             counter: Counter::new(),
+            secret_counter: Counter::new(),
         }
     }
 
-    /// Send a ping to another context via cross-context call
-    ///
-    /// # Arguments
-    /// * `target_context` - The base58-encoded ID of the context to send the ping to
-    ///
-    /// # Example
-    /// ```json
-    /// {
-    ///   "target_context": "AmxF5dVaqTTAWNbv4uDJhxdoQTEY1wfv6Ld8Gjbu6Zdk"
-    /// }
-    /// ```
+    /// Send a ping to another context, dispatching an `xcall` to its `pong`
+    /// entry point. `target_context` arrives base58-encoded and is parsed into
+    /// a `ContextId` by the SDK.
     pub fn ping(&mut self, target_context: ContextId) -> app::Result<()> {
-        // `target_context` arrives as a base58 string and is parsed into a
-        // `ContextId` by the SDK — no hand-rolled bs58 decoding needed.
-        let current_context = ContextId::from(calimero_sdk::env::context_id());
-
-        app::log!(
-            "Sending ping from context {} to context {}",
-            current_context,
-            target_context
-        );
-
-        // Prepare the parameters for the cross-context call
-        #[derive(calimero_sdk::serde::Serialize)]
-        #[serde(crate = "calimero_sdk::serde")]
-        struct PongParams {
-            from_context: ContextId,
-        }
-
-        let params = calimero_sdk::serde_json::to_vec(&PongParams {
-            from_context: current_context,
-        })?;
-
-        // Make the cross-context call to the pong method
-        calimero_sdk::env::xcall(target_context.as_ref(), "pong", &params);
-
-        // Emit an event to notify that a ping was sent
-        app::emit!(Event::PingSent {
-            to_context: target_context,
-        });
-
-        app::log!("Ping sent successfully");
-
-        Ok(())
+        self.xcall_to(target_context, "pong")
     }
 
-    /// Receive a pong from another context
-    ///
-    /// This function is called via xcall from other contexts.
-    /// It increments the counter when a pong is received.
-    ///
-    /// # Arguments
-    /// * `from_context` - The ID of the context sending the pong (base58 string over the wire)
-    pub fn pong(&mut self, from_context: ContextId) -> app::Result<()> {
-        let current_context = ContextId::from(calimero_sdk::env::context_id());
+    /// Send a ping that targets an arbitrary method on `target_context`. Used
+    /// to show the node denying an xcall to a non-`#[app::xcall]` method (e.g.
+    /// `secret`) before it runs.
+    pub fn ping_to(&mut self, target_context: ContextId, method: String) -> app::Result<()> {
+        self.xcall_to(target_context, &method)
+    }
 
-        app::log!(
-            "Context {} received pong from {}",
-            current_context,
-            from_context
-        );
+    /// Receive a pong via `xcall`. Marked `#[app::xcall]` so other contexts in
+    /// the same namespace may invoke it.
+    ///
+    /// `env::xcall_origin()` is set by the node and can't be forged, so this
+    /// method rejects direct calls (no origin) and refuses any call where the
+    /// origin doesn't match the self-reported `from_context`.
+    #[app::xcall]
+    pub fn pong(&mut self, from_context: ContextId) -> app::Result<()> {
+        let origin = calimero_sdk::env::xcall_origin().map(ContextId::from);
+
+        let Some(origin) = origin else {
+            app::bail!("pong is xcall-only: no cross-context origin (direct call rejected)");
+        };
+        if origin != from_context {
+            app::bail!(
+                "xcall provenance mismatch: node-set origin {} != claimed from_context {}",
+                origin,
+                from_context
+            );
+        }
 
         self.counter.increment()?;
         let counter = self.counter.value()?;
@@ -99,16 +78,70 @@ impl XCallExample {
             counter,
         });
 
-        app::log!("Pong received! Counter is now: {}", counter);
+        app::log!(
+            "pong from {} accepted; counter now {}",
+            from_context,
+            counter
+        );
 
         Ok(())
     }
 
-    /// Get the current counter value
+    /// Intentionally NOT an `#[app::xcall]` entry point. A direct call works,
+    /// but an `xcall` targeting it is denied by the node before it runs, so
+    /// `secret_counter` only moves on a direct call.
+    pub fn secret(&mut self, from_context: ContextId) -> app::Result<()> {
+        let _ = from_context;
+        self.secret_counter.increment()?;
+        app::log!(
+            "secret executed; secret_counter now {}",
+            self.secret_counter.value()?
+        );
+        Ok(())
+    }
+
+    /// Current `pong` counter.
     pub fn get_counter(&self) -> app::Result<u64> {
-        let value = self.counter.value()?;
-        app::log!("Getting counter value: {}", value);
-        Ok(value)
+        Ok(self.counter.value()?)
+    }
+
+    /// Current `secret` counter (should remain 0 when `secret` is only ever
+    /// reached via a denied `xcall`).
+    pub fn get_secret_counter(&self) -> app::Result<u64> {
+        Ok(self.secret_counter.value()?)
+    }
+
+    /// Queue an `xcall` to `method` on `target_context`, passing this context's
+    /// id as `from_context` so the target can compare it against the node-set
+    /// `env::xcall_origin()`.
+    fn xcall_to(&mut self, target_context: ContextId, method: &str) -> app::Result<()> {
+        let current_context = ContextId::from(calimero_sdk::env::context_id());
+
+        app::log!(
+            "xcall '{}' from {} to {}",
+            method,
+            current_context,
+            target_context
+        );
+
+        #[derive(calimero_sdk::serde::Serialize)]
+        #[serde(crate = "calimero_sdk::serde")]
+        struct Params {
+            from_context: ContextId,
+        }
+
+        let params = calimero_sdk::serde_json::to_vec(&Params {
+            from_context: current_context,
+        })?;
+
+        calimero_sdk::env::xcall(target_context.as_ref(), method, &params);
+
+        app::emit!(Event::PingSent {
+            to_context: target_context,
+            method: method.to_owned(),
+        });
+
+        Ok(())
     }
 }
 
@@ -118,21 +151,27 @@ mod tests {
 
     use super::*;
 
+    // `pong` is xcall-only: a direct call carries no `env::xcall_origin()`, so it
+    // is rejected. (TestHost drives methods directly, with no xcall origin.)
     #[test]
-    fn pong_increments_counter() {
+    fn pong_rejects_direct_call() {
         let mut app = TestHost::new(XCallExample::init);
-
-        assert_eq!(app.view(|s| s.get_counter()).unwrap(), 0);
-
-        // `pong` is the callback a remote `ping` triggers; here we invoke it
-        // directly (the cross-context `ping` path needs a live runtime).
         let from = ContextId::from([7u8; 32]);
-        app.call(|s| s.pong(from)).unwrap();
-        app.call(|s| s.pong(from)).unwrap();
+        assert!(
+            app.call(|s| s.pong(from)).is_err(),
+            "direct call to xcall-only pong must be rejected"
+        );
+        assert_eq!(app.view(|s| s.get_counter()).unwrap(), 0);
+    }
 
-        assert_eq!(app.view(|s| s.get_counter()).unwrap(), 2);
-
-        let events = app.events();
-        assert!(events.iter().any(|e| e.kind == "PongReceived"));
+    // `secret` is a normal method: a direct call works (only *xcalls* to it are
+    // gated, by the node — not visible at this layer).
+    #[test]
+    fn secret_direct_call_increments() {
+        let mut app = TestHost::new(XCallExample::init);
+        let from = ContextId::from([7u8; 32]);
+        app.call(|s| s.secret(from)).unwrap();
+        app.call(|s| s.secret(from)).unwrap();
+        assert_eq!(app.view(|s| s.get_secret_counter()).unwrap(), 2);
     }
 }

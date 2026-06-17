@@ -23,6 +23,11 @@ pub enum Modifer {
     /// exclusive write lock. Mutually exclusive with `Init` (an initializer
     /// always writes state).
     View,
+    /// `#[app::xcall]` — app author declares the method a cross-context entry
+    /// point. Stored in the compiled ABI (`Method.xcall_callable`) so the node
+    /// can restrict `xcall` dispatch to declared entry points. Mutually
+    /// exclusive with `Init` (an initializer is never an xcall target).
+    XCall,
 }
 
 pub struct PublicLogicMethod<'a> {
@@ -374,6 +379,9 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                     "view" => {
                         modifiers.push(Modifer::View);
                     }
+                    "xcall" => {
+                        modifiers.push(Modifer::XCall);
+                    }
                     _ => {}
                 }
             }
@@ -384,6 +392,20 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             errors.subsume(SynError::new_spanned(
                 input.item,
                 ParseError::ViewAndInitConflict,
+            ));
+        }
+
+        let is_xcall = modifiers.iter().any(|m| matches!(m, Modifer::XCall));
+        if is_init && is_xcall {
+            errors.subsume(SynError::new_spanned(
+                input.item,
+                ParseError::XCallAndInitConflict,
+            ));
+        }
+        if is_view && is_xcall {
+            errors.subsume(SynError::new_spanned(
+                input.item,
+                ParseError::XCallAndViewConflict,
             ));
         }
 

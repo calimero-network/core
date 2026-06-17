@@ -1,397 +1,102 @@
-description: A workflow demonstrating cross-context calls (XCall) using ping-pong between contexts
-name: XCall Ping-Pong Workflow
+name: XCall Ping-Pong (same-namespace demo)
+description: >
+  Minimal "how to use xcall" demo. Two contexts in the SAME namespace ping each
+  other's `pong` entry point; each pong increments the target's counter.
 
-# Force pull Docker images even if they exist locally
-force_pull_image: true
+  Note on the trust model: cross-context calls are gated by the namespace
+  boundary — a context may only xcall a target in its own namespace (see
+  `xcall.yml` for the full authorization test, including the cross-namespace
+  and non-entry-point denials). This demo therefore keeps both contexts in one
+  namespace so the calls are permitted.
+
+force_pull_image: false
 near_devnet: false
 
 nodes:
-  count: 2
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: calimero-node
+  count: 1
+  image: merod:local
+  prefix: rust-xcall
 
 steps:
-  # ============================================
-  # Setup Phase: Install app and create contexts on Node 1
-  # ============================================
-  
-  # Step 1: Install the xcall-example application on Node 1
-  - name: Install XCall Application on Node 1
+  - name: Install app
     type: install_application
-    node: calimero-node-1
+    node: rust-xcall-1
     path: res/xcall_example.wasm
     dev: true
     outputs:
       app_id: applicationId
 
-  # Step 2: Create Namespace A on Node 1
-  - name: Create Namespace A on Node 1
+  - name: Create shared namespace
     type: create_namespace
-    node: calimero-node-1
+    node: rust-xcall-1
     application_id: "{{app_id}}"
     outputs:
-      namespace_id_a: namespaceId
+      ns: namespaceId
 
-  # Step 3: Create Context A on Node 1
-  - name: Create Context A on Node 1
+  - name: Create Context A
     type: create_context
-    node: calimero-node-1
+    node: rust-xcall-1
     application_id: "{{app_id}}"
-    group_id: "{{namespace_id_a}}"
+    group_id: "{{ns}}"
     outputs:
-      context_a_id: contextId
-      context_a_member_key: memberPublicKey
+      ctx_a: contextId
 
-  - name: Assert Context A created
-    type: assert
-    statements:
-      - "is_set({{context_a_id}})"
-      - "is_set({{context_a_member_key}})"
-
-  # Step 4: Create Namespace B on Node 1
-  - name: Create Namespace B on Node 1
-    type: create_namespace
-    node: calimero-node-1
-    application_id: "{{app_id}}"
-    outputs:
-      namespace_id_b: namespaceId
-
-  # Step 5: Create Context B on Node 1 (same node, different context)
-  - name: Create Context B on Node 1
+  - name: Create Context B (same namespace)
     type: create_context
-    node: calimero-node-1
+    node: rust-xcall-1
     application_id: "{{app_id}}"
-    group_id: "{{namespace_id_b}}"
+    group_id: "{{ns}}"
     outputs:
-      context_b_id: contextId
-      context_b_member_key: memberPublicKey
+      ctx_b: contextId
 
-  - name: Assert Context B created
-    type: assert
-    statements:
-      - "is_set({{context_b_id}})"
-      - "is_set({{context_b_member_key}})"
-
-  # ============================================
-  # Setup Phase: Node 2 joins both groups
-  # ============================================
-
-  # Step 4: Install app on Node 2
-  - name: Install XCall Application on Node 2
-    type: install_application
-    node: calimero-node-2
-    path: res/xcall_example.wasm
-    dev: true
-    outputs:
-      app_id_node2: applicationId
-
-  # Step 7: Create namespace invitation for Context A's namespace
-  - name: Create namespace invitation for Context A
-    type: create_namespace_invitation
-    node: calimero-node-1
-    namespace_id: "{{namespace_id_a}}"
-    outputs:
-      invitation_a: invitation
-
-  # Step 8: Create namespace invitation for Context B's namespace
-  - name: Create namespace invitation for Context B
-    type: create_namespace_invitation
-    node: calimero-node-1
-    namespace_id: "{{namespace_id_b}}"
-    outputs:
-      invitation_b: invitation
-
-  # Step 9: Node 2 joins namespace A (auto-joins all contexts in namespace)
-  - name: Node 2 Join Namespace A
-    type: join_namespace
-    node: calimero-node-2
-    namespace_id: "{{namespace_id_a}}"
-    invitation: "{{invitation_a}}"
-    outputs:
-      identity_a: memberIdentity
-
-  - name: Wait for Group A join to propagate
-    type: wait_for_sync
-    context_id: "{{context_a_id}}"
-    nodes:
-      - calimero-node-1
-      - calimero-node-2
-    timeout: 60
-    trigger_sync: true
-
-  # Step 10: Node 2 joins namespace B (auto-joins all contexts in namespace)
-  - name: Node 2 Join Namespace B
-    type: join_namespace
-    node: calimero-node-2
-    namespace_id: "{{namespace_id_b}}"
-    invitation: "{{invitation_b}}"
-    outputs:
-      identity_b: memberIdentity
-
-  - name: Wait for Group B join to propagate
-    type: wait_for_sync
-    context_id: "{{context_b_id}}"
-    nodes:
-      - calimero-node-1
-      - calimero-node-2
-    timeout: 60
-    trigger_sync: true
-
-  # ============================================
-  # Testing Phase: Ping-Pong XCall functionality
-  # ============================================
-
-  # Step 11: Verify both contexts start with counter at 0
-  - name: Check initial counter on Context A (Node 1)
+  - name: Ping A -> B
     type: call
-    node: calimero-node-1
-    context_id: "{{context_a_id}}"
-    method: get_counter
-    outputs:
-      context_a_initial_counter: result
-
-  - name: Assert Context A starts with counter at 0
-    type: json_assert
-    statements:
-      - 'json_equal({{context_a_initial_counter}}, {"output": 0})'
-
-  - name: Check initial counter on Context B (Node 1)
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_b_id}}"
-    method: get_counter
-    outputs:
-      context_b_initial_counter_node1: result
-
-  - name: Assert Context B starts with counter at 0 on Node 1
-    type: json_assert
-    statements:
-      - 'json_equal({{context_b_initial_counter_node1}}, {"output": 0})'
-
-  - name: Check initial counter on Context B (Node 2)
-    type: call
-    node: calimero-node-2
-    context_id: "{{context_b_id}}"
-    method: get_counter
-    outputs:
-      context_b_initial_counter_node2: result
-
-  - name: Assert Context B starts with counter at 0 on Node 2
-    type: json_assert
-    statements:
-      - 'json_equal({{context_b_initial_counter_node2}}, {"output": 0})'
-
-  # Step 12: Context A sends ping to Context B
-  - name: Send ping from Context A to Context B (on Node 1)
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_a_id}}"
+    node: rust-xcall-1
+    context_id: "{{ctx_a}}"
     method: ping
     args:
-      target_context: "{{context_b_id}}"
-    outputs:
-      ping_result_1: result
+      target_context: "{{ctx_b}}"
 
-  - name: Assert ping succeeded
-    type: json_assert
-    statements:
-      - 'json_equal({{ping_result_1}}, {"output": null})'
+  - name: Wait for xcall to execute
+    type: wait
+    seconds: 8
 
-  # Step 13: Wait for XCall execution and state delta broadcast
-  - name: Wait for XCall execution and broadcast - Context B
-    type: wait_for_sync
-    context_id: "{{context_b_id}}"
-    nodes:
-      - calimero-node-1
-      - calimero-node-2
-    timeout: 60
-    trigger_sync: true
-
-  # Step 14: Verify Context B counter incremented on Node 1
-  - name: Check counter on Context B (Node 1)
+  - name: Read B counter
     type: call
-    node: calimero-node-1
-    context_id: "{{context_b_id}}"
+    node: rust-xcall-1
+    context_id: "{{ctx_b}}"
     method: get_counter
     outputs:
-      context_b_counter_node1: result
-
-  - name: Assert Context B counter is 1 on Node 1
+      b_counter: result.output
+  - name: Assert B received the ping (counter 1)
     type: json_assert
     statements:
-      - 'json_equal({{context_b_counter_node1}}, {"output": 1})'
+      - "equal({{b_counter}}, 1)"
 
-  # Step 15: Verify Context B's state change synced to Node 2
-  - name: Check counter on Context B (Node 2)
+  - name: Ping B -> A
     type: call
-    node: calimero-node-2
-    context_id: "{{context_b_id}}"
-    method: get_counter
-    outputs:
-      context_b_counter_node2: result
-
-  - name: Assert Context B counter is 1 on Node 2 (synced)
-    type: json_assert
-    statements:
-      - 'json_equal({{context_b_counter_node2}}, {"output": 1})'
-
-  # Step 16: Verify Context A counter is still 0 (sender doesn't increment)
-  - name: Check counter on Context A (Node 1)
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_a_id}}"
-    method: get_counter
-    outputs:
-      context_a_counter_after_ping: result
-
-  - name: Assert Context A counter is still 0
-    type: json_assert
-    statements:
-      - 'json_equal({{context_a_counter_after_ping}}, {"output": 0})'
-
-  # ============================================
-  # Bi-directional Ping-Pong Test
-  # ============================================
-
-  # Step 17: Send a ping from Context B to Context A
-  - name: Send ping from Context B to Context A (on Node 1)
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_b_id}}"
+    node: rust-xcall-1
+    context_id: "{{ctx_b}}"
     method: ping
     args:
-      target_context: "{{context_a_id}}"
-    outputs:
-      ping_result_2: result
+      target_context: "{{ctx_a}}"
 
-  - name: Assert ping from B to A succeeded
-    type: json_assert
-    statements:
-      - 'json_equal({{ping_result_2}}, {"output": null})'
+  - name: Wait for xcall to execute
+    type: wait
+    seconds: 8
 
-  # Step 18: Wait for XCall execution and broadcast
-  - name: Wait for XCall execution and broadcast - Context A
-    type: wait_for_sync
-    context_id: "{{context_a_id}}"
-    nodes:
-      - calimero-node-1
-      - calimero-node-2
-    timeout: 60
-    trigger_sync: true
-
-  # Step 19: Verify Context A counter incremented on Node 1
-  - name: Check counter on Context A (Node 1)
+  - name: Read A counter
     type: call
-    node: calimero-node-1
-    context_id: "{{context_a_id}}"
+    node: rust-xcall-1
+    context_id: "{{ctx_a}}"
     method: get_counter
     outputs:
-      context_a_counter_node1: result
-
-  - name: Assert Context A counter is 1 on Node 1
+      a_counter: result.output
+  - name: Assert A received the ping (counter 1)
     type: json_assert
     statements:
-      - 'json_equal({{context_a_counter_node1}}, {"output": 1})'
+      - "equal({{a_counter}}, 1)"
 
-  # Step 20: Verify Context A's state change synced to Node 2
-  - name: Check counter on Context A (Node 2)
-    type: call
-    node: calimero-node-2
-    context_id: "{{context_a_id}}"
-    method: get_counter
-    outputs:
-      context_a_counter_node2: result
-
-  - name: Assert Context A counter is 1 on Node 2 (synced)
-    type: json_assert
-    statements:
-      - 'json_equal({{context_a_counter_node2}}, {"output": 1})'
-
-  # ============================================
-  # Multiple Pings Test
-  # ============================================
-
-  # Step 21: Send multiple pings from Context A to Context B
-  - name: Send second ping from Context A to Context B
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_a_id}}"
-    method: ping
-    args:
-      target_context: "{{context_b_id}}"
-    outputs:
-      ping_result_3: result
-
-  - name: Wait for XCall execution - Context B
-    type: wait_for_sync
-    context_id: "{{context_b_id}}"
-    nodes:
-      - calimero-node-1
-      - calimero-node-2
-    timeout: 60
-    trigger_sync: true
-
-  - name: Send third ping from Context A to Context B
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_a_id}}"
-    method: ping
-    args:
-      target_context: "{{context_b_id}}"
-    outputs:
-      ping_result_4: result
-
-  - name: Wait for XCall execution - Context B
-    type: wait_for_sync
-    context_id: "{{context_b_id}}"
-    nodes:
-      - calimero-node-1
-      - calimero-node-2
-    timeout: 60
-    trigger_sync: true
-
-  # Step 22: Verify Context B counter is now 3 on both nodes
-  - name: Check final counter on Context B (Node 1)
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_b_id}}"
-    method: get_counter
-    outputs:
-      context_b_final_counter_node1: result
-
-  - name: Assert Context B counter is 3 on Node 1
-    type: json_assert
-    statements:
-      - 'json_equal({{context_b_final_counter_node1}}, {"output": 3})'
-
-  - name: Check final counter on Context B (Node 2)
-    type: call
-    node: calimero-node-2
-    context_id: "{{context_b_id}}"
-    method: get_counter
-    outputs:
-      context_b_final_counter_node2: result
-
-  - name: Assert Context B counter is 3 on Node 2 (synced)
-    type: json_assert
-    statements:
-      - 'json_equal({{context_b_final_counter_node2}}, {"output": 3})'
-
-  # Step 23: Verify Context A counter is still 1 (contexts are independent)
-  - name: Verify Context A counter is still 1 (Node 1)
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_a_id}}"
-    method: get_counter
-    outputs:
-      context_a_final_counter: result
-
-  - name: Assert Context A counter is still 1
-    type: json_assert
-    statements:
-      - 'json_equal({{context_a_final_counter}}, {"output": 1})'
-
-# Configuration
-stop_all_nodes: false
+stop_all_nodes: true
 restart: false
 wait_timeout: 120

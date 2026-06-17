@@ -221,6 +221,7 @@ jobs:
           # cascades parent+chunks+metadata — merobox#285, 0.6.39); the old
           # `delete_blob_on_disk` rm was a no-op for chunked blobs.
           - 37-stranded-resync
+          - 38-namespace-invite-join-regression
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:
