@@ -507,6 +507,20 @@ get_group_signing_key(store, &amp;current, public_key) <span class="comment">// 
   <rect x="790" y="240" width="140" height="42" rx="8" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.2"/>
   <text x="860" y="265" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">primitives</text>
 
+  <!-- New crates: op, projection, authz -->
+  <rect x="30" y="130" width="120" height="50" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="90" y="155" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">calimero-op</text>
+
+  <rect x="180" y="130" width="140" height="50" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="250" y="155" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">calimero-projection</text>
+
+  <rect x="340" y="130" width="120" height="50" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="400" y="155" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">calimero-authz</text>
+
+  <!-- context → new crates -->
+  <line x1="480" y1="80" x2="90" y2="130" stroke="#10b981" stroke-width="1.5" marker-end="url(#dg)"/>
+  <line x1="510" y1="80" x2="250" y2="130" stroke="#10b981" stroke-width="1.5" marker-end="url(#dg)"/>
+
   <!-- context → external deps -->
   <line x1="420" y1="80" x2="100" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
   <line x1="450" y1="80" x2="260" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
@@ -516,6 +530,10 @@ get_group_signing_key(store, &amp;current, public_key) <span class="comment">// 
   <!-- primitives → primitives (bottom) -->
   <line x1="220" y1="180" x2="860" y2="240" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
   <line x1="535" y1="180" x2="860" y2="240" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+
+  <!-- new crates → external deps -->
+  <line x1="90" y1="180" x2="260" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="250" y1="180" x2="440" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
 
   <!-- External crate deps -->
   <rect x="200" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
