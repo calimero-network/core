@@ -207,6 +207,14 @@ pub fn merge_root_state(
     // Try registered CRDT merge functions first.
     // This enables automatic nested CRDT merging when apps use `#[app::state]`.
     //
+    // NOTE: unlike `merge_root_state_typed`, the bootstrap fast-path is checked
+    // only in the `NoFunctionsRegistered` arm below, NOT before dispatch. This
+    // divergence is intentional and test-locked
+    // (`test_root_cold_join_bootstrap_signal_with_merger_preserves_local_fields`):
+    // when a CRDT merger IS registered it must run even on a cold-join bootstrap
+    // signal, so local fields the joiner already materialised are preserved by
+    // the merge rather than discarded by a verbatim accept-incoming.
+    //
     // On host production builds the registry doesn't exist (deleted in
     // the WASM-owns-merges architectural fix for core#2469) — the local
     // closure below produces `NoFunctionsRegistered` directly so the
@@ -400,9 +408,13 @@ pub fn merge_by_crdt_type(
         // signature verification gates which deltas reach this point).
         CrdtType::SharedStorage => Ok(incoming.to_vec()),
 
-        // RotationLog (P3 of core#2716) - unconditional union of entries by
-        // delta_id. Entries are authenticated at resolve time (writers_at), so
-        // the merge trusts nothing and just unions.
+        // RotationLog: defensive fallback only. The production caller
+        // (`Interface::try_merge_non_root`) intercepts `RotationLog` into the
+        // LWW path before reaching here, because a rotation-log entry now lives
+        // as its own per-`delta_id` child (structural add-wins via the parent's
+        // children list, not a value union). This `merge_rotation_log` union was
+        // only needed by the abandoned single-blob representation; it is kept as
+        // a correct-but-unreached arm to satisfy the exhaustive match.
         CrdtType::RotationLog => merge_rotation_log(existing, incoming),
 
         // App-defined types

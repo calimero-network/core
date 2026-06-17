@@ -30,7 +30,7 @@
 <summary>#[app::state] &mdash; persistent state struct</summary>
 <div class="detail-body">
 <p>Marks the persistent state struct. Generates automatic storage keys, versioning info, Borsh derives, and CRDT merge registration. Each field with a CRDT type gets its own storage subtree.</p>
-<p>The optional <span class="code">version = N</span> attribute sets the schema target version for identity-gated migration (see <span class="code">migrate_my_entries</span> in <a href="../../docs/migrations.md">migrations guide §5</a>). When the state contains an <span class="code">AuthoredMap</span> / <span class="code">AuthoredVector</span> field and <span class="code">version = N</span> is declared, the macro auto-generates a <span class="code">migrate_my_entries()</span> WASM export that sweeps the caller's stale entries up to that target. Defaults to <span class="code">0</span> (inert).</p>
+<p>The optional <span class="code">version = N</span> attribute sets the schema target version for identity-gated migration (see <span class="code">migrate_my_entries</span> in the <a href="../migrations.html">migrations guide §5</a>). When the state contains an <span class="code">AuthoredMap</span> / <span class="code">AuthoredVector</span> field and <span class="code">version = N</span> is declared, the macro auto-generates a <span class="code">migrate_my_entries()</span> WASM export that sweeps the caller's stale entries up to that target. Defaults to <span class="code">0</span> (inert).</p>
 <div class="typedef">
 <span class="kw">use</span> calimero_sdk::app;
 <span class="kw">use</span> calimero_sdk::borsh::{BorshSerialize, BorshDeserialize};
@@ -174,7 +174,7 @@ app::emit!((Event::ItemSet { key: &amp;k, value: &amp;v }, "on_item_set"));
     matches!(new.items.len(), Ok(n) <span class="kw">if</span> n <span class="kw">as</span> u64 == w.v1_count)
 }
 </div>
-<p style="margin-top:10px;">Both the check and any witness must be deterministic pure functions of the v1 state — they run independently on every node and must reach the same verdict. See <a href="../../docs/migrations.md#7-guarding-a-migration-migration_check--abort">migrations guide §7</a> for the full contract.</p>
+<p style="margin-top:10px;">Both the check and any witness must be deterministic pure functions of the v1 state — they run independently on every node and must reach the same verdict. See the <a href="../migrations.html">migrations guide §7</a> for the full contract.</p>
 <p style="margin-top:10px;"><strong>Determinism — no node-local inputs.</strong> A migration check (and its witness) must never read <span class="code">env::time_now()</span>, RNG, <span class="code">env::executor_id()</span>, or any other node-local state. Two nodes evaluating different wall-clocks would reach opposite verdicts and fork the network — exactly the divergence <span class="code">Counter::increment</span> / <span class="code">RGA::insert</span> already panic on during a migrate (see <a href="store.html">store.html</a>, nonce/clock section). Treat the inputs as the only legal source of truth: derive the verdict purely from <span class="code">old</span>, <span class="code">new</span>, and the borsh witness carried out of <span class="code">#[app::migrate]</span>. Use the witness to smuggle any v1-derived quantity (counts, hashes) the check needs, rather than recomputing it from ambient state.</p>
 </div>
 </details>

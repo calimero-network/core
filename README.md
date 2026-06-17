@@ -28,7 +28,7 @@ Peer-to-peer application platform with local-first governance, CRDT state sync, 
 | System overview and crate map | [System Overview](https://calimero-network.github.io/core/system-overview.html) |
 | Local governance and groups | [Local Governance](https://calimero-network.github.io/core/local-governance.html) |
 | App signing, bundles, migrations | [App Lifecycle](https://calimero-network.github.io/core/app-lifecycle.html) |
-| Writing app state migrations (developer guide) | [docs/migrations.md](docs/migrations.md) |
+| Writing app state migrations (developer guide) | [Migrations](https://calimero-network.github.io/core/migrations.html) |
 | Wire protocol and sync | [Wire Protocol](https://calimero-network.github.io/core/wire-protocol.html) |
 | Sequence diagrams | [Sequence Diagrams](https://calimero-network.github.io/core/sequence-diagrams.html) |
 | Storage schema | [Storage Schema](https://calimero-network.github.io/core/storage-schema.html) |

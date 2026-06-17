@@ -46,8 +46,14 @@ pub fn read_embedded_state_schema(wasm: &[u8]) -> Option<Manifest> {
     for payload in Parser::new(0).parse_all(wasm).flatten() {
         if let Payload::CustomSection(reader) = payload {
             if reader.name() == SECTION_NAME {
+                // Accept only a structurally VALID manifest. A well-formed-JSON
+                // but semantically invalid section (dangling refs, bad
+                // state_root, …) is treated as absent — deserialization alone
+                // does not vouch for validity, only that the bytes parse.
                 if let Ok(manifest) = serde_json::from_slice::<Manifest>(reader.data()) {
-                    found = Some(manifest);
+                    if crate::validate::validate_manifest(&manifest).is_ok() {
+                        found = Some(manifest);
+                    }
                 }
             }
         }

@@ -60,15 +60,27 @@ where
         if self.inner.id() == new_id {
             return; // already deterministic — idempotent
         }
-        let elements: Vec<V> = self.iter().expect("read set elements for re-key").collect();
+        // Snapshot `(value, storage_type)` so a guarded set's per-entry writer
+        // stamp survives the clear+reinsert, and re-insert through the same
+        // storage-type-preserving path the map uses (no divergent hand-rolled
+        // re-inherit).
+        let elements = self
+            .inner
+            .entries_with_storage_type()
+            .expect("read set elements for re-key");
         self.inner.clear().expect("clear set for re-key");
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__set",
             CrdtType::unordered_set(std::any::type_name::<V>()),
         );
-        for v in elements {
-            let _ = self.insert(v).expect("re-insert set element during re-key");
+        let parent = self.inner.id();
+        for (v, storage_type) in elements {
+            let id = super::compute_id(parent, v.as_ref());
+            let _ = self
+                .inner
+                .insert_with_storage_type(Some(id), v, storage_type)
+                .expect("re-insert set element during re-key");
         }
     }
 }
@@ -162,11 +174,14 @@ where
             return;
         }
 
-        // Collect all elements before migration (must do this before clearing)
-        let elements: Vec<V> = self
-            .iter()
-            .expect("failed to read elements for migration")
-            .collect();
+        // Snapshot `(value, storage_type)` before clearing so a guarded set's
+        // per-entry writer stamp survives the re-key. Mirrors `rekey_relative_to`
+        // (the nested path); a plain `insert` would re-stamp every entry with the
+        // collection's current domain and drop per-entry writer identity.
+        let elements = self
+            .inner
+            .entries_with_storage_type()
+            .expect("failed to read elements for migration");
 
         // Clear the collection (removes old entries with old IDs)
         self.inner.clear().expect("failed to clear for migration");
@@ -177,9 +192,14 @@ where
             CrdtType::unordered_set(std::any::type_name::<V>()),
         );
 
-        // Re-insert all elements (they will get new IDs based on new parent ID)
-        for value in elements {
-            self.insert(value)
+        // Re-insert all elements under the new parent ID, preserving each
+        // entry's original storage type.
+        let parent = self.inner.id();
+        for (value, storage_type) in elements {
+            let id = super::compute_id(parent, value.as_ref());
+            let _ = self
+                .inner
+                .insert_with_storage_type(Some(id), value, storage_type)
                 .expect("failed to re-insert element during migration");
         }
     }
@@ -585,6 +605,53 @@ mod tests {
                 assert_eq!(w, crate::entities::full_mask(writers.clone()))
             }
             other => panic!("set member must inherit Shared, got {other:?}"),
+        }
+    }
+
+    // The top-level `#[app::state]` re-key path (`reassign_deterministic_id`)
+    // must preserve each entry's per-entry `StorageType`, like the nested
+    // `rekey_relative_to` path. Seed an entry with an explicit `Shared` stamp
+    // while the collection domain stays `Main`, so the old `iter()` + `insert()`
+    // path (which re-stamps with the collection's current Main domain) would
+    // downgrade it — only the storage-type-preserving path keeps it `Shared`.
+    #[test]
+    fn reassign_preserves_per_entry_storage_type() {
+        use std::collections::BTreeSet;
+
+        use calimero_primitives::identity::PublicKey;
+
+        use crate::collections::{compute_collection_id, compute_id};
+        use crate::entities::{full_mask, StorageType};
+        use crate::interface::Interface;
+        use crate::store::MainStorage;
+
+        crate::env::reset_for_testing();
+
+        // Random inner id => the real clear+reinsert path (not the no-op).
+        let mut set = UnorderedSet::<String>::new();
+        let writers: BTreeSet<PublicKey> = std::iter::once(PublicKey::from([9u8; 32])).collect();
+        let shared = StorageType::Shared {
+            writers: full_mask(writers.clone()),
+            signature_data: None,
+        };
+        let pre_id = compute_id(set.inner.id(), "x".as_bytes());
+        let _ignored = set
+            .inner
+            .insert_with_storage_type(Some(pre_id), "x".to_owned(), shared)
+            .expect("seed shared entry");
+
+        set.reassign_deterministic_id("tags");
+
+        // The re-keyed child lives under the deterministic parent id.
+        let new_parent = compute_collection_id(None, "tags");
+        let child = compute_id(new_parent, "x".as_bytes());
+        let entry =
+            <Interface<MainStorage>>::find_by_id::<crate::collections::Entry<String>>(child)
+                .expect("load re-keyed entry")
+                .expect("re-keyed entry exists");
+        match entry.storage.metadata.storage_type {
+            StorageType::Shared { writers: w, .. } => assert_eq!(w, full_mask(writers)),
+            other => panic!("re-keyed set member must retain Shared, got {other:?}"),
         }
     }
 }
