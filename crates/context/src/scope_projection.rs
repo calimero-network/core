@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{NamespaceDagService, NamespaceOpLogService};
+use calimero_governance_store::{NamespaceDagService, NamespaceOpLogService, NamespaceRepository};
 use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::{payload_from_root_op, set_writers_payload};
@@ -251,6 +251,9 @@ pub struct ScopeProjections {
     /// Op ids already retained per scope — gives `ingest_op` O(1) dedup of a
     /// replayed delta instead of an O(n) scan of the log.
     seen: HashMap<ScopeId, HashSet<[u8; 32]>>,
+    /// Namespaces already replayed from persisted state, so `backfill_namespace`
+    /// walks each governance DAG at most once (the live feed maintains it after).
+    backfilled: HashSet<[u8; 32]>,
 }
 
 impl ScopeProjections {
@@ -308,6 +311,10 @@ impl ScopeProjections {
     /// [`op_from_rotation_entry`] + [`load_rotation_log_direct`] at the call site
     /// (the anchors are known there).
     pub fn backfill_namespace(&mut self, store: &Store, namespace_id: [u8; 32]) {
+        // Walk each namespace at most once; the live feed maintains it after.
+        if !self.backfilled.insert(namespace_id) {
+            return;
+        }
         let dag = NamespaceDagService::new(store, namespace_id);
         let heads = match dag.read_head_record() {
             Ok(head) => head.parent_hashes,
@@ -346,6 +353,29 @@ impl ScopeProjections {
                 self.ingest_op(&op);
             }
         }
+    }
+
+    /// Is `author` a member of `group` at the governance cut named by `heads`,
+    /// per the projection? `None` if the answer can't be formed (group→namespace
+    /// resolution fails, or no projection for the scope even after backfill).
+    ///
+    /// Backfills the group's namespace from persisted state on first use (so a
+    /// cold/post-restart projection isn't spuriously empty), then resolves the
+    /// **causal-honor** view at `heads`. This is the decision-site shadow's
+    /// reader: the node compares this to the live `authorize_delta_at_edge`
+    /// outcome behind a divergence metric, while acting on the live decision.
+    /// Returns the type-free `bool` so the node side needs no `authz`/`op` deps.
+    pub fn member_at_cut(
+        &mut self,
+        store: &Store,
+        group: ContextGroupId,
+        author: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let namespace_id = NamespaceRepository::new(store).resolve(&group).ok()?;
+        self.backfill_namespace(store, namespace_id.to_bytes());
+        let scope = ScopeId::from(group.to_bytes());
+        Some(self.acl_view_at(&scope, heads)?.is_scope_member(author))
     }
 
     /// The role the projection records for `member` in `group` within `scope`,

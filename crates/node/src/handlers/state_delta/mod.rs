@@ -932,6 +932,28 @@ pub async fn handle_state_delta(
                     role,
                 }),
             );
+
+            // Decision-site shadow (additive, acts on live): the unified-op
+            // projection — backfilled from persisted governance + maintained by
+            // the live feed — should also see this author as a member at the cut
+            // the live decision just authorized against. A disagreement is logged
+            // behind the divergence marker (watched in e2e); the live decision is
+            // unaffected. This is the projection's first reader at the auth
+            // boundary — the precursor to the cutover flip.
+            if let Some(gp) = governance_position.as_ref() {
+                let projected = node_state.scope_projections.lock().ok().and_then(|mut p| {
+                    p.member_at_cut(datastore, group, &author_id, &gp.governance_dag_heads)
+                });
+                if projected == Some(false) {
+                    warn!(
+                        marker = "unified_projection_divergence",
+                        plane = "membership-cut",
+                        group_id = ?group,
+                        %author_id,
+                        "projection sees non-member at the cut where the live decision authorized"
+                    );
+                }
+            }
         }
         DeltaAuthOutcome::Reject(reason) => {
             warn!(
