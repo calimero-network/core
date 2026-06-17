@@ -276,6 +276,86 @@ impl Clone for SyncManager {
 // (`dispatch_recently_attempted`, `session_dispatch_wedged`) and the
 // nested `apply_session_result` helper now live alongside that struct.
 
+/// One probe of the inbound materialisation poll loop.
+///
+/// `Ready` carries the materialised value (the dialer is verified and the
+/// context entry now exists locally); `Waiting` reports whether the dialer
+/// has been verified as a member so far, so the timeout path can pick the
+/// right close message.
+enum MaterializationProbe<T> {
+    Ready(T),
+    Waiting { dialer_verified: bool },
+}
+
+/// Result of [`await_materialization_or_close`].
+enum MaterializationOutcome<T> {
+    /// The probe reported the context materialised within the window.
+    Ready(T),
+    /// The window elapsed without materialisation. `dialer_verified` selects
+    /// the close message (`OpaqueError` vs `NotMaterialized`).
+    Elapsed { dialer_verified: bool },
+    /// The dialing peer closed (or errored, or sent an unexpected frame)
+    /// before materialising — abandon the wait immediately.
+    PeerGone,
+}
+
+/// Run a bounded materialisation poll while watching the inbound stream for
+/// the dialer disconnecting.
+///
+/// `probe` is invoked synchronously each cycle until it returns `Ready`, the
+/// `deadline` passes, or the dialing peer goes away. Watching the stream is
+/// what stops a bailed dialer from pinning the stream handle + task slot for
+/// the full window: any resolution of `stream.next()` — `None` (EOF),
+/// `Some(Err(_))` (transport/codec error), or `Some(Ok(_))` (an unexpected
+/// inbound frame; the dialer should be silently awaiting our reply) — means
+/// the peer is no longer waiting, so we stop. `Framed` buffers internally, so
+/// dropping the losing `next()` future each cycle is cancel-safe.
+///
+/// `probe` is always called at least once (before the first deadline check),
+/// and once more after each sleep before the deadline is re-checked — so it can
+/// run up to one extra time just past the deadline. That is intentional: it
+/// gives a just-materialised context a final chance to resolve, and the probe
+/// is a cheap local read. Deadline precision is therefore one `poll` interval:
+/// a cycle that begins before the deadline always sleeps a full `poll` first.
+/// `dialer_verified` is latched monotonically (`|=`): once a cycle reports the
+/// dialer verified it never regresses, so the `Elapsed` close message is stable.
+async fn await_materialization_or_close<T, F>(
+    stream: &mut Stream,
+    deadline: Instant,
+    poll: time::Duration,
+    mut probe: F,
+) -> eyre::Result<MaterializationOutcome<T>>
+where
+    F: FnMut() -> eyre::Result<MaterializationProbe<T>>,
+{
+    let mut dialer_verified = false;
+    loop {
+        match probe()? {
+            MaterializationProbe::Ready(value) => {
+                return Ok(MaterializationOutcome::Ready(value));
+            }
+            MaterializationProbe::Waiting {
+                dialer_verified: dv,
+            } => dialer_verified |= dv,
+        }
+
+        if Instant::now() >= deadline {
+            return Ok(MaterializationOutcome::Elapsed { dialer_verified });
+        }
+
+        tokio::select! {
+            // biased: poll the stream first so a disconnected (or misbehaving)
+            // peer is detected immediately rather than after a full poll tick.
+            biased;
+            event = stream.next() => {
+                let _ = event; // None=EOF, Some(Err)=transport err, Some(Ok)=unexpected frame
+                return Ok(MaterializationOutcome::PeerGone);
+            }
+            () = time::sleep(poll) => {}
+        }
+    }
+}
+
 impl SyncManager {
     pub(crate) fn new(
         sync_config: SyncConfig,
@@ -2691,11 +2771,13 @@ impl SyncManager {
     /// join/registration race window if the context isn't materialised
     /// locally yet.
     ///
-    /// Returns `Ok(Some(ctx))` once resolved. Returns `Ok(None)` — after
-    /// sending `OpaqueError` (unknown context / unverified dialer) or
-    /// `NotMaterialized` (verified member, context not yet materialised) on
-    /// `stream` — when the caller should stop and close the stream. See the
-    /// race-window rationale inline below.
+    /// Returns `Ok(Some(ctx))` once resolved. Returns `Ok(None)` when the caller
+    /// should stop and close the stream:
+    /// - after sending `OpaqueError` (unknown context / unverified dialer) or
+    ///   `NotMaterialized` (verified member, context not yet materialised); or
+    /// - silently, with NO close message, when the dialer disconnected during
+    ///   the wait (the peer is already gone).
+    /// See the race-window rationale inline below.
     async fn resolve_inbound_context(
         &self,
         context_id: ContextId,
@@ -2748,53 +2830,33 @@ impl SyncManager {
         const MATERIALIZATION_POLL: time::Duration = time::Duration::from_millis(200);
 
         let deadline = Instant::now() + MATERIALIZATION_WINDOW;
-        let mut dialer_verified = false;
-        let mut materialised: Option<_> = None;
 
-        loop {
-            if !dialer_verified {
-                if let Some(group_id) =
-                    calimero_context::group_store::get_group_for_context(store, &context_id)?
-                {
-                    if MembershipRepository::new(store).is_member(&group_id, &their_identity)? {
-                        dialer_verified = true;
+        let mut dialer_verified = false;
+
+        let outcome =
+            await_materialization_or_close(stream, deadline, MATERIALIZATION_POLL, || {
+                if !dialer_verified {
+                    if let Some(group_id) =
+                        calimero_context::group_store::get_group_for_context(store, &context_id)?
+                    {
+                        if MembershipRepository::new(store).is_member(&group_id, &their_identity)? {
+                            dialer_verified = true;
+                        }
                     }
                 }
-            }
 
-            if dialer_verified {
-                if let Some(ctx) = self.context_client.get_context(&context_id)? {
-                    materialised = Some(ctx);
-                    break;
+                if dialer_verified {
+                    if let Some(ctx) = self.context_client.get_context(&context_id)? {
+                        return Ok(MaterializationProbe::Ready(ctx));
+                    }
                 }
-            }
 
-            if Instant::now() >= deadline {
-                break;
-            }
-            time::sleep(MATERIALIZATION_POLL).await;
-        }
+                Ok(MaterializationProbe::Waiting { dialer_verified })
+            })
+            .await?;
 
-        if !dialer_verified {
-            // Genuinely unknown context (or cross-namespace stream
-            // leak per #2198), or namespace governance op never
-            // landed within the window. Close cleanly so unrelated
-            // sync activity is unaffected.
-            warn!(
-                %context_id,
-                ?their_identity,
-                "inbound stream for unknown context, closing cleanly"
-            );
-
-            if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
-                error!(%err, %context_id, "failed to send OpaqueError for unknown context");
-            }
-
-            return Ok(None);
-        }
-
-        match materialised {
-            Some(ctx) => {
+        match outcome {
+            MaterializationOutcome::Ready(ctx) => {
                 debug!(
                     %context_id,
                     ?their_identity,
@@ -2802,7 +2864,35 @@ impl SyncManager {
                 );
                 Ok(Some(ctx))
             }
-            None => {
+            MaterializationOutcome::PeerGone => {
+                // The dialer disconnected mid-wait. No close message to send —
+                // the peer is already gone; it retries on its next sync interval.
+                debug!(
+                    %context_id,
+                    ?their_identity,
+                    "dialer disconnected during materialisation wait, abandoning"
+                );
+                Ok(None)
+            }
+            MaterializationOutcome::Elapsed {
+                dialer_verified: false,
+            } => {
+                // Genuinely unknown context (or cross-namespace stream leak per
+                // #2198), or namespace governance op never landed within the
+                // window. Close cleanly so unrelated sync activity is unaffected.
+                warn!(
+                    %context_id,
+                    ?their_identity,
+                    "inbound stream for unknown context, closing cleanly"
+                );
+                if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
+                    error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+                }
+                Ok(None)
+            }
+            MaterializationOutcome::Elapsed {
+                dialer_verified: true,
+            } => {
                 debug!(
                     %context_id,
                     ?their_identity,
@@ -2842,6 +2932,11 @@ impl SyncManager {
         // and direct group-membership; the parent-walk for `Open` subgroups
         // lives in `calimero-context::group_store`, which we have access
         // to here at the node layer.
+        //
+        // Resolve the owning group fresh here (not cached from the
+        // materialisation wait): authorization must read current governance
+        // state, since a group reparent during the wait could otherwise be
+        // evaluated against a stale binding.
         let is_inherited_member = || -> eyre::Result<bool> {
             let store = self.context_client.datastore();
             let Some(group_id) =
