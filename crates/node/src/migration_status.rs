@@ -481,21 +481,31 @@ pub fn compute_namespace_migration_facts(
 
             let loaded = loaded_context_version(datastore, &context_id);
 
-            // A persisted failure marker is honored only while the context has
-            // NOT reached its group's target. A context that has since converged
-            // (via a later migrate, lazy access, or cascade) is migrated — a
-            // stale marker must never force a false `failed`. An unresolvable
-            // version (None) is conservatively treated as below-target.
+            // A persisted failure marker is honored while the context has NOT
+            // reached its group's target. A context that has since converged is
+            // migrated — a stale marker must never force a false `failed`. An
+            // unresolvable loaded version (None) is conservatively below-target.
+            //
+            // Special case: a `NoMigrationPath` strand whose target can't be
+            // resolved here (`target == 0` — a subgroup member that holds the
+            // upgrade ladder but not the semver `GroupUpgradeValue`) is still
+            // genuinely behind. The strand path only writes NoMigrationPath when
+            // a ladder hop is blocked, and every heal path (successful hop,
+            // migrate commit, resync's `settle_snapshot_activation`) clears it,
+            // so honoring it can't outlive convergence. Other kinds stay
+            // strictly below_target-gated (no false failed from a stale abort).
             let below_target = loaded.is_none_or(|l| l < target);
-            if below_target {
-                if let Ok(Some(marker)) =
-                    datastore
-                        .handle()
-                        .get(&calimero_store::key::ContextMigrationFailed::new(
-                            context_id,
-                        ))
-                {
-                    if let Some(kind) = MigrationFailureKind::from_u8(marker.kind) {
+            if let Ok(Some(marker)) =
+                datastore
+                    .handle()
+                    .get(&calimero_store::key::ContextMigrationFailed::new(
+                        context_id,
+                    ))
+            {
+                if let Some(kind) = MigrationFailureKind::from_u8(marker.kind) {
+                    let honor = below_target
+                        || (matches!(kind, MigrationFailureKind::NoMigrationPath) && target == 0);
+                    if honor {
                         migration_failed = Some(more_severe_failure(migration_failed, kind));
                     }
                 }
@@ -1708,6 +1718,87 @@ mod tests {
             Some(MigrationFailureKind::NoMigrationPath),
             "target must resolve from the subgroup's own upgrade record (v3), not \
              the recordless root (v0) — else the marker is dropped (the #37 bug)"
+        );
+    }
+
+    /// A subgroup member that joined via inheritance holds the upgrade LADDER
+    /// (it replayed a hop) but not necessarily the semver `GroupUpgradeValue`,
+    /// so its target resolves to 0 here. A `NoMigrationPath` strand marker is
+    /// still the authoritative "behind" signal in that case and MUST surface as
+    /// `failed` — the `below_target` gate (loaded 1 < target 0 = false) would
+    /// otherwise drop it, so the stranded member rolled up as `in_progress`
+    /// instead of `failed` (the residual #37 gap). Other failure kinds stay
+    /// gated; only an unresolvable-target NoMigrationPath is honored.
+    #[test]
+    fn facts_surface_no_migration_path_when_target_unresolvable() {
+        use calimero_context::group_store::NamespaceRepository;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x8Cu8; 32];
+        let subgroup = ContextGroupId::from([0x8Du8; 32]);
+
+        // NO upgrade record anywhere → resolve_group_target_version == 0.
+        NamespaceRepository::new(&store)
+            .nest(&ContextGroupId::from(ns), &subgroup)
+            .unwrap();
+        let ctx = [0xE4u8; 32];
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextMigrationFailed::new(ctx.into()),
+                &calimero_store::types::ContextMigrationFailed {
+                    kind: MigrationFailureKind::NoMigrationPath.to_u8(),
+                },
+            )
+            .expect("put marker");
+
+        assert_eq!(
+            compute_namespace_migration_facts(&store, ns).migration_failed,
+            Some(MigrationFailureKind::NoMigrationPath),
+            "a NoMigrationPath strand with an unresolvable target (0) must still \
+             surface as failed — it self-clears on resync/heal, so it can't go stale"
+        );
+    }
+
+    /// Guard the conservative scope of the unresolvable-target rule: a
+    /// `CheckAborted` marker is NOT honored when the target can't be resolved
+    /// (only NoMigrationPath is). CheckAborted is tied to a specific attempted
+    /// migration and stays `below_target`-gated, so an unresolvable target keeps
+    /// it suppressed (no false failed from a stale check-abort).
+    #[test]
+    fn facts_check_aborted_not_honored_when_target_unresolvable() {
+        use calimero_context::group_store::NamespaceRepository;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x8Eu8; 32];
+        let subgroup = ContextGroupId::from([0x8Fu8; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ContextGroupId::from(ns), &subgroup)
+            .unwrap();
+        let ctx = [0xE5u8; 32];
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextMigrationFailed::new(ctx.into()),
+                &calimero_store::types::ContextMigrationFailed {
+                    kind: MigrationFailureKind::CheckAborted.to_u8(),
+                },
+            )
+            .expect("put marker");
+
+        assert_eq!(
+            compute_namespace_migration_facts(&store, ns).migration_failed,
+            None,
+            "CheckAborted stays below_target-gated; an unresolvable target (0) \
+             does not honor it (only NoMigrationPath gets that special case)"
         );
     }
 
