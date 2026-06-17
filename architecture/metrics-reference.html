@@ -357,8 +357,8 @@
      ════════════════════════════════════════════════════════ -->
 <div class="card gb">
 <h2>TEE Self-Purge Metrics</h2>
-<p style="margin-bottom:8px;">Observability for the self-purge cleanup that runs when a hardware-attested fleet node is evicted from its <span class="code">ReadOnlyTee</span> role. Self-purge hard-deletes a node's own local rows and keys (both signing-key material and per-group encryption keys) and is recovered across restarts by a marker plus a startup reconcile sweep. See <a href="membership-and-leave.html">Membership &amp; Leave</a> and <a href="tee-fleet-ha.html">TEE Fleet HA</a>.</p>
-<a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/context/src/metrics.rs" target="_blank" rel="noopener">crates/context/src/metrics.rs</a>
+<p style="margin-bottom:8px;">Observability for the self-purge cleanup that runs when a hardware-attested fleet node is evicted from its <span class="code">ReadOnlyTee</span> role. Self-purge hard-deletes a node's own local rows and keys (signing-key material and, as of #2776, the per-group encryption keys) and is recovered across restarts by a marker plus a startup reconcile sweep. See <a href="membership-and-leave.html">Membership &amp; Leave</a> and <a href="tee-fleet-ha.html">TEE Fleet HA</a>.</p>
+<a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/governance-store/src/metrics.rs" target="_blank" rel="noopener">crates/governance-store/src/metrics.rs</a>
 
 <div class="metric-note" style="margin-top:14px;"><strong>Naming</strong> — These families register under the <span class="code">context</span> → <span class="code">group_store</span> sub-registries, so the exported Prometheus names carry the <span class="code">context_group_store_</span> prefix (e.g. <span class="code">context_group_store_self_purge_failures_total</span>). The registered names are shown below.</div>
 

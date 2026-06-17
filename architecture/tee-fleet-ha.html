@@ -340,7 +340,7 @@ restart (<span class="code">crates/governance-store/src/local_state.rs</span>).
 <li>Sidecar observes the drop on a confirmed-good poll and runs <span class="code">meroctl namespace leave</span>.</li>
 <li>Core publishes <span class="code">GroupOp::MemberLeft</span>; it cascades, emitting <span class="code">TeeMemberRemoved</span> for the root and each subgroup row.</li>
 <li><span class="code">self_purge</span> sees the <span class="code">ReadOnlyTee</span> removals and runs <span class="code">PurgeAction::Namespace</span>.</li>
-<li>Local data + signing keys + AES group keys are deleted; the node unsubscribes from the gossip topic.</li>
+<li>Local data + signing keys are deleted (plus the AES group keys <em>(PR #2776)</em>); the node unsubscribes from the gossip topic.</li>
 <li>If interrupted, the pending-self-purge marker + startup reconcile sweep finish the purge after restart.</li>
 </ol>
 </div>
@@ -362,8 +362,7 @@ Changing the shape of any of these requires coordinating across the three repos.
   <span class="code">self_purge_reconcile_total</span>, and
   <span class="code">self_purge_events_dropped_total</span>. A rising failures or dropped-events
   counter means purges are not completing cleanly; reconcile counts confirm the startup sweep is
-  doing its job. (See <a href="metrics-reference.html">Metrics Reference</a> once these are listed
-  there.)</li>
+  doing its job. (See <a href="metrics-reference.html">Metrics Reference</a>.)</li>
   <li><b>MRTD alignment.</b> The node image's measurements and the control plane's
   <span class="code">allowed_mrtd</span> allowlist must agree, or every fleet-join fails admission.
   After a node-image bump, update the namespace's admission policy before expecting replicas to

@@ -107,7 +107,7 @@
     <div class="typedef"><span class="kw">struct</span> <span class="ty">TeeAttestationAnnounce</span> {
     <span class="field">quote_bytes</span>: <span class="ty">Vec&lt;u8&gt;</span>,            <span class="comment">// TDX attestation quote bytes</span>
     <span class="field">public_key</span>:  <span class="ty">PublicKey</span>,           <span class="comment">// announcing node's identity public key</span>
-    <span class="field">nonce</span>:       <span class="ty">[u8; 32]</span>,            <span class="comment">// group DAG head hash for freshness binding</span>
+    <span class="field">nonce</span>:       <span class="ty">[u8; 32]</span>,            <span class="comment">// fresh random 32 bytes; report_data = nonce(32) || Sha256(pubkey)</span>
     <span class="field">node_type</span>:   <span class="ty">SpecializedNodeType</span>, <span class="comment">// specialized node type (e.g. ReadOnlyTee)</span>
 }</div>
     <div class="borsh-note">Published on ns/&lt;hex(namespace_id)&gt; · drives fleet admission in crates/server/src/admin/handlers/tee/fleet_join.rs</div>

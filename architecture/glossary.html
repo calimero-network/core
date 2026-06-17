@@ -335,7 +335,7 @@
 <div class="term-row" data-term="groupkeyring group encryption keys">
   <div class="term-name">GroupKeyring (group encryption keys)</div>
   <div class="term-body">
-    The per-group symmetric encryption keys used to encrypt/decrypt a group's GroupOps and shared state. Each new member receives them via ECDH-wrapped KeyDelivery, they are rotated when a member is removed, and they are deleted from a fleet node's disk on self-purge. Distinct from the node's KMS storage key (see the <strong>two key families</strong> entry).
+    The per-group symmetric encryption keys used to encrypt/decrypt a group's GroupOps and shared state. Each new member receives them via ECDH-wrapped KeyDelivery, they are rotated when a member is removed, and (as of #2776) they are deleted from a fleet node's disk on self-purge. Distinct from the node's KMS storage key (see the <strong>two key families</strong> entry).
   </div>
 </div>
 
@@ -346,7 +346,7 @@
     <br><br>
     <strong>(1) KMS storage / disk key</strong> — per-node, fetched from the <a href="tee-mode.html">KMS</a> only after the node's TEE measurement (MRTD) is verified. Encrypts the node's on-disk datastore. One per node; never delivered over governance.
     <br><br>
-    <strong>(2) Per-group GroupKeyring encryption keys</strong> — per-group, ECDH-delivered to members via KeyDelivery, rotated on member removal, and deleted on self-purge. Encrypt group operations and shared state. See <a href="tee-fleet-ha.html">TEE Fleet HA</a>.
+    <strong>(2) Per-group GroupKeyring encryption keys</strong> — per-group, ECDH-delivered to members via KeyDelivery, rotated on member removal, and (as of #2776) deleted on self-purge. Encrypt group operations and shared state. See <a href="tee-fleet-ha.html">TEE Fleet HA</a>.
     <br><br>
     Mnemonic: the KMS key protects <em>this node's disk</em>; the GroupKeyring keys protect <em>a group's shared data across all members</em>.
   </div>
@@ -719,7 +719,7 @@
 <div class="term-row" data-term="self-purge">
   <div class="term-name">self-purge</div>
   <div class="term-body">
-    The role-scoped local cleanup a fleet node runs on eviction from <strong>ReadOnlyTee</strong>. It hard-deletes the node's own local rows and keys for the namespace — <strong>both</strong> its namespace signing-key material and its per-group GroupKeyring encryption keys — so no residual state or decryption capability lingers on disk. Driven by a pending-self-purge marker plus a startup reconcile sweep, so an eviction missed while offline is still completed on the next boot. Failures and sweep outcomes are observable via the <code>self_purge_*</code> metrics.
+    The role-scoped local cleanup a fleet node runs on eviction from <strong>ReadOnlyTee</strong>. It hard-deletes the node's own local rows and keys for the namespace — its namespace signing-key material and, as of #2776, its per-group GroupKeyring encryption keys — so no residual state or decryption capability lingers on disk. Driven by a pending-self-purge marker plus a startup reconcile sweep, so an eviction missed while offline is still completed on the next boot. Failures and sweep outcomes are observable via the <code>self_purge_*</code> metrics.
     <div class="term-source"><a href="membership-and-leave.html">Membership &amp; Leave</a> &bull; <a href="tee-fleet-ha.html">TEE Fleet HA</a></div>
   </div>
 </div>
@@ -811,7 +811,7 @@
 <div class="term-row" data-term="teeadmissionpolicy">
   <div class="term-name">TeeAdmissionPolicy</div>
   <div class="term-body">
-    The namespace-scoped measurement allowlist a fleet node's attestation is checked against. It pins the acceptable TDX measurements — <code>allowed_mrtd</code>, RTMR values, TCB/SVN bounds — plus an <code>accept_mock</code> escape hatch for non-TEE test runs. Resolved to the namespace root, so the whole namespace shares one policy. Admission of a TeeAttestationAnnounce succeeds only if the verified quote satisfies this policy.
+    The namespace-scoped measurement allowlist a fleet node's attestation is checked against. It pins the acceptable TDX measurements — <code>allowed_mrtd</code>, RTMR values, TCB-status bounds — plus an <code>accept_mock</code> escape hatch for non-TEE test runs. Resolved to the namespace root, so the whole namespace shares one policy. Admission of a TeeAttestationAnnounce succeeds only if the verified quote satisfies this policy.
     <div class="term-source"><a href="tee-fleet-ha.html">TEE Fleet HA</a></div>
   </div>
 </div>
