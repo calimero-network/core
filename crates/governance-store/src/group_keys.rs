@@ -101,11 +101,22 @@ impl<'a> GroupKeyring<'a> {
     /// prefix scan collects them in a single pass — the same ordering
     /// assumption as [`load_current_key_record`](Self::load_current_key_record).
     ///
-    /// The scan and the deletes use separate store handles, so this is not
-    /// atomic against a concurrent writer. That is safe here because the purge
-    /// cascade removes group membership *before* calling this (see
-    /// `delete_group_local_rows`), so no new key can be delivered or rotated
-    /// into the group during the scan→delete window.
+    /// The scan and the deletes use separate store handles, so this is **not**
+    /// atomic. Two windows follow from that, both benign here:
+    ///
+    /// 1. *Concurrent writer.* A `store_key` racing between the scan and the
+    ///    delete loop would be missed. This cannot happen on the purge path:
+    ///    the only writer of `GroupKeyEntry` is the governance key-delivery /
+    ///    rotation pipeline, which only writes for groups the node is a member
+    ///    of, and `delete_group_local_rows` removes the membership rows *before*
+    ///    calling this — and the cascade itself runs single-threaded. So no
+    ///    `store_key` for this group can be issued once we reach here.
+    /// 2. *Partial delete on error.* If a `handle.delete` fails mid-loop, the
+    ///    already-deleted keys stay deleted and the rest remain; the error
+    ///    propagates via `?`. The caller (`delete_group_local_rows`) propagates
+    ///    it too, keeping the purge retry anchor alive, and the next reconcile
+    ///    invocation re-scans and deletes only the survivors — idempotent across
+    ///    retries even after a partial delete.
     pub fn delete_all_for_group(&self) -> EyreResult<()> {
         let gid = self.group_id.to_bytes();
         let keys = collect_keys_with_prefix(
