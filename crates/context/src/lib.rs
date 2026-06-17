@@ -40,6 +40,7 @@ pub mod hlc_fence;
 mod lifecycle;
 pub mod migration_plan;
 pub mod self_purge;
+pub mod tee_subgroup_admit;
 
 pub(crate) use cache::{BoundedCache, Evictable};
 
@@ -72,6 +73,7 @@ pub mod group_store {
         sign_and_publish_namespace_op,
         sign_apply_and_publish,
         sign_apply_and_publish_namespace_op,
+        tee_admission_record,
         // Absorb buffer (PR-6b straggler safety).
         AbsorbRecord,
         AbsorbRepository,
@@ -755,6 +757,19 @@ impl Actor for ContextManager {
         // existing rejoin codepaths can re-establish state. Mirrors
         // auto_follow's listener pattern. Idempotent across restarts.
         self_purge::spawn(self.datastore.clone(), self.node_client.clone());
+
+        // Transparent per-subgroup TEE admission (proposal.md §12d, Phase 1).
+        // Reacts to SubgroupCreated / TeeMemberAdmitted to admit entitled TEE
+        // members into Restricted subgroups this node holds keys for. Open
+        // subgroups need no admission. Mirrors the self_purge listener pattern.
+        //
+        // `shutdown` before `spawn`: the handler is a process-global singleton,
+        // and a plain `spawn` no-ops while a prior handler still runs. If this
+        // actor is restarted with a *different* `Store`/`ContextClient`, that
+        // would leave the subscriber bound to the stale handles. Aborting first
+        // guarantees we (re)bind to this instance's current store/client.
+        tee_subgroup_admit::shutdown();
+        tee_subgroup_admit::spawn(self.datastore.clone(), self.context_client.clone());
     }
 }
 
