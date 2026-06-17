@@ -112,6 +112,27 @@ impl Handler<ExecuteRequest> for ContextManager {
         // populated alongside the module cache; a cold miss (None) silently
         // defaults to the write lock.
         let is_state_op = "__calimero_sync_next" == method;
+
+        // Shadow ACL-plane feed (additive — nothing reads the projection yet).
+        // A sync-apply's artifact carries the resolved per-object writer sets;
+        // decode them here while `payload` is still owned (execution moves it),
+        // and fold them into this scope's unified-op projection only after the
+        // apply succeeds (below). `None` for non-`CausalActions` / writer-free
+        // deltas. See [`scope_projection::shadow_set_writers_op`] for why this
+        // resolver-fed form is transitional.
+        let acl_shadow_feed = if is_state_op {
+            match borsh::from_slice::<StorageDelta>(&payload) {
+                Ok(StorageDelta::CausalActions {
+                    effective_writers,
+                    delta_hlc,
+                    ..
+                }) if !effective_writers.is_empty() => Some((effective_writers, delta_hlc)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         let is_read_only_call = 'ro: {
             if is_state_op || matches!(atomic, Some(ContextAtomic::Held(_))) {
                 break 'ro false;
@@ -873,6 +894,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let node_client = act.node_client.clone();
                 let context_client = act.context_client.clone();
+                let scope_projections = std::sync::Arc::clone(&act.scope_projections);
                 // `datastore_for_broadcast` used to recompute the
                 // governance position at broadcast time — that recompute
                 // produced the persist-vs-broadcast signature mismatch
@@ -884,6 +906,25 @@ impl Handler<ExecuteRequest> for ContextManager {
                 async move {
                     if outcome.returns.is_err() {
                         return Ok((guard, context.root_hash, outcome));
+                    }
+
+                    // Apply succeeded — fold the resolved writer sets into this
+                    // scope's shadow projection (additive; nothing reads it
+                    // yet). Synchronous, no await under the lock; a poisoned
+                    // lock is ignored so the shadow can never affect execution.
+                    if let Some((writers, delta_hlc)) = &acl_shadow_feed {
+                        let scope = calimero_op::ScopeId::from(*context_id.digest());
+                        if let Ok(mut projections) = scope_projections.lock() {
+                            for (object, set) in writers {
+                                let op = crate::scope_projection::shadow_set_writers_op(
+                                    scope,
+                                    *object,
+                                    *delta_hlc,
+                                    set.clone(),
+                                );
+                                projections.ingest_op(&op);
+                            }
+                        }
                     }
 
                     info!(

@@ -16,7 +16,7 @@
 //! `signer` is a deterministic cross-node author and whose target scope is
 //! resolvable from the op — applied at the namespace governance handler.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
@@ -25,6 +25,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
+use calimero_storage::entities::OpMask;
 use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_storage::rotation_log::RotationLogEntry;
 
@@ -118,6 +119,32 @@ pub fn op_from_rotation_entry(object: Id, scope: ScopeId, entry: &RotationLogEnt
     let author = entry.signer?;
     let payload = set_writers_payload(object, entry);
     Some(build_op(scope, author, entry.delta_hlc, &[], payload))
+}
+
+/// Build the shadow `SetWriters` op for a per-object writer set as **resolved
+/// by the current resolver** (the data the apply path has on hand —
+/// `effective_writers`).
+///
+/// A fixed placeholder author keeps `op_id` deterministic across nodes: the
+/// resolved set is identical everywhere, and the author doesn't affect the
+/// writer set the projection records (only the LWW tiebreak). This is the
+/// transitional live feed; the cutover replaces it with ops authored from the
+/// raw rotation entries ([`op_from_rotation_entry`]), at which point the
+/// projection — not the resolver — is the source of truth.
+#[must_use]
+pub fn shadow_set_writers_op(
+    scope: ScopeId,
+    object: Id,
+    hlc: HybridTimestamp,
+    writers: BTreeMap<PublicKey, OpMask>,
+) -> Op {
+    build_op(
+        scope,
+        PublicKey::from([0u8; 32]),
+        hlc,
+        &[],
+        OpPayload::SetWriters { object, writers },
+    )
 }
 
 /// Convert a cleartext namespace governance op into the unified [`Op`] for the
