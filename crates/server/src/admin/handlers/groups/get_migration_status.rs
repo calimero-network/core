@@ -18,7 +18,7 @@ use super::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
-/// `GET /admin/contexts/migration-status/{namespace_id}` — the operator-facing
+/// `GET /admin-api/groups/{namespace_id}/migration-status` — the operator-facing
 /// "have all peers migrated?" rollup (Task 6c.10).
 ///
 /// Mirrors [`super::get_cascade_status::handler`]: parse the namespace id,

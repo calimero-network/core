@@ -2320,26 +2320,50 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // HLC fence (PR-3), parallel to `apply_authorized_state_delta`. The
     // snapshot-sync replay path does NOT funnel through that chokepoint —
     // it carries its own duplicated verification chain — so the fence is
-    // applied here too. `BufferedDelta` now carries the stamped
-    // `producing_app_key` through snapshot-sync buffering, so a stale-schema
-    // delta buffered across a cascade migration is dropped on replay rather
-    // than silently applied. `None` is unfenceable and falls through.
+    // applied here too. `BufferedDelta` carries the stamped `producing_app_key`
+    // through snapshot-sync buffering. `None` is unfenceable and falls through.
+    //
+    // Absorb-don't-drop: route through `delta_fence_decision` (not the boolean
+    // `delta_is_fenced`, which collapses `Buffer` into "drop"). A `Buffer`
+    // decision means the loaded reader is behind the incoming schema — the
+    // delta must be persisted verbatim to the absorb buffer for replay once the
+    // binary advances, exactly like the gossip/live-apply chokepoint
+    // (`fence_and_maybe_absorb`). Collapsing it to a drop here permanently lost
+    // a legitimate newer-schema straggler on the snapshot-sync replay path.
     if let Some(producing_app_key) = buffered.producing_app_key {
-        if calimero_context::hlc_fence::delta_is_fenced(
+        use calimero_context::hlc_fence::FenceDecision;
+        match calimero_context::hlc_fence::delta_fence_decision(
             context_client.datastore(),
             &context_id,
             producing_app_key,
             buffered.hlc,
         )? {
-            warn!(
-                %context_id,
-                author = %buffered.author_id,
-                delta_id = ?delta_id,
-                producing_app_key = %hex::encode(producing_app_key),
-                "Dropping buffered state delta — HLC fence: stale schema after cascade migration"
-            );
-            crate::node_metrics::record_delta_outcome("fenced_stale_schema");
-            return Ok(false);
+            FenceDecision::Apply => {}
+            FenceDecision::Buffer => {
+                let record = calimero_context::group_store::AbsorbRecord::from_buffered(&buffered);
+                calimero_context::group_store::AbsorbRepository::new(context_client.datastore())
+                    .save(&context_id, producing_app_key, &record)?;
+                warn!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    delta_id = ?delta_id,
+                    producing_app_key = %hex::encode(producing_app_key),
+                    "Absorbing buffered state delta — loaded reader behind incoming schema; buffered for verbatim replay"
+                );
+                crate::node_metrics::record_delta_outcome("absorbed_for_migration");
+                return Ok(false);
+            }
+            FenceDecision::Drop => {
+                warn!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    delta_id = ?delta_id,
+                    producing_app_key = %hex::encode(producing_app_key),
+                    "Dropping buffered state delta — HLC fence: stale schema after cascade migration"
+                );
+                crate::node_metrics::record_delta_outcome("fenced_stale_schema");
+                return Ok(false);
+            }
         }
     }
 

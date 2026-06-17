@@ -1,7 +1,7 @@
 name: Doc Auto-Update
 
 # Inlined from calimero-network/ai-code-reviewer reusable workflow at
-# SHA 06d0a027b59caba85269b5a63bac4b0e53ffa0ea, with one fix:
+# SHA 485b32abf334f1518dcadc9c3762ea98705e696c, with one fix:
 # `cache: pip` removed from `actions/setup-python@v5`. The upstream sets
 # it unconditionally, but setup-python's pip cache requires a
 # requirements.txt or pyproject.toml in the calling repo — neither
@@ -58,7 +58,21 @@ jobs:
       # Pinned to the same SHA as ai-review.yaml so both workflows install
       # the audited version of ai-code-reviewer. Bump deliberately.
       - name: Install ai-code-reviewer
-        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@06d0a027b59caba85269b5a63bac4b0e53ffa0ea
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@485b32abf334f1518dcadc9c3762ea98705e696c
+
+      # Mint a short-lived MeroReviewer App installation token. Unlike the
+      # default GITHUB_TOKEN, an App token is not subject to the org/repo
+      # "Allow GitHub Actions to create and approve pull requests" setting,
+      # so `ai-reviewer update-docs` can actually open the doc PR.
+      - name: Create GitHub App token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
+        id: app-token
+        with:
+          app-id: ${{ vars.MERO_REVIEWER_APP_ID }}
+          private-key: ${{ secrets.MERO_REVIEWER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            core
 
       - name: Get merged PR number
         id: pr
@@ -73,7 +87,7 @@ jobs:
         # merges — and unlike the time-ordered list, it doesn't race with
         # other PRs that merge in the same window.
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
@@ -113,7 +127,7 @@ jobs:
         # through `env` so the shell never string-interpolates them.
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}

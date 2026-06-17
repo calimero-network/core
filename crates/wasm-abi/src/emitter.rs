@@ -416,9 +416,7 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                     .map_or_else(|| "unnamed".to_owned(), ToString::to_string);
 
                 let field_type = normalize_type(&field.ty, true, self).unwrap_or_else(|e| {
-                    eprintln!("Failed to normalize type for field: {field_name}");
-                    eprintln!("Error: {e:?}");
-                    panic!("Type normalization failed");
+                    panic!("ABI emit: failed to normalize type for field `{field_name}`: {e:?}");
                 });
                 let field_type = post_process_type_ref(field_type, self);
 

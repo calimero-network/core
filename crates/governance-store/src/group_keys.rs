@@ -90,6 +90,52 @@ impl<'a> GroupKeyring<'a> {
         Ok(best.map(|(record, _)| record))
     }
 
+    /// Delete every stored group encryption key (`GroupKeyEntry`) for this
+    /// group. Used by the purge/leave cascade for forward-secrecy hygiene —
+    /// mirrors `SigningKeysRepository::delete_all_for_group` (the group id is
+    /// taken from `self` rather than a parameter, since the keyring is already
+    /// scoped to one group). Idempotent.
+    ///
+    /// Correctness relies on `GroupKeyEntry` keys being ordered by
+    /// `(group_id, key_id)`, so all of this group's keys are contiguous and the
+    /// prefix scan collects them in a single pass — the same ordering
+    /// assumption as [`load_current_key_record`](Self::load_current_key_record).
+    ///
+    /// The scan and the deletes use separate store handles, so this is **not**
+    /// atomic. Two windows follow from that, both benign here:
+    ///
+    /// 1. *Concurrent writer.* A `store_key` racing between the scan and the
+    ///    delete loop would be missed. This cannot happen on the purge path:
+    ///    the only writer of `GroupKeyEntry` is the governance key-delivery /
+    ///    rotation pipeline, which only writes for groups the node is a member
+    ///    of, and `delete_group_local_rows` removes the membership rows *before*
+    ///    calling this — and the cascade itself runs single-threaded. So no
+    ///    `store_key` for this group can be issued once we reach here. The
+    ///    method is `pub(crate)` precisely so this precondition is enforced
+    ///    structurally: the only caller is `delete_group_local_rows` (and the
+    ///    in-crate tests), never an external code path that might skip the
+    ///    membership removal.
+    /// 2. *Partial delete on error.* If a `handle.delete` fails mid-loop, the
+    ///    already-deleted keys stay deleted and the rest remain; the error
+    ///    propagates via `?`. The caller (`delete_group_local_rows`) propagates
+    ///    it too, keeping the purge retry anchor alive, and the next reconcile
+    ///    invocation re-scans and deletes only the survivors — idempotent across
+    ///    retries even after a partial delete.
+    pub(crate) fn delete_all_for_group(&self) -> EyreResult<()> {
+        let gid = self.group_id.to_bytes();
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupKeyEntry::new(gid, [0u8; 32]),
+            GROUP_KEY_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+        let mut handle = self.store.handle();
+        for key in keys {
+            handle.delete(&key)?;
+        }
+        Ok(())
+    }
+
     /// Backward-compatible tuple view of [`StoredGroupKey`].
     pub fn load_current_key(&self) -> EyreResult<Option<([u8; 32], [u8; 32])>> {
         Ok(self
@@ -217,5 +263,50 @@ impl<'a> GroupKeyring<'a> {
             new_key_id,
             envelopes,
         })
+    }
+}
+
+#[cfg(test)]
+mod delete_tests {
+    use std::sync::Arc;
+
+    use calimero_store::db::InMemoryDB;
+
+    use super::*;
+
+    fn test_store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    #[test]
+    fn delete_all_for_group_removes_all_keys_and_is_scoped() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0x42u8; 32]);
+        let ring = GroupKeyring::new(&store, gid);
+
+        let id1 = ring.store_key(&[0x01u8; 32]).unwrap();
+        let _id2 = ring.store_key(&[0x02u8; 32]).unwrap();
+        assert!(ring.load_current_key().unwrap().is_some());
+        assert!(ring.load_key_by_id(&id1).unwrap().is_some());
+
+        // Seed a different group; it must survive the targeted delete.
+        let other = ContextGroupId::from([0x99u8; 32]);
+        let other_ring = GroupKeyring::new(&store, other);
+        let _ = other_ring.store_key(&[0x03u8; 32]).unwrap();
+
+        ring.delete_all_for_group().unwrap();
+
+        assert!(
+            ring.load_current_key().unwrap().is_none(),
+            "all group encryption keys for the target group must be gone"
+        );
+        assert!(ring.load_key_by_id(&id1).unwrap().is_none());
+        assert!(
+            other_ring.load_current_key().unwrap().is_some(),
+            "another group's keys must NOT be deleted"
+        );
+
+        // Idempotent: deleting again is a no-op.
+        ring.delete_all_for_group().unwrap();
     }
 }

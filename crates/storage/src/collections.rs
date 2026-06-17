@@ -721,6 +721,22 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Ok(iter)
     }
 
+    /// Snapshot every child as `(item, storage_type)` in child-list order.
+    /// `storage_type` carries the per-entry owner stamp (AuthoredMap/Shared);
+    /// a re-key that re-inserts plain `item`s would drop it and silently
+    /// downgrade authored entries to `Public`, so callers re-insert via
+    /// `insert_with_storage_type`.
+    pub(crate) fn entries_with_storage_type(&self) -> StoreResult<Vec<(T, StorageType)>> {
+        let ids: Vec<Id> = self.children_cache()?.iter().copied().collect();
+        let mut out = Vec::with_capacity(ids.len());
+        for child in ids {
+            let entry = <Interface<S>>::find_by_id::<Entry<T>>(child)?
+                .ok_or(StoreError::StorageError(StorageError::NotFound(child)))?;
+            out.push((entry.item, entry.storage.metadata.storage_type));
+        }
+        Ok(out)
+    }
+
     fn nth(&self, index: usize) -> StoreResult<Option<Id>> {
         Ok(self.children_cache()?.get_index(index).copied())
     }

@@ -74,7 +74,10 @@ use tokio::task::AbortHandle;
 use tracing::{debug, error, info, warn};
 
 use calimero_governance_store;
-use calimero_governance_store::metrics::{record_purge_failure, PurgeBranch, PurgeFailureClass};
+use calimero_governance_store::metrics::{
+    record_events_dropped, record_purge_failure, record_reconcile_outcome, PurgeBranch,
+    PurgeFailureClass, ReconcileOutcome,
+};
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
     MembershipRepository, NamespaceRepository, PendingSelfPurgeRepository,
@@ -174,6 +177,14 @@ async fn run(store: Store, node_client: NodeClient) {
                      NOT complete it; the residual local key material persists (bounded, \
                      not a forward-secrecy hole — FS is held by key rotation)"
                 );
+                // #2686: surface the silent-residue count as a metric so
+                // operators can alert on it — the `warn!` above is not
+                // machine-queryable. `skipped` is the broadcast's total dropped
+                // count across ALL `OpEvent` variants; the channel does not
+                // report which were dropped, so this is an upper bound on dropped
+                // `TeeMemberRemoved` evictions, not an exact count (see the
+                // metric help string in governance-store).
+                record_events_dropped(skipped);
                 continue;
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -369,6 +380,7 @@ async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
     let scanned = pending.len();
     let mut reconciled = 0usize;
     let mut cleared_stale = 0usize;
+    let mut stale_clear_failed = 0usize;
     let mut retained = 0usize;
     let mut skipped = 0usize;
 
@@ -389,8 +401,10 @@ async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
                 // the counter (review nit).
                 if purge_namespace_for_self(store, node_client, ns_id).await {
                     reconciled += 1;
+                    record_reconcile_outcome(ReconcileOutcome::Reconciled);
                 } else {
                     retained += 1;
+                    record_reconcile_outcome(ReconcileOutcome::Retained);
                 }
             }
             ReconcileDecision::ClearStaleMarker(reason) => {
@@ -399,21 +413,39 @@ async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
                     %reason,
                     "self-purge reconcile: clearing stale marker WITHOUT purging"
                 );
-                clear_marker(store, &ns_id);
-                cleared_stale += 1;
+                // #2686: distinguish a successful stale-marker clear from a
+                // failed one. A failed clear is benign (the next restart
+                // re-evaluates the already-clean / re-admitted namespace and
+                // retries the clear), but operators should be able to see it.
+                if clear_marker(store, &ns_id) {
+                    cleared_stale += 1;
+                    record_reconcile_outcome(ReconcileOutcome::ClearedStale);
+                } else {
+                    stale_clear_failed += 1;
+                    record_reconcile_outcome(ReconcileOutcome::StaleClearFailed);
+                }
             }
             ReconcileDecision::Skip => {
-                // A read error somewhere — already logged + metered inside
-                // `reconcile_decision`. Keep the marker; the next restart
-                // retries.
+                // A read error made the decision uncertain — already logged
+                // inside `reconcile_decision` (which is now pure, #2686: it no
+                // longer records a purge-step failure for these reconcile
+                // read-errors). Keep the marker; the next restart retries.
+                // `skipped` is the correct signal for these read-uncertainty
+                // cases, NOT `self_purge_failures_total`.
                 skipped += 1;
+                record_reconcile_outcome(ReconcileOutcome::Skipped);
             }
         }
     }
 
     info!(
         scanned,
-        reconciled, cleared_stale, retained, skipped, "self-purge reconcile sweep complete"
+        reconciled,
+        cleared_stale,
+        stale_clear_failed,
+        retained,
+        skipped,
+        "self-purge reconcile sweep complete"
     );
 }
 
@@ -459,7 +491,13 @@ pub(crate) enum ReconcileDecision {
 ///     `ClearStaleMarker` — do NOT purge a healthy member.
 ///   * Any read error ⇒ `Skip` (never purge on uncertainty).
 ///
-/// Pure store reads; no mutation.
+/// Pure store reads; no mutation AND no metrics side-effect (#2686). This
+/// function deliberately does NOT call `record_purge_failure` on its
+/// read-error paths: a reconcile read-error is uncertainty, not a purge-step
+/// (delete) failure, and labelling it as one inflated
+/// `self_purge_failures_total`. The sweep records those `Skip` decisions via
+/// the `self_purge_reconcile_total{outcome="skipped"}` counter instead — the
+/// correct signal for reconcile read-uncertainty.
 pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> ReconcileDecision {
     let ns_hex = hex::encode(ns_id.to_bytes());
 
@@ -490,7 +528,10 @@ pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> Reconc
                 "self-purge reconcile: failed to re-check pending-self-purge marker \
                  — skipping (will retry on next restart; NOT purging on uncertainty)"
             );
-            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
+            // #2686: NO `record_purge_failure` here — this is a reconcile
+            // read-error (uncertainty), not a purge-step failure. The sweep
+            // records the resulting `Skip` as
+            // `self_purge_reconcile_total{outcome="skipped"}`.
             return ReconcileDecision::Skip;
         }
     }
@@ -509,7 +550,9 @@ pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> Reconc
                 "self-purge reconcile: failed to read namespace identity for a marked \
                  namespace — skipping (will retry on next restart; NOT purging on uncertainty)"
             );
-            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
+            // #2686: NO `record_purge_failure` here — reconcile read-error,
+            // not a purge-step failure. Recorded as `outcome="skipped"` by the
+            // sweep.
             return ReconcileDecision::Skip;
         }
     };
@@ -533,7 +576,9 @@ pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> Reconc
                  — skipping (keeping marker; will retry on next restart; NOT purging \
                  on uncertainty)"
             );
-            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
+            // #2686: NO `record_purge_failure` here — reconcile read-error,
+            // not a purge-step failure. Recorded as `outcome="skipped"` by the
+            // sweep.
             ReconcileDecision::Skip
         }
     }
@@ -543,7 +588,11 @@ pub(crate) fn reconcile_decision(store: &Store, ns_id: ContextGroupId) -> Reconc
 /// non-fatal: a stale marker just means the next reconcile re-evaluates the
 /// (already-clean / re-admitted) namespace and tries to clear it again. Logged
 /// so it is visible, but it does not block the sweep.
-fn clear_marker(store: &Store, ns_id: &ContextGroupId) {
+///
+/// Returns `true` iff the clear succeeded (#2686). The reconcile sweep uses
+/// this to distinguish a `cleared_stale` outcome from a `stale_clear_failed`
+/// one rather than counting `cleared_stale` regardless of the result.
+fn clear_marker(store: &Store, ns_id: &ContextGroupId) -> bool {
     if let Err(e) = PendingSelfPurgeRepository::new(store).clear(ns_id) {
         warn!(
             namespace = %hex::encode(ns_id.to_bytes()),
@@ -551,6 +600,9 @@ fn clear_marker(store: &Store, ns_id: &ContextGroupId) {
             "self-purge: failed to clear pending-self-purge marker — stale marker will be \
              re-evaluated on the next reconcile (harmless)"
         );
+        false
+    } else {
+        true
     }
 }
 
@@ -681,6 +733,12 @@ async fn handle_member_removed(
 ///
 /// Sync: store operations only, no async work. Split out so tests can
 /// drive it without standing up a `NodeClient` mock.
+///
+/// Scope note (#2686): this stays sync / no-`Result` on purpose. Subgroup-step
+/// failures are already captured by `record_purge_failure(Subgroup, …)`; the
+/// retry-surface refactor (returning `Result<()>` so a subgroup-scoped
+/// reconcile can complete a failed subgroup-only purge) belongs with the
+/// subgroup-reconcile work in #2726, not here.
 ///
 /// Mirrors the per-group cleanup sequence in
 /// `handlers/delete_namespace.rs:74-90` for a single group:
@@ -1195,7 +1253,8 @@ mod tests {
     use rand::RngCore;
 
     use calimero_governance_store::{
-        MembershipRepository, MetaRepository, PendingSelfPurgeRepository, SigningKeysRepository,
+        GroupKeyring, MembershipRepository, MetaRepository, PendingSelfPurgeRepository,
+        SigningKeysRepository,
     };
 
     use super::*;
@@ -1273,6 +1332,119 @@ mod tests {
         );
 
         (store, ns_id, self_pk)
+    }
+
+    #[test]
+    fn cascade_namespace_state_purges_group_encryption_keys_root_and_subgroups() {
+        // A namespace root + one nested subgroup, each holding an AES group
+        // encryption key. A namespace-root cascade must delete BOTH — an
+        // evicted TEE replica must not retain decryption keys (forward secrecy).
+        let mut rng = OsRng;
+        let store = empty_store();
+
+        let ns_id = ContextGroupId::from([0x70u8; 32]);
+        let sub_id = ContextGroupId::from([0x71u8; 32]);
+
+        let self_sk = PrivateKey::random(&mut rng);
+        let self_pk = self_sk.public_key();
+
+        // Root group.
+        MetaRepository::new(&store)
+            .save(&ns_id, &make_meta(self_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member_with_keys(
+                &ns_id,
+                &self_pk,
+                GroupMemberRole::Admin,
+                Some([0xAA; 32]),
+                Some([0xBB; 32]),
+            )
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .store_identity(&ns_id, &self_pk, &[0xAA; 32], &[0xBB; 32])
+            .unwrap();
+
+        // Nested subgroup under the namespace root.
+        MetaRepository::new(&store)
+            .save(&sub_id, &make_meta(self_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member_with_keys(
+                &sub_id,
+                &self_pk,
+                GroupMemberRole::ReadOnlyTee,
+                Some([0xCC; 32]),
+                Some([0xDD; 32]),
+            )
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&ns_id, &sub_id)
+            .unwrap();
+
+        // Seed a signing key on BOTH groups so `delete_group_local_rows`
+        // exercises the signing-key delete (not just the AES-key delete) for
+        // each, symmetric with the multi-group cascade test's seeding. (The
+        // `purged_groups == 2` count itself comes from both groups having rows
+        // to drop; these seeds make the per-group signing-key delete path real.)
+        SigningKeysRepository::new(&store)
+            .store_key(&ns_id, &self_pk, &[0xEEu8; 32])
+            .unwrap();
+        SigningKeysRepository::new(&store)
+            .store_key(&sub_id, &self_pk, &[0xFFu8; 32])
+            .unwrap();
+
+        // Seed an AES group encryption key on BOTH groups.
+        GroupKeyring::new(&store, ns_id)
+            .store_key(&[0x11u8; 32])
+            .unwrap();
+        GroupKeyring::new(&store, sub_id)
+            .store_key(&[0x22u8; 32])
+            .unwrap();
+        assert!(GroupKeyring::new(&store, ns_id)
+            .load_current_key()
+            .unwrap()
+            .is_some());
+        assert!(GroupKeyring::new(&store, sub_id)
+            .load_current_key()
+            .unwrap()
+            .is_some());
+
+        let result = cascade_namespace_state(&store, ns_id);
+        assert_eq!(
+            result.purged_groups, 2,
+            "exactly root + subgroup must be purged, got {}",
+            result.purged_groups
+        );
+
+        assert!(
+            GroupKeyring::new(&store, ns_id)
+                .load_current_key()
+                .unwrap()
+                .is_none(),
+            "root AES group encryption key MUST be purged"
+        );
+        assert!(
+            GroupKeyring::new(&store, sub_id)
+                .load_current_key()
+                .unwrap()
+                .is_none(),
+            "subgroup AES group encryption key MUST be purged"
+        );
+        assert!(
+            SigningKeysRepository::new(&store)
+                .get_key(&ns_id, &self_pk)
+                .unwrap()
+                .is_none(),
+            "root signing key MUST be purged"
+        );
+        assert!(
+            SigningKeysRepository::new(&store)
+                .get_key(&sub_id, &self_pk)
+                .unwrap()
+                .is_none(),
+            "subgroup signing key MUST be purged"
+        );
     }
 
     // --- Reconcile sweep (#2721) ---------------------------------------
@@ -1719,6 +1891,46 @@ mod tests {
     }
 
     #[test]
+    fn clear_marker_returns_true_on_success() {
+        // #2686: `clear_marker` now returns whether the clear succeeded so the
+        // reconcile sweep can distinguish `cleared_stale` from
+        // `stale_clear_failed`. Happy path: a present marker clears and the
+        // function reports success, leaving no marker. (A failing clear can't
+        // be cheaply provoked with the InMemoryDB — `clear` is an idempotent
+        // delete that returns Ok even on an absent key — so `clear_marker`'s
+        // `false` return is not directly exercised here. The `stale_clear_failed`
+        // reconcile *outcome* that a false return feeds into is covered
+        // separately in the metrics recorder test
+        // `self_purge_reconcile_register_and_encode`.)
+        let store = empty_store();
+        let ns_id = ContextGroupId::from([0x55u8; 32]);
+        PendingSelfPurgeRepository::new(&store)
+            .mark(&ns_id)
+            .unwrap();
+        assert!(PendingSelfPurgeRepository::new(&store)
+            .is_marked(&ns_id)
+            .unwrap());
+
+        assert!(
+            clear_marker(&store, &ns_id),
+            "clear_marker MUST return true when the clear succeeds"
+        );
+        assert!(
+            !PendingSelfPurgeRepository::new(&store)
+                .is_marked(&ns_id)
+                .unwrap(),
+            "marker MUST be gone after a successful clear"
+        );
+
+        // Idempotent: clearing an already-absent marker is still a success
+        // (the underlying delete is an idempotent no-op).
+        assert!(
+            clear_marker(&store, &ns_id),
+            "clear_marker MUST return true on an already-absent marker (idempotent)"
+        );
+    }
+
+    #[test]
     fn purge_subgroup_drops_signing_key_but_leaves_namespace_identity() {
         // Subgroup-only purge: only the kicked-from group's rows should
         // go. Namespace identity + any other groups under the same
@@ -1766,6 +1978,18 @@ mod tests {
                 .is_some(),
             "subgroup signing key should exist before purge"
         );
+        // Seed an AES group encryption key on the subgroup so we can assert
+        // the subgroup-ONLY leave path deletes it (forward-secrecy).
+        GroupKeyring::new(&store, sub_id)
+            .store_key(&[0x33u8; 32])
+            .unwrap();
+        assert!(
+            GroupKeyring::new(&store, sub_id)
+                .load_current_key()
+                .unwrap()
+                .is_some(),
+            "subgroup AES group key should exist before purge"
+        );
 
         purge_subgroup_for_self(&store, sub_id);
 
@@ -1798,6 +2022,13 @@ mod tests {
         assert!(
             MetaRepository::new(&store).load(&sub_id).unwrap().is_none(),
             "subgroup meta MUST be purged"
+        );
+        assert!(
+            GroupKeyring::new(&store, sub_id)
+                .load_current_key()
+                .unwrap()
+                .is_none(),
+            "subgroup-only leave MUST delete the subgroup's AES group key"
         );
         assert!(
             NamespaceRepository::new(&store)

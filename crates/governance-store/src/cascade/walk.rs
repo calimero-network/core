@@ -70,8 +70,8 @@ pub struct WalkEntry {
 /// remain bounded under any store state.
 ///
 /// Iteration order is depth-first by stable RocksDB key-byte order
-/// within each parent's child list (matching
-/// [`list_child_groups`][crate::list_child_groups]). The
+/// within each parent's child list (matching the namespace child-index
+/// enumeration). The
 /// caller does not depend on this order — both cascade apply arms iterate
 /// the full result before issuing any writes — but it is deterministic
 /// for debuggability.

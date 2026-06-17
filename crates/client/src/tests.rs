@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use eyre::Result;
 use url::Url;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::client::Client;
@@ -21,6 +21,7 @@ use crate::traits::ClientStorage;
 
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::PublicKey;
@@ -41,6 +42,7 @@ use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetSubgroupVisibilityApiRequest;
 use calimero_server_primitives::admin::SyncGroupApiRequest;
+use calimero_server_primitives::admin::UpdateContextApplicationRequest;
 use calimero_server_primitives::admin::UpdateGroupSettingsApiRequest;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
 use calimero_server_primitives::admin::UpgradeGroupApiRequest;
@@ -647,9 +649,26 @@ async fn get_group_upgrade_status() {
 #[tokio::test]
 async fn get_cascade_status() {
     let server = MockServer::start().await;
+    // Non-empty entry exercises the nested CascadeStatusApiEntry +
+    // GroupUpgradeStatusApiData deserialization (not just an empty array).
     Mock::given(method("GET"))
         .and(path(format!("/admin-api/groups/{GID}/cascade-status")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": [{
+                "groupId": GID,
+                "upgrade": {
+                    "fromVersion": "1.0.0",
+                    "toVersion": "2.0.0",
+                    "initiatedAt": 100,
+                    "initiatedBy": ZERO_BS58,
+                    "status": "pending",
+                    "total": 3,
+                    "completed": 1,
+                    "failed": 0
+                },
+                "cascadeHlc": "hlc-abc"
+            }]})),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -657,7 +676,10 @@ async fn get_cascade_status() {
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client.get_cascade_status(GID).await.unwrap();
 
-    assert!(resp.data.is_empty());
+    assert_eq!(resp.data.len(), 1);
+    assert_eq!(resp.data[0].group_id, GID);
+    assert_eq!(resp.data[0].upgrade.to_version, "2.0.0");
+    assert_eq!(resp.data[0].cascade_hlc.as_deref(), Some("hlc-abc"));
 }
 
 #[tokio::test]
@@ -696,15 +718,27 @@ async fn get_migration_status() {
             "targetVersion": 2,
             "expectedMembers": 1,
             "rollup": {
-                "migrated": 1,
+                "migrated": 0,
                 "inProgress": 0,
                 "unknown": 0,
-                "failed": 0,
+                "failed": 1,
                 "total": 1,
-                "allMigrated": true,
+                "allMigrated": false,
                 "membersPendingSignature": 0
             },
-            "members": []
+            "members": [{
+                "peer": ZERO_BS58,
+                "report": {
+                    "schemaVersion": 1,
+                    "residueAuto": 0,
+                    "residueIdentity": 2,
+                    "syncedUpToHlc": 0,
+                    "reportedAt": 100,
+                    "authoredRemaining": 2,
+                    "migrationFailed": "no_migration_path"
+                },
+                "state": "failed"
+            }]
         })))
         .expect(1)
         .mount(&server)
@@ -714,7 +748,22 @@ async fn get_migration_status() {
     let resp = client.get_migration_status(GID).await.unwrap();
 
     assert_eq!(resp.target_version, 2);
-    assert!(resp.rollup.all_migrated);
+    assert!(!resp.rollup.all_migrated);
+    assert_eq!(resp.rollup.failed, 1);
+    // Non-empty member array exercises the nested per-member DTO + report
+    // deserialization (not just an empty rollup), including the stranded
+    // `no_migration_path` failure reason.
+    assert_eq!(resp.members.len(), 1);
+    let report = resp.members[0]
+        .report
+        .as_ref()
+        .expect("member report present");
+    assert_eq!(report.authored_remaining, 2);
+    assert_eq!(
+        report.migration_failed.as_deref(),
+        Some("no_migration_path")
+    );
+    assert_eq!(resp.members[0].state, "failed");
 }
 
 #[tokio::test]
@@ -722,6 +771,8 @@ async fn resync_context() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/contexts/{CID}/resync")))
+        // Body assertion: the destructive `force` flag must actually be sent.
+        .and(body_json(serde_json::json!({ "force": true })))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "contextId": CID,
             "resyncStarted": true
@@ -738,6 +789,50 @@ async fn resync_context() {
 
     assert_eq!(resp.context_id, CID);
     assert!(resp.resync_started);
+}
+
+#[tokio::test]
+async fn abort_migration() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/admin-api/groups/{GID}/migration/abort")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "namespaceId": GID,
+            "aborted": true
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client.abort_migration(GID).await.unwrap();
+
+    assert_eq!(resp.namespace_id, GID);
+    assert!(resp.aborted);
+}
+
+#[tokio::test]
+async fn update_context_application() {
+    let server = MockServer::start().await;
+    // Format the same ContextId into both the mock path and the call, so the
+    // match holds regardless of the id's Display encoding.
+    let cid = ContextId::from([7u8; 32]);
+    let app_id = ApplicationId::from([8u8; 32]);
+    let executor = PublicKey::from([9u8; 32]);
+    Mock::given(method("POST"))
+        .and(path(format!("/admin-api/contexts/{cid}/application")))
+        // `UpdateContextApplicationResponse.data` is the unit struct `Empty`,
+        // which serializes as JSON `null`.
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": null })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    client
+        .update_context_application(&cid, UpdateContextApplicationRequest::new(app_id, executor))
+        .await
+        .unwrap();
 }
 
 // ---- Sync & Signing Key ----

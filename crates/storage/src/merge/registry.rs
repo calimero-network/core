@@ -305,7 +305,15 @@ pub fn try_merge_registered(
     // For now, we don't have type information at runtime.
     // TODO: Store type hints with root entity for O(1) dispatch (see issue #1993)
 
-    // Try each registered merge function until one succeeds (O(n) where n = registered types)
+    // Try each registered merge function until one succeeds (O(n) where n = registered types).
+    //
+    // Iteration order over the HashMap is unspecified, but this is sound because
+    // a module registers exactly one root state type (the `#[app::state]` type),
+    // so `n == 1` in production and "first success" is unambiguous. Were two
+    // types ever registered and both able to deserialize the same bytes, the
+    // pick would be ambiguous — and unfixable here, since `TypeId` has no stable
+    // cross-process ordering to sort by. The single-registrant invariant is the
+    // guarantee; keep it.
     with_registry(|registry| {
         if registry.is_empty() {
             return MergeRegistryResult::NoFunctionsRegistered;

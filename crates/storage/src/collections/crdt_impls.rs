@@ -224,7 +224,10 @@ impl Mergeable for ReplicatedGrowableArray {
         let other_chars = other.chars.entries()?;
 
         for (key, char_data) in other_chars {
-            if self.chars.get(&key).ok().flatten().is_none() {
+            // Propagate a read error instead of swallowing it: `.ok().flatten()`
+            // would treat a transient storage failure as "char absent" and
+            // re-insert, corrupting the array. A genuine absence is `Ok(None)`.
+            if self.chars.get(&key)?.is_none() {
                 // Character exists in other but not in self - add it
                 drop(self.chars.insert(key, char_data)?);
             }

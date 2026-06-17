@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{MembershipRepository, MetaRepository, NamespaceError};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
@@ -209,11 +211,19 @@ impl<'a> NamespaceRepository<'a> {
         group_id: &ContextGroupId,
     ) -> EyreResult<Vec<ContextGroupId>> {
         let mut descendants = Vec::new();
+        let mut visited = HashSet::new();
+        let _ = visited.insert(*group_id);
         let mut stack = vec![*group_id];
 
         while let Some(current) = stack.pop() {
             let children = self.list_children(&current)?;
             for child in children {
+                // Cycle/diamond guard: a malformed child index could point
+                // back at an ancestor; skip already-seen groups so the walk
+                // stays bounded (mirrors `cascade::walk_for_predicate`).
+                if !visited.insert(child) {
+                    continue;
+                }
                 descendants.push(child);
                 stack.push(child);
             }
@@ -230,10 +240,16 @@ impl<'a> NamespaceRepository<'a> {
         viewer: &PublicKey,
     ) -> EyreResult<Vec<ContextGroupId>> {
         let mut descendants = Vec::new();
+        let mut visited = HashSet::new();
+        let _ = visited.insert(*group_id);
         let mut stack = vec![*group_id];
 
         while let Some(current) = stack.pop() {
             for child in self.list_children(&current)? {
+                // Cycle/diamond guard (see `collect_descendants`).
+                if !visited.insert(child) {
+                    continue;
+                }
                 if !MembershipRepository::new(self.store).is_member(&child, viewer)? {
                     continue;
                 }
