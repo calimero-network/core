@@ -1,0 +1,17 @@
+[package]
+name = "calimero-authz"
+version.workspace = true
+description.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+
+calimero-context-config.workspace = true
+calimero-op.workspace = true
+calimero-primitives.workspace = true
+calimero-storage.workspace = true

@@ -9,7 +9,7 @@ description = "Core Calimero infrastructure and tools"
 # Update workspace metadata (see docs/RELEASE.md for versioning and release)
 [workspace.metadata.workspaces]
 # Shared version of all public crates; bump this when cutting a release.
-version = "0.11.0-rc.3"
+version = "0.11.0-rc.4"
 exclude = [
     "./crates/git-hooks",
     "./apps/abi_conformance",
@@ -99,6 +99,10 @@ members = [
     "./crates/network/primitives",
     "./crates/node",
     "./crates/node/primitives",
+    "./crates/op",
+    "./crates/authz",
+    "./crates/projection",
+    "./crates/op-adapter",
     "./crates/prelude",
     "./crates/primitives",
     "./crates/runtime",
@@ -317,6 +321,10 @@ calimero-network = { path = "./crates/network" }
 calimero-network-primitives = { path = "./crates/network/primitives" }
 calimero-node = { path = "./crates/node" }
 calimero-node-primitives = { path = "./crates/node/primitives" }
+calimero-op = { path = "./crates/op" }
+calimero-op-adapter = { path = "./crates/op-adapter" }
+calimero-authz = { path = "./crates/authz" }
+calimero-projection = { path = "./crates/projection" }
 calimero-prelude = { path = "./crates/prelude" }
 calimero-primitives = { path = "./crates/primitives" }
 calimero-runtime = { path = "./crates/runtime" }
