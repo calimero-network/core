@@ -6,9 +6,10 @@
 version: 1
 
 # Anthropic Messages API.
-# We deliberately use Sonnet (cheaper than Opus) for review agents and Haiku
-# (cheaper still) for doc-prose generation. Do not switch to Opus without an
-# explicit cost discussion.
+# We deliberately use Sonnet (cheaper than Opus) for both review agents and
+# doc generation. Haiku was too weak for the doc HTML-patch task — it failed
+# to emit valid find/replace patches and most files were silently skipped.
+# Do not switch to Opus without an explicit cost discussion.
 anthropic:
   default_model: claude-sonnet-4-6
   enable_prompt_caching: true
@@ -18,7 +19,7 @@ anthropic:
 # Disabled by default upstream; enabled here so doc-update.yaml has work to do.
 doc_generation:
   enabled: true
-  model: claude-haiku-4-5-20251001  # Haiku is sufficient for prose / HTML drafting
+  model: claude-sonnet-4-6  # Sonnet: Haiku failed the HTML find/replace patch task
   max_files: 15
   static_docs_dirs:
     - architecture/   # GitHub Pages source for the architecture site

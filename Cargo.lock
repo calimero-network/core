@@ -1141,6 +1141,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-authz"
+version = "0.0.0"
+dependencies = [
+ "calimero-context-config",
+ "calimero-op",
+ "calimero-primitives",
+ "calimero-storage",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "calimero-blobstore"
 version = "0.0.0"
 dependencies = [
@@ -1340,7 +1351,9 @@ dependencies = [
  "calimero-dag",
  "calimero-network-primitives",
  "calimero-node-primitives",
+ "calimero-op",
  "calimero-primitives",
+ "calimero-projection",
  "calimero-storage",
  "calimero-store",
  "calimero-utils-actix",
@@ -1470,6 +1483,7 @@ dependencies = [
  "rand_chacha 0.3.1",
  "serde",
  "serde_json",
+ "serial_test",
  "sha2 0.10.9",
  "tar",
  "tempfile",
@@ -1523,6 +1537,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-op"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "calimero-context-config",
+ "calimero-primitives",
+ "calimero-storage",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "calimero-op-adapter"
+version = "0.0.0"
+dependencies = [
+ "calimero-authz",
+ "calimero-context-config",
+ "calimero-governance-types",
+ "calimero-op",
+ "calimero-primitives",
+ "calimero-projection",
+ "calimero-storage",
+]
+
+[[package]]
 name = "calimero-prelude"
 version = "0.0.0"
 dependencies = [
@@ -1551,6 +1589,18 @@ dependencies = [
  "thiserror 1.0.69",
  "url",
  "zeroize",
+]
+
+[[package]]
+name = "calimero-projection"
+version = "0.0.0"
+dependencies = [
+ "calimero-authz",
+ "calimero-context-config",
+ "calimero-op",
+ "calimero-primitives",
+ "calimero-storage",
+ "sha2 0.10.9",
 ]
 
 [[package]]

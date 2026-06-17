@@ -3558,6 +3558,122 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
 }
 
 #[test]
+fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
+    // Same cross-store key-recovery pull as
+    // `responder_delivery_round_trips_key_to_joiner_cross_store`, but the
+    // joiner is a `ReadOnlyTee` member rather than a plain `Member`. The
+    // responder authz is `is_member` (role-agnostic), so the per-subgroup key
+    // for a Restricted subgroup must round-trip to a TEE joiner exactly as it
+    // does for a regular member — this closes the runtime-unverified gap for
+    // the `ReadOnlyTee` role at the crypto/authz layer.
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+
+    let namespace_id = [0xF2u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    // A non-root subgroup so the bootstrap-admin seed path is not exercised.
+    let subgroup_id = [0xF3u8; 32];
+    let subgroup_gid = ContextGroupId::from(subgroup_id);
+    let group_key = [0x6Du8; 32];
+
+    // Joiner identity: the ECDH recipient and the member the key is for.
+    let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let joiner_sk = PrivateKey::from(joiner_sk_bytes);
+    let joiner_pk = joiner_sk.public_key();
+
+    // Responder identity: the namespace identity that holds and wraps the key.
+    let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_pk = responder_sk.public_key();
+
+    // ---- Responder store: holds the key, knows the joiner is a TEE member. ----
+    let responder_store = test_store();
+    NamespaceRepository::new(&responder_store)
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
+        .unwrap();
+    MetaRepository::new(&responder_store)
+        .save(&ns_gid, &sample_meta_with_admin(responder_pk))
+        .unwrap();
+    MetaRepository::new(&responder_store)
+        .save(&subgroup_gid, &sample_meta_with_admin(responder_pk))
+        .unwrap();
+    NamespaceRepository::new(&responder_store)
+        .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+    MembershipRepository::new(&responder_store)
+        .add_member(&subgroup_gid, &joiner_pk, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+    GroupKeyring::new(&responder_store, subgroup_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    // Responder builds the delivery for the joiner (the `GroupKeyResponse`).
+    let (envelope_bytes, responder_identity) =
+        build_group_key_delivery(&responder_store, namespace_id, subgroup_id, joiner_pk).unwrap();
+    assert!(
+        !envelope_bytes.is_empty(),
+        "responder holding the key must deliver it to a ReadOnlyTee member"
+    );
+    assert_eq!(responder_identity, responder_pk);
+
+    // ---- Joiner store: keyless, with a buffered encrypted op for the group. -
+    let joiner_store = test_store();
+    NamespaceRepository::new(&joiner_store)
+        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes, &[0u8; 32])
+        .unwrap();
+    let buffered = SignedNamespaceOp::sign(
+        &responder_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: subgroup_id,
+            // Content-addressed id of `group_key`, so the retry path finds
+            // the delivered key by id once it is stored.
+            key_id: GroupKeyring::key_id_for(&group_key),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    NamespaceOpLogService::new(&joiner_store, namespace_id)
+        .store_signed_operation(&buffered)
+        .unwrap();
+
+    // Precondition: joiner awaits the key and holds none.
+    assert_eq!(
+        namespace_groups_awaiting_key(&joiner_store, namespace_id).unwrap(),
+        vec![subgroup_id]
+    );
+
+    // Joiner applies the responder's delivery (the wire payload).
+    apply_received_group_key(
+        &joiner_store,
+        namespace_id,
+        subgroup_id,
+        &envelope_bytes,
+        responder_identity,
+    )
+    .unwrap();
+
+    // Postcondition: the ECDH-wrapped key round-tripped to the TEE joiner, is
+    // stored under the joiner's keyring, and the group no longer awaits a key.
+    assert_eq!(
+        GroupKeyring::new(&joiner_store, subgroup_gid)
+            .load_current_key()
+            .unwrap()
+            .map(|(_, k)| k),
+        Some(group_key)
+    );
+    assert!(namespace_groups_awaiting_key(&joiner_store, namespace_id)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn responder_refuses_delivery_to_non_member() {
     use rand::rngs::OsRng;
 

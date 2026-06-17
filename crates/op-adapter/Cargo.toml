@@ -1,0 +1,21 @@
+[package]
+name = "calimero-op-adapter"
+version.workspace = true
+description.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+calimero-authz.workspace = true
+calimero-context-config.workspace = true
+calimero-governance-types.workspace = true
+calimero-op.workspace = true
+calimero-primitives.workspace = true
+calimero-storage.workspace = true
+
+[dev-dependencies]
+calimero-primitives.workspace = true
+calimero-projection.workspace = true
