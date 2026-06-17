@@ -206,18 +206,52 @@ ultimately comes from a live `ScopeState` (slice 3). But slice 2 can run
   decouples slice 2 from slice 3. Slice 3 then swaps the `AclView` source to
   `ScopeState::acl_view_at` (same interface).
 
-## S2.3 — OpPayload coverage for the live op stream
+## S2.3 — OpPayload coverage for the live op stream  *(COMPLETE)*
 
-Slice 1b found `OpPayload` has no arm for several governance ops. For
-**authorize** (S2) only the auth-relevant planes matter (writers, membership,
-admin) — already covered. The structural/config ops (`GroupReparented`,
-`GroupDeleted`, capability/policy/target/context-registration) matter for the
-**full projection** (slice 3), not the auth decision.
+Coverage is now closed in `calimero-op-adapter`. Every op the live stream can
+carry either maps to an `OpPayload` arm or is **out-of-model by design** with a
+documented rationale. The dividing line is the unified `authorize` decision,
+which is **role**-based (`is_group_admin` ⇔ `role == Admin`, `is_owner` ⇔ root
+admin) — exactly like today's cross-DAG `membership_status_at` check. An op is
+in-model iff it moves that decision (or the data/ACL/scope-tree state under it).
 
-- **Recommendation:** slice 2 proceeds on current coverage (auth planes).
-  Slice 3 resolves the rest: add `OpPayload` arms for the scope-tree structural
-  ops (`SubgroupReparented`/`SubgroupDeleted`) and fold group-config/capability
-  ops into the groups/policy state; keep `KeyDelivery`/`Noop` out-of-model.
+**In-model — mapped:**
+- data: `Action::Add/Update` → `Put`, `DeleteRef` → `Delete` (`Compare` is a
+  sync hint, not a state change → `None`).
+- ACL: `RotationLogEntry` → `SetWriters`.
+- membership: `GroupOp::MemberAdded/MemberRoleSet` → `MemberAdded`;
+  `MemberRemoved/MemberLeft` → `MemberRemoved`;
+  `MemberJoinedViaTeeAttestation` → `MemberAdded` (attestation evidence is the
+  admission gate's, not the projection's); `RootOp::MemberJoined` → `MemberAdded`
+  (group_id + role decoded off the admin-signed invitation, no escalation);
+  `RootOp::MemberJoinedOpen` → `MemberAdded` (Member).
+- ownership: `GroupOp::TransferOwnership` → `AdminChanged` (owner ⇔ ADMIN, §9.2;
+  authored in the group's scope, so it sets that scope's root admin).
+- admin/policy: `RootOp::AdminChanged` → `AdminChanged`, `PolicyUpdated` →
+  `PolicyUpdated`.
+- scope tree: `RootOp::GroupCreated` → `SubgroupCreated`, `GroupReparented` →
+  `SubgroupReparented`, `GroupDeleted` → `SubgroupDeleted` (one per cascaded
+  scope; `restricted` resolved from policy at the live call site).
+
+**Out-of-model by design (`None`) — never enters the auth decision:**
+- key transport: `KeyDelivery` (§9.6 — payloads are scope-key-encrypted; the
+  key delivery rides its own channel), `Noop` (padding).
+- capability refinement: `MemberCapabilitySet`, `DefaultCapabilitiesSet`,
+  `ContextCapabilityGranted/Revoked` — a separate, deferred permission layer
+  (§9.3 keeps the simple lattice). Capabilities never gate `authorize`.
+- app/upgrade/migration config: `UpgradePolicySet`, `TargetApplicationSet`,
+  `GroupMigrationSet`, the `Cascade*` ops — owned by app-version / migrations-v2.
+- metadata + policy knobs: `GroupMetadataSet`, `MemberMetadataSet`,
+  `ContextMetadataSet`, `SubgroupVisibilitySet`, `TeeAdmissionPolicySet`,
+  `MemberSetAutoFollow`.
+- context↔group binding: `ContextRegistered/ContextDetached`, `GroupDelete` —
+  `authorize` derives a context's group from that binding at auth time (the P4
+  context→group lookup), so it lives in that index, not a scope's `ScopeState`.
+
+The adapter uses `_ => None` catch-alls (not exhaustive matches) so it keeps
+compiling as master grows the governance enums; any genuinely auth-relevant new
+variant must be armed explicitly, and slice-3's coverage/divergence tests would
+surface one that slipped through.
 
 ## Slice 2 implementation order (once ratified)
 1. `AclView`-from-current-resolvers builder + `authorize` shadow at the

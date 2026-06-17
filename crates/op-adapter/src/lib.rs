@@ -130,23 +130,60 @@ pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
     }
 }
 
+/// Map an invitation's `invited_role` byte (0 = Admin, 2 = ReadOnly, else
+/// Member) to a [`GroupMemberRole`] — the same mapping as governance-store's
+/// `role_from_invited_role` (reimplemented here so the adapter doesn't depend
+/// on a `pub(crate)` helper; both are deleted together post-migration).
+fn role_from_invited_role(value: u8) -> GroupMemberRole {
+    match value {
+        0 => GroupMemberRole::Admin,
+        2 => GroupMemberRole::ReadOnly,
+        _ => GroupMemberRole::Member,
+    }
+}
+
 /// Encode a per-group governance op ([`GroupOp`], already decrypted) as an
 /// [`OpPayload`] for `group`.
 ///
-/// **Coverage (membership plane):** `MemberAdded`/`MemberRoleSet` →
-/// `MemberAdded` (a role change is a re-assert; `ScopeState`'s per-`(group,
-/// member)` LWW keeps the latest role); `MemberRemoved`/`MemberLeft` →
-/// `MemberRemoved`.
+/// **In-model — the ops that move the unified `authorize` decision:**
+/// - `MemberAdded` / `MemberRoleSet` → `MemberAdded` (a role change is a
+///   re-assert; `ScopeState`'s per-`(group, member)` LWW keeps the latest).
+/// - `MemberRemoved` / `MemberLeft` → `MemberRemoved`.
+/// - `MemberJoinedViaTeeAttestation` → `MemberAdded` (a hardware-attested TEE
+///   node becomes a member with the granted role; the attestation evidence is
+///   consumed by the admission gate, not the membership projection).
+/// - `TransferOwnership` → `AdminChanged` (owner ⇔ ADMIN, design §9.2; the op
+///   is authored in the *group's* scope, so it sets that scope's root admin).
 ///
-/// **Returns `None`** for ops with no current `OpPayload` arm — a tracked
-/// coverage gap for the migration to resolve (either extend `OpPayload` or
-/// handle outside the op model): `Noop`, `MemberCapabilitySet`,
-/// `DefaultCapabilitiesSet`, `UpgradePolicySet`, `TargetApplicationSet`,
-/// `ContextRegistered`, `ContextDetached`.
+/// **Out-of-model (`None`, by design — not gaps).** Everything else, because
+/// the unified `authorize` decision is **role**-based (`is_group_admin` ⇔
+/// `role == Admin`, `is_owner` ⇔ root admin) — exactly like today's cross-DAG
+/// `membership_status_at` check. Ops that never enter that decision don't
+/// belong in the auth projection (`scope_root`):
+/// - capability refinement (`MemberCapabilitySet`, `DefaultCapabilitiesSet`,
+///   `ContextCapabilityGranted`/`Revoked`) — a separate, deferred permission
+///   layer (design §9.3 keeps the simple lattice);
+/// - app / upgrade / migration config (`UpgradePolicySet`,
+///   `TargetApplicationSet`, `GroupMigrationSet`, the `Cascade*` ops) — owned by
+///   the app-version / migrations-v2 machinery;
+/// - metadata (`GroupMetadataSet`, `MemberMetadataSet`, `ContextMetadataSet`),
+///   subgroup-visibility and TEE-admission *policy* (`SubgroupVisibilitySet`,
+///   `TeeAdmissionPolicySet`), auto-follow (`MemberSetAutoFollow`);
+/// - the context↔group binding (`ContextRegistered`/`ContextDetached`,
+///   `GroupDelete`) — `authorize` derives a context's group from that binding
+///   *at auth time* (the P4 context→group lookup), so it lives in that index,
+///   not inside a scope's `ScopeState`.
+///
+/// A `_` catch-all (rather than an exhaustive match) keeps this transitional
+/// adapter compiling as master grows `GroupOp`; any genuinely auth-relevant new
+/// variant must be armed explicitly above (and the migration's coverage tests
+/// would catch a divergence if one slipped through).
 #[must_use]
 pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPayload> {
     match op {
-        GroupOp::MemberAdded { member, role } | GroupOp::MemberRoleSet { member, role } => {
+        GroupOp::MemberAdded { member, role }
+        | GroupOp::MemberRoleSet { member, role }
+        | GroupOp::MemberJoinedViaTeeAttestation { member, role, .. } => {
             Some(OpPayload::MemberAdded {
                 group,
                 member: *member,
@@ -159,6 +196,9 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
                 member: *member,
             })
         }
+        GroupOp::TransferOwnership { new_owner } => Some(OpPayload::AdminChanged {
+            new_admin: *new_owner,
+        }),
         _ => None,
     }
 }
@@ -179,10 +219,13 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
 ///   `cascade_group_ids` mean the live path emits one `SubgroupDeleted` per
 ///   cascaded scope.
 ///
-/// **Returns `None`** (tracked gaps): `MemberJoined` (invitation-based — needs
-/// the signed-invitation decode for `group_id`/`invited_role`; handled where
-/// the invitation is already decoded), `KeyDelivery` (key transport, outside
-/// the op model — §9.6).
+/// `MemberJoined` → `MemberAdded`: an invitation-based join. The admin-signed
+/// invitation carries the authoritative `group_id` and `invited_role` (the
+/// joiner cannot escalate — the role is under the admin's signature), so we
+/// decode both straight off it.
+///
+/// **Returns `None`** (out-of-model by design): `KeyDelivery` (key transport,
+/// outside the op model — §9.6).
 #[must_use]
 pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
     match op {
@@ -191,6 +234,14 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         }),
         RootOp::PolicyUpdated { policy_bytes } => Some(OpPayload::PolicyUpdated {
             policy_bytes: policy_bytes.clone(),
+        }),
+        RootOp::MemberJoined {
+            member,
+            signed_invitation,
+        } => Some(OpPayload::MemberAdded {
+            group: signed_invitation.invitation.group_id,
+            member: *member,
+            role: role_from_invited_role(signed_invitation.invitation.invited_role),
         }),
         RootOp::MemberJoinedOpen { member, group_id } => Some(OpPayload::MemberAdded {
             group: ContextGroupId::from(*group_id),
@@ -443,8 +494,43 @@ mod tests {
                 role: GroupMemberRole::Admin,
             })
         );
-        // Non-membership ops have no current OpPayload arm (tracked gap).
+        // A TEE node admitted via attestation is a member with the granted
+        // role; the attestation evidence is consumed by the admission gate.
+        assert_eq!(
+            payload_from_group_op(
+                group,
+                &GroupOp::MemberJoinedViaTeeAttestation {
+                    member: m,
+                    quote_hash: [0u8; 32],
+                    mrtd: String::new(),
+                    rtmr0: String::new(),
+                    rtmr1: String::new(),
+                    rtmr2: String::new(),
+                    rtmr3: String::new(),
+                    tcb_status: String::new(),
+                    role: GroupMemberRole::ReadOnlyTee,
+                },
+            ),
+            Some(OpPayload::MemberAdded {
+                group,
+                member: m,
+                role: GroupMemberRole::ReadOnlyTee,
+            })
+        );
+        // Ownership transfer sets the group scope's root admin (owner ⇔ ADMIN).
+        let new_owner = PublicKey::from([0x77; 32]);
+        assert_eq!(
+            payload_from_group_op(group, &GroupOp::TransferOwnership { new_owner }),
+            Some(OpPayload::AdminChanged {
+                new_admin: new_owner,
+            })
+        );
+        // Out-of-model ops (capabilities, metadata, config, …) → None.
         assert_eq!(payload_from_group_op(group, &GroupOp::Noop), None);
+        assert_eq!(
+            payload_from_group_op(group, &GroupOp::DefaultCapabilitiesSet { capabilities: 7 }),
+            None
+        );
     }
 
     #[test]
@@ -474,6 +560,33 @@ mod tests {
                 group: ContextGroupId::from(gid),
                 member: m,
                 role: GroupMemberRole::Member,
+            })
+        );
+        // Invitation-based join: group_id + role decoded off the admin-signed
+        // invitation (invited_role 0 = Admin). The joiner can't escalate — the
+        // role is under the admin's signature.
+        use calimero_context_config::types::{GroupInvitationFromAdmin, SignedGroupOpenInvitation};
+        let signed_invitation = SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: [0xA1; 32].into(),
+                group_id: ContextGroupId::from(gid),
+                expiration_timestamp: 1_700_000_000,
+                secret_salt: [0x33; 32],
+                invited_role: 0, // Admin
+            },
+            inviter_signature: "deadbeef".to_string(),
+            application_id: None,
+            app_key: None,
+        };
+        assert_eq!(
+            payload_from_root_op(&RootOp::MemberJoined {
+                member: m,
+                signed_invitation,
+            }),
+            Some(OpPayload::MemberAdded {
+                group: ContextGroupId::from(gid),
+                member: m,
+                role: GroupMemberRole::Admin,
             })
         );
         let parent = [0x70; 32]; // placeholder parent id
