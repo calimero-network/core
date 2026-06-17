@@ -20,11 +20,13 @@ use std::collections::HashMap;
 
 use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
-use calimero_op_adapter::{payload_from_action, payload_from_root_op};
+use calimero_op_adapter::{payload_from_action, payload_from_root_op, set_writers_payload};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
 use calimero_storage::action::Action;
+use calimero_storage::address::Id;
 use calimero_storage::logical_clock::HybridTimestamp;
+use calimero_storage::rotation_log::RotationLogEntry;
 
 /// Build an [`Op`] from its scope, author, and causal coordinates.
 fn build_op(
@@ -93,6 +95,29 @@ fn scope_for_root_op(op: &RootOp, namespace_id: [u8; 32]) -> Option<ScopeId> {
         }
         _ => None,
     }
+}
+
+/// Convert a writer-set rotation ([`RotationLogEntry`]) into the unified
+/// `SetWriters` [`Op`] for `object` in `scope`, or `None` for an unsigned
+/// bootstrap entry (no author to attribute it to — those are skipped exactly as
+/// the rotation-log append path skips them).
+///
+/// The author is the rotation's `signer` (deterministic across nodes) and the
+/// hlc is the rotation's `delta_hlc`. Parents are left empty: the rotation log
+/// is a per-object sequence resolved by `(hlc, signer)` today, and the
+/// projection's per-object `(hlc, op_id)` LWW reproduces that ordering without
+/// needing the causal edges (the equivalence is covered by
+/// `op-adapter::acl_plane_matches_resolve_local_*`).
+///
+/// This is the ACL-plane **conversion**; feeding it from the live apply stream
+/// is a later step — the raw rotation entries are produced in the storage
+/// layer, below the projection, so the independent feed needs storage to
+/// surface applied rotations rather than re-deriving them from the resolver.
+#[must_use]
+pub fn op_from_rotation_entry(object: Id, scope: ScopeId, entry: &RotationLogEntry) -> Option<Op> {
+    let author = entry.signer?;
+    let payload = set_writers_payload(object, entry);
+    Some(build_op(scope, author, entry.delta_hlc, &[], payload))
 }
 
 /// Convert a cleartext namespace governance op into the unified [`Op`] for the
@@ -181,8 +206,7 @@ mod tests {
     };
     use calimero_op::OpPayload;
     use calimero_primitives::context::GroupMemberRole;
-    use calimero_storage::address::Id;
-    use calimero_storage::entities::Metadata;
+    use calimero_storage::entities::{Metadata, OpMask};
     use calimero_storage::logical_clock::{Timestamp, ID, NTP64};
 
     use super::*;
@@ -349,6 +373,38 @@ mod tests {
             &[],
         )
         .is_none());
+    }
+
+    #[test]
+    fn rotation_entry_maps_to_set_writers_op() {
+        let scope = ScopeId::from([0u8; 32]);
+        let object = Id::new([0xB0; 32]);
+        let signer = PublicKey::from([1u8; 32]);
+        let writer = PublicKey::from([9u8; 32]);
+        let writers: std::collections::BTreeMap<PublicKey, OpMask> =
+            [(writer, OpMask::FULL)].into_iter().collect();
+
+        let entry = RotationLogEntry {
+            delta_id: [7u8; 32],
+            delta_hlc: hlc(5),
+            signer: Some(signer),
+            signature: None,
+            signed_payload: None,
+            new_writers: writers.clone(),
+            writers_nonce: 1,
+        };
+
+        let op = op_from_rotation_entry(object, scope, &entry).expect("signed rotation maps");
+        assert_eq!(op.author, signer, "author is the rotation signer");
+        assert_eq!(op.hlc, hlc(5));
+        assert_eq!(op.payload, OpPayload::SetWriters { object, writers });
+
+        // Unsigned bootstrap entries have no author and are skipped.
+        let unsigned = RotationLogEntry {
+            signer: None,
+            ..entry
+        };
+        assert!(op_from_rotation_entry(object, scope, &unsigned).is_none());
     }
 
     #[test]
