@@ -112,6 +112,29 @@ impl Handler<ExecuteRequest> for ContextManager {
         // populated alongside the module cache; a cold miss (None) silently
         // defaults to the write lock.
         let is_state_op = "__calimero_sync_next" == method;
+
+        // Shadow ACL-plane feed (additive — nothing reads the projection yet).
+        // Capture the Shared anchors this sync-apply touches + the delta id,
+        // decoded here while `payload` is still owned (execution moves it). After
+        // the apply succeeds we read back the RAW rotation entries those anchors
+        // recorded for this delta (with their signer) and fold them in — the
+        // independent source, not the resolver's merged output. `None` for
+        // non-`CausalActions` / writer-free deltas.
+        let acl_shadow_objects = if is_state_op {
+            match borsh::from_slice::<StorageDelta>(&payload) {
+                Ok(StorageDelta::CausalActions {
+                    effective_writers,
+                    delta_id,
+                    ..
+                }) if !effective_writers.is_empty() => {
+                    Some((effective_writers.into_keys().collect::<Vec<_>>(), delta_id))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         let is_read_only_call = 'ro: {
             if is_state_op || matches!(atomic, Some(ContextAtomic::Held(_))) {
                 break 'ro false;
@@ -873,6 +896,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let node_client = act.node_client.clone();
                 let context_client = act.context_client.clone();
+                let scope_projections = std::sync::Arc::clone(&act.scope_projections);
                 // `datastore_for_broadcast` used to recompute the
                 // governance position at broadcast time — that recompute
                 // produced the persist-vs-broadcast signature mismatch
@@ -884,6 +908,49 @@ impl Handler<ExecuteRequest> for ContextManager {
                 async move {
                     if outcome.returns.is_err() {
                         return Ok((guard, context.root_hash, outcome));
+                    }
+
+                    // Apply succeeded — recover the RAW rotation entries this
+                    // delta recorded for the touched anchors and fold a
+                    // SetWriters op (authored by the rotation signer) per
+                    // rotation into the scope's shadow projection. Additive;
+                    // nothing reads it yet. Reads are synchronous and happen
+                    // before the lock; a poisoned lock is ignored, so the shadow
+                    // can never affect execution.
+                    if let Some((objects, delta_id)) = &acl_shadow_objects {
+                        let scope = calimero_op::ScopeId::from(*context_id.digest());
+                        let mut ops = Vec::new();
+                        for object in objects {
+                            let Some(log) = crate::scope_projection::load_rotation_log_direct(
+                                &context_client,
+                                context_id,
+                                *object,
+                            ) else {
+                                continue;
+                            };
+                            for entry in log.entries.iter().filter(|e| e.delta_id == *delta_id) {
+                                if let Some(op) = crate::scope_projection::op_from_rotation_entry(
+                                    *object, scope, entry,
+                                ) {
+                                    ops.push(op);
+                                }
+                            }
+                        }
+                        if !ops.is_empty() {
+                            match scope_projections.lock() {
+                                Ok(mut projections) => {
+                                    for op in &ops {
+                                        projections.ingest_op(op);
+                                    }
+                                }
+                                // A poisoned lock skips the shadow feed with a
+                                // warning; it must never affect execution.
+                                Err(err) => tracing::warn!(
+                                    %err,
+                                    "scope-projections lock poisoned; skipping ACL shadow feed"
+                                ),
+                            }
+                        }
                     }
 
                     info!(
