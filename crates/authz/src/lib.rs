@@ -60,6 +60,12 @@ pub struct AclView {
 /// `ADMIN` — rotating an object's writer set still requires an explicit ACL
 /// grant (ownership), so a plain member can't lock others out of a default
 /// entity.
+///
+/// Implication, by design: any member can write **and delete** any
+/// non-restricted entity in the scope (a single compromised member can wipe
+/// default data) — this matches a shared key-value store, where membership is
+/// the write boundary. Data that needs a narrower writer/deleter set must be a
+/// restricted object with an explicit ACL.
 const DEFAULT_MEMBER_MASK: OpMask = OpMask::WRITE.union(OpMask::DELETE);
 
 impl AclView {
@@ -122,13 +128,19 @@ impl AclView {
     }
 }
 
-/// The capability a data op requires of its author.
+/// The capability a **data** op requires of its author, or `None` for a
+/// non-data op (whose authority is decided by ownership/admin, not a mask).
+///
+/// Returning `None` rather than `OpMask::NONE` is deliberate: the empty mask is
+/// contained by *every* mask, so a `NONE` requirement fed to [`AclView::may`]
+/// would authorize anyone — a footgun if a non-data payload ever reached a
+/// `may` check. `None` makes that misuse impossible to express.
 #[must_use]
-pub fn required_mask_for(payload: &OpPayload) -> OpMask {
+pub fn required_mask_for(payload: &OpPayload) -> Option<OpMask> {
     match payload {
-        OpPayload::Put { .. } => OpMask::WRITE,
-        OpPayload::Delete { .. } => OpMask::DELETE,
-        _ => OpMask::NONE,
+        OpPayload::Put { .. } => Some(OpMask::WRITE),
+        OpPayload::Delete { .. } => Some(OpMask::DELETE),
+        _ => None,
     }
 }
 
@@ -141,7 +153,9 @@ pub fn required_mask_for(payload: &OpPayload) -> OpMask {
 pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
     match &op.payload {
         OpPayload::Put { entity, .. } | OpPayload::Delete { entity } => {
-            let required = required_mask_for(&op.payload);
+            // `required_mask_for` is total over data payloads, and this arm
+            // matches only data payloads, so the mask is always present.
+            let required = required_mask_for(&op.payload).unwrap_or(OpMask::FULL);
             if acl_at_cut.may(&op.author, *entity, required) {
                 Ok(())
             } else {

@@ -614,7 +614,6 @@ mod tests {
 
     #[test]
     fn scope_tree_create_reparent_delete_is_order_independent() {
-        let scope = ScopeId::from([0u8; 32]);
         let child = ScopeId::from([0xC1; 32]);
         let p1 = ScopeId::from([0x11; 32]);
         let p2 = ScopeId::from([0x22; 32]);
