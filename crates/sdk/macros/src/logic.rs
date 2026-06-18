@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse2, Error as SynError, GenericParam, ImplItem, ItemImpl, Path};
+use syn::{parse2, Attribute, Error as SynError, GenericParam, ImplItem, ItemImpl, Path};
 
 use crate::errors::{Errors, ParseError};
 use crate::logic::method::{LogicMethod, LogicMethodImplInput, PublicLogicMethod};
@@ -13,6 +13,16 @@ mod arg;
 mod method;
 mod ty;
 mod utils;
+
+/// Whether any attribute in the list is `#[app::init]`. Mirrors the per-method
+/// detection in `logic/method.rs`, but is applied at the impl level so the
+/// duplicate-init check doesn't depend on the method parsing successfully.
+fn has_init_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let segments = &attr.path().segments;
+        segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "init"
+    })
+}
 
 pub struct LogicImpl<'a> {
     #[expect(dead_code, reason = "This will be used in future")]
@@ -125,15 +135,19 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
         }
 
         // At most one `#[app::init]` per type — a second initializer is
-        // ambiguous (which one constructs the state?). Flag every init after the
-        // first, at its own name span. These errors accumulate with any
-        // per-method errors above (nothing calls `errors.check()` before here),
-        // so the user sees them together. `methods` holds only successfully
-        // parsed public methods: a malformed `#[app::init]` is excluded and
-        // surfaces its own error instead, which the author fixes first.
-        for method in methods.iter().filter(|m| m.is_init()).skip(1) {
+        // ambiguous (which one constructs the state?). Count the attribute
+        // directly on the impl items, independent of per-method parsing: a
+        // second initializer that fails its *own* validation (e.g. not named
+        // `init`) is excluded from `methods`, so a `methods`-based check would
+        // miss it. Flag every `#[app::init]` after the first, at its own name
+        // span; these accumulate with any per-method errors above.
+        let init_methods = input.item.items.iter().filter_map(|item| match item {
+            ImplItem::Fn(method) if has_init_attr(&method.attrs) => Some(method),
+            _ => None,
+        });
+        for method in init_methods.skip(1) {
             errors.subsume(SynError::new_spanned(
-                method.name(),
+                &method.sig.ident,
                 ParseError::DuplicateInit,
             ));
         }

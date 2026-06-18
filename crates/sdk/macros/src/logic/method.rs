@@ -49,20 +49,6 @@ pub struct PublicLogicMethod<'a> {
     modifiers: Vec<Modifer>,
 }
 
-impl<'a> PublicLogicMethod<'a> {
-    /// Whether this method is the `#[app::init]` initializer.
-    pub fn is_init(&self) -> bool {
-        self.modifiers
-            .iter()
-            .any(|modifier| matches!(modifier, Modifer::Init))
-    }
-
-    /// The method's identifier (for diagnostics).
-    pub fn name(&self) -> &'a Ident {
-        self.name
-    }
-}
-
 impl ToTokens for LogicMethod<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
