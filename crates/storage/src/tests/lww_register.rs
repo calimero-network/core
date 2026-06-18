@@ -32,6 +32,43 @@ fn test_lww_set() {
 }
 
 #[test]
+fn test_lww_value_mut_stamps_on_mutation() {
+    env::reset_for_testing();
+
+    // Start from an explicit stale stamp written by a foreign node.
+    let mut reg =
+        LwwRegister::new_with_metadata("Initial".to_string(), make_timestamp(100), [9u8; 32]);
+
+    // Mutate in place through the guard (ordinary `&mut T` semantics).
+    reg.value_mut().push_str(" + edit");
+    assert_eq!(reg.get(), "Initial + edit");
+
+    // The guard re-stamped on drop: the write is now attributed to this executor
+    // with a fresh HLC, not the foreign stamp — so LWW merge will see it (this is
+    // exactly what `get_mut` fails to do).
+    assert_eq!(reg.node_id(), env::executor_id());
+    assert_ne!(reg.timestamp(), make_timestamp(100));
+}
+
+#[test]
+fn test_lww_value_mut_readonly_does_not_stamp() {
+    env::reset_for_testing();
+
+    let mut reg =
+        LwwRegister::new_with_metadata("Initial".to_string(), make_timestamp(100), [9u8; 32]);
+
+    // Take the guard but only read through it.
+    {
+        let guard = reg.value_mut();
+        assert_eq!(&*guard, "Initial");
+    }
+
+    // No mutation → the dirty flag stayed false → the clock is untouched.
+    assert_eq!(reg.timestamp(), make_timestamp(100));
+    assert_eq!(reg.node_id(), [9u8; 32]);
+}
+
+#[test]
 fn test_lww_merge_later_timestamp_wins() {
     env::reset_for_testing();
 
