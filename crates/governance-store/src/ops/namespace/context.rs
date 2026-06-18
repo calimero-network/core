@@ -44,6 +44,9 @@ impl<'a> NamespaceApplyCtx<'a> {
         self.pending_events.push(event);
     }
 
+    /// Drains and returns all queued events, leaving the internal buffer
+    /// empty (destructive). Calling this a second time returns an empty
+    /// `Vec` — the post-persist flush must `take` exactly once.
     pub(crate) fn take_events(&mut self) -> Vec<crate::op_events::OpEvent> {
         std::mem::take(&mut self.pending_events)
     }

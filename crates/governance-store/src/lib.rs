@@ -1331,6 +1331,31 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     // retrying — so idempotency is a hard requirement for any new handler.
     if op_log_contains_content_hash(store, &group_id, &content_hash)? {
         store_nonce_window(store, &group_id, &op.signer, &nonce_window)?;
+        // #2770 — CANONICAL note on the dropped-on-dedup tradeoff (the
+        // namespace group-op and RootOp dedup branches share it):
+        //
+        // `pending_events` is intentionally dropped here. The mutation above
+        // re-collected events on this replay, but the op is already logged, so
+        // re-emitting would fire the event again on EVERY ordinary duplicate
+        // (network re-gossip, DAG replay) — exactly the duplicate-notification
+        // behaviour this change removes. Subscribers are idempotent + lossy-
+        // tolerant, so no-re-emit is strictly more correct for the common case.
+        //
+        // Accepted edge: a crash landing BETWEEN the op-log append below and
+        // the post-append flush leaves the op logged but its events un-emitted;
+        // the restart replay reaches this branch and drops them, so a one-time
+        // signal (e.g. `TeeMemberRemoved`) is not redelivered. This is the SAME
+        // bounded gap already documented + accepted for the broadcast
+        // lagged-drop case (see `calimero-context::self_purge` run-loop `Lagged`
+        // arm): NOT a forward-secrecy hole — FS on future writes is held by the
+        // key-rotation pipeline, not this purge — the residue is only stale,
+        // already-orphaned local key material.
+        //
+        // We deliberately do NOT re-emit here to cover that window: this branch
+        // cannot distinguish a crash-recovery replay from an ordinary duplicate,
+        // so it would regress the common case. A crash-safe fix belongs on the
+        // apply path (writing the self-purge marker deterministically as every
+        // node applies), tracked as TEE-lifecycle follow-up (#2772/#2771).
         return Ok(());
     }
 

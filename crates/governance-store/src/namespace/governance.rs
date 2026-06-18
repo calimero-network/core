@@ -230,6 +230,11 @@ impl<'a> NamespaceGovernance<'a> {
                 delta_id = %hex::encode(delta_id),
                 "namespace governance op already applied; skipping re-apply (#2327)"
             );
+            // #2770: this early-return is BEFORE the RootOp mutations, so a
+            // replay re-collects no events and the post-`store_operation` flush
+            // below never runs for an already-logged op — same no-re-emit-on-
+            // replay behaviour (and same accepted crash-window gap) as the
+            // canonical dedup-tradeoff note in `apply_local_signed_group_op`.
             return Ok(ApplyNamespaceOpResult::default());
         }
 
@@ -1373,7 +1378,11 @@ impl<'a> NamespaceGovernance<'a> {
                     self.store, group_id, next_seq, new_heads, &op_bytes,
                 )?;
                 // #2770: flush after the op-log append; a re-received op
-                // (already_logged) drops its queued events (no re-emit).
+                // (already_logged) drops its queued events (no re-emit). See
+                // the canonical dedup-tradeoff note in
+                // `apply_local_signed_group_op` (lib.rs) for why dropping on
+                // replay is correct and why the crash-between-append-and-flush
+                // window is an accepted, bounded gap (not an FS hole).
                 for event in pending_events {
                     crate::op_events::notify(event);
                 }

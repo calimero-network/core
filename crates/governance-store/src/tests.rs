@@ -5768,7 +5768,7 @@ mod auto_follow_tests {
     /// after the append, so the observer always reads `true`.
     #[test]
     fn member_added_event_fires_after_op_log_append() {
-        use std::sync::mpsc;
+        use std::sync::{Arc, Barrier};
 
         use crate::op_events::{self, OpEvent};
 
@@ -5800,11 +5800,16 @@ mod auto_follow_tests {
         // `Store` is `Clone` (shared handle to the same backing DB), so the
         // snapshot reads the same state the applying thread is writing.
         let observer_store = store.clone();
-        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        // Rendezvous: both threads wait here, so the observer is provably
+        // already in its `try_recv` spin loop before the applier calls
+        // `apply_local_signed_group_op`. This closes the window the old
+        // pre-loop ready-signal left open (where the applier could finish the
+        // whole apply before the observer started polling, making the test
+        // pass vacuously).
+        let barrier = Arc::new(Barrier::new(2));
+        let observer_barrier = Arc::clone(&barrier);
         let observer = std::thread::spawn(move || {
-            // Signal we're about to park on recv so the applier doesn't
-            // race ahead before the observer is listening.
-            ready_tx.send(()).unwrap();
+            observer_barrier.wait();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 if std::time::Instant::now() >= deadline {
@@ -5830,13 +5835,23 @@ mod auto_follow_tests {
                         // to win the race against the applier's persist).
                         std::hint::spin_loop();
                     }
-                    Err(_) => return None,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                        // Capacity-induced miss (parallel tests flooded the
+                        // channel). Fail loudly rather than returning `None`,
+                        // which the caller would misreport as "event never
+                        // fired" and bury the real cause.
+                        panic!(
+                            "observer lagged by {n} events before MemberAdded — test inconclusive"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
                 }
             }
         });
 
-        // Wait until the observer is parked on recv before applying.
-        ready_rx.recv().unwrap();
+        // Release the observer and immediately apply: the observer is now
+        // spinning on `try_recv`, racing the applier's persist.
+        barrier.wait();
         apply_local_signed_group_op(&store, &op).unwrap();
 
         let log_contained_at_emit = observer
@@ -5879,17 +5894,23 @@ mod auto_follow_tests {
         let mut rx = op_events::subscribe();
         apply_local_signed_group_op(&store, &op).unwrap(); // replay (already logged)
 
-        // No MemberAdded for (gid, member) should arrive in a short window.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
-        while std::time::Instant::now() < deadline {
-            if let Ok(OpEvent::MemberAdded {
-                group_id, member, ..
-            }) = rx.try_recv()
-            {
-                assert!(
+        // `apply_local_signed_group_op` and `op_events::notify` are both
+        // synchronous on THIS thread, so by the time the replay apply returns
+        // any re-emitted event is already in the broadcast buffer. Drain it in
+        // a single non-blocking pass (no wall-clock window) and assert the
+        // replayed op produced no `MemberAdded` for (gid, member). This removes
+        // the time dependency entirely — a buggy re-emit fails deterministically
+        // instead of racing a 300ms deadline.
+        loop {
+            match rx.try_recv() {
+                Ok(OpEvent::MemberAdded {
+                    group_id, member, ..
+                }) => assert!(
                     !(group_id == gid_bytes && member == new_member_pk),
                     "replay must not re-emit MemberAdded (#2770)"
-                );
+                ),
+                Ok(_) => {}      // unrelated events from parallel tests
+                Err(_) => break, // Empty (drained) or Lagged — nothing more to read
             }
         }
     }
@@ -5910,7 +5931,7 @@ mod auto_follow_tests {
     /// `true`.
     #[test]
     fn subgroup_created_event_fires_after_namespace_op_persist() {
-        use std::sync::mpsc;
+        use std::sync::{Arc, Barrier};
 
         use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
@@ -5966,9 +5987,13 @@ mod auto_follow_tests {
         // to the same backing DB), so the snapshot reads the same state
         // the applying thread is writing.
         let observer_store = store.clone();
-        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        // Rendezvous: guarantees the observer is in its `try_recv` spin loop
+        // before the applier proceeds (see the group-path test for why the
+        // old pre-loop ready-signal left a vacuous-pass window).
+        let barrier = Arc::new(Barrier::new(2));
+        let observer_barrier = Arc::clone(&barrier);
         let observer = std::thread::spawn(move || {
-            ready_tx.send(()).unwrap();
+            observer_barrier.wait();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 if std::time::Instant::now() >= deadline {
@@ -5996,13 +6021,18 @@ mod auto_follow_tests {
                         // against the applier's `store_operation`).
                         std::hint::spin_loop();
                     }
-                    Err(_) => return None,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                        // Capacity-induced miss: fail loudly rather than
+                        // misreporting it as "event never fired".
+                        panic!("observer lagged by {n} events before SubgroupCreated — test inconclusive");
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
                 }
             }
         });
 
-        // Wait until the observer is parked on recv before applying.
-        ready_rx.recv().unwrap();
+        // Release the observer and immediately apply.
+        barrier.wait();
         NamespaceGovernance::new(&store, ns_id)
             .apply_signed_op(&op)
             .unwrap();
