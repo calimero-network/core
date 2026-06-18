@@ -126,7 +126,11 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
 
         // At most one `#[app::init]` per type — a second initializer is
         // ambiguous (which one constructs the state?). Flag every init after the
-        // first, at its own name span.
+        // first, at its own name span. These errors accumulate with any
+        // per-method errors above (nothing calls `errors.check()` before here),
+        // so the user sees them together. `methods` holds only successfully
+        // parsed public methods: a malformed `#[app::init]` is excluded and
+        // surfaces its own error instead, which the author fixes first.
         for method in methods.iter().filter(|m| m.is_init()).skip(1) {
             errors.subsume(SynError::new_spanned(
                 method.name(),

@@ -62,9 +62,16 @@ use crate::store::StorageAdaptor;
 // Note: Vec is also not Mergeable for same reason
 // Use Vector<T> CRDT collection instead
 
-// `do_not_recommend`: when a user field isn't `Mergeable`, rustc must not
-// suggest "implement `Mergeable for Option<_>`" — the fix is to use a CRDT type,
-// which the trait's `on_unimplemented` note already spells out.
+// `#[diagnostic::do_not_recommend]` is applied to EVERY `Mergeable` impl in the
+// crate (collections + guarded wrappers), not just these blanket ones. This
+// intentionally suppresses rustc's entire "the following other types implement
+// `Mergeable`: …" list when a user field isn't `Mergeable`: that list is noise
+// (an app author won't turn their type into an `UnorderedMap`), and the
+// authoritative guidance already lives in the trait's `on_unimplemented` note
+// ("wrap in `LwwRegister<T>` / use a CRDT collection / `#[derive(Mergeable)]`").
+// Bonus: it makes the `error_non_mergeable_field` golden drift-proof as new
+// `Mergeable` impls land. `do_not_recommend` only affects diagnostics, never
+// trait resolution.
 #[diagnostic::do_not_recommend]
 impl<T: Mergeable + Clone> Mergeable for Option<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {

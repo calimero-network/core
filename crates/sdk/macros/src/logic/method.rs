@@ -16,6 +16,12 @@ pub enum LogicMethod<'a> {
     Private,
 }
 
+/// Name prefixes reserved for the SDK's generated exports (`__calimero_*` —
+/// the merge-registration hook, root-state merge, rekey thunks, etc.). A public
+/// app method matching one of these would collide with an emitted symbol, so the
+/// macro rejects it. Add to this list if codegen introduces new prefixes.
+const RESERVED_METHOD_PREFIXES: &[&str] = &["__calimero"];
+
 pub enum Modifer {
     Init,
     /// `#[app::view]` — app author declares the method read-only. Stored in
@@ -486,9 +492,13 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
 
         let name = &input.item.sig.ident;
 
-        // Exported methods become symbols the runtime dispatches by name; the
-        // `__calimero` prefix is reserved for the SDK's own generated exports.
-        if name.to_string().starts_with("__calimero") {
+        // Exported methods become symbols the runtime dispatches by name; these
+        // prefixes are reserved for the SDK's own generated exports.
+        let name_str = name.to_string();
+        if RESERVED_METHOD_PREFIXES
+            .iter()
+            .any(|prefix| name_str.starts_with(prefix))
+        {
             errors.subsume(SynError::new_spanned(name, ParseError::ReservedMethodName));
         }
 

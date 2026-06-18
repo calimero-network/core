@@ -514,7 +514,9 @@ cargo build -p kv-store --target wasm32-unknown-unknown --release
 The macros reject common misuse with span-precise `(calimero)>` compile errors
 (don't rely on the cryptic downstream trait-bound error). Rejected at compile
 time: non-CRDT state fields (bare `String`/`Vec`/primitives, std collections,
-`Rc`/`Arc`/`Cell`/`RefCell`/`Mutex`/`RwLock`), `#[app::state]` on an enum,
+and the interior-mutability / shared-ownership wrappers `Rc`/`Arc`/`Weak`/
+`Cell`/`RefCell`/`UnsafeCell`/`OnceCell`/`OnceLock`/`Mutex`/`RwLock`),
+`#[app::state]` on an enum,
 state lifetime params, duplicate `#[app::init]`, `__calimero`-prefixed method
 names, `#[app::event]` on a struct, and emitting a non-`#[app::event]` type.
 A discarded `get()` result (`ValueRef`) warns via `#[must_use]`.
