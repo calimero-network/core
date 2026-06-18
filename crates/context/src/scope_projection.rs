@@ -363,24 +363,40 @@ impl ScopeProjections {
         self.backfilled.contains(&namespace_id)
     }
 
-    /// Resolve `group`'s namespace and report it **iff** it still needs a
-    /// backfill (cheap: a single point lookup + a set membership test, no DAG
-    /// walk). `None` means either already backfilled or unresolvable — in both
-    /// cases the caller skips the walk. Split out so the expensive walk
-    /// ([`collect_namespace_ops`]) can run WITHOUT the projection lock held.
+    /// Resolve `group`'s namespace and report it **iff** the projection needs a
+    /// (re)walk before resolving the cut at `heads`: either it was never
+    /// backfilled, OR the cut cites a head this node hasn't folded yet. The
+    /// latter is the self-heal for the **originator** case — a node that emits a
+    /// governance op applies it locally (bypassing the namespace apply feed) and
+    /// then cites the new head; backfill ran once already, so the head is missing
+    /// from the log until we re-walk. Cheap (point lookup + set/contains checks,
+    /// no DAG walk); the expensive walk ([`collect_namespace_ops`]) runs WITHOUT
+    /// the projection lock held. `None` ⇒ unresolvable, or the cut is already
+    /// fully folded (steady state — no re-walk).
     ///
     /// [`collect_namespace_ops`]: Self::collect_namespace_ops
     #[must_use]
-    pub fn namespace_needing_backfill(
+    pub fn namespace_to_refresh(
         &self,
         store: &Store,
         group: ContextGroupId,
+        heads: &[[u8; 32]],
     ) -> Option<[u8; 32]> {
         let namespace_id = NamespaceRepository::new(store)
             .resolve(&group)
             .ok()?
             .to_bytes();
-        (!self.backfilled.contains(&namespace_id)).then_some(namespace_id)
+        if !self.backfilled.contains(&namespace_id) {
+            return Some(namespace_id);
+        }
+        // Already walked once — only re-walk if the cut references a head we
+        // haven't folded (e.g. an op this node just authored locally).
+        let scope = ScopeId::from(namespace_id);
+        let folded = self.seen.get(&scope);
+        let cut_incomplete = heads
+            .iter()
+            .any(|h| folded.is_none_or(|ids| !ids.contains(h)));
+        cut_incomplete.then_some(namespace_id)
     }
 
     /// Walk a namespace's **persisted** governance DAG from its heads and return
@@ -471,18 +487,16 @@ impl ScopeProjections {
     }
 
     /// Ingest the ops [`collect_namespace_ops`] gathered and mark the namespace
-    /// backfilled — the cheap, lock-held half. Double-checked: if a concurrent
-    /// caller already backfilled this namespace (the set insert returns `false`),
-    /// the ops are dropped rather than re-ingested (`ingest_op` would dedup them
-    /// anyway, but the early-out avoids the work). Ingestion order is irrelevant:
-    /// [`ScopeState::apply`] is per-slot LWW, so the folded state converges
-    /// regardless of the order the DAG walk happened to visit ops in.
+    /// backfilled — the cheap, lock-held half. Always ingests (no early-out on an
+    /// already-backfilled namespace) so a *refresh* re-walk — triggered when the
+    /// cut cites a head this node authored after the first backfill — actually
+    /// folds the new ops; `ingest_op` dedups by id, so re-ingesting the rest is a
+    /// cheap no-op. Ingestion order is irrelevant: [`ScopeState::apply`] is
+    /// per-slot LWW, so the folded state converges regardless of walk order.
     ///
     /// [`collect_namespace_ops`]: Self::collect_namespace_ops
     pub fn apply_backfill(&mut self, namespace_id: [u8; 32], ops: Vec<Op>) {
-        if !self.backfilled.insert(namespace_id) {
-            return;
-        }
+        let _ = self.backfilled.insert(namespace_id);
         for op in &ops {
             self.ingest_op(op);
         }

@@ -944,15 +944,17 @@ pub async fn handle_state_delta(
             if let Some(gp) = governance_position.as_ref() {
                 let heads = &gp.governance_dag_heads;
 
-                // Backfill the group's namespace into the projection WITHOUT
-                // holding the projection lock across the DAG walk: that walk is a
-                // synchronous RocksDB sweep, and the governance apply path shares
-                // this lock to ingest, so holding it across the walk would stall
-                // the actor's ingest. Resolve+gate under a brief lock, walk
-                // lock-free, then re-lock only to ingest.
+                // Backfill (or refresh) the group's namespace into the projection
+                // WITHOUT holding the projection lock across the DAG walk: that
+                // walk is a synchronous RocksDB sweep, and the governance apply
+                // path shares this lock to ingest, so holding it across the walk
+                // would stall the actor's ingest. Resolve+gate under a brief lock,
+                // walk lock-free, then re-lock only to ingest. The refresh covers
+                // the originator case — a node citing a head it authored locally
+                // after the first backfill.
                 let needs_backfill = node_state
                     .lock_scope_projections()
-                    .namespace_needing_backfill(datastore, group);
+                    .namespace_to_refresh(datastore, group, heads);
                 if let Some(namespace_id) = needs_backfill {
                     if let Some(ops) =
                         ScopeProjections::collect_namespace_ops(datastore, namespace_id)
