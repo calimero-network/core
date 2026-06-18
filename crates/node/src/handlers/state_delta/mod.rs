@@ -757,6 +757,37 @@ pub(crate) async fn apply_authorized_state_delta(
     Ok(())
 }
 
+/// The unified-op projection's membership verdict for `author` in `group` at the
+/// governance cut `heads`. Refreshes the namespace projection first (lock-free
+/// DAG walk, then a brief ingest) so a locally-authored head is folded, then
+/// reads `member_at_cut`. Shared by the decision-site shadows (forward: does the
+/// projection see a member where live authorized; inverse: does it authorize
+/// where live rejected). `None` when no answer can be formed.
+fn projection_member_at_cut(
+    node_state: &crate::NodeState,
+    datastore: &calimero_store::Store,
+    group: calimero_context_config::types::ContextGroupId,
+    author_id: &calimero_primitives::identity::PublicKey,
+    heads: &[[u8; 32]],
+) -> Option<bool> {
+    // Backfill / refresh WITHOUT holding the projection lock across the DAG walk
+    // (the governance apply path shares the lock). Gate under a brief lock, walk
+    // lock-free, re-lock only to ingest.
+    if let Some(namespace_id) = node_state
+        .lock_scope_projections()
+        .namespace_to_refresh(datastore, group, heads)
+    {
+        if let Some(ops) = ScopeProjections::collect_namespace_ops(datastore, namespace_id) {
+            node_state
+                .lock_scope_projections()
+                .apply_backfill(namespace_id, ops);
+        }
+    }
+    node_state
+        .lock_scope_projections()
+        .member_at_cut(datastore, group, author_id, heads)
+}
+
 pub async fn handle_state_delta(
     input: StateDeltaContext,
     message: StateDeltaMessage,
@@ -944,31 +975,10 @@ pub async fn handle_state_delta(
             if let Some(gp) = governance_position.as_ref() {
                 let heads = &gp.governance_dag_heads;
 
-                // Backfill (or refresh) the group's namespace into the projection
-                // WITHOUT holding the projection lock across the DAG walk: that
-                // walk is a synchronous RocksDB sweep, and the governance apply
-                // path shares this lock to ingest, so holding it across the walk
-                // would stall the actor's ingest. Resolve+gate under a brief lock,
-                // walk lock-free, then re-lock only to ingest. The refresh covers
-                // the originator case — a node citing a head it authored locally
-                // after the first backfill.
-                let needs_backfill = node_state
-                    .lock_scope_projections()
-                    .namespace_to_refresh(datastore, group, heads);
-                if let Some(namespace_id) = needs_backfill {
-                    if let Some(ops) =
-                        ScopeProjections::collect_namespace_ops(datastore, namespace_id)
-                    {
-                        node_state
-                            .lock_scope_projections()
-                            .apply_backfill(namespace_id, ops);
-                    }
-                }
-
-                // Brief read-only lock for the actual compare.
-                let projected = node_state
-                    .lock_scope_projections()
-                    .member_at_cut(datastore, group, &author_id, heads);
+                // Forward shadow: the projection should ALSO see this author as a
+                // member at the cut the live decision just authorized against.
+                let projected =
+                    projection_member_at_cut(&node_state, datastore, group, &author_id, heads);
                 if projected == Some(false) {
                     // Diagnostics distinguish the failure mode: empty projection
                     // (log_len 0) vs cut heads absent from the log (heads_in_log
@@ -1003,6 +1013,35 @@ pub async fn handle_state_delta(
             }
         }
         DeltaAuthOutcome::Reject(reason) => {
+            // Inverse shadow (the direction the flip exposes): would the
+            // projection AUTHORIZE a write the live decision rejected? The
+            // forward shadow only proved the projection never *rejects* where
+            // live authorizes; before the projection becomes the authorizer it
+            // must also never be MORE permissive than live. A hit here is a real
+            // over-authorization and trips the (now hard) divergence gate.
+            if let Some(gp) = governance_position.as_ref() {
+                if let Ok(Some(group)) =
+                    calimero_context::group_store::get_group_for_context(datastore, &context_id)
+                {
+                    let projected = projection_member_at_cut(
+                        &node_state,
+                        datastore,
+                        group,
+                        &author_id,
+                        &gp.governance_dag_heads,
+                    );
+                    if projected == Some(true) {
+                        warn!(
+                            marker = "unified_projection_divergence",
+                            plane = "membership-cut-reject",
+                            group_id = ?group,
+                            %author_id,
+                            reason,
+                            "projection authorizes a write the live decision rejected"
+                        );
+                    }
+                }
+            }
             warn!(
                 %context_id,
                 %author_id,
