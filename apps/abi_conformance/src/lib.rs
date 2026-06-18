@@ -360,6 +360,22 @@ impl AbiState {
         Ok(Status::Active { timestamp })
     }
 
+    // Read-only and cross-context entry points. They keep the `#[app::view]`
+    // and `#[app::xcall]` markers covered by the conformance golden, which
+    // records each method's `intent` / `xcall_callable` flag.
+
+    /// Read-only method — must surface `intent: read_only` in the ABI.
+    #[app::view]
+    pub fn view_constant(&self) -> app::Result<u32> {
+        Ok(42)
+    }
+
+    /// Cross-context entry point — must surface `xcall_callable: true` in the ABI.
+    #[app::xcall]
+    pub fn xcall_noop(&mut self) -> app::Result<()> {
+        Ok(())
+    }
+
     // Private method - should NOT appear in ABI
     const fn private_helper(value: u32) -> u32 {
         let internal_data = InternalData {

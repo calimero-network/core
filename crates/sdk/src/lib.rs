@@ -42,7 +42,7 @@ pub mod app {
 
     pub use calimero_sdk_macros::{
         bail, destroy, emit, err, event, init, log, logic, migrate, migration_check, private,
-        state, xcall, Mergeable, Migrate,
+        state, view, xcall, Mergeable, Migrate,
     };
 
     use core::sync::atomic::{AtomicU32, Ordering};

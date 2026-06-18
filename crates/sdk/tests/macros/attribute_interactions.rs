@@ -169,4 +169,29 @@ impl DeprecatedMethodState {
     }
 }
 
+// Test that #[app::view] (the read-only intent marker) compiles, on its own
+// and combined with other attributes like #[must_use].
+#[app::state]
+struct ViewState {
+    value: String,
+}
+
+#[app::logic]
+impl ViewState {
+    #[app::view]
+    pub fn get_value(&self) -> &str {
+        &self.value
+    }
+
+    #[app::view]
+    #[must_use]
+    pub fn value_len(&self) -> usize {
+        self.value.len()
+    }
+
+    pub fn set_value(&mut self, value: String) {
+        self.value = value;
+    }
+}
+
 fn main() {}
