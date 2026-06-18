@@ -12,6 +12,20 @@
 - **`SortedSet<T>` collection** — the `BTreeSet` to `UnorderedSet`'s `HashSet`: an ordered set with `range`/`prefix`/`page`/`first`/`last`, same add-wins union merge and the same on-disk ordered index as `SortedMap` ([#2559])
 - **In-process unit-test harness (`calimero_sdk::testing::TestHost`)** - Exercise app logic as ordinary Rust under `cargo test` — no WASM build, no node, no merobox. `TestHost::new(MyApp::init)` runs methods via `call`/`view` against an in-memory mock host that records `app::emit!` events and `app::log!` lines and serves a configurable executor identity (`call_as` for multi-author CRDT tests). The `#[app::state]` macro generates the storage bridge; apps opt in with `calimero-storage`'s `testing` feature as a dev-dependency. All core example apps now ship `#[cfg(test)]` tests using it ([#2551])
 
+## [0.11.0-rc.5] - 2026-06-18
+
+### Added
+
+- **Transparent TEE admission into Restricted subgroups** — an entitled fleet TEE node admitted at the namespace root is now automatically admitted (as `ReadOnlyTee`) into the namespace's Restricted subgroups and delivered their per-group keys, so it serves reads across the whole namespace without per-subgroup configuration. Open subgroups need no admission (covered by inherited membership + the namespace key) ([#2772])
+
+### Fixed
+
+- **Governance op-events now emit after the op-log entry is persisted** — events are collected during apply and flushed only after the op-log append (both the group-op and namespace RootOp paths), closing a race where a subscriber reacting to an event could read the op-log back before it was written. Replays of an already-logged op no longer re-emit ([#2792])
+
+### Security
+
+- **Leave/eviction now deletes group encryption keys (forward secrecy)** — self-purge on a `ReadOnlyTee` removal, and namespace/subgroup deletion, now delete the AES group encryption keys (`GroupKeyEntry`) in addition to the per-member signing keys, so an evicted fleet replica retains no decryption material for the groups it left ([#2776])
+
 ## [0.10.1-rc.10] - 2026-03-30
 
 ### Added
@@ -249,7 +263,8 @@ Integrations:
 
 <!-- versions -->
 
-[unreleased]: https://github.com/calimero-network/core/compare/0.8.0...HEAD
+[unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.5...HEAD
+[0.11.0-rc.5]: https://github.com/calimero-network/core/compare/0.11.0-rc.4...0.11.0-rc.5
 [0.8.0]: https://github.com/calimero-network/core/compare/0.7.0...0.8.0
 [0.7.0]: https://github.com/calimero-network/core/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/calimero-network/core/compare/0.5.0...0.6.0
@@ -270,6 +285,11 @@ Integrations:
 
 <!-- patches -->
 
+[#2772]: https://github.com/calimero-network/core/pull/2772
+[#2776]: https://github.com/calimero-network/core/pull/2776
+[#2792]: https://github.com/calimero-network/core/pull/2792
+[#2559]: https://github.com/calimero-network/core/pull/2559
+[#2551]: https://github.com/calimero-network/core/pull/2551
 [#1171]: https://github.com/calimero-network/core/pull/1171
 [#1223]: https://github.com/calimero-network/core/pull/1223
 [#1181]: https://github.com/calimero-network/core/pull/1181

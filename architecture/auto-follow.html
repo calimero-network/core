@@ -95,7 +95,7 @@ reconcile loop.
    RootOp::MemberJoined (open-subgroup self-join).
    └─ Apply path writes a fresh GroupMember row with default flags
       (contexts: true, subgroups: false).
-   └─ emit_auto_follow_set_if_enabled synthesises
+   └─ build_auto_follow_set_if_enabled synthesises
       OpEvent::AutoFollowSet { member, contexts: true, subgroups: false }
       so the on-join backfill cascade fires without requiring an
       explicit MemberSetAutoFollow op. This closes the Ronit/Fran

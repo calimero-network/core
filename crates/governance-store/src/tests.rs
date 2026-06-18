@@ -5137,7 +5137,8 @@ fn apply_group_op_mutations_surfaces_divergence_on_hash_mismatch() {
         expected_context_state_hashes: Vec::new(),
     };
 
-    let (handled, divergence) = apply_group_op_mutations(&store, &gid, &admin, &op).unwrap();
+    let (handled, divergence, _pending_events) =
+        apply_group_op_mutations(&store, &gid, &admin, &op).unwrap();
     assert!(handled, "MemberRemoved should be handled");
     let report = divergence.expect("hash mismatch must produce a DivergenceReport");
     assert!(
@@ -5184,7 +5185,8 @@ fn apply_group_op_mutations_no_divergence_on_matching_hash() {
         expected_context_state_hashes: Vec::new(),
     };
 
-    let (handled, divergence) = apply_group_op_mutations(&store, &gid, &admin, &op).unwrap();
+    let (handled, divergence, _pending_events) =
+        apply_group_op_mutations(&store, &gid, &admin, &op).unwrap();
     assert!(handled);
     assert!(
         divergence.is_none(),
@@ -5747,6 +5749,340 @@ mod auto_follow_tests {
         assert!(
             !value.auto_follow.contexts,
             "explicit opt-out via SetMemberAutoFollow must stick"
+        );
+    }
+
+    /// #2770: when `MemberAdded` fires, the op-log entry must already be
+    /// persisted. Before the post-persist drain, the handler emitted the
+    /// event BEFORE the op-log append, so a subscriber reacting to the
+    /// event could read a log that did not yet contain the op.
+    ///
+    /// The event is delivered on a process-wide `tokio::broadcast`, and
+    /// `apply_local_signed_group_op` sends synchronously. To catch the
+    /// ordering (not merely the post-apply steady state), a dedicated
+    /// observer thread parks on `recv()` and snapshots the op-log THE
+    /// MOMENT the event arrives — concurrently with the apply call still
+    /// running on this thread. Pre-fix (emit-before-persist) the observer
+    /// wakes during the gap between `notify` and `persist_*` and reads a
+    /// log that does NOT yet contain the op; post-fix the drain runs only
+    /// after the append, so the observer always reads `true`.
+    ///
+    /// NOTE: this is a DETERMINISTIC GREEN (proves the fixed persist-then-notify
+    /// ordering) but only a BEST-EFFORT RED (regression detection) — see the
+    /// `Barrier` comment in the body for why a fully deterministic RED would need
+    /// a test-only sync hook in the apply hot path, which we deliberately omit.
+    #[test]
+    fn member_added_event_fires_after_op_log_append() {
+        use std::sync::{Arc, Barrier};
+
+        use crate::op_events::{self, OpEvent};
+
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, admin_sk, _existing_member_sk) = seed(&mut rng);
+
+        // Subscribe BEFORE spawning the observer / applying.
+        let mut rx = op_events::subscribe();
+
+        let new_member_sk = PrivateKey::random(&mut rng);
+        let new_member_pk = new_member_sk.public_key();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberAdded {
+                member: new_member_pk,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .unwrap();
+        let content_hash = op.content_hash().unwrap();
+
+        // Observer thread: blocks on `recv()`, then snapshots whether the
+        // op-log already contains our op at the instant the event fires.
+        // `Store` is `Clone` (shared handle to the same backing DB), so the
+        // snapshot reads the same state the applying thread is writing.
+        let observer_store = store.clone();
+        // Rendezvous: both threads wait here so the observer enters its
+        // `try_recv` spin loop concurrently with the applier, not after the
+        // applier has finished (the window the old pre-loop ready-signal left
+        // open).
+        //
+        // RED/GREEN strength: for the FIXED code (persist-then-notify) this is a
+        // DETERMINISTIC green — the event can only be observed after the append,
+        // so the snapshot is always `true` regardless of thread timing. As a RED
+        // regression-catcher it is best-effort: in principle a regression
+        // (notify-then-persist) is only caught if the observer reads the event
+        // inside the notify→persist window. In practice that window is reliably
+        // hit because after the barrier the applier must run the membership
+        // mutations AND the op-log append (substantial store work) before it
+        // reaches `notify`, whereas the observer only needs to enter a tight
+        // spin loop — orders of magnitude less work — so it is already polling
+        // long before the event fires. A FULLY deterministic RED would need a
+        // synchronization point injected BETWEEN the append and the flush in the
+        // production apply path; we deliberately do not add a test-only hook to
+        // that hot path. The structural guarantee is the persist-then-flush
+        // ordering visible in `apply_local_signed_group_op` itself.
+        let barrier = Arc::new(Barrier::new(2));
+        let observer_barrier = Arc::clone(&barrier);
+        let observer = std::thread::spawn(move || {
+            observer_barrier.wait();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                match rx.try_recv() {
+                    Ok(OpEvent::MemberAdded {
+                        group_id, member, ..
+                    }) if group_id == gid_bytes && member == new_member_pk => {
+                        return Some(
+                            crate::local_state::op_log_contains_content_hash(
+                                &observer_store,
+                                &gid,
+                                &content_hash,
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    Ok(_) => {} // unrelated events from parallel tests
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                        // `yield_now` (not `spin_loop`): poll tightly but let the
+                        // scheduler run the applier thread, so a single-core or
+                        // cooperative scheduler can't starve it into the 10s
+                        // deadline. Still polls fast enough to snapshot close to
+                        // the broadcast send.
+                        std::thread::yield_now();
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                        // Capacity-induced miss (parallel tests flooded the
+                        // channel). Fail loudly rather than returning `None`,
+                        // which the caller would misreport as "event never
+                        // fired" and bury the real cause.
+                        panic!(
+                            "observer lagged by {n} events before MemberAdded — test inconclusive"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
+                }
+            }
+        });
+
+        // Release the observer and immediately apply: the observer is now
+        // spinning on `try_recv`, racing the applier's persist.
+        barrier.wait();
+        apply_local_signed_group_op(&store, &op).unwrap();
+
+        let log_contained_at_emit = observer
+            .join()
+            .unwrap()
+            .expect("MemberAdded event should have fired for the new joiner");
+        assert!(
+            log_contained_at_emit,
+            "op-log entry must be persisted before MemberAdded fires (#2770)"
+        );
+    }
+
+    /// #2770: re-applying an already-logged op must NOT re-fire its event.
+    /// The queued events are dropped on the content-hash dedup early-return.
+    #[test]
+    fn replayed_group_op_does_not_re_emit() {
+        use crate::op_events::{self, OpEvent};
+
+        let mut rng = OsRng;
+        let (store, _gid, gid_bytes, admin_sk, _existing_member_sk) = seed(&mut rng);
+
+        let new_member_sk = PrivateKey::random(&mut rng);
+        let new_member_pk = new_member_sk.public_key();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberAdded {
+                member: new_member_pk,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .unwrap();
+
+        // Subscribe BEFORE the first apply so the receiver is in place ahead of
+        // every emit — there is no subscribe-to-apply gap a parallel-test flood
+        // could exploit. We then count how many `MemberAdded` events for
+        // (gid, member) appear across BOTH applies: the first must emit exactly
+        // one, the replay (already-logged) must emit none, so the total is 1.
+        // This is stronger than asserting absence — it doubles as a POSITIVE
+        // control (an event mechanism that silently fired zero times would fail
+        // here too) — and it is timing-independent because both applies and
+        // `op_events::notify` are synchronous on THIS thread, so all events are
+        // buffered before the single drain below.
+        let mut rx = op_events::subscribe();
+        apply_local_signed_group_op(&store, &op).unwrap(); // first apply emits
+        apply_local_signed_group_op(&store, &op).unwrap(); // replay (already logged)
+
+        let mut member_added = 0usize;
+        loop {
+            match rx.try_recv() {
+                Ok(OpEvent::MemberAdded {
+                    group_id, member, ..
+                }) if group_id == gid_bytes && member == new_member_pk => member_added += 1,
+                Ok(_) => {} // unrelated events from parallel tests
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                    // A capacity flood (1024) from parallel tests could drop the
+                    // events we count — fail loudly rather than under-counting
+                    // into a false pass.
+                    panic!("drain lagged by {n} events — replay re-emit check inconclusive");
+                }
+                Err(_) => break, // Empty (drained) or Closed — nothing more to read
+            }
+        }
+        assert_eq!(
+            member_added, 1,
+            "first apply must emit MemberAdded exactly once and the replay must \
+             not re-emit it (#2770)"
+        );
+    }
+
+    /// #2770 (namespace RootOp path): when `SubgroupCreated` fires, the
+    /// namespace op-log entry for the driving `RootOp::GroupCreated` must
+    /// already be persisted. Same concurrent-observer technique as
+    /// `member_added_event_fires_after_op_log_append`, but on the
+    /// namespace-apply path (`NamespaceGovernance::apply_signed_op` →
+    /// `dispatch_root_op` → `group_created::apply`): a dedicated observer
+    /// thread parks on `recv()` and snapshots
+    /// `NamespaceOpLogService::contains_op(delta_id)` the instant the
+    /// event arrives — concurrently with the apply still running. Pre-fix
+    /// (the dormant direct `notify_op_event` in `group_created::apply`)
+    /// the observer would wake before `store_operation`, reading a log
+    /// that does NOT yet contain the op; post-fix the events are drained
+    /// only after the namespace op is appended, so the snapshot is always
+    /// `true`.
+    ///
+    /// NOTE: deterministic GREEN, best-effort RED — same characterization as
+    /// `member_added_event_fires_after_op_log_append` (see its body comment).
+    #[test]
+    fn subgroup_created_event_fires_after_namespace_op_persist() {
+        use std::sync::{Arc, Barrier};
+
+        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+        use super::NamespaceGovernance;
+        use crate::op_events::{self, OpEvent};
+        use crate::NamespaceOpLogService;
+
+        let mut rng = OsRng;
+        let admin_sk = PrivateKey::random(&mut rng);
+        let admin_sk_bytes: [u8; 32] = *admin_sk;
+        let admin_pk = admin_sk.public_key();
+
+        let ns_id = [0xA0u8; 32];
+        let ns_gid = calimero_context_config::types::ContextGroupId::from(ns_id);
+        let new_group_id = [0xCCu8; 32];
+
+        // Minimal namespace root: admin meta + admin membership + the
+        // local namespace identity (so the originator-style apply path is
+        // exercised end to end).
+        let store = test_store();
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+            .unwrap();
+
+        let op = SignedNamespaceOp::sign(
+            &admin_sk,
+            ns_id,
+            vec![],
+            [0u8; 32],
+            1,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                group_id: new_group_id,
+                parent_id: ns_id,
+            }),
+        )
+        .unwrap();
+        // `delta_id` is the op's content hash — the key the namespace
+        // op-log is indexed by (see `NamespaceOpLogService::store_signed_operation`).
+        let delta_id = op.content_hash().unwrap();
+
+        // Subscribe BEFORE spawning the observer / applying.
+        let mut rx = op_events::subscribe();
+
+        // Observer thread: blocks on `recv()`, then snapshots whether the
+        // namespace op-log already contains the op at the instant the
+        // `SubgroupCreated` event fires. `Store` is `Clone` (shared handle
+        // to the same backing DB), so the snapshot reads the same state
+        // the applying thread is writing.
+        let observer_store = store.clone();
+        // Rendezvous: observer enters its `try_recv` spin loop concurrently with
+        // the applier. Same RED/GREEN characterization as the group-path test
+        // (`member_added_event_fires_after_op_log_append`): deterministic GREEN
+        // for the fixed persist-then-notify ordering, best-effort RED for a
+        // regression (the applier runs the RootOp mutations + `store_operation`
+        // before `notify`, so the observer is reliably spinning first); a fully
+        // deterministic RED would need a hot-path test hook we deliberately omit.
+        let barrier = Arc::new(Barrier::new(2));
+        let observer_barrier = Arc::clone(&barrier);
+        let observer = std::thread::spawn(move || {
+            observer_barrier.wait();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                match rx.try_recv() {
+                    Ok(OpEvent::SubgroupCreated {
+                        namespace_id,
+                        parent_group_id,
+                        child_group_id,
+                    }) if namespace_id == ns_id
+                        && parent_group_id == ns_id
+                        && child_group_id == new_group_id =>
+                    {
+                        return Some(
+                            NamespaceOpLogService::new(&observer_store, ns_id)
+                                .contains_op(delta_id)
+                                .unwrap(),
+                        );
+                    }
+                    Ok(_) => {} // unrelated events from parallel tests
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                        // `yield_now` (not `spin_loop`): poll tightly but let the
+                        // scheduler run the applier thread (single-core / coop
+                        // scheduler safety). Still snapshots close to the send.
+                        std::thread::yield_now();
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                        // Capacity-induced miss: fail loudly rather than
+                        // misreporting it as "event never fired".
+                        panic!("observer lagged by {n} events before SubgroupCreated — test inconclusive");
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
+                }
+            }
+        });
+
+        // Release the observer and immediately apply.
+        barrier.wait();
+        NamespaceGovernance::new(&store, ns_id)
+            .apply_signed_op(&op)
+            .unwrap();
+
+        let log_contained_at_emit = observer
+            .join()
+            .unwrap()
+            .expect("SubgroupCreated event should have fired for the new subgroup");
+        assert!(
+            log_contained_at_emit,
+            "namespace op-log entry must be persisted before SubgroupCreated fires (#2770)"
         );
     }
 }

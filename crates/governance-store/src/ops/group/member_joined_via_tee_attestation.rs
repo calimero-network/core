@@ -1,7 +1,7 @@
 //! `GroupOp::MemberJoinedViaTeeAttestation` apply handler. Extracted from
 //! `apply_group_op_mutations` in #2304.
 
-use super::super::super::emit_auto_follow_set_if_enabled;
+use super::super::super::build_auto_follow_set_if_enabled;
 use super::context::GroupApplyCtx;
 use crate::{DenyListRepository, MembershipError};
 use calimero_primitives::context::GroupMemberRole;
@@ -40,7 +40,7 @@ pub(crate) fn apply(
     // Same rationale as `MemberAdded`: a TEE rejoining after a
     // prior removal should have their deny-list entry cleared.
     DenyListRepository::new(store).clear(group_id, member)?;
-    crate::op_events::notify(crate::op_events::OpEvent::TeeMemberAdmitted {
+    ctx.queue_event(crate::op_events::OpEvent::TeeMemberAdmitted {
         group_id: group_id.to_bytes(),
         member: *member,
     });
@@ -53,6 +53,8 @@ pub(crate) fn apply(
     // creates a second cascade — both join_context attempts are
     // idempotent (see auto_follow.rs:101-107), so the only cost
     // is two rate-limiter tokens. Documented and accepted.
-    emit_auto_follow_set_if_enabled(store, group_id, member)?;
+    if let Some(event) = build_auto_follow_set_if_enabled(ctx.store(), ctx.group_id(), member)? {
+        ctx.queue_event(event);
+    }
     Ok(())
 }

@@ -11,6 +11,7 @@ use tracing::{error, info};
 
 use super::parse_group_id;
 use super::upgrade_group::format_status;
+use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::auth::AuthenticatedKey;
@@ -29,11 +30,16 @@ pub async fn handler(
 
     info!(group_id=%group_id_str, "Retrying group upgrade");
 
+    let requester = match resolve_requester(auth_key, req.requester) {
+        Ok(r) => r,
+        Err(err) => return err.into_response(),
+    };
+
     let result = state
         .ctx_client
         .retry_group_upgrade(RetryGroupUpgradeRequest {
             group_id,
-            requester: auth_key.map(|Extension(k)| k.0).or(req.requester),
+            requester,
         })
         .await
         .map_err(parse_api_error);

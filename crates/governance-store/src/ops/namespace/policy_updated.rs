@@ -8,7 +8,7 @@ use super::context::NamespaceApplyCtx;
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use eyre::Result as EyreResult;
 
-pub(crate) fn apply(ctx: &NamespaceApplyCtx<'_>, op: &SignedNamespaceOp) -> EyreResult<()> {
+pub(crate) fn apply(ctx: &mut NamespaceApplyCtx<'_>, op: &SignedNamespaceOp) -> EyreResult<()> {
     ctx.require_namespace_admin(&op.signer)?;
     tracing::debug!("PolicyUpdated: stored in DAG log, no additional state mutation");
     Ok(())
