@@ -62,8 +62,28 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
         if migration.is_none() {
             if let Some(ref context) = context_meta {
                 if application_id == context.application_id {
-                    debug!(%context_id, "Application already set and no migration requested, skipping update");
-                    return ActorResponse::reply(Ok(()));
+                    // #2060: a same ApplicationId does NOT imply same bytecode for a
+                    // signed bundle (its id is version-stable). Only skip when the
+                    // context already activated the installed blob; otherwise fall
+                    // through to the code-only swap so the new bytecode is loaded and
+                    // the activation marker recorded — a bare id compare would silently
+                    // drop a code-only upgrade and report success.
+                    let installed = self
+                        .node_client
+                        .get_application(&application_id)
+                        .ok()
+                        .flatten()
+                        .map(|app| *app.blob.bytecode.as_ref());
+                    let activated = crate::activation::activated_blob(&self.datastore, &context_id);
+                    if same_id_update_is_noop(activated, installed) {
+                        debug!(%context_id, "Application already set, installed bytecode already active, and no migration requested; skipping update");
+                        return ActorResponse::reply(Ok(()));
+                    }
+                    debug!(
+                        %context_id, %application_id,
+                        "same application id but the installed bytecode is not yet active \
+                         (code-only bundle upgrade); applying update"
+                    );
                 }
             }
         }
@@ -291,6 +311,18 @@ fn application_version(
             None
         }
     }
+}
+
+/// #2060: a signed bundle's `ApplicationId` is version-stable
+/// (`hash(package, signer)`), so a same-id no-migration update can be either a
+/// true no-op or a code-only bytecode swap. The early skip is safe ONLY when the
+/// context already executes the exact bytecode now installed under that id — its
+/// activation marker (`activated`) equals the installed blob. A missing marker
+/// or any mismatch means the new bytecode is not yet active, so the update must
+/// proceed; an unreadable application row (`installed` is `None`) also proceeds
+/// rather than silently skipping.
+fn same_id_update_is_noop(activated: Option<[u8; 32]>, installed: Option<[u8; 32]>) -> bool {
+    matches!((activated, installed), (Some(a), Some(b)) if a == b)
 }
 
 /// Builds an `AppVersionChanged` node event for a context whose application id
@@ -1507,7 +1539,10 @@ mod tests {
     use calimero_primitives::events::{ContextEvent, ContextEventPayload, NodeEvent};
 
     use super::ContextStorage;
-    use super::{app_version_changed_event, application_version, verify_appkey_continuity};
+    use super::{
+        app_version_changed_event, application_version, same_id_update_is_noop,
+        verify_appkey_continuity,
+    };
 
     /// Creates a test store with in-memory database.
     fn create_test_store() -> Store {
@@ -1630,6 +1665,29 @@ mod tests {
             }
             other => panic!("expected AppVersionChanged, got {other:?}"),
         }
+    }
+
+    // #2060: the same-id no-migration skip is safe ONLY when the context already
+    // executes the exact bytecode now installed under that id. A signed bundle's
+    // ApplicationId is version-stable, so a code-only upgrade leaves the id equal
+    // while the blob changes — the skip must NOT fire there.
+    #[test]
+    fn same_id_update_skips_only_when_installed_bytecode_already_active() {
+        let blob_v1 = [1u8; 32];
+        let blob_v2 = [2u8; 32];
+
+        // Genuine no-op: the context already activated the installed bytecode.
+        assert!(same_id_update_is_noop(Some(blob_v1), Some(blob_v1)));
+
+        // #2060: a new bundle replaced the bytecode under the same id; the
+        // context still runs the old blob, so the update must proceed.
+        assert!(!same_id_update_is_noop(Some(blob_v1), Some(blob_v2)));
+
+        // No activation marker yet — cannot prove up-to-date, so proceed.
+        assert!(!same_id_update_is_noop(None, Some(blob_v2)));
+
+        // Installed application row unreadable — proceed conservatively.
+        assert!(!same_id_update_is_noop(Some(blob_v1), None));
     }
 
     #[test]
