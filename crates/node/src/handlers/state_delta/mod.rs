@@ -2,6 +2,7 @@
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
 use calimero_context::group_store::{DenyListRepository, NamespaceRepository};
+use calimero_context::scope_projection::ScopeProjections;
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::Nonce;
@@ -941,9 +942,31 @@ pub async fn handle_state_delta(
             // unaffected. This is the projection's first reader at the auth
             // boundary — the precursor to the cutover flip.
             if let Some(gp) = governance_position.as_ref() {
-                let projected = node_state.scope_projections.lock().ok().and_then(|mut p| {
-                    p.member_at_cut(datastore, group, &author_id, &gp.governance_dag_heads)
-                });
+                let heads = &gp.governance_dag_heads;
+
+                // Backfill the group's namespace into the projection WITHOUT
+                // holding the projection lock across the DAG walk: that walk is a
+                // synchronous RocksDB sweep, and the governance apply path shares
+                // this lock to ingest, so holding it across the walk would stall
+                // the actor's ingest. Resolve+gate under a brief lock, walk
+                // lock-free, then re-lock only to ingest.
+                let needs_backfill = node_state
+                    .lock_scope_projections()
+                    .namespace_needing_backfill(datastore, group);
+                if let Some(namespace_id) = needs_backfill {
+                    if let Some(ops) =
+                        ScopeProjections::collect_namespace_ops(datastore, namespace_id)
+                    {
+                        node_state
+                            .lock_scope_projections()
+                            .apply_backfill(namespace_id, ops);
+                    }
+                }
+
+                // Brief read-only lock for the actual compare.
+                let projected = node_state
+                    .lock_scope_projections()
+                    .member_at_cut(datastore, group, &author_id, heads);
                 if projected == Some(false) {
                     warn!(
                         marker = "unified_projection_divergence",

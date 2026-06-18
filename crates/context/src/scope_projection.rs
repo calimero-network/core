@@ -21,7 +21,8 @@ use std::collections::{HashMap, HashSet};
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    MembershipRepository, NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
+    MembershipPath, MembershipRepository, MetaRepository, NamespaceDagService,
+    NamespaceOpLogService, NamespaceRepository,
 };
 use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
@@ -313,22 +314,78 @@ impl ScopeProjections {
     /// [`op_from_rotation_entry`] + [`load_rotation_log_direct`] at the call site
     /// (the anchors are known there).
     pub fn backfill_namespace(&mut self, store: &Store, namespace_id: [u8; 32]) {
-        // Walk each namespace at most once; the live feed maintains it after.
-        if !self.backfilled.insert(namespace_id) {
+        if self.backfilled.contains(&namespace_id) {
             return;
         }
+        if let Some(ops) = Self::collect_namespace_ops(store, namespace_id) {
+            self.apply_backfill(namespace_id, ops);
+        }
+        // A `None` (governance head unreadable) leaves the namespace UN-backfilled
+        // so a later call retries; see `collect_namespace_ops`.
+    }
+
+    /// Has this namespace's governance history already been replayed into the
+    /// projection? The hot-path gate so the (lock-free) [`collect_namespace_ops`]
+    /// walk runs at most once per namespace.
+    ///
+    /// [`collect_namespace_ops`]: Self::collect_namespace_ops
+    #[must_use]
+    pub fn is_namespace_backfilled(&self, namespace_id: [u8; 32]) -> bool {
+        self.backfilled.contains(&namespace_id)
+    }
+
+    /// Resolve `group`'s namespace and report it **iff** it still needs a
+    /// backfill (cheap: a single point lookup + a set membership test, no DAG
+    /// walk). `None` means either already backfilled or unresolvable — in both
+    /// cases the caller skips the walk. Split out so the expensive walk
+    /// ([`collect_namespace_ops`]) can run WITHOUT the projection lock held.
+    ///
+    /// [`collect_namespace_ops`]: Self::collect_namespace_ops
+    #[must_use]
+    pub fn namespace_needing_backfill(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+    ) -> Option<[u8; 32]> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        (!self.backfilled.contains(&namespace_id)).then_some(namespace_id)
+    }
+
+    /// Walk a namespace's **persisted** governance DAG from its heads and return
+    /// the [`Op`]s to ingest — the backfill's expensive half, deliberately an
+    /// associated fn taking no `&self` so it can run **outside** the projection
+    /// lock (the apply path shares that lock; holding it across a RocksDB DAG
+    /// walk would stall the actor's ingest). Pair with [`apply_backfill`].
+    ///
+    /// Replays the authoritative persisted op-log rather than persisting a
+    /// parallel copy (which could diverge), re-deriving each op's delta
+    /// coordinates (`signed_namespace_op_to_delta`) so the ingested ops carry the
+    /// same ids/parents as the live feed (see [`op_from_signed_namespace_op`]).
+    ///
+    /// `None` when the governance head itself is unreadable — the signal to leave
+    /// the namespace un-backfilled so a transient store fault retries on the next
+    /// call rather than permanently marking it done. A missing *parent* op is a
+    /// normal partial frontier (collect what's present), not a `None`.
+    ///
+    /// [`apply_backfill`]: Self::apply_backfill
+    #[must_use]
+    pub fn collect_namespace_ops(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
         let dag = NamespaceDagService::new(store, namespace_id);
         let heads = match dag.read_head_record() {
             Ok(head) => head.parent_hashes,
             Err(err) => {
                 tracing::warn!(namespace = ?namespace_id, %err, "projection backfill: governance head unreadable");
-                return;
+                return None;
             }
         };
 
         let op_log = NamespaceOpLogService::new(store, namespace_id);
         let mut visited: HashSet<[u8; 32]> = HashSet::new();
         let mut queue: std::collections::VecDeque<[u8; 32]> = heads.into_iter().collect();
+        let mut ops = Vec::new();
         while let Some(id) = queue.pop_front() {
             if !visited.insert(id) {
                 continue;
@@ -352,58 +409,94 @@ impl ScopeProjections {
             if let Some(op) =
                 op_from_signed_namespace_op(&signed, delta.id, delta.hlc, &delta.parents)
             {
-                self.ingest_op(&op);
+                ops.push(op);
             }
+        }
+        Some(ops)
+    }
+
+    /// Ingest the ops [`collect_namespace_ops`] gathered and mark the namespace
+    /// backfilled — the cheap, lock-held half. Double-checked: if a concurrent
+    /// caller already backfilled this namespace (the set insert returns `false`),
+    /// the ops are dropped rather than re-ingested (`ingest_op` would dedup them
+    /// anyway, but the early-out avoids the work). Ingestion order is irrelevant:
+    /// [`ScopeState::apply`] is per-slot LWW, so the folded state converges
+    /// regardless of the order the DAG walk happened to visit ops in.
+    ///
+    /// [`collect_namespace_ops`]: Self::collect_namespace_ops
+    pub fn apply_backfill(&mut self, namespace_id: [u8; 32], ops: Vec<Op>) {
+        if !self.backfilled.insert(namespace_id) {
+            return;
+        }
+        for op in &ops {
+            self.ingest_op(op);
         }
     }
 
     /// Is `author` a member of `group` at the governance cut named by `heads`,
-    /// per the projection? `None` if the answer can't be formed (group→namespace
-    /// resolution fails, or no projection for the scope even after backfill).
+    /// per the projection? A **pure read** — the caller must have already
+    /// backfilled the group's namespace (via [`namespace_needing_backfill`] +
+    /// [`collect_namespace_ops`] + [`apply_backfill`]) so this can take `&self`
+    /// and hold the projection lock only briefly. Returns the type-free `bool` so
+    /// the node side needs no `authz`/`op` deps.
     ///
-    /// Backfills the group's namespace from persisted state on first use (so a
-    /// cold/post-restart projection isn't spuriously empty), then resolves the
-    /// **causal-honor** view at `heads`. This is the decision-site shadow's
-    /// reader: the node compares this to the live `authorize_delta_at_edge`
-    /// outcome behind a divergence metric, while acting on the live decision.
-    /// Returns the type-free `bool` so the node side needs no `authz`/`op` deps.
+    /// [`namespace_needing_backfill`]: Self::namespace_needing_backfill
+    /// [`collect_namespace_ops`]: Self::collect_namespace_ops
+    /// [`apply_backfill`]: Self::apply_backfill
+    #[must_use]
     pub fn member_at_cut(
-        &mut self,
+        &self,
         store: &Store,
         group: ContextGroupId,
         author: &PublicKey,
         heads: &[[u8; 32]],
     ) -> Option<bool> {
-        let namespace_id = NamespaceRepository::new(store).resolve(&group).ok()?;
-        self.backfill_namespace(store, namespace_id.to_bytes());
         let scope = ScopeId::from(group.to_bytes());
 
         // The part under test: membership established by governance ops
         // (`MemberJoined` / `MemberAdded`) reachable from the cut, folded from the
         // op-log the live feed + backfill maintain. A real feed gap — an op the
-        // projection failed to fold — shows up as this returning `false` while the
-        // live decision authorized, which is exactly what the divergence marker
-        // catches.
-        if self.acl_view_at(&scope, heads)?.is_scope_member(author) {
+        // projection failed to fold — shows up as this NOT seeing the author while
+        // the live decision authorized, which is exactly what the divergence
+        // marker catches. A scope with no log at all (`acl_view_at` is `None`)
+        // likewise falls through to a real divergence unless the author is a
+        // genuine non-op member below.
+        if self
+            .acl_view_at(&scope, heads)
+            .is_some_and(|view| view.is_scope_member(author))
+        {
             return Some(true);
         }
 
-        // Genesis / structural base state the projection does not model as ops
-        // yet, mirroring the live resolver's own carve-outs (see
-        // `calimero_governance_store::acl_view_at`): the creator's admin
-        // membership lives in `GroupMeta::admin_identity` (no self-`MemberJoined`
-        // op at genesis), and open-subgroup membership is reachable only via a
-        // parent-group walk — neither is a governance op in this namespace's DAG.
-        // Honoring them here keeps the shadow focused on real op-fold gaps rather
-        // than false-flagging base state the op-log was never meant to carry.
+        // Base state that is NOT a governance op in this namespace's DAG, so the
+        // op-log legitimately cannot carry it. Honor exactly the two such cases
+        // the live resolver does (see `calimero_governance_store::acl_view_at`),
+        // and nothing more:
+        //   (a) genesis admin — the creator's membership lives in
+        //       `GroupMeta::admin_identity`, with no self-`MemberJoined` op;
+        //   (b) inherited membership — established by an op in a PARENT group's
+        //       DAG, reachable only via the parent walk (`check_path` =>
+        //       `Inherited`).
+        // Direct membership (`has_direct_member` / `role_of`) is deliberately NOT
+        // honored here: those rows come from `MemberJoined` / `MemberAdded` ops
+        // the projection IS meant to fold, so a miss there must surface as a
+        // divergence — not be masked by reading the live store back.
         //
         // TODO(cutover): fold genesis admin + inherited membership into the
         // scope's base `ScopeState` so the projection's `authorize` is complete
         // on its own, without consulting the live membership repository here.
-        let membership = MembershipRepository::new(store);
-        if membership.is_admin(&group, author).unwrap_or(false)
-            || membership.is_member(&group, author).unwrap_or(false)
-        {
+        let is_genesis_admin = MetaRepository::new(store)
+            .load(&group)
+            .ok()
+            .flatten()
+            .is_some_and(|meta| meta.admin_identity == *author);
+        if is_genesis_admin {
+            return Some(true);
+        }
+        if matches!(
+            MembershipRepository::new(store).check_path(&group, author),
+            Ok(MembershipPath::Inherited { .. })
+        ) {
             return Some(true);
         }
 

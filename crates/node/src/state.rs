@@ -330,6 +330,20 @@ impl NodeState {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Lock the unified-op scope-projections, recovering a poisoned guard
+    /// rather than skipping (same rationale as `lock_peer_identity_cache`).
+    /// Recovering matters here specifically: returning early on poison would
+    /// silently blind the divergence shadow — the very signal that gates the
+    /// cutover flip — so a poisoned writer must not be allowed to make the gate
+    /// vacuously pass. Held only across synchronous work (no `.await` in scope).
+    pub(crate) fn lock_scope_projections(
+        &self,
+    ) -> MutexGuard<'_, calimero_context::scope_projection::ScopeProjections> {
+        self.scope_projections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Push a state delta into the governance-pending buffer. Called when
     /// `membership_status_at` returns `Unknown { needed }` — the referenced
     /// governance heads aren't yet known locally, so the delta cannot be
