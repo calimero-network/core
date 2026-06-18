@@ -5,6 +5,12 @@ error: (calimero)> method annotated with `#[app::init]` must be named `init`
    |            ^^^^^^^^^^^^^^^
 
 error: (calimero)> duplicate `#[app::init]` — a type may declare at most one initializer
+  --> tests/macros/error_duplicate_init.rs:24:12
+   |
+24 |     pub fn init() -> S {
+   |            ^^^^
+
+error: (calimero)> duplicate `#[app::init]` — a type may declare at most one initializer
   --> tests/macros/error_duplicate_init.rs:29:12
    |
 29 |     pub fn init_with_value(value: u64) -> S {

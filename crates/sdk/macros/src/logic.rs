@@ -134,22 +134,31 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             }
         }
 
-        // At most one `#[app::init]` per type — a second initializer is
+        // At most one `#[app::init]` per type — multiple initializers are
         // ambiguous (which one constructs the state?). Count the attribute
-        // directly on the impl items, independent of per-method parsing: a
-        // second initializer that fails its *own* validation (e.g. not named
-        // `init`) is excluded from `methods`, so a `methods`-based check would
-        // miss it. Flag every `#[app::init]` after the first, at its own name
-        // span; these accumulate with any per-method errors above.
-        let init_methods = input.item.items.iter().filter_map(|item| match item {
-            ImplItem::Fn(method) if has_init_attr(&method.attrs) => Some(method),
-            _ => None,
-        });
-        for method in init_methods.skip(1) {
-            errors.subsume(SynError::new_spanned(
-                &method.sig.ident,
-                ParseError::DuplicateInit,
-            ));
+        // directly on the impl items, independent of per-method parsing: an
+        // initializer that fails its *own* validation (e.g. not named `init`) is
+        // excluded from `methods`, so a `methods`-based check would miss it.
+        // When there's more than one, flag *every* `#[app::init]` (not just the
+        // ones after the first) so the error never lands on an arbitrary "valid"
+        // initializer while the real offender — which may appear earlier in
+        // source order — goes unmarked. These accumulate with per-method errors.
+        let init_methods: Vec<_> = input
+            .item
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ImplItem::Fn(method) if has_init_attr(&method.attrs) => Some(method),
+                _ => None,
+            })
+            .collect();
+        if init_methods.len() > 1 {
+            for method in &init_methods {
+                errors.subsume(SynError::new_spanned(
+                    &method.sig.ident,
+                    ParseError::DuplicateInit,
+                ));
+            }
         }
 
         errors.check()?;
