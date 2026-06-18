@@ -48,7 +48,9 @@ use tracing::{debug, info, warn};
 
 use calimero_governance_store;
 use calimero_governance_store::op_events::{self, OpEvent};
-use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{
+    MembershipPath, MembershipRepository, MetaRepository, NamespaceRepository,
+};
 
 /// Token-bucket rate limit for auto-follow emissions.
 ///
@@ -473,20 +475,54 @@ fn self_pk_for_group(store: &Store, group_id: &ContextGroupId) -> Option<PublicK
     }
 }
 
-/// Check if `member` is in `group_id` with `auto_follow.contexts = true`.
+/// Check if `member` should auto-follow `group_id`'s contexts.
+///
+/// A direct member uses its own row's `auto_follow.contexts` flag. A member
+/// with NO direct row may still be an *inherited* member of an Open subgroup
+/// (membership flows down from an anchor ancestor that granted
+/// `CAN_JOIN_OPEN_SUBGROUPS`); in that case we honor the **anchor row's**
+/// `auto_follow.contexts` flag. This is what lets a root-admitted ReadOnlyTee
+/// (which holds no direct row in Open subgroups) replicate their contexts.
 fn should_auto_follow_contexts(
     store: &Store,
     group_id: &ContextGroupId,
     member: &PublicKey,
 ) -> bool {
-    match MembershipRepository::new(store).member_value(group_id, member) {
-        Ok(Some(v)) => v.auto_follow.contexts,
-        Ok(None) => false,
+    let repo = MembershipRepository::new(store);
+    match repo.member_value(group_id, member) {
+        Ok(Some(v)) => return v.auto_follow.contexts,
+        Ok(None) => {} // fall through to inheritance check below
         Err(err) => {
             warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 ?err,
                 "auto-follow: failed to read member value"
+            );
+            return false;
+        }
+    }
+
+    // No direct row — resolve the inheritance anchor (Open-subgroup chain).
+    match repo.check_path(group_id, member) {
+        Ok(MembershipPath::Inherited { anchor, .. }) => match repo.member_value(&anchor, member) {
+            Ok(Some(v)) => v.auto_follow.contexts,
+            Ok(None) => false,
+            Err(err) => {
+                warn!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    anchor = %hex::encode(anchor.to_bytes()),
+                    ?err,
+                    "auto-follow: failed to read anchor member value"
+                );
+                false
+            }
+        },
+        Ok(_) => false,
+        Err(err) => {
+            warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                ?err,
+                "auto-follow: failed to resolve inheritance path"
             );
             false
         }
@@ -599,6 +635,7 @@ mod tests {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         use calimero_context_config::types::ContextGroupId;
+        use calimero_context_config::{MemberCapabilities, VisibilityMode};
         use calimero_primitives::application::ApplicationId;
         use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
         use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -613,7 +650,8 @@ mod tests {
             ContextRegisteredDecision, BACKFILL_LIMIT,
         };
         use calimero_governance_store::{
-            register_context_in_group, MembershipRepository, MetaRepository, NamespaceRepository,
+            register_context_in_group, CapabilitiesRepository, MembershipRepository,
+            MetaRepository, NamespaceRepository,
         };
 
         fn test_store() -> Store {
@@ -757,6 +795,105 @@ mod tests {
             assert_eq!(
                 decide_on_context_registered(&store, gid.to_bytes(), &context_id),
                 ContextRegisteredDecision::Join,
+            );
+        }
+
+        /// Create an Open subgroup nested under `root_gid` with no direct
+        /// member row for any identity. After this call, `check_path(sub,
+        /// member)` resolves to `Inherited { anchor: root, .. }` for a
+        /// root member that holds `CAN_JOIN_OPEN_SUBGROUPS`, and
+        /// `resolve_identity(sub)` walks the parent edge up to the root's
+        /// stored namespace identity.
+        fn seed_open_subgroup(
+            store: &Store,
+            root_gid: ContextGroupId,
+            sub_gid: ContextGroupId,
+            admin: PublicKey,
+        ) {
+            MetaRepository::new(store)
+                .save(&sub_gid, &sample_meta(admin))
+                .expect("save_subgroup_meta");
+            NamespaceRepository::new(store)
+                .nest(&root_gid, &sub_gid)
+                .expect("nest subgroup under root");
+            CapabilitiesRepository::new(store)
+                .set_subgroup_visibility(&sub_gid, VisibilityMode::Open)
+                .expect("set subgroup visibility Open");
+        }
+
+        /// Inherited Open-subgroup member with `auto_follow.contexts = true`
+        /// on the ANCHOR (root) row must auto-follow the subgroup's contexts,
+        /// even though it holds NO direct row in the subgroup. This is the
+        /// root-admitted-ReadOnlyTee replication path (Fix B).
+        #[test]
+        fn context_registered_join_for_inherited_open_subgroup_member() {
+            let mut rng = OsRng;
+            let root_gid = ContextGroupId::from([0xE1u8; 32]);
+            let (store, _sk, pk) = seed_self_member(&mut rng, root_gid);
+
+            // Root row: CAN_JOIN_OPEN_SUBGROUPS + auto_follow.contexts = true.
+            CapabilitiesRepository::new(&store)
+                .set_member_capability(&root_gid, &pk, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+                .expect("set_member_capability");
+            MembershipRepository::new(&store)
+                .set_auto_follow(
+                    &root_gid,
+                    &pk,
+                    AutoFollowFlags {
+                        contexts: true,
+                        subgroups: false,
+                    },
+                )
+                .expect("set_member_auto_follow");
+
+            // Open subgroup with NO direct row for `pk`.
+            let sub_gid = ContextGroupId::from([0xE2u8; 32]);
+            seed_open_subgroup(&store, root_gid, sub_gid, pk);
+            assert!(
+                MembershipRepository::new(&store)
+                    .member_value(&sub_gid, &pk)
+                    .expect("member_value")
+                    .is_none(),
+                "test precondition: no direct subgroup row for self_pk"
+            );
+
+            let context_id = ContextId::from([0xE3u8; 32]);
+            assert_eq!(
+                decide_on_context_registered(&store, sub_gid.to_bytes(), &context_id),
+                ContextRegisteredDecision::Join,
+            );
+        }
+
+        /// Same inherited-member shape, but the ANCHOR (root) row has
+        /// `auto_follow.contexts = false` — the inherited member must NOT
+        /// auto-follow.
+        #[test]
+        fn context_registered_not_auto_following_for_inherited_member_when_anchor_flag_false() {
+            let mut rng = OsRng;
+            let root_gid = ContextGroupId::from([0xE4u8; 32]);
+            let (store, _sk, pk) = seed_self_member(&mut rng, root_gid);
+
+            CapabilitiesRepository::new(&store)
+                .set_member_capability(&root_gid, &pk, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+                .expect("set_member_capability");
+            MembershipRepository::new(&store)
+                .set_auto_follow(
+                    &root_gid,
+                    &pk,
+                    AutoFollowFlags {
+                        contexts: false,
+                        subgroups: false,
+                    },
+                )
+                .expect("set_member_auto_follow");
+
+            let sub_gid = ContextGroupId::from([0xE5u8; 32]);
+            seed_open_subgroup(&store, root_gid, sub_gid, pk);
+
+            let context_id = ContextId::from([0xE6u8; 32]);
+            assert_eq!(
+                decide_on_context_registered(&store, sub_gid.to_bytes(), &context_id),
+                ContextRegisteredDecision::NotAutoFollowing,
             );
         }
 
