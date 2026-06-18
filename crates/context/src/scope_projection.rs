@@ -765,34 +765,16 @@ mod tests {
     }
 
     #[test]
-    fn out_of_model_op_folds_as_a_noop_graph_node() {
-        // `MemberJoinedAt` isn't modeled as a membership payload yet, but it MUST
-        // still become a node so an ancestry walk can pass through it to the ops
-        // behind it (dropping it would orphan them — the bug this guards against).
+    fn undecryptable_group_op_folds_as_a_noop_graph_node() {
+        // A group op we can't decrypt (no `decrypted` supplied) carries no
+        // membership change we can read, but it MUST still become a node so an
+        // ancestry walk can pass through it to the ops behind it (dropping it
+        // would orphan them — the bug this guards against).
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
-        let signed_invitation = SignedGroupOpenInvitation {
-            invitation: GroupInvitationFromAdmin {
-                inviter_identity: [0xA1; 32].into(),
-                group_id: ContextGroupId::from([0x44; 32]),
-                expiration_timestamp: 1_700_000_000,
-                secret_salt: [0x33; 32],
-                invited_role: 1,
-            },
-            inviter_signature: "deadbeef".to_string(),
-            application_id: None,
-            app_key: None,
-        };
+        let group = ContextGroupId::from([0x33; 32]);
         let op = op_from_namespace_op(
-            &signed_root(
-                ns,
-                signer,
-                RootOp::MemberJoinedAt {
-                    member: PublicKey::from([0x55; 32]),
-                    signed_invitation,
-                    joined_at: 42,
-                },
-            ),
+            &signed_group(ns, signer, group),
             None,
             [0x99; 32],
             hlc(10),
@@ -801,7 +783,7 @@ mod tests {
         assert_eq!(
             op.payload,
             OpPayload::Noop,
-            "out-of-model op is a Noop node"
+            "undecryptable group op is a Noop node"
         );
         assert_eq!(op.id, [0x99; 32], "but it still occupies its DAG node");
         assert_eq!(op.parents, vec![[0x88; 32]], "with its real parents");

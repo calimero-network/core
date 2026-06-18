@@ -146,10 +146,11 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
 ///   `cascade_group_ids` mean the live path emits one `SubgroupDeleted` per
 ///   cascaded scope.
 ///
-/// `MemberJoined` → `MemberAdded`: an invitation-based join. The admin-signed
-/// invitation carries the authoritative `group_id` and `invited_role` (the
-/// joiner cannot escalate — the role is under the admin's signature), so we
-/// decode both straight off it.
+/// `MemberJoined` / `MemberJoinedAt` → `MemberAdded`: an invitation-based join
+/// (`MemberJoinedAt` is the same join carrying the joiner's observed timestamp).
+/// The admin-signed invitation carries the authoritative `group_id` and
+/// `invited_role` (the joiner cannot escalate — the role is under the admin's
+/// signature), so we decode both straight off it.
 ///
 /// **Returns `None`** (out-of-model by design): `KeyDelivery` — key transport,
 /// which rides its own channel and never enters the auth projection.
@@ -165,6 +166,11 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         RootOp::MemberJoined {
             member,
             signed_invitation,
+        }
+        | RootOp::MemberJoinedAt {
+            member,
+            signed_invitation,
+            ..
         } => Some(OpPayload::MemberAdded {
             group: signed_invitation.invitation.group_id,
             member: *member,
@@ -511,7 +517,21 @@ mod tests {
         assert_eq!(
             payload_from_root_op(&RootOp::MemberJoined {
                 member: m,
+                signed_invitation: signed_invitation.clone(),
+            }),
+            Some(OpPayload::MemberAdded {
+                group: ContextGroupId::from(gid),
+                member: m,
+                role: GroupMemberRole::Admin,
+            })
+        );
+        // `MemberJoinedAt` (the timestamped invitation join `join_group` emits)
+        // decodes identically — it is NOT out-of-model.
+        assert_eq!(
+            payload_from_root_op(&RootOp::MemberJoinedAt {
+                member: m,
                 signed_invitation,
+                joined_at: 42,
             }),
             Some(OpPayload::MemberAdded {
                 group: ContextGroupId::from(gid),
