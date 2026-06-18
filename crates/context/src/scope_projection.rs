@@ -598,10 +598,10 @@ impl ScopeProjections {
         group: ContextGroupId,
         author: &PublicKey,
         heads: &[[u8; 32]],
-    ) -> (bool, bool, usize, usize, bool) {
+    ) -> (bool, bool, usize, usize, bool, bool, usize) {
         let resolved = NamespaceRepository::new(store).resolve(&group).ok();
         let Some(ns) = resolved else {
-            return (false, false, 0, 0, false);
+            return (false, false, 0, 0, false, false, 0);
         };
         let ns_bytes = ns.to_bytes();
         let backfilled = self.backfilled.contains(&ns_bytes);
@@ -615,10 +615,25 @@ impl ScopeProjections {
             }
             None => 0,
         };
-        let author_in_any = self
-            .acl_view_at(&scope, heads)
-            .is_some_and(|v| v.is_scope_member(author));
-        (backfilled, true, log_len, heads_in_log, author_in_any)
+        let view = self.acl_view_at(&scope, heads);
+        let author_in_any = view.as_ref().is_some_and(|v| v.is_scope_member(author));
+        // Is the DECISION group folded at all, and how big? Distinguishes
+        // "subgroup membership never folded" (group absent / size 0 — a
+        // decrypt/sync gap) from "folded but author absent" (re-add / deny-list).
+        let decision_group_size = view
+            .as_ref()
+            .and_then(|v| v.groups.get(&group))
+            .map_or(0, std::collections::BTreeMap::len);
+        let decision_group_in_view = view.as_ref().is_some_and(|v| v.groups.contains_key(&group));
+        (
+            backfilled,
+            true,
+            log_len,
+            heads_in_log,
+            author_in_any,
+            decision_group_in_view,
+            decision_group_size,
+        )
     }
 
     /// The role the projection resolves for `member` in `group` at the causal
