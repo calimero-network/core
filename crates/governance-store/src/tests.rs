@@ -5800,12 +5800,26 @@ mod auto_follow_tests {
         // `Store` is `Clone` (shared handle to the same backing DB), so the
         // snapshot reads the same state the applying thread is writing.
         let observer_store = store.clone();
-        // Rendezvous: both threads wait here, so the observer is provably
-        // already in its `try_recv` spin loop before the applier calls
-        // `apply_local_signed_group_op`. This closes the window the old
-        // pre-loop ready-signal left open (where the applier could finish the
-        // whole apply before the observer started polling, making the test
-        // pass vacuously).
+        // Rendezvous: both threads wait here so the observer enters its
+        // `try_recv` spin loop concurrently with the applier, not after the
+        // applier has finished (the window the old pre-loop ready-signal left
+        // open).
+        //
+        // RED/GREEN strength: for the FIXED code (persist-then-notify) this is a
+        // DETERMINISTIC green — the event can only be observed after the append,
+        // so the snapshot is always `true` regardless of thread timing. As a RED
+        // regression-catcher it is best-effort: in principle a regression
+        // (notify-then-persist) is only caught if the observer reads the event
+        // inside the notify→persist window. In practice that window is reliably
+        // hit because after the barrier the applier must run the membership
+        // mutations AND the op-log append (substantial store work) before it
+        // reaches `notify`, whereas the observer only needs to enter a tight
+        // spin loop — orders of magnitude less work — so it is already polling
+        // long before the event fires. A FULLY deterministic RED would need a
+        // synchronization point injected BETWEEN the append and the flush in the
+        // production apply path; we deliberately do not add a test-only hook to
+        // that hot path. The structural guarantee is the persist-then-flush
+        // ordering visible in `apply_local_signed_group_op` itself.
         let barrier = Arc::new(Barrier::new(2));
         let observer_barrier = Arc::clone(&barrier);
         let observer = std::thread::spawn(move || {
@@ -5909,8 +5923,15 @@ mod auto_follow_tests {
                     !(group_id == gid_bytes && member == new_member_pk),
                     "replay must not re-emit MemberAdded (#2770)"
                 ),
-                Ok(_) => {}      // unrelated events from parallel tests
-                Err(_) => break, // Empty (drained) or Lagged — nothing more to read
+                Ok(_) => {} // unrelated events from parallel tests
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                    // Capacity flood between subscribe and this drain could have
+                    // dropped a buggy re-emit — fail loudly rather than treating
+                    // the miss as "no re-emit" (false pass). Mirrors the observer
+                    // tests above.
+                    panic!("drain lagged by {n} events — replay re-emit check inconclusive");
+                }
+                Err(_) => break, // Empty (drained) or Closed — nothing more to read
             }
         }
     }
@@ -5987,9 +6008,13 @@ mod auto_follow_tests {
         // to the same backing DB), so the snapshot reads the same state
         // the applying thread is writing.
         let observer_store = store.clone();
-        // Rendezvous: guarantees the observer is in its `try_recv` spin loop
-        // before the applier proceeds (see the group-path test for why the
-        // old pre-loop ready-signal left a vacuous-pass window).
+        // Rendezvous: observer enters its `try_recv` spin loop concurrently with
+        // the applier. Same RED/GREEN characterization as the group-path test
+        // (`member_added_event_fires_after_op_log_append`): deterministic GREEN
+        // for the fixed persist-then-notify ordering, best-effort RED for a
+        // regression (the applier runs the RootOp mutations + `store_operation`
+        // before `notify`, so the observer is reliably spinning first); a fully
+        // deterministic RED would need a hot-path test hook we deliberately omit.
         let barrier = Arc::new(Barrier::new(2));
         let observer_barrier = Arc::clone(&barrier);
         let observer = std::thread::spawn(move || {
