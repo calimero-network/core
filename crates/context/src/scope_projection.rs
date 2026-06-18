@@ -537,7 +537,8 @@ impl ScopeProjections {
         // marker catches. A scope with no log at all (`acl_view_at` is `None`)
         // likewise falls through to a real divergence unless the author is a
         // genuine non-op member below.
-        let in_group_at_cut = self.acl_view_at(&scope, heads).is_some_and(|view| {
+        let view = self.acl_view_at(&scope, heads);
+        let in_group_at_cut = view.as_ref().is_some_and(|view| {
             view.groups
                 .get(&group)
                 .is_some_and(|members| members.contains_key(author))
@@ -575,6 +576,28 @@ impl ScopeProjections {
             MembershipRepository::new(store).check_path(&group, author),
             Ok(MembershipPath::Inherited { .. })
         ) {
+            return Some(true);
+        }
+
+        // (c) materialized-only membership — the decision group is ENTIRELY
+        // absent from the fold (no member folded for it at all), yet the live
+        // store has the author as a direct member. This is a restricted
+        // subgroup whose membership reached this node as materialized
+        // `GroupMember` rows via governance sync (or whose member ops this node
+        // can't decrypt), not as foldable ops — so the op-log legitimately can't
+        // carry it, exactly like the live resolver's `heads_equal` materialized
+        // fast-path. Gated on the group being WHOLLY unfolded (not a single
+        // missing member) so it can't mask a real op-fold drop, which would
+        // leave the group's other members folded. F4 needs this same fallback:
+        // the flip authorizes such writes off materialized state, as live does.
+        let group_wholly_unfolded = view.as_ref().is_none_or(|v| !v.groups.contains_key(&group));
+        if group_wholly_unfolded
+            && MembershipRepository::new(store)
+                .role_of(&group, author)
+                .ok()
+                .flatten()
+                .is_some()
+        {
             return Some(true);
         }
 
