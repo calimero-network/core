@@ -866,6 +866,177 @@ async fn root_admitted_tee_is_member_of_open_subgroup() {
     );
 }
 
+/// End-to-end regression for Fix B (auto-follow inheritance, Task 1): a TEE node
+/// admitted at the namespace ROOT must not only *be authorized for* an Open
+/// subgroup's contexts — it must actually start **replicating** them. This is the
+/// behavioural pay-off of making `should_auto_follow_contexts` inheritance-aware:
+/// the root `ReadOnlyTee` holds NO direct row in the Open subgroup, so before the
+/// fix `decide_on_context_registered` resolved to `NotAutoFollowing` and
+/// `join_context` never fired; after the fix it resolves the inheritance anchor
+/// (the root row, which carries `auto_follow.contexts = true`) and auto-joins.
+///
+/// Structure (mirrors `root_admitted_tee_is_member_of_open_subgroup`): root-admit
+/// a TEE node, create an Open subgroup it inherits into with no direct row, point
+/// the node's namespace identity at that TEE, then register a context in the
+/// subgroup and let the production auto-follow handler react to the
+/// `OpEvent::ContextRegistered` event. Observable: the TEE node ends up with the
+/// context's `ContextMeta` written locally (`has_context` is true) — the durable
+/// proof that `join_context` ran and the TEE is now replicating it. Pre-fix this
+/// poll would time out (no auto-join ⇒ no `ContextMeta`).
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn root_admitted_tee_auto_follows_open_subgroup_context() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x96u8; 32]);
+    let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // 1) Admit a TEE node at the namespace root via the announce path. Keep the
+    //    TEE secret key: after the Open subgroup exists we re-point THIS node's
+    //    namespace identity to the TEE (step 3b) so the auto-follow joiner IS the
+    //    inherited-only TEE — the path the fix changes — rather than the owner,
+    //    who is a *direct* member of the subgroup it created.
+    let tee_sk = PrivateKey::random(&mut rng);
+    let tee_pk = tee_sk.public_key();
+    let nonce = [0x7Eu8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+    assert!(
+        wait_until(
+            || calimero_context::group_store::MembershipRepository::new(&node.store)
+                .is_member(&ns_gid, &tee_pk)
+                .unwrap_or(false)
+        )
+        .await,
+        "TEE node must be admitted at the namespace root first"
+    );
+
+    // Same race guard as the sibling membership test: shut the process-global
+    // `tee_subgroup_admit` subscriber down before the (momentarily-Restricted)
+    // subgroup is created, so it can't race in a DIRECT ReadOnlyTee row and mask
+    // the *inheritance* path this test asserts on. We need the TEE to have NO
+    // direct row in the Open subgroup for the inheritance fall-through to be the
+    // thing under test.
+    calimero_context::tee_subgroup_admit::shutdown();
+
+    // 2) Create an OPEN subgroup nested under the namespace. The root TEE node is
+    //    an inherited member of it with no direct row (proven by the sibling test).
+    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&node.store)
+            .has_direct_member(&open_sub, &tee_pk)
+            .unwrap(),
+        "the TEE must have NO direct row in the Open subgroup — the inheritance \
+         fall-through is the path under test"
+    );
+
+    // 3) Re-point THIS node's namespace identity to the root-admitted TEE. The
+    //    auto-follow gate resolves the joiner from the node's namespace identity
+    //    (`resolve_identity`), and so does `join_context`. After
+    //    `provision_tee_owner` that identity is the OWNER — but the owner created
+    //    the subgroup and therefore holds a *direct* row in it, which would
+    //    exercise the direct-member path (unaffected by the fix) instead of the
+    //    inheritance fall-through. Pointing the identity at the TEE makes the
+    //    joiner an inherited-only member (root ReadOnlyTee row, no subgroup row) —
+    //    exactly the path Task 1 fixed. The TEE row carries the default
+    //    `auto_follow.contexts = true` (set by `add_member` at admission), which
+    //    the inheritance fall-through must honor via the root anchor.
+    calimero_context::group_store::NamespaceRepository::new(&node.store)
+        .store_identity(&ns_gid, &tee_pk, &tee_sk, &[0u8; 32])
+        .expect("re-point namespace identity to the TEE");
+
+    // 4) Bind the auto-follow handler to THIS node's store/client. Like
+    //    `tee_subgroup_admit`, the handler is a process-global singleton bound to
+    //    whichever node spawned it first; rebind it (shutdown + spawn) so it acts
+    //    on the store we assert on. The handler subscribes to the `op_events`
+    //    broadcast channel inside its spawned task, so we re-fire the registration
+    //    event in the poll loop below to absorb the spawn/subscribe race.
+    calimero_context::auto_follow::shutdown();
+    calimero_context::auto_follow::spawn(node.store.clone(), node.context_client.clone());
+
+    // 5) Make the subgroup's application a `calimero://` STUB so `join_context`'s
+    //    `sync_context_config` bootstrap does not try to install a real bytecode
+    //    blob (it would derive a different application id off the placeholder
+    //    fixture and bail with "application mismatch"). A stub source is
+    //    install-skipped (`is_stub`), so the bootstrap writes `ContextMeta` and
+    //    completes — exactly what makes the auto-join observable. The app id is
+    //    the one `sample_meta` pins on the group (`[0xCC; 32]`).
+    let app_id = ApplicationId::from([0xCCu8; 32]);
+    let stub_blob =
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0u8; 32]));
+    let stub_meta = ApplicationMetaValue::new(
+        stub_blob,
+        0,
+        "calimero://stub-app".into(),
+        Box::new([]),
+        stub_blob,
+        "stub-package".into(),
+        "0.0.0".into(),
+        "stub-signer".into(),
+    );
+    node.store
+        .handle()
+        .put(
+            &calimero_store::key::ApplicationMeta::new(app_id),
+            &stub_meta,
+        )
+        .expect("seed stub application meta");
+
+    // 6) Register a context in the Open subgroup: seed the context->group mapping
+    //    (the same mapping `join_context` resolves) the way the in-file resolver
+    //    e2e does, then drive the production trigger by emitting the exact
+    //    `OpEvent::ContextRegistered` the apply path queues
+    //    (`ops/group/context_registered.rs`).
+    let context_id = calimero_primitives::context::ContextId::from([0xC0u8; 32]);
+    calimero_context::group_store::register_context_in_group(&node.store, &open_sub, &context_id)
+        .expect("register context -> open subgroup");
+
+    // 7) The node — now acting as the inherited-only TEE member of the Open
+    //    subgroup (no direct row, root ReadOnlyTee anchor) — must auto-join the
+    //    context: the inheritance-aware auto-follow gate resolves to
+    //    Join, `join_context` runs, and `sync_context_config` writes the context's
+    //    `ContextMeta` locally. `has_context` is the durable proof the auto-join
+    //    ran. Re-fire the event each poll so a late handler subscribe still lands
+    //    the trigger (re-firing is harmless — `join_context` is idempotent once
+    //    the context exists). `has_member`/group membership is deliberately NOT
+    //    used as the observable: it is true via the group-membership fallback
+    //    regardless of whether a join actually happened.
+    //
+    // Pre-fix this poll times out: with no direct subgroup row the gate returned
+    // `NotAutoFollowing`, `join_context` never fired, and no `ContextMeta` was
+    // ever written.
+    let replicating = wait_until(|| {
+        calimero_governance_store::op_events::notify(
+            calimero_governance_store::op_events::OpEvent::ContextRegistered {
+                group_id: open_sub.to_bytes(),
+                context_id,
+            },
+        );
+        node.context_client
+            .has_context(&context_id)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        replicating,
+        "root-admitted TEE (inherited-only Open-subgroup member) must auto-follow \
+         (replicate) the Open-subgroup context via the inheritance-aware auto-follow \
+         gate — pre-fix it resolved to NotAutoFollowing (no direct row) and never joined"
+    );
+}
+
 /// End-to-end create-time path (proposal.md §12d, Phase 1): with a TEE node
 /// already admitted at the namespace root, creating a **Restricted** subgroup on
 /// the same node must transparently give that TEE node a direct `ReadOnlyTee`
