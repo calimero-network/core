@@ -968,11 +968,24 @@ pub async fn handle_state_delta(
                     .lock_scope_projections()
                     .member_at_cut(datastore, group, &author_id, heads);
                 if projected == Some(false) {
+                    // Diagnostics distinguish the failure mode: empty projection
+                    // (log_len 0) vs cut heads absent from the log (heads_in_log
+                    // 0) vs ops present but author not folded into any group.
+                    let (backfilled, ns_resolved, log_len, heads_in_log, author_in_any) =
+                        node_state
+                            .lock_scope_projections()
+                            .cut_diagnostics(datastore, group, &author_id, heads);
                     warn!(
                         marker = "unified_projection_divergence",
                         plane = "membership-cut",
                         group_id = ?group,
                         %author_id,
+                        ns_resolved,
+                        backfilled,
+                        log_len,
+                        heads_len = heads.len(),
+                        heads_in_log,
+                        author_in_any,
                         "projection sees non-member at the cut where the live decision authorized"
                     );
                 }

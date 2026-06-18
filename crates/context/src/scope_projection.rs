@@ -567,6 +567,46 @@ impl ScopeProjections {
         Some(false)
     }
 
+    /// Diagnostics for a divergence at `heads` — why does the projection NOT see
+    /// `author` in `group`? Distinguishes the failure modes:
+    /// - `namespace_log_len == 0` → the projection is empty for this namespace
+    ///   (feed/backfill never populated it);
+    /// - `heads_in_log == 0` with a non-empty log → the cited cut heads aren't in
+    ///   the projection's id-space (cut misalignment / not-yet-fed heads);
+    /// - both non-zero but `author_in_any_group == false` → the ops are present
+    ///   but the membership fold doesn't place `author` in any group.
+    ///
+    /// Cheap read-only inspection for the shadow's warning; not on any hot path.
+    #[must_use]
+    pub fn cut_diagnostics(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        author: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> (bool, bool, usize, usize, bool) {
+        let resolved = NamespaceRepository::new(store).resolve(&group).ok();
+        let Some(ns) = resolved else {
+            return (false, false, 0, 0, false);
+        };
+        let ns_bytes = ns.to_bytes();
+        let backfilled = self.backfilled.contains(&ns_bytes);
+        let scope = ScopeId::from(ns_bytes);
+        let log = self.logs.get(&scope);
+        let log_len = log.map_or(0, Vec::len);
+        let heads_in_log = match log {
+            Some(l) => {
+                let ids: HashSet<[u8; 32]> = l.iter().map(|o| o.id).collect();
+                heads.iter().filter(|h| ids.contains(*h)).count()
+            }
+            None => 0,
+        };
+        let author_in_any = self
+            .acl_view_at(&scope, heads)
+            .is_some_and(|v| v.is_scope_member(author));
+        (backfilled, true, log_len, heads_in_log, author_in_any)
+    }
+
     /// The role the projection records for `member` in `group` within `scope`,
     /// or `None` if absent (member not present, or the scope hasn't been fed).
     /// Used by the shadow-compare to check a freshly-applied membership op
