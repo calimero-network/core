@@ -1272,7 +1272,8 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        let (handled, divergence) = apply_group_op_mutations(self.store, group_id, signer, op)?;
+        let (handled, divergence, pending_events) =
+            apply_group_op_mutations(self.store, group_id, signer, op)?;
         if !handled {
             tracing::debug!(
                 ?op,
@@ -1365,6 +1366,11 @@ impl<'a> NamespaceGovernance<'a> {
                 super::super::local_state::persist_group_op_log_entry(
                     self.store, group_id, next_seq, new_heads, &op_bytes,
                 )?;
+                // #2770: flush after the op-log append; a re-received op
+                // (already_logged) drops its queued events (no re-emit).
+                for event in pending_events {
+                    crate::op_events::notify(event);
+                }
             }
         }
 

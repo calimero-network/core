@@ -1205,10 +1205,14 @@ fn apply_group_op_mutations(
     group_id: &ContextGroupId,
     signer: &PublicKey,
     op: &GroupOp,
-) -> EyreResult<(bool, Option<DivergenceReport>)> {
+) -> EyreResult<(
+    bool,
+    Option<DivergenceReport>,
+    Vec<crate::op_events::OpEvent>,
+)> {
     let mut ctx = ops::group::GroupApplyCtx::new(store, group_id, signer);
     let handled = ops::group::dispatch(&mut ctx, op)?;
-    Ok((handled, ctx.divergence))
+    Ok((handled, ctx.divergence, ctx.pending_events))
 }
 
 /// Apply a [`SignedGroupOp`] to the local group store (signature, monotonic nonce, admin rules).
@@ -1269,7 +1273,8 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         return Ok(());
     }
 
-    let (handled, _divergence) = apply_group_op_mutations(store, &group_id, &op.signer, &op.op)?;
+    let (handled, _divergence, pending_events) =
+        apply_group_op_mutations(store, &group_id, &op.signer, &op.op)?;
     // The `_divergence` outcome is dropped on the local-apply path —
     // this entry point is used by callers (local replay, tests) that
     // are not the gossipsub-receive path. The reconcile-via-anchor
@@ -1347,6 +1352,10 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         &op_bytes,
     )?;
 
+    // #2770: flush events only after the op-log entry is durably appended.
+    for event in pending_events {
+        crate::op_events::notify(event);
+    }
     Ok(())
 }
 
