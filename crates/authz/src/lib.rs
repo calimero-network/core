@@ -197,6 +197,8 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 Err(Rejected::NotRootAdmin)
             }
         }
+        // A graph-only node mutates nothing, so there is nothing to authorize.
+        OpPayload::Noop => Ok(()),
     }
 }
 

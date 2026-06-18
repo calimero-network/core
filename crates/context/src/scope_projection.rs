@@ -70,26 +70,30 @@ fn build_op(
     }
 }
 
-/// The scope a [`RootOp`] belongs to, or `None` if it isn't fed into the
-/// projection yet.
-///
-/// - membership joins land in the **target group's** scope (the group id is
-///   explicit in the op / its admin-signed invitation);
-/// - namespace admin / policy changes land in the **namespace-root** scope;
-/// - structural scope-tree ops (`GroupCreated` / `GroupReparented` /
-///   `GroupDeleted`) and key transport (`KeyDelivery`) are deferred — placing a
-///   subgroup-tree edit in the right scope is a later step, and key delivery
-///   isn't authorization state.
-fn scope_for_root_op(op: &RootOp, namespace_id: [u8; 32]) -> Option<ScopeId> {
-    match op {
-        RootOp::MemberJoinedOpen { group_id, .. } => Some(ScopeId::from(*group_id)),
-        RootOp::MemberJoined {
-            signed_invitation, ..
-        } => Some(ScopeId::from(
-            signed_invitation.invitation.group_id.to_bytes(),
-        )),
-        RootOp::AdminChanged { .. } | RootOp::PolicyUpdated { .. } => {
-            Some(ScopeId::from(namespace_id))
+/// The unified-op membership [`OpPayload`] a decrypted [`GroupOp`] produces, or
+/// `None` if the variant doesn't change membership (capability / metadata /
+/// context / ownership ops). Role-change variants are an LWW upsert
+/// (`MemberAdded` with the new role); removals and self-leaves are
+/// `MemberRemoved`.
+fn group_membership_payload(group_op: &GroupOp, group: ContextGroupId) -> Option<OpPayload> {
+    match group_op {
+        GroupOp::MemberAdded { member, role } | GroupOp::MemberRoleSet { member, role } => {
+            Some(OpPayload::MemberAdded {
+                group,
+                member: *member,
+                role: role.clone(),
+            })
+        }
+        GroupOp::MemberJoinedViaTeeAttestation { member, .. } => Some(OpPayload::MemberAdded {
+            group,
+            member: *member,
+            role: GroupMemberRole::Member,
+        }),
+        GroupOp::MemberRemoved { member, .. } | GroupOp::MemberLeft { member, .. } => {
+            Some(OpPayload::MemberRemoved {
+                group,
+                member: *member,
+            })
         }
         _ => None,
     }
@@ -205,94 +209,63 @@ pub fn load_rotation_log_direct(
     })
 }
 
-/// Convert a cleartext namespace governance op into the unified [`Op`] for the
-/// scope it affects, or `None` if it isn't represented in the projection yet.
+/// Convert a namespace governance op into the unified [`Op`] graph node it
+/// occupies — **always** a node, never `None`: membership ops carry their
+/// payload, and every other op (non-membership Root op, encrypted/undecryptable
+/// Group op, key transport) folds to [`OpPayload::Noop`]. The node MUST still
+/// exist so an ancestry walk can traverse *through* it; dropping it would
+/// truncate the walk and orphan every membership op behind it.
+///
+/// Governance ops are keyed under the **namespace** scope, not per-group. The
+/// live system keeps ONE governance DAG per namespace and a data write cites
+/// namespace-wide `governance_dag_heads`, so membership has to resolve over the
+/// whole namespace ancestry (a per-group log truncates the walk at the first
+/// cross-scope node — that was the bug). Membership for a specific group is read
+/// out of the folded view's `groups[group]`; the per-scope-DAG split is a
+/// post-cutover concern.
 ///
 /// `id`/`hlc`/`parents` are the governance **delta's own** id, hlc, and parents
-/// (its `parent_op_hashes`) — so the op mirrors the governance DAG and a
-/// data-write's `governance_dag_heads` cut maps onto the projection (see
-/// [`build_op`]). The author is the op's `signer` (the same on every node, so
-/// the projection's LWW order is deterministic). Encrypted group-scoped ops
-/// (`NamespaceOp::Group`) are not represented: their payload is unreadable
-/// without the group key.
+/// (its `parent_op_hashes`) so the projection mirrors the governance DAG and the
+/// cut maps onto it (see [`build_op`]). `decrypted_group_op` is the cleartext
+/// `GroupOp` for a `NamespaceOp::Group` (via
+/// `calimero_governance_store::decrypt_group_op`), or `None` when it couldn't be
+/// decrypted — in which case the node is still recorded as `Noop`.
 #[must_use]
-pub fn op_from_signed_namespace_op(
+pub fn op_from_namespace_op(
     signed: &SignedNamespaceOp,
+    decrypted_group_op: Option<&GroupOp>,
     id: [u8; 32],
     hlc: HybridTimestamp,
     parents: &[[u8; 32]],
-) -> Option<Op> {
-    let NamespaceOp::Root(root) = &signed.op else {
-        return None;
+) -> Op {
+    let payload = match &signed.op {
+        NamespaceOp::Root(root) => payload_from_root_op(root).unwrap_or(OpPayload::Noop),
+        NamespaceOp::Group { group_id, .. } => decrypted_group_op
+            .and_then(|g| group_membership_payload(g, ContextGroupId::from(*group_id)))
+            .unwrap_or(OpPayload::Noop),
     };
-    let scope = scope_for_root_op(root, signed.namespace_id)?;
-    let payload = payload_from_root_op(root)?;
-    Some(build_op(id, scope, signed.signer, hlc, parents, payload))
-}
-
-/// Convert a **decrypted** group governance op into the unified membership [`Op`]
-/// for `group`'s scope, or `None` if the variant doesn't change membership.
-///
-/// This is the encrypted-plane counterpart of [`op_from_signed_namespace_op`].
-/// A `GroupOp` rides the namespace DAG inside an encrypted `NamespaceOp::Group`,
-/// so it is folded only after the apply path decrypts it (via
-/// `calimero_governance_store::decrypt_group_op`). The `id` / `hlc` / `parents`
-/// MUST be the **carrying namespace delta's** coordinates (its content hash and
-/// `parent_op_hashes`), not the inner op's — the cut a data write cites
-/// (`governance_dag_heads`) names namespace-DAG nodes, so the membership op has
-/// to live at that node to be reachable from the cut (see [`build_op`]). The
-/// author is the namespace op's `signer` (deterministic across nodes).
-///
-/// Role-change variants map to `MemberAdded` (an LWW upsert of the role);
-/// removals and self-leaves to `MemberRemoved`; everything else (capability /
-/// metadata / context / ownership ops) is not membership state and is skipped.
-#[must_use]
-pub fn op_from_group_op(
-    group_op: &GroupOp,
-    group: ContextGroupId,
-    signer: PublicKey,
-    id: [u8; 32],
-    hlc: HybridTimestamp,
-    parents: &[[u8; 32]],
-) -> Option<Op> {
-    let payload = match group_op {
-        GroupOp::MemberAdded { member, role } | GroupOp::MemberRoleSet { member, role } => {
-            OpPayload::MemberAdded {
-                group,
-                member: *member,
-                role: role.clone(),
-            }
-        }
-        GroupOp::MemberJoinedViaTeeAttestation { member, .. } => OpPayload::MemberAdded {
-            group,
-            member: *member,
-            role: GroupMemberRole::Member,
-        },
-        GroupOp::MemberRemoved { member, .. } | GroupOp::MemberLeft { member, .. } => {
-            OpPayload::MemberRemoved {
-                group,
-                member: *member,
-            }
-        }
-        _ => return None,
-    };
-    Some(build_op(
+    build_op(
         id,
-        ScopeId::from(group.to_bytes()),
-        signer,
+        ScopeId::from(signed.namespace_id),
+        signed.signer,
         hlc,
         parents,
         payload,
-    ))
+    )
 }
 
 /// In-memory registry of unified-op [`ScopeState`] projections, keyed by
 /// [`ScopeId`].
 ///
-/// Keyed by **scope**, not context: a scope is the unit of convergence — a
-/// context's data lives in its own scope, a group's membership in the group's
-/// scope, and authorization for a context resolves against its group's scope.
-/// The apply paths feed each op into the scope it belongs to.
+/// Keyed by **scope**. For the ACL plane a scope is a single object's
+/// writer-set sequence. For the **governance** plane the scope is the
+/// **namespace** (`ScopeId::from(namespace_id)`): the live system keeps one
+/// governance DAG per namespace and a data write cites namespace-wide
+/// `governance_dag_heads`, so all of a namespace's governance ops fold into one
+/// log and membership for any group within it is read from the folded view's
+/// `groups[group]`. (Keying governance per-group instead would truncate the
+/// causal-cut walk at the first cross-scope node; the per-scope-DAG split is a
+/// post-cutover concern.)
 ///
 /// Unbounded for now: only governance/ACL ops feed it today, so growth tracks
 /// the (small) number of live scopes and their op history; eviction (gated like
@@ -419,7 +392,11 @@ impl ScopeProjections {
     /// Replays the authoritative persisted op-log rather than persisting a
     /// parallel copy (which could diverge), re-deriving each op's delta
     /// coordinates (`signed_namespace_op_to_delta`) so the ingested ops carry the
-    /// same ids/parents as the live feed (see [`op_from_signed_namespace_op`]).
+    /// same ids/parents as the live feed (see [`op_from_namespace_op`]). EVERY
+    /// op becomes a node (membership ops with their payload, the rest as `Noop`)
+    /// so the ancestry stays unbroken; encrypted `NamespaceOp::Group` ops are
+    /// decrypted best-effort (this node holds the key for groups it belongs to),
+    /// folding membership when decryptable and a `Noop` node otherwise.
     ///
     /// `None` when the governance head itself is unreadable — the signal to leave
     /// the namespace un-backfilled so a transient store fault retries on the next
@@ -462,11 +439,33 @@ impl ScopeProjections {
             let Ok(delta) = signed_namespace_op_to_delta(&signed) else {
                 continue;
             };
-            if let Some(op) =
-                op_from_signed_namespace_op(&signed, delta.id, delta.hlc, &delta.parents)
-            {
-                ops.push(op);
-            }
+            // Decrypt an encrypted group op so its membership change folds; a
+            // failure (no key for this group) leaves it a `Noop` node — still
+            // recorded so the walk can pass through it.
+            let decrypted = match &signed.op {
+                calimero_governance_types::NamespaceOp::Group {
+                    group_id,
+                    key_id,
+                    encrypted,
+                    ..
+                } => calimero_governance_store::decrypt_group_op(
+                    store,
+                    namespace_id,
+                    ContextGroupId::from(*group_id),
+                    key_id,
+                    encrypted,
+                )
+                .ok()
+                .flatten(),
+                calimero_governance_types::NamespaceOp::Root(_) => None,
+            };
+            ops.push(op_from_namespace_op(
+                &signed,
+                decrypted.as_ref(),
+                delta.id,
+                delta.hlc,
+                &delta.parents,
+            ));
         }
         Some(ops)
     }
@@ -507,7 +506,14 @@ impl ScopeProjections {
         author: &PublicKey,
         heads: &[[u8; 32]],
     ) -> Option<bool> {
-        let scope = ScopeId::from(group.to_bytes());
+        // Governance is keyed by namespace (see [`op_from_namespace_op`]): the cut
+        // `heads` are namespace-DAG nodes, so resolve over the whole namespace
+        // ancestry, then read out membership for THIS group.
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let scope = ScopeId::from(namespace_id);
 
         // The part under test: membership established by governance ops
         // (`MemberJoined` / `MemberAdded`) reachable from the cut, folded from the
@@ -517,10 +523,12 @@ impl ScopeProjections {
         // marker catches. A scope with no log at all (`acl_view_at` is `None`)
         // likewise falls through to a real divergence unless the author is a
         // genuine non-op member below.
-        if self
-            .acl_view_at(&scope, heads)
-            .is_some_and(|view| view.is_scope_member(author))
-        {
+        let in_group_at_cut = self.acl_view_at(&scope, heads).is_some_and(|view| {
+            view.groups
+                .get(&group)
+                .is_some_and(|members| members.contains_key(author))
+        });
+        if in_group_at_cut {
             return Some(true);
         }
 
@@ -615,13 +623,13 @@ mod tests {
     }
 
     #[test]
-    fn namespace_op_open_join_maps_to_group_scope() {
+    fn open_join_folds_into_the_group_under_the_namespace_scope() {
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let member = PublicKey::from([0x55; 32]);
         let group = [0x33; 32];
 
-        let op = op_from_signed_namespace_op(
+        let op = op_from_namespace_op(
             &signed_root(
                 ns,
                 signer,
@@ -630,11 +638,11 @@ mod tests {
                     group_id: group,
                 },
             ),
+            None,
             [0x99; 32],
             hlc(10),
             &[],
-        )
-        .expect("open-join is in-model");
+        );
 
         assert_eq!(
             op.id, [0x99; 32],
@@ -642,8 +650,8 @@ mod tests {
         );
         assert_eq!(
             op.scope,
-            ScopeId::from(group),
-            "join lands in the group scope"
+            ScopeId::from(ns),
+            "governance ops are keyed under the namespace scope"
         );
         assert_eq!(op.author, signer, "author is the op signer (deterministic)");
         assert_eq!(
@@ -657,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn namespace_op_invitation_join_decodes_group_and_role() {
+    fn invitation_join_decodes_group_and_role() {
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let member = PublicKey::from([0x55; 32]);
@@ -675,7 +683,7 @@ mod tests {
             app_key: None,
         };
 
-        let op = op_from_signed_namespace_op(
+        let op = op_from_namespace_op(
             &signed_root(
                 ns,
                 signer,
@@ -684,13 +692,13 @@ mod tests {
                     signed_invitation,
                 },
             ),
+            None,
             [0x99; 32],
             hlc(10),
             &[],
-        )
-        .expect("invitation join is in-model");
+        );
 
-        assert_eq!(op.scope, ScopeId::from(group.to_bytes()));
+        assert_eq!(op.scope, ScopeId::from(ns));
         assert_eq!(
             op.payload,
             OpPayload::MemberAdded {
@@ -702,43 +710,61 @@ mod tests {
     }
 
     #[test]
-    fn namespace_admin_change_maps_to_namespace_scope() {
+    fn admin_change_folds_under_the_namespace_scope() {
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
-        let op = op_from_signed_namespace_op(
+        let op = op_from_namespace_op(
             &signed_root(ns, signer, RootOp::AdminChanged { new_admin: signer }),
+            None,
             [0x99; 32],
             hlc(10),
             &[],
-        )
-        .expect("admin change is in-model");
-        assert_eq!(
-            op.scope,
-            ScopeId::from(ns),
-            "admin change is on the namespace root scope"
         );
+        assert_eq!(op.scope, ScopeId::from(ns));
+        assert_eq!(op.payload, OpPayload::AdminChanged { new_admin: signer });
     }
 
     #[test]
-    fn structural_scope_tree_op_is_deferred() {
-        // A subgroup-create maps to a payload, but its scope-tree placement is
-        // deferred, so it is not fed into the projection yet (scope gating).
+    fn out_of_model_op_folds_as_a_noop_graph_node() {
+        // `MemberJoinedAt` isn't modeled as a membership payload yet, but it MUST
+        // still become a node so an ancestry walk can pass through it to the ops
+        // behind it (dropping it would orphan them — the bug this guards against).
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
-        assert!(op_from_signed_namespace_op(
+        let signed_invitation = SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: [0xA1; 32].into(),
+                group_id: ContextGroupId::from([0x44; 32]),
+                expiration_timestamp: 1_700_000_000,
+                secret_salt: [0x33; 32],
+                invited_role: 1,
+            },
+            inviter_signature: "deadbeef".to_string(),
+            application_id: None,
+            app_key: None,
+        };
+        let op = op_from_namespace_op(
             &signed_root(
                 ns,
                 signer,
-                RootOp::GroupCreated {
-                    group_id: [0x33; 32],
-                    parent_id: [0x22; 32],
+                RootOp::MemberJoinedAt {
+                    member: PublicKey::from([0x55; 32]),
+                    signed_invitation,
+                    joined_at: 42,
                 },
             ),
+            None,
             [0x99; 32],
             hlc(10),
-            &[],
-        )
-        .is_none());
+            &[[0x88; 32]],
+        );
+        assert_eq!(
+            op.payload,
+            OpPayload::Noop,
+            "out-of-model op is a Noop node"
+        );
+        assert_eq!(op.id, [0x99; 32], "but it still occupies its DAG node");
+        assert_eq!(op.parents, vec![[0x88; 32]], "with its real parents");
     }
 
     #[test]
@@ -829,14 +855,14 @@ mod tests {
     }
 
     #[test]
-    fn registry_records_membership_per_scope() {
+    fn registry_records_membership_under_the_namespace_scope() {
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let member = PublicKey::from([0x55; 32]);
         let group = ContextGroupId::from([0x33; 32]);
-        let other_scope = ScopeId::from([0xEE; 32]);
+        let ns_scope = ScopeId::from(ns);
 
-        let join = op_from_signed_namespace_op(
+        let join = op_from_namespace_op(
             &signed_root(
                 ns,
                 signer,
@@ -845,85 +871,164 @@ mod tests {
                     group_id: group.to_bytes(),
                 },
             ),
+            None,
             [0x99; 32],
             hlc(10),
             &[],
-        )
-        .unwrap();
+        );
 
         let mut reg = ScopeProjections::new();
-        // Before the join: no projection for the group scope.
-        assert_eq!(reg.role_of(&join.scope, &group, &member), None);
+        // Before the join: nothing recorded.
+        assert_eq!(reg.role_of(&ns_scope, &group, &member), None);
         reg.ingest_op(&join);
-        // After: the member is recorded in the group's scope...
+        // After: the member is recorded for the group, under the namespace scope.
         assert_eq!(
-            reg.role_of(&join.scope, &group, &member),
+            reg.role_of(&ns_scope, &group, &member),
             Some(GroupMemberRole::Member),
         );
-        // ...and only that scope (isolation).
-        assert_eq!(reg.role_of(&other_scope, &group, &member), None);
+        // A different namespace's scope is unaffected (isolation across namespaces).
+        assert_eq!(
+            reg.role_of(&ScopeId::from([0xEE; 32]), &group, &member),
+            None,
+        );
     }
 
     #[test]
-    fn group_op_membership_folds_at_the_namespace_delta_coordinates() {
+    fn group_op_membership_folds_under_the_namespace_scope() {
         use calimero_governance_types::GroupOp;
 
+        let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let member = PublicKey::from([0x77; 32]);
         let group = ContextGroupId::from([0x33; 32]);
-        // The carrying namespace delta's id/parents — what the op must fold at so
-        // a `governance_dag_heads` cut naming this node reaches it.
-        let ns_delta_id = [0xAB; 32];
+        let ns_scope = ScopeId::from(ns);
 
-        // Admin-push add (encrypted GroupOp::MemberAdded) → MemberAdded in scope.
-        let add = op_from_group_op(
-            &GroupOp::MemberAdded {
+        // Admin-push add (decrypted GroupOp::MemberAdded) folds into groups[group].
+        let add = op_from_namespace_op(
+            &signed_group(ns, signer, group),
+            Some(&GroupOp::MemberAdded {
                 member,
                 role: GroupMemberRole::Admin,
-            },
-            group,
-            signer,
-            ns_delta_id,
+            }),
+            [0xAB; 32],
             hlc(5),
             &[],
-        )
-        .expect("MemberAdded is membership");
-        assert_eq!(add.id, ns_delta_id, "op must carry the namespace delta id");
-        assert_eq!(add.scope, ScopeId::from(group.to_bytes()));
+        );
+        assert_eq!(
+            add.scope, ns_scope,
+            "group ops key under the namespace scope"
+        );
+        assert_eq!(add.id, [0xAB; 32], "op carries the namespace delta id");
 
         let mut reg = ScopeProjections::new();
         reg.ingest_op(&add);
         assert_eq!(
-            reg.role_of(&add.scope, &group, &member),
+            reg.role_of(&ns_scope, &group, &member),
             Some(GroupMemberRole::Admin),
         );
 
         // A later removal at a higher hlc wins → member gone.
-        let remove = op_from_group_op(
-            &GroupOp::MemberRemoved {
+        let remove = op_from_namespace_op(
+            &signed_group(ns, signer, group),
+            Some(&GroupOp::MemberRemoved {
                 member,
                 expected_group_state_hash: [0u8; 32],
                 expected_context_state_hashes: Vec::new(),
-            },
-            group,
-            signer,
+            }),
             [0xCD; 32],
             hlc(9),
-            &[ns_delta_id],
-        )
-        .expect("MemberRemoved is membership");
+            &[[0xAB; 32]],
+        );
         reg.ingest_op(&remove);
-        assert_eq!(reg.role_of(&remove.scope, &group, &member), None);
+        assert_eq!(reg.role_of(&ns_scope, &group, &member), None);
 
-        // A non-membership group op is not folded.
-        assert!(op_from_group_op(
-            &GroupOp::TransferOwnership { new_owner: member },
-            group,
-            signer,
+        // A non-membership group op folds as a Noop node (still recorded).
+        let other = op_from_namespace_op(
+            &signed_group(ns, signer, group),
+            Some(&GroupOp::TransferOwnership { new_owner: member }),
             [0xEF; 32],
             hlc(11),
             &[],
-        )
-        .is_none());
+        );
+        assert_eq!(other.payload, OpPayload::Noop);
+    }
+
+    /// A namespace DAG interleaves a group-membership op with a namespace-root op
+    /// on ONE parent chain. Keying governance under the namespace scope keeps the
+    /// ancestry walk whole, so a cut at the namespace head still sees the member
+    /// (the per-group-scope keying that truncated this walk was the bug).
+    #[test]
+    fn namespace_head_cut_sees_a_member_joined_earlier_on_the_chain() {
+        let ns = [0x11; 32];
+        let signer = PublicKey::from([1u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+        let group = ContextGroupId::from([0x33; 32]);
+
+        //   MemberJoinedOpen(group, member)  <--  AdminChanged(namespace)  [head]
+        let join = op_from_namespace_op(
+            &signed_root(
+                ns,
+                signer,
+                RootOp::MemberJoinedOpen {
+                    member,
+                    group_id: group.to_bytes(),
+                },
+            ),
+            None,
+            [0x99; 32],
+            hlc(10),
+            &[],
+        );
+        let admin = op_from_namespace_op(
+            &signed_root(ns, signer, RootOp::AdminChanged { new_admin: signer }),
+            None,
+            [0xAA; 32],
+            hlc(20),
+            &[[0x99; 32]], // child of the join
+        );
+
+        let mut reg = ScopeProjections::new();
+        reg.ingest_op(&join);
+        reg.ingest_op(&admin);
+
+        // Cut = the namespace head (AdminChanged). The member joined causally
+        // before it, so the projection must still see them at that cut.
+        let ns_scope = ScopeId::from(ns);
+        let view = reg
+            .acl_view_at(&ns_scope, &[[0xAA; 32]])
+            .expect("scope fed");
+        assert!(
+            view.groups
+                .get(&group)
+                .is_some_and(|m| m.contains_key(&member)),
+            "member must be visible at the namespace-head cut"
+        );
+    }
+
+    /// Build a `NamespaceOp::Group` envelope for the namespace; the cleartext op
+    /// is supplied separately to [`op_from_namespace_op`] as `decrypted`.
+    fn signed_group(
+        namespace_id: [u8; 32],
+        signer: PublicKey,
+        group: ContextGroupId,
+    ) -> SignedNamespaceOp {
+        SignedNamespaceOp {
+            version: 1,
+            namespace_id,
+            parent_op_hashes: Vec::new(),
+            state_hash: [0u8; 32],
+            signer,
+            nonce: 0,
+            op: NamespaceOp::Group {
+                group_id: group.to_bytes(),
+                key_id: [0u8; 32],
+                encrypted: calimero_governance_types::EncryptedGroupOp {
+                    nonce: [0u8; 12],
+                    ciphertext: Vec::new(),
+                },
+                key_rotation: None,
+            },
+            signature: [0u8; 64],
+        }
     }
 }

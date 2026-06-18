@@ -132,6 +132,15 @@ pub enum OpPayload {
     /// Delete a subgroup scope. Deleting a subtree is expressed as one
     /// `SubgroupDeleted` per cascaded scope.
     SubgroupDeleted { scope: ScopeId },
+
+    // ---- graph-only ----
+    /// A node that changes no projection state but occupies its place in the
+    /// causal graph. Used when a source-DAG op must be present so an ancestry
+    /// walk can traverse *through* it to reach the ops behind it, yet the op
+    /// itself carries nothing the projection models (e.g. a non-membership
+    /// governance op, or an encrypted op this node can't decrypt). Folding it
+    /// is a no-op; its only effect is keeping the parent chain unbroken.
+    Noop,
 }
 
 impl Op {

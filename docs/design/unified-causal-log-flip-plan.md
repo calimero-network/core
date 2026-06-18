@@ -42,39 +42,46 @@ decision behind the `unified_projection_divergence` marker. **Still act on the
 live decision.** This is the literal authorize-vs-live compare; its e2e output
 (zero divergence) is the gate for F4.
 
-## F3.5 — feed the encrypted membership plane (prerequisite for F4)
-The shadow-compare surfaced the one membership source the projection does not
-yet fold: the **encrypted `GroupOp` plane** (admin-push `MemberAdded`,
-`MemberRemoved`, `MemberRoleSet`, `MemberJoinedViaTeeAttestation`,
-`TransferOwnership`, …). Those ops ride the namespace DAG encrypted, so neither
-the post-apply Store read nor the startup backfill can decrypt them — the
-projection's op-fold misses every admin-added member, and the live decision
-(which decrypts via the keyring) authorizes them. The shadow only stops
-false-flagging these because `member_at_cut` currently honors genesis-admin and
-inherited carve-outs; admin-push members are a *real* op-fold gap, not a
-carve-out.
+## F3.5 — namespace-wide governance resolution (prerequisite for F4)
+The shadow-compare surfaced TWO problems, the second deeper than it first looked.
 
-Closing it has three parts:
-- **received live feed** — ✅ done. The namespace apply handler decrypts an
-  applied `NamespaceOp::Group` (read-only, via `decrypt_group_op` — no re-run of
-  the mutation) and folds the cleartext `GroupOp` membership variant via
-  `op_from_group_op`, at the **carrying namespace delta's** id/hlc/parents so the
-  op lands on the DAG node a `governance_dag_heads` cut names. Covers every
-  non-originating node (in `frozen-rga`, node-2 + node-3).
-- **originator local feed** — the node that *emits* an admin-push op applies the
-  cleartext `GroupOp` locally (via `sign_apply_and_publish`) without going
-  through the decrypt path, so its own projection doesn't see the member. Feed it
-  from the group-op-emitting context handlers (or a shared post-publish hook),
-  using the published namespace op's `op_hash` as the id for alignment.
-- **cold/backfill** — a restarted node re-reads encrypted ops it cannot decrypt,
-  so backfill must seed the encrypted plane from the **materialized** membership
-  (the `GroupMember` rows the live applier wrote), mirroring the live resolver's
-  own `heads_equal` fast-path. At-cut historical resolution for encrypted ops is
-  then approximate in exactly the way the live resolver's materialized path is.
+**1. The encrypted `GroupOp` plane wasn't folded.** Admin-push `MemberAdded` /
+`MemberRemoved` / `MemberRoleSet` / `MemberJoinedViaTeeAttestation` ride the
+namespace DAG encrypted, so the projection couldn't see admin-added members while
+the live decision (which decrypts via the keyring) authorized them.
 
-Until all three land, the e2e divergence step is **informational** (reports
-planes + counts, does not fail); it flips back to a hard gate as the last step
-here.
+**2. The bigger one — the per-scope log fragmented the namespace-wide cut.** The
+live system keeps ONE governance DAG per namespace, interleaving namespace-root
+ops and every group's membership ops on a single parent chain, and a data write
+cites namespace-wide `governance_dag_heads`. The projection keyed its op-log
+per-group, so `acl_view_at(group_scope, heads)` truncated the ancestry walk at
+the first node that wasn't in that group's log (a namespace-root op, another
+group's op, or an unmodeled op) — orphaning every membership op behind it. Even
+a member couldn't see *itself* once any later cross-scope op became the head.
+
+The fix addresses both at the root:
+- **namespace-scoped governance** — all of a namespace's governance ops fold into
+  one log keyed by `ScopeId::from(namespace_id)`; membership for a group is read
+  from the folded view's `groups[group]`. `member_at_cut` resolves the namespace
+  and walks the whole namespace ancestry (mirroring the live resolver's
+  `prefix_walk_membership`), so the cut never truncates.
+- **graph-complete ancestry** — EVERY namespace op becomes a node, even ones the
+  projection doesn't model (out-of-model Root ops, undecryptable group ops): they
+  fold as `OpPayload::Noop` but keep the parent chain unbroken so the walk can
+  pass through them. `op_from_namespace_op` always returns a node.
+- **encrypted plane folded** — the namespace apply handler and the backfill walk
+  both decrypt an applied/persisted `NamespaceOp::Group` (read-only, via
+  `decrypt_group_op` — no re-run of the mutation) and fold its membership variant
+  at the carrying namespace delta's id/parents. Backfill decrypts the ops for
+  groups this node belongs to, so cold-start and the op-emitting originator are
+  covered once the namespace is (re)walked.
+
+Residual (narrow): an originator that emits a *new* group op AFTER its namespace
+was already backfilled won't live-fold it (its own ops don't pass through the
+namespace apply handler, and backfill runs once). Re-walk-on-new-head or a
+post-publish feed closes it; tracked here. Until divergence is zero across e2e,
+the divergence step stays **informational**; it flips back to a hard gate as the
+last step here.
 
 ## F4 — the flip (gated: do not merge until divergence==0 e2e)
 Replace `authorize_delta_at_edge` + `writers_at_authenticated` with the single

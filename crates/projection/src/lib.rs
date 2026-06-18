@@ -176,6 +176,9 @@ impl ScopeState {
                 let slot = self.subgroups.entry(*scope).or_default();
                 lww_set(&mut slot.exists, stamp, false);
             }
+            // A graph-only node: present in the log so an ancestry walk can
+            // traverse through it, but it folds to nothing.
+            OpPayload::Noop => {}
         }
     }
 
