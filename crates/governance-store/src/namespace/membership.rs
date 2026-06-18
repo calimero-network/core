@@ -29,7 +29,7 @@ impl<'a> NamespaceMembershipService<'a> {
         signer: &PublicKey,
         member: &PublicKey,
         signed_invitation: &SignedGroupOpenInvitation,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<Option<crate::op_events::OpEvent>> {
         let inv = &signed_invitation.invitation;
         let group_id = inv.group_id;
 
@@ -44,7 +44,7 @@ impl<'a> NamespaceMembershipService<'a> {
         // so subsequent direct-membership lookups (e.g. removal,
         // capability writes, list_group_members) reflect their join.
         if MembershipRepository::new(self.store).has_direct_member(&group_id, member)? {
-            return Ok(());
+            return Ok(None);
         }
 
         let role = role_from_invited_role(inv.invited_role);
@@ -68,10 +68,9 @@ impl<'a> NamespaceMembershipService<'a> {
         // Open-subgroup self-joiner with `contexts: true` (the post-#2422
         // default) would only auto-follow FUTURE contexts, not the ones
         // already registered when they joined.
-        if let Some(event) = build_auto_follow_set_if_enabled(self.store, &group_id, member)? {
-            crate::op_events::notify(event);
-        }
-        Ok(())
+        Ok(build_auto_follow_set_if_enabled(
+            self.store, &group_id, member,
+        )?)
     }
 
     fn verify_member_join_signature(

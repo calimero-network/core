@@ -16,6 +16,10 @@ use eyre::{bail, Result as EyreResult};
 pub(crate) struct NamespaceApplyCtx<'a> {
     store: &'a Store,
     namespace_id: [u8; 32],
+    /// Op-events queued during apply, flushed AFTER the namespace op-log
+    /// entry is persisted (#2770). Handlers MUST queue_event rather than
+    /// calling op_events::notify directly, or they reintroduce the
+    /// emit-before-persist race.
     pending_events: Vec<crate::op_events::OpEvent>,
 }
 

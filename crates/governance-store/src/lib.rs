@@ -1148,7 +1148,7 @@ fn diff_sorted_context_hashes(
 /// based on that. The handler's downstream `handle_auto_follow_enabled`
 /// uses `join_context`, which is itself idempotent.
 ///
-/// Read failures are downgraded to a warn log and `Ok(())` — the
+/// Read failures are downgraded to a warn log and `Ok(None)` — the
 /// apply-site has already written the row and committed by the time
 /// this is called, so a transient read failure here should not roll
 /// back the op via the caller's `?`. The synthesized event is a

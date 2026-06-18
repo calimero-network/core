@@ -2,7 +2,7 @@
 //! `NamespaceGovernance::execute_group_created` in #2481.
 
 use super::context::NamespaceApplyCtx;
-use crate::op_events::{notify as notify_op_event, OpEvent};
+use crate::op_events::OpEvent;
 use crate::{
     ApplyError, GroupCreatedRejection, MembershipRepository, MetaRepository, NamespaceError,
 };
@@ -118,7 +118,7 @@ pub(crate) fn apply(
     }
     MembershipRepository::new(store).add_member(&gid, &op.signer, GroupMemberRole::Admin)?;
 
-    notify_op_event(OpEvent::SubgroupCreated {
+    ctx.queue_event(OpEvent::SubgroupCreated {
         namespace_id,
         parent_group_id: parent_id,
         child_group_id: group_id,

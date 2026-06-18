@@ -5893,6 +5893,129 @@ mod auto_follow_tests {
             }
         }
     }
+
+    /// #2770 (namespace RootOp path): when `SubgroupCreated` fires, the
+    /// namespace op-log entry for the driving `RootOp::GroupCreated` must
+    /// already be persisted. Same concurrent-observer technique as
+    /// `member_added_event_fires_after_op_log_append`, but on the
+    /// namespace-apply path (`NamespaceGovernance::apply_signed_op` →
+    /// `dispatch_root_op` → `group_created::apply`): a dedicated observer
+    /// thread parks on `recv()` and snapshots
+    /// `NamespaceOpLogService::contains_op(delta_id)` the instant the
+    /// event arrives — concurrently with the apply still running. Pre-fix
+    /// (the dormant direct `notify_op_event` in `group_created::apply`)
+    /// the observer would wake before `store_operation`, reading a log
+    /// that does NOT yet contain the op; post-fix the events are drained
+    /// only after the namespace op is appended, so the snapshot is always
+    /// `true`.
+    #[test]
+    fn subgroup_created_event_fires_after_namespace_op_persist() {
+        use std::sync::mpsc;
+
+        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+        use super::NamespaceGovernance;
+        use crate::op_events::{self, OpEvent};
+        use crate::NamespaceOpLogService;
+
+        let mut rng = OsRng;
+        let admin_sk = PrivateKey::random(&mut rng);
+        let admin_sk_bytes: [u8; 32] = *admin_sk;
+        let admin_pk = admin_sk.public_key();
+
+        let ns_id = [0xA0u8; 32];
+        let ns_gid = calimero_context_config::types::ContextGroupId::from(ns_id);
+        let new_group_id = [0xCCu8; 32];
+
+        // Minimal namespace root: admin meta + admin membership + the
+        // local namespace identity (so the originator-style apply path is
+        // exercised end to end).
+        let store = test_store();
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+            .unwrap();
+
+        let op = SignedNamespaceOp::sign(
+            &admin_sk,
+            ns_id,
+            vec![],
+            [0u8; 32],
+            1,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                group_id: new_group_id,
+                parent_id: ns_id,
+            }),
+        )
+        .unwrap();
+        // `delta_id` is the op's content hash — the key the namespace
+        // op-log is indexed by (see `NamespaceOpLogService::store_signed_operation`).
+        let delta_id = op.content_hash().unwrap();
+
+        // Subscribe BEFORE spawning the observer / applying.
+        let mut rx = op_events::subscribe();
+
+        // Observer thread: blocks on `recv()`, then snapshots whether the
+        // namespace op-log already contains the op at the instant the
+        // `SubgroupCreated` event fires. `Store` is `Clone` (shared handle
+        // to the same backing DB), so the snapshot reads the same state
+        // the applying thread is writing.
+        let observer_store = store.clone();
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let observer = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                match rx.try_recv() {
+                    Ok(OpEvent::SubgroupCreated {
+                        namespace_id,
+                        parent_group_id,
+                        child_group_id,
+                    }) if namespace_id == ns_id
+                        && parent_group_id == ns_id
+                        && child_group_id == new_group_id =>
+                    {
+                        return Some(
+                            NamespaceOpLogService::new(&observer_store, ns_id)
+                                .contains_op(delta_id)
+                                .unwrap(),
+                        );
+                    }
+                    Ok(_) => {} // unrelated events from parallel tests
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                        // Spin tightly so the snapshot is taken as close as
+                        // possible to the broadcast send (win the race
+                        // against the applier's `store_operation`).
+                        std::hint::spin_loop();
+                    }
+                    Err(_) => return None,
+                }
+            }
+        });
+
+        // Wait until the observer is parked on recv before applying.
+        ready_rx.recv().unwrap();
+        NamespaceGovernance::new(&store, ns_id)
+            .apply_signed_op(&op)
+            .unwrap();
+
+        let log_contained_at_emit = observer
+            .join()
+            .unwrap()
+            .expect("SubgroupCreated event should have fired for the new subgroup");
+        assert!(
+            log_contained_at_emit,
+            "namespace op-log entry must be persisted before SubgroupCreated fires (#2770)"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------
