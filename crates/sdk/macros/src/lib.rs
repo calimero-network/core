@@ -212,8 +212,11 @@ pub fn xcall(_args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// # Usage
 ///
-/// Apply `#[app::view]` to a public, read-only (`&self`) logic method. Mutually
-/// exclusive with `#[app::init]` and `#[app::xcall]`.
+/// Apply `#[app::view]` to a public, read-only (`&self`) logic method. The
+/// mutual exclusivity with `#[app::init]` and `#[app::xcall]` is enforced at
+/// compile time; the read-only contract is not. This attribute does not require
+/// a `&self` receiver — a `#[app::view]` method that mutates state is rejected
+/// by the node at runtime, not by the compiler.
 #[proc_macro_attribute]
 pub fn view(_args: TokenStream, input: TokenStream) -> TokenStream {
     // this is a no-op, the attribute is just a marker
