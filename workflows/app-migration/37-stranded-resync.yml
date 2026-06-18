@@ -1,11 +1,4 @@
 name: 37 — Stranded context recovers via resync (intermediate blob unobtainable, 2-node)
-# NOT in the app-migration-e2e CI matrix yet: staging the strand needs the v2
-# rung's bytecode made genuinely unobtainable, but `delete_blob_on_disk` is a
-# no-op for chunked blobs (it `rm`s the base58 PARENT id, which is RocksDB-only
-# metadata — the bytes live in a chunk file named by an unexposed chunk hash).
-# The correct delete is the admin API (`DELETE admin-api/blobs/{id}`, which
-# cascades parent+chunks+metadata); re-enable this scenario once merobox grows a
-# step that calls it (swap the two `delete_blob_on_disk` steps in Phase 6 for it).
 description: >
   A behind member is STRANDED when an upgrade-ladder rung's bytecode is
   unobtainable, and recovers via an operator-initiated state resync — the
@@ -15,7 +8,9 @@ description: >
   binary), so it holds v3 state and all three blobs. node-2 joins at v1, syncs
   v1 state, learns of the v3 target, but never accesses — it stays at v1. The
   v2 (INTERMEDIATE) blob is then deleted on every holder (node-1 + node-2's
-  pre-stage) with `delete_blob_on_disk`; the v3 blob stays intact on node-1.
+  pre-stage) with `delete_blob` (admin API — cascades the parent metadata + every
+  chunk file + chunk metadata, so the bytecode is truly gone); the v3 blob stays
+  intact on node-1.
 
   When node-2 first accesses the context its lazy ladder replay reaches the
   v1 -> v2 hop, cannot fetch the v2 bytecode from any peer, and hits
@@ -246,17 +241,20 @@ steps:
     statements:
       - 'json_subset({{v3_schema_node1}}, {"output": {"schema_version": "3.0.0"}})'
 
-  # Phase 6: STRAND — delete the v2 intermediate blob on every holder. node 1
-  # is past v2 (at v3) so it no longer needs it; node 2 may have pre-staged it
-  # over BlobShare (missing_ok covers the case it did not). The v3 blob on
-  # node 1 stays intact for recovery.
+  # Phase 6: STRAND — delete the v2 intermediate blob on every holder via the
+  # admin API (`delete_blob` cascades parent metadata + chunk files + chunk
+  # metadata, so the bytecode is truly unobtainable — `delete_blob_on_disk` only
+  # rm's the parent-id path, a no-op for chunked blobs). node 1 is past v2 (at
+  # v3) so it no longer needs it; node 2 may have pre-staged it over BlobShare
+  # (missing_ok covers the case it did not). The v3 blob on node 1 stays intact.
   - name: Delete the v2 blob on node 1 (it is at v3, no longer needs v2)
-    type: delete_blob_on_disk
+    type: delete_blob
     node: app-migration-strand-1
     blob_id: "{{v2_blob_id}}"
+    missing_ok: true
 
   - name: Delete the v2 blob on node 2 (drops any pre-staged copy)
-    type: delete_blob_on_disk
+    type: delete_blob
     node: app-migration-strand-2
     blob_id: "{{v2_blob_id}}"
     missing_ok: true
@@ -294,16 +292,21 @@ steps:
     type: wait
     seconds: 40
 
-  - name: Read migration-status rollup on node 2
+  # Read the rollup on node 1: the migration-status endpoint requires the group
+  # admin (node 1 created the namespace), and the admin's rollup aggregates every
+  # member's heartbeat — so node 2's stranded marker surfaces here once its
+  # heartbeat has gossiped (the settle wait above covers that). Node 2 is an
+  # inherited Open-subgroup member, not an admin, so it cannot read the rollup.
+  - name: Read migration-status rollup on node 1 (admin)
     type: get_migration_status
-    node: app-migration-strand-2
+    node: app-migration-strand-1
     namespace_id: "{{namespace_id}}"
     outputs:
       strand_failed: failed
 
   - name: Assert exactly node 2 surfaces as failed in the rollup
-    # node 2 reports its own NoMigrationPath marker (local — no gossip wait);
-    # node 1 is at v3 (migrated). Mirrors scenario 14's numeric rollup asserts.
+    # Node 1's cohort rollup: node 1 is at v3 (migrated), node 2 is stranded
+    # (NoMigrationPath) -> failed == 1. Mirrors scenario 14's numeric asserts.
     type: json_assert
     statements:
       - "equal({{strand_failed}}, 1)"
@@ -321,7 +324,9 @@ steps:
   - name: Assert resync was started
     type: json_assert
     statements:
-      - 'equal("{{resync_started}}", "true")'
+      # merobox renders the response's JSON bool as the Python str "True"
+      # (capital) when templated into a string, so compare against "True".
+      - 'equal("{{resync_started}}", "True")'
 
   - name: Assert node 2 logged the resync request
     type: assert_log_present
@@ -372,10 +377,11 @@ steps:
 
   # Structured recovery proof: the rollup converges to all-migrated (node 2's
   # stranded marker was cleared and it now reports the v3 schema with zero
-  # residue). Polls past the heartbeat interval.
+  # residue). Read on node 1 (admin) like the strand check above; polls past the
+  # heartbeat interval so node 2's recovered heartbeat reaches the admin.
   - name: Assert the cohort converges to all-migrated after recovery
     type: assert_migration_complete
-    node: app-migration-strand-2
+    node: app-migration-strand-1
     namespace_id: "{{namespace_id}}"
     timeout_seconds: 90
     poll_interval: 5

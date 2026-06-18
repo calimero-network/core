@@ -334,25 +334,6 @@ fn parse_major_version(version: &str) -> Option<u32> {
         .and_then(|major| major.trim().parse::<u32>().ok())
 }
 
-/// Derive the migration TARGET version for `group_id` from the local upgrade
-/// record. `None` record ⇒ baseline `0` (nothing in flight). A record whose
-/// `to_version` does not parse pins to [`u32::MAX`] so no real loaded version
-/// can satisfy it (no false green) — the same rule the `get_migration_status`
-/// rollup applies via `derive_target_version`.
-fn derive_target_version(
-    datastore: &Store,
-    group_id: &calimero_context_config::types::ContextGroupId,
-) -> u32 {
-    match calimero_context::group_store::UpgradesRepository::new(datastore)
-        .load(group_id)
-        .ok()
-        .flatten()
-    {
-        None => 0,
-        Some(record) => parse_major_version(&record.to_version).unwrap_or(u32::MAX),
-    }
-}
-
 /// Resolve a single context's LOADED reader version: the major version of the
 /// `ApplicationMeta` its `ContextMeta.application` points at. This is the schema
 /// the node can actually read *right now* (the binary it has swapped to), NOT
@@ -369,6 +350,54 @@ fn loaded_context_version(
         .flatten()?;
     let app_meta = handle.get(&ctx_meta.application).ok().flatten()?;
     parse_major_version(&app_meta.version)
+}
+
+/// Every group in a namespace's tree: the namespace-root group plus every
+/// descendant subgroup. `NamespaceRepository::collect_descendants` does the
+/// depth-bounded, cycle-guarded DOWN-direction walk over the `GroupChildIndex`
+/// (the down-counterpart of `enumerate_inherited`'s up-walk), so a context a
+/// node joined via an Open subgroup is no longer invisible to the facts builder.
+/// Best-effort: a descendant-walk error degrades to just the root group.
+fn namespace_tree_groups(
+    datastore: &Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+) -> Vec<calimero_context_config::types::ContextGroupId> {
+    let mut groups = vec![*group_id];
+    groups.extend(
+        calimero_context::group_store::NamespaceRepository::new(datastore)
+            .collect_descendants(group_id)
+            .unwrap_or_default(),
+    );
+    groups
+}
+
+/// Resolve the migration TARGET version governing `group_id`'s contexts: the
+/// parsed `to_version` of the NEAREST upgrade record found by walking from
+/// `group_id` UP its ancestors. A subgroup upgraded directly (`upgrade_group`
+/// on the subgroup) carries its own record; a subgroup under a root/cascade
+/// upgrade inherits the ancestor's record. No record anywhere up the chain ⇒ 0.
+///
+/// This replaces deriving the target once from the namespace-root group, which
+/// reported 0 for a bare subgroup upgrade (root has no record) — making a
+/// stranded subgroup context look "at target" so its failure marker / residue
+/// were silently dropped (the #37 bug).
+fn resolve_group_target_version(
+    datastore: &Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+) -> u32 {
+    let upgrades = calimero_context::group_store::UpgradesRepository::new(datastore);
+    let namespaces = calimero_context::group_store::NamespaceRepository::new(datastore);
+    let mut current = *group_id;
+    for _ in 0..calimero_governance_store::MAX_NAMESPACE_DEPTH {
+        if let Ok(Some(record)) = upgrades.load(&current) {
+            return parse_major_version(&record.to_version).unwrap_or(u32::MAX);
+        }
+        match namespaces.parent(&current) {
+            Ok(Some(parent)) => current = parent,
+            _ => break,
+        }
+    }
+    0
 }
 
 /// Compute this node's locally-advertised migration facts for `namespace_id`.
@@ -414,20 +443,10 @@ pub fn compute_namespace_migration_facts(
     datastore: &Store,
     namespace_id: [u8; 32],
 ) -> MigrationFacts {
-    let group_id = calimero_context_config::types::ContextGroupId::from(namespace_id);
-    let target_version = derive_target_version(datastore, &group_id);
-
-    // The namespace's contexts, enumerated via the same group→context index the
-    // `get_migration_status` cohort uses. A context whose loaded reader version
-    // trails the target is an unconverted whole-root (residue_auto); the lowest
-    // loaded version across them is the node's honest advertised schema_version.
-    let contexts = calimero_context::group_store::enumerate_group_contexts(
-        datastore,
-        &group_id,
-        0,
-        usize::MAX,
-    )
-    .unwrap_or_default();
+    let root = calimero_context_config::types::ContextGroupId::from(namespace_id);
+    // Fallback target for the no-loaded-context path (preserves the prior
+    // namespace-root semantics): the version a context-less node advertises.
+    let root_target = resolve_group_target_version(datastore, &root);
 
     let mut min_loaded: Option<u32> = None;
     let mut residue_auto: u64 = 0;
@@ -436,47 +455,69 @@ pub fn compute_namespace_migration_facts(
     // committed-state iteration. Absent row ⇒ 0.
     let mut authored_remaining: u64 = 0;
     // Most-severe persisted migration-failure across the namespace's contexts,
-    // honored only for contexts still below target (self-healing on recovery).
+    // honored only for contexts still below THEIR group's target.
     let mut migration_failed: Option<MigrationFailureKind> = None;
-    for context_id in &contexts {
-        if let Ok(Some(entry)) =
-            datastore
-                .handle()
-                .get(&calimero_store::key::ContextAuthoredRemaining::new(
-                    *context_id,
-                ))
+
+    // Walk the namespace-root group plus every descendant subgroup, judging each
+    // group's contexts against THAT group's own resolved target (its upgrade
+    // record, or the nearest ancestor's). A bare `upgrade_group` on a subgroup
+    // records the target on the subgroup; a single root-derived target would
+    // read 0 there and silently drop the subgroup context's residue/failure.
+    for gid in &namespace_tree_groups(datastore, &root) {
+        let target = resolve_group_target_version(datastore, gid);
+        for context_id in
+            calimero_context::group_store::enumerate_group_contexts(datastore, gid, 0, usize::MAX)
+                .unwrap_or_default()
         {
-            authored_remaining = authored_remaining.saturating_add(u64::from(entry.count));
-        }
+            if let Ok(Some(entry)) =
+                datastore
+                    .handle()
+                    .get(&calimero_store::key::ContextAuthoredRemaining::new(
+                        context_id,
+                    ))
+            {
+                authored_remaining = authored_remaining.saturating_add(u64::from(entry.count));
+            }
 
-        let loaded = loaded_context_version(datastore, context_id);
+            let loaded = loaded_context_version(datastore, &context_id);
 
-        // A persisted failure marker is honored only while the context has NOT
-        // reached target. A context that has since converged (via a later
-        // migrate, lazy access, or cascade) is migrated — a stale marker must
-        // never force a false `failed`. An unresolvable version (None) is
-        // conservatively treated as below-target so a genuine failure surfaces.
-        let below_target = loaded.is_none_or(|l| l < target_version);
-        if below_target {
+            // A persisted failure marker is honored while the context has NOT
+            // reached its group's target. A context that has since converged is
+            // migrated — a stale marker must never force a false `failed`. An
+            // unresolvable loaded version (None) is conservatively below-target.
+            //
+            // Special case: a `NoMigrationPath` strand whose target can't be
+            // resolved here (`target == 0` — a subgroup member that holds the
+            // upgrade ladder but not the semver `GroupUpgradeValue`) is still
+            // genuinely behind. The strand path only writes NoMigrationPath when
+            // a ladder hop is blocked, and every heal path (successful hop,
+            // migrate commit, resync's `settle_snapshot_activation`) clears it,
+            // so honoring it can't outlive convergence. Other kinds stay
+            // strictly below_target-gated (no false failed from a stale abort).
+            let below_target = loaded.is_none_or(|l| l < target);
             if let Ok(Some(marker)) =
                 datastore
                     .handle()
                     .get(&calimero_store::key::ContextMigrationFailed::new(
-                        *context_id,
+                        context_id,
                     ))
             {
                 if let Some(kind) = MigrationFailureKind::from_u8(marker.kind) {
-                    migration_failed = Some(more_severe_failure(migration_failed, kind));
+                    let honor = below_target
+                        || (matches!(kind, MigrationFailureKind::NoMigrationPath) && target == 0);
+                    if honor {
+                        migration_failed = Some(more_severe_failure(migration_failed, kind));
+                    }
                 }
             }
-        }
 
-        let Some(loaded) = loaded else {
-            continue;
-        };
-        min_loaded = Some(min_loaded.map_or(loaded, |m| m.min(loaded)));
-        if loaded < target_version {
-            residue_auto += 1;
+            let Some(loaded) = loaded else {
+                continue;
+            };
+            min_loaded = Some(min_loaded.map_or(loaded, |m| m.min(loaded)));
+            if loaded < target {
+                residue_auto += 1;
+            }
         }
     }
 
@@ -488,8 +529,8 @@ pub fn compute_namespace_migration_facts(
     // unknown `0` instead; the gate stays conservative (0 < MAX ⇒ not migrated).
     let schema_version = match min_loaded {
         Some(loaded) => loaded,
-        None if target_version == u32::MAX => 0,
-        None => target_version,
+        None if root_target == u32::MAX => 0,
+        None => root_target,
     };
 
     // Invoke the 6c.6 residue scan over the iterable adaptor bound at this seam.
@@ -498,7 +539,7 @@ pub fn compute_namespace_migration_facts(
     // yet, so the scan resolves to the conservative `0`. The scan call is real
     // (exercised against `MockedStorage` in tests) and ready to count true
     // residue the moment the node binds a key-iterating committed-state adaptor.
-    let residue_identity = residue_identity_count::<CommittedStateScan>(target_version);
+    let residue_identity = residue_identity_count::<CommittedStateScan>(root_target);
 
     MigrationFacts {
         schema_version,
@@ -508,6 +549,53 @@ pub fn compute_namespace_migration_facts(
         authored_remaining,
         migration_failed,
     }
+}
+
+/// Build the local node's OWN migration report for `namespace_id`, keyed by its
+/// namespace identity, for inclusion in the `get_migration_status` rollup.
+///
+/// A node never receives its own gossiped heartbeat, so the per-(namespace,peer)
+/// receive cache never holds the local node. Without injecting this, the local
+/// node — frequently the admin running the rollup — resolves to `unknown` in its
+/// own status report (its cohort entry has no matching `member_reports` key),
+/// keeping `all_migrated` permanently false. The facts are computed directly
+/// (authoritative, no wire round-trip); `synced_up_to_hlc` is overlaid from
+/// `NamespaceGovHead.sequence` exactly as the emitter's `refresh_hlc` does, so
+/// the cohort pin compares like-for-like against gossiped peers. Returns `None`
+/// when this node has no identity for the namespace (nothing to self-report).
+#[must_use]
+pub fn self_migration_report(
+    datastore: &Store,
+    namespace_id: [u8; 32],
+    now_millis: u64,
+) -> Option<(PublicKey, MigrationStatusReport)> {
+    let group_id = calimero_context_config::types::ContextGroupId::from(namespace_id);
+    let self_pk = NamespaceRepository::new(datastore)
+        .identity(&group_id)
+        .ok()
+        .flatten()?
+        .0;
+
+    let mut facts = compute_namespace_migration_facts(datastore, namespace_id);
+    if let Ok(Some(head)) = datastore
+        .handle()
+        .get(&calimero_store::key::NamespaceGovHead::new(namespace_id))
+    {
+        facts.synced_up_to_hlc = head.sequence;
+    }
+
+    Some((
+        self_pk,
+        MigrationStatusReport {
+            schema_version: facts.schema_version,
+            residue_auto: facts.residue_auto,
+            residue_identity: facts.residue_identity,
+            synced_up_to_hlc: facts.synced_up_to_hlc,
+            reported_at: now_millis,
+            authored_remaining: facts.authored_remaining,
+            migration_failed: facts.migration_failed.map_or(0, |k| k.to_u8()),
+        },
+    ))
 }
 
 /// Pick the more severe of an accumulated failure and a freshly-read one:
@@ -1188,6 +1276,23 @@ mod tests {
     /// declares `version`. This is the binary the node has actually swapped to
     /// — the value the facts must report, distinct from the migration target.
     fn install_loaded_context(store: &Store, ns: [u8; 32], ctx: [u8; 32], version: &str) {
+        install_loaded_context_in_group(
+            store,
+            &calimero_context_config::types::ContextGroupId::from(ns),
+            ctx,
+            version,
+        );
+    }
+
+    /// Like [`install_loaded_context`] but registers the context under an
+    /// arbitrary `group_id` rather than the namespace-root group — used to put
+    /// a context in a SUBGROUP so the descendant-tree enumeration is exercised.
+    fn install_loaded_context_in_group(
+        store: &Store,
+        group_id: &calimero_context_config::types::ContextGroupId,
+        ctx: [u8; 32],
+        version: &str,
+    ) {
         use calimero_primitives::application::ApplicationId;
         use calimero_store::key::{
             ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey,
@@ -1223,12 +1328,8 @@ mod tests {
                 ),
             )
             .expect("put ContextMeta");
-        calimero_context::group_store::register_context_in_group(
-            store,
-            &calimero_context_config::types::ContextGroupId::from(ns),
-            &ctx.into(),
-        )
-        .expect("register context in group");
+        calimero_context::group_store::register_context_in_group(store, group_id, &ctx.into())
+            .expect("register context in group");
     }
 
     /// A node whose LOADED binary still reads schema v1, while the group's
@@ -1469,5 +1570,312 @@ mod tests {
             "residue_identity must INVOKE the scan and count only stale \
              identity-gated entries"
         );
+    }
+
+    /// A context that lives in a SUBGROUP under the namespace (not a direct
+    /// child of the namespace-root group — the stranded-resync e2e topology
+    /// where a node joins via `join_subgroup_inheritance`) MUST be enumerated
+    /// by the facts builder: its stranded-at-v1 state surfaces as `residue_auto`
+    /// and its persisted `NoMigrationPath` marker as `migration_failed`. Before
+    /// the descendant-tree enumeration, `enumerate_group_contexts(namespace)`
+    /// alone skipped subgroup contexts, so the failure was silently dropped
+    /// (the heartbeat reported `unknown` instead of `failed`).
+    #[test]
+    fn facts_enumerate_context_in_subgroup_and_surface_failure() {
+        use calimero_context::group_store::{NamespaceRepository, UpgradesRepository};
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x7Au8; 32];
+        let subgroup = ContextGroupId::from([0x7Bu8; 32]);
+
+        // The namespace is migrating to v2.
+        UpgradesRepository::new(&store)
+            .save(
+                &ContextGroupId::from(ns),
+                &GroupUpgradeValue {
+                    from_version: "1".to_owned(),
+                    to_version: "2".to_owned(),
+                    migration: None,
+                    initiated_at: 0,
+                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    status: GroupUpgradeStatus::InProgress {
+                        total: 1,
+                        completed: 0,
+                        failed: 0,
+                    },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                },
+            )
+            .unwrap();
+
+        // Nest the subgroup under the namespace-root group, then register a
+        // stranded-at-v1 context in the SUBGROUP (NOT the namespace-root group).
+        NamespaceRepository::new(&store)
+            .nest(&ContextGroupId::from(ns), &subgroup)
+            .unwrap();
+        let ctx = [0xE1u8; 32];
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+
+        // The node stranded at v1 (NoMigrationPath) — the marker is persisted on
+        // the subgroup context.
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextMigrationFailed::new(ctx.into()),
+                &calimero_store::types::ContextMigrationFailed {
+                    kind: MigrationFailureKind::NoMigrationPath.to_u8(),
+                },
+            )
+            .expect("put marker");
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(
+            facts.schema_version, 1,
+            "the subgroup context's loaded v1 must govern the advertised version"
+        );
+        assert_eq!(
+            facts.residue_auto, 1,
+            "the subgroup context trails the target and counts as residue_auto"
+        );
+        assert_eq!(
+            facts.migration_failed,
+            Some(MigrationFailureKind::NoMigrationPath),
+            "a stranded subgroup context's failure marker must surface as failed \
+             (was silently lost when only namespace-root contexts were enumerated)"
+        );
+    }
+
+    /// The REAL stranded-resync (#37) topology: `upgrade_group` ran on the
+    /// SUBGROUP, so the `GroupUpgradeValue` lives on the subgroup and the
+    /// namespace-root group has NO record. Each context's target must resolve
+    /// from the nearest upgrade record walking UP from its own group — so the
+    /// subgroup context sees target v3 (its own record), NOT v0 (root has none).
+    /// Deriving the target only from the namespace root made the stranded
+    /// context look "at target" (1 >= 0) → its `NoMigrationPath` marker was
+    /// never read and the heartbeat reported success: the exact #37 failure.
+    #[test]
+    fn facts_resolve_target_from_subgroup_upgrade_record() {
+        use calimero_context::group_store::{NamespaceRepository, UpgradesRepository};
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x8Au8; 32];
+        let subgroup = ContextGroupId::from([0x8Bu8; 32]);
+
+        // Upgrade record ONLY on the subgroup (root group has none) — what a
+        // direct `upgrade_group` on a subgroup leaves behind.
+        UpgradesRepository::new(&store)
+            .save(
+                &subgroup,
+                &GroupUpgradeValue {
+                    from_version: "1".to_owned(),
+                    to_version: "3".to_owned(),
+                    migration: None,
+                    initiated_at: 0,
+                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    status: GroupUpgradeStatus::InProgress {
+                        total: 1,
+                        completed: 0,
+                        failed: 0,
+                    },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                },
+            )
+            .unwrap();
+
+        NamespaceRepository::new(&store)
+            .nest(&ContextGroupId::from(ns), &subgroup)
+            .unwrap();
+        let ctx = [0xE2u8; 32];
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextMigrationFailed::new(ctx.into()),
+                &calimero_store::types::ContextMigrationFailed {
+                    kind: MigrationFailureKind::NoMigrationPath.to_u8(),
+                },
+            )
+            .expect("put marker");
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(facts.schema_version, 1);
+        assert_eq!(
+            facts.residue_auto, 1,
+            "loaded v1 trails the SUBGROUP's own target v3 → residue_auto"
+        );
+        assert_eq!(
+            facts.migration_failed,
+            Some(MigrationFailureKind::NoMigrationPath),
+            "target must resolve from the subgroup's own upgrade record (v3), not \
+             the recordless root (v0) — else the marker is dropped (the #37 bug)"
+        );
+    }
+
+    /// A subgroup member that joined via inheritance holds the upgrade LADDER
+    /// (it replayed a hop) but not necessarily the semver `GroupUpgradeValue`,
+    /// so its target resolves to 0 here. A `NoMigrationPath` strand marker is
+    /// still the authoritative "behind" signal in that case and MUST surface as
+    /// `failed` — the `below_target` gate (loaded 1 < target 0 = false) would
+    /// otherwise drop it, so the stranded member rolled up as `in_progress`
+    /// instead of `failed` (the residual #37 gap). Other failure kinds stay
+    /// gated; only an unresolvable-target NoMigrationPath is honored.
+    #[test]
+    fn facts_surface_no_migration_path_when_target_unresolvable() {
+        use calimero_context::group_store::NamespaceRepository;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x8Cu8; 32];
+        let subgroup = ContextGroupId::from([0x8Du8; 32]);
+
+        // NO upgrade record anywhere → resolve_group_target_version == 0.
+        NamespaceRepository::new(&store)
+            .nest(&ContextGroupId::from(ns), &subgroup)
+            .unwrap();
+        let ctx = [0xE4u8; 32];
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextMigrationFailed::new(ctx.into()),
+                &calimero_store::types::ContextMigrationFailed {
+                    kind: MigrationFailureKind::NoMigrationPath.to_u8(),
+                },
+            )
+            .expect("put marker");
+
+        assert_eq!(
+            compute_namespace_migration_facts(&store, ns).migration_failed,
+            Some(MigrationFailureKind::NoMigrationPath),
+            "a NoMigrationPath strand with an unresolvable target (0) must still \
+             surface as failed — it self-clears on resync/heal, so it can't go stale"
+        );
+    }
+
+    /// Guard the conservative scope of the unresolvable-target rule: a
+    /// `CheckAborted` marker is NOT honored when the target can't be resolved
+    /// (only NoMigrationPath is). CheckAborted is tied to a specific attempted
+    /// migration and stays `below_target`-gated, so an unresolvable target keeps
+    /// it suppressed (no false failed from a stale check-abort).
+    #[test]
+    fn facts_check_aborted_not_honored_when_target_unresolvable() {
+        use calimero_context::group_store::NamespaceRepository;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x8Eu8; 32];
+        let subgroup = ContextGroupId::from([0x8Fu8; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ContextGroupId::from(ns), &subgroup)
+            .unwrap();
+        let ctx = [0xE5u8; 32];
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextMigrationFailed::new(ctx.into()),
+                &calimero_store::types::ContextMigrationFailed {
+                    kind: MigrationFailureKind::CheckAborted.to_u8(),
+                },
+            )
+            .expect("put marker");
+
+        assert_eq!(
+            compute_namespace_migration_facts(&store, ns).migration_failed,
+            None,
+            "CheckAborted stays below_target-gated; an unresolvable target (0) \
+             does not honor it (only NoMigrationPath gets that special case)"
+        );
+    }
+
+    /// A node never receives its own gossip heartbeat, so its own status must be
+    /// computed locally and injected into the rollup — else the local (often
+    /// admin) node resolves to `unknown` and `all_migrated` can never go true.
+    /// The self-report is keyed by the node's namespace identity and carries its
+    /// real facts (here: a stranded subgroup context's `NoMigrationPath`).
+    #[test]
+    fn self_migration_report_keys_local_identity_and_carries_failure() {
+        use calimero_context::group_store::{NamespaceRepository, UpgradesRepository};
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x9Au8; 32];
+        let subgroup = ContextGroupId::from([0x9Bu8; 32]);
+        let self_pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+
+        // This node's namespace identity (what its heartbeat would be signed by).
+        NamespaceRepository::new(&store)
+            .store_identity(&ContextGroupId::from(ns), &self_pk, &[7u8; 32], &[8u8; 32])
+            .unwrap();
+
+        // Stranded subgroup context (subgroup-only upgrade record, as in #37).
+        UpgradesRepository::new(&store)
+            .save(
+                &subgroup,
+                &GroupUpgradeValue {
+                    from_version: "1".to_owned(),
+                    to_version: "3".to_owned(),
+                    migration: None,
+                    initiated_at: 0,
+                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    status: GroupUpgradeStatus::InProgress {
+                        total: 1,
+                        completed: 0,
+                        failed: 0,
+                    },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                },
+            )
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&ContextGroupId::from(ns), &subgroup)
+            .unwrap();
+        let ctx = [0xE3u8; 32];
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextMigrationFailed::new(ctx.into()),
+                &calimero_store::types::ContextMigrationFailed {
+                    kind: MigrationFailureKind::NoMigrationPath.to_u8(),
+                },
+            )
+            .expect("put marker");
+
+        let (pk, report) =
+            self_migration_report(&store, ns, 4242).expect("node has an identity → Some");
+        assert_eq!(
+            pk, self_pk,
+            "self-report is keyed by the namespace identity"
+        );
+        assert_eq!(report.reported_at, 4242);
+        assert_eq!(report.schema_version, 1);
+        assert_eq!(
+            report.migration_failed,
+            MigrationFailureKind::NoMigrationPath.to_u8(),
+            "the local node's own stranded context surfaces in its self-report \
+             (so the admin running the rollup is not reported as `unknown`)"
+        );
+
+        // No identity for an unrelated namespace ⇒ nothing to self-report.
+        assert!(self_migration_report(&store, [0xCCu8; 32], 1).is_none());
     }
 }

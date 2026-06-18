@@ -77,9 +77,25 @@ impl Handler<NodeMessage> for NodeManager {
                 // fine to ignore. Stale entries are filtered by the cache's
                 // per-call TTL; a member with no fresh entry is simply absent,
                 // which the rollup resolves to `unknown`.
-                let reports = self
+                let mut reports = self
                     .migration_status_cache
                     .migration_status_reports(namespace_id, DEFAULT_HEARTBEAT_TTL);
+                // A node never receives its OWN gossiped heartbeat, so the cache
+                // above never holds the local node. Inject its freshly-computed
+                // facts (keyed by its namespace identity) so the local node —
+                // frequently the admin running this very rollup — is not reported
+                // as `unknown`, which would pin `all_migrated` false forever.
+                let now_millis = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                if let Some((self_pk, self_report)) = crate::migration_status::self_migration_report(
+                    &self.datastore,
+                    namespace_id,
+                    now_millis,
+                ) {
+                    let _ = reports.insert(self_pk, self_report);
+                }
                 let _ = outcome.send(reports);
             }
             NodeMessage::ForwardNamespaceOpApplied { namespace_id } => {
@@ -110,6 +126,13 @@ impl Handler<NodeMessage> for NodeManager {
                 // recompute and post the node's facts — this both edge-triggers
                 // an on-change heartbeat and seeds the namespace into the
                 // emitter so its periodic keep-alive tick goes live.
+                self.notify_migration_facts(namespace_id);
+            }
+            NodeMessage::RefreshMigrationFacts { namespace_id } => {
+                // Edge-trigger a fact recompute + emit-on-change for this
+                // namespace (resync-heal path). Same seam the governance-apply
+                // signal uses, without the readiness side-effect — a resync
+                // applies no governance op.
                 self.notify_migration_facts(namespace_id);
             }
         }

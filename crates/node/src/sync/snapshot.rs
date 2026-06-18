@@ -394,7 +394,8 @@ impl SyncManager {
         self.context_client
             .update_dag_heads(&context_id, boundary.dag_heads.clone())?;
         self.clear_sync_in_progress_marker(context_id)?;
-        self.finalize_snapshot_activation(context_id, observed_schema);
+        self.finalize_snapshot_activation(context_id, observed_schema)
+            .await;
 
         info!(%context_id, applied_records, "Snapshot sync completed successfully");
 
@@ -1111,12 +1112,67 @@ impl SyncManager {
     /// Resync-scoped (see `settle_snapshot_activation`): only an operator resync
     /// rebinds the activation marker — to `observed_schema`, the schema the
     /// applied entities actually carried. Best-effort and group-only.
-    fn finalize_snapshot_activation(
+    async fn finalize_snapshot_activation(
         &self,
         context_id: ContextId,
         observed_schema: Option<[u8; 32]>,
     ) {
-        settle_snapshot_activation(self.context_client.datastore(), context_id, observed_schema);
+        let Some(namespace_id) = settle_snapshot_activation(
+            self.context_client.datastore(),
+            context_id,
+            observed_schema,
+        ) else {
+            return;
+        };
+
+        // A resynced peer runs the recovered bytecode but never ran the install,
+        // so its `ApplicationMeta` (the version migration-status reads) still
+        // reflects the version it last installed — it lingers below-target. Run
+        // the SAME in-place install the normal blob-share path runs
+        // (`install_bundle_after_blob_sharing`) against the blob the activation
+        // marker now points at, so the peer's installed version matches the
+        // adopted one — exactly as a normally-upgraded peer ends up.
+        if let Some(bound) = calimero_context::activation::activated_blob(
+            self.context_client.datastore(),
+            &context_id,
+        ) {
+            let blob_id = calimero_primitives::blobs::BlobId::from(bound);
+            if self.node_client.has_blob(&blob_id).unwrap_or(false) {
+                match self.context_client.get_context(&context_id) {
+                    Ok(Some(mut context)) => {
+                        let mut application: Option<calimero_primitives::application::Application> =
+                            None;
+                        if let Err(err) = self
+                            .install_bundle_after_blob_sharing(
+                                &context_id,
+                                &blob_id,
+                                &None,
+                                &mut context,
+                                &mut application,
+                            )
+                            .await
+                        {
+                            warn!(
+                                %context_id, %err,
+                                "resync in-place install failed; reported version may lag \
+                                 until the next install"
+                            );
+                        }
+                    }
+                    other => debug!(
+                        %context_id, ?other,
+                        "resync: context unavailable for in-place install; skipping"
+                    ),
+                }
+            }
+        }
+
+        // Edge-trigger the migration emitter so the recovered facts (cleared
+        // strand marker + advanced installed version) reach the admin rollup at
+        // once, instead of lingering as stale `failed`/`in-progress` until the
+        // next ~30s periodic heartbeat.
+        self.node_client
+            .notify_migration_facts_refresh(namespace_id);
     }
 
     fn clear_sync_in_progress_marker(&self, context_id: ContextId) -> Result<()> {
@@ -1960,13 +2016,17 @@ fn collect_context_state_keys<L: calimero_store::layer::ReadLayer>(
 /// bound), so the one-shot request can never get stuck forcing snapshots. When
 /// the snapshot carried no schema stamp (`data_schema == None`, e.g. an empty
 /// or legacy/non-migrating snapshot) the marker falls back to the group target.
+///
+/// Returns the namespace-root id the heal belongs to when this was an operator
+/// resync (so the caller can edge-trigger the migration emitter), or `None` for
+/// a non-resync snapshot or when the group/root can't be resolved.
 fn settle_snapshot_activation(
     store: &calimero_store::Store,
     context_id: ContextId,
     data_schema: Option<[u8; 32]>,
-) {
+) -> Option<[u8; 32]> {
     use calimero_context::group_store::{
-        get_group_for_context, MetaRepository, UpgradeLadderRepository,
+        get_group_for_context, MetaRepository, NamespaceRepository, UpgradeLadderRepository,
     };
 
     let mut handle = store.handle();
@@ -1974,7 +2034,7 @@ fn settle_snapshot_activation(
     // Non-resync snapshots (bootstrap, crash recovery) leave the binding to the
     // lazy gate — see the doc above.
     if !matches!(handle.get(&resync_key), Ok(Some(()))) {
-        return;
+        return None;
     }
 
     // Clear the one-shot resync marker + any stranded marker FIRST, so neither
@@ -1991,10 +2051,10 @@ fn settle_snapshot_activation(
     drop(handle);
 
     let Some(gid) = get_group_for_context(store, &context_id).ok().flatten() else {
-        return;
+        return None;
     };
     let Some(meta) = MetaRepository::new(store).load(&gid).ok().flatten() else {
-        return;
+        return None;
     };
     // Bind to the schema the synced data actually carries; fall back to the
     // group target only when the snapshot carried no schema stamp.
@@ -2002,7 +2062,7 @@ fn settle_snapshot_activation(
         .filter(|k| *k != [0u8; 32])
         .unwrap_or(meta.app_key);
     if bind == [0u8; 32] {
-        return; // zero-key group: no bytecode signal to bind
+        return None; // zero-key group: no bytecode signal to bind
     }
     calimero_context::activation::record_activation(store, &context_id, bind);
     // Reconcile the bound id too, or a single-wasm context (distinct id per
@@ -2020,6 +2080,14 @@ fn settle_snapshot_activation(
         calimero_context::activation::reconcile_context_application(store, &context_id, app_id);
     }
     debug!(%context_id, "resync snapshot settled; markers cleared");
+
+    // The heartbeat emitter is keyed by the namespace ROOT, so resolve it from
+    // the (possibly sub-)group the context lives in. `None` ⇒ the caller skips
+    // the edge-trigger and the next periodic beat carries the recovered facts.
+    NamespaceRepository::new(store)
+        .resolve(&gid)
+        .ok()
+        .map(|root| root.to_bytes())
 }
 
 #[cfg(test)]
@@ -2686,6 +2754,61 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "resync marker must be cleared"
+        );
+    }
+
+    /// settle returns the namespace ROOT on a resync heal (so the caller can
+    /// edge-trigger the migration emitter), and `None` for a non-resync
+    /// snapshot. This is the seam that makes a just-resynced member surface as
+    /// recovered in the admin rollup promptly instead of lingering as `failed`.
+    #[test]
+    fn settle_snapshot_activation_returns_namespace_root_on_resync() {
+        use calimero_context::group_store::{register_context_in_group, MetaRepository};
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::context::UpgradePolicy;
+        use calimero_primitives::identity::PublicKey;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key;
+        use calimero_store::Store;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let gid = ContextGroupId::from([0x61; 32]); // top-level group ⇒ root == gid
+        let ctx = ContextId::from([0x51; 32]);
+        MetaRepository::new(&store)
+            .save(
+                &gid,
+                &key::GroupMetaValue {
+                    app_key: [0x2B; 32],
+                    target_application_id: ApplicationId::from([0xAB; 32]),
+                    upgrade_policy: UpgradePolicy::LazyOnAccess,
+                    created_at: 0,
+                    admin_identity: PublicKey::from([0x08; 32]),
+                    owner_identity: PublicKey::from([0x08; 32]),
+                    migration: None,
+                    auto_join: false,
+                },
+            )
+            .unwrap();
+        register_context_in_group(&store, &gid, &ctx).unwrap();
+
+        // No resync marker ⇒ non-resync snapshot ⇒ no edge-trigger.
+        assert_eq!(
+            settle_snapshot_activation(&store, ctx, None),
+            None,
+            "a non-resync snapshot must not edge-trigger the emitter"
+        );
+
+        // Resync marker set ⇒ heal returns the namespace root to refresh.
+        store
+            .handle()
+            .put(&key::ContextResyncRequested::new(ctx.into()), &())
+            .unwrap();
+        assert_eq!(
+            settle_snapshot_activation(&store, ctx, None),
+            Some(gid.to_bytes()),
+            "a resync heal must return the namespace root so the caller can \
+             edge-trigger the migration emitter"
         );
     }
 

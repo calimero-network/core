@@ -53,6 +53,16 @@ pub enum NodeMessage {
     /// claim "FSM observes every monotonic advance regardless of
     /// origin" only held for the receive path until #2237 follow-up.
     ForwardNamespaceOpApplied { namespace_id: [u8; 32] },
+    /// Edge-trigger the migration-heartbeat emitter to recompute and re-publish
+    /// this node's facts for a namespace, out of band of the periodic tick.
+    /// Routed `NodeClient -> NodeManager` (the emitter address lives on
+    /// `NodeManager`, which the sync crate cannot name). Used by the resync-heal
+    /// path: `settle_snapshot_activation` clears the strand marker and rebinds
+    /// the activation, but without this the recovered facts wouldn't reach the
+    /// admin rollup until the next periodic beat — so a just-resynced member
+    /// lingers as stale `failed`. Fire-and-forget; the periodic tick is the
+    /// fallback if the signal is dropped.
+    RefreshMigrationFacts { namespace_id: [u8; 32] },
     /// Read the best-effort sync-status snapshot the sync run-loop has
     /// recorded for a context. Routed through `NodeClient -> NodeManager`
     /// because the snapshot lives on the node-crate-private `NodeState`,

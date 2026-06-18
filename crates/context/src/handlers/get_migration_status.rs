@@ -84,10 +84,9 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
             authorize_migration_status(&self.datastore, &namespace_id, &node_identity)?;
 
             // Pin the cohort at the migration's expand-entry HLC (the sticky
-            // `cascade_hlc` the originating op stamped). `target_version` reads
-            // off the upgrade record's `to_version`; absent an upgrade record
-            // there is no migration in flight, so the target is the current
-            // (from) version and the cohort still reports against it.
+            // `cascade_hlc` the originating op stamped). The pin lives on the
+            // namespace-root record (a cascade stamps it there), so the pin still
+            // reads the root.
             let upgrade = UpgradesRepository::new(&self.datastore).load(&namespace_id)?;
             let cohort_pinned_at_hlc: Option<HybridTimestamp> =
                 upgrade.as_ref().and_then(|u| u.cascade_hlc);
@@ -98,7 +97,13 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
             // like-for-like. `cohort_pinned_at_hlc` is the replicated NTP64 HLC
             // fence surfaced for display only — never the overlay pin.
             let cohort_pinned_at_seq: Option<u64> = upgrade.as_ref().and_then(|u| u.cascade_seq);
-            let target_version = derive_target_version(upgrade.as_ref());
+            // The target is the MAX `to_version` across the namespace-root group
+            // AND every descendant subgroup's upgrade record — NOT the root's
+            // alone. A bare `upgrade_group` on a subgroup records the target only
+            // there, so reading the root alone returned 0, making every member
+            // trivially "migrated" (the false green that hid a stranded subgroup
+            // member in #37).
+            let target_version = max_subtree_target_version(&self.datastore, &namespace_id)?;
 
             // The full inherited-membership closure for the subtree (the #2371
             // `list ∪ enumerate_inherited` set). The rollup applies the
@@ -159,6 +164,32 @@ fn derive_target_version(upgrade: Option<&calimero_store::key::GroupUpgradeValue
         None => 0,
         Some(record) => parse_schema_version(&record.to_version).unwrap_or(u32::MAX),
     }
+}
+
+/// The migration target the whole cohort rolls up against: the MAX
+/// [`derive_target_version`] across the namespace-root group AND every
+/// descendant subgroup's upgrade record (`collect_descendants`, the same
+/// subtree `collect_migration_cohort` walks).
+///
+/// Reading the root record alone returned `0` for a bare subgroup upgrade
+/// (`upgrade_group` records the target on the subgroup, leaving the root
+/// recordless) — making every member's `schema_version >= 0` trivially
+/// "migrated", a false green that hid a stranded subgroup member. Taking the
+/// max keeps the no-false-green rule: an unparseable record on any subtree
+/// group resolves to [`u32::MAX`], which then dominates the max so no real
+/// version satisfies it.
+fn max_subtree_target_version(
+    store: &calimero_store::Store,
+    namespace_id: &ContextGroupId,
+) -> eyre::Result<u32> {
+    let mut groups = vec![*namespace_id];
+    groups.extend(NamespaceRepository::new(store).collect_descendants(namespace_id)?);
+    let upgrades = UpgradesRepository::new(store);
+    let mut target = 0u32;
+    for gid in &groups {
+        target = target.max(derive_target_version(upgrades.load(gid)?.as_ref()));
+    }
+    Ok(target)
 }
 
 #[cfg(test)]
@@ -379,6 +410,63 @@ mod tests {
             super::derive_target_version(Some(&rec)),
             u32::MAX,
             "an unparseable pending target must not collapse to 0 (false green)"
+        );
+    }
+
+    /// The cohort target must reflect a SUBGROUP's own upgrade record, not just
+    /// the namespace-root group. A bare `upgrade_group` on a subgroup records
+    /// the target on the subgroup, leaving the root recordless — reading the
+    /// root alone resolved to `0`, making every member `schema_version >= 0`
+    /// trivially "migrated" and hiding a stranded subgroup member (the #37 bug).
+    #[test]
+    fn target_version_takes_max_across_subgroup_records() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let root = ContextGroupId::from([0x44; 32]);
+        let subgroup = ContextGroupId::from([0x55; 32]);
+        let admin = PublicKey::from([0xAD; 32]);
+
+        MetaRepository::new(&store)
+            .save(&root, &meta(admin))
+            .unwrap();
+        MetaRepository::new(&store)
+            .save(&subgroup, &meta(admin))
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&root, &subgroup)
+            .unwrap();
+
+        // Upgrade record ONLY on the subgroup (root recordless), heading to v3.
+        calimero_governance_store::UpgradesRepository::new(&store)
+            .save(
+                &subgroup,
+                &upgrade_record(
+                    "1",
+                    "3",
+                    calimero_store::key::GroupUpgradeStatus::InProgress {
+                        total: 1,
+                        completed: 0,
+                        failed: 0,
+                    },
+                ),
+            )
+            .unwrap();
+
+        // The root record alone resolves to 0 (the false-green path)...
+        assert_eq!(
+            super::derive_target_version(
+                calimero_governance_store::UpgradesRepository::new(&store)
+                    .load(&root)
+                    .unwrap()
+                    .as_ref()
+            ),
+            0,
+            "root group is recordless → root-only target is a false-green 0"
+        );
+        // ...but the subtree max reads the subgroup's own v3.
+        assert_eq!(
+            super::max_subtree_target_version(&store, &root).unwrap(),
+            3,
+            "subtree target must read the subgroup's own record, not the root's"
         );
     }
 }

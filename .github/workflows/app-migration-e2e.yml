@@ -18,6 +18,8 @@ on:
       - "crates/context/src/handlers/upgrade_group.rs"
       - "crates/context/src/handlers/apply_signed_group_op.rs"
       - "crates/context/src/handlers/create_group.rs"
+      - "crates/context/src/handlers/get_migration_status.rs"
+      - "crates/node/src/migration_status.rs"
       - "crates/context/primitives/src/local_governance/**"
       - "crates/governance-store/src/ops/**"
       - "crates/storage/src/interface.rs"
@@ -35,6 +37,8 @@ on:
       - "crates/context/src/handlers/upgrade_group.rs"
       - "crates/context/src/handlers/apply_signed_group_op.rs"
       - "crates/context/src/handlers/create_group.rs"
+      - "crates/context/src/handlers/get_migration_status.rs"
+      - "crates/node/src/migration_status.rs"
       - "crates/context/primitives/src/local_governance/**"
       - "crates/governance-store/src/ops/**"
       - "crates/storage/src/interface.rs"
@@ -217,17 +221,10 @@ jobs:
           - 33-authored-remaining-count
           - 35-two-namespaces-coexist
           - 36-chained-catchup
-          # 37-stranded-resync is intentionally excluded: staging the strand
-          # needs the v2 rung's bytecode made genuinely unobtainable, but
-          # `delete_blob_on_disk` (filesystem `rm` of the base58 *parent* blob
-          # id) is a no-op — blobs are content-chunked, so the parent id is
-          # RocksDB-only metadata and the bytes live in a chunk file named by an
-          # unexposed chunk hash. The correct delete is the admin API
-          # (`DELETE admin-api/blobs/{id}` → cascades parent+chunks+metadata),
-          # which merobox has no step for yet. Re-enable once that step ships.
-          # The engine path it exercises (marker-less multi-version ladder
-          # replay + NoMigrationPath strand) is covered by 36-chained-catchup +
-          # upgrade_gate unit tests. See follow-up issue.
+          # Stages the strand with merobox's `delete_blob` step (admin API,
+          # cascades parent+chunks+metadata — merobox#285, 0.6.39); the old
+          # `delete_blob_on_disk` rm was a no-op for chunked blobs.
+          - 37-stranded-resync
           - 38-namespace-invite-join-regression
     env:
       WORKFLOW: ${{ matrix.workflow }}
