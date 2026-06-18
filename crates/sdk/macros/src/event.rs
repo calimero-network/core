@@ -80,6 +80,12 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
                 // event serializes to. Reject it here with a clear SDK message,
                 // otherwise the `#[serde(content = "...")]` we generate below
                 // surfaces serde-derive's confusing "can only be used on enums".
+                //
+                // The early return is intentional: the downstream checks
+                // (visibility, generics, reserved idents) all assume the event is
+                // an enum, so re-running them on a struct would only add noise.
+                // Converting the struct to an enum is the single required fix and
+                // re-surfaces any remaining diagnostics on the next compile.
                 return Err(errors.finish(SynError::new_spanned(
                     &item.ident,
                     ParseError::EventMustBeEnum,

@@ -508,3 +508,25 @@ cargo build -p kv-store --target wasm32-unknown-unknown --release
 - Methods without `&mut self` are read-only (queries)
 - Methods with `&mut self` can modify state (mutations)
 - WASM apps must target `wasm32-unknown-unknown`
+
+## Misuse Diagnostics
+
+The macros reject common misuse with span-precise `(calimero)>` compile errors
+(don't rely on the cryptic downstream trait-bound error). Rejected at compile
+time: non-CRDT state fields (bare `String`/`Vec`/primitives, std collections,
+`Rc`/`Arc`/`Cell`/`RefCell`/`Mutex`/`RwLock`), `#[app::state]` on an enum,
+state lifetime params, duplicate `#[app::init]`, `__calimero`-prefixed method
+names, `#[app::event]` on a struct, and emitting a non-`#[app::event]` type.
+A discarded `get()` result (`ValueRef`) warns via `#[must_use]`.
+
+These messages are regression-tested by the trybuild suite in
+`tests/macros/` (`tests/macros.rs::all`, run under plain `cargo test`). The
+golden `.stderr` files are toolchain-sensitive; after an intentional
+`rust-toolchain.toml` bump, re-bless with:
+
+```bash
+TRYBUILD=overwrite cargo test -p calimero-sdk --test macros
+```
+
+then verify the diff only shows rustc wording/cascade noise — never a dropped
+`(calimero)>` line.

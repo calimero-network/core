@@ -8,14 +8,14 @@ error[E0277]: (calimero)> `Plain` cannot be stored in replicated state — it is
    = note: every `#[app::state]` field and every collection value must be `Mergeable` so replicas converge.
    = note: fixes: wrap a plain value in `LwwRegister<Plain>` (last-write-wins) or `Counter`; use `UnorderedMap`/`UnorderedSet`/`Vector` for collections; or `#[derive(Mergeable)]` on your own struct (every field must itself be `Mergeable`).
    = help: the following other types implement trait `Mergeable`:
+             AccessControl
              AuthoredMap<K, V, S>
              AuthoredVector<V, S>
              Counter<ALLOW_DECREMENT, S>
              FrozenValue<T>
+             PermissionedStorage<T, A>
              ReplicatedGrowableArray
              S
-             calimero_storage::collections::FrozenStorage<T, S>
-             calimero_storage::collections::LwwRegister<T>
            and $N others
    = note: required for `calimero_storage::collections::UnorderedMap<std::string::String, Plain>` to implement `Mergeable`
    = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)

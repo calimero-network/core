@@ -27,9 +27,13 @@ impl MultiLifetimeState {
         a
     }
 
-    // Test lifetime elision still works. Elision ties the output to `&self`, so
-    // the body returns a self-derived (here `'static`-coercible) value.
-    pub fn elided_lifetime(&self, data: &str) -> &str {
+    // Lifetime elision through the macro: with `&self` plus another reference
+    // parameter, the elided output lifetime binds to `&self` (the receiver wins),
+    // *not* to `_data` — so the body can't return `_data` and instead returns
+    // `""`, which is `'static` and satisfies any lifetime. This checks the macro
+    // accepts an elided-lifetime signature; borrowing a real field under the same
+    // `&self`-tied elision is covered by `LifetimeReturnState::borrow_data` below.
+    pub fn elided_lifetime(&self, _data: &str) -> &str {
         ""
     }
 }
