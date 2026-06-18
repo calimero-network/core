@@ -1,11 +1,12 @@
 name: App migration e2e
 
 # End-to-end coverage for the per-context application migration
-# pipeline and its namespace-cascade extensions. One shared `build`
-# job compiles merod:local and every migration-suite + scenario-*
-# WASM fixture once; the `scenario` matrix fans those artifacts out
-# across one job per workflow under workflows/app-migration/ so every
-# scenario runs in parallel and reports its own pass/fail.
+# pipeline and its namespace-cascade extensions. Two parallel build
+# jobs compile the merod:local image and the migration WASM fixtures
+# (independent builds, so the build phase is max() not sum()); the
+# `scenario` matrix fans those artifacts out across one job per workflow
+# under workflows/app-migration/ so every scenario runs in parallel and
+# reports its own pass/fail.
 
 permissions:
   contents: read
@@ -62,11 +63,16 @@ env:
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 jobs:
-  # One shared build of merod:local + every migration-suite +
-  # scenario-* WASM fixture. Both are uploaded as artifacts so the
-  # downstream matrix jobs never re-compile Rust.
-  build:
-    name: Build merod
+  # The merod:local image and the WASM fixtures are independent builds, so
+  # they run as two parallel jobs — the e2e build phase is now max(merod,
+  # wasms) instead of their sum. Each uploads the artifact the `scenario`
+  # matrix consumes, so the matrix jobs never re-compile Rust.
+  #
+  # Cache: build-merod owns the shared `e2e-rust-apps` bucket (it builds the
+  # native release binary, like that workflow does); build-wasms reads it but
+  # never SAVEs, so the two jobs never race a second writer for one key.
+  build-merod:
+    name: Build merod image
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 20
     steps:
@@ -92,9 +98,6 @@ jobs:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build all WASM fixtures
-        run: bash workflows/app-migration/build-wasms.sh
-
       - name: Save merod:local Docker image
         run: |
           mkdir -p image-artifact
@@ -107,6 +110,29 @@ jobs:
           name: app-migration-merod-image
           path: image-artifact/merod-local.tar.gz
           retention-days: 1
+
+  build-wasms:
+    name: Build WASM fixtures
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          # Read the warm e2e-rust-apps dependency cache, but never SAVE under
+          # that key — build-merod owns it, and a second writer only races.
+          shared-key: e2e-rust-apps
+          save-if: false
+
+      - name: Build all WASM fixtures
+        run: bash workflows/app-migration/build-wasms.sh
 
       - name: Upload WASM fixtures artifact
         uses: actions/upload-artifact@v4
@@ -182,7 +208,7 @@ jobs:
   # other failures in the same run.
   scenario:
     name: ${{ matrix.workflow }}
-    needs: build
+    needs: [build-merod, build-wasms]
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 15
     strategy:
