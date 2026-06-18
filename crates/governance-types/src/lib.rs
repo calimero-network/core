@@ -514,6 +514,16 @@ pub enum RootOp {
         member: PublicKey,
         group_id: [u8; 32],
     },
+    /// Invitation-based join carrying the joiner's claimed redemption
+    /// time (`joined_at`, unix seconds, covered by the joiner's
+    /// signature). Apply rejects it when `joined_at` exceeds the
+    /// invitation's `expiration_timestamp`, enforcing expiry
+    /// deterministically on every node rather than only the joining one.
+    MemberJoinedAt {
+        member: PublicKey,
+        signed_invitation: SignedGroupOpenInvitation,
+        joined_at: u64,
+    },
 }
 
 impl NamespaceOp {
@@ -531,6 +541,7 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::AdminChanged { .. }) => "admin_changed",
             NamespaceOp::Root(RootOp::PolicyUpdated { .. }) => "policy_updated",
             NamespaceOp::Root(RootOp::MemberJoined { .. }) => "member_joined",
+            NamespaceOp::Root(RootOp::MemberJoinedAt { .. }) => "member_joined_at",
             NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => "member_joined_open",
             NamespaceOp::Root(RootOp::KeyDelivery { .. }) => "key_delivery",
             NamespaceOp::Group { .. } => "group_op",

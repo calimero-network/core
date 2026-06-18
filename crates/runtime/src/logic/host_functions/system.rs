@@ -396,6 +396,34 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
+    /// Writes the xcall origin (the source context id) into `dest_register_id`
+    /// and returns `1` when this execution was dispatched via `xcall`. Returns
+    /// `0` and leaves the register untouched for a direct/RPC call.
+    ///
+    /// The origin is set by the node from the calling context — never from
+    /// guest memory — so a target may trust it as caller provenance.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::InvalidMemoryAccess` if the register operation fails.
+    pub fn xcall_origin(&mut self, dest_register_id: u64) -> VMLogicResult<u32> {
+        let origin = self.borrow_logic().context.xcall_origin;
+        let Some(origin) = origin else {
+            return Ok(0);
+        };
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
+            logic.registers.set(logic.limits, dest_register_id, origin)
+        })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            "xcall_origin written"
+        );
+
+        Ok(1)
+    }
+
     /// Copies the input data for the current execution (from context ID) into a register.
     ///
     /// # Arguments
@@ -1185,6 +1213,55 @@ mod tests {
             .get(executor_id_register)
             .unwrap();
         assert_eq!(requested_executor_id, executor_id);
+    }
+
+    /// `xcall_origin()` returns 0 and leaves the register untouched for a direct
+    /// call (no origin), and returns 1 writing the source context for an xcall.
+    #[test]
+    fn test_xcall_origin_present_and_absent() {
+        let context_id = [3u8; DIGEST_SIZE];
+        let executor_id = [5u8; DIGEST_SIZE];
+
+        // Absent: a plain direct/RPC call has no xcall origin.
+        {
+            let mut storage = SimpleMockStorage::new();
+            let limits = VMLimits::default();
+            let context = VMContext::new(Cow::Owned(vec![]), context_id, executor_id);
+            let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
+            let mut store = Store::default();
+            let memory =
+                wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+            let _ = logic.with_memory(memory);
+            let mut host = logic.host_functions(store.as_store_mut());
+
+            let reg = 4;
+            let present = host.xcall_origin(reg).unwrap();
+            assert_eq!(present, 0, "no origin ⇒ returns 0");
+            assert!(
+                host.borrow_logic().registers.get(reg).is_err(),
+                "register must be untouched when there is no origin"
+            );
+        }
+
+        // Present: an xcall-dispatched execution carries the source context.
+        {
+            let origin = [9u8; DIGEST_SIZE];
+            let mut storage = SimpleMockStorage::new();
+            let limits = VMLimits::default();
+            let mut context = VMContext::new(Cow::Owned(vec![]), context_id, executor_id);
+            context.xcall_origin = Some(origin);
+            let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
+            let mut store = Store::default();
+            let memory =
+                wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+            let _ = logic.with_memory(memory);
+            let mut host = logic.host_functions(store.as_store_mut());
+
+            let reg = 5;
+            let present = host.xcall_origin(reg).unwrap();
+            assert_eq!(present, 1, "origin present ⇒ returns 1");
+            assert_eq!(host.borrow_logic().registers.get(reg).unwrap(), origin);
+        }
     }
 
     /// Tests the `value_return()` host function for both `Ok` and `Err` variants.

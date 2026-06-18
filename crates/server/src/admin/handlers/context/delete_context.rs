@@ -12,6 +12,7 @@ use reqwest::StatusCode;
 use tower_sessions::Session;
 use tracing::{error, info};
 
+use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::auth::AuthenticatedKey;
 use crate::AdminState;
@@ -35,11 +36,11 @@ pub async fn handler(
         }
     };
 
-    // Prefer the authenticated identity over the caller-supplied requester to
-    // prevent authorization bypass via a spoofed public key in the request body.
-    let requester = auth_key
-        .map(|Extension(k)| k.0)
-        .or_else(|| body.and_then(|Json(req)| req.requester));
+    let body_requester = body.and_then(|Json(req)| req.requester);
+    let requester = match resolve_requester(auth_key, body_requester) {
+        Ok(r) => r,
+        Err(err) => return err.into_response(),
+    };
 
     info!(context_id=%context_id_result, "Deleting context");
 

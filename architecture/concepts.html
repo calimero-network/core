@@ -144,8 +144,15 @@
 <p><span class="code">xcall</span> is a <strong>fire-and-forget</strong> call from one context&rsquo;s WASM into another context on the <strong>same node</strong>.</p>
 <ul>
 <li>Calls are queued while your handler runs and execute <em>after</em> the current commit completes.</li>
-<li>There is no return value; treat it like an async notification.</li>
+<li>The caller gets no return value, but the outcome &mdash; success, denial, or target error &mdash; is broadcast as an <span class="code">XCall</span> event for observers.</li>
 <li>The target context processes the call as its own member.</li>
+</ul>
+<h3>Authorization</h3>
+<p>An xcall must clear three checks before it runs; a failure is denied (and reported on the <span class="code">XCall</span> event) without aborting the caller:</p>
+<ul>
+<li><strong>Namespace boundary (L1)</strong> &mdash; the source and target contexts must resolve to the <strong>same namespace</strong>. Cross-namespace xcalls are refused by the node. Always enforced, fail-closed.</li>
+<li><strong>Entry-point gate (L3)</strong> &mdash; opt-in. If the target app marks any method <span class="code">#[app::xcall]</span>, only those methods are reachable via xcall; an app that marks none stays ungated.</li>
+<li><strong>Provenance (L2a)</strong> &mdash; the target can read the verified source context via <span class="code">env::xcall_origin()</span>. The node sets this; a guest cannot forge it.</li>
 </ul>
 <h3>When to use it</h3>
 <p>Good fits: secondary indexes, notifications, audit logs, or any work that should not block the caller&rsquo;s transaction on a synchronous response.</p>

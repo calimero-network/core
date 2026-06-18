@@ -1489,6 +1489,7 @@ fn root_op_commits_to_namespace_state(op: &RootOp) -> bool {
         RootOp::AdminChanged { .. }
             | RootOp::PolicyUpdated { .. }
             | RootOp::MemberJoined { .. }
+            | RootOp::MemberJoinedAt { .. }
             | RootOp::MemberJoinedOpen { .. }
     )
 }

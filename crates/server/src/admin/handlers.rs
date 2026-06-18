@@ -11,6 +11,7 @@ pub mod namespaces;
 pub mod network;
 pub mod packages;
 pub mod peers;
+pub mod requester;
 pub mod tee;
 pub mod usage;
 pub mod validation;

@@ -60,6 +60,12 @@ pub struct AclView {
 /// `ADMIN` — rotating an object's writer set still requires an explicit ACL
 /// grant (ownership), so a plain member can't lock others out of a default
 /// entity.
+///
+/// Implication, by design: any member can write **and delete** any
+/// non-restricted entity in the scope (a single compromised member can wipe
+/// default data) — this matches a shared key-value store, where membership is
+/// the write boundary. Data that needs a narrower writer/deleter set must be a
+/// restricted object with an explicit ACL.
 const DEFAULT_MEMBER_MASK: OpMask = OpMask::WRITE.union(OpMask::DELETE);
 
 impl AclView {
@@ -122,13 +128,33 @@ impl AclView {
     }
 }
 
-/// The capability a data op requires of its author.
+/// The capability a **data** op requires of its author, or `None` for a
+/// non-data op (whose authority is decided by ownership/admin, not a mask).
+///
+/// Returning `None` rather than `OpMask::NONE` is deliberate: the empty mask is
+/// contained by *every* mask, so a `NONE` requirement fed to [`AclView::may`]
+/// would authorize anyone — a footgun if a non-data payload ever reached a
+/// `may` check. `None` makes that misuse impossible to express.
 #[must_use]
-pub fn required_mask_for(payload: &OpPayload) -> OpMask {
+pub fn required_mask_for(payload: &OpPayload) -> Option<OpMask> {
     match payload {
-        OpPayload::Put { .. } => OpMask::WRITE,
-        OpPayload::Delete { .. } => OpMask::DELETE,
-        _ => OpMask::NONE,
+        OpPayload::Put { .. } => Some(OpMask::WRITE),
+        OpPayload::Delete { .. } => Some(OpMask::DELETE),
+        _ => None,
+    }
+}
+
+/// `Ok` iff `author` holds `required` on `entity` (the data-plane check).
+fn check_data(
+    acl_at_cut: &AclView,
+    author: &PublicKey,
+    entity: Id,
+    required: OpMask,
+) -> Result<(), Rejected> {
+    if acl_at_cut.may(author, entity, required) {
+        Ok(())
+    } else {
+        Err(Rejected::NotPermitted { required })
     }
 }
 
@@ -140,14 +166,12 @@ pub fn required_mask_for(payload: &OpPayload) -> OpMask {
 /// authority the op's payload requires.
 pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
     match &op.payload {
-        OpPayload::Put { entity, .. } | OpPayload::Delete { entity } => {
-            let required = required_mask_for(&op.payload);
-            if acl_at_cut.may(&op.author, *entity, required) {
-                Ok(())
-            } else {
-                Err(Rejected::NotPermitted { required })
-            }
-        }
+        // Split per data op so each carries its literal required mask — no
+        // `Option` to unwrap, so there is no unreachable fallback that could
+        // silently deny (or panic) if the arms ever drift. `required_mask_for`
+        // remains the public helper for external callers.
+        OpPayload::Put { entity, .. } => check_data(acl_at_cut, &op.author, *entity, OpMask::WRITE),
+        OpPayload::Delete { entity } => check_data(acl_at_cut, &op.author, *entity, OpMask::DELETE),
         OpPayload::SetWriters { object, .. } => {
             if acl_at_cut.is_owner(&op.author, *object) {
                 Ok(())

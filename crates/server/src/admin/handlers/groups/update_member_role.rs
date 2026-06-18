@@ -8,15 +8,18 @@ use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
 use tracing::{error, info};
 
 use super::{parse_group_id, parse_identity};
+use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::parse_api_error;
 use crate::admin::service::ApiResponse;
+use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 use calimero_server_primitives::admin::UpdateMemberRoleApiResponse;
 
 pub async fn handler(
     Path((group_id_str, identity_str)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<UpdateMemberRoleApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
@@ -31,13 +34,18 @@ pub async fn handler(
 
     info!(group_id=%group_id_str, identity=%identity_str, "Updating member role");
 
+    let requester = match resolve_requester(auth_key, req.requester) {
+        Ok(r) => r,
+        Err(err) => return err.into_response(),
+    };
+
     let result = state
         .ctx_client
         .update_member_role(UpdateMemberRoleRequest {
             group_id,
             identity,
             new_role: req.role,
-            requester: req.requester,
+            requester,
         })
         .await
         .map_err(parse_api_error);

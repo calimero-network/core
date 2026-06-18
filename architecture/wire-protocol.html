@@ -739,6 +739,12 @@
     <span class="field">signed_invitation</span>: <span class="ty">SignedInvitation</span>,     <span class="comment">// proof of valid invitation</span>
 }
 
+<span class="field">MemberJoinedAt</span> {
+    <span class="field">member</span>:            <span class="ty">PublicKey</span>,            <span class="comment">// joiner's namespace identity</span>
+    <span class="field">signed_invitation</span>: <span class="ty">SignedInvitation</span>,     <span class="comment">// proof of valid invitation</span>
+    <span class="field">joined_at</span>:         <span class="ty">u64</span>,                  <span class="comment">// joiner-signed claim time; apply rejects if &gt; invitation expiry. New joins emit this; legacy MemberJoined stays for decode</span>
+}
+
 <span class="field">KeyDelivery</span> {
     <span class="field">group_id</span>: <span class="ty">[u8; 32]</span>,     <span class="comment">// target group</span>
     <span class="field">envelope</span>: <span class="ty">KeyEnvelope</span>,  <span class="comment">// ECDH-wrapped group key for joiner</span>

@@ -97,10 +97,14 @@ fn role_from_invited_role(value: u8) -> GroupMemberRole {
 ///   *at auth time* (the context→group lookup), so it lives in that index, not
 ///   inside a scope's `ScopeState`.
 ///
-/// A `_` catch-all (rather than an exhaustive match) keeps this transitional
-/// adapter compiling as `GroupOp` grows; any genuinely auth-relevant new
-/// variant must be armed explicitly above, and the fold-equivalence coverage
-/// tests would catch a divergence if one slipped through.
+/// The auth-relevant (in-model) variants are armed explicitly; everything else
+/// maps to `None`. `GroupOp` is `#[non_exhaustive]`, so a `_` arm is mandatory
+/// here (a downstream crate cannot match it exhaustively) — which means a new
+/// upstream variant lands in `_ => None` by default. The safety net against a
+/// new *auth-relevant* op being silently dropped is the fold-equivalence test
+/// (`prefix_walk_resolution_matches_reference_under_random_inputs` in
+/// `calimero-governance-store`): if a new variant changes membership in a way
+/// the projection doesn't see, that test diverges.
 #[must_use]
 pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPayload> {
     match op {
@@ -189,6 +193,8 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         RootOp::GroupDeleted { root_group_id, .. } => Some(OpPayload::SubgroupDeleted {
             scope: ScopeId::from(*root_group_id),
         }),
+        // Out-of-model: `KeyDelivery` is key transport, not authorization
+        // state. (`RootOp` is `#[non_exhaustive]`, so a `_` arm is mandatory.)
         _ => None,
     }
 }

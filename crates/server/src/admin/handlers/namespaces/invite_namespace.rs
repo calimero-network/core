@@ -17,6 +17,7 @@ use reqwest::StatusCode;
 use tracing::{error, info};
 
 use crate::admin::handlers::groups::parse_group_id;
+use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::auth::AuthenticatedKey;
@@ -47,7 +48,10 @@ pub async fn handler(
 
     info!(namespace_id=%namespace_id_str, recursive=?req.recursive, "Creating namespace invitation");
 
-    let requester = auth_key.map(|Extension(k)| k.0).or(req.requester);
+    let requester = match resolve_requester(auth_key, req.requester) {
+        Ok(r) => r,
+        Err(err) => return err.into_response(),
+    };
     let expiration_secs = req.expiration_timestamp.unwrap_or(365 * 24 * 3600);
 
     if req.recursive.unwrap_or(false) {
