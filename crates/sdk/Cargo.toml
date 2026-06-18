@@ -31,3 +31,8 @@ tracing = ["dep:tracing", "dep:tracing-subscriber"]
 
 [dev-dependencies]
 trybuild.workspace = true
+# The macro-test fixtures exercise full `#[app::state]` expansion, which emits
+# `::calimero_storage` paths (CRDT merge registry). This is a dev-dependency
+# cycle (calimero-storage depends on calimero-sdk) — Cargo permits it because
+# the back-edge is a dev-dependency.
+calimero-storage.workspace = true

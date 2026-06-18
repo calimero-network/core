@@ -74,6 +74,14 @@ pub enum ParseError<'a> {
     MustSpecifyLifetime,
     #[error("this event must be public")]
     NoPrivateEvent,
+    #[error(
+        "`#[app::event]` can only be applied to an enum — events are serialized as a tagged \
+         union (`{{ \"kind\": ..., \"data\": ... }}`), which has no meaning for a struct.\n\n\
+         Model each event as an enum variant instead:\n\n\
+         #[app::event]\n\
+         pub enum Event {{ /* one variant per event */ }}"
+    )]
+    EventMustBeEnum,
     #[error("please use a simple `pub` directive")]
     NoComplexVisibility,
     #[error("explicit ABIs are not supported")]

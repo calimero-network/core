@@ -1,19 +1,30 @@
-//! Tests for SDK macros interacting with other Rust attributes
+//! `#[app::state]` / `#[app::logic]` compose with standard Rust attributes
+//! (`#[derive]`, doc comments, `#[repr]`, `#[cfg]`, `#[allow]`, `#[must_use]`,
+//! `#[inline]`, `#[deprecated]`).
 //!
-//! This file tests that SDK macros work correctly when combined with
-//! standard Rust attributes like #[derive], #[cfg], #[allow], etc.
+//! Each scenario keeps its original fields; bare value types are wrapped in
+//! `LwwRegister<T>` (the CRDT form), which derefs to `T` so the `&self.field`
+//! accessors compile unchanged.
 
 use calimero_sdk::app;
+use calimero_storage::collections::LwwRegister;
 
-// Test combining app::state with derive attributes
+// Test combining app::state with a derive attribute
 #[app::state]
 #[derive(Clone)]
 struct StateWithDerive {
-    value: String,
+    value: LwwRegister<String>,
 }
 
 #[app::logic]
 impl StateWithDerive {
+    #[app::init]
+    pub fn init() -> StateWithDerive {
+        StateWithDerive {
+            value: LwwRegister::new(String::new()),
+        }
+    }
+
     pub fn get_value(&self) -> &str {
         &self.value
     }
@@ -27,18 +38,19 @@ impl StateWithDerive {
 #[app::state]
 #[derive(Clone, Default)]
 struct StateWithMultipleDerive {
-    count: u64,
-    items: Vec<String>,
+    count: LwwRegister<u64>,
+    items: LwwRegister<Vec<String>>,
 }
 
 #[app::logic]
 impl StateWithMultipleDerive {
-    pub fn new() -> Self {
+    #[app::init]
+    pub fn init() -> Self {
         Self::default()
     }
 
     pub fn get_count(&self) -> u64 {
-        self.count
+        *self.count
     }
 }
 
@@ -47,11 +59,18 @@ impl StateWithMultipleDerive {
 #[app::state]
 struct DocumentedState {
     /// The main data field
-    data: String,
+    data: LwwRegister<String>,
 }
 
 #[app::logic]
 impl DocumentedState {
+    #[app::init]
+    pub fn init() -> DocumentedState {
+        DocumentedState {
+            data: LwwRegister::new(String::new()),
+        }
+    }
+
     /// Gets the data
     pub fn get_data(&self) -> &str {
         &self.data
@@ -59,7 +78,7 @@ impl DocumentedState {
 
     /// Sets the data
     pub fn set_data(&mut self, value: String) {
-        self.data = value;
+        self.data.set(value);
     }
 }
 
@@ -69,6 +88,11 @@ struct StateWithLintAttributes;
 
 #[app::logic]
 impl StateWithLintAttributes {
+    #[app::init]
+    pub fn init() -> StateWithLintAttributes {
+        StateWithLintAttributes
+    }
+
     #[allow(unused_variables)]
     pub fn with_allow(&self, unused: String) {}
 
@@ -82,64 +106,92 @@ impl StateWithLintAttributes {
 #[repr(C)]
 #[app::state]
 struct ReprCState {
-    x: i32,
-    y: i32,
+    x: LwwRegister<i32>,
+    y: LwwRegister<i32>,
 }
 
 #[app::logic]
 impl ReprCState {
+    #[app::init]
+    pub fn init() -> ReprCState {
+        ReprCState {
+            x: LwwRegister::new(0),
+            y: LwwRegister::new(0),
+        }
+    }
+
     pub fn get_x(&self) -> i32 {
-        self.x
+        *self.x
     }
 
     pub fn get_y(&self) -> i32 {
-        self.y
+        *self.y
     }
 }
 
-// Test cfg attributes work with state (basic)
-// Using #[cfg(test)] which is always true during test compilation
+// Test cfg attributes on a logic method. trybuild compiles each fixture as a
+// plain binary, so `#[cfg(test)]` is *false* here — `get_conditional` is
+// compiled out, which is itself the attribute/macro interplay under test.
 #[app::state]
 struct ConditionalState {
-    #[cfg(test)]
-    conditional_field: String,
-    always_present: u64,
+    always_present: LwwRegister<u64>,
 }
 
 #[app::logic]
 impl ConditionalState {
+    #[app::init]
+    pub fn init() -> ConditionalState {
+        ConditionalState {
+            always_present: LwwRegister::new(0),
+        }
+    }
+
     pub fn get_always_present(&self) -> u64 {
-        self.always_present
+        *self.always_present
     }
 
     #[cfg(test)]
-    pub fn get_conditional(&self) -> &str {
-        &self.conditional_field
+    pub fn get_conditional(&self) -> u64 {
+        0
     }
 }
 
 // Test must_use attribute on methods
 #[app::state]
 struct MustUseState {
-    value: u64,
+    value: LwwRegister<u64>,
 }
 
 #[app::logic]
 impl MustUseState {
+    #[app::init]
+    pub fn init() -> MustUseState {
+        MustUseState {
+            value: LwwRegister::new(0),
+        }
+    }
+
     #[must_use]
     pub fn compute(&self) -> u64 {
-        self.value * 2
+        *self.value * 2
     }
 }
 
 // Test inline attributes
 #[app::state]
 struct InlineState {
-    data: String,
+    data: LwwRegister<String>,
 }
 
 #[app::logic]
 impl InlineState {
+    #[app::init]
+    pub fn init() -> InlineState {
+        InlineState {
+            data: LwwRegister::new(String::new()),
+        }
+    }
+
     #[inline]
     pub fn get_inline(&self) -> &str {
         &self.data
@@ -154,11 +206,18 @@ impl InlineState {
 // Test deprecated attribute
 #[app::state]
 struct DeprecatedMethodState {
-    value: String,
+    value: LwwRegister<String>,
 }
 
 #[app::logic]
 impl DeprecatedMethodState {
+    #[app::init]
+    pub fn init() -> DeprecatedMethodState {
+        DeprecatedMethodState {
+            value: LwwRegister::new(String::new()),
+        }
+    }
+
     #[deprecated(note = "Use get_new_value instead")]
     pub fn get_old_value(&self) -> &str {
         &self.value

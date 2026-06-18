@@ -4,7 +4,13 @@
     reason = "Allowable in integration tests"
 )]
 
-#[ignore]
+// Verifies that the SDK proc-macros reject misuse with clear `(calimero)>`
+// compile errors and accept valid usage. Runs under plain `cargo test`, so it
+// gates CI. Golden `.stderr` files are toolchain-sensitive — after an
+// intentional `rust-toolchain.toml` bump, re-bless with:
+//   TRYBUILD=overwrite cargo test -p calimero-sdk --test macros
+// then eyeball the diff to confirm only rustc noise (cascade errors, wording)
+// changed and every `(calimero)>` message is preserved.
 #[test]
 fn all() {
     let t = trybuild::TestCases::new();
