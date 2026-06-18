@@ -1,8 +1,8 @@
 //! `GroupOp::MemberAdded` apply handler. Extracted from
 //! `apply_group_op_mutations` in #2304.
 
+use super::super::super::build_auto_follow_set_if_enabled;
 use super::super::super::contexts::restore_member_context_identities;
-use super::super::super::emit_auto_follow_set_if_enabled;
 use super::context::GroupApplyCtx;
 use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError,
@@ -56,6 +56,8 @@ pub(crate) fn apply(
     // The handler short-circuits via `NotForSelf` on every node
     // except the joiner, so the cascade only fires once per
     // membership change.
-    emit_auto_follow_set_if_enabled(store, group_id, member)?;
+    if let Some(event) = build_auto_follow_set_if_enabled(ctx.store(), ctx.group_id(), member)? {
+        ctx.queue_event(event);
+    }
     Ok(())
 }

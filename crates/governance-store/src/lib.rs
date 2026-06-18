@@ -1155,11 +1155,11 @@ fn diff_sorted_context_hashes(
 /// best-effort optimisation; missing it means the joiner won't
 /// backfill pre-existing contexts in this group, but they'll still
 /// auto-follow future ones via the `ContextRegistered` event handler.
-pub(crate) fn emit_auto_follow_set_if_enabled(
+pub(crate) fn build_auto_follow_set_if_enabled(
     store: &Store,
     group_id: &ContextGroupId,
     member: &PublicKey,
-) -> EyreResult<()> {
+) -> EyreResult<Option<crate::op_events::OpEvent>> {
     let value = match MembershipRepository::new(store).member_value(group_id, member) {
         Ok(Some(v)) => v,
         Ok(None) => {
@@ -1168,7 +1168,7 @@ pub(crate) fn emit_auto_follow_set_if_enabled(
                 %member,
                 "post-apply read found no member row — skipping auto-follow emission"
             );
-            return Ok(());
+            return Ok(None);
         }
         Err(err) => {
             // Best-effort: log and continue. See the function-level
@@ -1179,18 +1179,19 @@ pub(crate) fn emit_auto_follow_set_if_enabled(
                 ?err,
                 "post-apply read failed — skipping auto-follow emission"
             );
-            return Ok(());
+            return Ok(None);
         }
     };
     if value.auto_follow.contexts {
-        crate::op_events::notify(crate::op_events::OpEvent::AutoFollowSet {
+        Ok(Some(crate::op_events::OpEvent::AutoFollowSet {
             group_id: group_id.to_bytes(),
             member: *member,
             contexts: true,
             subgroups: value.auto_follow.subgroups,
-        });
+        }))
+    } else {
+        Ok(None)
     }
-    Ok(())
 }
 
 ///

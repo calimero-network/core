@@ -8,7 +8,7 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 use sha2::Digest;
 
-use super::super::emit_auto_follow_set_if_enabled;
+use super::super::build_auto_follow_set_if_enabled;
 use super::super::membership::role_from_invited_role;
 /// Namespace-scoped service for handling `RootOp::MemberJoined`.
 pub struct NamespaceMembershipService<'a> {
@@ -68,7 +68,9 @@ impl<'a> NamespaceMembershipService<'a> {
         // Open-subgroup self-joiner with `contexts: true` (the post-#2422
         // default) would only auto-follow FUTURE contexts, not the ones
         // already registered when they joined.
-        emit_auto_follow_set_if_enabled(self.store, &group_id, member)?;
+        if let Some(event) = build_auto_follow_set_if_enabled(self.store, &group_id, member)? {
+            crate::op_events::notify(event);
+        }
         Ok(())
     }
 
