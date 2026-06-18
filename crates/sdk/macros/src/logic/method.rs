@@ -43,6 +43,20 @@ pub struct PublicLogicMethod<'a> {
     modifiers: Vec<Modifer>,
 }
 
+impl<'a> PublicLogicMethod<'a> {
+    /// Whether this method is the `#[app::init]` initializer.
+    pub fn is_init(&self) -> bool {
+        self.modifiers
+            .iter()
+            .any(|modifier| matches!(modifier, Modifer::Init))
+    }
+
+    /// The method's identifier (for diagnostics).
+    pub fn name(&self) -> &'a Ident {
+        self.name
+    }
+}
+
 impl ToTokens for LogicMethod<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
@@ -471,6 +485,12 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         }
 
         let name = &input.item.sig.ident;
+
+        // Exported methods become symbols the runtime dispatches by name; the
+        // `__calimero` prefix is reserved for the SDK's own generated exports.
+        if name.to_string().starts_with("__calimero") {
+            errors.subsume(SynError::new_spanned(name, ParseError::ReservedMethodName));
+        }
 
         match (is_init, &self_type) {
             (true, Some(self_type)) => errors.subsume(SynError::new_spanned(

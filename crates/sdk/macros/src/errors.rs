@@ -122,6 +122,31 @@ pub enum ParseError<'a> {
         suggestion: &'static str,
     },
     #[error(
+        "`{type_name}` is not allowed in replicated state — interior-mutability and \
+         shared-ownership wrappers have no merge semantics and would silently diverge across \
+         replicas (and don't round-trip through borsh).\n\n\
+         Store the plain value instead — wrap it in `LwwRegister<T>` for last-write-wins, or use \
+         an SDK CRDT collection. If you truly need this for node-local scratch, keep it out of \
+         `#[app::state]`."
+    )]
+    ForbiddenInteriorMutability { type_name: &'static str },
+    #[error(
+        "`#[app::state]` cannot be applied to an enum — no `Mergeable` impl is generated for it, \
+         so the type fails to build for `wasm32` (the runtime's merge registration requires \
+         `Mergeable`), and even if it built, there is no canonical way to merge values from \
+         different variants.\n\n\
+         Use a struct of CRDT fields. For a value that really is one-of-N, make it a struct field \
+         wrapped in `LwwRegister<MyEnum>` (last-write-wins)."
+    )]
+    StateMustBeStruct,
+    #[error("duplicate `#[app::init]` — a type may declare at most one initializer")]
+    DuplicateInit,
+    #[error(
+        "this method name is reserved by the SDK's code generation — pick another. Names starting \
+         with `__calimero` (and the generated runtime exports) collide with emitted symbols."
+    )]
+    ReservedMethodName,
+    #[error(
         "`{type_name}` cannot be used inside `#[app::private]` — it {explanation}\n\n\
          A node-local private namespace has a single writer, so the multi-writer / \
          sync-layer semantics this type models have no meaning here."

@@ -1,0 +1,7 @@
+error: (calimero)> `#[app::state]` cannot be applied to an enum — no `Mergeable` impl is generated for it, so the type fails to build for `wasm32` (the runtime's merge registration requires `Mergeable`), and even if it built, there is no canonical way to merge values from different variants.
+
+       Use a struct of CRDT fields. For a value that really is one-of-N, make it a struct field wrapped in `LwwRegister<MyEnum>` (last-write-wins).
+ --> tests/macros/error_state_enum.rs:6:5
+  |
+6 | pub enum BadState {
+  |     ^^^^

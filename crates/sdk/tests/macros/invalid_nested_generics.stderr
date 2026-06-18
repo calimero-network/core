@@ -69,12 +69,14 @@ help: consider restricting type parameter `T` with trait `BorshSerialize`
 6 | struct MyState<T: calimero_sdk::borsh::BorshSerialize>(T);
   |                 +++++++++++++++++++++++++++++++++++++
 
-error[E0277]: the trait bound `T: Mergeable` is not satisfied
+error[E0277]: (calimero)> `T` cannot be stored in replicated state — it is not a CRDT
  --> tests/macros/invalid_nested_generics.rs:5:1
   |
 5 | #[app::state]
-  | ^^^^^^^^^^^^^ the trait `Mergeable` is not implemented for `T`
+  | ^^^^^^^^^^^^^ this type has no merge semantics
   |
+  = note: every `#[app::state]` field and every collection value must be `Mergeable` so replicas converge.
+  = note: fixes: wrap a plain value in `LwwRegister<T>` (last-write-wins) or `Counter`; use `UnorderedMap`/`UnorderedSet`/`Vector` for collections; or `#[derive(Mergeable)]` on your own struct (every field must itself be `Mergeable`).
   = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider restricting type parameter `T` with trait `Mergeable`
   |

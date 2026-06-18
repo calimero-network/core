@@ -62,6 +62,10 @@ use crate::store::StorageAdaptor;
 // Note: Vec is also not Mergeable for same reason
 // Use Vector<T> CRDT collection instead
 
+// `do_not_recommend`: when a user field isn't `Mergeable`, rustc must not
+// suggest "implement `Mergeable for Option<_>`" — the fix is to use a CRDT type,
+// which the trait's `on_unimplemented` note already spells out.
+#[diagnostic::do_not_recommend]
 impl<T: Mergeable + Clone> Mergeable for Option<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         match (self.as_mut(), other) {
@@ -86,6 +90,7 @@ impl<T: Mergeable + Clone> Mergeable for Option<T> {
 // through (`Box` is in the lint's pass-through list) only for the trait bound
 // to fail later with an unhelpful diagnostic. Trivial delegation makes the
 // claim honest.
+#[diagnostic::do_not_recommend]
 impl<T: Mergeable> Mergeable for Box<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         (**self).merge(&**other)

@@ -124,6 +124,16 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             }
         }
 
+        // At most one `#[app::init]` per type — a second initializer is
+        // ambiguous (which one constructs the state?). Flag every init after the
+        // first, at its own name span.
+        for method in methods.iter().filter(|m| m.is_init()).skip(1) {
+            errors.subsume(SynError::new_spanned(
+                method.name(),
+                ParseError::DuplicateInit,
+            ));
+        }
+
         errors.check()?;
 
         Ok(Self {

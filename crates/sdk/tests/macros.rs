@@ -58,4 +58,19 @@ fn all() {
     t.compile_fail("tests/macros/error_explicit_abi.rs");
     t.compile_fail("tests/macros/error_event_on_struct.rs");
     t.compile_fail("tests/macros/error_private_incompatible.rs");
+
+    // === SDK misuse diagnostics ===
+
+    // `#[app::state]` must be a struct of CRDT fields.
+    t.compile_fail("tests/macros/error_state_enum.rs");
+    t.compile_fail("tests/macros/error_interior_mutability.rs");
+    // A collection value that isn't a CRDT points at `Mergeable` / `LwwRegister`.
+    t.compile_fail("tests/macros/error_non_mergeable_field.rs");
+    // Only `#[app::event]` enums can be emitted.
+    t.compile_fail("tests/macros/error_emit_non_event.rs");
+    // Initializer + method-name rules.
+    t.compile_fail("tests/macros/error_duplicate_init.rs");
+    t.compile_fail("tests/macros/error_reserved_method_name.rs");
+    // Discarding a read-only `get()` result is a no-op read.
+    t.compile_fail("tests/macros/error_value_ref_must_use.rs");
 }
