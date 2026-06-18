@@ -161,6 +161,12 @@ pub enum ParseError<'a> {
     XCallAndInitConflict,
     #[error("`#[app::xcall]` and `#[app::view]` are mutually exclusive — xcall is fire-and-forget, so a read-only target's return value would be discarded")]
     XCallAndViewConflict,
+    #[error(
+        "a `#[app::view]` method is read-only but takes `&mut self` — the node runs it under a \
+         shared read lock, so mutating state through it is unsound. Use `&self`, or drop \
+         `#[app::view]` if the method must mutate."
+    )]
+    ViewCannotMutate,
 }
 
 impl AsRef<Self> for ParseError<'_> {

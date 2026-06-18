@@ -73,4 +73,10 @@ fn all() {
     t.compile_fail("tests/macros/error_reserved_method_name.rs");
     // Discarding a read-only `get()` result is a no-op read.
     t.compile_fail("tests/macros/error_value_ref_must_use.rs");
+    // `#[app::view]` is read-only — no `&mut self`.
+    t.compile_fail("tests/macros/error_view_mutates.rs");
+    // `emits = T` must name an `#[app::event]` type.
+    t.compile_fail("tests/macros/error_emits_non_event.rs");
+    // `PermissionedStorage<T, A>` policy must implement `Authorizer`.
+    t.compile_fail("tests/macros/error_bad_authorizer.rs");
 }

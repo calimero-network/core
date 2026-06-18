@@ -492,6 +492,14 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             errors.subsume(SynError::new_spanned(name, ParseError::ReservedMethodName));
         }
 
+        // A `#[app::view]` method is read-only (the node takes a shared read
+        // lock), so a `&mut self` receiver is a contradiction.
+        if is_view {
+            if let Some(SelfType::Mutable(ty)) = &self_type {
+                errors.subsume(SynError::new_spanned(ty, ParseError::ViewCannotMutate));
+            }
+        }
+
         match (is_init, &self_type) {
             (true, Some(self_type)) => errors.subsume(SynError::new_spanned(
                 match self_type {

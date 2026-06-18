@@ -281,6 +281,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<K, V, S> Mergeable for AuthoredMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,

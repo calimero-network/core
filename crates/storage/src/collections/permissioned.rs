@@ -94,6 +94,14 @@ impl Op {
 /// the API call-site and mirrors what the merge-time check enforces. A policy
 /// that cannot be reduced to the writer set (and, later, an op mask) merge can
 /// replay is advisory only and must be documented as such.
+#[diagnostic::on_unimplemented(
+    message = "(calimero)> `{Self}` is not an access-control policy for `PermissionedStorage`",
+    label = "not an `Authorizer`",
+    note = "the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` \
+            (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via \
+            `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` \
+            as a pure function of `(who, op, caps)` with no I/O."
+)]
 pub trait Authorizer {
     /// Is `who` permitted to perform `op`, given the resource's current
     /// capability map (each writer with its [`OpMask`])? Pure: no I/O.
@@ -372,6 +380,7 @@ where
 // Root-state merge is a no-op, exactly as for `WriterSetCell`: the value is a
 // separate entity (merged per-entity) and the writer set converges via the
 // verified rotation log. Delegated so the semantics stay identical.
+#[diagnostic::do_not_recommend]
 impl<T, A> Mergeable for PermissionedStorage<T, A>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default,

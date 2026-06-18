@@ -1,0 +1,14 @@
+error[E0277]: (calimero)> `NotAnEvent` is not an app event
+ --> tests/macros/error_emits_non_event.rs:7:22
+  |
+7 | #[app::state(emits = NotAnEvent)]
+  |                      ^^^^^^^^^^ not an `#[app::event]` type
+  |
+  = help: the trait `AppEvent` is not implemented for `NotAnEvent`
+  = note: only an enum annotated with `#[app::event]` can be emitted. Define one and emit a variant: `#[app::event] pub enum Event { Something }` then `app::emit!(Event::Something)`.
+  = help: the trait `AppEvent` is implemented for `NoEvent`
+note: required by a bound in `calimero_sdk::state::AppState::Event`
+ --> src/state.rs
+  |
+  |     type Event<'a>: AppEvent + 'a;
+  |                     ^^^^^^^^ required by this bound in `AppState::Event`

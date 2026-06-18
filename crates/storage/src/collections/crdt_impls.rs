@@ -116,6 +116,7 @@ impl<T: 'static> CrdtMeta for LwwRegister<T> {
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<T: Clone> Mergeable for LwwRegister<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Use existing merge implementation
@@ -156,6 +157,7 @@ impl<S: StorageAdaptor> CrdtMeta for Counter<true, S> {
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW_DECREMENT, S> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Merge positive counts (both G-Counter and PN-Counter)
@@ -217,6 +219,7 @@ impl CrdtMeta for ReplicatedGrowableArray {
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl Mergeable for ReplicatedGrowableArray {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // RGA is built on UnorderedMap which has element-level DAG synchronization.
@@ -265,6 +268,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<K, V, S> Mergeable for UnorderedMap<K, V, S>
 where
     K: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq + 'static,
@@ -329,6 +333,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<K, V, S> Mergeable for SortedMap<K, V, S>
 where
     K: borsh::BorshSerialize
@@ -384,6 +389,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for UnorderedSet<T, S>
 where
     T: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq + 'static,
@@ -445,6 +451,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for SortedSet<T, S>
 where
     T: borsh::BorshSerialize
@@ -487,6 +494,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for Vector<T, S>
 where
     T: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable + 'static,

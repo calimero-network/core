@@ -190,6 +190,7 @@ where
 }
 
 // Implement Mergeable so it correctly merges in #[app::state]
+#[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for FrozenStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Clone + 'static,
