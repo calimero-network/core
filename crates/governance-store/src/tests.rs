@@ -5766,6 +5766,11 @@ mod auto_follow_tests {
     /// wakes during the gap between `notify` and `persist_*` and reads a
     /// log that does NOT yet contain the op; post-fix the drain runs only
     /// after the append, so the observer always reads `true`.
+    ///
+    /// NOTE: this is a DETERMINISTIC GREEN (proves the fixed persist-then-notify
+    /// ordering) but only a BEST-EFFORT RED (regression detection) — see the
+    /// `Barrier` comment in the body for why a fully deterministic RED would need
+    /// a test-only sync hook in the apply hot path, which we deliberately omit.
     #[test]
     fn member_added_event_fires_after_op_log_append() {
         use std::sync::{Arc, Barrier};
@@ -5844,10 +5849,12 @@ mod auto_follow_tests {
                     }
                     Ok(_) => {} // unrelated events from parallel tests
                     Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                        // Spin tightly so the snapshot is taken as close as
-                        // possible to the broadcast send (no sleep — we want
-                        // to win the race against the applier's persist).
-                        std::hint::spin_loop();
+                        // `yield_now` (not `spin_loop`): poll tightly but let the
+                        // scheduler run the applier thread, so a single-core or
+                        // cooperative scheduler can't starve it into the 10s
+                        // deadline. Still polls fast enough to snapshot close to
+                        // the broadcast send.
+                        std::thread::yield_now();
                     }
                     Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
                         // Capacity-induced miss (parallel tests flooded the
@@ -5902,38 +5909,42 @@ mod auto_follow_tests {
             },
         )
         .unwrap();
-        apply_local_signed_group_op(&store, &op).unwrap(); // first apply emits
 
-        // Subscribe AFTER the first apply so we only observe the replay.
+        // Subscribe BEFORE the first apply so the receiver is in place ahead of
+        // every emit — there is no subscribe-to-apply gap a parallel-test flood
+        // could exploit. We then count how many `MemberAdded` events for
+        // (gid, member) appear across BOTH applies: the first must emit exactly
+        // one, the replay (already-logged) must emit none, so the total is 1.
+        // This is stronger than asserting absence — it doubles as a POSITIVE
+        // control (an event mechanism that silently fired zero times would fail
+        // here too) — and it is timing-independent because both applies and
+        // `op_events::notify` are synchronous on THIS thread, so all events are
+        // buffered before the single drain below.
         let mut rx = op_events::subscribe();
+        apply_local_signed_group_op(&store, &op).unwrap(); // first apply emits
         apply_local_signed_group_op(&store, &op).unwrap(); // replay (already logged)
 
-        // `apply_local_signed_group_op` and `op_events::notify` are both
-        // synchronous on THIS thread, so by the time the replay apply returns
-        // any re-emitted event is already in the broadcast buffer. Drain it in
-        // a single non-blocking pass (no wall-clock window) and assert the
-        // replayed op produced no `MemberAdded` for (gid, member). This removes
-        // the time dependency entirely — a buggy re-emit fails deterministically
-        // instead of racing a 300ms deadline.
+        let mut member_added = 0usize;
         loop {
             match rx.try_recv() {
                 Ok(OpEvent::MemberAdded {
                     group_id, member, ..
-                }) => assert!(
-                    !(group_id == gid_bytes && member == new_member_pk),
-                    "replay must not re-emit MemberAdded (#2770)"
-                ),
+                }) if group_id == gid_bytes && member == new_member_pk => member_added += 1,
                 Ok(_) => {} // unrelated events from parallel tests
                 Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
-                    // Capacity flood between subscribe and this drain could have
-                    // dropped a buggy re-emit — fail loudly rather than treating
-                    // the miss as "no re-emit" (false pass). Mirrors the observer
-                    // tests above.
+                    // A capacity flood (1024) from parallel tests could drop the
+                    // events we count — fail loudly rather than under-counting
+                    // into a false pass.
                     panic!("drain lagged by {n} events — replay re-emit check inconclusive");
                 }
                 Err(_) => break, // Empty (drained) or Closed — nothing more to read
             }
         }
+        assert_eq!(
+            member_added, 1,
+            "first apply must emit MemberAdded exactly once and the replay must \
+             not re-emit it (#2770)"
+        );
     }
 
     /// #2770 (namespace RootOp path): when `SubgroupCreated` fires, the
@@ -5950,6 +5961,9 @@ mod auto_follow_tests {
     /// that does NOT yet contain the op; post-fix the events are drained
     /// only after the namespace op is appended, so the snapshot is always
     /// `true`.
+    ///
+    /// NOTE: deterministic GREEN, best-effort RED — same characterization as
+    /// `member_added_event_fires_after_op_log_append` (see its body comment).
     #[test]
     fn subgroup_created_event_fires_after_namespace_op_persist() {
         use std::sync::{Arc, Barrier};
@@ -6041,10 +6055,10 @@ mod auto_follow_tests {
                     }
                     Ok(_) => {} // unrelated events from parallel tests
                     Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                        // Spin tightly so the snapshot is taken as close as
-                        // possible to the broadcast send (win the race
-                        // against the applier's `store_operation`).
-                        std::hint::spin_loop();
+                        // `yield_now` (not `spin_loop`): poll tightly but let the
+                        // scheduler run the applier thread (single-core / coop
+                        // scheduler safety). Still snapshots close to the send.
+                        std::thread::yield_now();
                     }
                     Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
                         // Capacity-induced miss: fail loudly rather than
