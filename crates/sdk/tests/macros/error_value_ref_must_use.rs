@@ -22,7 +22,13 @@ impl S {
     }
 
     pub fn peek(&self, key: String) {
-        // Reads a value and throws it away — the change-less footgun the guard closes.
+        // Reads a value and throws it away — the change-less footgun the guard
+        // closes. This is a `compile_fail` fixture: it is only ever compiled,
+        // never run, so the `unwrap`s can't actually panic. The discarded
+        // `ValueRef` is what `#[must_use]` flags (turned into an error by the
+        // crate-level `#![deny(unused_must_use)]` above so trybuild can assert
+        // it; `must_use` is warn-by-default and a compile_fail test needs an
+        // error).
         self.items.get(&key).unwrap().unwrap();
     }
 }

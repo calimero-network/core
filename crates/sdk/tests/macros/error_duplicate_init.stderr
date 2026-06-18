@@ -1,13 +1,13 @@
-error: (calimero)> duplicate `#[app::init]` — a type may declare at most one initializer
-  --> tests/macros/error_duplicate_init.rs:23:12
+error: (calimero)> method annotated with `#[app::init]` must be named `init`
+  --> tests/macros/error_duplicate_init.rs:24:12
    |
-23 |     pub fn init(value: u64) -> S {
-   |            ^^^^
+24 |     pub fn init_with_value(value: u64) -> S {
+   |            ^^^^^^^^^^^^^^^
 
 error[E0277]: (calimero)> no method named `#[app::init]` found for type `S`
-  --> tests/macros/error_duplicate_init.rs:13:8
+  --> tests/macros/error_duplicate_init.rs:14:8
    |
-13 | struct S;
+14 | struct S;
    |        ^ add an `#[app::init]` method to this type
    |
    = help: the trait `AppStateInit` is not implemented for `S`
@@ -16,12 +16,3 @@ note: required by a bound in `AppState`
    |
    | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
    |                                                         ^^^^^^^^^^^^ required by this bound in `AppState`
-
-error[E0592]: duplicate definitions with name `init`
-  --> tests/macros/error_duplicate_init.rs:23:5
-   |
-18 |     pub fn init() -> S {
-   |     ------------------ other definition for `init`
-...
-23 |     pub fn init(value: u64) -> S {
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ duplicate definitions for `init`
