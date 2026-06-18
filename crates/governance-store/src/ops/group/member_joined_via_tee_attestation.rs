@@ -40,7 +40,7 @@ pub(crate) fn apply(
     // Same rationale as `MemberAdded`: a TEE rejoining after a
     // prior removal should have their deny-list entry cleared.
     DenyListRepository::new(store).clear(group_id, member)?;
-    crate::op_events::notify(crate::op_events::OpEvent::TeeMemberAdmitted {
+    ctx.queue_event(crate::op_events::OpEvent::TeeMemberAdmitted {
         group_id: group_id.to_bytes(),
         member: *member,
     });

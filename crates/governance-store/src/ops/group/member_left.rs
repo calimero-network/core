@@ -101,12 +101,12 @@ pub(crate) fn apply(
             // state-delta traffic on those topics is dropped
             // until they re-join.
             DenyListRepository::new(store).mark(sub, member)?;
-            crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
+            ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
                 group_id: sub.to_bytes(),
                 member: *member,
             });
             if *role == GroupMemberRole::ReadOnlyTee {
-                crate::op_events::notify(crate::op_events::OpEvent::TeeMemberRemoved {
+                ctx.queue_event(crate::op_events::OpEvent::TeeMemberRemoved {
                     group_id: sub.to_bytes(),
                     member: *member,
                 });
@@ -156,14 +156,14 @@ pub(crate) fn apply(
         expected_group_state_hash,
         expected_context_state_hashes,
     );
-    crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
+    ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
         group_id: group_id.to_bytes(),
         member: *member,
     });
     // Role-scoped follow-up for the root-group removal. See the
     // matching block in `member_removed.rs` for rationale.
     if leaver_role == GroupMemberRole::ReadOnlyTee {
-        crate::op_events::notify(crate::op_events::OpEvent::TeeMemberRemoved {
+        ctx.queue_event(crate::op_events::OpEvent::TeeMemberRemoved {
             group_id: group_id.to_bytes(),
             member: *member,
         });

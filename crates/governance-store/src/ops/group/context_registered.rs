@@ -27,7 +27,7 @@ pub(crate) fn apply(
     // propagation) that the context→group mapping has just been
     // persisted. See `crate::registration_notify` for rationale.
     crate::registration_notify::notify(*context_id);
-    crate::op_events::notify(crate::op_events::OpEvent::ContextRegistered {
+    ctx.queue_event(crate::op_events::OpEvent::ContextRegistered {
         group_id: group_id.to_bytes(),
         context_id: *context_id,
     });

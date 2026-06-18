@@ -5751,6 +5751,148 @@ mod auto_follow_tests {
             "explicit opt-out via SetMemberAutoFollow must stick"
         );
     }
+
+    /// #2770: when `MemberAdded` fires, the op-log entry must already be
+    /// persisted. Before the post-persist drain, the handler emitted the
+    /// event BEFORE the op-log append, so a subscriber reacting to the
+    /// event could read a log that did not yet contain the op.
+    ///
+    /// The event is delivered on a process-wide `tokio::broadcast`, and
+    /// `apply_local_signed_group_op` sends synchronously. To catch the
+    /// ordering (not merely the post-apply steady state), a dedicated
+    /// observer thread parks on `recv()` and snapshots the op-log THE
+    /// MOMENT the event arrives — concurrently with the apply call still
+    /// running on this thread. Pre-fix (emit-before-persist) the observer
+    /// wakes during the gap between `notify` and `persist_*` and reads a
+    /// log that does NOT yet contain the op; post-fix the drain runs only
+    /// after the append, so the observer always reads `true`.
+    #[test]
+    fn member_added_event_fires_after_op_log_append() {
+        use std::sync::mpsc;
+
+        use crate::op_events::{self, OpEvent};
+
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, admin_sk, _existing_member_sk) = seed(&mut rng);
+
+        // Subscribe BEFORE spawning the observer / applying.
+        let mut rx = op_events::subscribe();
+
+        let new_member_sk = PrivateKey::random(&mut rng);
+        let new_member_pk = new_member_sk.public_key();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberAdded {
+                member: new_member_pk,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .unwrap();
+        let content_hash = op.content_hash().unwrap();
+
+        // Observer thread: blocks on `recv()`, then snapshots whether the
+        // op-log already contains our op at the instant the event fires.
+        // `Store` is `Clone` (shared handle to the same backing DB), so the
+        // snapshot reads the same state the applying thread is writing.
+        let observer_store = store.clone();
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let observer = std::thread::spawn(move || {
+            // Signal we're about to park on recv so the applier doesn't
+            // race ahead before the observer is listening.
+            ready_tx.send(()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                match rx.try_recv() {
+                    Ok(OpEvent::MemberAdded {
+                        group_id, member, ..
+                    }) if group_id == gid_bytes && member == new_member_pk => {
+                        return Some(
+                            crate::local_state::op_log_contains_content_hash(
+                                &observer_store,
+                                &gid,
+                                &content_hash,
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    Ok(_) => {} // unrelated events from parallel tests
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                        // Spin tightly so the snapshot is taken as close as
+                        // possible to the broadcast send (no sleep — we want
+                        // to win the race against the applier's persist).
+                        std::hint::spin_loop();
+                    }
+                    Err(_) => return None,
+                }
+            }
+        });
+
+        // Wait until the observer is parked on recv before applying.
+        ready_rx.recv().unwrap();
+        apply_local_signed_group_op(&store, &op).unwrap();
+
+        let log_contained_at_emit = observer
+            .join()
+            .unwrap()
+            .expect("MemberAdded event should have fired for the new joiner");
+        assert!(
+            log_contained_at_emit,
+            "op-log entry must be persisted before MemberAdded fires (#2770)"
+        );
+    }
+
+    /// #2770: re-applying an already-logged op must NOT re-fire its event.
+    /// The queued events are dropped on the content-hash dedup early-return.
+    #[test]
+    fn replayed_group_op_does_not_re_emit() {
+        use crate::op_events::{self, OpEvent};
+
+        let mut rng = OsRng;
+        let (store, _gid, gid_bytes, admin_sk, _existing_member_sk) = seed(&mut rng);
+
+        let new_member_sk = PrivateKey::random(&mut rng);
+        let new_member_pk = new_member_sk.public_key();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberAdded {
+                member: new_member_pk,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op).unwrap(); // first apply emits
+
+        // Subscribe AFTER the first apply so we only observe the replay.
+        let mut rx = op_events::subscribe();
+        apply_local_signed_group_op(&store, &op).unwrap(); // replay (already logged)
+
+        // No MemberAdded for (gid, member) should arrive in a short window.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        while std::time::Instant::now() < deadline {
+            if let Ok(OpEvent::MemberAdded {
+                group_id, member, ..
+            }) = rx.try_recv()
+            {
+                assert!(
+                    !(group_id == gid_bytes && member == new_member_pk),
+                    "replay must not re-emit MemberAdded (#2770)"
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------

@@ -40,7 +40,7 @@ pub(crate) fn apply(
     // no-op. Idempotent on first-time adds: the joiner's later
     // `join_context` sees an existing row and skips.
     restore_member_context_identities(store, group_id, member)?;
-    crate::op_events::notify(crate::op_events::OpEvent::MemberAdded {
+    ctx.queue_event(crate::op_events::OpEvent::MemberAdded {
         group_id: group_id.to_bytes(),
         member: *member,
         role: role.clone(),
