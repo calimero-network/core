@@ -1161,18 +1161,18 @@ fn diff_sorted_context_hashes(
 /// based on that. The handler's downstream `handle_auto_follow_enabled`
 /// uses `join_context`, which is itself idempotent.
 ///
-/// Read failures are downgraded to a warn log and `Ok(())` — the
+/// Read failures are downgraded to a warn log and `Ok(None)` — the
 /// apply-site has already written the row and committed by the time
 /// this is called, so a transient read failure here should not roll
 /// back the op via the caller's `?`. The synthesized event is a
 /// best-effort optimisation; missing it means the joiner won't
 /// backfill pre-existing contexts in this group, but they'll still
 /// auto-follow future ones via the `ContextRegistered` event handler.
-pub(crate) fn emit_auto_follow_set_if_enabled(
+pub(crate) fn build_auto_follow_set_if_enabled(
     store: &Store,
     group_id: &ContextGroupId,
     member: &PublicKey,
-) -> EyreResult<()> {
+) -> EyreResult<Option<crate::op_events::OpEvent>> {
     let value = match MembershipRepository::new(store).member_value(group_id, member) {
         Ok(Some(v)) => v,
         Ok(None) => {
@@ -1181,7 +1181,7 @@ pub(crate) fn emit_auto_follow_set_if_enabled(
                 %member,
                 "post-apply read found no member row — skipping auto-follow emission"
             );
-            return Ok(());
+            return Ok(None);
         }
         Err(err) => {
             // Best-effort: log and continue. See the function-level
@@ -1192,18 +1192,19 @@ pub(crate) fn emit_auto_follow_set_if_enabled(
                 ?err,
                 "post-apply read failed — skipping auto-follow emission"
             );
-            return Ok(());
+            return Ok(None);
         }
     };
     if value.auto_follow.contexts {
-        crate::op_events::notify(crate::op_events::OpEvent::AutoFollowSet {
+        Ok(Some(crate::op_events::OpEvent::AutoFollowSet {
             group_id: group_id.to_bytes(),
             member: *member,
             contexts: true,
             subgroups: value.auto_follow.subgroups,
-        });
+        }))
+    } else {
+        Ok(None)
     }
-    Ok(())
 }
 
 ///
@@ -1218,10 +1219,14 @@ fn apply_group_op_mutations(
     group_id: &ContextGroupId,
     signer: &PublicKey,
     op: &GroupOp,
-) -> EyreResult<(bool, Option<DivergenceReport>)> {
+) -> EyreResult<(
+    bool,
+    Option<DivergenceReport>,
+    Vec<crate::op_events::OpEvent>,
+)> {
     let mut ctx = ops::group::GroupApplyCtx::new(store, group_id, signer);
     let handled = ops::group::dispatch(&mut ctx, op)?;
-    Ok((handled, ctx.divergence))
+    Ok((handled, ctx.divergence, ctx.pending_events))
 }
 
 /// Apply a [`SignedGroupOp`] to the local group store (signature, monotonic nonce, admin rules).
@@ -1282,7 +1287,8 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         return Ok(());
     }
 
-    let (handled, _divergence) = apply_group_op_mutations(store, &group_id, &op.signer, &op.op)?;
+    let (handled, _divergence, pending_events) =
+        apply_group_op_mutations(store, &group_id, &op.signer, &op.op)?;
     // The `_divergence` outcome is dropped on the local-apply path —
     // this entry point is used by callers (local replay, tests) that
     // are not the gossipsub-receive path. The reconcile-via-anchor
@@ -1325,6 +1331,31 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     // retrying — so idempotency is a hard requirement for any new handler.
     if op_log_contains_content_hash(store, &group_id, &content_hash)? {
         store_nonce_window(store, &group_id, &op.signer, &nonce_window)?;
+        // #2770 — CANONICAL note on the dropped-on-dedup tradeoff (the
+        // namespace group-op and RootOp dedup branches share it):
+        //
+        // `pending_events` is intentionally dropped here. The mutation above
+        // re-collected events on this replay, but the op is already logged, so
+        // re-emitting would fire the event again on EVERY ordinary duplicate
+        // (network re-gossip, DAG replay) — exactly the duplicate-notification
+        // behaviour this change removes. Subscribers are idempotent + lossy-
+        // tolerant, so no-re-emit is strictly more correct for the common case.
+        //
+        // Accepted edge: a crash landing BETWEEN the op-log append below and
+        // the post-append flush leaves the op logged but its events un-emitted;
+        // the restart replay reaches this branch and drops them, so a one-time
+        // signal (e.g. `TeeMemberRemoved`) is not redelivered. This is the SAME
+        // bounded gap already documented + accepted for the broadcast
+        // lagged-drop case (see `calimero-context::self_purge` run-loop `Lagged`
+        // arm): NOT a forward-secrecy hole — FS on future writes is held by the
+        // key-rotation pipeline, not this purge — the residue is only stale,
+        // already-orphaned local key material.
+        //
+        // We deliberately do NOT re-emit here to cover that window: this branch
+        // cannot distinguish a crash-recovery replay from an ordinary duplicate,
+        // so it would regress the common case. A crash-safe fix belongs on the
+        // apply path (writing the self-purge marker deterministically as every
+        // node applies), tracked as TEE-lifecycle follow-up (#2772/#2771).
         return Ok(());
     }
 
@@ -1360,6 +1391,10 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         &op_bytes,
     )?;
 
+    // #2770: flush events only after the op-log entry is durably appended.
+    for event in pending_events {
+        crate::op_events::notify(event);
+    }
     Ok(())
 }
 

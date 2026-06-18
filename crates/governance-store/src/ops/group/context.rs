@@ -37,6 +37,12 @@ pub(crate) struct GroupApplyCtx<'a> {
     /// pipeline; the node-side handler routes it to the
     /// reconcile-via-anchor path.
     pub(crate) divergence: Option<DivergenceReport>,
+    /// Op-events queued during apply, flushed by the caller AFTER the
+    /// op-log entry is persisted (see #2770). Mirrors `divergence`'s
+    /// out-parameter pattern. Handlers MUST `queue_event` rather than
+    /// calling `op_events::notify` directly, or they reintroduce the
+    /// emit-before-persist race.
+    pub(crate) pending_events: Vec<crate::op_events::OpEvent>,
 }
 
 impl<'a> GroupApplyCtx<'a> {
@@ -54,7 +60,12 @@ impl<'a> GroupApplyCtx<'a> {
             settings: GroupSettingsService::new(store, *group_id),
             context_registration: ContextRegistrationService::new(store, *group_id),
             divergence: None,
+            pending_events: Vec::new(),
         }
+    }
+
+    pub(crate) fn queue_event(&mut self, event: crate::op_events::OpEvent) {
+        self.pending_events.push(event);
     }
 
     pub(crate) fn store(&self) -> &'a Store {

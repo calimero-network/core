@@ -104,7 +104,7 @@ pub(crate) fn apply(
         expected_group_state_hash,
         expected_context_state_hashes,
     );
-    crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
+    ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
         group_id: group_id.to_bytes(),
         member: *member,
     });
@@ -113,7 +113,7 @@ pub(crate) fn apply(
     // soft-leave path deliberately skips. Non-TEE removals stay
     // soft-leave so rejoin/keyshare flows can re-use the local rows.
     if removed_role == Some(GroupMemberRole::ReadOnlyTee) {
-        crate::op_events::notify(crate::op_events::OpEvent::TeeMemberRemoved {
+        ctx.queue_event(crate::op_events::OpEvent::TeeMemberRemoved {
             group_id: group_id.to_bytes(),
             member: *member,
         });

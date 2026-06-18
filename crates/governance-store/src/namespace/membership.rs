@@ -8,7 +8,7 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 use sha2::Digest;
 
-use super::super::emit_auto_follow_set_if_enabled;
+use super::super::build_auto_follow_set_if_enabled;
 use super::super::membership::role_from_invited_role;
 /// Namespace-scoped service for handling `RootOp::MemberJoined`.
 pub struct NamespaceMembershipService<'a> {
@@ -30,7 +30,7 @@ impl<'a> NamespaceMembershipService<'a> {
         member: &PublicKey,
         signed_invitation: &SignedGroupOpenInvitation,
         joined_at: Option<u64>,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<Option<crate::op_events::OpEvent>> {
         let inv = &signed_invitation.invitation;
         let group_id = inv.group_id;
 
@@ -58,7 +58,7 @@ impl<'a> NamespaceMembershipService<'a> {
         // so subsequent direct-membership lookups (e.g. removal,
         // capability writes, list_group_members) reflect their join.
         if MembershipRepository::new(self.store).has_direct_member(&group_id, member)? {
-            return Ok(());
+            return Ok(None);
         }
 
         let role = role_from_invited_role(inv.invited_role);
@@ -82,8 +82,9 @@ impl<'a> NamespaceMembershipService<'a> {
         // Open-subgroup self-joiner with `contexts: true` (the post-#2422
         // default) would only auto-follow FUTURE contexts, not the ones
         // already registered when they joined.
-        emit_auto_follow_set_if_enabled(self.store, &group_id, member)?;
-        Ok(())
+        Ok(build_auto_follow_set_if_enabled(
+            self.store, &group_id, member,
+        )?)
     }
 
     /// Validate an open invitation for the responder key-delivery path:

@@ -16,6 +16,11 @@ use eyre::{bail, Result as EyreResult};
 pub(crate) struct NamespaceApplyCtx<'a> {
     store: &'a Store,
     namespace_id: [u8; 32],
+    /// Op-events queued during apply, flushed AFTER the namespace op-log
+    /// entry is persisted (#2770). Handlers MUST queue_event rather than
+    /// calling op_events::notify directly, or they reintroduce the
+    /// emit-before-persist race.
+    pending_events: Vec<crate::op_events::OpEvent>,
 }
 
 impl<'a> NamespaceApplyCtx<'a> {
@@ -23,6 +28,7 @@ impl<'a> NamespaceApplyCtx<'a> {
         Self {
             store,
             namespace_id,
+            pending_events: Vec::new(),
         }
     }
 
@@ -32,6 +38,17 @@ impl<'a> NamespaceApplyCtx<'a> {
 
     pub(crate) fn namespace_id(&self) -> [u8; 32] {
         self.namespace_id
+    }
+
+    pub(crate) fn queue_event(&mut self, event: crate::op_events::OpEvent) {
+        self.pending_events.push(event);
+    }
+
+    /// Drains and returns all queued events, leaving the internal buffer
+    /// empty (destructive). Calling this a second time returns an empty
+    /// `Vec` — the post-persist flush must `take` exactly once.
+    pub(crate) fn take_events(&mut self) -> Vec<crate::op_events::OpEvent> {
+        std::mem::take(&mut self.pending_events)
     }
 
     /// Convenience: assert `signer` is a namespace-root admin or

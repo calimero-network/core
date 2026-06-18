@@ -37,7 +37,7 @@ pub(crate) fn apply(
         subgroups: *auto_follow_subgroups,
     };
     MembershipRepository::new(store).set_auto_follow(group_id, target, flags)?;
-    crate::op_events::notify(crate::op_events::OpEvent::AutoFollowSet {
+    ctx.queue_event(crate::op_events::OpEvent::AutoFollowSet {
         group_id: group_id.to_bytes(),
         member: *target,
         contexts: *auto_follow_contexts,

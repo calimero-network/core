@@ -2,14 +2,14 @@
 //! `NamespaceGovernance::execute_group_reparented` in #2481.
 
 use super::context::NamespaceApplyCtx;
-use crate::op_events::{notify as notify_op_event, OpEvent};
+use crate::op_events::OpEvent;
 use crate::{NamespaceRepository, ReparentOutcome};
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
 use eyre::Result as EyreResult;
 
 pub(crate) fn apply(
-    ctx: &NamespaceApplyCtx<'_>,
+    ctx: &mut NamespaceApplyCtx<'_>,
     op: &SignedNamespaceOp,
     child_group_id: [u8; 32],
     new_parent_id: [u8; 32],
@@ -19,8 +19,9 @@ pub(crate) fn apply(
     let new_parent = ContextGroupId::from(new_parent_id);
     match NamespaceRepository::new(ctx.store()).reparent(&child, &new_parent)? {
         ReparentOutcome::Reparented { old_parent } => {
-            notify_op_event(OpEvent::SubgroupReparented {
-                namespace_id: ctx.namespace_id(),
+            let ns_id = ctx.namespace_id();
+            ctx.queue_event(OpEvent::SubgroupReparented {
+                namespace_id: ns_id,
                 old_parent_group_id: old_parent.to_bytes(),
                 new_parent_group_id: new_parent_id,
                 child_group_id,

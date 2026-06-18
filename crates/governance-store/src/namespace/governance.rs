@@ -230,14 +230,20 @@ impl<'a> NamespaceGovernance<'a> {
                 delta_id = %hex::encode(delta_id),
                 "namespace governance op already applied; skipping re-apply (#2327)"
             );
+            // #2770: this early-return is BEFORE the RootOp mutations, so a
+            // replay re-collects no events and the post-`store_operation` flush
+            // below never runs for an already-logged op — same no-re-emit-on-
+            // replay behaviour (and same accepted crash-window gap) as the
+            // canonical dedup-tradeoff note in `apply_local_signed_group_op`.
             return Ok(ApplyNamespaceOpResult::default());
         }
 
         let mut result = ApplyNamespaceOpResult::default();
+        let mut root_events: Vec<crate::op_events::OpEvent> = Vec::new();
 
         match &op.op {
             NamespaceOp::Root(root) => {
-                self.apply_root_op(op, root)?;
+                root_events = self.apply_root_op(op, root)?;
 
                 match root {
                     RootOp::KeyDelivery {
@@ -423,6 +429,11 @@ impl<'a> NamespaceGovernance<'a> {
         let head = self.read_head_record()?;
         self.advance_dag_head(delta_id, &op.parent_op_hashes, head.next_nonce)?;
         self.store_operation(op)?;
+
+        // #2770: flush RootOp-path events only after the namespace op is appended.
+        for event in root_events {
+            crate::op_events::notify(event);
+        }
 
         Ok(result)
     }
@@ -1272,7 +1283,8 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        let (handled, divergence) = apply_group_op_mutations(self.store, group_id, signer, op)?;
+        let (handled, divergence, pending_events) =
+            apply_group_op_mutations(self.store, group_id, signer, op)?;
         if !handled {
             tracing::debug!(
                 ?op,
@@ -1365,6 +1377,15 @@ impl<'a> NamespaceGovernance<'a> {
                 super::super::local_state::persist_group_op_log_entry(
                     self.store, group_id, next_seq, new_heads, &op_bytes,
                 )?;
+                // #2770: flush after the op-log append; a re-received op
+                // (already_logged) drops its queued events (no re-emit). See
+                // the canonical dedup-tradeoff note in
+                // `apply_local_signed_group_op` (lib.rs) for why dropping on
+                // replay is correct and why the crash-between-append-and-flush
+                // window is an accepted, bounded gap (not an FS hole).
+                for event in pending_events {
+                    crate::op_events::notify(event);
+                }
             }
         }
 
@@ -1402,7 +1423,11 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(divergence)
     }
 
-    fn apply_root_op(&self, op: &SignedNamespaceOp, root: &RootOp) -> EyreResult<()> {
+    fn apply_root_op(
+        &self,
+        op: &SignedNamespaceOp,
+        root: &RootOp,
+    ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
         // Staleness telemetry for root ops whose correctness depends on
         // the namespace's own meta+member set (`root_op_commits_to_
         // namespace_state` whitelist). Same shape as the group-op branch
@@ -1447,9 +1472,10 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         // Per-variant logic lives in `ops/namespace/<variant>.rs` (#2481).
-        let ctx =
+        let mut ctx =
             super::super::ops::namespace::NamespaceApplyCtx::new(self.store, self.namespace_id);
-        super::super::ops::namespace::dispatch_root_op(&ctx, op, root)
+        super::super::ops::namespace::dispatch_root_op(&mut ctx, op, root)?;
+        Ok(ctx.take_events())
     }
 }
 
