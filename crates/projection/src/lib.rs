@@ -26,11 +26,24 @@ use calimero_storage::logical_clock::HybridTimestamp;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-/// Last-writer-wins stamp for a slot: the `(hlc, op_id)` of the op that last
-/// won it. Comparing as a tuple makes concurrent ops (equal `hlc`) tie-break
-/// deterministically by content-address `op_id`, so every node picks the same
-/// winner regardless of arrival order.
-type Stamp = (HybridTimestamp, [u8; 32]);
+/// Last-writer-wins stamp for a slot: `(hlc, generation, op_id)` of the op that
+/// last won it, compared as a tuple.
+///
+/// - `hlc` orders ops that carry a real wall/logical clock (the data and
+///   ACL-rotation planes). It dominates the comparison.
+/// - `generation` is the op's causal depth within the cut being resolved
+///   (`1 + max(parent generation)`, `0` at a root). It breaks ties when `hlc`
+///   is equal — which is the case for the **governance** plane, whose ops all
+///   carry `hlc = 0` (the source deltas are stamped with the default clock).
+///   Without it, an add → remove → re-add chain on one `(group, member)` slot
+///   would tie-break purely by `op_id` (content hash) — causally arbitrary, so
+///   a re-add could lose to the earlier remove. Generation makes the causally
+///   later op win. Only meaningful inside [`ScopeState::acl_view_at`], which
+///   knows each op's ancestry; the streaming `apply` path uses `0`.
+/// - `op_id` is the final, content-addressed tie-break for genuinely concurrent
+///   ops (equal `hlc` and `generation`), so every node picks the same winner
+///   regardless of arrival order.
+type Stamp = (HybridTimestamp, u32, [u8; 32]);
 
 fn wins(incoming: Stamp, current: Option<&Stamp>) -> bool {
     current.is_none_or(|cur| incoming > *cur)
@@ -89,9 +102,16 @@ impl ScopeState {
         state
     }
 
-    /// Apply one op, last-writer-wins per affected slot.
+    /// Apply one op, last-writer-wins per affected slot. Streaming entry point
+    /// (no ancestry context), so it uses causal generation `0`; the cut-aware
+    /// [`Self::acl_view_at`] supplies real generations.
     pub fn apply(&mut self, op: &Op) {
-        let stamp: Stamp = (op.hlc, op.id);
+        self.apply_with_generation(op, 0);
+    }
+
+    /// Apply one op with an explicit causal `generation` for its LWW stamp.
+    pub fn apply_with_generation(&mut self, op: &Op, generation: u32) {
+        let stamp: Stamp = (op.hlc, generation, op.id);
         match &op.payload {
             OpPayload::Put { entity, value } => {
                 if wins(stamp, self.data_clock.get(entity)) {
@@ -225,7 +245,55 @@ impl ScopeState {
                 }
             }
         }
-        Self::from_ops(ancestry).acl_view()
+
+        // Causal generation per ancestry op = longest path from a root
+        // (`1 + max(parent generation)`, `0` when no parent is in the ancestry).
+        // It orders causally-related governance ops (whose `hlc` is all `0`) so a
+        // re-add beats an earlier remove. Iterative post-order over the DAG (no
+        // cycles), so deep chains can't blow the stack.
+        let anc_by_id: HashMap<[u8; 32], &Op> = ancestry.iter().map(|op| (op.id, *op)).collect();
+        let mut generation: HashMap<[u8; 32], u32> = HashMap::new();
+        for &start in &ancestry {
+            if generation.contains_key(&start.id) {
+                continue;
+            }
+            let mut stack = vec![start.id];
+            while let Some(&top) = stack.last() {
+                let Some(top_op) = anc_by_id.get(&top) else {
+                    let _ = generation.insert(top, 0);
+                    let _ = stack.pop();
+                    continue;
+                };
+                let parents_in_anc: Vec<[u8; 32]> = top_op
+                    .parents
+                    .iter()
+                    .copied()
+                    .filter(|p| anc_by_id.contains_key(p))
+                    .collect();
+                let unresolved: Vec<[u8; 32]> = parents_in_anc
+                    .iter()
+                    .copied()
+                    .filter(|p| !generation.contains_key(p))
+                    .collect();
+                if unresolved.is_empty() {
+                    let g = parents_in_anc
+                        .iter()
+                        .map(|p| generation[p] + 1)
+                        .max()
+                        .unwrap_or(0);
+                    let _ = generation.insert(top, g);
+                    let _ = stack.pop();
+                } else {
+                    stack.extend(unresolved);
+                }
+            }
+        }
+
+        let mut state = Self::default();
+        for &op in &ancestry {
+            state.apply_with_generation(op, generation.get(&op.id).copied().unwrap_or(0));
+        }
+        state.acl_view()
     }
 
     /// The single convergence root over the whole projection (values + ACL +
@@ -645,6 +713,66 @@ mod tests {
         assert!(
             !post.is_owner(&owner, object),
             "post-revoke cut drops the owner"
+        );
+    }
+
+    #[test]
+    fn re_add_after_remove_wins_at_zero_hlc_via_causal_generation() {
+        // Governance ops all carry hlc=0, so only causal generation orders them.
+        // An add → remove → re-add chain on one (group, member) slot must resolve
+        // to PRESENT at the re-add cut, not lose to the remove by op_id tie-break
+        // (the kick-and-readd bug).
+        let group = ContextGroupId::from([3u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+        let scope = ScopeId::from([0u8; 32]);
+        let author = PublicKey::from([1u8; 32]);
+        let zero = hlc(0);
+        let mk = |parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
+            let id = Op::compute_id(scope, &parents, &author, &zero, &payload);
+            Op {
+                id,
+                scope,
+                parents,
+                author,
+                hlc: zero,
+                payload,
+                expected_scope_root: [0u8; 32],
+                signature: [0u8; 64],
+            }
+        };
+        let add = mk(
+            vec![],
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Member,
+            },
+        );
+        let remove = mk(vec![add.id], OpPayload::MemberRemoved { group, member });
+        let readd = mk(
+            vec![remove.id],
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Admin,
+            },
+        );
+        let log = vec![add.clone(), remove.clone(), readd.clone()];
+
+        // At the re-add cut: present as Admin (generation readd > remove > add).
+        let at_readd = ScopeState::acl_view_at(&log, &[readd.id]);
+        assert_eq!(
+            at_readd.groups.get(&group).and_then(|m| m.get(&member)),
+            Some(&GroupMemberRole::Admin),
+            "re-add after remove must win by causal generation at hlc=0"
+        );
+
+        // At the remove cut: absent.
+        let at_remove = ScopeState::acl_view_at(&log, &[remove.id]);
+        assert_eq!(
+            at_remove.groups.get(&group).and_then(|m| m.get(&member)),
+            None,
+            "the remove cut drops the member"
         );
     }
 

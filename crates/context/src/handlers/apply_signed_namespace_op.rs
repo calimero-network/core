@@ -105,8 +105,17 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         let (fed, projected) = match scope_projections.lock() {
                             Ok(mut projections) => {
                                 projections.ingest_op(&shadow_op);
+                                // Resolve at THIS op's own causal cut (its id),
+                                // so a re-add after a remove reflects the
+                                // causally-latest state rather than the non-causal
+                                // `states` snapshot (governance ops share hlc=0).
                                 let role = membership.and_then(|(g, m)| {
-                                    projections.role_of(&shadow_op.scope, &g, &m)
+                                    projections.role_at_cut(
+                                        &shadow_op.scope,
+                                        &g,
+                                        &m,
+                                        &[shadow_op.id],
+                                    )
                                 });
                                 (true, role)
                             }

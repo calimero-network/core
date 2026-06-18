@@ -621,10 +621,32 @@ impl ScopeProjections {
         (backfilled, true, log_len, heads_in_log, author_in_any)
     }
 
+    /// The role the projection resolves for `member` in `group` at the causal
+    /// cut named by `heads`, or `None` if absent. Unlike [`Self::role_of`] (the
+    /// `states` snapshot), this folds the cut's ancestry with causal generations,
+    /// so an add → remove → re-add chain resolves to the causally-latest state —
+    /// the correct answer for the apply-time membership shadow, which resolves at
+    /// the just-applied op's own cut.
+    #[must_use]
+    pub fn role_at_cut(
+        &self,
+        scope: &ScopeId,
+        group: &ContextGroupId,
+        member: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<GroupMemberRole> {
+        self.acl_view_at(scope, heads)?
+            .groups
+            .get(group)?
+            .get(member)
+            .cloned()
+    }
+
     /// The role the projection records for `member` in `group` within `scope`,
     /// or `None` if absent (member not present, or the scope hasn't been fed).
-    /// Used by the shadow-compare to check a freshly-applied membership op
-    /// against the live resolver, one member at a time.
+    /// The `states` fast-path snapshot — order-converged but NOT causal for
+    /// equal-`hlc` governance ops (use [`Self::role_at_cut`] when causal
+    /// resolution matters).
     #[must_use]
     pub fn role_of(
         &self,
