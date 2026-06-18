@@ -1019,12 +1019,20 @@ pub async fn handle_state_delta(
             // live authorizes; before the projection becomes the authorizer it
             // must also never be MORE permissive than live. A hit here is a real
             // over-authorization and trips the (now hard) divergence gate.
+            //
+            // Read the projection AS-IS — deliberately no backfill/refresh DAG
+            // walk on this path. Rejects are the churn-heavy hot path (a removed
+            // member retrying writes), and refreshing per reject — re-walking the
+            // namespace DAG whenever the rejected delta cites an unfolded head —
+            // stalls membership-churn scenarios into sync timeouts. The forward
+            // (authorized) path already populates the projection; the inverse
+            // check rides that, and simply can't false-flag when a cut isn't yet
+            // folded (it resolves to non-member, matching the reject).
             if let Some(gp) = governance_position.as_ref() {
                 if let Ok(Some(group)) =
                     calimero_context::group_store::get_group_for_context(datastore, &context_id)
                 {
-                    let projected = projection_member_at_cut(
-                        &node_state,
+                    let projected = node_state.lock_scope_projections().member_at_cut(
                         datastore,
                         group,
                         &author_id,
