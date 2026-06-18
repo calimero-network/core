@@ -232,11 +232,18 @@ impl DeprecatedMethodState {
 // and combined with other attributes like #[must_use].
 #[app::state]
 struct ViewState {
-    value: String,
+    value: LwwRegister<String>,
 }
 
 #[app::logic]
 impl ViewState {
+    #[app::init]
+    pub fn init() -> ViewState {
+        ViewState {
+            value: LwwRegister::new(String::new()),
+        }
+    }
+
     #[app::view]
     pub fn get_value(&self) -> &str {
         &self.value
@@ -249,7 +256,7 @@ impl ViewState {
     }
 
     pub fn set_value(&mut self, value: String) {
-        self.value = value;
+        self.value.set(value);
     }
 }
 
