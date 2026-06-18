@@ -24,7 +24,7 @@ use calimero_governance_store::{
     MembershipPath, MembershipRepository, MetaRepository, NamespaceDagService,
     NamespaceOpLogService, NamespaceRepository,
 };
-use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
+use calimero_governance_types::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::{payload_from_root_op, set_writers_payload};
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -228,6 +228,62 @@ pub fn op_from_signed_namespace_op(
     let scope = scope_for_root_op(root, signed.namespace_id)?;
     let payload = payload_from_root_op(root)?;
     Some(build_op(id, scope, signed.signer, hlc, parents, payload))
+}
+
+/// Convert a **decrypted** group governance op into the unified membership [`Op`]
+/// for `group`'s scope, or `None` if the variant doesn't change membership.
+///
+/// This is the encrypted-plane counterpart of [`op_from_signed_namespace_op`].
+/// A `GroupOp` rides the namespace DAG inside an encrypted `NamespaceOp::Group`,
+/// so it is folded only after the apply path decrypts it (via
+/// `calimero_governance_store::decrypt_group_op`). The `id` / `hlc` / `parents`
+/// MUST be the **carrying namespace delta's** coordinates (its content hash and
+/// `parent_op_hashes`), not the inner op's — the cut a data write cites
+/// (`governance_dag_heads`) names namespace-DAG nodes, so the membership op has
+/// to live at that node to be reachable from the cut (see [`build_op`]). The
+/// author is the namespace op's `signer` (deterministic across nodes).
+///
+/// Role-change variants map to `MemberAdded` (an LWW upsert of the role);
+/// removals and self-leaves to `MemberRemoved`; everything else (capability /
+/// metadata / context / ownership ops) is not membership state and is skipped.
+#[must_use]
+pub fn op_from_group_op(
+    group_op: &GroupOp,
+    group: ContextGroupId,
+    signer: PublicKey,
+    id: [u8; 32],
+    hlc: HybridTimestamp,
+    parents: &[[u8; 32]],
+) -> Option<Op> {
+    let payload = match group_op {
+        GroupOp::MemberAdded { member, role } | GroupOp::MemberRoleSet { member, role } => {
+            OpPayload::MemberAdded {
+                group,
+                member: *member,
+                role: role.clone(),
+            }
+        }
+        GroupOp::MemberJoinedViaTeeAttestation { member, .. } => OpPayload::MemberAdded {
+            group,
+            member: *member,
+            role: GroupMemberRole::Member,
+        },
+        GroupOp::MemberRemoved { member, .. } | GroupOp::MemberLeft { member, .. } => {
+            OpPayload::MemberRemoved {
+                group,
+                member: *member,
+            }
+        }
+        _ => return None,
+    };
+    Some(build_op(
+        id,
+        ScopeId::from(group.to_bytes()),
+        signer,
+        hlc,
+        parents,
+        payload,
+    ))
 }
 
 /// In-memory registry of unified-op [`ScopeState`] projections, keyed by
@@ -806,5 +862,68 @@ mod tests {
         );
         // ...and only that scope (isolation).
         assert_eq!(reg.role_of(&other_scope, &group, &member), None);
+    }
+
+    #[test]
+    fn group_op_membership_folds_at_the_namespace_delta_coordinates() {
+        use calimero_governance_types::GroupOp;
+
+        let signer = PublicKey::from([1u8; 32]);
+        let member = PublicKey::from([0x77; 32]);
+        let group = ContextGroupId::from([0x33; 32]);
+        // The carrying namespace delta's id/parents — what the op must fold at so
+        // a `governance_dag_heads` cut naming this node reaches it.
+        let ns_delta_id = [0xAB; 32];
+
+        // Admin-push add (encrypted GroupOp::MemberAdded) → MemberAdded in scope.
+        let add = op_from_group_op(
+            &GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Admin,
+            },
+            group,
+            signer,
+            ns_delta_id,
+            hlc(5),
+            &[],
+        )
+        .expect("MemberAdded is membership");
+        assert_eq!(add.id, ns_delta_id, "op must carry the namespace delta id");
+        assert_eq!(add.scope, ScopeId::from(group.to_bytes()));
+
+        let mut reg = ScopeProjections::new();
+        reg.ingest_op(&add);
+        assert_eq!(
+            reg.role_of(&add.scope, &group, &member),
+            Some(GroupMemberRole::Admin),
+        );
+
+        // A later removal at a higher hlc wins → member gone.
+        let remove = op_from_group_op(
+            &GroupOp::MemberRemoved {
+                member,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+            group,
+            signer,
+            [0xCD; 32],
+            hlc(9),
+            &[ns_delta_id],
+        )
+        .expect("MemberRemoved is membership");
+        reg.ingest_op(&remove);
+        assert_eq!(reg.role_of(&remove.scope, &group, &member), None);
+
+        // A non-membership group op is not folded.
+        assert!(op_from_group_op(
+            &GroupOp::TransferOwnership { new_owner: member },
+            group,
+            signer,
+            [0xEF; 32],
+            hlc(11),
+            &[],
+        )
+        .is_none());
     }
 }

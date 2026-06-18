@@ -33,12 +33,37 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
         // the op this governance delta represents, to fold into its scope's
         // projection only if the DAG actually applies it. Built before the DAG
         // call consumes `delta`; `None` for ops not yet in the projection model.
+        // Covers the CLEARTEXT (`NamespaceOp::Root`) membership ops; the
+        // encrypted `NamespaceOp::Group` plane is decrypted-and-folded inside the
+        // block below (only after a real apply, when the key is present).
         let shadow_op = crate::scope_projection::op_from_signed_namespace_op(
             &delta.payload,
             delta.id,
             delta.hlc,
             &delta.parents,
         );
+        // Inputs to fold the encrypted group-membership plane: the carrying
+        // namespace delta's coordinates (so the op lands at the DAG node the
+        // `governance_dag_heads` cut names) plus the encrypted envelope to
+        // decrypt post-apply. `None` for `Root` ops (handled by `shadow_op`).
+        let group_shadow_inputs = match &op.op {
+            calimero_governance_types::NamespaceOp::Group {
+                group_id,
+                key_id,
+                encrypted,
+                ..
+            } => Some((
+                calimero_context_config::types::ContextGroupId::from(*group_id),
+                *key_id,
+                encrypted.clone(),
+                op.signer,
+                delta.id,
+                delta.hlc,
+                delta.parents.clone(),
+            )),
+            calimero_governance_types::NamespaceOp::Root(_) => None,
+        };
+        let decrypt_store = self.datastore.clone();
         let scope_projections = Arc::clone(&self.scope_projections);
 
         ActorResponse::r#async(
@@ -51,6 +76,32 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                 // the projection is not yet authoritative, so it must never break
                 // the governance apply path.
                 if matches!(outcome, Ok(AddDeltaOutcome::Applied)) {
+                    // For an encrypted `NamespaceOp::Group` that just applied,
+                    // decrypt its cleartext membership op (the key is present —
+                    // the live apply already used it) and fold it at the carrying
+                    // namespace delta's coordinates. Read-only decrypt; never
+                    // re-runs the mutation.
+                    let shadow_op = shadow_op.or_else(|| {
+                        let (group, key_id, encrypted, signer, id, hlc, parents) =
+                            group_shadow_inputs.as_ref()?;
+                        match calimero_governance_store::decrypt_group_op(
+                            &decrypt_store,
+                            namespace_id,
+                            *group,
+                            key_id,
+                            encrypted,
+                        ) {
+                            Ok(Some(group_op)) => crate::scope_projection::op_from_group_op(
+                                &group_op, *group, *signer, *id, *hlc, parents,
+                            ),
+                            Ok(None) => None,
+                            Err(err) => {
+                                tracing::warn!(%err, "unified-op shadow: group-op decrypt failed; not folded");
+                                None
+                            }
+                        }
+                    });
+
                     if let Some(op) = &shadow_op {
                         // The member this op touches (for the per-member
                         // shadow-compare), if it's a membership op.

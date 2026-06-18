@@ -54,20 +54,27 @@ false-flagging these because `member_at_cut` currently honors genesis-admin and
 inherited carve-outs; admin-push members are a *real* op-fold gap, not a
 carve-out.
 
-Closing it has two halves:
-- **live feed** — hook the `SignedGroupOp` apply path (the decrypted op is in
-  hand there, the analog of the namespace handler already hooked) and fold
-  `GroupOp` membership variants → `OpPayload`, with `id = content_hash`,
-  `parents = parent_op_hashes`, `author = signer` (same alignment as the
-  cleartext feed). Covers steady-state.
+Closing it has three parts:
+- **received live feed** — ✅ done. The namespace apply handler decrypts an
+  applied `NamespaceOp::Group` (read-only, via `decrypt_group_op` — no re-run of
+  the mutation) and folds the cleartext `GroupOp` membership variant via
+  `op_from_group_op`, at the **carrying namespace delta's** id/hlc/parents so the
+  op lands on the DAG node a `governance_dag_heads` cut names. Covers every
+  non-originating node (in `frozen-rga`, node-2 + node-3).
+- **originator local feed** — the node that *emits* an admin-push op applies the
+  cleartext `GroupOp` locally (via `sign_apply_and_publish`) without going
+  through the decrypt path, so its own projection doesn't see the member. Feed it
+  from the group-op-emitting context handlers (or a shared post-publish hook),
+  using the published namespace op's `op_hash` as the id for alignment.
 - **cold/backfill** — a restarted node re-reads encrypted ops it cannot decrypt,
   so backfill must seed the encrypted plane from the **materialized** membership
   (the `GroupMember` rows the live applier wrote), mirroring the live resolver's
   own `heads_equal` fast-path. At-cut historical resolution for encrypted ops is
   then approximate in exactly the way the live resolver's materialized path is.
 
-Until this lands, the e2e divergence step is **informational** (reports planes +
-counts, does not fail); it flips back to a hard gate as the last step here.
+Until all three land, the e2e divergence step is **informational** (reports
+planes + counts, does not fail); it flips back to a hard gate as the last step
+here.
 
 ## F4 — the flip (gated: do not merge until divergence==0 e2e)
 Replace `authorize_delta_at_edge` + `writers_at_authenticated` with the single
