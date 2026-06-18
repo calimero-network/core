@@ -78,7 +78,7 @@ impl SyncManager {
     /// Returns `Some(installed_application)` if a bundle was installed,
     /// `None` otherwise. Updates `context.application_id` if the installed
     /// ApplicationId differs from the context's ApplicationId.
-    pub(super) async fn install_bundle_after_blob_sharing(
+    pub(crate) async fn install_bundle_after_blob_sharing(
         &self,
         context_id: &ContextId,
         blob_id: &calimero_primitives::blobs::BlobId,

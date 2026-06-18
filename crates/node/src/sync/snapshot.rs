@@ -394,7 +394,8 @@ impl SyncManager {
         self.context_client
             .update_dag_heads(&context_id, boundary.dag_heads.clone())?;
         self.clear_sync_in_progress_marker(context_id)?;
-        self.finalize_snapshot_activation(context_id, observed_schema);
+        self.finalize_snapshot_activation(context_id, observed_schema)
+            .await;
 
         info!(%context_id, applied_records, "Snapshot sync completed successfully");
 
@@ -1111,21 +1112,67 @@ impl SyncManager {
     /// Resync-scoped (see `settle_snapshot_activation`): only an operator resync
     /// rebinds the activation marker — to `observed_schema`, the schema the
     /// applied entities actually carried. Best-effort and group-only.
-    fn finalize_snapshot_activation(
+    async fn finalize_snapshot_activation(
         &self,
         context_id: ContextId,
         observed_schema: Option<[u8; 32]>,
     ) {
-        if let Some(namespace_id) =
-            settle_snapshot_activation(self.context_client.datastore(), context_id, observed_schema)
-        {
-            // Resync healed this context: edge-trigger the migration emitter so
-            // the recovered facts (cleared strand marker + rebound schema) reach
-            // the admin rollup at once, instead of lingering as stale `failed`
-            // until the next ~30s periodic heartbeat.
-            self.node_client
-                .notify_migration_facts_refresh(namespace_id);
+        let Some(namespace_id) = settle_snapshot_activation(
+            self.context_client.datastore(),
+            context_id,
+            observed_schema,
+        ) else {
+            return;
+        };
+
+        // A resynced peer runs the recovered bytecode but never ran the install,
+        // so its `ApplicationMeta` (the version migration-status reads) still
+        // reflects the version it last installed — it lingers below-target. Run
+        // the SAME in-place install the normal blob-share path runs
+        // (`install_bundle_after_blob_sharing`) against the blob the activation
+        // marker now points at, so the peer's installed version matches the
+        // adopted one — exactly as a normally-upgraded peer ends up.
+        if let Some(bound) = calimero_context::activation::activated_blob(
+            self.context_client.datastore(),
+            &context_id,
+        ) {
+            let blob_id = calimero_primitives::blobs::BlobId::from(bound);
+            if self.node_client.has_blob(&blob_id).unwrap_or(false) {
+                match self.context_client.get_context(&context_id) {
+                    Ok(Some(mut context)) => {
+                        let mut application: Option<calimero_primitives::application::Application> =
+                            None;
+                        if let Err(err) = self
+                            .install_bundle_after_blob_sharing(
+                                &context_id,
+                                &blob_id,
+                                &None,
+                                &mut context,
+                                &mut application,
+                            )
+                            .await
+                        {
+                            warn!(
+                                %context_id, %err,
+                                "resync in-place install failed; reported version may lag \
+                                 until the next install"
+                            );
+                        }
+                    }
+                    other => debug!(
+                        %context_id, ?other,
+                        "resync: context unavailable for in-place install; skipping"
+                    ),
+                }
+            }
         }
+
+        // Edge-trigger the migration emitter so the recovered facts (cleared
+        // strand marker + advanced installed version) reach the admin rollup at
+        // once, instead of lingering as stale `failed`/`in-progress` until the
+        // next ~30s periodic heartbeat.
+        self.node_client
+            .notify_migration_facts_refresh(namespace_id);
     }
 
     fn clear_sync_in_progress_marker(&self, context_id: ContextId) -> Result<()> {
