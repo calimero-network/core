@@ -12,7 +12,7 @@ use calimero_primitives::context::GroupMemberRole;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
-    ctx: &NamespaceApplyCtx<'_>,
+    ctx: &mut NamespaceApplyCtx<'_>,
     op: &SignedNamespaceOp,
     group_id: [u8; 32],
     parent_id: [u8; 32],

@@ -16,6 +16,7 @@ use eyre::{bail, Result as EyreResult};
 pub(crate) struct NamespaceApplyCtx<'a> {
     store: &'a Store,
     namespace_id: [u8; 32],
+    pending_events: Vec<crate::op_events::OpEvent>,
 }
 
 impl<'a> NamespaceApplyCtx<'a> {
@@ -23,6 +24,7 @@ impl<'a> NamespaceApplyCtx<'a> {
         Self {
             store,
             namespace_id,
+            pending_events: Vec::new(),
         }
     }
 
@@ -32,6 +34,14 @@ impl<'a> NamespaceApplyCtx<'a> {
 
     pub(crate) fn namespace_id(&self) -> [u8; 32] {
         self.namespace_id
+    }
+
+    pub(crate) fn queue_event(&mut self, event: crate::op_events::OpEvent) {
+        self.pending_events.push(event);
+    }
+
+    pub(crate) fn take_events(&mut self) -> Vec<crate::op_events::OpEvent> {
+        std::mem::take(&mut self.pending_events)
     }
 
     /// Convenience: assert `signer` is a namespace-root admin or

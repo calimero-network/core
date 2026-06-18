@@ -31,7 +31,7 @@ use eyre::Result as EyreResult;
 /// Apply a `RootOp` against `ctx`. Thin router — variant-specific
 /// logic lives in the per-op submodules.
 pub(crate) fn dispatch_root_op(
-    ctx: &NamespaceApplyCtx<'_>,
+    ctx: &mut NamespaceApplyCtx<'_>,
     op: &SignedNamespaceOp,
     root: &RootOp,
 ) -> EyreResult<()> {

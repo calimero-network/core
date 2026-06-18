@@ -23,7 +23,7 @@ use calimero_primitives::identity::PublicKey;
 use eyre::Result as EyreResult;
 
 pub(crate) fn apply(
-    ctx: &NamespaceApplyCtx<'_>,
+    ctx: &mut NamespaceApplyCtx<'_>,
     op: &SignedNamespaceOp,
     member: PublicKey,
     group_id: [u8; 32],

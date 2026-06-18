@@ -12,7 +12,7 @@ use calimero_context_config::types::ContextGroupId;
 use eyre::Result as EyreResult;
 
 pub(crate) fn apply(
-    ctx: &NamespaceApplyCtx<'_>,
+    ctx: &mut NamespaceApplyCtx<'_>,
     op: &SignedNamespaceOp,
     root_group_id: [u8; 32],
     cascade_group_ids: &[[u8; 32]],

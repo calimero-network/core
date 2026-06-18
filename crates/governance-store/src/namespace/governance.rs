@@ -234,10 +234,11 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         let mut result = ApplyNamespaceOpResult::default();
+        let mut root_events: Vec<crate::op_events::OpEvent> = Vec::new();
 
         match &op.op {
             NamespaceOp::Root(root) => {
-                self.apply_root_op(op, root)?;
+                root_events = self.apply_root_op(op, root)?;
 
                 match root {
                     RootOp::KeyDelivery {
@@ -423,6 +424,11 @@ impl<'a> NamespaceGovernance<'a> {
         let head = self.read_head_record()?;
         self.advance_dag_head(delta_id, &op.parent_op_hashes, head.next_nonce)?;
         self.store_operation(op)?;
+
+        // #2770: flush RootOp-path events only after the namespace op is appended.
+        for event in root_events {
+            crate::op_events::notify(event);
+        }
 
         Ok(result)
     }
@@ -1408,7 +1414,11 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(divergence)
     }
 
-    fn apply_root_op(&self, op: &SignedNamespaceOp, root: &RootOp) -> EyreResult<()> {
+    fn apply_root_op(
+        &self,
+        op: &SignedNamespaceOp,
+        root: &RootOp,
+    ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
         // Staleness telemetry for root ops whose correctness depends on
         // the namespace's own meta+member set (`root_op_commits_to_
         // namespace_state` whitelist). Same shape as the group-op branch
@@ -1453,9 +1463,10 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         // Per-variant logic lives in `ops/namespace/<variant>.rs` (#2481).
-        let ctx =
+        let mut ctx =
             super::super::ops::namespace::NamespaceApplyCtx::new(self.store, self.namespace_id);
-        super::super::ops::namespace::dispatch_root_op(&ctx, op, root)
+        super::super::ops::namespace::dispatch_root_op(&mut ctx, op, root)?;
+        Ok(ctx.take_events())
     }
 }
 
