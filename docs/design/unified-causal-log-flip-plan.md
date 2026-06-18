@@ -42,6 +42,33 @@ decision behind the `unified_projection_divergence` marker. **Still act on the
 live decision.** This is the literal authorize-vs-live compare; its e2e output
 (zero divergence) is the gate for F4.
 
+## F3.5 — feed the encrypted membership plane (prerequisite for F4)
+The shadow-compare surfaced the one membership source the projection does not
+yet fold: the **encrypted `GroupOp` plane** (admin-push `MemberAdded`,
+`MemberRemoved`, `MemberRoleSet`, `MemberJoinedViaTeeAttestation`,
+`TransferOwnership`, …). Those ops ride the namespace DAG encrypted, so neither
+the post-apply Store read nor the startup backfill can decrypt them — the
+projection's op-fold misses every admin-added member, and the live decision
+(which decrypts via the keyring) authorizes them. The shadow only stops
+false-flagging these because `member_at_cut` currently honors genesis-admin and
+inherited carve-outs; admin-push members are a *real* op-fold gap, not a
+carve-out.
+
+Closing it has two halves:
+- **live feed** — hook the `SignedGroupOp` apply path (the decrypted op is in
+  hand there, the analog of the namespace handler already hooked) and fold
+  `GroupOp` membership variants → `OpPayload`, with `id = content_hash`,
+  `parents = parent_op_hashes`, `author = signer` (same alignment as the
+  cleartext feed). Covers steady-state.
+- **cold/backfill** — a restarted node re-reads encrypted ops it cannot decrypt,
+  so backfill must seed the encrypted plane from the **materialized** membership
+  (the `GroupMember` rows the live applier wrote), mirroring the live resolver's
+  own `heads_equal` fast-path. At-cut historical resolution for encrypted ops is
+  then approximate in exactly the way the live resolver's materialized path is.
+
+Until this lands, the e2e divergence step is **informational** (reports planes +
+counts, does not fail); it flips back to a hard gate as the last step here.
+
 ## F4 — the flip (gated: do not merge until divergence==0 e2e)
 Replace `authorize_delta_at_edge` + `writers_at_authenticated` with the single
 `authorize(op, projection.acl_view_at(parents))` decision. Subsumes the #2763
