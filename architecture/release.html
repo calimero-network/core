@@ -66,6 +66,24 @@
 <p>Release notes are driven by <span class="code">CHANGELOG.md</span> at the repository root. It follows the <a href="https://keepachangelog.com/" target="_blank" rel="noopener">Keep a Changelog</a> format and should be updated in the same PR that bumps the workspace version.</p>
 </div>
 
+<div class="card gb"><h2>Preventing recursive doc-update triggers</h2>
+<p>The <code>doc-update.yaml</code> workflow previously ran on every push to <code>main</code>/<code>master</code> with no path filtering. When the workflow merged its own auto-generated documentation PR (which only touches files under <code>architecture/**</code>), that merge was itself a push to <code>master</code>, re-triggering the workflow. Each cycle produced a new PR whose title accumulated an extra layer of nesting, observed in the wild as issue chain #2832 → #2833 → #2834.</p>
+<p><strong>Fix:</strong> A <code>paths-ignore</code> filter was added to the <code>push</code> trigger in <code>doc-update.yaml</code>, excluding the directories the workflow itself writes to:</p>
+<pre class="code">on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - 'docs/**'
+      - 'architecture/**'
+      - 'docs-static/**'</pre>
+<p>This mirrors the identical <code>paths-ignore</code> already present in <code>ai-review.yaml</code>. The effect is:</p>
+<ul>
+<li>A push that only modifies <code>docs/**</code>, <code>architecture/**</code>, or <code>docs-static/**</code> no longer triggers the workflow at all.</li>
+<li>A push that modifies any other path (source code, configuration, etc.) still triggers the workflow normally.</li>
+<li>Merging a doc-update PR — which exclusively touches <code>architecture/**</code> — is now a no-op from the workflow's perspective, ending the recursive chain.</li>
+</ul>
+<p><strong>Local note:</strong> If you merge a documentation PR and expect a subsequent doc refresh, it will not be triggered automatically. A separate source-code change, or a manual workflow dispatch, is required to generate a new doc update cycle.</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
