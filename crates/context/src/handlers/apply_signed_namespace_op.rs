@@ -102,7 +102,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         // this op (no TOCTOU window between ingest and read). A
                         // poisoned lock skips feed+compare with a warning rather
                         // than affecting the governance apply path.
-                        let (fed, projected) = match scope_projections.lock() {
+                        let (fed, projected) = match scope_projections.write() {
                             Ok(mut projections) => {
                                 projections.ingest_op(&shadow_op);
                                 // Resolve at THIS op's own causal cut (its id),

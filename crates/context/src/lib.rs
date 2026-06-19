@@ -511,9 +511,10 @@ pub struct ContextManager {
     /// Per-scope unified-op projections, maintained alongside the existing
     /// governance apply (additive — nothing reads it yet). The namespace
     /// governance handler folds each applied op into its scope's projection;
-    /// see [`scope_projection`]. Shared behind a mutex so the apply handler's
-    /// async body can ingest without holding `&mut self` across the await.
-    pub(crate) scope_projections: Arc<std::sync::Mutex<scope_projection::ScopeProjections>>,
+    /// see [`scope_projection`]. Shared behind an `RwLock` so the decision-site
+    /// reads run concurrently while the apply handler's async body ingests
+    /// (write) without holding `&mut self` across the await.
+    pub(crate) scope_projections: Arc<std::sync::RwLock<scope_projection::ScopeProjections>>,
 }
 
 /// Creates a new `ContextManager`.
@@ -550,7 +551,7 @@ impl ContextManager {
             ack_router,
             config: ContextManagerConfig::default(),
             vm_limits: calimero_runtime::logic::VMLimits::default(),
-            scope_projections: Arc::new(std::sync::Mutex::new(
+            scope_projections: Arc::new(std::sync::RwLock::new(
                 scope_projection::ScopeProjections::new(),
             )),
         }
@@ -573,7 +574,7 @@ impl ContextManager {
     #[must_use]
     pub fn with_scope_projections(
         mut self,
-        projections: Arc<std::sync::Mutex<scope_projection::ScopeProjections>>,
+        projections: Arc<std::sync::RwLock<scope_projection::ScopeProjections>>,
     ) -> Self {
         self.scope_projections = projections;
         self

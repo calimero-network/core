@@ -206,7 +206,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // Shared unified-op projection registry (cutover-flip prerequisite): one
     // instance fed by the context manager and read by the node at the
     // data-write decision. Threaded into both below.
-    let scope_projections = std::sync::Arc::new(std::sync::Mutex::new(
+    let scope_projections = std::sync::Arc::new(std::sync::RwLock::new(
         calimero_context::scope_projection::ScopeProjections::new(),
     ));
 

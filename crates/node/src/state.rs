@@ -115,7 +115,7 @@ pub(crate) struct NodeState {
     /// data-write decision for the authorize-vs-live shadow-compare. Default
     /// here; node startup replaces it with the instance shared with the manager.
     pub(crate) scope_projections:
-        Arc<std::sync::Mutex<calimero_context::scope_projection::ScopeProjections>>,
+        Arc<std::sync::RwLock<calimero_context::scope_projection::ScopeProjections>>,
     /// Active sync sessions (for delta buffering during snapshot sync).
     pub(crate) sync_sessions: Arc<DashMap<ContextId, SyncSession>>,
     /// Per-context queue of state deltas whose `governance_position` references
@@ -248,7 +248,7 @@ impl NodeState {
             pending_specialized_node_invites: new_pending_specialized_node_invites(),
             accept_mock_tee,
             node_mode,
-            scope_projections: Arc::new(std::sync::Mutex::new(
+            scope_projections: Arc::new(std::sync::RwLock::new(
                 calimero_context::scope_projection::ScopeProjections::new(),
             )),
             sync_sessions: Arc::new(DashMap::new()),
@@ -330,17 +330,29 @@ impl NodeState {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Lock the unified-op scope-projections, recovering a poisoned guard
-    /// rather than skipping (same rationale as `lock_peer_identity_cache`).
-    /// Recovering matters here specifically: returning early on poison would
-    /// silently blind the divergence shadow — the very signal that gates the
-    /// cutover flip — so a poisoned writer must not be allowed to make the gate
-    /// vacuously pass. Held only across synchronous work (no `.await` in scope).
-    pub(crate) fn lock_scope_projections(
+    /// Read-lock the unified-op scope-projections. The decision-site shadow's
+    /// reads (`member_at_cut` / `namespace_to_refresh` / `cut_diagnostics`) take
+    /// this on every authorized delta, so an `RwLock` read lets them run
+    /// concurrently instead of serializing against each other and the
+    /// governance-apply writer — the contention that otherwise starves apply and
+    /// stalls churn-heavy scenarios. Recovers a poisoned guard rather than
+    /// skipping (a poisoned writer must not silently blind the divergence gate).
+    /// Held only across synchronous work (no `.await` in scope).
+    pub(crate) fn read_scope_projections(
         &self,
-    ) -> MutexGuard<'_, calimero_context::scope_projection::ScopeProjections> {
+    ) -> std::sync::RwLockReadGuard<'_, calimero_context::scope_projection::ScopeProjections> {
         self.scope_projections
-            .lock()
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Write-lock the unified-op scope-projections (for `apply_backfill`). Brief
+    /// and infrequent relative to the reads; see [`Self::read_scope_projections`].
+    pub(crate) fn write_scope_projections(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, calimero_context::scope_projection::ScopeProjections> {
+        self.scope_projections
+            .write()
             .unwrap_or_else(PoisonError::into_inner)
     }
 

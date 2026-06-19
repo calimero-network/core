@@ -771,20 +771,21 @@ fn projection_member_at_cut(
     heads: &[[u8; 32]],
 ) -> Option<bool> {
     // Backfill / refresh WITHOUT holding the projection lock across the DAG walk
-    // (the governance apply path shares the lock). Gate under a brief lock, walk
-    // lock-free, re-lock only to ingest.
+    // (the governance apply path shares the lock). Gate under a brief READ lock,
+    // walk lock-free, take the WRITE lock only to ingest, then a READ for the
+    // compare.
     if let Some(namespace_id) = node_state
-        .lock_scope_projections()
+        .read_scope_projections()
         .namespace_to_refresh(datastore, group, heads)
     {
         if let Some(ops) = ScopeProjections::collect_namespace_ops(datastore, namespace_id) {
             node_state
-                .lock_scope_projections()
+                .write_scope_projections()
                 .apply_backfill(namespace_id, ops);
         }
     }
     node_state
-        .lock_scope_projections()
+        .read_scope_projections()
         .member_at_cut(datastore, group, author_id, heads)
 }
 
@@ -992,7 +993,7 @@ pub async fn handle_state_delta(
                         decision_group_in_view,
                         decision_group_size,
                     ) = node_state
-                        .lock_scope_projections()
+                        .read_scope_projections()
                         .cut_diagnostics(datastore, group, &author_id, heads);
                     warn!(
                         marker = "unified_projection_divergence",
