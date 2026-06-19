@@ -1056,12 +1056,44 @@ pub async fn handle_state_delta(
                     )
             }) == Some(true);
             if granted {
+                // Diagnostics pin WHY the authoritative walk grants where live says
+                // NeverMember: decision_group_size>0 → direct subgroup membership
+                // folded (cascade-removal not seen as an op); author_in_any but
+                // decision_group_size 0 → inherited via a parent the projection
+                // still folds as a member; heads_in_log==heads_len confirms the
+                // fold was complete (it must be, given member_at_cut_authoritative).
+                let (
+                    backfilled,
+                    ns_resolved,
+                    log_len,
+                    heads_in_log,
+                    author_in_any,
+                    decision_group_in_view,
+                    decision_group_size,
+                ) = governance_position
+                    .as_ref()
+                    .map(|gp| {
+                        node_state.read_scope_projections().cut_diagnostics(
+                            datastore,
+                            group,
+                            &author_id,
+                            &gp.governance_dag_heads,
+                        )
+                    })
+                    .unwrap_or((false, false, 0, 0, false, false, 0));
                 warn!(
                     marker = "unified_projection_divergence",
                     plane = "membership-cut-grant",
                     group_id = ?group,
                     %author_id,
                     reason,
+                    ns_resolved,
+                    backfilled,
+                    log_len,
+                    heads_in_log,
+                    author_in_any,
+                    decision_group_in_view,
+                    decision_group_size,
                     "projection authorizes a write the live resolver rejected — proceeding (sole authority)"
                 );
                 // Fall through to the apply path: the projection is authoritative.
