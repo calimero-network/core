@@ -27,3 +27,33 @@ doc_generation:
     - automated-docs
     - documentation
   pr_draft: true
+
+# Source → docs routing. A change whose files match a glob routes deterministically
+# to the listed page(s) with no model guess (the fast mapping-hit path); unmapped
+# crates fall back to model routing. Globs are fnmatch-style (`*` spans `/`).
+documentation:
+  source_to_docs_mapping:
+    # Per-crate internals pages (architecture/crates/*.html)
+    "crates/auth/**": ["architecture/crates/auth.html"]
+    "crates/node/**": ["architecture/crates/node.html", "architecture/crates/sync.html"]
+    "crates/context/**": ["architecture/crates/context.html", "architecture/membership-and-leave.html"]
+    "crates/network/**": ["architecture/crates/network.html", "architecture/wire-protocol.html"]
+    "crates/server/**": ["architecture/crates/server.html"]
+    "crates/runtime/**": ["architecture/crates/runtime.html", "architecture/app-lifecycle.html"]
+    "crates/dag/**": ["architecture/crates/dag.html"]
+    "crates/sdk/**": ["architecture/crates/sdk.html"]
+    "crates/meroctl/**": ["architecture/crates/tools.html"]
+    "crates/merod/**": ["architecture/crates/tools.html"]
+    # Storage
+    "crates/store/**": ["architecture/crates/store.html", "architecture/storage-schema.html"]
+    "crates/storage/**": ["architecture/storage-schema.html", "architecture/migrations.html"]
+    "crates/storage-macros/**": ["architecture/storage-schema.html"]
+    # Governance & op-log
+    "crates/governance-store/**": ["architecture/local-governance.html", "architecture/auto-follow.html"]
+    "crates/governance-types/**": ["architecture/local-governance.html"]
+    "crates/authz/**": ["architecture/local-governance.html"]
+    "crates/op/**": ["architecture/crates/dag.html", "architecture/auto-follow.html"]
+    "crates/op-adapter/**": ["architecture/crates/dag.html"]
+    # Subsystems
+    "crates/config/**": ["architecture/config-reference.html"]
+    "crates/tee-attestation/**": ["architecture/tee-mode.html"]
