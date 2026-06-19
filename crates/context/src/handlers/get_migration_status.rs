@@ -43,6 +43,30 @@ pub fn collect_migration_cohort(
         }
     }
 
+    // SHADOW: union the projection's effective-member set across the same subtree
+    // and compare to the live cohort (logs `membership-enum` divergence; still
+    // returns the live cohort).
+    let mut projected: BTreeSet<PublicKey> = BTreeSet::new();
+    for gid in &groups {
+        if let Some(ids) =
+            crate::scope_projection::ScopeProjections::member_identities_now_ephemeral(store, gid)
+        {
+            projected.extend(ids);
+        }
+    }
+    if projected != cohort {
+        let only_projection: Vec<_> = projected.difference(&cohort).collect();
+        let only_live: Vec<_> = cohort.difference(&projected).collect();
+        tracing::warn!(
+            marker = "unified_projection_divergence",
+            plane = "membership-enum",
+            namespace_id = ?namespace_id,
+            ?only_projection,
+            ?only_live,
+            "query-enum: projection migration cohort differs from live"
+        );
+    }
+
     Ok(cohort.into_iter().collect())
 }
 

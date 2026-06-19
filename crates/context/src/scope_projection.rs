@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    CapabilitiesRepository, MembershipRepository, MetaRepository, NamespaceDagService,
-    NamespaceOpLogService, NamespaceRepository,
+    CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
+    NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
 };
 use calimero_governance_types::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
@@ -523,6 +523,131 @@ impl ScopeProjections {
         // Projection couldn't decide (cold/partial fold or store fault) — live is
         // authoritative here, so its error legitimately propagates.
         MembershipRepository::new(store).is_member(group, member)
+    }
+
+    /// The set of identities the projection considers EFFECTIVE members of `group`
+    /// right now — direct plus inherited (open-subgroup parent walk) — built from a
+    /// fresh ephemeral projection. The mirror of live's `list ∪ enumerate_inherited`
+    /// for the membership-enumeration query endpoints. `None` when the
+    /// namespace/heads/view can't be resolved.
+    ///
+    /// One fold, then every candidate identity is filtered through the same at-cut
+    /// inheritance walk the boolean reads use, so the set is consistent with
+    /// [`member_now_ephemeral`](Self::member_now_ephemeral). The candidate universe
+    /// is every direct member of any group in the view plus the group/root admins —
+    /// a superset the walk narrows to `group`'s actual members.
+    ///
+    /// Mirrors live's enumeration DENY ASYMMETRY: a member who left/was-kicked from
+    /// an open subgroup but is still a namespace member stays `is_member`-true (an
+    /// `Inherited` path) yet is EXCLUDED from enumeration until they re-join. The
+    /// final filter drops such denied INHERITED candidates (direct members are never
+    /// deny-filtered), so the set matches live's `list ∪ enumerate_inherited`.
+    #[must_use]
+    pub fn member_identities_now_ephemeral(
+        store: &Store,
+        group: &ContextGroupId,
+    ) -> Option<std::collections::BTreeSet<PublicKey>> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(group)
+            .ok()?
+            .to_bytes();
+        let mut proj = Self::new();
+        let ops = Self::collect_namespace_ops(store, namespace_id)?;
+        proj.apply_backfill(namespace_id, ops);
+        // Cut heads read AFTER the fold (same rationale as `member_now_ephemeral`):
+        // the cut never names ops the fold is missing.
+        let heads = NamespaceDagService::new(store, namespace_id)
+            .read_head_record()
+            .ok()?
+            .parent_hashes;
+        let scope = ScopeId::from(namespace_id);
+        let view = proj.acl_view_at(&scope, &heads)?;
+
+        let root_group = ContextGroupId::from(namespace_id);
+        let root = MetaRepository::new(store)
+            .load(&root_group)
+            .ok()
+            .flatten()
+            .map(|meta| (root_group, meta.admin_identity));
+        let default_cap_base = CapabilitiesRepository::new(store)
+            .default_capabilities(&root_group)
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+
+        let mut candidates: std::collections::BTreeSet<PublicKey> =
+            std::collections::BTreeSet::new();
+        for members in view.groups.values() {
+            candidates.extend(members.keys().copied());
+        }
+        candidates.extend(view.group_admin.values().copied());
+        if let Some((_, admin)) = root {
+            let _ = candidates.insert(admin);
+        }
+        // Mirror live's enumeration deny ASYMMETRY: `is_member`/`check_path` keeps a
+        // denied member (a still-`Inherited` path), but `enumerate_inherited`
+        // EXCLUDES a denied INHERITED member — a node that left/was-kicked from an
+        // open subgroup yet remains a namespace member. Direct members are never
+        // deny-filtered (live's `list` doesn't consult the deny-list). The deny-list
+        // is independent persisted state (not the membership resolver F5 deletes),
+        // read here as a current-state base fact exactly like the root admin/caps.
+        let deny = DenyListRepository::new(store);
+        Some(
+            candidates
+                .into_iter()
+                .filter(|c| view.is_member_at_cut(*group, c, root, default_cap_base))
+                .filter(|c| {
+                    // Every (sub)group member must also be a member of the owning
+                    // namespace ROOT. `leave_namespace` publishes ONE `MemberLeft` on
+                    // the root whose LOCAL apply cascade-removes the leaver's direct
+                    // rows across every descendant subgroup; the projection folds only
+                    // that single op's namespace-level removal, not the cascade, so a
+                    // stale direct subgroup row survives the fold. Requiring root
+                    // membership drops it (live has no subgroup member who isn't a
+                    // namespace member — a join always goes through the namespace).
+                    *group == root_group
+                        || view.is_member_at_cut(root_group, c, root, default_cap_base)
+                })
+                .filter(|c| {
+                    let is_direct = view
+                        .groups
+                        .get(group)
+                        .is_some_and(|members| members.contains_key(c));
+                    is_direct || !deny.is_denied(group, c).unwrap_or(false)
+                })
+                .collect(),
+        )
+    }
+
+    /// SHADOW cross-check for the membership-enumeration endpoints: compare the
+    /// projection's effective member-identity set against the `live_identities` the
+    /// caller already built, logging the hard-gated `unified_projection_divergence`
+    /// (plane `membership-enum`) on any set difference. Read-only — the caller still
+    /// returns the live list; this validates equivalence (now including the deny
+    /// asymmetry) ahead of the F5 flip to acting on the projection set.
+    pub fn shadow_check_member_enum(
+        store: &Store,
+        group: &ContextGroupId,
+        live_identities: &std::collections::BTreeSet<PublicKey>,
+    ) {
+        let Some(projected) = Self::member_identities_now_ephemeral(store, group) else {
+            return;
+        };
+        if &projected != live_identities {
+            let only_projection: Vec<_> = projected.difference(live_identities).collect();
+            let only_live: Vec<_> = live_identities.difference(&projected).collect();
+            // Hard-gated: the projection enumeration now mirrors live's deny
+            // asymmetry, so any residual set difference is a real divergence the
+            // cutover gate must catch (same marker the boolean gates use).
+            tracing::warn!(
+                marker = "unified_projection_divergence",
+                plane = "membership-enum",
+                group_id = ?group,
+                ?only_projection,
+                ?only_live,
+                "query-enum: projection effective-member set differs from live"
+            );
+        }
     }
 
     #[must_use]

@@ -25,7 +25,11 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
             let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
                 bail!("node has no group identity configured");
             };
-            if !MembershipRepository::new(&self.datastore).is_member(&group_id, &node_identity)? {
+            if !crate::scope_projection::ScopeProjections::member_now_checked(
+                &self.datastore,
+                &group_id,
+                &node_identity,
+            )? {
                 bail!("node is not a member of group '{group_id:?}'");
             }
 
@@ -46,6 +50,26 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 + MembershipRepository::new(&self.datastore)
                     .enumerate_inherited(&group_id)?
                     .len()) as u64;
+
+            // SHADOW: validate the projection's effective-member count against the
+            // live union (logs `membership-enum` divergence; still returns live).
+            if let Some(projected) =
+                crate::scope_projection::ScopeProjections::member_identities_now_ephemeral(
+                    &self.datastore,
+                    &group_id,
+                )
+            {
+                if projected.len() as u64 != member_count {
+                    tracing::warn!(
+                        marker = "unified_projection_divergence",
+                        plane = "membership-enum",
+                        group_id = ?group_id,
+                        projection_count = projected.len(),
+                        live_count = member_count,
+                        "query-enum: projection effective-member count differs from live"
+                    );
+                }
+            }
 
             let context_count =
                 MetadataRepository::new(&self.datastore).count_contexts(&group_id)? as u64;
