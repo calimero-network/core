@@ -606,6 +606,22 @@ impl ScopeProjections {
             return Some(true);
         }
 
+        // The fold is only authoritative enough to DENY when the FULL cited
+        // ancestry is present. A proactive governance backfill races incoming
+        // state deltas: the write can arrive before this node has folded the
+        // author's membership chain, leaving the cut's ancestry truncated. An
+        // INHERITED open-subgroup membership is especially exposed — deriving it
+        // needs the whole chain folded (anchor membership + the subgroup edge +
+        // its visibility + the join cap), far more state than a direct membership
+        // fold did, so a partial fold spuriously reads not-a-member. Rejecting on
+        // that partial view would be a false deny of a real member. Defer to live
+        // (`None`) until the ancestry is whole; the at-cut walk above then decides
+        // correctly. Symmetric with `member_at_cut_authoritative`, which gates
+        // grants on this same completeness predicate.
+        if !self.cut_ancestry_complete(&scope, heads) {
+            return None;
+        }
+
         Some(false)
     }
 

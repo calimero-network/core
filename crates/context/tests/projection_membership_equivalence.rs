@@ -430,3 +430,107 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         "projection must restore inherited access on rejoin (the under-grant guard)"
     );
 }
+
+/// Backfill-lag deferral: when the cut's ancestry is only PARTIALLY folded — the
+/// write arrived before a proactive governance backfill folded the author's
+/// membership chain — the deny co-authorizer must DEFER to live (`None`), not
+/// reject (`Some(false)`). An inherited open-subgroup membership is the exposed
+/// case: deriving it needs the whole chain folded (anchor membership + subgroup
+/// edge + visibility + cap), so a truncated fold reads not-a-member. Live (with
+/// its materialized rows) still authorizes; the projection must not contradict it
+/// on a partial view. This reproduces the single transient divergence the e2e
+/// cutover gate caught in `group-leave-then-rejoin-via-inheritance` (one marker,
+/// emitted mid-backfill, gone once the ancestry completed).
+#[test]
+fn projection_defers_when_cut_ancestry_incomplete() {
+    let store = store();
+    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner = joiner_sk.public_key();
+
+    let ns = ContextGroupId::from([0x41; 32]);
+    let subgroup = ContextGroupId::from([0x42; 32]);
+
+    for g in [&ns, &subgroup] {
+        MetaRepository::new(&store).save(g, &meta(admin)).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(g, &admin, GroupMemberRole::Admin)
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .unwrap();
+
+    // LIVE applies the full chain — root join + inherited subgroup join — so the
+    // live resolver authoritatively sees the joiner as an inherited member.
+    let join_ns = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: joiner,
+            signed_invitation: sign_invitation(&admin_sk, ns, 1),
+        }),
+    )
+    .unwrap();
+    group_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
+    let join_sub = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns.to_bytes(),
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: joiner,
+            group_id: subgroup.to_bytes(),
+        }),
+    )
+    .unwrap();
+    group_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&subgroup, &joiner)
+            .unwrap(),
+        "live: joiner inherits subgroup access"
+    );
+
+    // The PROJECTION has only folded the subgroup structure + the rejoin op
+    // itself, NOT the joiner's root-membership ancestor (`[0xC1; 32]` is never
+    // ingested) — exactly the mid-backfill state on the node that caught the
+    // divergence. The cited head `[0xC2; 32]` is present, but its ancestry is
+    // truncated, so the inheritance walk can find no anchor membership.
+    let mut proj = ScopeProjections::new();
+    fold_subgroup_structure(
+        &mut proj,
+        ns.to_bytes(),
+        admin,
+        subgroup,
+        [0xC0; 32],
+        [0xCF; 32],
+    );
+    proj.ingest_op(&op_from_namespace_op(
+        &join_sub,
+        None,
+        [0xC2; 32],
+        hlc(2),
+        &[[0xC1; 32]], // parent (the root join) deliberately NOT ingested
+    ));
+
+    // Pre-fix this returned `Some(false)` (the walk fails + no direct row for the
+    // materialized fallback) → a false deny that tripped the cutover gate. The
+    // completeness guard makes it abstain instead.
+    assert_eq!(
+        proj.member_at_cut(&store, subgroup, &joiner, &[[0xC2; 32]]),
+        None,
+        "projection must DEFER to live (None) on a partially-folded cut, not deny"
+    );
+}
