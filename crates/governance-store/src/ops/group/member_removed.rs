@@ -7,7 +7,6 @@ use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError,
     MembershipRepository, MetaRepository, NamespaceRepository,
 };
-use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
@@ -80,32 +79,51 @@ pub(crate) fn apply(
     // `member_left.rs`, but DELIBERATELY omits the owner-self and per-
     // descendant last-admin checks: a `ReadOnlyTee` is structurally never an
     // owner or admin, so both are inert here and would mislead.
-    let is_namespace_root = NamespaceRepository::new(store).resolve(group_id)? == *group_id;
-    if is_namespace_root && removed_role == Some(GroupMemberRole::ReadOnlyTee) {
-        let descendants = NamespaceRepository::new(store).collect_descendants(group_id)?;
-        // Capture (descendant, role) per direct row so the role-scoped
-        // `TeeMemberRemoved` follow-up can be gated per-group. Cascade ENTRY
-        // is gated on the ROOT role (the security boundary); this per-
-        // descendant role gate is only for the event.
-        let mut direct_descendants: Vec<(ContextGroupId, GroupMemberRole)> = Vec::new();
-        for sub in &descendants {
-            if let Some(role) = MembershipRepository::new(store).role_of(sub, member)? {
-                direct_descendants.push((*sub, role));
-            }
-        }
-        for (sub, role) in &direct_descendants {
-            cascade_remove_member_from_group_tree(store, sub, member)?;
-            MembershipRepository::new(store).remove_member(sub, member)?;
-            DenyListRepository::new(store).mark(sub, member)?;
-            ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
-                group_id: sub.to_bytes(),
-                member: *member,
-            });
-            if *role == GroupMemberRole::ReadOnlyTee {
-                ctx.queue_event(crate::op_events::OpEvent::TeeMemberRemoved {
+    //
+    // Gate the namespace-root resolution behind the already-loaded role
+    // check: `resolve` walks the parent chain (O(depth)) and only a
+    // `ReadOnlyTee` removal cascades, so every non-TEE removal skips the walk.
+    if removed_role == Some(GroupMemberRole::ReadOnlyTee) {
+        let namespaces = NamespaceRepository::new(store);
+        let is_namespace_root = namespaces.resolve(group_id)? == *group_id;
+        if is_namespace_root {
+            let membership = MembershipRepository::new(store);
+            let deny_list = DenyListRepository::new(store);
+            // `collect_descendants` returns the FULL subtree (every level, not
+            // just direct children) and excludes the root itself, so one pass
+            // covers each descendant group's own directly-registered contexts.
+            let descendants = namespaces.collect_descendants(group_id)?;
+            for sub in &descendants {
+                // `ContextIdentity` hygiene runs for EVERY descendant —
+                // INCLUDING Open subgroups the TEE only *inherited* into (no
+                // direct `GroupMember` row) yet still auto-followed contexts of
+                // (Fix B). Skipping those would strand the evicted node's
+                // `ContextIdentity` rows there. `cascade_remove_member` is an
+                // idempotent no-op where the TEE holds no rows and touches only
+                // `ContextIdentity` (disjoint from `GroupMember`), so it is
+                // group-state-hash-neutral.
+                cascade_remove_member_from_group_tree(store, sub, member)?;
+                // Membership teardown + role-scoped events fire only where the
+                // TEE holds a DIRECT row — inherited rows have no per-subgroup
+                // `GroupMember` to evict and never emitted a join event. The
+                // cascade ENTRY is gated on the ROOT role (the security
+                // boundary); this per-descendant role gate is only for the
+                // event split.
+                let Some(role) = membership.role_of(sub, member)? else {
+                    continue;
+                };
+                membership.remove_member(sub, member)?;
+                deny_list.mark(sub, member)?;
+                ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
                     group_id: sub.to_bytes(),
                     member: *member,
                 });
+                if role == GroupMemberRole::ReadOnlyTee {
+                    ctx.queue_event(crate::op_events::OpEvent::TeeMemberRemoved {
+                        group_id: sub.to_bytes(),
+                        member: *member,
+                    });
+                }
             }
         }
     }

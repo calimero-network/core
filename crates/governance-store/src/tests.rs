@@ -6191,6 +6191,14 @@ mod tee_member_removed_event_tests {
                     } else if group_id == gid_b {
                         b_mr += 1;
                     }
+                    // Events on any OTHER group_id are intentionally dropped:
+                    // `op_events` is a PROCESS-GLOBAL broadcast bus and tests
+                    // run in parallel, so a concurrent test that reuses this
+                    // same `member` key emits onto this receiver too. We
+                    // cannot assert "no unexpected group_id" without making
+                    // every test's member key globally unique. Over-cascade is
+                    // instead pinned by the dedicated callers, which set up a
+                    // unique (group_id, member) pair and assert exact counts.
                 }
                 Ok(OpEvent::TeeMemberRemoved {
                     group_id,
@@ -6401,6 +6409,109 @@ mod tee_member_removed_event_tests {
             sub_pair,
             (1, 1),
             "subgroup must see one MemberRemoved + one TeeMemberRemoved from the cascade"
+        );
+        assert_eq!(
+            root_pair,
+            (1, 1),
+            "root must see one MemberRemoved + one TeeMemberRemoved"
+        );
+    }
+
+    /// A root TEE removal must also purge the TEE's `ContextIdentity` rows in
+    /// an Open subgroup it only INHERITED into — i.e. where it auto-followed
+    /// contexts (Fix B) without ever holding a direct `GroupMember` row.
+    /// Those subgroups are excluded from the per-direct-row event loop, so the
+    /// regression guarded here is a stranded-identity leak: the cascade must
+    /// still run `cascade_remove_member` over every descendant, while the
+    /// per-subgroup `MemberRemoved`/`TeeMemberRemoved` events stay gated to
+    /// direct rows.
+    #[test]
+    fn member_removed_root_readonly_tee_purges_inherited_open_subgroup_identity() {
+        use calimero_context_config::VisibilityMode;
+
+        let store = test_store();
+
+        // namespace (root) ── Open subgroup (TEE has NO direct row here)
+        let ns_gid = ContextGroupId::from([0xD4; 32]);
+        let subgroup = ContextGroupId::from([0xD5; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &subgroup)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .unwrap();
+
+        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_pk = admin_sk.public_key();
+        let tee_pk = PublicKey::from([0xE3; 32]);
+
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MetaRepository::new(&store)
+            .save(&subgroup, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        // TEE has a direct row ONLY at the root — in the Open subgroup its
+        // membership is inherited, so there is no `GroupMember` row there.
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &tee_pk, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+
+        // Auto-follow gave the inherited TEE a `ContextIdentity` row under a
+        // context registered in the Open subgroup, despite no direct row.
+        let context = ContextId::from([0xC5; 32]);
+        register_context_in_group(&store, &subgroup, &context).unwrap();
+        let identity_key = calimero_store::key::ContextIdentity::new(context, tee_pk.into());
+        {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &identity_key,
+                    &calimero_store::types::ContextIdentity {
+                        private_key: Some([7u8; 32]),
+                        sender_key: None,
+                    },
+                )
+                .unwrap();
+        }
+        assert!(
+            store.handle().has(&identity_key).unwrap(),
+            "test precondition: inherited ContextIdentity row exists"
+        );
+
+        let mut rx = op_events::subscribe();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            ns_gid.to_bytes(),
+            vec![],
+            MetaRepository::new(&store)
+                .compute_state_hash(&ns_gid)
+                .unwrap(),
+            1,
+            dummy_member_removed_op(tee_pk),
+        )
+        .expect("sign MemberRemoved");
+        apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
+
+        // The stranded inherited identity row is purged …
+        assert!(
+            !store.handle().has(&identity_key).unwrap(),
+            "root TEE removal MUST purge inherited Open-subgroup ContextIdentity rows"
+        );
+
+        // … but no per-subgroup membership event fires (no direct row), while
+        // the root still emits its pair. `tee_pk`/`subgroup` are unique to this
+        // test, so the shared-bus event counts are not contaminated.
+        let (root_pair, sub_pair) =
+            count_removed_events_for_two(&mut rx, ns_gid.to_bytes(), subgroup.to_bytes(), tee_pk);
+        assert_eq!(
+            sub_pair,
+            (0, 0),
+            "inherited subgroup (no direct row) must NOT emit cascade membership events"
         );
         assert_eq!(
             root_pair,
