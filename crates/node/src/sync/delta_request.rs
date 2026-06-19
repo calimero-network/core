@@ -181,7 +181,8 @@ fn verify_fetched_parent(
         | crate::handlers::state_delta::DeltaAuthOutcome::Ungated => {
             // Authorized at the cited cut — proceed.
         }
-        crate::handlers::state_delta::DeltaAuthOutcome::Reject(reason) => {
+        crate::handlers::state_delta::DeltaAuthOutcome::Reject(reason)
+        | crate::handlers::state_delta::DeltaAuthOutcome::MembershipReject { reason, .. } => {
             warn!(
                 %context_id,
                 author = %fetched.author_id,

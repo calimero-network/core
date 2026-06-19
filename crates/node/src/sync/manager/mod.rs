@@ -2139,7 +2139,8 @@ impl SyncManager {
                                     | DeltaAuthOutcome::Ungated => {
                                         // Authorized at the cited cut — proceed.
                                     }
-                                    DeltaAuthOutcome::Reject(reason) => {
+                                    DeltaAuthOutcome::Reject(reason)
+                                    | DeltaAuthOutcome::MembershipReject { reason, .. } => {
                                         warn!(
                                             %context_id,
                                             %author,

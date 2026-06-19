@@ -23,12 +23,20 @@ pub(crate) enum DeltaAuthOutcome {
     /// No governance gate applies — a non-group context carrying no edge
     /// (legacy path). Proceed to apply.
     Ungated,
-    /// Reject the delta. `reason` is a static label for the call site's warn
-    /// log. Covers: author Removed / NeverMember at the cut; a group-context
-    /// delta with no edge (bypass attempt); an edge on a non-group context;
-    /// and lookup / walk errors (rejected conservatively to avoid silent
-    /// bypass on transient I/O or corruption).
+    /// Reject the delta on a **structural / error** ground (NOT a membership
+    /// verdict): a group-context delta with no edge (bypass attempt), an edge on
+    /// a non-group context, or a lookup / walk error (rejected conservatively to
+    /// avoid silent bypass on transient I/O or corruption). The projection does
+    /// not override these.
     Reject(&'static str),
+    /// Live membership resolution says the author is NOT a member at the cut
+    /// (Removed / NeverMember). Carries the owning `group` so the **projection**
+    /// can render the authoritative membership verdict (the sole-authority
+    /// flip): the projection decides, and live's verdict here is the cross-check.
+    MembershipReject {
+        group: calimero_context_config::types::ContextGroupId,
+        reason: &'static str,
+    },
     /// Local governance state is behind the cited cut. Buffer until catchup;
     /// `needed` lists every missing governance head so the receiver can
     /// request them all at once.
@@ -93,12 +101,14 @@ pub(crate) fn authorize_delta_at_edge(
         (Some(group), Some(pos)) => {
             match acl_view_at(store, group, author, &pos.governance_dag_heads) {
                 Ok(MembershipStatus::Member(role)) => DeltaAuthOutcome::Authorized { group, role },
-                Ok(MembershipStatus::Removed { .. }) => {
-                    DeltaAuthOutcome::Reject("author was removed from group at governance cut")
-                }
-                Ok(MembershipStatus::NeverMember) => DeltaAuthOutcome::Reject(
-                    "author is not a member of the group at governance cut",
-                ),
+                Ok(MembershipStatus::Removed { .. }) => DeltaAuthOutcome::MembershipReject {
+                    group,
+                    reason: "author was removed from group at governance cut",
+                },
+                Ok(MembershipStatus::NeverMember) => DeltaAuthOutcome::MembershipReject {
+                    group,
+                    reason: "author is not a member of the group at governance cut",
+                },
                 Ok(MembershipStatus::Unknown { needed }) => DeltaAuthOutcome::Buffer { needed },
                 Err(err) => {
                     // Surface the real cause (hash mismatch / store corruption /
