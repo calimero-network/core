@@ -959,19 +959,18 @@ pub async fn handle_state_delta(
                 "cross-DAG check: author authorized at governance cut"
             );
 
-            // SOLE AUTHORITY (F4b): the unified-op projection is the membership
-            // decider. Live resolved `Authorized`; the projection must concur —
-            // if it does NOT see the author as a member at the cut, we DENY
-            // (return). Paired with the `MembershipReject` arm (where the
-            // projection can GRANT), this makes the projection authoritative in
-            // both directions; live now supplies only structural classification
-            // and the buffer-on-unknown-heads liveness gate.
+            // CO-AUTHORIZER (F4a, safe direction): live resolved `Authorized`;
+            // the projection must ALSO see the author as a member at the cut. If
+            // it does NOT, we DENY (return) rather than merely log. This only ever
+            // ADDS rejections to live's authorize (a strict AND), so it can never
+            // over-authorize — the safe half of the flip. The GRANT half (the
+            // projection overriding live's reject) is deferred until the
+            // deny-list is folded; see the `MembershipReject` arm.
             //
-            // A disagreement either way trips the hard divergence marker, so a
-            // wrong verdict fails an e2e scenario AND the gate on this
-            // do-not-merge branch. Both directions are zero across e2e (forward
-            // and the at-cut inverse), so in practice the projection concurs.
-            // `None` (projection can't form an answer, e.g. namespace
+            // A wrong denial trips the hard divergence marker, so it fails an e2e
+            // scenario AND the gate on this do-not-merge branch. Forward
+            // divergence is zero across e2e, so in practice the projection
+            // concurs. `None` (projection can't form an answer, e.g. namespace
             // unresolvable) defers to live's authorize.
             if let Some(gp) = governance_position.as_ref() {
                 let heads = &gp.governance_dag_heads;
@@ -1026,46 +1025,44 @@ pub async fn handle_state_delta(
             );
         }
         DeltaAuthOutcome::MembershipReject { group, reason } => {
-            // SOLE AUTHORITY (F4b): the projection renders the authoritative
-            // membership verdict; live's membership-reject here is the
-            // cross-check. If the projection sees the author as a member at the
-            // cut, AUTHORIZE (fall through to apply) — overriding live's reject.
-            //
-            // Safety: such a grant is a DISAGREEMENT with live, gated by the hard
-            // divergence marker, so were it ever to fire it fails an e2e scenario
-            // AND the gate on this do-not-merge branch. The inverse direction has
-            // been driven to zero (the at-cut walk closed the over-auth), so in
-            // practice the projection agrees with the reject and we fall through
-            // to the reject below. `None` (projection abstains) trusts the reject.
-            let projected = governance_position.as_ref().and_then(|gp| {
-                projection_member_at_cut(
-                    &node_state,
+            // The projection is a co-authorizer in the SAFE direction: it can add
+            // rejections (the Authorized arm above), but it does NOT override
+            // live's membership-reject to GRANT. Acting on a grant here is unsafe
+            // until the projection models the DENY-LIST: a removed member is
+            // hard-blocked even for a write citing a pre-removal cut, deliberately
+            // overriding forward-only causal semantics. The projection's at-cut
+            // walk (forward-only) sees the member at that old cut and would grant
+            // — a real over-authorization the deny-list exists to prevent. So we
+            // reject (trust live), and keep an INFORMATIONAL, refresh-free
+            // readiness marker (not gated) measuring how often the projection
+            // would over-grant, to size folding the deny-list (full F4b grant
+            // side). NOTE: a hit here does NOT trip the hard cutover gate.
+            if let Some(gp) = governance_position.as_ref() {
+                let projected = node_state.read_scope_projections().member_at_cut(
                     datastore,
                     group,
                     &author_id,
                     &gp.governance_dag_heads,
-                )
-            });
-            if projected == Some(true) {
-                warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "membership-cut-grant",
-                    group_id = ?group,
-                    %author_id,
-                    reason,
-                    "projection authorizes a write the live resolver rejected — proceeding (sole authority)"
                 );
-                // Fall through to the apply path: the projection is authoritative.
-            } else {
-                warn!(
-                    %context_id,
-                    %author_id,
-                    delta_id = ?delta_id,
-                    reason,
-                    "cross-DAG check: rejecting state delta (projection concurs)"
-                );
-                return Ok(());
+                if projected == Some(true) {
+                    warn!(
+                        marker = "unified_projection_overauth",
+                        plane = "membership-cut-reject",
+                        group_id = ?group,
+                        %author_id,
+                        reason,
+                        "projection would grant a write live rejected (deny-list not yet folded; not gated)"
+                    );
+                }
             }
+            warn!(
+                %context_id,
+                %author_id,
+                delta_id = ?delta_id,
+                reason,
+                "cross-DAG check: rejecting state delta"
+            );
+            return Ok(());
         }
         DeltaAuthOutcome::Reject(reason) => {
             // Structural / error reject (bypass attempt, edge on a non-group
