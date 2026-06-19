@@ -148,7 +148,7 @@ app::emit!((Event::ItemSet { key: &amp;k, value: &amp;v }, "on_item_set"));
     <span class="kw">pub fn</span> <span class="field">get</span>(&amp;self, key: &amp;str) -&gt; app::Result&lt;Option&lt;String&gt;&gt; { .. }
 }
 </div>
-<p style="margin-top:10px;">A method marked <span class="code">#[app::view]</span> <strong>must</strong> take <span class="code">&amp;self</span> (not <span class="code">&amp;mut self</span>); the macro enforces this at compile time. No state writes may occur inside a view method — the intent is compiler-documented and runtime-exploited for parallelism. Design note: see <a href="../../docs/design/context-method-read-write-intent.md">docs/design/context-method-read-write-intent.md</a> for the parallel-read accelerator design.</p>
+<p style="margin-top:10px;">A method marked <span class="code">#[app::view]</span> <strong>must</strong> take <span class="code">&amp;self</span> (not <span class="code">&amp;mut self</span>); the macro enforces this at compile time. No state writes may occur inside a view method — the intent is compiler-documented and runtime-exploited for parallelism. As of 0.11.0-rc.6, <span class="code">#[app::view]</span> is registered as a no-op marker and resolves correctly when used through a dependency crate. Design note: see <a href="../../docs/design/context-method-read-write-intent.md">docs/design/context-method-read-write-intent.md</a> for the parallel-read accelerator design.</p>
 </div>
 </details>
 
@@ -361,7 +361,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 <div class="g2" style="margin-bottom:16px;">
   <div class="cb">
     <h4 style="color:#f59e0b;">LwwRegister&lt;T&gt;</h4>
-    <p style="margin-top:8px;">Last-write-wins register with logical timestamp. Concurrent writes resolve by highest timestamp. Simple but effective for single-value fields where latest value is always preferred.</p>
+    <p style="margin-top:8px;">Last-write-wins register with logical timestamp. Concurrent writes resolve by highest timestamp. Simple but effective for single-value fields where latest value is always preferred. A drop-stamping guard on <span class="code">value_mut()</span> prevents an incorrect last-writer timestamp from being recorded on mutable-borrow drop (fixed in 0.11.0-rc.6).</p>
     <div class="typedef" style="margin-top:10px;">
 <span class="kw">use</span> calimero_storage::collections::<span class="ty">LwwRegister</span>;<br><br>
 <span class="kw">struct</span> <span class="ty">State</span> {<br>
