@@ -56,11 +56,9 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Pinned to a specific SHA on calimero-network/ai-code-reviewer to
-      # prevent an upstream change from running with this repo's secrets.
-      # Bump deliberately when adopting new reviewer features.
+      # Tracks ai-code-reviewer @master (pin a SHA here for a deliberate review gate).
       - name: Install ai-code-reviewer
-        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@485b32abf334f1518dcadc9c3762ea98705e696c
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@master
 
       # Authenticate as the MeroReviewer App so review comments genuinely
       # come from meroreviewer[bot] (not whatever GH_PAT/GITHUB_TOKEN
