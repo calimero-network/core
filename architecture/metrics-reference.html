@@ -40,7 +40,7 @@
   <div class="stat"><div class="v">16</div><div class="l">sync metrics</div></div>
   <div class="stat"><div class="v">5</div><div class="l">channel metrics</div></div>
   <div class="stat"><div class="v">2</div><div class="l">context metrics</div></div>
-  <div class="stat"><div class="v">4</div><div class="l">sections</div></div>
+  <div class="stat"><div class="v">3</div><div class="l">self-purge metrics</div></div>
 </div>
 
 <!-- ════════════════════════════════════════════════════════
@@ -353,7 +353,51 @@
 </div>
 
 <!-- ════════════════════════════════════════════════════════
-     5. DASHBOARD QUERIES
+     5. TEE GOVERNANCE / SELF-PURGE METRICS
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>TEE Self-Purge Metrics</h2>
+<p style="margin-bottom:8px;">Observability for the self-purge cleanup that runs when a hardware-attested fleet node is evicted from its <span class="code">ReadOnlyTee</span> role. Self-purge hard-deletes a node's own local rows and keys (signing-key material and, as of #2776, the per-group encryption keys) and is recovered across restarts by a marker plus a startup reconcile sweep. See <a href="membership-and-leave.html">Membership &amp; Leave</a> and <a href="tee-fleet-ha.html">TEE Fleet HA</a>.</p>
+<a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/governance-store/src/metrics.rs" target="_blank" rel="noopener">crates/governance-store/src/metrics.rs</a>
+
+<div class="metric-note" style="margin-top:14px;"><strong>Naming</strong> — These families register under the <span class="code">context</span> → <span class="code">group_store</span> sub-registries, so the exported Prometheus names carry the <span class="code">context_group_store_</span> prefix (e.g. <span class="code">context_group_store_self_purge_failures_total</span>). The registered names are shown below.</div>
+
+<table class="metric-table" style="margin-top:18px;">
+<thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="mn">self_purge_failures_total</td>
+  <td class="mt">Family&lt;Counter&gt;</td>
+  <td class="ml">branch, class</td>
+  <td class="md">Self-purge local-state cleanup failures. <span class="code">branch</span> ∈ {<span class="code">namespace</span>, <span class="code">subgroup</span>}; <span class="code">class</span> ∈ {<span class="code">signing_key</span>, <span class="code">context_cleanup</span>}. The <span class="code">class="signing_key"</span> series is the security-relevant one (forward-secrecy residue on disk); <span class="code">class="context_cleanup"</span> is a best-effort dead-pointer leak and is informational.</td>
+</tr>
+<tr>
+  <td class="mn">self_purge_reconcile_total</td>
+  <td class="mt">Family&lt;Counter&gt;</td>
+  <td class="ml">outcome</td>
+  <td class="md">Startup reconcile-sweep outcomes, one increment per marked namespace processed. <span class="code">outcome</span> ∈ {<span class="code">reconciled</span>, <span class="code">retained</span>, <span class="code">cleared_stale</span>, <span class="code">stale_clear_failed</span>, <span class="code">skipped</span>}. <span class="code">retained</span> stuck across restarts means a signing-key purge keeps failing; read-uncertainty lands in <span class="code">skipped</span> (not in <span class="code">self_purge_failures_total</span>).</td>
+</tr>
+<tr>
+  <td class="mn">self_purge_events_dropped_total</td>
+  <td class="mt">Counter</td>
+  <td class="ml">—</td>
+  <td class="md">Self-purge op-events dropped by the broadcast <span class="code">Lagged</span> arm (subscriber fell behind). An upper bound on dropped eviction events, each of which writes no reconcile marker — un-recoverable on-disk residue (bounded; not a forward-secrecy hole, which is held by key rotation).</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>Self-purge metric usage notes</summary>
+  <div class="detail-body">
+    <div class="metric-note"><strong>self_purge_failures_total</strong> — Alert on any non-zero rate of <span class="code">class="signing_key"</span>: it means a node's own private signing-key material may linger on disk after eviction, pending the reconcile sweep. <span class="code">class="context_cleanup"</span> is informational (orphaned dead-pointer rows); namespace deletion and unsubscribe still proceed.</div>
+    <div class="metric-note"><strong>self_purge_reconcile_total</strong> — In steady state the startup sweep should be quiet. A namespace persistently in <span class="code">outcome="retained"</span> across restarts indicates a signing-key purge that keeps failing — investigate. <span class="code">stale_clear_failed</span> is benign (re-evaluated next restart); <span class="code">skipped</span> means the sweep declined to purge under read uncertainty (never purge on uncertainty).</div>
+    <div class="metric-note"><strong>self_purge_events_dropped_total</strong> — Any non-zero rate means the self-purge subscriber fell more than the broadcast capacity behind and some evictions may have left un-reconcilable on-disk residue. Bounded and not a forward-secrecy hole, but worth alerting as a correctness signal.</div>
+  </div>
+</details>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     6. DASHBOARD QUERIES
      ════════════════════════════════════════════════════════ -->
 <div class="card gd">
 <h2>Dashboard Queries</h2>
@@ -440,6 +484,22 @@ network_event_channel_depth / 1000
 <span class="comment"># Protocol selection distribution</span><br>
 <span class="fn">sum</span>(<span class="fn">rate</span>(sync_protocol_selections_total[5m])) <span class="fn">by</span> (<span class="label">protocol</span>)<br>
 / <span class="fn">ignoring</span>(<span class="label">protocol</span>) <span class="fn">group_left</span> <span class="fn">sum</span>(<span class="fn">rate</span>(sync_protocol_selections_total[5m]))
+</div>
+
+<h3>TEE Self-Purge Health</h3>
+<div class="promql">
+<span class="comment"># CRITICAL: signing-key residue left on disk after eviction</span><br>
+<span class="fn">increase</span>(context_group_store_self_purge_failures_total{<span class="label">class</span>="signing_key"}[15m]) > 0
+</div>
+
+<div class="promql">
+<span class="comment"># WARNING: a namespace stuck "retained" — repeated purge failure</span><br>
+<span class="fn">increase</span>(context_group_store_self_purge_reconcile_total{<span class="label">outcome</span>="retained"}[1h]) > 0
+</div>
+
+<div class="promql">
+<span class="comment"># WARNING: dropped self-purge events — un-recoverable residue risk</span><br>
+<span class="fn">rate</span>(context_group_store_self_purge_events_dropped_total[5m]) > 0
 </div>
 </div>
 

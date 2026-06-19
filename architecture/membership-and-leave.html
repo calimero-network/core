@@ -14,40 +14,57 @@
      1. TITLE + STATS
      ═══════════════════════════════════════════════════════════════════ -->
 <h1>Membership &amp; <em>Leave Operations</em></h1>
-<p class="page-subtitle">Voluntary leave and Owner role across namespaces, groups, and contexts</p>
+<p class="page-subtitle">Voluntary leave, owner-initiated removal, and role-scoped TEE self-purge across namespaces, groups, and contexts</p>
 
 <div class="g4" style="margin-bottom:36px;">
   <div class="stat"><div class="v">3 leaves</div><div class="l">context · group · namespace</div></div>
-  <div class="stat"><div class="v">1 op</div><div class="l">TransferOwnership</div></div>
+  <div class="stat"><div class="v">Key rotation</div><div class="l">on removal (publisher pipeline)</div></div>
   <div class="stat"><div class="v">Direct</div><div class="l">leave deletes a row</div></div>
-  <div class="stat"><div class="v">Owner≠Admin</div><div class="l">exclusive role</div></div>
+  <div class="stat"><div class="v">TEE purge</div><div class="l">role-scoped hard delete</div></div>
+</div>
+
+<div class="card ga">
+<p style="margin:0;">
+<b>As-built page.</b> This was originally a proposal; it now documents shipped behavior. For the
+fleet-specific eviction story (owner kicks a <code>ReadOnlyTee</code> node on HA-disable, the
+self-purge listener, and the marker-gated startup reconcile) see
+<a href="tee-fleet-ha.html">Fleet HA</a>. Term definitions live in the
+<a href="glossary.html">Glossary</a>. The governing design record is
+<code>docs/adr/0002-fleet-tee-leave-protocol.md</code>.
+</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
      2. PROBLEM &amp; MOTIVATION
      ═══════════════════════════════════════════════════════════════════ -->
 <div class="card ga">
-<h2>Problem</h2>
+<h2>Problem this solved</h2>
 <p>
-Today, the only way out of a Calimero group or namespace is to be removed by an admin —
-<code>MemberRemoved</code> is admin-initiated and there is no self-leave op. Users cannot
-voluntarily exit a workspace they joined; muting a context they're auto-followed into requires
+Originally, the only way out of a Calimero group or namespace was to be removed by an admin —
+<code>MemberRemoved</code> was admin-initiated and there was no self-leave op. Users could not
+voluntarily exit a workspace they joined; muting a context they were auto-followed into required
 client-side filtering rather than a real opt-out, because auto-follow re-adds them on the next
 <code>ContextRegistered</code> event.
 </p>
 <p>
-Separately, every group already records a single "creator / fallback admin" identity
-(<code>GroupMetaValue.admin_identity</code>) but no role distinguishes that creator from any other
-admin. There is no way to express "this person owns the group, others administrate it" — admins
-can demote each other, kick each other, and leave a group ownerless. There is no
-<code>TransferOwnership</code> op to designate a successor.
+Separately, every group records a single "creator / fallback admin" identity
+(<code>GroupMetaValue.owner_identity</code>) but the role enum did not distinguish that creator
+from any other admin. There was no clean way to express "this person owns the group, others
+administrate it."
 </p>
 <p>
-This page proposes three new leave operations and formalizes Owner as a real, exclusive,
-transferable role distinct from Admin. The four pieces share infrastructure: Owner blocks
-<code>leave_group</code>/<code>leave_namespace</code>; leave operations reuse the existing
-<code>MemberRemoved</code> key-rotation pipeline; <code>leave_namespace</code> is
-<code>leave_group</code> plus the cascade handler.
+The shipped design adds three leave operations and an owner identity stored on group metadata that
+gates self-leave and involuntary removal. The pieces share infrastructure: the stored owner blocks
+<code>leave_group</code>/<code>leave_namespace</code> and involuntary <code>MemberRemoved</code>;
+owner-initiated <code>MemberRemoved</code> reuses the group key-rotation pipeline;
+<code>leave_namespace</code> is the namespace-root <code>MemberLeft</code> plus a cascade through
+descendant groups.
+</p>
+<p>
+A separate, role-scoped mechanism layers on top for fleet TEE nodes: when a
+<code>ReadOnlyTee</code> member is removed, the evicted node <b>hard-deletes</b> its local key
+material (see <a href="#self-purge">TEE self-purge</a>), because a TEE node has no rejoin path
+under the same identity. Non-TEE removals keep the soft-leave invariant.
 </p>
 </div>
 
@@ -141,11 +158,17 @@ subgroups have one (direct invite).
 
 <h3>Roles &amp; capabilities</h3>
 <p>
-Roles defined in <code>crates/primitives/src/context.rs:253-265</code>:
+The <code>GroupMemberRole</code> enum (<code>crates/primitives/src/context.rs</code>) has exactly
+four variants:
 </p>
 <ul>
   <li><code>Admin</code>, <code>Member</code>, <code>ReadOnly</code>, <code>ReadOnlyTee</code>.</li>
-  <li>This proposal adds <code>Owner</code> as a fifth role — exactly one per group, transferable.</li>
+  <li><b>There is no <code>Owner</code> role variant.</b> "Owner" is not a member role — it is a
+  single identity stored on group metadata (<code>GroupMetaValue.owner_identity</code>). The owner
+  is whichever member's public key equals that field; they are otherwise an ordinary
+  <code>Admin</code>. Owner status is enforced by identity comparison in the apply handlers
+  (<code>OwnerImmuneFromRemoval</code>, <code>OwnerCannotSelfLeave</code>), not by a role check. See
+  the <a href="#owner">Owner</a> section.</li>
 </ul>
 <p>
 Per-member capability bits (<code>crates/context/config/src/lib.rs</code>, <code>MemberCapabilities</code>):
@@ -162,10 +185,13 @@ Per-member capability bits (<code>crates/context/config/src/lib.rs</code>, <code
   <li><b>Last-admin protection</b> (<code>membership_policy.rs:39-46</code>):
   <code>MemberRemoved</code> rejects with <code>LastAdmin</code> if it would leave a group with
   zero admins. Also enforced on demotion.</li>
-  <li><b>Key rotation on removal</b> (<code>group_governance_publisher.rs:216-220</code>):
-  publishing <code>MemberRemoved</code> automatically generates a fresh group key, wraps it for
-  remaining members, and emits <code>RootOp::KeyDelivery</code>. The leave operations in this
-  proposal hook into the same pipeline.</li>
+  <li><b>Key rotation on removal</b> (<code>group_governance_publisher.rs</code>,
+  <code>sign_apply_and_publish_inner</code>): publishing <code>MemberRemoved</code> automatically
+  generates a fresh group key via <code>GroupKeyring</code>, wraps it (<code>wrap_for_member</code>)
+  for every <em>remaining</em> member — excluding the removed one — and delivers it. The removed
+  member never receives the new key, so it cannot decrypt anything written after eviction. This is
+  the forward-secrecy mechanism for the namespace's future writes. Owner-initiated removal is the
+  cryptographically-complete leave path.</li>
 </ul>
 </div>
 
@@ -329,12 +355,22 @@ layer and keeps the synced shape clean.
      5. leave_group
      ═══════════════════════════════════════════════════════════════════ -->
 <div class="card gc">
-<h2>leave_group — distributed, two-phase, no cascade</h2>
+<h2>leave_group — self-removal, no cascade</h2>
 <p>
-Self-removal from a single group. Reuses the existing <code>MemberRemoved</code> key-rotation
-pipeline but the publisher/rotation responsibility splits across two parties: the leaver
-publishes the leave op, then a remaining admin publishes the <code>KeyDelivery</code> with the
-fresh group key. The leaver never holds the new key.
+Self-removal from a single group via <code>GroupOp::MemberLeft</code>. The leaver publishes the
+leave op; every receiver deletes the leaver's <code>(member, group)</code> row.
+</p>
+<p>
+<b>As-built caveat — no key rotation on self-leave.</b> Unlike owner-initiated
+<code>MemberRemoved</code>, <code>MemberLeft</code> deliberately does <em>not</em> trigger the
+key-rotation pipeline. The publisher of a self-leave is the leaver, and the leaver cannot generate
+the fresh group key without also retaining it — which would defeat forward secrecy. So
+<code>MemberLeft</code> is the governance-level departure (the membership row is removed, peers
+observe the leave, the leaver is deny-listed) <em>without</em> a re-key. The path to a
+cryptographically-complete leave is an admin/owner-initiated <code>MemberRemoved</code>, which
+rotates. A two-phase self-leave rotation (a remaining admin's apply hook publishes the new key) is
+a tracked follow-up, not yet shipped. See the inline note in
+<code>crates/governance-store/src/ops/group/member_left.rs</code>.
 </p>
 
 <h3>New op</h3>
@@ -351,35 +387,33 @@ Distinct from <code>MemberRemoved</code> for audit clarity — "this member chos
 
 <h3>Preconditions</h3>
 <ul>
-  <li>Signer has a <b>direct row</b> in the group (computed via
-  <code>check_group_membership_path</code>; reject with <code>NotADirectMember</code> if the
-  signer is only an inherited member — they must leave the anchor instead).</li>
-  <li>Signer is not the Owner (<code>OwnerCannotLeave</code>; must
+  <li>Signer equals the member being removed (<code>SelfLeaveOnly</code>) and has a <b>direct row</b>
+  in the group; reject with <code>MemberNotDirect</code> if the signer is only an inherited member —
+  they must leave the anchor instead.</li>
+  <li>Signer is not the group's <code>owner_identity</code> (<code>OwnerCannotSelfLeave</code>; must
   <code>TransferOwnership</code> first).</li>
-  <li>If signer is admin, removing them does not leave the group with zero admins
-  (<code>LastAdmin</code> via existing <code>ensure_not_last_admin_removal</code>).</li>
+  <li>Removing the signer does not leave the group with zero admins
+  (<code>LastAdmin</code> via <code>ensure_not_last_admin_removal</code>).</li>
 </ul>
 
 <h3>Flow</h3>
 <ol>
   <li>Leaver's client calls <code>leave_group(group_id)</code>.</li>
-  <li>Server-side validation runs the preconditions above.</li>
+  <li>Apply enforces the preconditions above (self-equality, direct-row, owner, last-admin).</li>
   <li>Leaver publishes <code>MemberLeft { member: signer }</code> via the governance DAG. Signed
   by the leaver. Targets this group.</li>
-  <li>Op broadcasts to all members of the group. Each receiver applies it: deletes the
-  <code>(leaver, group_id)</code> row from local membership state. Leaver's own node also drops
-  sync state for this group's contexts and (optionally) purges encrypted blobs.</li>
-  <li>The first remaining admin to ack the op enters <b>phase two</b>:
-  <ol>
-    <li>Generates a fresh group key via <code>build_key_rotation</code>
-    (<code>group_keys.rs:266</code>).</li>
-    <li>Wraps it for each remaining member (leaver excluded).</li>
-    <li>Publishes <code>RootOp::KeyDelivery</code> carrying the wrapped bundles.</li>
-  </ol>
-  </li>
-  <li>Each remaining member receives <code>KeyDelivery</code>, unwraps their bundle, replaces the
-  active group key. New writes use the new key from now on. The leaver's old key still decrypts
-  historical content but not new writes.</li>
+  <li>Op broadcasts to all members of the group. Each receiver applies it:
+  <code>cascade_remove_member_from_group_tree</code> drops the leaver's <code>ContextIdentity</code>
+  rows, <code>remove_member</code> deletes the <code>(leaver, group_id)</code> membership row, and
+  the leaver is added to the group deny-list so their state-delta traffic is dropped until they
+  re-join.</li>
+  <li>The apply emits <code>OpEvent::MemberRemoved</code>; if the leaver's role was
+  <code>ReadOnlyTee</code> it additionally emits <code>OpEvent::TeeMemberRemoved</code>, which drives
+  the leaver's own node to <a href="#self-purge">self-purge</a> the group's local key material.</li>
+  <li><b>No automatic re-key.</b> As noted above, <code>MemberLeft</code> does not rotate the group
+  key — the leaver still holds the last key it received and can decrypt writes made under it. Forward
+  secrecy on future writes requires the owner-initiated <code>MemberRemoved</code> path (or the
+  deferred two-phase self-leave rotation).</li>
 </ol>
 
 <h3>Cascade behavior</h3>
@@ -390,13 +424,12 @@ Distinct from <code>MemberRemoved</code> for audit clarity — "this member chos
 
 <h3>Failure modes</h3>
 <ul>
-  <li><b>Network partition between phase one and phase two.</b> <code>MemberLeft</code> lands but
-  <code>KeyDelivery</code> is delayed. Forward secrecy briefly weak — the leaver is no longer in
-  the membership list but new writes are still under the old key (which they hold). Heals on
-  partition resolve.</li>
-  <li><b>All admins offline.</b> <code>MemberLeft</code> lands; rotation never fires until an
-  admin returns. Operational mitigation: alert when no rotation follows a leave within a
-  configurable window.</li>
+  <li><b>No forward secrecy on self-leave (by design, not a failure).</b> Because
+  <code>MemberLeft</code> never rotates, the leaver retains the ability to decrypt writes made under
+  the key they last held. To revoke that, an admin/owner must issue <code>MemberRemoved</code>
+  (which rotates) or the deferred two-phase self-leave rotation must land.</li>
+  <li><b>Inherited-only membership.</b> A signer whose membership is purely inherited (no direct row)
+  is rejected with <code>MemberNotDirect</code>; they must leave the anchoring ancestor instead.</li>
 </ul>
 
 <h3>Rejoin</h3>
@@ -415,45 +448,52 @@ Distinct from <code>MemberRemoved</code> for audit clarity — "this member chos
 <div class="card gc">
 <h2>leave_namespace — cascading, heaviest</h2>
 <p>
-A namespace is the root group. Leaving it cascades through every descendant where the leaver has
-a direct row, rotating each scope's group key independently. Plus the namespace's own root key.
-This is the only operation in the proposal that fans out across multiple scopes.
+A namespace is the root group. Leaving it is a single <code>MemberLeft</code> at the namespace root
+whose apply cascades through every descendant group where the leaver has a direct row. This is the
+only leave operation that fans out across multiple scopes. As with <code>leave_group</code>, the
+self-leave op does <b>not</b> rotate keys (same publisher-holds-the-key constraint); row removal +
+deny-listing only.
 </p>
 
 <h3>Preconditions</h3>
 <ul>
-  <li>Signer has a direct row at the namespace root.</li>
-  <li>Signer does not own the namespace OR any subgroup beneath it. If they do →
-  <code>MustTransferOwnership { groups: [...] }</code> listing every owned scope.</li>
+  <li>Signer has a direct row at the namespace root (<code>MemberNotDirect</code> otherwise).</li>
+  <li>Signer is not the <code>owner_identity</code> of the namespace root
+  (<code>OwnerCannotSelfLeave</code>) nor of any subgroup beneath it where they have a direct row
+  (<code>OwnerOwnsSubgroup</code>, reporting the offending scope).</li>
   <li>Removing the signer doesn't leave any scope (namespace or descendant) admin-less. If it
-  would → <code>LastAdmin { group: G }</code> reports the offending scope, forcing a successor
-  promotion before retry.</li>
+  would → <code>LastAdmin</code> reports the offending scope, forcing a successor promotion before
+  retry. All these checks run upfront, before any mutation.</li>
 </ul>
 
 <h3>Flow</h3>
 <ol>
   <li>Client calls <code>leave_namespace(namespace_id)</code>.</li>
-  <li>Server-side validation walks the subgroup tree:
+  <li>Apply detects the no-parent (namespace-root) case and walks the subtree:
     <ul>
-      <li>Compute <code>direct_groups = [namespace, G1, G2, ...]</code> — every group in the
-      namespace where the signer has a direct row.</li>
-      <li>Run owner check + last-admin check across all of them. If any fails, surface the
-      offending scope and bail before publishing anything.</li>
+      <li>Compute the descendant groups where the signer has a direct row.</li>
+      <li>Run owner check + last-admin check across all of them upfront. If any fails
+      (<code>OwnerOwnsSubgroup</code>, <code>OwnerCannotSelfLeave</code>, <code>LastAdmin</code>) it
+      bails before mutating anything — no half-applied cleanup.</li>
     </ul>
   </li>
   <li>Signer publishes a single <code>MemberLeft { member: signer }</code> at the namespace root.</li>
-  <li>The cascade handler (<code>cascade_remove_member_from_group_tree</code>,
-  <code>mod.rs:811</code>) fans out: locally and on each receiver, fire the
-  <code>MemberLeft</code>-equivalent for each scope in <code>direct_groups</code>.</li>
-  <li>Per-scope key rotation runs the same phase-two pattern as <code>leave_group</code>, in
-  parallel. Total network ops: one root-level <code>MemberLeft</code> +
-  <span class="ty">N</span> <code>KeyDelivery</code> ops where <span class="ty">N</span> = number
-  of direct memberships in the subtree.</li>
-  <li>Local cleanup on the leaver's node:
+  <li>The apply cascades: for each direct-row descendant it calls
+  <code>cascade_remove_member_from_group_tree</code>, removes the membership row, deny-lists the
+  leaver, and emits <code>OpEvent::MemberRemoved</code>. For each descendant where the leaver's role
+  was <code>ReadOnlyTee</code> it also emits a per-subgroup <code>OpEvent::TeeMemberRemoved</code>.
+  The same removal then runs for the namespace root, emitting a root <code>MemberRemoved</code> (and
+  a root <code>TeeMemberRemoved</code> if the root role was <code>ReadOnlyTee</code>).</li>
+  <li><b>No per-scope key rotation.</b> The cascade is row-removal only — there is no
+  <code>KeyDelivery</code> fan-out. Forward secrecy on each scope's future writes is provided by the
+  owner-initiated <code>MemberRemoved</code> rotation pipeline, not by self-leave.</li>
+  <li>Local cleanup on the leaver's node is <b>role-scoped</b>, not a soft/hard toggle:
     <ul>
-      <li><b>Soft mode (default):</b> archive namespace data as read-only. Leaver can browse their
-      historical view.</li>
-      <li><b>Hard mode (opt-in):</b> purge keys, DAG entries, encrypted blobs.</li>
+      <li><b>Non-TEE roles:</b> soft leave. Local rows (identity, signing keys, contexts) are kept so
+      rejoin / keyshare / inheritance-rejoin flows can reuse them.</li>
+      <li><b><code>ReadOnlyTee</code>:</b> the emitted <code>TeeMemberRemoved</code> events drive the
+      <a href="#self-purge">self-purge</a> listener to hard-delete local key material across the
+      whole subtree and unsubscribe from the namespace gossipsub topic.</li>
     </ul>
   </li>
 </ol>
@@ -471,33 +511,145 @@ ownership but there's no one to transfer to. Use a dedicated <code>DeleteNamespa
 
 <h3>Failure modes</h3>
 <ul>
-  <li>Same as <code>leave_group</code>, multiplied across scopes. Each rotation can fail
-  independently.</li>
-  <li>Partial cascade: if some sub-rotations succeed and others don't, the leaver's root row is
-  gone everywhere but some peers may have lingering ghost rows in subgroups. Eventually
-  consistent — peers detect the leaver-not-in-root state and reconcile on next sync.</li>
+  <li><b>No forward secrecy on self-leave</b> across any scope (same constraint as
+  <code>leave_group</code>): the cascade removes rows but does not re-key. Use owner-initiated
+  <code>MemberRemoved</code> for a cryptographically-complete eviction.</li>
+  <li><b>Interrupted TEE self-purge.</b> If the leaver was a <code>ReadOnlyTee</code> node and its
+  local cascade-purge is interrupted (crash, or a signing-key delete error), a durable
+  pending-self-purge marker survives and the startup <code>reconcile_sweep</code> completes the purge
+  on next restart. See <a href="#self-purge">TEE self-purge</a>.</li>
 </ul>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
-     7. OWNER ROLE
+     6a. TEE SELF-PURGE
      ═══════════════════════════════════════════════════════════════════ -->
-<div class="card gd">
-<h2>Owner Role</h2>
+<div class="card gd" id="self-purge">
+<h2>Role-scoped TEE self-purge</h2>
 <p>
-Promotes the existing <code>GroupMetaValue.admin_identity</code> field
-(<code>crates/store/src/key/group/mod.rs:1160-1169</code>) from "fallback creator-admin" to a
-real, exclusive, transferable role. Every group has exactly one Owner. Owner is also an admin —
-all admin permissions cascade. The distinction is exclusive privileges no admin can perform, plus
-the property that Owner cannot be involuntarily removed.
+Removal alone (the <code>MemberRemoved</code> rotation) already provides forward secrecy on a
+namespace's future writes — the evicted node never receives the rotated key. But a
+<code>ReadOnlyTee</code> fleet node still holds, on its own disk, the old key material from before
+the rotation: signing keys, the group encryption keys it last received, its
+<code>NamespaceIdentity</code>, and the governance op-log. A regular member's local rows are
+deliberately kept (the soft-leave invariant lets <code>kick-and-readd</code> /
+<code>rejoin-via-keyshare</code> / inheritance-rejoin reuse them). A <code>ReadOnlyTee</code> node has
+<em>no</em> rejoin path — re-admission via <code>MemberJoinedViaTeeAttestation</code> derives a fresh
+attestation pubkey — so that material buys nothing and is pure hygiene debt. The self-purge handler
+hard-deletes it.
+</p>
+<p>
+Design record: <code>docs/adr/0002-fleet-tee-leave-protocol.md</code>. Implementation:
+<code>crates/context/src/self_purge.rs</code>. Fleet-side framing:
+<a href="tee-fleet-ha.html">Fleet HA</a>.
 </p>
 
-<h3>Storage change</h3>
+<h3>Role-scoped trigger</h3>
 <p>
-Semantic rename of <code>admin_identity</code> to <code>owner_identity</code>. Field shape and
-serialization unchanged — every existing group's current <code>admin_identity</code> becomes
-its Owner. No migration needed at the data layer; the change is at the type and access-path
-layer (rename callsites, expose as a real role).
+The apply path emits a generic <code>OpEvent::MemberRemoved</code> for every removal, and — only when
+the removed member's stored role was <code>ReadOnlyTee</code> — an additional
+<code>OpEvent::TeeMemberRemoved</code> (see <code>ops/group/member_removed.rs</code> and
+<code>member_left.rs</code>). The self-purge listener subscribes to the op-apply event channel and
+reacts <b>only</b> to <code>TeeMemberRemoved</code>:
+</p>
+<ul>
+  <li><b>Non-TEE removals</b> (<code>Admin</code>/<code>Member</code>/<code>ReadOnly</code>) keep
+  soft-leave semantics — no purge. Hardening to hard-purge every removal would regress the
+  <code>apps/scaffolding-e2e/workflows/group-{kick,leave}-*</code> workflows that depend on the
+  retained rows.</li>
+  <li><b><code>ReadOnlyTee</code> removals</b> trigger a hard purge. The self-detection ("did this op
+  evict <em>me</em>?") is a handler concern, not part of the node-agnostic apply contract — it reads
+  this node's stored namespace identity (per-node state). This mirrors the
+  <a href="auto-follow.html">auto-follow</a> architectural split.</li>
+</ul>
+
+<h3>Subgroup vs namespace-root</h3>
+<p>
+<code>decide_purge_action</code> (pure store reads) resolves the namespace owning the evicted group,
+confirms the evicted member is this node's own identity, and then picks one of two actions:
+</p>
+<table class="properties">
+  <tr><td><b><code>PurgeAction::Subgroup</code></b></td><td>Removed from one subgroup while still a
+  member of others under the same namespace. Purge only that group's local rows
+  (<code>delete_group_local_rows</code>) plus its context-index and tree-edge rows. <b>Do not</b>
+  unsubscribe from the namespace gossipsub topic — other memberships still need it.</td></tr>
+  <tr><td><b><code>PurgeAction::Namespace</code></b></td><td>Removed from the namespace root. Cascade
+  the whole subtree, drop namespace-level state, then unsubscribe from the namespace topic.</td></tr>
+  <tr><td><b><code>PurgeAction::None</code></b></td><td>Event is for another member, or for a
+  namespace this node has no identity in. No action.</td></tr>
+</table>
+
+<h3>What gets hard-deleted</h3>
+<p>
+The cascade (<code>cascade_namespace_state</code>) iterates the root plus every descendant group and
+calls <code>delete_group_local_rows</code> per group. That helper
+(<code>crates/governance-store/src/local_state.rs</code>) deletes the membership rows, capabilities,
+metadata, upgrade records, the group op-log + head, the deny-list, and — load-bearing —
+the private key material:
+</p>
+<ul>
+  <li><b>Signing keys.</b> <code>SigningKeysRepository::delete_all_for_group</code> — the 32-byte
+  private signing-key material. Leaking these is the actual forward-secrecy hazard, so this is the
+  step the failure-class gating treats as security-critical.</li>
+  <li><b>Group encryption keys.</b> <code>GroupKeyring::delete_all_for_group</code> — the AES group
+  keys the node received while admitted (added in PR&nbsp;#2776). Without this the evicted node would
+  retain its copy of past group keys on disk even though the rotation already orphaned them for
+  future writes.</li>
+</ul>
+<p>
+Forward secrecy is therefore split cleanly: <em>future</em> writes are protected by key rotation
+(re-key excluding the removed member, done by the publisher pipeline at removal); the evicted TEE
+node's <em>own copies of past keys</em> are deleted here by self-purge. The purge does not — and need
+not — trigger any rotation itself.
+</p>
+<p>
+Namespace-level teardown (<code>delete_namespace_local_state</code>) then drops the
+<code>NamespaceIdentity</code>, the namespace governance head, and the namespace op-log. Dropping the
+identity and unsubscribing is gated on the <em>signing-key</em> purge succeeding (a best-effort
+dead-pointer cleanup failure does not block the security-critical finalize).
+</p>
+
+<h3>Durable marker + startup reconcile</h3>
+<p>
+<code>TeeMemberRemoved</code> fires once per eviction and an already-evicted identity receives no
+further removal events, so a missed or partially-failed purge has no event-driven retry. Recovery is
+a startup sweep, made role-safe by a durable marker (ADR&nbsp;0002 / #2721):
+</p>
+<ul>
+  <li>Before the namespace cascade, <code>handle_member_removed</code> writes a durable
+  <b>pending-self-purge marker</b> for the namespace. This is the one site that knows — node-aware and
+  role-aware — that this is a confirmed TEE self-eviction of our identity.</li>
+  <li>On startup, <code>reconcile_sweep</code> enumerates <em>markers only</em> and completes a purge
+  iff <b>(marker present)</b> AND <b>(still no surviving namespace-root membership)</b>. If the
+  identity is already gone, or we have been re-admitted, it clears the stale marker without purging; a
+  read error skips (never purge on uncertainty).</li>
+  <li>The marker is essential because, post-eviction, the role row is erased: a role-blind scan of
+  <code>NamespaceIdentity</code> rows could not distinguish evicted-TEE residue from a pending join or
+  non-TEE soft-leave residue, and would false-purge both. The marker is the role/intent gate; the
+  still-evicted check is the safety gate; both must hold.</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     7. OWNER (STORED IDENTITY, NOT A ROLE)
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gd" id="owner">
+<h2>Owner (stored identity, not a role)</h2>
+<p>
+<b>Owner is not a <code>GroupMemberRole</code> variant.</b> It is a single identity stored on group
+metadata: <code>GroupMetaValue.owner_identity</code> (<code>crates/store/src/key/group/mod.rs</code>).
+Every group has exactly one Owner, and that member is otherwise an ordinary <code>Admin</code> — the
+"Owner" status is whatever the apply handlers grant by comparing the signer's public key against
+<code>owner_identity</code>. The distinction is a small set of exclusive privileges plus immunity
+from involuntary removal; it is enforced by identity comparison, not by a role bit.
+</p>
+
+<h3>Storage</h3>
+<p>
+The struct carries <em>both</em> fields: the legacy <code>admin_identity</code> (now a
+fallback creator-admin marker for pre-existing groups) and the shipped <code>owner_identity</code>.
+Newly-created groups initialize <code>owner_identity == admin_identity</code>. Field shape and
+serialization are stable.
 </p>
 
 <h3>New op</h3>
@@ -525,8 +677,8 @@ layer (rename callsites, expose as a real role).
   <tr><td>Demote admin → member</td><td>—</td><td>✓<sup>1</sup></td><td>✓</td></tr>
   <tr><td><code>TransferOwnership</code></td><td>—</td><td>—</td><td>✓</td></tr>
   <tr><td><code>DeleteGroup</code> / <code>DeleteContext</code> / <code>DeleteNamespace</code></td><td>—</td><td>—</td><td>✓</td></tr>
-  <tr><td>Be involuntarily removed (<code>MemberRemoved</code>)</td><td>✓</td><td>✓</td><td>✗ — <code>CannotRemoveOwner</code></td></tr>
-  <tr><td>Self-leave via <code>leave_group</code> / <code>leave_namespace</code></td><td>✓</td><td>✓ (last-admin permitting)</td><td>✗ — must <code>TransferOwnership</code> first</td></tr>
+  <tr><td>Be involuntarily removed (<code>MemberRemoved</code>)</td><td>✓</td><td>✓</td><td>✗ — <code>OwnerImmuneFromRemoval</code></td></tr>
+  <tr><td>Self-leave via <code>leave_group</code> / <code>leave_namespace</code></td><td>✓</td><td>✓ (last-admin permitting)</td><td>✗ — <code>OwnerCannotSelfLeave</code> / <code>OwnerOwnsSubgroup</code></td></tr>
 </table>
 <p style="font-size:0.9em; color:#6b6b80; margin-top:8px;">
 <sup>1</sup> Open question. The existing code allows admins to demote each other
@@ -581,7 +733,7 @@ parent group as before.
     <td><code>leave_group</code></td>
     <td>Single group</td>
     <td><code>MemberLeft</code></td>
-    <td>Yes (1 group)</td>
+    <td>No (self-leave; deferred)</td>
     <td>None</td>
     <td>Re-invite (Restricted) / re-inherit (Open)</td>
   </tr>
@@ -589,9 +741,25 @@ parent group as before.
     <td><code>leave_namespace</code></td>
     <td>Whole subtree</td>
     <td><code>MemberLeft</code> at root</td>
-    <td>Yes (1 + N)</td>
+    <td>No (self-leave; deferred)</td>
     <td>All direct-row scopes</td>
     <td>Re-invite at root + re-inherit</td>
+  </tr>
+  <tr>
+    <td><code>MemberRemoved</code> (owner/admin)</td>
+    <td>Single group (cascades contexts)</td>
+    <td><code>MemberRemoved</code></td>
+    <td><b>Yes</b> — re-key excludes removed</td>
+    <td>Context identities</td>
+    <td>Re-invite (re-key delivered on add)</td>
+  </tr>
+  <tr>
+    <td><code>ReadOnlyTee</code> removal + self-purge</td>
+    <td>Subgroup or whole namespace</td>
+    <td><code>MemberRemoved</code> + <code>TeeMemberRemoved</code> event</td>
+    <td>Yes (via removal) + local key delete</td>
+    <td>Subtree on namespace-root</td>
+    <td>None under same identity (fresh attestation)</td>
   </tr>
   <tr>
     <td><code>TransferOwnership</code></td>
@@ -626,17 +794,17 @@ parent group as before.
 <div class="card gb">
 <h2>Implementation Status</h2>
 <p>
-This page commits the design before any code lands. Status flips from <b>proposed</b> to
-<b>implemented</b> as each feature ships, in PRs that update the corresponding section.
+This page documents shipped behavior. Each row points at the code that implements it.
 </p>
 <table class="properties">
-  <tr><th>Section</th><th>Status</th><th>Tracking</th></tr>
+  <tr><th>Section</th><th>Status</th><th>Code</th></tr>
   <tr><td>Membership Model Recap</td><td>Documents existing code</td><td>—</td></tr>
-  <tr><td><code>leave_context</code></td><td><b>Implemented</b> (PR #2280)</td><td><code>crates/context/src/handlers/leave_context.rs</code>, <code>auto_follow.rs</code> gate, <code>POST /admin-api/contexts/:id/leave</code></td></tr>
-  <tr><td><code>leave_group</code></td><td><b>Implemented</b> (PR #2280)</td><td><code>GroupOp::MemberLeft</code>, <code>crates/context/src/handlers/leave_group.rs</code>, <code>POST /admin-api/groups/:id/leave</code> — apply enforces self-leave + direct-row + owner + last-admin. <em>No key rotation</em>; admin follow-up required for forward secrecy (deferred).</td></tr>
-  <tr><td><code>leave_namespace</code></td><td><b>Implemented</b> (PR #2280)</td><td><code>crates/context/src/handlers/leave_namespace.rs</code>, <code>POST /admin-api/namespaces/:id/leave</code>. Apply detects no-parent and cascades through descendant groups where leaver has direct rows; multi-scope owner + last-admin checked upfront. <em>No per-scope key rotation</em>.</td></tr>
-  <tr><td>Owner Role + <code>TransferOwnership</code></td><td><b>Implemented</b> (PR #2280)</td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code>, <code>CannotRemoveOwner</code> gate in <code>MemberRemoved</code></td></tr>
-  <tr><td><code>DeleteGroup</code> Owner-gating</td><td><b>Implemented</b> (PR #2280)</td><td>Group-scope only — root <code>GroupDeleted</code> + <code>DeleteNamespace</code> Owner-gating planned with <code>leave_namespace</code> in PR #3</td></tr>
+  <tr><td><code>leave_context</code></td><td><b>Implemented</b></td><td><code>crates/context/src/handlers/leave_context.rs</code>, <code>auto_follow.rs</code> gate, <code>POST /admin-api/contexts/:id/leave</code></td></tr>
+  <tr><td><code>leave_group</code></td><td><b>Implemented</b></td><td><code>GroupOp::MemberLeft</code>, <code>crates/governance-store/src/ops/group/member_left.rs</code>, <code>POST /admin-api/groups/:id/leave</code> — apply enforces self-leave + direct-row + owner + last-admin. <em>No key rotation on self-leave</em> (deferred two-phase rotation).</td></tr>
+  <tr><td><code>leave_namespace</code></td><td><b>Implemented</b></td><td>Same <code>member_left.rs</code> apply detects the no-parent case and cascades through descendant groups where the leaver has direct rows; multi-scope owner + last-admin checked upfront. <em>No per-scope key rotation</em>.</td></tr>
+  <tr><td>Key rotation on <code>MemberRemoved</code></td><td><b>Implemented</b></td><td><code>crates/governance-store/src/group_governance_publisher.rs</code> (<code>sign_apply_and_publish_inner</code>) + <code>GroupKeyring</code> in <code>group_keys.rs</code> — fresh key wrapped for remaining members, excluding the removed one.</td></tr>
+  <tr><td>Role-scoped TEE self-purge</td><td><b>Implemented</b> (ADR 0002; #2680/#2724/#2725)</td><td><code>crates/context/src/self_purge.rs</code> listener + cascade + marker-gated <code>reconcile_sweep</code>; <code>delete_group_local_rows</code> in <code>governance-store/src/local_state.rs</code> deletes signing keys (and, as of #2776, <code>GroupKeyring</code> encryption keys); <code>OpEvent::TeeMemberRemoved</code> emitted from <code>member_removed.rs</code> / <code>member_left.rs</code>.</td></tr>
+  <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
 </table>
 </div>
 
@@ -644,22 +812,23 @@ This page commits the design before any code lands. Status flips from <b>propose
      10. OPEN QUESTIONS
      ═══════════════════════════════════════════════════════════════════ -->
 <div class="card gc">
-<h2>Open Questions</h2>
+<h2>Open Questions &amp; Follow-ups</h2>
 <ol>
-  <li><b>Soft vs hard local cleanup default for <code>leave_namespace</code>.</b> This proposal
-  defaults to soft (archive). Privacy-conscious products may want hard (purge) as the default.</li>
-  <li><b>Admin-mutual demote.</b> Today admins can demote each other. Should this be restricted
-  to Owner-only? This proposal preserves current behavior; revisit if a security concern surfaces.</li>
-  <li><b>Old owner after <code>TransferOwnership</code>.</b> Becomes a regular admin (this
-  proposal) or just a member (alternative)? Admin retains operational continuity; member is a
-  cleaner "step-down" semantic.</li>
-  <li><b>Multi-scope transfer ergonomics.</b> If an owner of a namespace + 5 subgroups wants to
-  leave, does the UI surface 6 separate prompts or one bulk-transfer flow?</li>
-  <li><b>Cascade visibility in <code>leave_namespace</code>.</b> Remaining peers see one
-  user-facing event (<code>MemberLeft</code>) or N events (one per cascading scope's
-  <code>KeyDelivery</code>)? Recommend collapsing to one user-facing event with internal fan-out.</li>
-  <li><b>Owner-leaves-with-no-successor edge case.</b> Dedicated <code>DeleteNamespace</code> op
-  (this proposal) or refuse outright?</li>
+  <li><b>Two-phase self-leave rotation.</b> <code>MemberLeft</code> currently does not re-key (the
+  leaver can't generate a key without retaining it). A deferred design has a remaining admin's apply
+  hook publish the new key after the leave. Until it lands, owner-initiated <code>MemberRemoved</code>
+  is the only rotating leave.</li>
+  <li><b>Local cleanup is role-scoped, not a toggle.</b> The earlier soft-vs-hard default question is
+  resolved by role (ADR 0002): non-TEE removals stay soft; <code>ReadOnlyTee</code> removals
+  hard-purge. No global default knob.</li>
+  <li><b>Admin-mutual demote.</b> Admins can demote each other. Whether to restrict this to
+  Owner-only is unresolved; current behavior is preserved.</li>
+  <li><b>Old owner after <code>TransferOwnership</code>.</b> Becomes a regular admin (current
+  behavior) or just a member (alternative)?</li>
+  <li><b>Subgroup-level self-purge reconcile.</b> The startup reconcile is namespace-level only; a
+  subgroup-only purge has no reconcile retry surface yet (tracked in #2726).</li>
+  <li><b>Periodic reconcile.</b> A purely-lagged-drop of <code>TeeMemberRemoved</code> writes no
+  marker and is not recovered until a future eviction; a periodic sweep is an open follow-up.</li>
 </ol>
 </div>
 

@@ -14,7 +14,19 @@
      1. TITLE + STATS
      ═══════════════════════════════════════════════════════════════════ -->
 <h1>Auto-Follow <em>Group Membership</em></h1>
-<p class="page-subtitle">Event-driven context auto-join for group members, with per-member opt-in</p>
+<p class="page-subtitle">Event-driven <strong>context</strong> auto-join for group members, with per-member opt-in</p>
+
+<div class="card ga" style="margin-bottom:24px;">
+<h2>Scope</h2>
+<p>
+This page covers <strong>context auto-join</strong> — the <code>contexts: true</code> path. The handler
+reacts to <code>ContextRegistered</code> / <code>AutoFollowSet</code> ops and emits
+<code>JoinContextRequest</code>. It does <strong>not</strong> perform member admission and does
+<strong>not</strong> act on the <code>subgroups: true</code> flag (see
+<a href="#tee-fleet-integration">TEE Fleet Integration</a> below). For how a fleet node actually
+gains <em>subgroup</em> membership, see <a href="tee-fleet-ha.html">TEE Fleet HA</a>.
+</p>
+</div>
 
 <div class="g4" style="margin-bottom:36px;">
   <div class="stat"><div class="v">Opt-in</div><div class="l">per-member flag</div></div>
@@ -60,11 +72,24 @@ Each <code>GroupMember</code> gains a pair of opt-in flags:
 <p>
 Defaults <strong>(as of #2422)</strong>: <code>contexts: true</code>, <code>subgroups: false</code>.
 A new member added via <code>add_group_member</code> auto-follows new contexts in the group by
-default; subgroup auto-admit stays opt-in. <code>ReadOnlyTee</code> members get both set to
-<code>true</code> automatically — that's the TEE-fleet use case. The default lives in a single
+default; subgroup auto-admit stays opt-in. <code>ReadOnlyTee</code> members get both flags set to
+<code>true</code> automatically. The default lives in a single
 explicit <code>impl Default for AutoFollowFlags</code> in
 <code>crates/store/src/key/group/mod.rs</code>, so both the borsh-legacy decode fallback and
 <code>.unwrap_or_default()</code> sites pick it up.
+</p>
+<div class="card ga" style="margin:16px 0;">
+<p style="margin:0;">
+<b>The <code>subgroups: true</code> flag is currently a no-op in the auto-follow path.</b> The handler
+implements <code>contexts: true</code> only. It reads the <code>subgroups</code> field off
+<code>AutoFollowSet</code> and discards it (subgroup auto-follow is "implemented per-role in a
+follow-up" per the module docs). So although a <code>ReadOnlyTee</code> member carries
+<code>subgroups: true</code>, that flag drives no admission today. How a fleet node actually obtains
+<em>subgroup</em> access is covered in <a href="tee-fleet-ha.html">TEE Fleet HA</a> and summarised in
+<a href="#tee-fleet-integration">TEE Fleet Integration</a> below.
+</p>
+</div>
+<p>
 </p>
 <p>
 Flags are toggled by the governance op <code>GroupOp::MemberSetAutoFollow</code> with
@@ -125,7 +150,9 @@ reconcile loop.
    └─ RootOp::GroupCreated { group_id, parent_id } applied on namespace DAG
        (atomic create+nest — strict-tree invariant).
    └─ op_events::notify(OpEvent::SubgroupCreated { parent, child }).
-   └─ Handler reacts (subgroup variant — separate follow-up PR).
+   └─ The auto-follow handler IGNORES this event today (the SubgroupCreated /
+      AutoFollowSet { subgroups: true } variants fall through the catch-all
+      match arm). Subgroup membership is handled elsewhere — see TEE Fleet HA.
 
 4b. Admin moves an existing subgroup to a new parent.
     └─ RootOp::GroupReparented { child, new_parent } applied.
@@ -136,7 +163,7 @@ reconcile loop.
 <!-- ═══════════════════════════════════════════════════════════════════
      5. TEE FLEET INTEGRATION
      ═══════════════════════════════════════════════════════════════════ -->
-<div class="card gd">
+<div class="card gd" id="tee-fleet-integration">
 <h2>TEE Fleet Integration</h2>
 <p>
 A TEE fleet node calls <code>POST /admin-api/tee/fleet-join</code>. The handler in
@@ -154,21 +181,44 @@ A TEE fleet node calls <code>POST /admin-api/tee/fleet-join</code>. The handler 
   usually lacks both admin authority and the member's signing key.</li>
 </ol>
 <p>
-From this point, every new context in the group is auto-joined by the core handler. The
-<code>mero-tee</code> sidecar's per-group polling loop becomes redundant.
+From this point, every new <em>context</em> in the group is auto-joined by the core handler (the
+<code>contexts: true</code> path described on this page). The <code>mero-tee</code> sidecar's
+per-group context-polling loop becomes redundant.
 </p>
+<div class="card ga" style="margin:16px 0;">
+<p style="margin:0 0 8px;">
+<b>The <code>subgroups: true</code> flag published here is, today, a no-op.</b> The auto-follow
+handler implements <code>contexts: true</code> only — it does not act on <code>subgroups: true</code>
+and does not perform member admission. Publishing <code>subgroups: true</code> at fleet-join
+therefore does <em>not</em> cause the node to auto-join subgroups. The flag is set in anticipation of
+the per-role subgroup follow-up, but it drives no admission in the current tree.
+</p>
+<p style="margin:0;">
+Subgroup <em>access</em> for a <code>ReadOnlyTee</code> fleet node comes from two other mechanisms,
+not from auto-follow:
+</p>
+<ul style="margin:8px 0 0;">
+  <li><b>Open subgroups.</b> Inherited membership plus the namespace key the node already holds —
+  no separate admission step is required.</li>
+  <li><b>Restricted subgroups.</b> A separate <code>tee_subgroup_admit</code> subscriber (PR #2772)
+  in which an existing key-holder admits the node in response to
+  <code>SubgroupCreated</code> / <code>TeeMemberAdmitted</code> events. This is outside the
+  auto-follow path entirely.</li>
+</ul>
+<p style="margin:8px 0 0;">
+The full fleet/subgroup admission story is documented in
+<a href="tee-fleet-ha.html">TEE Fleet HA</a>.
+</p>
+</div>
 <p>
-<b>Policy scope — namespace, not per-group.</b> Because auto-follow propagates fleet-node
-membership down into subgroups without a second admission check, any TEE admission policy set on
-a subgroup would be inert. As of 2026-04-21 this is made explicit: the canonical
-<code>TeeAdmissionPolicy</code> lives on the namespace root only.
-<code>read_tee_admission_policy</code> in <code>group_store::tee</code> resolves its argument to
-the namespace root before reading, and both the write handler
+<b>Policy scope — namespace, not per-group.</b> The canonical <code>TeeAdmissionPolicy</code> lives
+on the namespace root only. <code>read_tee_admission_policy</code> in <code>group_store::tee</code>
+resolves its argument to the namespace root before reading, and both the write handler
 (<code>handlers::set_tee_admission_policy</code>) and the apply path in
 <code>group_store::apply_group_op_mutations</code> refuse a <code>TeeAdmissionPolicySet</code>
-targeting a subgroup. Subgroup policy bytes in any legacy op logs are ignored. A deferred
-follow-up adds a drift guard that validates the root policy against Calimero's canonical fleet
-measurements.
+targeting a subgroup. Subgroup policy bytes in any legacy op logs are ignored. Admission — including
+how this namespace-scoped policy is enforced — is covered in depth in
+<a href="tee-fleet-ha.html">TEE Fleet HA</a>.
 </p>
 </div>
 
