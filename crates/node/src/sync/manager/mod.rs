@@ -2839,7 +2839,7 @@ impl SyncManager {
                     if let Some(group_id) =
                         calimero_context::group_store::get_group_for_context(store, &context_id)?
                     {
-                        if MembershipRepository::new(store).is_member(&group_id, &their_identity)? {
+                        if self.peer_is_group_member(store, group_id, &their_identity)? {
                             dialer_verified = true;
                         }
                     }
@@ -2913,6 +2913,54 @@ impl SyncManager {
         }
     }
 
+    /// Inbound-sync membership authorization via the unified projection — current
+    /// state, direct OR inherited (open-subgroup parent walk) — with the live
+    /// resolver kept as the gated cross-check. The projection's verdict decides;
+    /// a disagreement trips `unified_projection_divergence` (plane
+    /// `membership-sync`, caught by the same e2e gate). `None` (cold or partially
+    /// folded projection) falls back to live so a sync peer is never spuriously
+    /// rejected on a stale fold — the inbound path's own catch-up retry then
+    /// re-resolves once governance advances. Reuses the data-write path's
+    /// refreshing `projection_member_at_cut`, so sync and writes decide against an
+    /// identically up-to-date fold.
+    fn peer_is_group_member(
+        &self,
+        store: &calimero_store::Store,
+        group_id: calimero_context_config::types::ContextGroupId,
+        their_identity: &PublicKey,
+    ) -> eyre::Result<bool> {
+        let live = MembershipRepository::new(store).is_member(&group_id, their_identity)?;
+        let Some(heads) =
+            calimero_context::scope_projection::ScopeProjections::namespace_current_heads(
+                store, group_id,
+            )
+        else {
+            return Ok(live);
+        };
+        let projected = crate::handlers::state_delta::projection_member_at_cut(
+            &self.node_state,
+            store,
+            group_id,
+            their_identity,
+            &heads,
+        );
+        if let Some(p) = projected {
+            if p != live {
+                warn!(
+                    marker = "unified_projection_divergence",
+                    plane = "membership-sync",
+                    group_id = ?group_id,
+                    ?their_identity,
+                    projection = p,
+                    live,
+                    "inbound-sync auth: projection disagrees with live membership"
+                );
+            }
+        }
+        // Act on the projection; `None` (can't decide) falls back to live.
+        Ok(projected.unwrap_or(live))
+    }
+
     /// Authorize the dialing peer as a sync-eligible member of `context_id` —
     /// direct context/group membership, or inheritance-eligible parent
     /// membership (`Open` subgroups). On an unknown member, refresh context
@@ -2944,7 +2992,7 @@ impl SyncManager {
             else {
                 return Ok(false);
             };
-            MembershipRepository::new(store).is_member(&group_id, &their_identity)
+            self.peer_is_group_member(store, group_id, &their_identity)
         };
 
         if !self

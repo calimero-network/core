@@ -790,7 +790,9 @@ fn refresh_projection_for_cut(
     }
 }
 
-fn projection_member_at_cut(
+// `pub(crate)` so the sync manager's inbound-peer authorization reuses the exact
+// same refreshing deny-direction read the data-write path uses.
+pub(crate) fn projection_member_at_cut(
     node_state: &crate::NodeState,
     datastore: &calimero_store::Store,
     group: calimero_context_config::types::ContextGroupId,
