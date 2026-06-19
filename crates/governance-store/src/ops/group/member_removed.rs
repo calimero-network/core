@@ -73,12 +73,17 @@ pub(crate) fn apply(
     // choice, so root authority extends to it. Cascade per-receiver like a
     // self-`MemberLeft` namespace-leave; scoped to `ReadOnlyTee` so
     // normal-member Restricted-subgroup membership autonomy (#2256) is
-    // untouched. Queue the cascade events BEFORE the root events (below) so
-    // the evicted node's per-subgroup self_purge resolves before namespace
-    // finalization. Mirrors the `is_namespace_leave` block in
-    // `member_left.rs`, but DELIBERATELY omits the owner-self and per-
-    // descendant last-admin checks: a `ReadOnlyTee` is structurally never an
-    // owner or admin, so both are inert here and would mislead.
+    // untouched. The per-subgroup cascade events are queued BEFORE the root
+    // events (below), but note this ordering is NOT a store-state causality:
+    // every event rides the emit-after-persist sink and is delivered only
+    // AFTER this apply returns and all mutations (root row included) are
+    // persisted. So a subscriber processing the subgroup `TeeMemberRemoved`
+    // already observes the root row removed; the queue order merely sequences
+    // the order subscribers see the events, not the state they read. Mirrors
+    // the `is_namespace_leave` block in `member_left.rs`, but DELIBERATELY
+    // omits the owner-self and per-descendant last-admin checks: a
+    // `ReadOnlyTee` is structurally never an owner or admin, so both are inert
+    // here and would mislead.
     //
     // Gate the namespace-root resolution behind the already-loaded role
     // check: `resolve` walks the parent chain (O(depth)) and only a
@@ -113,6 +118,17 @@ pub(crate) fn apply(
                     continue;
                 };
                 membership.remove_member(sub, member)?;
+                // Deny-listing is intentionally gated to DIRECT rows (mirrors
+                // `member_left.rs`). A deny-list entry drops the member's
+                // state-delta traffic on the group's topics "until they
+                // re-join", and is cleared by a direct re-add. Inherited Open
+                // subgroups have no direct row and no subgroup-level re-join op
+                // to clear it: re-inheritance is re-evaluated from the root
+                // row. Marking them here would strand a stale entry that
+                // wrongly drops the traffic of a legitimately re-inherited node
+                // after a root re-admission. The `ContextIdentity` purge above
+                // is safe to run namespace-wide precisely because it is
+                // re-created on the next join/auto-follow; the deny-list is not.
                 deny_list.mark(sub, member)?;
                 ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
                     group_id: sub.to_bytes(),
