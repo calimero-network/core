@@ -362,7 +362,7 @@ async fn await_first_fresh_beacon_resolves_on_late_arrival() {
     let cache_w = cache.clone();
     let notify_w = notify.clone();
     let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
-    let _ = tokio::spawn(async move {
+    tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
         cache_w.insert(&make_beacon(pk, 7, true));
         notify_w.notify([42u8; 32]);

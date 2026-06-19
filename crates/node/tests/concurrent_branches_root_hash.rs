@@ -26,6 +26,7 @@ async fn test_concurrent_branches_track_expected_root_hash() {
 
     // Simple test applier that doesn't actually apply to storage
     struct TestApplier {
+        #[allow(clippy::type_complexity, reason = "test fixture")]
         applied: Arc<Mutex<Vec<([u8; 32], [u8; 32])>>>, // (delta_id, expected_root_hash)
     }
 
@@ -87,6 +88,7 @@ async fn test_merge_delta_expected_root_hash() {
     use tokio::sync::Mutex;
 
     struct TestApplier {
+        #[allow(clippy::type_complexity, reason = "test fixture")]
         applied: Arc<Mutex<Vec<([u8; 32], [u8; 32])>>>,
     }
 

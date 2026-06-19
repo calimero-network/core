@@ -60,6 +60,7 @@ impl DeltaApplier<Vec<Action>> for TestApplier {
 // Simulated Node with DAG
 // ============================================================
 
+#[allow(dead_code, reason = "test fixture field kept for clarity")]
 struct SimulatedNode {
     node_id: String,
     dag: Arc<RwLock<DagStore<Vec<Action>>>>,

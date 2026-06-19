@@ -558,9 +558,8 @@ mod tests {
         let log_node2 = log_of(vec![r2, r1, r3]);
 
         // R1 and R2 both happen-before R3; R1 and R2 are concurrent.
-        let happens_before = |a: &[u8; 32], b: &[u8; 32]| {
-            (a == &[1; 32] && b == &[3; 32]) || (a == &[2; 32] && b == &[3; 32])
-        };
+        let happens_before =
+            |a: &[u8; 32], b: &[u8; 32]| (a == &[1; 32] || a == &[2; 32]) && b == &[3; 32];
         let parents = [[3; 32]];
 
         let from_node1 = writers_at(&log_node1, &parents, happens_before);

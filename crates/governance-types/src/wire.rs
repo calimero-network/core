@@ -346,6 +346,10 @@ pub struct ReadinessProbe {
 /// Adding a variant requires a coordinated cluster upgrade (pre-1.0,
 /// no rolling-upgrade compatibility path).
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "gossip/stored message: constructed, borsh-serialized, then dropped; boxing the common large variant adds a per-message heap allocation without real benefit"
+)]
 pub enum NamespaceTopicMsg {
     Op(SignedNamespaceOp),
     Ack(SignedAck),
@@ -360,6 +364,10 @@ pub enum NamespaceTopicMsg {
 /// topic; this enum reserves the wire format so a future migration to
 /// per-group topics does not require another schema bump.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "gossip/stored message: constructed, borsh-serialized, then dropped; boxing the common large variant adds a per-message heap allocation without real benefit"
+)]
 pub enum GroupTopicMsg {
     Op(SignedGroupOp),
     Ack(SignedAck),

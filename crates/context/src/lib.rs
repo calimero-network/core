@@ -1,4 +1,3 @@
-#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
 use calimero_governance_store::{

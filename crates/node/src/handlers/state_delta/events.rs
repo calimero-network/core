@@ -41,6 +41,10 @@ pub(super) struct CascadeOutcome {
 /// has somewhere to go, but callers must NOT use `?` to propagate it: doing so
 /// would abort delta handling *after* the DAG has already been mutated. Match
 /// and log instead.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args on a consensus sync/handler path; no cohesive grouping"
+)]
 pub(super) async fn execute_cascaded_events(
     cascaded_events: &[([u8; 32], Vec<u8>)],
     node_client: &NodeClient,

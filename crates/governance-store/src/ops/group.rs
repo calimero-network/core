@@ -131,7 +131,17 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             tcb_status,
             role,
         } => member_joined_via_tee_attestation::apply(
-            ctx, member, mrtd, rtmr0, rtmr1, rtmr2, rtmr3, tcb_status, role,
+            ctx,
+            member,
+            &crate::membership::TeeAttestationClaims {
+                mrtd: mrtd.as_str(),
+                rtmr0: rtmr0.as_str(),
+                rtmr1: rtmr1.as_str(),
+                rtmr2: rtmr2.as_str(),
+                rtmr3: rtmr3.as_str(),
+                tcb_status: tcb_status.as_str(),
+            },
+            role,
         )?,
         GroupOp::MemberSetAutoFollow {
             target,

@@ -44,6 +44,13 @@ pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
 ///
 /// * `Ok(())` if the method name is valid
 /// * `Err(FunctionCallError)` if the method name is invalid
+// FunctionCallError carries wasmer's large CompileError/LinkError via #[from];
+// boxing the variant would break the derive and ripple through the crate, and
+// this is not a hot path.
+#[allow(
+    clippy::result_large_err,
+    reason = "pervasive #[from] error enum; boxing breaks the derive"
+)]
 fn validate_method_name(method: &str, max_length: u64) -> Result<(), FunctionCallError> {
     // Check for empty method name
     if method.is_empty() {
@@ -164,6 +171,10 @@ impl Engine {
         Self::new(engine, limits)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "pervasive #[from] error enum; boxing breaks the derive"
+    )]
     pub fn compile(&self, bytes: &[u8]) -> Result<Module, FunctionCallError> {
         // Check module size before compilation to prevent memory exhaustion attacks
         // Note: `as u64` is safe because usize <= u64 on all supported platforms (32-bit and 64-bit)
@@ -250,6 +261,13 @@ impl Module {
 
     /// Run a method with no cross-context origin (direct/RPC call). Thin
     /// wrapper over [`run_with_origin`](Self::run_with_origin).
+    // The args are orthogonal (identity, method, I/O, storage, node client) with
+    // no cohesive grouping, and this is the runtime's primary hot execution entry
+    // called from many sites; a param struct would add ceremony without clarity.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "orthogonal args on the primary execution entry point"
+    )]
     pub fn run<'a>(
         &'a self,
         context: ContextId,
@@ -1122,8 +1140,10 @@ mod wasm_integration_tests {
         let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
 
         // Create an engine with a very small module size limit (smaller than our module)
-        let mut limits = VMLimits::default();
-        limits.max_module_size = 10; // 10 bytes - way too small for any valid module
+        let limits = VMLimits {
+            max_module_size: 10, // 10 bytes - way too small for any valid module
+            ..Default::default()
+        };
 
         let engine = Engine::new(wasmer::Engine::default(), limits);
 
@@ -1155,8 +1175,10 @@ mod wasm_integration_tests {
         let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
 
         // Create an engine with a large enough module size limit
-        let mut limits = VMLimits::default();
-        limits.max_module_size = 1024 * 1024; // 1 MiB - plenty of room
+        let limits = VMLimits {
+            max_module_size: 1024 * 1024, // 1 MiB - plenty of room
+            ..Default::default()
+        };
 
         let engine = Engine::new(wasmer::Engine::default(), limits);
 
@@ -1183,8 +1205,10 @@ mod wasm_integration_tests {
         let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
 
         // Create an engine with module size limit exactly equal to the WASM size
-        let mut limits = VMLimits::default();
-        limits.max_module_size = wasm.len() as u64; // Exact size limit
+        let limits = VMLimits {
+            max_module_size: wasm.len() as u64, // Exact size limit
+            ..Default::default()
+        };
 
         let engine = Engine::new(wasmer::Engine::default(), limits);
 
@@ -1235,8 +1259,10 @@ mod wasm_integration_tests {
         let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
 
         // Create an engine with max_module_size = 0
-        let mut limits = VMLimits::default();
-        limits.max_module_size = 0;
+        let limits = VMLimits {
+            max_module_size: 0,
+            ..Default::default()
+        };
 
         let engine = Engine::new(wasmer::Engine::default(), limits);
 

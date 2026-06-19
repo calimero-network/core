@@ -25,6 +25,8 @@ use calimero_storage::address::Id;
 use calimero_storage::delta::StorageDelta;
 use tokio::sync::{Mutex, RwLock};
 
+type ReceivedDeltas = Arc<Mutex<Vec<([u8; 32], Vec<Action>)>>>;
+
 // ============================================================
 // Mock Network Infrastructure
 // ============================================================
@@ -37,7 +39,7 @@ struct MockPeer {
     dag: Arc<RwLock<DagStore<Vec<Action>>>>,
 
     /// Received deltas (for verification)
-    received_deltas: Arc<Mutex<Vec<([u8; 32], Vec<Action>)>>>,
+    received_deltas: ReceivedDeltas,
 
     /// Network delay simulation (milliseconds)
     latency_ms: u64,
@@ -89,6 +91,7 @@ struct MockNetwork {
 }
 
 #[derive(Clone)]
+#[allow(dead_code, reason = "test fixture fields kept for clarity")]
 struct BroadcastMessage {
     context_id: ContextId,
     author_id: PublicKey,
@@ -122,6 +125,10 @@ impl MockNetwork {
     }
 
     /// Broadcast a delta to all subscribers
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "test harness mirror of NodeClient::broadcast"
+    )]
     async fn broadcast(
         &self,
         context_id: ContextId,

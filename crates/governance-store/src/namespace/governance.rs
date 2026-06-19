@@ -602,6 +602,9 @@ impl<'a> NamespaceGovernance<'a> {
     /// visible) and passes it in here. Recomputing inside this function
     /// would shift the hash forward and every member-mutating op would
     /// permanently bail on the receiver's staleness check.
+    // Gossip-publish entry on the namespace governance path: transport handles,
+    // the op, and ack/gate sizing are orthogonal with no cohesive grouping.
+    #[allow(clippy::too_many_arguments, reason = "orthogonal broadcast-path args")]
     pub(crate) async fn sign_and_publish_post_gate(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
@@ -644,6 +647,9 @@ impl<'a> NamespaceGovernance<'a> {
     /// * `true` (group-op apply-and-publish path) — the local mutation is
     ///   already committed, so a publish failure is swallowed into a
     ///   `Degraded` [`DeliveryReport`] and propagation falls to sync.
+    // Gossip-publish entry on the namespace governance path: transport handles,
+    // the op, and ack/gate sizing are orthogonal with no cohesive grouping.
+    #[allow(clippy::too_many_arguments, reason = "orthogonal broadcast-path args")]
     async fn publish_post_gate(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,

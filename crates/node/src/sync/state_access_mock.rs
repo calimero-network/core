@@ -62,6 +62,7 @@ impl MockSyncStateAccess {
     /// Register a `DeltaStore` so subsequent `delta_store(ctx)` calls
     /// return it (rather than `None`) and `get_or_register_delta_store`
     /// reports `created=false`.
+    #[allow(dead_code, reason = "mock test helper for test authoring")]
     pub(crate) fn insert_delta_store(&self, context_id: ContextId, store: DeltaStore) {
         let _replaced = self.delta_stores.lock().insert(context_id, store);
     }
@@ -106,6 +107,7 @@ impl MockSyncStateAccess {
     /// directly — that path now installs a cooldown the same way the
     /// production impl does (see [`SyncStateAccess::record_reconcile_failure`]'s
     /// mock body).
+    #[allow(dead_code, reason = "mock test helper for test authoring")]
     pub(crate) fn set_reconcile_cooldown(
         &self,
         context_id: ContextId,

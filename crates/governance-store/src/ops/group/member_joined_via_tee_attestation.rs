@@ -3,6 +3,7 @@
 
 use super::super::super::build_auto_follow_set_if_enabled;
 use super::context::GroupApplyCtx;
+use crate::membership::TeeAttestationClaims;
 use crate::{DenyListRepository, MembershipError};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
@@ -11,12 +12,7 @@ use eyre::{bail, Result as EyreResult};
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
     member: &PublicKey,
-    mrtd: &str,
-    rtmr0: &str,
-    rtmr1: &str,
-    rtmr2: &str,
-    rtmr3: &str,
-    tcb_status: &str,
+    claims: &TeeAttestationClaims<'_>,
     role: &GroupMemberRole,
 ) -> EyreResult<()> {
     let signer = ctx.signer();
@@ -32,9 +28,7 @@ pub(crate) fn apply(
         .membership_policy()
         .read_required_tee_admission_policy()?;
     ctx.membership_policy()
-        .validate_tee_attestation_allowlists(
-            &policy, mrtd, rtmr0, rtmr1, rtmr2, rtmr3, tcb_status,
-        )?;
+        .validate_tee_attestation_allowlists(&policy, claims)?;
     ctx.membership_policy()
         .admit_member_if_absent(member, role)?;
     // Same rationale as `MemberAdded`: a TEE rejoining after a

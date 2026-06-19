@@ -6,6 +6,12 @@ pub const TEE_REJECT_RTMR2: &str = "rtmr2_not_allowed";
 pub const TEE_REJECT_RTMR3: &str = "rtmr3_not_allowed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Each variant names the specific attestation field a policy rejected; the
+// shared `NotAllowed` suffix is meaningful domain vocabulary, not redundancy.
+#[allow(
+    clippy::enum_variant_names,
+    reason = "each variant is a distinct policy-rejection reason"
+)]
 pub enum MembershipPolicyRejection {
     MrtdNotAllowed,
     TcbStatusNotAllowed,

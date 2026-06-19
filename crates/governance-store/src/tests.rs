@@ -2402,8 +2402,8 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
 ///   3. applies a DIFFERENT op B (nonce 2) and asserts the op-log now holds
 ///      TWO entries (A preserved at seq 1, B appended at seq 2) — i.e. B did
 ///      not overwrite the orphan.
-/// A partial bootstrap seed (meta written, admin member row missing) must be
-/// repaired by a later seed call, not skipped forever (PR #2473, finding C).
+///      A partial bootstrap seed (meta written, admin member row missing) must be
+///      repaired by a later seed call, not skipped forever (PR #2473, finding C).
 ///
 /// `seed_bootstrap_admin_if_absent` writes two non-atomic rows: group meta and
 /// the admin member row. A crash between them leaves meta present but the member

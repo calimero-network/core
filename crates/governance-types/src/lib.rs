@@ -767,6 +767,10 @@ pub struct OpaqueSkeleton {
 /// This removes ambiguity from polymorphic storage payloads by explicitly
 /// tagging whether a row contains a full signed op or an opaque skeleton.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "gossip/stored message: constructed, borsh-serialized, then dropped; boxing the common large variant adds a per-message heap allocation without real benefit"
+)]
 pub enum StoredNamespaceEntry {
     Signed(SignedNamespaceOp),
     Opaque(OpaqueSkeleton),

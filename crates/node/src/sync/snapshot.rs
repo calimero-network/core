@@ -31,6 +31,9 @@ use tracing::{debug, info, warn};
 use super::manager::SyncManager;
 use super::tracking::Sequencer;
 
+/// Members deferred during snapshot apply: (entity id, key, value, parent).
+type DeferredMembers = Vec<(Id, Vec<u8>, Vec<u8>, Option<[u8; 32]>)>;
+
 /// Maximum uncompressed bytes per snapshot page (64 KB).
 pub const DEFAULT_PAGE_BYTE_LIMIT: u32 = 64 * 1024;
 
@@ -586,7 +589,7 @@ impl SyncManager {
         // still reports an `observed_schema` (pass 1 only sets it from regular
         // Entity records, so without this the settle would bind to the group
         // target instead of the schema the synced entities actually carry).
-        let mut deferred_members: Vec<(Id, Vec<u8>, Vec<u8>, Option<[u8; 32]>)> = Vec::new();
+        let mut deferred_members: DeferredMembers = Vec::new();
 
         loop {
             let msg = StreamMessage::Init {
@@ -2050,12 +2053,8 @@ fn settle_snapshot_activation(
     }
     drop(handle);
 
-    let Some(gid) = get_group_for_context(store, &context_id).ok().flatten() else {
-        return None;
-    };
-    let Some(meta) = MetaRepository::new(store).load(&gid).ok().flatten() else {
-        return None;
-    };
+    let gid = get_group_for_context(store, &context_id).ok().flatten()?;
+    let meta = MetaRepository::new(store).load(&gid).ok().flatten()?;
     // Bind to the schema the synced data actually carries; fall back to the
     // group target only when the snapshot carried no schema stamp.
     let bind = data_schema

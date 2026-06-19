@@ -218,7 +218,8 @@ pub(crate) fn persist_signed_signatures(
             //    real signature already stored for that entity.
             // 3. Anything else falls through to
             //    `update_signature_in_place`.
-            let signed_with_real_sig = match &storage_type {
+            let signed_with_real_sig = matches!(
+                &storage_type,
                 StorageType::Shared {
                     signature_data: Some(sig),
                     ..
@@ -230,9 +231,8 @@ pub(crate) fn persist_signed_signatures(
                 | StorageType::SharedMember {
                     signature_data: Some(sig),
                     ..
-                } if sig.signature != [0u8; 64] => true,
-                _ => false,
-            };
+                } if sig.signature != [0u8; 64]
+            );
             if !signed_with_real_sig {
                 continue;
             }
