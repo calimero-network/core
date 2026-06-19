@@ -21,24 +21,25 @@ use super::{
 /// delta's authorization status against current local governance state and
 /// dispatching by outcome.
 ///
-/// Outcomes per drained delta:
-/// * `Member` — the referenced governance heads are now known and the author
-///   is authorized. The buffered delta is reconstructed into a
+/// Authorization is resolved by the projection (`member_at_cut_authoritative`)
+/// at the cut the author signed at; outcomes per drained delta:
+/// * `Some(true)` — the cited governance ancestry is fully folded and the
+///   author is a member at that cut. The buffered delta is reconstructed into a
 ///   [`StateDeltaMessage`] and applied directly via
 ///   [`apply_authorized_state_delta`]. Gossipsub does *not* auto-rebroadcast
 ///   already-delivered messages, so dropping here would lose the delta
 ///   permanently — recovery would only happen via hash-heartbeat divergence
 ///   detection triggering snapshot sync.
-/// * `Removed` / `NeverMember` / `Err` — author is permanently not
-///   authorized at this position; drop with a warn log.
-/// * `Unknown { needed }` — governance still hasn't caught up; push the
-///   delta back into the pending buffer.
+/// * `Some(false)` — folded ancestry says the author is not a member at this
+///   cut; drop with a warn log.
+/// * `None` — the cited ancestry isn't fully folded yet (governance hasn't
+///   caught up); push the delta back into the pending buffer.
 ///
 /// Calls `apply_authorized_state_delta` directly (not `handle_state_delta`)
 /// so the call graph stays linear — no async recursion, no per-recurse
-/// future allocation. The cross-DAG check we just performed via
-/// `membership_status_at` is the same check `handle_state_delta` would have
-/// performed; skipping back through the entry handler would also re-drain
+/// future allocation. The projection membership check we just performed is the
+/// same check `handle_state_delta` would have performed; skipping back through
+/// the entry handler would also re-drain
 /// the (now-empty) pending buffer, wasted work.
 pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_id: &ContextId) {
     // Pop-then-process pattern: drain one delta at a time so that if
@@ -79,13 +80,13 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
         let datastore = input.node_clients.context.datastore();
         // Derive the owning group from the CONTEXT (P4) — never the
         // signer-supplied `pos.group_id` — then authorize at the cut named by
-        // the edge's heads via `acl_view_at`. A context that is no longer part
+        // the edge's heads via the projection. A context that is no longer part
         // of any group (detached, or a transient store inconsistency) drops
         // the delta with a distinct metric label.
         //
         // INVARIANT: `ContextManager` serializes governance ops, so no
         // concurrent group reassignment can interleave between this lookup and
-        // the `acl_view_at` walk below.
+        // the membership resolution below.
         let owning_group = match calimero_context::group_store::get_group_for_context(
             datastore, context_id,
         ) {
@@ -123,14 +124,57 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
         // signed cut (including a `MemberRemoved` for this author);
         // forward-only resolves pre-removal writes to `Member` so the deferred
         // apply is correct.
-        let status = acl_view_at(
-            datastore,
-            owning_group,
-            &buffered.author_id,
-            &pos.governance_dag_heads,
-        );
-        match status {
-            Ok(MembershipStatus::Member(_)) => {
+        // SOLE AUTHORITY: the projection decides whether the buffered delta is
+        // applicable at the cut the author signed at. `member_at_cut_authoritative`
+        // grants ONLY when the COMPLETE cited ancestry is folded AND the at-cut
+        // inheritance walk confirms membership — it never over-authorizes (mirrors
+        // the data-write grant flip in `mod.rs`). The three projection verdicts map
+        // onto the drain's three outcomes:
+        //   Some(true)  → author is a member at the cut → re-apply
+        //   Some(false) → folded ancestry says not-a-member  → drop
+        //   None        → cut ancestry not fully folded yet  → re-buffer (governance
+        //                 not caught up — exactly the old `Unknown` case)
+        //
+        // `acl_view_at` is retained only as the divergence cross-check feeding the
+        // hard gate, and is consulted ONLY on a decisive projection verdict — never
+        // on `None`. `None` means "cut ancestry not folded yet" (re-buffer): a
+        // deferral, not a disagreement, so comparing it against live would both
+        // waste a DAG walk and risk a false-positive divergence (e.g. live already
+        // sees `Member` while the projection simply hasn't caught up). The live
+        // resolver is deleted in F5 once every consumer is validated divergence-free.
+        let proj = input
+            .node_state
+            .read_scope_projections()
+            .member_at_cut_authoritative(
+                datastore,
+                owning_group,
+                &buffered.author_id,
+                &pos.governance_dag_heads,
+            );
+        match proj {
+            Some(true) => {
+                // Cross-check: a grant the live resolver DEFINITELY denies (Removed /
+                // NeverMember) is the dangerous divergence (grant plane). live's
+                // `Unknown` is "not caught up", not a denial — not a disagreement.
+                let live = acl_view_at(
+                    datastore,
+                    owning_group,
+                    &buffered.author_id,
+                    &pos.governance_dag_heads,
+                );
+                if matches!(
+                    live,
+                    Ok(MembershipStatus::Removed { .. }) | Ok(MembershipStatus::NeverMember)
+                ) {
+                    warn!(
+                        marker = "unified_projection_divergence",
+                        plane = "membership-cut-grant",
+                        %context_id,
+                        delta_id = ?buffered.id,
+                        author = %buffered.author_id,
+                        "governance-drain: projection applies a delta live would drop"
+                    );
+                }
                 debug!(
                     %context_id,
                     delta_id = ?buffered.id,
@@ -151,26 +195,42 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
                     );
                 }
             }
-            Ok(MembershipStatus::Removed { last_role }) => {
+            Some(false) => {
+                // The projection denies on a COMPLETE fold; if live grants, that is a
+                // real deny-plane divergence. live also names the drop metric label
+                // (removed vs never-member); fall back to a generic label otherwise.
+                let live = acl_view_at(
+                    datastore,
+                    owning_group,
+                    &buffered.author_id,
+                    &pos.governance_dag_heads,
+                );
+                if matches!(live, Ok(MembershipStatus::Member(_))) {
+                    warn!(
+                        marker = "unified_projection_divergence",
+                        plane = "membership-cut",
+                        %context_id,
+                        delta_id = ?buffered.id,
+                        author = %buffered.author_id,
+                        "governance-drain: projection drops a delta live would apply"
+                    );
+                }
+                let label = match &live {
+                    Ok(MembershipStatus::Removed { .. }) => "removed",
+                    Ok(MembershipStatus::NeverMember) => "never_member",
+                    _ => "not_member",
+                };
                 warn!(
                     %context_id,
                     delta_id = ?buffered.id,
                     author = %buffered.author_id,
-                    last_role = ?last_role,
-                    "governance-pending drain: pending delta from removed author; dropping"
+                    outcome = label,
+                    "governance-pending drain: projection says author is not a member at the \
+                     signed cut; dropping"
                 );
-                crate::node_metrics::record_governance_drain_outcome("removed");
+                crate::node_metrics::record_governance_drain_outcome(label);
             }
-            Ok(MembershipStatus::NeverMember) => {
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    author = %buffered.author_id,
-                    "governance-pending drain: pending delta from non-member; dropping"
-                );
-                crate::node_metrics::record_governance_drain_outcome("never_member");
-            }
-            Ok(MembershipStatus::Unknown { needed }) => {
+            None => {
                 let mut buffered = buffered;
                 buffered.governance_drain_attempts =
                     buffered.governance_drain_attempts.saturating_add(1);
@@ -189,24 +249,14 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
                     debug!(
                         %context_id,
                         delta_id = ?buffered.id,
-                        needed_count = needed.len(),
                         attempts = buffered.governance_drain_attempts,
-                        "governance-pending drain: still pending governance catchup; re-buffering"
+                        "governance-pending drain: cut ancestry not fully folded; re-buffering"
                     );
                     crate::node_metrics::record_governance_drain_outcome("rebuffered");
                     input
                         .node_state
                         .buffer_governance_pending(*context_id, buffered);
                 }
-            }
-            Err(err) => {
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    %err,
-                    "governance-pending drain: membership lookup failed for pending delta; dropping"
-                );
-                crate::node_metrics::record_governance_drain_outcome("lookup_error");
             }
         }
     }
