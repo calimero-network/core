@@ -142,7 +142,7 @@ pub fn extract_bundle_manifest(
                 validate_artifact_path(&abi.path, "abi.path")?;
             }
             for (i, migration) in manifest.migrations.iter().enumerate() {
-                validate_artifact_path(&migration.path, &format!("migrations[{}].path", i))?;
+                validate_artifact_path(&migration.path, &format!("migrations[{i}].path"))?;
             }
 
             let current_runtime_version = Version::parse(env!("CALIMERO_RELEASE_VERSION"))

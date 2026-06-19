@@ -30,7 +30,7 @@ pub fn generate_entities(count: usize, seed: u64) -> Vec<(EntityId, Vec<u8>, Ent
     (0..count)
         .map(|i| {
             let id = EntityId::from_u64(seed * 10000 + i as u64);
-            let data = format!("entity-{}-{}", seed, i).into_bytes();
+            let data = format!("entity-{seed}-{i}").into_bytes();
             let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i as u64 * 100);
             (id, data, metadata)
         })
@@ -65,7 +65,7 @@ pub fn generate_deep_tree_entities(
             key[24..32].copy_from_slice(&(seed + i as u64).to_le_bytes());
 
             let id = EntityId::from_bytes(key);
-            let data = format!("deep-entity-{}-{}", seed, i).into_bytes();
+            let data = format!("deep-entity-{seed}-{i}").into_bytes();
             let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i as u64 * 100);
             (id, data, metadata)
         })
@@ -82,7 +82,7 @@ pub fn generate_shallow_wide_tree(
     seed: u64,
 ) -> Vec<(EntityId, Vec<u8>, EntityMetadata)> {
     assert!(
-        depth >= 1 && depth <= 2,
+        (1..=2).contains(&depth),
         "shallow tree depth must be 1 or 2"
     );
 
@@ -97,7 +97,7 @@ pub fn generate_shallow_wide_tree(
             key[24..32].copy_from_slice(&(seed + i as u64).to_le_bytes());
 
             let id = EntityId::from_bytes(key);
-            let data = format!("shallow-entity-{}-{}", seed, i).into_bytes();
+            let data = format!("shallow-entity-{seed}-{i}").into_bytes();
             let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i as u64 * 100);
             (id, data, metadata)
         })
@@ -350,7 +350,7 @@ impl Scenario {
 
         (0..n)
             .map(|i| {
-                let mut node = SimNode::new(format!("node-{}", i));
+                let mut node = SimNode::new(format!("node-{i}"));
                 for (id, data, metadata) in &entities {
                     node.insert_entity_with_metadata(*id, data.clone(), metadata.clone());
                 }
@@ -363,7 +363,7 @@ impl Scenario {
     pub fn n_nodes_diverged(n: usize) -> Vec<SimNode> {
         (0..n)
             .map(|i| {
-                let mut node = SimNode::new(format!("node-{}", i));
+                let mut node = SimNode::new(format!("node-{i}"));
                 for (id, data, metadata) in generate_entities(50, i as u64 + 1) {
                     node.insert_entity_with_metadata(id, data, metadata);
                 }
@@ -464,8 +464,7 @@ mod tests {
 
         assert!(
             depth_b > 3,
-            "SubtreePrefetch scenario should have max_depth > 3, got {}",
-            depth_b
+            "SubtreePrefetch scenario should have max_depth > 3, got {depth_b}"
         );
 
         // Both nodes should have similar depth (deep tree structure)
@@ -487,9 +486,7 @@ mod tests {
 
         assert!(
             depth_a <= 2 && depth_b <= 2,
-            "LevelWise scenario should have max_depth <= 2, got a={}, b={}",
-            depth_a,
-            depth_b
+            "LevelWise scenario should have max_depth <= 2, got a={depth_a}, b={depth_b}"
         );
     }
 
@@ -511,8 +508,7 @@ mod tests {
         // With depth parameter 5, we should get meaningful depth > 3
         assert!(
             depth > 3,
-            "Deep tree entities should produce depth > 3, got {}",
-            depth
+            "Deep tree entities should produce depth > 3, got {depth}"
         );
     }
 
@@ -534,8 +530,7 @@ mod tests {
         // Shallow tree should have depth <= 2
         assert!(
             depth <= 2,
-            "Shallow tree entities should produce depth <= 2, got {}",
-            depth
+            "Shallow tree entities should produce depth <= 2, got {depth}"
         );
     }
 
@@ -554,9 +549,7 @@ mod tests {
         // Deep tree should have higher depth than shallow tree
         assert!(
             deep_depth > shallow_depth,
-            "Deep tree depth ({}) should be > shallow tree depth ({})",
-            deep_depth,
-            shallow_depth
+            "Deep tree depth ({deep_depth}) should be > shallow tree depth ({shallow_depth})"
         );
     }
 }

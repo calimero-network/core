@@ -116,7 +116,7 @@ impl EncryptionState {
     /// Get current encryption parameters.
     #[must_use]
     pub fn get(&self) -> Option<(SharedKey, Nonce)> {
-        self.key_nonce.clone()
+        self.key_nonce
     }
 
     /// Encrypt data if encryption is configured.

@@ -56,7 +56,7 @@ pub async fn handler(
                 error!(application_id=%application_id, "Application not found");
                 return ApiError {
                     status_code: StatusCode::NOT_FOUND,
-                    message: format!("Application '{}' not found", application_id),
+                    message: format!("Application '{application_id}' not found"),
                 }
                 .into_response();
             }
@@ -64,7 +64,7 @@ pub async fn handler(
                 error!(application_id=%application_id, error=?err, "Failed to get application");
                 return ApiError {
                     status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: format!("Failed to get application: {}", err),
+                    message: format!("Failed to get application: {err}"),
                 }
                 .into_response();
             }

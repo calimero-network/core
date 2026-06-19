@@ -1018,7 +1018,7 @@ impl From<calimero_store::key::GroupUpgradeValue> for GroupUpgradeInfo {
             migration: v.migration,
             initiated_at: v.initiated_at,
             initiated_by: v.initiated_by,
-            status: v.status.into(),
+            status: v.status,
         }
     }
 }

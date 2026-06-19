@@ -326,7 +326,7 @@ fn context_tree_service_register_move_detach_and_cascade_cleanup() {
     let mut handle = store.handle();
     handle
         .put(
-            &calimero_store::key::ContextIdentity::new(context, member.into()),
+            &calimero_store::key::ContextIdentity::new(context, member),
             &calimero_store::types::ContextIdentity {
                 private_key: None,
                 sender_key: Some([0u8; 32]),
@@ -337,7 +337,7 @@ fn context_tree_service_register_move_detach_and_cascade_cleanup() {
 
     tree_b.cascade_remove_member(&member).unwrap();
     let handle = store.handle();
-    let identity_key = calimero_store::key::ContextIdentity::new(context, member.into());
+    let identity_key = calimero_store::key::ContextIdentity::new(context, member);
     assert!(!handle.has(&identity_key).unwrap());
 
     tree_b.unregister_context(&context).unwrap();
@@ -1787,8 +1787,7 @@ fn is_open_chain_to_namespace_bails_on_depth_overflow() {
     assert!(
         res.is_err(),
         "is_open_chain_to_namespace must bail on MAX_NAMESPACE_DEPTH overflow, \
-         got {:?}",
-        res
+         got {res:?}"
     );
 }
 
@@ -3034,7 +3033,7 @@ fn restore_member_context_identities_writes_missing_rows() {
 
     let handle = store.handle();
     for ctx in [&ctx_a, &ctx_b] {
-        let key = calimero_store::key::ContextIdentity::new(*ctx, member.into());
+        let key = calimero_store::key::ContextIdentity::new(*ctx, member);
         let row = handle.get(&key).unwrap().expect("row should be created");
         assert_eq!(
             row.private_key,
@@ -3064,7 +3063,7 @@ fn restore_member_context_identities_no_op_when_not_local_rejoiner() {
 
     // No namespace identity at all → no-op.
     restore_member_context_identities(&store, &gid, &member).unwrap();
-    let key = calimero_store::key::ContextIdentity::new(ctx, member.into());
+    let key = calimero_store::key::ContextIdentity::new(ctx, member);
     assert!(
         !store.handle().has(&key).unwrap(),
         "no namespace identity stored → must not write a row"
@@ -3105,7 +3104,7 @@ fn restore_member_context_identities_is_idempotent() {
         let mut handle = store.handle();
         handle
             .put(
-                &calimero_store::key::ContextIdentity::new(ctx, member.into()),
+                &calimero_store::key::ContextIdentity::new(ctx, member),
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(original_sk),
                     sender_key: Some(original_sender),
@@ -3118,10 +3117,7 @@ fn restore_member_context_identities_is_idempotent() {
 
     let handle = store.handle();
     let row = handle
-        .get(&calimero_store::key::ContextIdentity::new(
-            ctx,
-            member.into(),
-        ))
+        .get(&calimero_store::key::ContextIdentity::new(ctx, member))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -3159,7 +3155,7 @@ fn restore_member_context_identities_repairs_keyless_row() {
         let mut handle = store.handle();
         handle
             .put(
-                &calimero_store::key::ContextIdentity::new(ctx, member.into()),
+                &calimero_store::key::ContextIdentity::new(ctx, member),
                 &calimero_store::types::ContextIdentity {
                     private_key: None,
                     sender_key: Some(delivered_sender),
@@ -3172,10 +3168,7 @@ fn restore_member_context_identities_repairs_keyless_row() {
 
     let row = store
         .handle()
-        .get(&calimero_store::key::ContextIdentity::new(
-            ctx,
-            member.into(),
-        ))
+        .get(&calimero_store::key::ContextIdentity::new(ctx, member))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -3241,7 +3234,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
         let mut handle = store.handle();
         handle
             .put(
-                &calimero_store::key::ContextIdentity::new(ctx, member_pk.into()),
+                &calimero_store::key::ContextIdentity::new(ctx, member_pk),
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(member_sk_bytes),
                     sender_key: Some([0x77; 32]),
@@ -3264,7 +3257,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     // Confirm cascade ran — row gone.
     {
         let handle = store.handle();
-        let key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+        let key = calimero_store::key::ContextIdentity::new(ctx, member_pk);
         assert!(
             !handle.has(&key).unwrap(),
             "cascade must have deleted the ContextIdentity row"
@@ -3288,7 +3281,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     apply_local_signed_group_op(&store, &readded).unwrap();
 
     let handle = store.handle();
-    let key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    let key = calimero_store::key::ContextIdentity::new(ctx, member_pk);
     let row = handle
         .get(&key)
         .unwrap()
@@ -3367,7 +3360,7 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
         let mut handle = store.handle();
         handle
             .put(
-                &calimero_store::key::ContextIdentity::new(ctx, member_pk.into()),
+                &calimero_store::key::ContextIdentity::new(ctx, member_pk),
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(member_sk_bytes),
                     sender_key: Some([0x33; 32]),
@@ -3385,7 +3378,7 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     )
     .unwrap();
     apply_local_signed_group_op(&store, &removed).unwrap();
-    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk);
     assert!(
         !store.handle().has(&id_key).unwrap(),
         "cascade must have deleted the ContextIdentity row before the rejoin test"
@@ -3493,7 +3486,7 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
     assert!(DenyListRepository::new(&store)
         .is_denied(&subgroup, &member_pk)
         .unwrap());
-    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk);
     assert!(!store.handle().has(&id_key).unwrap());
 
     // The local node IS the rejoiner — its namespace identity matches
@@ -3594,7 +3587,7 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
     apply_local_signed_group_op(&store, &added).unwrap();
 
     let handle = store.handle();
-    let key = calimero_store::key::ContextIdentity::new(ctx, rejoiner_pk.into());
+    let key = calimero_store::key::ContextIdentity::new(ctx, rejoiner_pk);
     assert!(
         !handle.has(&key).unwrap(),
         "non-rejoiner peers must NOT create a ContextIdentity row for someone else"
@@ -6479,7 +6472,7 @@ mod tee_member_removed_event_tests {
         // context registered in the Open subgroup, despite no direct row.
         let context = ContextId::from([0xC5; 32]);
         register_context_in_group(&store, &subgroup, &context).unwrap();
-        let identity_key = calimero_store::key::ContextIdentity::new(context, tee_pk.into());
+        let identity_key = calimero_store::key::ContextIdentity::new(context, tee_pk);
         {
             let mut handle = store.handle();
             handle

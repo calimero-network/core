@@ -181,7 +181,7 @@ impl MockNetwork {
                                 parents: msg.parent_ids.clone(),
                                 payload: actions,
                                 hlc: calimero_storage::env::hlc_timestamp(),
-                                expected_root_hash: msg.root_hash.into(),
+                                expected_root_hash: msg.root_hash,
                                 kind: calimero_dag::DeltaKind::Regular,
                             };
 
@@ -489,7 +489,7 @@ async fn test_concurrent_broadcasts_from_multiple_peers() {
     // Create 5 peers
     let peers: Vec<_> = (0..5)
         .map(|i| {
-            let peer = MockPeer::new(&format!("peer_{}", i), i * 5);
+            let peer = MockPeer::new(&format!("peer_{i}"), i * 5);
             network.add_peer(peer.clone());
             peer
         })
@@ -497,14 +497,14 @@ async fn test_concurrent_broadcasts_from_multiple_peers() {
 
     // All subscribe
     for i in 0..5 {
-        network.subscribe(&format!("peer_{}", i), context_id).await;
+        network.subscribe(&format!("peer_{i}"), context_id).await;
     }
 
     // All peers broadcast concurrently
     for (i, peer) in peers.iter().enumerate() {
         let storage_delta = StorageDelta::Actions(vec![]);
         let artifact = borsh::to_vec(&storage_delta).unwrap();
-        let peer_id = format!("peer_{}", i);
+        let peer_id = format!("peer_{i}");
 
         network
             .broadcast(
@@ -525,7 +525,7 @@ async fn test_concurrent_broadcasts_from_multiple_peers() {
     // Each peer should receive 4 deltas (all except own)
     for (i, peer) in peers.iter().enumerate() {
         let received = peer.received_deltas.lock().await;
-        assert_eq!(received.len(), 4, "Peer {} should receive 4 deltas", i);
+        assert_eq!(received.len(), 4, "Peer {i} should receive 4 deltas");
     }
 }
 

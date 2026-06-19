@@ -140,7 +140,7 @@ pub(crate) fn service(
 
     // Get the node prefix from env var
     let path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
-        format!("{}{}", prefix, base_path)
+        format!("{prefix}{base_path}")
     } else {
         base_path.to_owned()
     };
@@ -171,7 +171,7 @@ async fn ws_handler(
             debug!("Invalid WebSocket upgrade request: {}", rejection);
             return (
                 StatusCode::BAD_REQUEST,
-                format!("Invalid WebSocket upgrade request: {}", rejection),
+                format!("Invalid WebSocket upgrade request: {rejection}"),
             )
                 .into_response();
         }

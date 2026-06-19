@@ -144,6 +144,12 @@ impl Data for Paragraph {
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq, PartialOrd)]
 pub struct Paragraphs;
 
+impl Default for Paragraphs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Paragraphs {
     /// Creates a new paragraph collection.
     pub fn new() -> Self {

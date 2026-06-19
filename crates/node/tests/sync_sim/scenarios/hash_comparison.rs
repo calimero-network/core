@@ -46,7 +46,7 @@ fn test_tree_traversal_basic() {
     // Alice has entities 1-10
     for i in 1..=10 {
         let id = EntityId::from_u64(i);
-        let data = format!("alice-entity-{}", i).into_bytes();
+        let data = format!("alice-entity-{i}").into_bytes();
         let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 100);
         alice.insert_entity_with_metadata(id, data, metadata);
     }
@@ -54,7 +54,7 @@ fn test_tree_traversal_basic() {
     // Bob has entities 5-15 (overlapping 5-10)
     for i in 5..=15 {
         let id = EntityId::from_u64(i);
-        let data = format!("bob-entity-{}", i).into_bytes();
+        let data = format!("bob-entity-{i}").into_bytes();
         let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 100 + 50);
         bob.insert_entity_with_metadata(id, data, metadata);
     }
@@ -170,13 +170,13 @@ fn test_partial_overlap_merge() {
 
         alice.insert_entity_with_metadata(
             id,
-            format!("shared-alice-{}", i).into_bytes(),
+            format!("shared-alice-{i}").into_bytes(),
             EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
 
         bob.insert_entity_with_metadata(
             id,
-            format!("shared-bob-{}", i).into_bytes(),
+            format!("shared-bob-{i}").into_bytes(),
             EntityMetadata::new(CrdtType::lww_register("test"), i * 100 + 50), // Newer
         );
     }
@@ -186,7 +186,7 @@ fn test_partial_overlap_merge() {
         let id = EntityId::from_u64(i);
         alice.insert_entity_with_metadata(
             id,
-            format!("alice-only-{}", i).into_bytes(),
+            format!("alice-only-{i}").into_bytes(),
             EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
@@ -196,7 +196,7 @@ fn test_partial_overlap_merge() {
         let id = EntityId::from_u64(i);
         bob.insert_entity_with_metadata(
             id,
-            format!("bob-only-{}", i).into_bytes(),
+            format!("bob-only-{i}").into_bytes(),
             EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
@@ -228,7 +228,7 @@ fn test_divergent_subtrees_only() {
     // Identical prefix: entities 1-10 (same on both)
     for i in 1..=10 {
         let id = EntityId::from_u64(i);
-        let data = format!("shared-{}", i).into_bytes();
+        let data = format!("shared-{i}").into_bytes();
         let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 100);
 
         alice.insert_entity_with_metadata(id, data.clone(), metadata.clone());
@@ -240,7 +240,7 @@ fn test_divergent_subtrees_only() {
         let id = EntityId::from_u64(i);
         alice.insert_entity_with_metadata(
             id,
-            format!("alice-{}", i).into_bytes(),
+            format!("alice-{i}").into_bytes(),
             EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
@@ -249,7 +249,7 @@ fn test_divergent_subtrees_only() {
         let id = EntityId::from_u64(i);
         bob.insert_entity_with_metadata(
             id,
-            format!("bob-{}", i).into_bytes(),
+            format!("bob-{i}").into_bytes(),
             EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
@@ -321,8 +321,7 @@ fn test_empty_tree_handling() {
 
     assert!(
         matches!(protocol, SelectedProtocol::Snapshot { .. }),
-        "Fresh node should use Snapshot, got {:?}",
-        protocol
+        "Fresh node should use Snapshot, got {protocol:?}"
     );
 
     // But we can force HashComparison for testing edge case

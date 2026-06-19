@@ -72,7 +72,7 @@ fn register_and_dispatch_against_production_registry() {
 
     let merged_bytes = match try_merge_registered(&bytes_a, &bytes_b, 100, 200) {
         MergeRegistryResult::Success(bytes) => bytes,
-        other => panic!("expected Success from production registry, got {:?}", other),
+        other => panic!("expected Success from production registry, got {other:?}"),
     };
 
     let merged: IntegrationState = borsh::from_slice(&merged_bytes).unwrap();

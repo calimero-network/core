@@ -225,7 +225,7 @@ pub fn restore_member_context_identities(
     let contexts = enumerate_group_contexts(store, group_id, 0, usize::MAX)?;
     let mut handle = store.handle();
     for context_id in &contexts {
-        let identity_key = calimero_store::key::ContextIdentity::new(*context_id, (*member).into());
+        let identity_key = calimero_store::key::ContextIdentity::new(*context_id, *member);
         // Three cases:
         //   * No row              → write a fresh `Some(private_key)` row.
         //   * Row, private_key None → repair it: the rejoiner can't sign

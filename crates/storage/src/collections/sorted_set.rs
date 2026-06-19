@@ -678,7 +678,7 @@ mod tests {
 
     #[test]
     fn test_sorted_set_basic_and_order() {
-        let mut set = Root::new(|| SortedSet::<_, MainStorage>::new());
+        let mut set = Root::new(SortedSet::<_, MainStorage>::new);
 
         for v in ["delta", "alpha", "charlie", "bravo"] {
             assert!(set.insert(v.to_owned()).expect("insert failed"));
@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn test_sorted_set_range_prefix_page_first_last() {
-        let mut set = Root::new(|| SortedSet::<_, MainStorage>::new());
+        let mut set = Root::new(SortedSet::<_, MainStorage>::new);
         for v in ["user:alice", "user:bob", "post:1", "user:carol", "post:2"] {
             set.insert(v.to_owned()).unwrap();
         }
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn test_sorted_set_remove_updates_order() {
-        let mut set = Root::new(|| SortedSet::<_, MainStorage>::new());
+        let mut set = Root::new(SortedSet::<_, MainStorage>::new);
         for v in ["a", "b", "c", "d"] {
             set.insert(v.to_owned()).unwrap();
         }
@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_sorted_set_clear() {
-        let mut set = Root::new(|| SortedSet::<_, MainStorage>::new());
+        let mut set = Root::new(SortedSet::<_, MainStorage>::new);
         set.insert("x".to_owned()).unwrap();
         set.insert("y".to_owned()).unwrap();
         set.clear().unwrap();

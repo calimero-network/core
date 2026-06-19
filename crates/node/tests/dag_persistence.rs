@@ -76,7 +76,7 @@ fn test_dag_state_serialization() {
 
     // Serialize
     let serialized = state.serialize().unwrap();
-    assert!(serialized.len() > 0);
+    assert!(!serialized.is_empty());
 
     // Deserialize
     let deserialized = PersistedDagState::deserialize(&serialized).unwrap();

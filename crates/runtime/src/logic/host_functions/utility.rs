@@ -703,8 +703,7 @@ mod tests {
                 // Also valid - some versions of ed25519_dalek reject the identity point.
             }
             other => panic!(
-                "Expected invalid signature (0) or Ed25519IncorrectPublicKey error, got {:?}",
-                other
+                "Expected invalid signature (0) or Ed25519IncorrectPublicKey error, got {other:?}"
             ),
         }
     }

@@ -45,7 +45,7 @@ fn test_signer_id_display() {
     let signer_id =
         SignerId::new("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK").unwrap();
     assert_eq!(
-        format!("{}", signer_id),
+        format!("{signer_id}"),
         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
     );
 }
@@ -176,7 +176,7 @@ fn test_app_key_display() {
     let app_key = AppKey::new("com.example.myapp", signer_id).unwrap();
 
     assert_eq!(
-        format!("{}", app_key),
+        format!("{app_key}"),
         "com.example.myapp:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
     );
 }

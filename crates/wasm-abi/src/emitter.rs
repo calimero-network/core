@@ -639,8 +639,7 @@ pub fn emit_manifest_from_crate(
     // Parse all files
     let mut files = Vec::new();
     for (name, content) in sources {
-        let file =
-            syn::parse_file(content).map_err(|e| format!("Failed to parse {}: {}", name, e))?;
+        let file = syn::parse_file(content).map_err(|e| format!("Failed to parse {name}: {e}"))?;
         files.push(file);
     }
 

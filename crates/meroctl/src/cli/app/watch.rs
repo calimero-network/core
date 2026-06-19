@@ -87,7 +87,7 @@ impl WatchCommand {
         let target_app_id = self.current_app_id.unwrap_or(initial_app_id);
 
         // Get all contexts that use this application
-        let target_contexts = get_contexts_using_application(&client, &target_app_id).await?;
+        let target_contexts = get_contexts_using_application(client, &target_app_id).await?;
 
         if target_contexts.is_empty() {
             return handle_no_contexts_found(environment, &target_app_id);
@@ -174,17 +174,15 @@ async fn watch_app_and_update_contexts(
             .application_id;
 
         environment.output.write(&InfoLine(&format!(
-            "📦 Installed new application version: {}",
-            new_application_id
+            "📦 Installed new application version: {new_application_id}"
         )));
 
         // Refresh context list to catch any new contexts using the baseline app
-        let target_contexts = get_contexts_using_application(&client, &baseline_app_id).await?;
+        let target_contexts = get_contexts_using_application(client, &baseline_app_id).await?;
 
         if target_contexts.is_empty() {
             environment.output.write(&InfoLine(&format!(
-                "No contexts currently use application {}.",
-                baseline_app_id
+                "No contexts currently use application {baseline_app_id}."
             )));
             return handle_no_contexts_found(environment, &baseline_app_id);
         }
@@ -212,8 +210,7 @@ async fn watch_app_and_update_contexts(
                         *first_identity
                     } else {
                         environment.output.write(&ErrorLine(&format!(
-                            "✗ No identities found for context {}. Skipping.",
-                            context_id
+                            "✗ No identities found for context {context_id}. Skipping."
                         )));
                         error_count += 1;
                         continue;
@@ -221,8 +218,7 @@ async fn watch_app_and_update_contexts(
                 }
                 Err(err) => {
                     environment.output.write(&ErrorLine(&format!(
-                        "✗ Failed to get identities for context {}: {}. Skipping.",
-                        context_id, err
+                        "✗ Failed to get identities for context {context_id}: {err}. Skipping."
                     )));
                     error_count += 1;
                     continue;
@@ -234,16 +230,14 @@ async fn watch_app_and_update_contexts(
             match client.update_context_application(context_id, request).await {
                 Ok(response) => {
                     environment.output.write(&InfoLine(&format!(
-                        "✓ Updated context {} with application {}",
-                        context_id, new_application_id
+                        "✓ Updated context {context_id} with application {new_application_id}"
                     )));
                     environment.output.write(&response);
                     success_count += 1;
                 }
                 Err(err) => {
                     environment.output.write(&ErrorLine(&format!(
-                        "✗ Failed to update context {}: {}",
-                        context_id, err
+                        "✗ Failed to update context {context_id}: {err}"
                     )));
                     error_count += 1;
                 }
@@ -251,23 +245,20 @@ async fn watch_app_and_update_contexts(
         }
 
         environment.output.write(&InfoLine(&format!(
-            "📊 Update complete: {} successful, {} failed",
-            success_count, error_count
+            "📊 Update complete: {success_count} successful, {error_count} failed"
         )));
 
         // If we had successful updates, update the baseline to track the new app ID
         if success_count > 0 {
             baseline_app_id = new_application_id;
             environment.output.write(&InfoLine(&format!(
-                "🔄 Updated baseline tracking to application {}",
-                baseline_app_id
+                "🔄 Updated baseline tracking to application {baseline_app_id}"
             )));
         } else {
             // If all updates failed, the contexts are still using the old app ID
             // Continue tracking the old baseline for next iteration
             environment.output.write(&InfoLine(&format!(
-                "All context updates failed. Continuing to track application {}",
-                baseline_app_id
+                "All context updates failed. Continuing to track application {baseline_app_id}"
             )));
         }
     }
@@ -294,15 +285,13 @@ async fn get_contexts_using_application(
 /// Helper function to provide consistent messaging when no contexts are found
 fn handle_no_contexts_found(environment: &mut Environment, app_id: &ApplicationId) -> Result<()> {
     environment.output.write(&ErrorLine(&format!(
-        "No contexts found using application {}.",
-        app_id
+        "No contexts found using application {app_id}."
     )));
     environment.output.write(&InfoLine(
         "To use this watch command, first create contexts with this application:",
     ));
     environment.output.write(&InfoLine(&format!(
-        "  meroctl context create --application-id {} --protocol <protocol_name>",
-        app_id
+        "  meroctl context create --application-id {app_id} --protocol <protocol_name>"
     )));
     environment
         .output
@@ -330,7 +319,7 @@ mod tests {
     fn test_watch_command_parsing_minimal() {
         use clap::Parser;
 
-        let cmd = WatchCommand::try_parse_from(&["watch", "--path", "./test.wasm"]).unwrap();
+        let cmd = WatchCommand::try_parse_from(["watch", "--path", "./test.wasm"]).unwrap();
 
         assert_eq!(cmd.path.as_str(), "./test.wasm");
         assert_eq!(cmd.metadata, None);
@@ -341,7 +330,7 @@ mod tests {
     fn test_watch_command_parsing_with_metadata() {
         use clap::Parser;
 
-        let cmd = WatchCommand::try_parse_from(&[
+        let cmd = WatchCommand::try_parse_from([
             "watch",
             "--path",
             "./test.wasm",
@@ -360,7 +349,7 @@ mod tests {
         use clap::Parser;
 
         let app_id = ApplicationId::from([42u8; 32]);
-        let cmd = WatchCommand::try_parse_from(&[
+        let cmd = WatchCommand::try_parse_from([
             "watch",
             "--path",
             "./test.wasm",
@@ -379,7 +368,7 @@ mod tests {
         use clap::Parser;
 
         let app_id = ApplicationId::from([1u8; 32]);
-        let cmd = WatchCommand::try_parse_from(&[
+        let cmd = WatchCommand::try_parse_from([
             "watch",
             "--path",
             "./test.wasm",
@@ -399,7 +388,7 @@ mod tests {
     fn test_watch_command_parsing_short_flags() {
         use clap::Parser;
 
-        let cmd = WatchCommand::try_parse_from(&["watch", "-p", "./test.wasm"]).unwrap();
+        let cmd = WatchCommand::try_parse_from(["watch", "-p", "./test.wasm"]).unwrap();
 
         assert_eq!(cmd.path.as_str(), "./test.wasm");
     }
@@ -408,7 +397,7 @@ mod tests {
     fn test_watch_command_missing_path_fails() {
         use clap::Parser;
 
-        let result = WatchCommand::try_parse_from(&["watch"]);
+        let result = WatchCommand::try_parse_from(["watch"]);
         assert!(result.is_err(), "Command should fail when path is missing");
     }
 
@@ -416,7 +405,7 @@ mod tests {
     fn test_watch_command_invalid_app_id_fails() {
         use clap::Parser;
 
-        let result = WatchCommand::try_parse_from(&[
+        let result = WatchCommand::try_parse_from([
             "watch",
             "--path",
             "./test.wasm",

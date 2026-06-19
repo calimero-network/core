@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calimero_context::governance_broadcast::ns_topic;
-use calimero_context::group_store::{self, NamespaceGovernance};
+use calimero_context::group_store::NamespaceGovernance;
 use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use calimero_context_client::local_governance::{
     AckRouter, NamespaceOp, NamespaceTopicMsg, ReadinessProbe, RootOp,

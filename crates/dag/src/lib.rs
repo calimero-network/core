@@ -557,7 +557,7 @@ impl<T: Clone> DagStore<T> {
 
         let mut missing_ids = HashSet::new();
 
-        'outer: for (_pending_id, pending) in &self.pending {
+        'outer: for pending in self.pending.values() {
             for parent in &pending.delta.parents {
                 if missing_ids.len() >= delta_query_limit {
                     warn!(

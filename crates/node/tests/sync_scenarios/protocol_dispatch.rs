@@ -188,13 +188,11 @@ fn test_protocol_selection_critical_invariants_with_manager_handshakes() {
         // CRITICAL: has_state must match
         assert_eq!(
             sim_hs_a.has_state, mgr_hs_a.has_state,
-            "has_state mismatch for {} (local)",
-            name
+            "has_state mismatch for {name} (local)"
         );
         assert_eq!(
             sim_hs_b.has_state, mgr_hs_b.has_state,
-            "has_state mismatch for {} (remote)",
-            name
+            "has_state mismatch for {name} (remote)"
         );
 
         let sim_selection = select_protocol(&sim_hs_a, &sim_hs_b);
@@ -214,8 +212,7 @@ fn test_protocol_selection_critical_invariants_with_manager_handshakes() {
         if mgr_hs_a.has_state {
             assert!(
                 !matches!(mgr_selection.protocol, SyncProtocol::Snapshot { .. }),
-                "I5 VIOLATION: Snapshot selected for initialized node in '{}'",
-                name
+                "I5 VIOLATION: Snapshot selected for initialized node in '{name}'"
             );
         }
     }
@@ -375,8 +372,7 @@ fn test_all_selections_have_reasons() {
 
         assert!(
             !selection.reason.is_empty(),
-            "Selection for '{}' has empty reason",
-            name
+            "Selection for '{name}' has empty reason"
         );
         assert!(
             selection.reason.len() > 5,

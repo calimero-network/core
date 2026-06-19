@@ -977,7 +977,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_basic_operations() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
         assert!(map
             .insert("key".to_owned(), "value".to_owned())
@@ -1038,7 +1038,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_insert_and_get() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
         assert!(map
             .insert("key1".to_owned(), "value1".to_owned())
@@ -1067,16 +1067,16 @@ mod tests {
 
     #[test]
     fn test_unordered_map_update_value() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
         assert!(map
             .insert("key".to_owned(), "value".to_owned())
             .expect("insert failed")
             .is_none());
-        assert!(!map
+        assert!(map
             .insert("key".to_owned(), "new_value".to_owned())
             .expect("insert failed")
-            .is_none());
+            .is_some());
 
         assert_eq!(
             map.get("key")
@@ -1089,7 +1089,7 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
         assert!(map
             .insert("key".to_owned(), "value".to_owned())
@@ -1105,7 +1105,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
         assert!(map
             .insert("key1".to_owned(), "value1".to_owned())
@@ -1124,7 +1124,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_len() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
         assert_eq!(map.len().expect("len failed"), 0);
 
@@ -1136,10 +1136,10 @@ mod tests {
             .insert("key2".to_owned(), "value2".to_owned())
             .expect("insert failed")
             .is_none());
-        assert!(!map
+        assert!(map
             .insert("key2".to_owned(), "value3".to_owned())
             .expect("insert failed")
-            .is_none());
+            .is_some());
 
         assert_eq!(map.len().expect("len failed"), 2);
 
@@ -1153,20 +1153,20 @@ mod tests {
 
     #[test]
     fn test_unordered_map_contains() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
         assert!(map
             .insert("key".to_owned(), "value".to_owned())
             .expect("insert failed")
             .is_none());
 
-        assert_eq!(map.contains("key").expect("contains failed"), true);
-        assert_eq!(map.contains("nonexistent").expect("contains failed"), false);
+        assert!(map.contains("key").expect("contains failed"));
+        assert!(!map.contains("nonexistent").expect("contains failed"));
     }
 
     #[test]
     fn test_unordered_map_entries() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
         assert!(map
             .insert("key1".to_owned(), "value1".to_owned())
@@ -1176,10 +1176,10 @@ mod tests {
             .insert("key2".to_owned(), "value2".to_owned())
             .expect("insert failed")
             .is_none());
-        assert!(!map
+        assert!(map
             .insert("key2".to_owned(), "value3".to_owned())
             .expect("insert failed")
-            .is_none());
+            .is_some());
 
         let entries: Vec<(String, String)> = map.entries().expect("entries failed").collect();
 
@@ -1190,7 +1190,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_get_mut() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
         drop(
             map.insert("key1".to_owned(), "value1".to_owned())
                 .expect("insert failed"),
@@ -1224,7 +1224,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_entry_vacant() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
         // Test `or_insert()`
         {
@@ -1265,7 +1265,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_entry_occupied_or_insert() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
         drop(
             map.insert("key1".to_owned(), "value1".to_owned())
                 .expect("insert failed"),
@@ -1306,7 +1306,7 @@ mod tests {
             assert_eq!(*guard, "value1");
         } // Guard is dropped
 
-        assert_eq!(called, false); // Verify closure was not executed
+        assert!(!called); // Verify closure was not executed
         assert_eq!(map.len().unwrap(), 1);
         assert_eq!(
             map.get("key1").unwrap().as_deref().map(String::as_str),
@@ -1316,7 +1316,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_entry_or_default() {
-        let mut map = Root::new(|| UnorderedMap::<String, u64, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<String, u64, MainStorage>::new);
 
         // Vacant: `or_default()` inserts `u64::default()` (0) and the write-back
         // guard persists the mutation made through it on drop.
@@ -1350,7 +1350,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_entry_occupied_mutations() {
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
         drop(map.insert("key1".to_owned(), "value1".to_owned()).unwrap());
         drop(map.insert("key2".to_owned(), "value2".to_owned()).unwrap());
         drop(map.insert("key3".to_owned(), "value3".to_owned()).unwrap());
@@ -1609,7 +1609,7 @@ mod tests {
 
         // For nested maps (values in other maps), we use new() which generates random IDs.
         // This is fine because merge happens by the parent map's key, not the nested map's ID.
-        let mut parent_map = Root::new(|| UnorderedMap::<String, String>::new());
+        let mut parent_map = Root::new(UnorderedMap::<String, String>::new);
 
         // Insert an entry
         parent_map

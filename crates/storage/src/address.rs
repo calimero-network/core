@@ -128,7 +128,7 @@ impl Path {
             if str.len().saturating_add(segment.len()) > 255 {
                 return Err(PathError::Overflow);
             }
-            if str.len() > 0 {
+            if !str.is_empty() {
                 #[expect(clippy::cast_possible_truncation, reason = "Can't occur here")]
                 offsets.push(str.len() as u8);
             }

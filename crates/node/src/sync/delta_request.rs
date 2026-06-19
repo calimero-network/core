@@ -159,7 +159,7 @@ fn verify_fetched_parent(
     // check on the catchup path even though gossip rejects it.
     // Mirror the gate `apply_authorized_state_delta` uses.
     if NamespaceRepository::new(datastore)
-        .is_read_only_for_context(&context_id, &fetched.author_id)
+        .is_read_only_for_context(context_id, &fetched.author_id)
         .unwrap_or(false)
     {
         warn!(

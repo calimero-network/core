@@ -87,8 +87,7 @@ fn test_gcounter_merge_sums_contributions() {
     // Expected: alice(5) + bob(3) = 8
     assert_eq!(
         merged_value, 8,
-        "GCounter merge should sum contributions from different executors: 5 + 3 = 8, got {}",
-        merged_value
+        "GCounter merge should sum contributions from different executors: 5 + 3 = 8, got {merged_value}"
     );
 }
 
@@ -117,8 +116,7 @@ fn test_gcounter_merge_max_per_executor() {
     // Expected: max(5, 7) = 7
     assert_eq!(
         merged_value, 7,
-        "GCounter merge should take max for same executor: max(5, 7) = 7, got {}",
-        merged_value
+        "GCounter merge should take max for same executor: max(5, 7) = 7, got {merged_value}"
     );
 }
 
@@ -148,8 +146,7 @@ fn test_pncounter_merge_combines_maps() {
     // Expected: positive(alice:10, bob:5) - negative(alice:2) = 15 - 2 = 13
     assert_eq!(
         merged_value, 13,
-        "PnCounter merge should combine maps: (10+5) - 2 = 13, got {}",
-        merged_value
+        "PnCounter merge should combine maps: (10+5) - 2 = 13, got {merged_value}"
     );
 }
 
@@ -269,8 +266,7 @@ fn test_merge_corrupted_data_returns_serialization_error() {
 
     assert!(
         matches!(result, Err(MergeError::SerializationError(_))),
-        "Corrupted data should return SerializationError, got {:?}",
-        result
+        "Corrupted data should return SerializationError, got {result:?}"
     );
 }
 
@@ -344,8 +340,7 @@ fn test_merge_by_crdt_type_differs_from_lww() {
     // Verify they're different
     assert_ne!(
         lww_value, merged_value,
-        "LWW ({}) should differ from CRDT merge ({})",
-        lww_value, merged_value
+        "LWW ({lww_value}) should differ from CRDT merge ({merged_value})"
     );
     assert_eq!(lww_value, 3, "LWW should be bob's value only");
     assert_eq!(merged_value, 8, "CRDT merge should be alice + bob = 8");

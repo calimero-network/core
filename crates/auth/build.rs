@@ -171,7 +171,7 @@ fn target_dir() -> eyre::Result<PathBuf> {
 
     while out_dir.pop() {
         if let Some(name) = out_dir.file_name().and_then(|n| n.to_str()) {
-            if profile_names.iter().any(|&pn| pn == name) {
+            if profile_names.contains(&name) {
                 return Ok(out_dir);
             }
         }

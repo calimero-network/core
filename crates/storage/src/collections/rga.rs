@@ -77,8 +77,7 @@ impl BorshDeserialize for CharKey {
     fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
         let id = CharId::deserialize_reader(reader)?;
         // Reconstruct bytes from id
-        let bytes = borsh::to_vec(&id)
-            .map_err(|e| borsh::io::Error::new(borsh::io::ErrorKind::Other, e))?;
+        let bytes = borsh::to_vec(&id).map_err(borsh::io::Error::other)?;
         Ok(Self { id, bytes })
     }
 }

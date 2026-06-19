@@ -268,8 +268,7 @@ fn test_invalid_gcounter_returns_serialization_error() {
 
     assert!(
         matches!(result, Err(MergeError::SerializationError(_))),
-        "Invalid GCounter bytes should return SerializationError, got {:?}",
-        result
+        "Invalid GCounter bytes should return SerializationError, got {result:?}"
     );
 }
 
@@ -283,8 +282,7 @@ fn test_invalid_rga_returns_serialization_error() {
 
     assert!(
         matches!(result, Err(MergeError::SerializationError(_))),
-        "Invalid RGA bytes should return SerializationError, got {:?}",
-        result
+        "Invalid RGA bytes should return SerializationError, got {result:?}"
     );
 }
 
@@ -310,8 +308,7 @@ fn test_all_builtin_types_classification() {
     for crdt_type in &builtin_types {
         assert!(
             is_builtin_crdt(crdt_type),
-            "{:?} should be builtin",
-            crdt_type
+            "{crdt_type:?} should be builtin"
         );
     }
 
@@ -356,7 +353,7 @@ fn test_builtin_merge_behavior_summary() {
 
     for crdt_type in &return_incoming {
         let result = merge_by_crdt_type(crdt_type, &existing, &incoming).unwrap();
-        assert_eq!(result, incoming, "{:?} should return incoming", crdt_type);
+        assert_eq!(result, incoming, "{crdt_type:?} should return incoming");
     }
 
     // FrozenStorage returns existing

@@ -45,7 +45,7 @@ pub fn migrate_v1_to_v2() -> ScenarioCrdtNativeV2 {
 
     let old_state: ScenarioCrdtNativeV1 = BorshDeserialize::deserialize(&mut &old_bytes[..])
         .unwrap_or_else(|e| {
-            panic!("Migration failed: V1 deserialization error {:?}", e);
+            panic!("Migration failed: V1 deserialization error {e:?}");
         });
 
     app::emit!(Event::Migrated {
@@ -68,7 +68,7 @@ pub fn migrate_v1_to_v2() -> ScenarioCrdtNativeV2 {
     let mut keys: Vec<String> = old_state
         .items
         .entries()
-        .unwrap_or_else(|e| panic!("Migration failed: V1 items iteration error {:?}", e))
+        .unwrap_or_else(|e| panic!("Migration failed: V1 items iteration error {e:?}"))
         .map(|(k, _v)| k)
         .collect();
     keys.sort();
@@ -76,7 +76,7 @@ pub fn migrate_v1_to_v2() -> ScenarioCrdtNativeV2 {
     let mut tags: Vector<LwwRegister<String>> = Vector::new();
     for k in keys {
         tags.push(k.into())
-            .unwrap_or_else(|e| panic!("Migration failed: V2 tags seed error {:?}", e));
+            .unwrap_or_else(|e| panic!("Migration failed: V2 tags seed error {e:?}"));
     }
 
     ScenarioCrdtNativeV2 {

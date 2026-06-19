@@ -32,7 +32,7 @@ fn parse_payload<const PRETTY: bool>(
         Err(err) => err.into_bytes(),
     };
 
-    Ok(format!("{:?}", payload))
+    Ok(format!("{payload:?}"))
 }
 
 fn main() -> EyreResult<()> {
@@ -76,7 +76,7 @@ fn main() -> EyreResult<()> {
         let outcome = module.run(
             [0; 32].into(),
             [0; 32].into(),
-            &name,
+            name,
             &input,
             &mut storage,
             None, // No private storage for example
@@ -117,7 +117,7 @@ fn main() -> EyreResult<()> {
                 println!("{}:", "Returns".green());
 
                 let payload = returns
-                    .map(|p| parse_payload::<true>(p))
+                    .map(parse_payload::<true>)
                     .transpose()?
                     .unwrap_or_default();
 
@@ -138,7 +138,7 @@ fn main() -> EyreResult<()> {
                     calimero_runtime::errors::FunctionCallError::ExecutionError(payload) => {
                         parse_payload::<true>(payload)?
                     }
-                    _ => format!("{:#?}", err),
+                    _ => format!("{err:#?}"),
                 };
 
                 for line in error.lines() {

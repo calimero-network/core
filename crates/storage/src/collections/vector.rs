@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn test_vector_push() {
-        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
         let value = "test_data".to_owned();
         let result = vector.push(value.clone());
@@ -556,21 +556,21 @@ mod tests {
 
     #[test]
     fn test_vector_get() {
-        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
         let value = "test_data".to_owned();
-        let _ = vector.push(value.clone()).unwrap();
+        vector.push(value.clone()).unwrap();
         let retrieved_value = vector.get(0).unwrap().map(|v| v.into_inner());
         assert_eq!(retrieved_value, Some(value));
     }
 
     #[test]
     fn test_vector_update() {
-        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
         let value1 = "test_data1".to_owned();
         let value2 = "test_data2".to_owned();
-        let _ = vector.push(value1.clone()).unwrap();
+        vector.push(value1.clone()).unwrap();
         let old = vector.update(0, value2.clone()).unwrap();
         let retrieved_value = vector.get(0).unwrap().map(|v| v.into_inner());
         assert_eq!(retrieved_value, Some(value2));
@@ -579,20 +579,20 @@ mod tests {
 
     #[test]
     fn test_vector_get_non_existent() {
-        let vector = Root::new(|| Vector::<String>::new());
+        let vector = Root::new(Vector::<String>::new);
 
         match vector.get(0) {
             Ok(retrieved_value) => assert_eq!(retrieved_value, None),
-            Err(e) => panic!("Error occurred: {:?}", e),
+            Err(e) => panic!("Error occurred: {e:?}"),
         }
     }
 
     #[test]
     fn test_vector_pop() {
-        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
         let value = "test_data".to_owned();
-        let _ = vector.push(value.clone()).unwrap();
+        vector.push(value.clone()).unwrap();
         let popped_value = vector.pop().unwrap();
         assert_eq!(popped_value, Some(value));
         assert_eq!(vector.len().unwrap(), 0);
@@ -600,22 +600,22 @@ mod tests {
 
     #[test]
     fn test_vector_items() {
-        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
         let value1 = "test_data1".to_owned();
         let value2 = "test_data2".to_owned();
-        let _ = vector.push(value1.clone()).unwrap();
-        let _ = vector.push(value2.clone()).unwrap();
+        vector.push(value1.clone()).unwrap();
+        vector.push(value2.clone()).unwrap();
         let items: Vec<String> = vector.iter().unwrap().collect();
         assert_eq!(items, vec![value1, value2]);
     }
 
     #[test]
     fn test_vector_contains() {
-        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
         let value = "test_data".to_owned();
-        let _ = vector.push(value.clone()).unwrap();
+        vector.push(value.clone()).unwrap();
         assert!(vector.contains(&value).unwrap());
         let non_existent_value = "non_existent".to_owned();
         assert!(!vector.contains(&non_existent_value).unwrap());
@@ -623,22 +623,22 @@ mod tests {
 
     #[test]
     fn test_vector_clear() {
-        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
         let value = "test_data".to_owned();
-        let _ = vector.push(value.clone()).unwrap();
+        vector.push(value.clone()).unwrap();
         vector.clear().unwrap();
         assert_eq!(vector.len().unwrap(), 0);
     }
 
     #[test]
     fn test_vector_find() {
-        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
-        let _ = vector.push("apple".to_owned()).unwrap();
-        let _ = vector.push("banana".to_owned()).unwrap();
-        let _ = vector.push("cherry".to_owned()).unwrap();
-        let _ = vector.push("banana".to_owned()).unwrap();
+        vector.push("apple".to_owned()).unwrap();
+        vector.push("banana".to_owned()).unwrap();
+        vector.push("cherry".to_owned()).unwrap();
+        vector.push("banana".to_owned()).unwrap();
 
         // Find first element that starts with 'b'
         let result: Vec<String> = vector.find(|s| s.starts_with('b')).unwrap().collect();
@@ -657,13 +657,13 @@ mod tests {
 
     #[test]
     fn test_vector_filter() {
-        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
-        let _ = vector.push("apple".to_owned()).unwrap();
-        let _ = vector.push("banana".to_owned()).unwrap();
-        let _ = vector.push("cherry".to_owned()).unwrap();
-        let _ = vector.push("banana".to_owned()).unwrap();
-        let _ = vector.push("apricot".to_owned()).unwrap();
+        vector.push("apple".to_owned()).unwrap();
+        vector.push("banana".to_owned()).unwrap();
+        vector.push("cherry".to_owned()).unwrap();
+        vector.push("banana".to_owned()).unwrap();
+        vector.push("apricot".to_owned()).unwrap();
 
         // Filter all elements that start with 'a'
         let result: Vec<String> = vector.filter(|s| s.starts_with('a')).unwrap().collect();
@@ -687,12 +687,12 @@ mod tests {
 
     #[test]
     fn test_vector_find_with_numbers() {
-        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
-        let _ = vector.push(1u32).unwrap();
-        let _ = vector.push(5u32).unwrap();
-        let _ = vector.push(10u32).unwrap();
-        let _ = vector.push(15u32).unwrap();
+        vector.push(1u32).unwrap();
+        vector.push(5u32).unwrap();
+        vector.push(10u32).unwrap();
+        vector.push(15u32).unwrap();
 
         // Find first number > 7
         let result: Vec<u32> = vector.find(|&n| n > 7).unwrap().collect();
@@ -702,13 +702,13 @@ mod tests {
 
     #[test]
     fn test_vector_filter_with_numbers() {
-        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
-        let _ = vector.push(1u32).unwrap();
-        let _ = vector.push(5u32).unwrap();
-        let _ = vector.push(10u32).unwrap();
-        let _ = vector.push(15u32).unwrap();
-        let _ = vector.push(20u32).unwrap();
+        vector.push(1u32).unwrap();
+        vector.push(5u32).unwrap();
+        vector.push(10u32).unwrap();
+        vector.push(15u32).unwrap();
+        vector.push(20u32).unwrap();
 
         // Filter all numbers > 7
         let result: Vec<u32> = vector.filter(|&n| n > 7).unwrap().collect();
@@ -723,7 +723,7 @@ mod tests {
 
     #[test]
     fn test_vector_get_with_max_index() {
-        let vector = Root::new(|| Vector::<String>::new());
+        let vector = Root::new(Vector::<String>::new);
 
         // Accessing with usize::MAX should return error due to overflow protection
         let result = vector.get(usize::MAX);
@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn test_vector_update_with_max_index() {
-        let mut vector = Root::new(|| Vector::<String>::new());
+        let mut vector = Root::new(Vector::<String>::new);
 
         // Updating with usize::MAX should return error due to overflow protection
         let result = vector.update(usize::MAX, "test".to_owned());

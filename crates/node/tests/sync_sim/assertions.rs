@@ -267,8 +267,7 @@ mod tests {
         let div = divergence_percentage(&a, &b);
         assert!(
             (div - 1.0).abs() < 0.001,
-            "Expected 100% divergence for conflicting content, got {}",
-            div
+            "Expected 100% divergence for conflicting content, got {div}"
         );
     }
 

@@ -70,8 +70,7 @@ fn test_various_crdt_types_preserved() {
 
         assert!(
             node.storage().has_entity(Id::new(entity_id.0)),
-            "Entity with {:?} should be stored",
-            crdt_type
+            "Entity with {crdt_type:?} should be stored"
         );
     }
 }
@@ -160,7 +159,7 @@ fn test_custom_type_returns_wasm_required() {
         Err(MergeError::WasmRequired { type_name }) => {
             assert_eq!(type_name, "MyApp::Counter", "Type name should be preserved");
         }
-        other => panic!("Expected WasmRequired, got {:?}", other),
+        other => panic!("Expected WasmRequired, got {other:?}"),
     }
 }
 
@@ -176,12 +175,11 @@ fn test_collection_types_return_incoming() {
         CrdtType::vector("u64"),
     ] {
         let result = merge_by_crdt_type(&crdt_type, &existing, &incoming);
-        assert!(result.is_ok(), "{:?} should succeed", crdt_type);
+        assert!(result.is_ok(), "{crdt_type:?} should succeed");
         assert_eq!(
             result.unwrap(),
             incoming,
-            "{:?} should return incoming",
-            crdt_type
+            "{crdt_type:?} should return incoming"
         );
     }
 }
@@ -196,7 +194,6 @@ fn test_corrupted_data_returns_serialization_error() {
 
     assert!(
         matches!(result, Err(MergeError::SerializationError(_))),
-        "Corrupted data should return SerializationError, got {:?}",
-        result
+        "Corrupted data should return SerializationError, got {result:?}"
     );
 }

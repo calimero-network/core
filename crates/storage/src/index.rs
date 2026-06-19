@@ -802,7 +802,7 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(parent_index
             .children
             .as_ref()
-            .map_or(false, |c| !c.is_empty()))
+            .is_some_and(|c| !c.is_empty()))
     }
 
     /// Recalculates ancestor hashes recursively up to root.
@@ -861,7 +861,7 @@ impl<S: StorageAdaptor> Index<S> {
                                 target: "storage::merkle",
                                 child_id = %current_id,
                                 old_child_hash = %hex::encode(child.merkle_hash()),
-                                new_child_hash = %hex::encode(&new_child_hash),
+                                new_child_hash = %hex::encode(new_child_hash),
                                 "ROOT MERKLE: Child hash updated"
                             );
                         }
@@ -882,8 +882,8 @@ impl<S: StorageAdaptor> Index<S> {
                 info!(
                     target: "storage::merkle",
                     parent_id = %parent_id,
-                    old_full_hash = %hex::encode(&old_full_hash),
-                    new_full_hash = %hex::encode(&parent_index.full_hash),
+                    old_full_hash = %hex::encode(old_full_hash),
+                    new_full_hash = %hex::encode(parent_index.full_hash),
                     children_count,
                     "ROOT MERKLE: Root hash recalculated from ancestor"
                 );
@@ -1022,10 +1022,10 @@ impl<S: StorageAdaptor> Index<S> {
             info!(
                 target: "storage::merkle",
                 %id,
-                old_own_hash = %hex::encode(&old_own_hash),
-                new_own_hash = %hex::encode(&merkle_hash),
-                old_full_hash = %hex::encode(&old_full_hash),
-                new_full_hash = %hex::encode(&index.full_hash),
+                old_own_hash = %hex::encode(old_own_hash),
+                new_own_hash = %hex::encode(merkle_hash),
+                old_full_hash = %hex::encode(old_full_hash),
+                new_full_hash = %hex::encode(index.full_hash),
                 children_count,
                 children_hashes = ?children_hashes,
                 "ROOT MERKLE: Hash update for root entity"

@@ -19,13 +19,11 @@
 //! Collapsing these into `Option<GroupMemberRole>` (as the legacy
 //! `get_member_role` API does) makes "forgot to check" a silent runtime bug;
 //! [`MembershipStatus`] makes it a non-exhaustive-match warning.
-use crate::{ApplyError, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository};
+use crate::{ApplyError, GroupKeyring, MembershipRepository, NamespaceRepository};
 use std::collections::{HashSet, VecDeque};
 
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
-use calimero_context_config::types::{
-    ContextGroupId, GovernanceParentEdge, MAX_GOVERNANCE_DAG_HEADS,
-};
+use calimero_context_config::types::{ContextGroupId, MAX_GOVERNANCE_DAG_HEADS};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -1024,12 +1022,12 @@ mod tests {
             target_application_id: ApplicationId::from([0u8; 32]),
             upgrade_policy: UpgradePolicy::LazyOnAccess,
             created_at: 0,
-            admin_identity: admin.into(),
-            owner_identity: admin.into(),
+            admin_identity: admin,
+            owner_identity: admin,
             migration: None,
             auto_join: false,
         };
-        MetaRepository::new(&store)
+        crate::MetaRepository::new(&store)
             .save(&group_id, &meta)
             .expect("save_group_meta");
 

@@ -48,9 +48,7 @@ use tracing::{debug, info, warn};
 
 use calimero_governance_store;
 use calimero_governance_store::op_events::{self, OpEvent};
-use calimero_governance_store::{
-    MembershipPath, MembershipRepository, MetaRepository, NamespaceRepository,
-};
+use calimero_governance_store::{MembershipPath, MembershipRepository, NamespaceRepository};
 
 /// Token-bucket rate limit for auto-follow emissions.
 ///

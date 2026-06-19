@@ -2030,7 +2030,7 @@ fn settle_snapshot_activation(
     };
 
     let mut handle = store.handle();
-    let resync_key = calimero_store::key::ContextResyncRequested::new(context_id.into());
+    let resync_key = calimero_store::key::ContextResyncRequested::new(context_id);
     // Non-resync snapshots (bootstrap, crash recovery) leave the binding to the
     // lazy gate — see the doc above.
     if !matches!(handle.get(&resync_key), Ok(Some(()))) {
@@ -2044,7 +2044,7 @@ fn settle_snapshot_activation(
         warn!(%context_id, %err, "failed to clear resync marker after snapshot");
     }
     if let Err(err) = handle.delete(&calimero_store::key::ContextMigrationFailed::new(
-        context_id.into(),
+        context_id,
     )) {
         warn!(%context_id, %err, "failed to clear migration-failed marker after resync");
     }
@@ -2724,12 +2724,12 @@ mod tests {
         let mut handle = store.handle();
         handle
             .put(
-                &key::ContextMigrationFailed::new(ctx.into()),
+                &key::ContextMigrationFailed::new(ctx),
                 &ContextMigrationFailed { kind: 3 },
             )
             .unwrap();
         handle
-            .put(&key::ContextResyncRequested::new(ctx.into()), &())
+            .put(&key::ContextResyncRequested::new(ctx), &())
             .unwrap();
         drop(handle);
 
@@ -2743,14 +2743,14 @@ mod tests {
         let handle = store.handle();
         assert!(
             handle
-                .get(&key::ContextMigrationFailed::new(ctx.into()))
+                .get(&key::ContextMigrationFailed::new(ctx))
                 .unwrap()
                 .is_none(),
             "stranded marker must be cleared"
         );
         assert!(
             handle
-                .get(&key::ContextResyncRequested::new(ctx.into()))
+                .get(&key::ContextResyncRequested::new(ctx))
                 .unwrap()
                 .is_none(),
             "resync marker must be cleared"
@@ -2802,7 +2802,7 @@ mod tests {
         // Resync marker set ⇒ heal returns the namespace root to refresh.
         store
             .handle()
-            .put(&key::ContextResyncRequested::new(ctx.into()), &())
+            .put(&key::ContextResyncRequested::new(ctx), &())
             .unwrap();
         assert_eq!(
             settle_snapshot_activation(&store, ctx, None),
@@ -2911,7 +2911,7 @@ mod tests {
         register_context_in_group(&store, &gid, &ctx).unwrap();
         store
             .handle()
-            .put(&key::ContextResyncRequested::new(ctx.into()), &())
+            .put(&key::ContextResyncRequested::new(ctx), &())
             .unwrap();
 
         settle_snapshot_activation(&store, ctx, Some(BEHIND_KEY));
@@ -2963,12 +2963,12 @@ mod tests {
         let mut handle = store.handle();
         handle
             .put(
-                &key::ContextMeta::new(ctx.into()),
+                &key::ContextMeta::new(ctx),
                 &ContextMeta::new(key::ApplicationMeta::new(old_app), [0u8; 32], vec![], None),
             )
             .unwrap();
         handle
-            .put(&key::ContextResyncRequested::new(ctx.into()), &())
+            .put(&key::ContextResyncRequested::new(ctx), &())
             .unwrap();
         drop(handle);
 
@@ -2976,7 +2976,7 @@ mod tests {
 
         let meta = store
             .handle()
-            .get(&key::ContextMeta::new(ctx.into()))
+            .get(&key::ContextMeta::new(ctx))
             .unwrap()
             .unwrap();
         assert_eq!(

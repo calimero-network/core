@@ -856,7 +856,7 @@ async fn fetch_from_phala(
     // 2) Create report_data with challenge nonce in [0..32] and SHA256(peer_id) in [32..64].
     let peer_id_hash = hash_peer_id(peer_id);
     debug!(
-        peer_id_hash = %hex::encode(&peer_id_hash),
+        peer_id_hash = %hex::encode(peer_id_hash),
         "Generated peer ID hash for attestation"
     );
 
@@ -930,10 +930,7 @@ fn build_kms_http_client(phala_config: &PhalaKmsConfig) -> Result<reqwest::Clien
         // Intentional sync I/O: this path is executed during startup preflight
         // key-fetch/probe setup and keeps client construction fail-closed.
         let ca_pem = std::fs::read(ca_cert_path).with_context(|| {
-            format!(
-                "Failed to read tee.kms.phala.tls.ca_cert_path at {}",
-                ca_cert_path
-            )
+            format!("Failed to read tee.kms.phala.tls.ca_cert_path at {ca_cert_path}")
         })?;
         let cert = reqwest::Certificate::from_pem(&ca_pem)
             .context("Failed to parse tee.kms.phala.tls.ca_cert_path as PEM certificate")?;
@@ -954,16 +951,10 @@ fn build_kms_http_client(phala_config: &PhalaKmsConfig) -> Result<reqwest::Clien
 
             // Intentional sync I/O for startup-only TLS material loading.
             let client_cert_pem = std::fs::read(client_cert_path).with_context(|| {
-                format!(
-                    "Failed to read tee.kms.phala.tls.client_cert_path at {}",
-                    client_cert_path
-                )
+                format!("Failed to read tee.kms.phala.tls.client_cert_path at {client_cert_path}")
             })?;
             let client_key_pem = std::fs::read(client_key_path).with_context(|| {
-                format!(
-                    "Failed to read tee.kms.phala.tls.client_key_path at {}",
-                    client_key_path
-                )
+                format!("Failed to read tee.kms.phala.tls.client_key_path at {client_key_path}")
             })?;
 
             let mut identity_pem =
@@ -1175,26 +1166,17 @@ fn load_external_attestation_policy(
 ) -> Result<ExternalKmsAttestationPolicy> {
     // Intentional sync I/O: this path is used during startup preflight only.
     let policy_raw = std::fs::read_to_string(policy_path).with_context(|| {
-        format!(
-            "Failed to read external KMS attestation policy file at {}",
-            policy_path
-        )
+        format!("Failed to read external KMS attestation policy file at {policy_path}")
     })?;
 
     serde_json::from_str::<ExternalKmsAttestationPolicy>(&policy_raw).with_context(|| {
-        format!(
-            "Failed to parse external KMS attestation policy JSON at {}",
-            policy_path
-        )
+        format!("Failed to parse external KMS attestation policy JSON at {policy_path}")
     })
 }
 
 fn canonicalize_external_policy_path(policy_path: &Utf8Path) -> Result<Utf8PathBuf> {
     let canonical_path = std::fs::canonicalize(policy_path).with_context(|| {
-        format!(
-            "Failed to canonicalize external KMS attestation policy path at {}",
-            policy_path
-        )
+        format!("Failed to canonicalize external KMS attestation policy path at {policy_path}")
     })?;
     Utf8PathBuf::from_path_buf(canonical_path).map_err(|path| {
         eyre::eyre!(

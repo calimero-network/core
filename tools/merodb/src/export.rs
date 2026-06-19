@@ -108,24 +108,21 @@ fn try_decode_with_field(
             };
             decode_map_entry(entry_bytes, &map_field, manifest)
                 .ok()
-                .map(|decoded| add_index_metadata(decoded, index))
-                .flatten()
+                .and_then(|decoded| add_index_metadata(decoded, index))
         }
         TypeRef::Collection {
             collection: CollectionType::List { items },
             ..
         } => decode_list_entry(entry_bytes, field, items, manifest)
             .ok()
-            .map(|decoded| add_index_metadata(decoded, index))
-            .flatten(),
+            .and_then(|decoded| add_index_metadata(decoded, index)),
         TypeRef::Collection {
             collection: CollectionType::Record { .. },
             crdt_type,
             inner_type,
         } => decode_record_entry(entry_bytes, field, crdt_type, inner_type, manifest)
             .ok()
-            .map(|decoded| add_index_metadata(decoded, index))
-            .flatten(),
+            .and_then(|decoded| add_index_metadata(decoded, index)),
         _ => None,
     }
 }
@@ -215,20 +212,17 @@ fn try_decode_collection_entry_from_index(
     // First, try to match by field_name if available (most direct and efficient)
     if let Some(ref field_name) = index.metadata.field_name {
         eprintln!(
-            "[try_decode_collection_entry_from_index] Using field_name from metadata: {}",
-            field_name
+            "[try_decode_collection_entry_from_index] Using field_name from metadata: {field_name}"
         );
         if let Some(field) = record_fields.iter().find(|f| f.name == *field_name) {
             eprintln!(
-                "[try_decode_collection_entry_from_index] Found matching field by name: {}",
-                field_name
+                "[try_decode_collection_entry_from_index] Found matching field by name: {field_name}"
             );
             // Try to decode with this specific field
             return try_decode_with_field(&entry_bytes, field, index, manifest);
         } else {
             eprintln!(
-                "[try_decode_collection_entry_from_index] Field name '{}' not found in schema, falling back to all fields",
-                field_name
+                "[try_decode_collection_entry_from_index] Field name '{field_name}' not found in schema, falling back to all fields"
             );
         }
     }
@@ -691,7 +685,7 @@ fn decode_state_entry(
             "created_at": index.metadata.created_at,
             "updated_at": *index.metadata.updated_at,
             "field_name": index.metadata.field_name,
-            "crdt_type": index.metadata.crdt_type.as_ref().map(|c| format!("{:?}", c)),
+            "crdt_type": index.metadata.crdt_type.as_ref().map(|c| format!("{c:?}")),
             "deleted_at": index.deleted_at
         }));
     } else {

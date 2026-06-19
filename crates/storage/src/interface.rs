@@ -420,9 +420,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// if no rotation has been recorded yet (the parent map does not exist).
     pub fn load_rotation_log_child(anchor: Id) -> Option<crate::rotation_log::RotationLog> {
         let map_id = Self::rotation_log_child_id(anchor);
-        if S::storage_read(Key::Entry(map_id)).is_none() {
-            return None;
-        }
+        S::storage_read(Key::Entry(map_id))?;
         let map = Self::rotation_log_map(anchor);
         let mut entries: Vec<crate::rotation_log::RotationLogEntry> = map
             .entries()
@@ -481,7 +479,7 @@ impl<S: StorageAdaptor> Interface<S> {
             // only its id), so every node that materialises the parent stores
             // the same bytes and the same `own_hash`.
             let empty = to_vec(&Self::rotation_log_map(anchor))
-                .map_err(|e| StorageError::SerializationError(e.into()))?;
+                .map_err(StorageError::SerializationError)?;
             let _ = Self::save_raw(map_id, empty, meta)?;
         }
         Ok(map_id)
@@ -940,7 +938,7 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(false);
         }
 
-        let data = to_vec(child).map_err(|e| StorageError::SerializationError(e.into()))?;
+        let data = to_vec(child).map_err(StorageError::SerializationError)?;
 
         let own_hash = Sha256::digest(&data).into();
 
@@ -1779,7 +1777,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                     None => return Err(StorageError::InvalidSignature),
                                 };
                                 // Operation-granularity gate: deletes need DELETE.
-                                Self::enforce_op_mask(&signer, OpMask::DELETE, &existing_writers)?;
+                                Self::enforce_op_mask(&signer, OpMask::DELETE, existing_writers)?;
 
                                 // Replay protection (per-entity monotonic nonce).
                                 //
@@ -2225,7 +2223,7 @@ impl<S: StorageAdaptor> Interface<S> {
         else {
             return None;
         };
-        let is_rotation = pre_apply_writers.map_or(true, |stored| stored != writers);
+        let is_rotation = pre_apply_writers != Some(writers);
         if !is_rotation {
             return None;
         }
@@ -2819,7 +2817,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 return Ok(());
             }
 
-            let data = to_vec(&root).map_err(|e| StorageError::SerializationError(e.into()))?;
+            let data = to_vec(&root).map_err(StorageError::SerializationError)?;
 
             Self::save_raw(id, data, root.element().metadata.clone())?
         } else {
@@ -2858,7 +2856,7 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(false);
         }
 
-        let data = to_vec(entity).map_err(|e| StorageError::SerializationError(e.into()))?;
+        let data = to_vec(entity).map_err(StorageError::SerializationError)?;
 
         let Some(hash) = Self::save_raw(entity.id(), data, entity.element().metadata.clone())?
         else {
@@ -2966,9 +2964,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         target: "storage::root_merge",
                         %id,
                         existing_len = existing_data.len(),
-                        existing_hash = %hex::encode(&existing_hash),
+                        existing_hash = %hex::encode(existing_hash),
                         incoming_len = data.len(),
-                        incoming_hash = %hex::encode(&incoming_hash),
+                        incoming_hash = %hex::encode(incoming_hash),
                         existing_created_at = last_metadata.created_at,
                         existing_updated_at = *last_metadata.updated_at,
                         incoming_updated_at,
@@ -2987,7 +2985,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         target: "storage::root_merge",
                         %id,
                         merged_len = merged.len(),
-                        merged_hash = %hex::encode(&merged_hash),
+                        merged_hash = %hex::encode(merged_hash),
                         same_as_existing = (merged_hash == existing_hash),
                         same_as_incoming = (merged_hash == incoming_hash),
                         "ROOT MERGE: Completed CRDT merge"
@@ -2998,7 +2996,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         target: "storage::root_merge",
                         %id,
                         incoming_len = data.len(),
-                        incoming_hash = %hex::encode(&incoming_hash),
+                        incoming_hash = %hex::encode(incoming_hash),
                         "ROOT MERGE: No existing data, using incoming directly"
                     );
                     data.to_vec()
@@ -3039,7 +3037,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     target: "storage::root_merge",
                     %id,
                     incoming_len = data.len(),
-                    incoming_hash = %hex::encode(&incoming_hash),
+                    incoming_hash = %hex::encode(incoming_hash),
                     "ROOT MERGE: First time creating root entity"
                 );
                 <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata.clone()))?;
@@ -3119,8 +3117,8 @@ impl<S: StorageAdaptor> Interface<S> {
             info!(
                 target: "storage::root_merge",
                 %id,
-                own_hash = %hex::encode(&own_hash),
-                full_hash = %hex::encode(&full_hash),
+                own_hash = %hex::encode(own_hash),
+                full_hash = %hex::encode(full_hash),
                 "ROOT MERGE: Final hashes after Merkle tree update"
             );
         }

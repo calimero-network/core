@@ -272,7 +272,7 @@ pub fn decode_rotation_log_entry_child(
 #[expect(unused_qualifications, reason = "AtomicUnit macro is unsanitized")]
 type StoreResult<T> = std::result::Result<T, StoreError>;
 
-static ROOT_ID: LazyLock<Id> = LazyLock::new(|| Id::root());
+static ROOT_ID: LazyLock<Id> = LazyLock::new(Id::root);
 
 /// The fixed id under which an app's `Root<T>` value lives — a single
 /// child of [`ROOT_ID`]. Mirrors [`root::Root::entry_id`] but available
@@ -319,7 +319,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// Creates a new collection.
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn new(id: Option<Id>) -> Self {
-        let id = id.unwrap_or_else(|| Id::random());
+        let id = id.unwrap_or_else(Id::random);
 
         let mut this = Self {
             children_ids: RefCell::new(None),
@@ -353,7 +353,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         crdt_type: CrdtType,
         writers: std::collections::BTreeSet<calimero_primitives::identity::PublicKey>,
     ) -> Self {
-        let id = id.unwrap_or_else(|| Id::random());
+        let id = id.unwrap_or_else(Id::random);
 
         let mut storage = match field_name {
             Some(name) => Element::new_with_field_name_and_crdt_type(

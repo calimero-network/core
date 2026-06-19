@@ -212,7 +212,7 @@ fn test_lww_with_different_types() {
     // Test with bool
     let mut flag = LwwRegister::new(false);
     flag.set(true);
-    assert_eq!(*flag, true);
+    assert!(*flag);
 
     // Test with Vec
     let mut vec = LwwRegister::new(vec![1, 2, 3]);
@@ -245,7 +245,7 @@ fn test_lww_display() {
     env::reset_for_testing();
 
     let reg = LwwRegister::new("Display Test".to_string());
-    assert_eq!(format!("{}", reg), "Display Test");
+    assert_eq!(format!("{reg}"), "Display Test");
 }
 
 #[test]

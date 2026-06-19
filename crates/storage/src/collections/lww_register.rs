@@ -285,7 +285,6 @@ mod merge_mode_tests {
     use crate::collections::{Root, UnorderedMap};
     use crate::env;
     use crate::logical_clock::HybridTimestamp;
-    use crate::store::MainStorage;
 
     #[test]
     fn lww_new_zeroes_timestamp_and_node_id_in_merge_mode() {
@@ -376,7 +375,7 @@ mod merge_mode_tests {
         env::set_executor_id([9; 32]);
 
         let total: LwwRegister<u64> = env::with_merge_mode(|| {
-            let mut map = Root::new(|| UnorderedMap::<String, LwwRegister<u64>>::new());
+            let mut map = Root::new(UnorderedMap::<String, LwwRegister<u64>>::new);
             map.insert("a".to_string(), 1_u64.into()).unwrap();
             map.insert("b".to_string(), 2_u64.into()).unwrap();
             assert!(

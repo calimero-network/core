@@ -80,7 +80,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
 
                 // Unsubscribe if this node's identity was removed
                 if let Some(self_pk) = self_identity {
-                    if members.iter().any(|pk| *pk == self_pk) {
+                    if members.contains(&self_pk) {
                         let _ = node_client.unsubscribe_namespace(group_id.to_bytes()).await;
                     }
                 }

@@ -813,11 +813,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                     .await?;
 
                 let duration = start.elapsed().as_secs_f64();
-                let status = outcome
-                    .returns
-                    .is_ok()
-                    .then_some("success")
-                    .unwrap_or("failure");
+                let status = if outcome.returns.is_ok() {
+                    "success"
+                } else {
+                    "failure"
+                };
 
                 // Update execution count metrics
                 if let Some(execution_count) = execution_count {
@@ -833,7 +833,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 // Update execution duration metrics
                 if let Some(execution_duration) = execution_duration {
-                    let _ignored = execution_duration
+                    execution_duration
                         .clone()
                         .get_or_create(&ExecutionLabels {
                             context_id: context_id.to_string(),
@@ -1950,7 +1950,7 @@ async fn internal_execute(
             };
 
             // The artifact was `StorageDelta::Actions`.
-            if actions.len() != 0 {
+            if !actions.is_empty() {
                 info!(
                     context_id = %context.id,
                     actions_count = actions.len(),
@@ -1980,7 +1980,7 @@ async fn internal_execute(
                 // change (variant flip, writer-set or owner change),
                 // so the merkle hash and the entity's
                 // access-control triple stay invariant.
-                persist_signed_signatures(&store, &context, identity_private_key, &actions)
+                persist_signed_signatures(&store, context, identity_private_key, &actions)
                     .wrap_err("Failed to persist signed signature_data after execute")?;
 
                 // Re-serialize the *signed* actions into a new artifact
@@ -2388,7 +2388,7 @@ fn substitute_aliases_in_payload(
             let public_key = node_client
                 .resolve_alias(*alias, Some(context_id))
                 .map_err(|_| ExecuteError::InternalError)?
-                .ok_or_else(|| ExecuteError::AliasResolutionFailed { alias: *alias })?;
+                .ok_or(ExecuteError::AliasResolutionFailed { alias: *alias })?;
 
             // Substitution hot path: bs58-encode the 32-byte key into a
             // stack buffer rather than allocating a fresh String per alias.

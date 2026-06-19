@@ -180,7 +180,7 @@ where
         let response = self
             .connection
             .post(
-                &format!("admin-api/alias/create/identity/{}", context_id),
+                &format!("admin-api/alias/create/identity/{context_id}"),
                 request,
             )
             .await?;
@@ -214,7 +214,7 @@ where
         let prefix = "admin-api/alias/create";
         let kind = T::KIND;
         let scope_path = T::scoped(scope.as_ref())
-            .map(|scope| format!("/{}", scope))
+            .map(|scope| format!("/{scope}"))
             .unwrap_or_default();
 
         let body = CreateAliasRequest {
@@ -240,7 +240,7 @@ where
         let prefix = "admin-api/alias/delete";
         let kind = T::KIND;
         let scope_path = T::scoped(scope.as_ref())
-            .map(|scope| format!("/{}", scope))
+            .map(|scope| format!("/{scope}"))
             .unwrap_or_default();
 
         let response = self
@@ -257,7 +257,7 @@ where
         let prefix = "admin-api/alias/list";
         let kind = T::KIND;
         let scope_path = T::scoped(scope.as_ref())
-            .map(|scope| format!("/{}", scope))
+            .map(|scope| format!("/{scope}"))
             .unwrap_or_default();
 
         let response = self
@@ -278,7 +278,7 @@ where
         let prefix = "admin-api/alias/lookup";
         let kind = T::KIND;
         let scope_path = T::scoped(scope.as_ref())
-            .map(|scope| format!("/{}", scope))
+            .map(|scope| format!("/{scope}"))
             .unwrap_or_default();
 
         let response = self

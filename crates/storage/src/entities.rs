@@ -348,7 +348,7 @@ impl Element {
     /// Use sparingly - prefer `set_updated_at()` for Law of Demeter compliance.
     #[must_use]
     pub fn updated_at_mut(&mut self) -> &mut u64 {
-        &mut *self.metadata.updated_at
+        &mut self.metadata.updated_at
     }
 
     /// Helper to set the storage domain to `User`.

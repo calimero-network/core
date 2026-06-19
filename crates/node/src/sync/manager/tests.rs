@@ -213,10 +213,7 @@ fn test_max_depth_calculation() {
 
         assert!(
             max_depth >= expected_min_depth,
-            "entity_count={} should have max_depth >= {}, got {}",
-            entity_count,
-            expected_min_depth,
-            max_depth
+            "entity_count={entity_count} should have max_depth >= {expected_min_depth}, got {max_depth}"
         );
     }
 }
