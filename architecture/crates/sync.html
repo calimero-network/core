@@ -242,6 +242,26 @@
 <h2>Group Governance Sync</h2>
 <p style="margin-bottom:18px;">Governance operations form a separate DAG and use dedicated sync mechanisms. Three complementary approaches ensure governance state converges across all group members.</p>
 
+<div class="cb" style="margin-bottom:18px; border-left:3px solid #f59e0b; padding-left:14px;">
+  <h4 style="color:#f59e0b; margin-bottom:8px;">Projection-Authoritative Membership on the Gossip Path</h4>
+  <p style="margin-bottom:10px;">When the live membership resolver rejects a delta (<span class="code">DeltaAuthOutcome::MembershipReject</span>), the node no longer drops it immediately. Instead it calls <span class="code">projection_member_at_cut_authoritative</span>, which first refreshes the projection fold via <span class="code">refresh_projection_for_cut</span> and then reads membership with the authoritative (complete-ancestry, no materialized-fallback) check. If the projection returns <span class="code">Some(true)</span> the delta falls through to the normal apply path; <span class="code">None</span> or <span class="code">Some(false)</span> still reject.</p>
+  <p style="margin-bottom:10px;">This makes the <strong>projection the final arbiter of membership</strong> on the primary gossip ingestion path — live's result is a cross-check, not the last word. A divergence-gate warning (<span class="code">unified_projection_divergence</span> / <span class="code">membership-cut-grant</span>) is emitted whenever the projection overrides a live reject, and <span class="code">observe_peer_identity</span> is called on the grant path so projection-only peers continue to feed sync peer selection.</p>
+  <p><strong>Scope:</strong> This override applies only to the primary gossip path (<span class="code">handle_state_delta</span>). Other <span class="code">MembershipReject</span> sites — sync delta-request and parent-fetch replay — intentionally remain live-only.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Grant path: refresh fold then authoritative read</span><br>
+<span class="kw">pub fn</span> <span class="field">projection_member_at_cut_authoritative</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;ctx: &amp;<span class="ty">DeltaContext</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;cut: &amp;<span class="ty">Cut</span>,<br>
+) -&gt; <span class="ty">Option</span>&lt;bool&gt;<br><br>
+<span class="comment">// Shared fold refresh (no author_id, no return value)</span><br>
+<span class="kw">pub fn</span> <span class="field">refresh_projection_for_cut</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;ctx: &amp;<span class="ty">DeltaContext</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;cut: &amp;<span class="ty">Cut</span>,<br>
+)
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;">Both <span class="code">projection_member_at_cut</span> (deny arm) and <span class="code">projection_member_at_cut_authoritative</span> (grant arm) call <span class="code">refresh_projection_for_cut</span> so both arms see the same fold state.</p>
+</div>
+
 <div class="g2" style="margin-bottom:16px;">
   <div class="cb">
     <h4 style="color:#10b981;">Real-time Gossip</h4>

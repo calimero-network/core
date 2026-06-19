@@ -109,6 +109,19 @@ membership at query time via the anchor-root membership + subgroup tree + visibi
 means inherited access is automatically revoked when the member is removed from the root group
 and restored if they rejoin, with no over-grant surviving root-anchor removal.
 </p>
+<p>
+This behavior is pinned by three assertions in
+<code>projection_membership_equivalence.rs</code>: (1)
+<code>projection_matches_live_across_inherited_join_and_root_removal</code> asserts that after
+an inherited join, <code>member_at_cut_authoritative</code> returns <code>Some(true)</code>;
+(2) the same test asserts that after a root removal that the live store rejects,
+<code>member_at_cut_authoritative</code> must <em>not</em> return <code>Some(true)</code> — the
+over-grant guard; (3)
+<code>projection_matches_live_across_leave_and_rejoin_inheritance</code> asserts that after a
+full leave-and-rejoin cycle, <code>member_at_cut_authoritative</code> correctly restores access.
+Together these tests ensure the authoritative grant resolver agrees with the live store across
+all three scenarios and never over-grants on root-anchor removal.
+</p>
 
 <h3>Visibility (Open vs Restricted)</h3>
 <p>
