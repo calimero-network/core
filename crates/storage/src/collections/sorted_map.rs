@@ -1099,6 +1099,8 @@ where
 
 /// A view into a single entry in a [`SortedMap`], which may either be occupied
 /// or vacant. Returned by [`SortedMap::entry`].
+#[must_use = "an Entry does nothing on its own; call `.or_insert(…)` / `.or_default()` \
+              (or match it) to read or modify the slot — dropping it is a no-op"]
 #[derive(Debug)]
 pub enum Entry<'a, K, V, S>
 where
