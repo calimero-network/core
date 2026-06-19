@@ -1038,19 +1038,38 @@ pub async fn handle_state_delta(
             // would over-grant, to size folding the deny-list (full F4b grant
             // side). NOTE: a hit here does NOT trip the hard cutover gate.
             if let Some(gp) = governance_position.as_ref() {
-                let projected = node_state.read_scope_projections().member_at_cut(
-                    datastore,
-                    group,
-                    &author_id,
-                    &gp.governance_dag_heads,
-                );
+                let heads = &gp.governance_dag_heads;
+                let proj = node_state.read_scope_projections();
+                let projected = proj.member_at_cut(datastore, group, &author_id, heads);
                 if projected == Some(true) {
+                    // Diagnose WHICH projection path over-grants:
+                    //   decision_group_size > 0 / author_in_any → the at-cut walk
+                    //   (folded membership) granted (forward-only over an old cut);
+                    //   decision_group_in_view=false → the wholly-unfolded
+                    //   materialized fallback (current-state role_of) granted.
+                    let (
+                        backfilled,
+                        ns_resolved,
+                        log_len,
+                        heads_in_log,
+                        author_in_any,
+                        decision_group_in_view,
+                        decision_group_size,
+                    ) = proj.cut_diagnostics(datastore, group, &author_id, heads);
                     warn!(
                         marker = "unified_projection_overauth",
                         plane = "membership-cut-reject",
                         group_id = ?group,
                         %author_id,
                         reason,
+                        ns_resolved,
+                        backfilled,
+                        log_len,
+                        heads_len = heads.len(),
+                        heads_in_log,
+                        author_in_any,
+                        decision_group_in_view,
+                        decision_group_size,
                         "projection would grant a write live rejected (deny-list not yet folded; not gated)"
                     );
                 }
