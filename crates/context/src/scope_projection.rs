@@ -42,6 +42,14 @@ use calimero_store::Store;
 
 use crate::governance_dag::signed_namespace_op_to_delta;
 
+/// Hard cap on ops collected in one backfill DAG walk ([`collect_namespace_ops`]).
+/// Bounds memory/CPU against a pathologically deep or corrupted persisted
+/// governance DAG (the `visited` set already prevents cycles, but not the
+/// allocation): hitting the cap leaves the namespace partially backfilled with a
+/// warning rather than OOM-ing the node. Set well above any real namespace's
+/// governance history — comfortably over the in-memory prune threshold (8192).
+const MAX_BACKFILL_OPS: usize = 100_000;
+
 /// Assemble an [`Op`] that **mirrors a source-DAG op**: its `id` and `parents`
 /// are the source delta's own id/parents, *not* a fresh [`Op::compute_id`]. This
 /// is deliberate — it makes the projection's op graph share an id space with the
@@ -434,6 +442,19 @@ impl ScopeProjections {
             if !visited.insert(id) {
                 continue;
             }
+            // Bound the walk: a corrupted/adversarial persisted DAG (or one far
+            // deeper than any real history) must not OOM the node. Stop with a
+            // warning and return what we have — a partial backfill is safe (the
+            // live feed keeps maintaining the projection; the authoritative-grant
+            // path independently checks `cut_ancestry_complete`).
+            if visited.len() > MAX_BACKFILL_OPS {
+                tracing::warn!(
+                    namespace = ?namespace_id,
+                    cap = MAX_BACKFILL_OPS,
+                    "projection backfill: op cap hit; returning partial walk"
+                );
+                break;
+            }
             let signed = match op_log.get_signed_op(id) {
                 Ok(Some(signed)) => signed,
                 // A referenced parent not present locally is a normal partial
@@ -499,12 +520,12 @@ impl ScopeProjections {
 
     /// Is `author` a member of `group` at the governance cut named by `heads`,
     /// per the projection? A **pure read** — the caller must have already
-    /// backfilled the group's namespace (via [`namespace_needing_backfill`] +
+    /// backfilled the group's namespace (via [`namespace_to_refresh`] +
     /// [`collect_namespace_ops`] + [`apply_backfill`]) so this can take `&self`
     /// and hold the projection lock only briefly. Returns the type-free `bool` so
     /// the node side needs no `authz`/`op` deps.
     ///
-    /// [`namespace_needing_backfill`]: Self::namespace_needing_backfill
+    /// [`namespace_to_refresh`]: Self::namespace_to_refresh
     /// [`collect_namespace_ops`]: Self::collect_namespace_ops
     /// [`apply_backfill`]: Self::apply_backfill
     #[must_use]
@@ -560,11 +581,19 @@ impl ScopeProjections {
         // membership reached this node as materialized `GroupMember` rows via
         // governance sync (or whose member ops this node can't decrypt), not as
         // foldable ops — so the op-log legitimately can't carry it, exactly like
-        // the live resolver's `heads_equal` materialized fast-path. Gated on the
-        // group being WHOLLY unfolded so it can't mask a real op-fold drop (which
-        // would leave the group's other members folded). This is the one
-        // remaining current-state read; the flip authorizes such writes off
-        // materialized state, as live does.
+        // the live resolver's `heads_equal` materialized fast-path. This is the
+        // one remaining current-state read (deny direction only — the
+        // authoritative grant path never uses it).
+        //
+        // The `wholly_unfolded` gate prevents masking ONLY for a group with zero
+        // folded members: a PARTIALLY-folded group (e.g. some members via
+        // cleartext Root ops, others via an encrypted channel this node can't
+        // decrypt) has `contains_key == true`, so the fallback is skipped and the
+        // un-folded members correctly surface as divergence. It does NOT mask a
+        // partial op-fold drop. (Caveat: `apply` drops an emptied group, so a
+        // group whose members were all removed via ops also reads as "unfolded" —
+        // acceptable here because this is the conservative deny-direction path,
+        // which errs toward member.)
         let group_wholly_unfolded = view.as_ref().is_none_or(|v| !v.groups.contains_key(&group));
         if group_wholly_unfolded
             && MembershipRepository::new(store)
