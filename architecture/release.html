@@ -51,6 +51,9 @@
 <div class="card gb">
 <h2>CI workflow</h2>
 <p>Pushes to <span class="code">master</span> run the main CI pipeline. The release workflow reads the version from root <span class="code">Cargo.toml</span> workspace metadata (<span class="code">cargo metadata</span>), builds <span class="code">merod</span> and <span class="code">meroctl</span> binaries for Linux and macOS, publishes workspace crates with <span class="code">cargo-workspaces</span>, and creates a GitHub release attaching those artifacts.</p>
+<p><strong>Clippy gate:</strong> The CI checks step runs clippy across the full workspace with warnings treated as errors:</p>
+<div class="typedef"><span class="field">cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings</span></div>
+<p>This covers all targets (binaries, libraries, tests, examples) and includes the feature-gated testing harness. Any clippy or rustc warning in any target fails CI. Run this command locally before pushing to avoid failures.</p>
 </div>
 
 <div class="card gc">
