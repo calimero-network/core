@@ -19,6 +19,10 @@ use thiserror::Error as ThisError;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_op::{Op, OpPayload, ScopeId};
+use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::PublicKey;
+use calimero_storage::address::Id;
+use calimero_storage::entities::OpMask;
 
 /// `CAN_JOIN_OPEN_SUBGROUPS` capability bit — gates inherited membership into an
 /// open subgroup (mirrors the live `MemberCapabilities` constant).
@@ -26,10 +30,6 @@ const CAN_JOIN_OPEN_SUBGROUPS: u32 = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS
 /// Max subgroup-tree depth the inheritance walk traverses (mirrors the live
 /// `MAX_NAMESPACE_DEPTH`).
 const MAX_NAMESPACE_DEPTH: usize = 16;
-use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
-use calimero_storage::address::Id;
-use calimero_storage::entities::OpMask;
 
 /// Why an op was refused. One rejection type for every plane — the caller
 /// doesn't have to know which plane said no.
