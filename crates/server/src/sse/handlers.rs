@@ -213,6 +213,7 @@ pub async fn handle_subscription(
 /// - Resume their session with the same session ID and subscriptions
 /// - Continue receiving new events from the current counter value
 /// - **NOT** receive events that occurred during disconnection (these are skipped)
+///
 /// Clients observing gaps in event IDs should re-query application state as needed.
 pub async fn sse_handler(
     Extension(state): Extension<Arc<ServiceState>>,

@@ -171,7 +171,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_missing_authorization_header() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let headers = HeaderMap::new();
 
         let result = token_manager.verify_token_from_headers(&headers).await;
@@ -186,7 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_bearer_token() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let mut headers = HeaderMap::new();
         headers.insert("Authorization", HeaderValue::from_static("Bearer "));
 
@@ -202,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bearer_prefix_only() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let mut headers = HeaderMap::new();
         headers.insert("Authorization", HeaderValue::from_static("Bearer"));
 
@@ -219,7 +219,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_authorization_scheme() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let mut headers = HeaderMap::new();
         headers.insert(
             "Authorization",
@@ -238,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_token_no_dots() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let mut headers = HeaderMap::new();
         headers.insert(
             "Authorization",
@@ -257,7 +257,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_token_single_dot() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let mut headers = HeaderMap::new();
         headers.insert(
             "Authorization",
@@ -276,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_token_invalid_base64() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let mut headers = HeaderMap::new();
         // Token with invalid base64 characters
         headers.insert(
@@ -296,7 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_token_valid_base64_invalid_json() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let mut headers = HeaderMap::new();
         // Base64 encoded non-JSON strings: "notjson", "alsonotjson", "signature"
         headers.insert(
@@ -316,7 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_with_extra_segments() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let mut headers = HeaderMap::new();
         headers.insert(
             "Authorization",
@@ -335,7 +335,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_with_unicode_characters() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let mut headers = HeaderMap::new();
         // Cannot put unicode directly in header value, but we can test with ASCII that looks suspicious
         headers.insert(
@@ -355,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_with_null_bytes() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let mut headers = HeaderMap::new();
         // Base64 encoded string with null bytes won't parse as valid JWT
         headers.insert("Authorization", HeaderValue::from_static("Bearer AA.AA.AA"));
@@ -367,7 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_extremely_long_token() {
-        let (storage, token_manager, _) = create_test_setup().await;
+        let (_storage, token_manager, _) = create_test_setup().await;
         let mut headers = HeaderMap::new();
         // Create a very long token (but still valid header format)
         let long_segment = "a".repeat(10000);

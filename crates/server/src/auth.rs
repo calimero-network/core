@@ -53,7 +53,6 @@ impl BundledAuth {
         self.app.state.auth_service.clone()
     }
 
-    #[must_use]
     pub fn into_router(self) -> Router {
         self.app.router
     }

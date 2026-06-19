@@ -48,7 +48,6 @@ impl AdminState {
     }
 }
 
-#[expect(clippy::print_stderr, reason = "Acceptable for CLI")]
 pub async fn start(
     config: ServerConfig,
     ctx_client: ContextClient,
