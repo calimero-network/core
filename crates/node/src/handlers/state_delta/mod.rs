@@ -763,23 +763,21 @@ pub(crate) async fn apply_authorized_state_delta(
 /// reads `member_at_cut`. Shared by the decision-site shadows (forward: does the
 /// projection see a member where live authorized; inverse: does it authorize
 /// where live rejected). `None` when no answer can be formed.
-fn projection_member_at_cut(
+/// Backfill / refresh the projection for `group`'s namespace so a subsequent
+/// at-cut read sees the ops cited by `heads`, WITHOUT holding the projection lock
+/// across the DAG walk (the governance apply path shares the lock). Gate under a
+/// brief READ lock, walk lock-free, take the WRITE lock only to ingest.
+///
+/// CRITICAL: the read guard MUST be bound to a `let` and dropped before the write
+/// lock is taken. Writing `if let Some(ns) = read().namespace_to_refresh()` keeps
+/// the read guard alive for the whole `if let` body (Rust temporary lifetime), so
+/// the `write()` inside would deadlock against the read held by this same thread.
+fn refresh_projection_for_cut(
     node_state: &crate::NodeState,
     datastore: &calimero_store::Store,
     group: calimero_context_config::types::ContextGroupId,
-    author_id: &calimero_primitives::identity::PublicKey,
     heads: &[[u8; 32]],
-) -> Option<bool> {
-    // Backfill / refresh WITHOUT holding the projection lock across the DAG walk
-    // (the governance apply path shares the lock). Gate under a brief READ lock,
-    // walk lock-free, take the WRITE lock only to ingest, then a READ for the
-    // compare.
-    //
-    // CRITICAL: the read guard MUST be bound to a `let` and dropped before the
-    // write lock is taken. Writing `if let Some(ns) = read().namespace_to_refresh()`
-    // keeps the read guard alive for the whole `if let` body (Rust temporary
-    // lifetime), so the `write()` inside would deadlock against the read held by
-    // this same thread.
+) {
     let needs_backfill = node_state
         .read_scope_projections()
         .namespace_to_refresh(datastore, group, heads);
@@ -790,9 +788,38 @@ fn projection_member_at_cut(
                 .apply_backfill(namespace_id, ops);
         }
     }
+}
+
+fn projection_member_at_cut(
+    node_state: &crate::NodeState,
+    datastore: &calimero_store::Store,
+    group: calimero_context_config::types::ContextGroupId,
+    author_id: &calimero_primitives::identity::PublicKey,
+    heads: &[[u8; 32]],
+) -> Option<bool> {
+    refresh_projection_for_cut(node_state, datastore, group, heads);
     node_state
         .read_scope_projections()
         .member_at_cut(datastore, group, author_id, heads)
+}
+
+/// The authoritative (grant-direction) read, refreshed first so a cold or stale
+/// projection isn't a spurious `None`/`Some(false)`. Shares
+/// [`refresh_projection_for_cut`] with the deny-direction
+/// [`projection_member_at_cut`] so both arms decide against an equally up-to-date
+/// fold; `None` (cut still not fully folded after refresh) and `Some(false)`
+/// remain safe — they fall through to live's reject and can never over-grant.
+fn projection_member_at_cut_authoritative(
+    node_state: &crate::NodeState,
+    datastore: &calimero_store::Store,
+    group: calimero_context_config::types::ContextGroupId,
+    author_id: &calimero_primitives::identity::PublicKey,
+    heads: &[[u8; 32]],
+) -> Option<bool> {
+    refresh_projection_for_cut(node_state, datastore, group, heads);
+    node_state
+        .read_scope_projections()
+        .member_at_cut_authoritative(datastore, group, author_id, heads)
 }
 
 pub async fn handle_state_delta(
@@ -1024,56 +1051,69 @@ pub async fn handle_state_delta(
             );
         }
         DeltaAuthOutcome::MembershipReject { group, reason } => {
-            // CO-AUTHORIZER (F4a, safe direction): the projection ADDS rejections
-            // (the Authorized arm above) but does NOT override live's
-            // membership-reject to GRANT. The grant direction (sole authority) is
-            // deferred: faithfully reproducing live's open-subgroup INHERITANCE
-            // model in the projection — for both directions and across
-            // leave/rejoin/remove — needs the full non-op subgroup tree +
-            // visibility + caps folded, which repeatedly traded an over-grant for
-            // an under-grant. Until that lands, reject (trust live) and keep an
-            // INFORMATIONAL, refresh-free readiness marker (NOT gated) sizing the
-            // gap via `member_at_cut_authoritative` (fold-complete at-cut only).
-            if let Some(gp) = governance_position.as_ref() {
-                let heads = &gp.governance_dag_heads;
-                let proj = node_state.read_scope_projections();
-                if proj.member_at_cut_authoritative(datastore, group, &author_id, heads)
-                    == Some(true)
-                {
-                    let (
-                        backfilled,
-                        ns_resolved,
-                        log_len,
-                        heads_in_log,
-                        author_in_any,
-                        decision_group_in_view,
-                        decision_group_size,
-                    ) = proj.cut_diagnostics(datastore, group, &author_id, heads);
-                    warn!(
-                        marker = "unified_projection_overauth",
-                        plane = "membership-cut-reject",
-                        group_id = ?group,
-                        %author_id,
-                        reason,
-                        ns_resolved,
-                        backfilled,
-                        log_len,
-                        heads_in_log,
-                        author_in_any,
-                        decision_group_in_view,
-                        decision_group_size,
-                        "projection would grant a write live rejected (grant direction deferred; not gated)"
-                    );
-                }
+            // SOLE AUTHORITY (grant direction): the projection is the authoritative
+            // membership decider; live's membership-reject here is the cross-check.
+            // If the projection AUTHORITATIVELY sees the author as a member at the
+            // cut, AUTHORIZE (fall through to apply), overriding live's reject.
+            //
+            // "Authoritatively" = `member_at_cut_authoritative`: grants ONLY when
+            // the COMPLETE cited ancestry is folded AND the at-cut inheritance walk
+            // confirms membership — never via the materialized fallback. With the
+            // open-subgroup inheritance fold now faithful (MemberJoinedOpen is a
+            // Noop derived by the walk), this matches live in both directions —
+            // cross-validated deterministically in
+            // calimero-context tests/projection_membership_equivalence.rs. `None`
+            // (cut not fully folded) and `Some(false)` fall through to the reject.
+            //
+            // Refreshes the projection first (shared with the deny arm) so a cold
+            // or stale fold doesn't spuriously abstain and drop a legitimate
+            // inherited-join write the gossip path would accept. `None`/`Some(false)`
+            // after refresh stay safe — they reject, never over-grant.
+            //
+            // A grant that disagrees with live trips the hard divergence gate
+            // (membership-cut-grant), so a wrong grant fails an e2e scenario AND the
+            // gate.
+            //
+            // SCOPE: the flip lands on the primary gossip path here first. The other
+            // `MembershipReject` sites (sync delta-request, parent-fetch replay) stay
+            // live-only for now and remain conservative — they DROP, which is
+            // recoverable: the same delta re-arrives via gossip (this path) or via
+            // hash-heartbeat-triggered snapshot sync, so a recovery-path drop cannot
+            // cause permanent divergence. They migrate once this path is validated.
+            let granted = governance_position.as_ref().is_some_and(|gp| {
+                projection_member_at_cut_authoritative(
+                    &node_state,
+                    datastore,
+                    group,
+                    &author_id,
+                    &gp.governance_dag_heads,
+                ) == Some(true)
+            });
+            if granted {
+                warn!(
+                    marker = "unified_projection_divergence",
+                    plane = "membership-cut-grant",
+                    group_id = ?group,
+                    %author_id,
+                    reason,
+                    "projection authorizes a write the live resolver rejected — proceeding (sole authority)"
+                );
+                // Record the (peer, identity) pair like the Authorized arm — a peer
+                // authorized solely by the projection must still feed anchor-preferred
+                // sync peer selection. The authoritative read returns no role, so
+                // observe without a membership annotation.
+                node_state.observe_peer_identity(source, author_id, None);
+                // Fall through to the apply path: the projection is authoritative.
+            } else {
+                warn!(
+                    %context_id,
+                    %author_id,
+                    delta_id = ?delta_id,
+                    reason,
+                    "cross-DAG check: rejecting state delta (projection concurs)"
+                );
+                return Ok(());
             }
-            warn!(
-                %context_id,
-                %author_id,
-                delta_id = ?delta_id,
-                reason,
-                "cross-DAG check: rejecting state delta"
-            );
-            return Ok(());
         }
         DeltaAuthOutcome::Reject(reason) => {
             // Structural / error reject (bypass attempt, edge on a non-group
