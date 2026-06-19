@@ -85,12 +85,42 @@ impl<T> LwwRegister<T> {
         &self.value
     }
 
-    /// Get a mutable reference to the value
+    /// Get a mutable reference to the value.
     ///
-    /// **WARNING:** Direct mutation bypasses timestamp updates!
-    /// Use `set()` instead for proper CRDT behavior.
+    /// **WARNING:** direct mutation through this reference bypasses the
+    /// timestamp update, so the write keeps a stale HLC stamp and last-write-wins
+    /// merge will not pick it up — replicas silently diverge. Prefer
+    /// [`value_mut`](LwwRegister::value_mut) (mutate in place, stamped on drop) or
+    /// [`set`](LwwRegister::set) (replace wholesale).
+    #[deprecated(
+        note = "bypasses the HLC stamp and silently breaks convergence; use `value_mut()` \
+                (in-place, stamped on drop) or `set()`"
+    )]
     pub fn get_mut(&mut self) -> &mut T {
         &mut self.value
+    }
+
+    /// Mutate the value in place, stamping a fresh HLC timestamp + node id when
+    /// the returned guard is dropped — the safe equivalent of mutating a plain
+    /// field, without the [`get_mut`](LwwRegister::get_mut) footgun.
+    ///
+    /// The guard derefs to `&mut T`, so you edit the value with ordinary
+    /// semantics; the stamp is applied once, on drop, and only if the value was
+    /// actually mutated (a guard used for reads only leaves the clock untouched).
+    /// In merge mode the stamp is zeroed for cross-node determinism, exactly like
+    /// [`set`](LwwRegister::set).
+    ///
+    /// ```ignore
+    /// // tweak one field of a struct value without clone+set:
+    /// self.profile.value_mut().bio = "hi".to_owned();
+    /// // multiple edits collapse to a single stamp at end of scope:
+    /// { let mut items = self.list.value_mut(); items.push(x); items.retain(|i| i.ok); }
+    /// ```
+    pub fn value_mut(&mut self) -> LwwGuard<'_, T> {
+        LwwGuard {
+            reg: self,
+            dirty: false,
+        }
     }
 
     /// Set a new value (updates timestamp and node_id)
@@ -173,6 +203,51 @@ impl<T> std::ops::Deref for LwwRegister<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.value
+    }
+}
+
+/// RAII guard returned by [`LwwRegister::value_mut`]. Derefs to `&mut T` for
+/// in-place mutation and stamps a fresh HLC timestamp + node id on drop (only if
+/// the value was actually mutated). This makes "mutate like a plain field" sound
+/// for a CRDT register — the stamp can't be forgotten the way it can with
+/// [`LwwRegister::get_mut`].
+#[must_use = "the value is stamped when the guard is dropped; bind it (or mutate through it) \
+              rather than discarding it"]
+pub struct LwwGuard<'a, T> {
+    reg: &'a mut LwwRegister<T>,
+    dirty: bool,
+}
+
+impl<T> core::ops::Deref for LwwGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.reg.value
+    }
+}
+
+impl<T> core::ops::DerefMut for LwwGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // Any mutable access counts as a write; stamp on drop.
+        self.dirty = true;
+        &mut self.reg.value
+    }
+}
+
+impl<T> Drop for LwwGuard<'_, T> {
+    fn drop(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        // Same stamping rule as `LwwRegister::set` (incl. merge-mode zeroing for
+        // cross-node determinism inside `#[app::migrate]`).
+        if env::in_merge_mode() {
+            self.reg.timestamp = HybridTimestamp::zero();
+            self.reg.node_id = [0; 32];
+        } else {
+            self.reg.timestamp = env::hlc_timestamp();
+            self.reg.node_id = env::executor_id();
+        }
     }
 }
 
