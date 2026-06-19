@@ -19,8 +19,14 @@ runs:
           | sudo tee /usr/share/keyrings/merobox.gpg > /dev/null
         echo "deb [signed-by=/usr/share/keyrings/merobox.gpg] https://calimero-network.github.io/merobox stable main" \
           | sudo tee /etc/apt/sources.list.d/merobox.list
-        timeout 120 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
-          -o Acquire::https::Timeout=20 update
+        # Refresh only merobox's list, not the flaky Ubuntu mirrors that timed
+        # the step out; List-Cleanup=0 keeps cached deps for the install below.
+        timeout 60 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+          -o Acquire::https::Timeout=20 \
+          -o Dir::Etc::sourcelist="sources.list.d/merobox.list" \
+          -o Dir::Etc::sourceparts="-" \
+          -o APT::Get::List-Cleanup="0" \
+          update
         timeout 180 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
           -o Acquire::https::Timeout=20 install -y merobox
         merobox --version
