@@ -237,6 +237,28 @@ the signed cut (including a later <code>MemberRemoved</code> for this signer) is
 the walk and cannot retroactively invalidate the delta.
 </p>
 
+<h3>Resolving the current governance cut — <code>ScopeProjections::namespace_current_heads</code></h3>
+<p>
+Current-state membership reads (as opposed to historical signed-position checks) need a "now"
+frontier: the set of parent hashes that represents the namespace's current DAG head. The static
+method <code>ScopeProjections::namespace_current_heads</code> provides this:
+</p>
+<ol>
+  <li>Resolves the supplied <code>ContextGroupId</code> to its owning namespace by walking the
+  parent chain.</li>
+  <li>Reads that namespace's DAG head record from the governance store.</li>
+  <li>Returns the parent hashes of that head — the cut argument passed to
+  <code>membership_status_at</code> (or <code>AclView::is_member_at_cut</code>) for a
+  current-state query.</li>
+</ol>
+<p>
+<b><code>None</code> return cases.</b> The method returns <code>None</code> when the group cannot
+be resolved to a namespace (e.g. the group does not exist in the local store) or when the head
+record itself is unreadable. Callers <b>must</b> fall back to the live membership store
+(<code>check_group_membership_path</code>) in both cases rather than treating <code>None</code> as
+an empty cut — an empty cut would falsely deny all access.
+</p>
+
 <h3>Where this can break</h3>
 <p>
 Two classes of change would silently re-introduce the divergence described above:
@@ -804,6 +826,7 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td><code>leave_namespace</code></td><td><b>Implemented</b></td><td>Same <code>member_left.rs</code> apply detects the no-parent case and cascades through descendant groups where the leaver has direct rows; multi-scope owner + last-admin checked upfront. <em>No per-scope key rotation</em>.</td></tr>
   <tr><td>Key rotation on <code>MemberRemoved</code></td><td><b>Implemented</b></td><td><code>crates/governance-store/src/group_governance_publisher.rs</code> (<code>sign_apply_and_publish_inner</code>) + <code>GroupKeyring</code> in <code>group_keys.rs</code> — fresh key wrapped for remaining members, excluding the removed one.</td></tr>
   <tr><td>Role-scoped TEE self-purge</td><td><b>Implemented</b> (ADR 0002; #2680/#2724/#2725)</td><td><code>crates/context/src/self_purge.rs</code> listener + cascade + marker-gated <code>reconcile_sweep</code>; <code>delete_group_local_rows</code> in <code>governance-store/src/local_state.rs</code> deletes signing keys (and, as of #2776, <code>GroupKeyring</code> encryption keys); <code>OpEvent::TeeMemberRemoved</code> emitted from <code>member_removed.rs</code> / <code>member_left.rs</code>.</td></tr>
+  <tr><td><code>ScopeProjections::namespace_current_heads</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>.</td></tr>
   <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
 </table>
 </div>
