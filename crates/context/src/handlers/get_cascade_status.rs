@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{CascadeStatusEntry, GetCascadeStatusRequest};
-use calimero_governance_store::{MembershipRepository, NamespaceRepository, UpgradesRepository};
+use calimero_governance_store::{NamespaceRepository, UpgradesRepository};
 use eyre::bail;
 
 use crate::ContextManager;
@@ -47,9 +47,11 @@ impl Handler<GetCascadeStatusRequest> for ContextManager {
             let Some((node_identity, _)) = self.node_namespace_identity(&namespace_id) else {
                 bail!("node has no group identity configured");
             };
-            if !MembershipRepository::new(&self.datastore)
-                .is_member(&namespace_id, &node_identity)?
-            {
+            if !crate::scope_projection::ScopeProjections::member_now_checked(
+                &self.datastore,
+                &namespace_id,
+                &node_identity,
+            )? {
                 bail!("node is not a member of namespace '{namespace_id:?}'");
             }
             collect_cascade_status(&self.datastore, &namespace_id)

@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::GetGroupUpgradeStatusRequest;
-use calimero_governance_store::{MembershipRepository, UpgradesRepository};
+use calimero_governance_store::UpgradesRepository;
 use eyre::bail;
 
 use crate::ContextManager;
@@ -17,7 +17,11 @@ impl Handler<GetGroupUpgradeStatusRequest> for ContextManager {
             let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
                 bail!("node has no group identity configured");
             };
-            if !MembershipRepository::new(&self.datastore).is_member(&group_id, &node_identity)? {
+            if !crate::scope_projection::ScopeProjections::member_now_checked(
+                &self.datastore,
+                &group_id,
+                &node_identity,
+            )? {
                 bail!("node is not a member of group '{group_id:?}'");
             }
             UpgradesRepository::new(&self.datastore)
