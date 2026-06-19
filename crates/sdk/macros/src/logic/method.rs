@@ -112,6 +112,19 @@ impl ToTokens for PublicLogicMethod<'_> {
                 quote! {}
             };
 
+            // Owned arguments are decoded from the caller's JSON, so they must be
+            // `DeserializeOwned`. Assert it explicitly so a non-deserializable
+            // argument surfaces the clear `AppArg` diagnostic at the method,
+            // rather than a raw serde-derive error. Borrowed (`&_`) args are
+            // validated by the input struct's `Deserialize` derive instead —
+            // their lifetime ties to the input buffer, which an owned assertion
+            // can't express.
+            let owned_arg_tys = args
+                .iter()
+                .filter(|arg| !arg.ty.ref_)
+                .map(|arg| &arg.ty)
+                .collect::<::std::vec::Vec<_>>();
+
             quote_spanned! {name.span()=>
                 #[derive(::calimero_sdk::serde::Deserialize)]
                 #[serde(crate = "::calimero_sdk::serde", deny_unknown_fields)]
@@ -120,6 +133,10 @@ impl ToTokens for PublicLogicMethod<'_> {
                         #args
                     ),*
                 }
+
+                #(
+                    let _ = ::calimero_sdk::__private::assert_app_arg::<#owned_arg_tys>;
+                )*
 
                 let Some(input) = ::calimero_sdk::env::input() else {
                     ::calimero_sdk::env::panic_str("Expected input since method has arguments.")

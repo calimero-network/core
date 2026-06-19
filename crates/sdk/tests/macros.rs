@@ -79,4 +79,10 @@ fn all() {
     t.compile_fail("tests/macros/error_emits_non_event.rs");
     // `PermissionedStorage<T, A>` policy must implement `Authorizer`.
     t.compile_fail("tests/macros/error_bad_authorizer.rs");
+    // Collection keys must be byte-encodable (`StorageKey`).
+    t.compile_fail("tests/macros/error_non_byte_key.rs");
+    // Note: the `AppArg`/`AppReturn` diagnostics (non-(de)serializable method
+    // args/returns) live in the `#[cfg(target_arch = "wasm32")]` export body, so
+    // they only fire for a wasm build — the host-compiled trybuild suite can't
+    // exercise them. They're covered by building the example apps for wasm.
 }

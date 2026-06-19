@@ -45,7 +45,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeSeq;
 use serde::Serialize;
 
-use super::{compute_id, Collection, CrdtType};
+use super::{compute_id, Collection, CrdtType, StorageKey};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::Data;
@@ -178,7 +178,7 @@ where
     /// will be returned.
     pub fn insert(&mut self, value: V) -> Result<bool, StoreError>
     where
-        V: AsRef<[u8]> + PartialEq + 'static,
+        V: StorageKey,
     {
         super::rekey::register_rekey::<Self>();
         let collection = self.inner.id();

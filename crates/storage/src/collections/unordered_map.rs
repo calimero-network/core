@@ -36,7 +36,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
-use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor, ValueRef};
+use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor, StorageKey, ValueRef};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
@@ -314,7 +314,7 @@ where
     ///
     pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, StoreError>
     where
-        K: AsRef<[u8]> + PartialEq + 'static,
+        K: StorageKey,
         V: 'static,
     {
         // Children inherit this collection's own storage domain. For an ordinary
