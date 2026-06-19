@@ -22,5 +22,3 @@ serde_json.workspace = true
 
 [package.metadata.workspaces]
 independent = true
-
-overflow-checks = true 
