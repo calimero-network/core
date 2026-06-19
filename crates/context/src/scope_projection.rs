@@ -24,7 +24,7 @@ use calimero_governance_store::{
     CapabilitiesRepository, MembershipRepository, MetaRepository, NamespaceDagService,
     NamespaceOpLogService, NamespaceRepository,
 };
-use calimero_governance_types::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
+use calimero_governance_types::{GroupOp, NamespaceOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::{payload_from_group_op, payload_from_root_op, set_writers_payload};
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -776,6 +776,7 @@ mod tests {
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
     };
+    use calimero_governance_types::RootOp;
     use calimero_op::OpPayload;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_storage::entities::OpMask;

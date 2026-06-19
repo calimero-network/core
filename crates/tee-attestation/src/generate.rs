@@ -52,13 +52,13 @@ pub fn generate_attestation(report_data: [u8; 64]) -> Result<AttestationResult, 
     // Generate TDX quote using configfs-tsm
     let quote_bytes = create_tdx_quote(report_data).map_err(|err| {
         error!(error=?err, "Failed to generate TDX quote");
-        AttestationError::QuoteGenerationFailed(format!("{:?}", err))
+        AttestationError::QuoteGenerationFailed(format!("{err:?}"))
     })?;
 
     // Parse the generated quote
     let tdx_quote = TdxQuote::from_bytes(&quote_bytes).map_err(|err| {
         error!(error=?err, "Failed to parse generated TDX quote");
-        AttestationError::QuoteParsingFailed(format!("{:?}", err))
+        AttestationError::QuoteParsingFailed(format!("{err:?}"))
     })?;
 
     // Convert to serializable format
