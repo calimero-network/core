@@ -70,6 +70,14 @@ impl ToTokens for PublicLogicMethod<'_> {
 
         let arg_idents = args.iter().map(|arg| arg.ident).collect::<Vec<_>>();
 
+        // Baked into the host-boundary (de)serialization panics below so a
+        // malformed call reports *which* method failed (and, for arg-bearing
+        // methods, *what shape* was expected) — the raw serde error alone names
+        // neither, which is where app authors lose the most time wiring a client.
+        // A compile-time string literal; the method name is always available, the
+        // argument schema is built per-branch (only the args path needs it).
+        let method_name = name.to_string();
+
         let init_method = modifiers
             .iter()
             .any(|modifier| matches!(modifier, Modifer::Init));
@@ -91,8 +99,8 @@ impl ToTokens for PublicLogicMethod<'_> {
                         {
                             if !fields.is_empty() {
                                 ::calimero_sdk::env::panic_str(&format!(
-                                    "Failed to deserialize input from JSON: method takes no \
-                                     arguments but received unknown field(s): {:?}",
+                                    "{}: takes no arguments, but the call sent unknown field(s): {:?}",
+                                    #method_name,
                                     fields.keys().collect::<::std::vec::Vec<_>>()
                                 ));
                             }
@@ -125,6 +133,30 @@ impl ToTokens for PublicLogicMethod<'_> {
                 .map(|arg| &arg.ty)
                 .collect::<::std::vec::Vec<_>>();
 
+            // Expected-argument hint for the deserialize panics, e.g.
+            // `{ key: String, value: String }`. Only built here (the args path).
+            // `to_token_stream()` renders the *sanitized* type, which spaces out
+            // punctuation and carries the internal reserved input lifetime for
+            // borrowed args; strip that lifetime and collapse the spacing so the
+            // hint reads like source (`&str` → not `& 'CALIMERO_INPUT str`).
+            let reserved_lt = lifetimes::input().to_token_stream().to_string();
+            let arg_schema = {
+                let fields = args
+                    .iter()
+                    .map(|arg| {
+                        let ty = arg
+                            .ty
+                            .to_token_stream()
+                            .to_string()
+                            .replace(&reserved_lt, "");
+                        let ty = ty.split_whitespace().collect::<Vec<_>>().join(" ");
+                        format!("{}: {}", arg.ident, ty)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{ {fields} }}")
+            };
+
             quote_spanned! {name.span()=>
                 #[derive(::calimero_sdk::serde::Deserialize)]
                 #[serde(crate = "::calimero_sdk::serde", deny_unknown_fields)]
@@ -139,16 +171,20 @@ impl ToTokens for PublicLogicMethod<'_> {
                 )*
 
                 let Some(input) = ::calimero_sdk::env::input() else {
-                    ::calimero_sdk::env::panic_str("Expected input since method has arguments.")
+                    ::calimero_sdk::env::panic_str(&format!(
+                        "{}: missing arguments — expected a JSON object {}",
+                        #method_name, #arg_schema
+                    ))
                 };
 
                 let #input_ident {
                     #(#arg_idents),*
                 } = match ::calimero_sdk::serde_json::from_slice(&input) {
                     Ok(value) => value,
-                    Err(err) => ::calimero_sdk::env::panic_str(
-                        &format!("Failed to deserialize input from JSON: {:?}", err)
-                    ),
+                    Err(err) => ::calimero_sdk::env::panic_str(&format!(
+                        "{}: failed to deserialize arguments (expected {}): {:?}",
+                        #method_name, #arg_schema, err
+                    )),
                 };
             }
         };
@@ -201,9 +237,10 @@ impl ToTokens for PublicLogicMethod<'_> {
                         .to_json()
                     {
                         Ok(output) => output,
-                        Err(err) => ::calimero_sdk::env::panic_str(
-                            &format!("Failed to serialize output to JSON: {:?}", err)
-                        ),
+                        Err(err) => ::calimero_sdk::env::panic_str(&format!(
+                            "{}: failed to serialize the return value to JSON: {:?}",
+                            #method_name, err
+                        )),
                     }
                 };
                 ::calimero_sdk::env::value_return(&output)
