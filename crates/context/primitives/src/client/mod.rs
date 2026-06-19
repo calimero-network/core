@@ -1030,13 +1030,16 @@ impl ContextClient {
         &self,
         protocol: String,
         application_id: &ApplicationId,
-        service_name: Option<String>,
-        identity_secret: Option<PrivateKey>,
-        init_params: Vec<u8>,
-        seed: Option<[u8; DIGEST_SIZE]>,
-        group_id: ContextGroupId,
-        name: Option<String>,
+        params: CreateContextParams,
     ) -> eyre::Result<CreateContextResponse> {
+        let CreateContextParams {
+            service_name,
+            identity_secret,
+            init_params,
+            seed,
+            group_id,
+            name,
+        } = params;
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
@@ -2341,4 +2344,14 @@ mod get_context_version_tests {
             .expect("context present");
         assert_eq!(ctx.name, None);
     }
+}
+
+/// Grouped inputs for [`ContextClient::create_context`].
+pub struct CreateContextParams {
+    pub service_name: Option<String>,
+    pub identity_secret: Option<PrivateKey>,
+    pub init_params: Vec<u8>,
+    pub seed: Option<[u8; DIGEST_SIZE]>,
+    pub group_id: ContextGroupId,
+    pub name: Option<String>,
 }

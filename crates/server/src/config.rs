@@ -71,13 +71,16 @@ impl ServerConfig {
     pub const fn with_auth(
         listen: Vec<Multiaddr>,
         identity: Keypair,
-        admin: Option<AdminConfig>,
-        jsonrpc: Option<JsonRpcConfig>,
-        websocket: Option<WsConfig>,
-        sse: Option<SseConfig>,
+        services: ServiceConfigs,
         auth_mode: AuthMode,
         embedded_auth: Option<AuthConfig>,
     ) -> Self {
+        let ServiceConfigs {
+            admin,
+            jsonrpc,
+            websocket,
+            sse,
+        } = services;
         Self {
             listen,
             identity,
@@ -107,4 +110,12 @@ pub fn default_addrs() -> Vec<Multiaddr> {
         .into_iter()
         .map(|addr| Multiaddr::from(addr).with(Protocol::Tcp(DEFAULT_PORT)))
         .collect()
+}
+
+/// The optional per-service endpoint configs passed to [`ServerConfig::with_auth`].
+pub struct ServiceConfigs {
+    pub admin: Option<AdminConfig>,
+    pub jsonrpc: Option<JsonRpcConfig>,
+    pub websocket: Option<WsConfig>,
+    pub sse: Option<SseConfig>,
 }

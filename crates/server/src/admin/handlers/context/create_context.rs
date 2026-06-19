@@ -40,12 +40,14 @@ pub async fn handler(
         .create_context(
             "local".to_owned(),
             &req.application_id,
-            req.service_name,
-            identity_secret,
-            req.initialization_params,
-            req.context_seed.map(Into::into),
-            group_id,
-            req.name,
+            calimero_context_client::client::CreateContextParams {
+                service_name: req.service_name,
+                identity_secret,
+                init_params: req.initialization_params,
+                seed: req.context_seed.map(Into::into),
+                group_id,
+                name: req.name,
+            },
         )
         .await
         .map_err(parse_api_error);

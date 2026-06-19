@@ -20,13 +20,16 @@ pub(crate) struct MountedService {
 pub(crate) fn mount_runtime_services(
     app: Router,
     config: &ServerConfig,
-    auth_service: Option<Arc<mero_auth::AuthService>>,
-    ctx_client: ContextClient,
-    node_client: NodeClient,
-    datastore: Store,
-    shared_state: Arc<AdminState>,
-    prom_registry: Registry,
+    deps: RuntimeServiceDeps,
 ) -> MountedService {
+    let RuntimeServiceDeps {
+        auth_service,
+        ctx_client,
+        node_client,
+        datastore,
+        shared_state,
+        prom_registry,
+    } = deps;
     let mut app = app;
     let mut service_count = 0usize;
 
@@ -92,4 +95,14 @@ impl AuthLayerExt for axum::routing::MethodRouter {
     fn with_auth_guard(self, service: Arc<mero_auth::AuthService>) -> Self {
         self.layer(auth::guard_layer(service))
     }
+}
+
+/// Runtime dependencies threaded into [`mount_runtime_services`].
+pub(crate) struct RuntimeServiceDeps {
+    pub auth_service: Option<Arc<mero_auth::AuthService>>,
+    pub ctx_client: ContextClient,
+    pub node_client: NodeClient,
+    pub datastore: Store,
+    pub shared_state: Arc<AdminState>,
+    pub prom_registry: Registry,
 }

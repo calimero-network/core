@@ -121,10 +121,12 @@ impl RunCommand {
         let server_config = ServerConfig::with_auth(
             server_source.listen,
             config.identity.keypair.clone(),
-            server_source.admin,
-            server_source.jsonrpc,
-            server_source.websocket,
-            server_source.sse,
+            calimero_server::config::ServiceConfigs {
+                admin: server_source.admin,
+                jsonrpc: server_source.jsonrpc,
+                websocket: server_source.websocket,
+                sse: server_source.sse,
+            },
             server_source.auth_mode,
             server_source.embedded_auth,
         );

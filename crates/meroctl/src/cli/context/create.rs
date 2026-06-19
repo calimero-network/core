@@ -110,15 +110,17 @@ impl CreateCommand {
                 let _ = create_context(
                     environment,
                     &client_clone,
-                    context_seed,
-                    app_id,
-                    service,
-                    params,
-                    identity,
-                    context,
-                    group_id,
-                    identity_secret,
-                    group_name,
+                    CreateContextArgs {
+                        context_seed,
+                        application_id: app_id,
+                        service,
+                        params,
+                        identity,
+                        context,
+                        group_id,
+                        identity_secret,
+                        group_name,
+                    },
                 )
                 .await?;
             }
@@ -155,15 +157,17 @@ impl CreateCommand {
                 let (context_id, member_public_key) = create_context(
                     environment,
                     &client_clone,
-                    context_seed,
-                    application_id,
-                    service,
-                    params,
-                    identity,
-                    context,
-                    group_id,
-                    identity_secret,
-                    group_name,
+                    CreateContextArgs {
+                        context_seed,
+                        application_id,
+                        service,
+                        params,
+                        identity,
+                        context,
+                        group_id,
+                        identity_secret,
+                        group_name,
+                    },
                 )
                 .await?;
 
@@ -187,16 +191,19 @@ impl CreateCommand {
 pub async fn create_context(
     environment: &mut Environment,
     client: &Client,
-    context_seed: Option<Hash>,
-    application_id: ApplicationId,
-    service: Option<String>,
-    params: Option<String>,
-    identity: Option<Alias<PublicKey>>,
-    context: Option<Alias<ContextId>>,
-    group_id: String,
-    identity_secret: Option<String>,
-    group_name: Option<String>,
+    args: CreateContextArgs,
 ) -> Result<(ContextId, PublicKey)> {
+    let CreateContextArgs {
+        context_seed,
+        application_id,
+        service,
+        params,
+        identity,
+        context,
+        group_id,
+        identity_secret,
+        group_name,
+    } = args;
     let response: GetApplicationResponse = client.get_application(&application_id).await?;
 
     if response.data.application.is_none() {
@@ -307,4 +314,17 @@ async fn watch_app_and_update_context(
     }
 
     Ok(())
+}
+
+/// Grouped inputs for [`create_context`].
+pub struct CreateContextArgs {
+    pub context_seed: Option<Hash>,
+    pub application_id: ApplicationId,
+    pub service: Option<String>,
+    pub params: Option<String>,
+    pub identity: Option<Alias<PublicKey>>,
+    pub context: Option<Alias<ContextId>>,
+    pub group_id: String,
+    pub identity_secret: Option<String>,
+    pub group_name: Option<String>,
 }
