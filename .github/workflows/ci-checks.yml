@@ -46,9 +46,13 @@ jobs:
       - name: Cargo format
         run: cargo fmt --check
 
+      # No-warnings gate: every workspace target (libs, bins, tests, examples)
+      # must be clippy- and rustc-warning-free. `--features calimero-storage/testing`
+      # pulls in that crate's feature-gated `testing` harness so it's linted in the
+      # same single pass. Run the same command locally before pushing.
       - name: Cargo clippy
         if: ${{ !cancelled() }}
-        run: cargo clippy -- -A warnings
+        run: cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
 
       - name: Cargo test
         if: ${{ !cancelled() }}
