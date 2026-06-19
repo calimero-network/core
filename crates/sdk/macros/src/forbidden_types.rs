@@ -30,6 +30,13 @@ pub fn validate_field_type<T>(ty: &Type, errors: &Errors<'_, T>, is_top_level: b
                         suggestion,
                     },
                 ));
+            } else if is_forbidden_wrapper(&ident_str) {
+                errors.subsume(syn::Error::new(
+                    last.ident.span(),
+                    ParseError::ForbiddenInteriorMutability {
+                        type_name: leak_str(ident_str.clone()),
+                    },
+                ));
             } else if is_top_level {
                 if let Some(suggestion) = forbidden_top_level_bare(&ident_str) {
                     errors.subsume(syn::Error::new(
@@ -88,6 +95,25 @@ fn forbidden_std_collection(ident: &str) -> Option<&'static str> {
         "VecDeque" => Some("Vector<T>"),
         _ => None,
     }
+}
+
+/// Interior-mutability and shared-ownership wrappers whose presence anywhere in
+/// a state field's type is wrong: they have no merge semantics, don't round-trip
+/// through borsh, and (for `Cell`/`Rc`) are non-deterministic or non-portable to
+/// the single-writer wasm replica. Flagged at any depth, like std collections.
+fn is_forbidden_wrapper(ident: &str) -> bool {
+    matches!(
+        ident,
+        "Rc" | "Arc"
+            | "Weak"
+            | "Cell"
+            | "RefCell"
+            | "UnsafeCell"
+            | "OnceCell"
+            | "OnceLock"
+            | "Mutex"
+            | "RwLock"
+    )
 }
 
 /// Types that are illegal as the *root* of a field but may appear nested inside
@@ -236,6 +262,29 @@ mod tests {
         // collection ensures they implement Mergeable at the use site.
         assert!(check(parse_quote!(MyCustomStruct)).is_none());
         assert!(check(parse_quote!(LwwRegister<MyCustomStruct>)).is_none());
+    }
+
+    #[test]
+    fn rejects_interior_mutability_and_shared_ownership() {
+        for ty in [
+            "Cell<u64>",
+            "RefCell<u64>",
+            "Mutex<u64>",
+            "RwLock<u64>",
+            "Rc<u64>",
+            "Arc<u64>",
+        ] {
+            let parsed: Type = syn::parse_str(ty).expect("parse");
+            let err = check(parsed).unwrap_or_else(|| panic!("{ty} should error"));
+            assert!(err.contains("interior-mutability"), "{err}");
+        }
+    }
+
+    #[test]
+    fn rejects_refcell_nested_in_crdt() {
+        // Flagged at any depth, like std collections.
+        let err = check(parse_quote!(LwwRegister<RefCell<u64>>)).expect("should error");
+        assert!(err.contains("`RefCell`"), "{err}");
     }
 
     #[test]
