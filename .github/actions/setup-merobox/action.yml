@@ -19,14 +19,8 @@ runs:
           | sudo tee /usr/share/keyrings/merobox.gpg > /dev/null
         echo "deb [signed-by=/usr/share/keyrings/merobox.gpg] https://calimero-network.github.io/merobox stable main" \
           | sudo tee /etc/apt/sources.list.d/merobox.list
-        # Refresh ONLY merobox's own list (-o Dir::Etc::*). A full `apt-get
-        # update` also probes the runner's Ubuntu mirrors; on Azure runners
-        # azure.archive.ubuntu.com is frequently dead (20s connect-timeout +
-        # retries) and the public archive.ubuntu.com fallback then crawls
-        # fetching the Packages indices — together that blew past the 120s
-        # bound and killed the step (exit 124). We don't need those repos:
-        # merobox's deps are already in the image's apt cache, and
-        # List-Cleanup=0 keeps that cache intact for the install below.
+        # Refresh only merobox's list, not the flaky Ubuntu mirrors that timed
+        # the step out; List-Cleanup=0 keeps cached deps for the install below.
         timeout 60 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
           -o Acquire::https::Timeout=20 \
           -o Dir::Etc::sourcelist="sources.list.d/merobox.list" \
