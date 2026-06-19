@@ -169,7 +169,7 @@ impl VMHostFunctions<'_> {
     /// # Arguments
     ///
     /// * `src_panic_msg_ptr` - A pointer in guest memory to a source-buffer `sys::Buffer` containing
-    /// the UTF-8 panic message.
+    ///   the UTF-8 panic message.
     /// * `src_location_ptr` - A pointer in guest memory to a `sys::Location` struct for the panic's origin.
     ///
     /// # Returns/Errors
@@ -248,7 +248,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `register_id` - The ID of the register to read from.
     /// * `dest_data_ptr` - A pointer in guest memory to a destination buffer `sys::BufferMut`
-    /// where the data should be copied.
+    ///   where the data should be copied.
     ///
     /// # Returns
     ///
@@ -457,7 +457,7 @@ impl VMHostFunctions<'_> {
     /// # Arguments
     ///
     /// * `src_value_ptr` - A pointer in guest memory to a source-`sys::ValueReturn`,
-    /// which is an enum indicating success or error, along with the data buffer.
+    ///   which is an enum indicating success or error, along with the data buffer.
     ///
     /// # Errors
     ///
@@ -606,7 +606,7 @@ impl VMHostFunctions<'_> {
     /// # Arguments
     ///
     /// * `src_event_ptr` - A pointer in guest memory to a `sys::Event` struct, which
-    /// contains source-buffers for the event `kind` and `data`.
+    ///   contains source-buffers for the event `kind` and `data`.
     ///
     /// # Errors
     ///
@@ -811,7 +811,7 @@ impl VMHostFunctions<'_> {
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if this function is called more than once or if memory
-    /// access fails for descriptor buffers.
+    ///   access fails for descriptor buffers.
     pub fn commit(&mut self, src_root_hash_ptr: u64, src_artifact_ptr: u64) -> VMLogicResult<()> {
         let root_hash =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_root_hash_ptr)? };
@@ -1400,8 +1400,10 @@ mod tests {
     #[test]
     fn test_log_utf8_overflow() {
         let mut storage = SimpleMockStorage::new();
-        let mut limits = VMLimits::default();
-        limits.max_logs = 5;
+        let limits = VMLimits {
+            max_logs: 5,
+            ..Default::default()
+        };
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
 
@@ -1433,8 +1435,10 @@ mod tests {
     #[test]
     fn test_log_utf8_length_overflow() {
         let mut storage = SimpleMockStorage::new();
-        let mut limits = VMLimits::default();
-        limits.max_log_size = 4;
+        let limits = VMLimits {
+            max_log_size: 4,
+            ..Default::default()
+        };
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
 
@@ -1477,8 +1481,10 @@ mod tests {
     #[test]
     fn test_js_std_d_print_length_overflow() {
         let mut storage = SimpleMockStorage::new();
-        let mut limits = VMLimits::default();
-        limits.max_log_size = 5;
+        let limits = VMLimits {
+            max_log_size: 5,
+            ..Default::default()
+        };
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
 

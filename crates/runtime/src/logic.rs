@@ -427,7 +427,7 @@ impl VMLogic<'_> {
     /// # Arguments
     ///
     /// * `err` - An optional `FunctionCallError` that occurred during execution (e.g., a trap).
-    ///           If `None`, the outcome is determined by the `returns` field.
+    ///   If `None`, the outcome is determined by the `returns` field.
     #[must_use]
     pub fn finish(mut self, err: Option<FunctionCallError>) -> Outcome {
         let log_count = self.logs.len();
@@ -470,7 +470,7 @@ impl VMLogic<'_> {
         // The runtime's catch_unwind wrapper ensures finish() is always called,
         // even when execution fails mid-way or panics occur.
         if let Some(memory) = self.memory {
-            drop(memory);
+            let _ = memory;
             trace!(target: "runtime::logic", "VMLogic::finish: cleaned up WASM memory");
         }
 

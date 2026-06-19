@@ -2,8 +2,6 @@
 
 use core::str;
 use std::env;
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
 use calimero_runtime::store::InMemoryStorage;
@@ -48,7 +46,7 @@ fn main() -> EyreResult<()> {
         eyre::bail!("KV wasm file not found");
     }
 
-    let file = File::open(path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
+    let file = std::fs::read(path)?;
 
     let mut storage = InMemoryStorage::default();
 

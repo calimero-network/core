@@ -20,18 +20,18 @@ impl VMHostFunctions<'_> {
     ///
     /// * `src_url_ptr` - Pointer to the URL string source-buffer in guest memory.
     /// * `src_method_ptr` - Pointer to the HTTP method string source-buffer (e.g., "GET", "POST")
-    /// in guest memory.
+    ///   in guest memory.
     /// * `src_headers_ptr` - Pointer to a borsh-serialized `Vec<(String, String)>` source-buffer of
-    /// headers in guest memory.
+    ///   headers in guest memory.
     /// * `src_body_ptr` - Pointer to the request body source-buffer in guest memory.
     /// * `dest_register_id` - The ID of the destination register in host memory where to store
-    /// the response body.
+    ///   the response body.
     ///
     /// # Returns
     ///
     /// * Returns `0` on success (HTTP 2xx)
     /// * Returns `1` on failure.
-    /// The response body or error message is placed in the host register.
+    ///   The response body or error message is placed in the host register.
     ///
     /// # Errors
     ///
@@ -141,12 +141,12 @@ impl VMHostFunctions<'_> {
     /// # Arguments
     ///
     /// * `dest_ptr` - A pointer to an 8-byte destination buffer `sys::BufferMut`
-    /// in guest memory where the `u64` timestamp will be written.
+    ///   in guest memory where the `u64` timestamp will be written.
     ///
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if the provided buffer is not exactly 8 bytes long
-    /// or if memory access fails for a descriptor buffer.
+    ///   or if memory access fails for a descriptor buffer.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Impossible to overflow in normal circumstances"
@@ -193,7 +193,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     /// * `HostError::Ed25519IncorrectPublicKey` if the provided public key is not a ED25519 Public
-    /// Key.
+    ///   Key.
     pub fn ed25519_verify(
         &mut self,
         src_signature_ptr: u64,
