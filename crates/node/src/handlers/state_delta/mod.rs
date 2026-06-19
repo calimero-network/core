@@ -1026,15 +1026,40 @@ pub async fn handle_state_delta(
             );
         }
         DeltaAuthOutcome::Reject(reason) => {
-            // NOTE: no projection shadow on this path. Rejects are the
-            // churn-heavy hot path (a removed member retrying writes), and taking
-            // the shared scope-projections lock per reject contends with the
-            // governance-apply actor (which holds the same lock to ingest),
-            // starving it and stalling membership-churn scenarios into sync
-            // timeouts. The inverse direction (does the projection over-authorize
-            // where live rejects?) is validated as part of F4's flip, where the
-            // projection REPLACES the live resolution — one resolution per delta,
-            // no doubled work, no extra contention.
+            // F4b inverse cross-check — validates the permissive direction the
+            // sole-authority flip will expose: would the projection AUTHORIZE a
+            // write the live resolver rejected? (The forward direction — never
+            // denying where live authorizes — is already zero.) A hit is a real
+            // over-authorization and trips the hard divergence gate.
+            //
+            // Done as a refresh-free, concurrent RwLock READ: no DAG walk on this
+            // churn-heavy reject path (the cost that stalled scenarios), and the
+            // lock is NOT taken in an `if let` scrutinee that re-locks in its body
+            // (the self-deadlock). It only logs; we still act on live's reject. If
+            // the cited heads aren't folded, member_at_cut resolves to non-member,
+            // matching the reject — so it can't false-flag.
+            if let Some(gp) = governance_position.as_ref() {
+                if let Ok(Some(group)) =
+                    calimero_context::group_store::get_group_for_context(datastore, &context_id)
+                {
+                    let projected = node_state.read_scope_projections().member_at_cut(
+                        datastore,
+                        group,
+                        &author_id,
+                        &gp.governance_dag_heads,
+                    );
+                    if projected == Some(true) {
+                        warn!(
+                            marker = "unified_projection_divergence",
+                            plane = "membership-cut-reject",
+                            group_id = ?group,
+                            %author_id,
+                            reason,
+                            "projection authorizes a write the live resolver rejected"
+                        );
+                    }
+                }
+            }
             warn!(
                 %context_id,
                 %author_id,
