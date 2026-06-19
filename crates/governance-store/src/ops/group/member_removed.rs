@@ -90,6 +90,10 @@ pub(crate) fn apply(
     // `ReadOnlyTee` removal cascades, so every non-TEE removal skips the walk.
     if removed_role == Some(GroupMemberRole::ReadOnlyTee) {
         let namespaces = NamespaceRepository::new(store);
+        // Relies on `resolve` being reflexive for roots: `resolve(root) ==
+        // root`. So equality here means `group_id` IS the namespace root (a
+        // subgroup-level TEE removal resolves to a different root and skips the
+        // cascade).
         let is_namespace_root = namespaces.resolve(group_id)? == *group_id;
         if is_namespace_root {
             let membership = MembershipRepository::new(store);

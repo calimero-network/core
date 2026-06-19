@@ -6194,11 +6194,15 @@ mod tee_member_removed_event_tests {
                     // Events on any OTHER group_id are intentionally dropped:
                     // `op_events` is a PROCESS-GLOBAL broadcast bus and tests
                     // run in parallel, so a concurrent test that reuses this
-                    // same `member` key emits onto this receiver too. We
-                    // cannot assert "no unexpected group_id" without making
-                    // every test's member key globally unique. Over-cascade is
-                    // instead pinned by the dedicated callers, which set up a
-                    // unique (group_id, member) pair and assert exact counts.
+                    // same fixed `member` key emits onto this receiver too. An
+                    // assert-"no unexpected group_id" guard would therefore be
+                    // unsound here. The exact-count assertions in the callers
+                    // are nonetheless contamination-proof because each caller's
+                    // `gid_a`/`gid_b` are byte patterns UNIQUE to that test and
+                    // we filter strictly on them: a concurrent test sharing the
+                    // member key emits on its own (different) group_ids, which
+                    // fall through uncounted. Over-cascade WITHIN a test's own
+                    // topology is what the callers pin via those exact counts.
                 }
                 Ok(OpEvent::TeeMemberRemoved {
                     group_id,

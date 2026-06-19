@@ -491,7 +491,12 @@ fn should_auto_follow_contexts(
     let repo = MembershipRepository::new(store);
     match repo.member_value(group_id, member) {
         Ok(Some(v)) => return v.auto_follow.contexts,
-        Ok(None) => {} // fall through to inheritance check below
+        // No direct row → fall through to the inheritance check. A concurrent
+        // op could insert a direct row for `member` between this read and the
+        // `check_path` below; that benign TOCTOU at worst yields a transient
+        // false-negative — the next `ContextRegistered` event re-evaluates and
+        // corrects it.
+        Ok(None) => {}
         Err(err) => {
             warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
@@ -503,6 +508,13 @@ fn should_auto_follow_contexts(
     }
 
     // No direct row — resolve the inheritance anchor (Open-subgroup chain).
+    // `check_path` walks UP the Open-visibility chain and returns the nearest
+    // ancestor where `member` holds a DIRECT row (with CAN_JOIN_OPEN_SUBGROUPS)
+    // as the `anchor`. This is depth-independent: even for a multi-hop Open
+    // chain the anchor is always a real direct-row member, so `member_value`
+    // below resolves to `Some(_)` and its `auto_follow.contexts` flag is
+    // authoritative. (For a root-admitted ReadOnlyTee, which holds only a root
+    // row, the anchor is always the namespace root.)
     match repo.check_path(group_id, member) {
         Ok(MembershipPath::Inherited { anchor, .. }) => match repo.member_value(&anchor, member) {
             Ok(Some(v)) => v.auto_follow.contexts,
