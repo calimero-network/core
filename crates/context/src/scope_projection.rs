@@ -210,16 +210,16 @@ pub fn op_from_namespace_op(
     parents: &[[u8; 32]],
 ) -> Op {
     let payload = match &signed.op {
-        // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF, not a
-        // direct membership: live's apply requires `check_path == Inherited` and
-        // writes NO persistent `GroupMember` row, re-deriving the membership from
-        // the anchor each time (so it is revoked when the parent membership is
-        // removed). Folding it as a direct `MemberAdded` would make it permanent
-        // and survive anchor removal — the over-grant in
-        // group-remove-from-root-revokes-inherited. Fold it as a `Noop` graph node;
-        // the inheritance walk in `AclView::is_member_at_cut` derives the actual
-        // membership from the (foldable) anchor membership + cap + visibility.
-        NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => OpPayload::Noop,
+        // NOTE on `MemberJoinedOpen` (open-subgroup inheritance join): live treats
+        // it as an inheritance PROOF (no persistent direct row; re-derived from the
+        // anchor each time, so revoked on anchor removal). Folding it as a direct
+        // `MemberAdded` makes the projection see the inherited member as present —
+        // which is correct for the DENY direction (never false-deny a live member,
+        // incl. leave/rejoin-via-inheritance) but over-permissive for the GRANT
+        // direction (survives anchor removal). The co-authorizer only ACTS on the
+        // deny direction, so `MemberAdded` is the right fold today; faithfully
+        // modeling it as inheritance-derived (Noop + full subgroup-tree/visibility/
+        // cap fold) for sole-authority is deferred — see the `MembershipReject` arm.
         NamespaceOp::Root(root) => {
             payload_from_root_op(root, signed.signer).unwrap_or(OpPayload::Noop)
         }
@@ -796,13 +796,13 @@ mod tests {
     }
 
     #[test]
-    fn open_subgroup_join_folds_as_noop_not_direct_membership() {
-        // `MemberJoinedOpen` is an inheritance-join PROOF (no persistent direct
-        // row in live), so it folds as a `Noop` graph node — the inheritance walk
-        // derives the membership from the anchor, so it's revoked when the anchor
-        // is removed. (Folding it as a direct `MemberAdded` was the over-grant in
-        // group-remove-from-root-revokes-inherited.) The node still occupies its
-        // place in the DAG so the ancestry walk passes through it.
+    fn open_subgroup_join_folds_as_direct_membership_for_deny_direction() {
+        // `MemberJoinedOpen` folds as a direct `MemberAdded` today: the
+        // co-authorizer only ACTS on the deny direction, where seeing the
+        // inherited member as present prevents false-denying a live member (incl.
+        // leave/rejoin-via-inheritance). Modeling it as inheritance-derived (so
+        // the GRANT direction revokes it on anchor loss) is the deferred
+        // sole-authority work — see the `MembershipReject` arm in the node handler.
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let member = PublicKey::from([0x55; 32]);
@@ -828,8 +828,11 @@ mod tests {
         assert_eq!(op.parents, vec![[0x88; 32]], "with its real parents");
         assert_eq!(
             op.payload,
-            OpPayload::Noop,
-            "open-subgroup inheritance join is a Noop, not a direct membership"
+            OpPayload::MemberAdded {
+                group: ContextGroupId::from(group),
+                member,
+                role: GroupMemberRole::Member,
+            },
         );
     }
 

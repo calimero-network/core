@@ -959,20 +959,18 @@ pub async fn handle_state_delta(
                 "cross-DAG check: author authorized at governance cut"
             );
 
-            // SOLE AUTHORITY (F4b), deny direction: live resolved `Authorized`;
-            // the projection must concur. If it does NOT see the author as a
-            // member at the cut, we DENY (return). Paired with the
-            // `MembershipReject` arm (grant direction), the projection is the
-            // membership decider both ways; live supplies only structural
-            // classification and the buffer-on-unknown-heads liveness gate.
+            // CO-AUTHORIZER (F4a, the safe direction): live resolved
+            // `Authorized`; the projection must concur. If it does NOT see the
+            // author as a member at the cut, we DENY (return). This only ever ADDS
+            // rejections to live's authorize (a strict AND) — it can never
+            // over-authorize, the safe half of the flip. The GRANT half is
+            // deferred (see the `MembershipReject` arm).
             //
             // Uses the REFRESHING read (incl. the conservative materialized
-            // fallback) so a cold projection isn't a false-deny of a real member —
-            // the OPPOSITE of the grant arm, which must rest only on fully-folded
-            // at-cut evidence (see `member_at_cut_authoritative`). A wrong denial
-            // trips the hard divergence marker → fails an e2e scenario AND the gate
-            // on this do-not-merge branch. `None` (projection can't form an
-            // answer) defers to live.
+            // fallback) so a cold projection isn't a false-deny of a real member.
+            // A wrong denial trips the hard divergence marker → fails an e2e
+            // scenario AND the gate on this do-not-merge branch. `None` (projection
+            // can't form an answer) defers to live.
             if let Some(gp) = governance_position.as_ref() {
                 let heads = &gp.governance_dag_heads;
                 let projected =
@@ -1026,87 +1024,56 @@ pub async fn handle_state_delta(
             );
         }
         DeltaAuthOutcome::MembershipReject { group, reason } => {
-            // SOLE AUTHORITY (F4b), grant direction: the projection renders the
-            // authoritative membership verdict; live's membership-reject is the
-            // cross-check. If the projection AUTHORITATIVELY sees the author as a
-            // member at the cut, AUTHORIZE (fall through to apply), overriding
-            // live's reject.
-            //
-            // "Authoritatively" = `member_at_cut_authoritative`, which grants ONLY
-            // when the COMPLETE cited ancestry is folded AND the at-cut walk
-            // confirms membership — never via the materialized `role_of` fallback.
-            // That fallback reads CURRENT live state, which races a still-
-            // propagating cascade removal and caused a non-deterministic
-            // over-grant in group-remove-from-root-revokes-inherited. Resting the
-            // grant only on fully-folded at-cut evidence makes it deterministic and
-            // unable to out-run live. `None` (cut not fully folded — can't decide)
-            // and `Some(false)` both fall through to the reject below.
-            //
-            // A grant that disagrees with live still trips the hard divergence gate
-            // (membership-cut-grant), so a wrong grant fails an e2e scenario AND
-            // the gate on this do-not-merge branch.
-            let granted = governance_position.as_ref().and_then(|gp| {
-                node_state
-                    .read_scope_projections()
-                    .member_at_cut_authoritative(
-                        datastore,
-                        group,
-                        &author_id,
-                        &gp.governance_dag_heads,
-                    )
-            }) == Some(true);
-            if granted {
-                // Diagnostics pin WHY the authoritative walk grants where live says
-                // NeverMember: decision_group_size>0 → direct subgroup membership
-                // folded (cascade-removal not seen as an op); author_in_any but
-                // decision_group_size 0 → inherited via a parent the projection
-                // still folds as a member; heads_in_log==heads_len confirms the
-                // fold was complete (it must be, given member_at_cut_authoritative).
-                let (
-                    backfilled,
-                    ns_resolved,
-                    log_len,
-                    heads_in_log,
-                    author_in_any,
-                    decision_group_in_view,
-                    decision_group_size,
-                ) = governance_position
-                    .as_ref()
-                    .map(|gp| {
-                        node_state.read_scope_projections().cut_diagnostics(
-                            datastore,
-                            group,
-                            &author_id,
-                            &gp.governance_dag_heads,
-                        )
-                    })
-                    .unwrap_or((false, false, 0, 0, false, false, 0));
-                warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "membership-cut-grant",
-                    group_id = ?group,
-                    %author_id,
-                    reason,
-                    ns_resolved,
-                    backfilled,
-                    log_len,
-                    heads_in_log,
-                    author_in_any,
-                    decision_group_in_view,
-                    decision_group_size,
-                    "projection authorizes a write the live resolver rejected — proceeding (sole authority)"
-                );
-                // Fall through to the apply path: the projection is authoritative.
-            } else {
-                warn!(
-                    %context_id,
-                    %author_id,
-                    delta_id = ?delta_id,
-                    reason,
-                    "cross-DAG check: rejecting state delta (projection concurs)"
-                );
-                return Ok(());
+            // CO-AUTHORIZER (F4a, safe direction): the projection ADDS rejections
+            // (the Authorized arm above) but does NOT override live's
+            // membership-reject to GRANT. The grant direction (sole authority) is
+            // deferred: faithfully reproducing live's open-subgroup INHERITANCE
+            // model in the projection — for both directions and across
+            // leave/rejoin/remove — needs the full non-op subgroup tree +
+            // visibility + caps folded, which repeatedly traded an over-grant for
+            // an under-grant. Until that lands, reject (trust live) and keep an
+            // INFORMATIONAL, refresh-free readiness marker (NOT gated) sizing the
+            // gap via `member_at_cut_authoritative` (fold-complete at-cut only).
+            if let Some(gp) = governance_position.as_ref() {
+                let heads = &gp.governance_dag_heads;
+                let proj = node_state.read_scope_projections();
+                if proj.member_at_cut_authoritative(datastore, group, &author_id, heads)
+                    == Some(true)
+                {
+                    let (
+                        backfilled,
+                        ns_resolved,
+                        log_len,
+                        heads_in_log,
+                        author_in_any,
+                        decision_group_in_view,
+                        decision_group_size,
+                    ) = proj.cut_diagnostics(datastore, group, &author_id, heads);
+                    warn!(
+                        marker = "unified_projection_overauth",
+                        plane = "membership-cut-reject",
+                        group_id = ?group,
+                        %author_id,
+                        reason,
+                        ns_resolved,
+                        backfilled,
+                        log_len,
+                        heads_in_log,
+                        author_in_any,
+                        decision_group_in_view,
+                        decision_group_size,
+                        "projection would grant a write live rejected (grant direction deferred; not gated)"
+                    );
+                }
             }
+            warn!(
+                %context_id,
+                %author_id,
+                delta_id = ?delta_id,
+                reason,
+                "cross-DAG check: rejecting state delta"
+            );
+            return Ok(());
         }
         DeltaAuthOutcome::Reject(reason) => {
             // Structural / error reject (bypass attempt, edge on a non-group
