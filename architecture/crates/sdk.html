@@ -614,6 +614,11 @@ self.shared.grant_capability(collaborator, OpMask::APPEND)?;
     <p style="margin-top:6px;">End-to-end test harness for the kv-store app. Runs multi-node scenarios with concurrent writes, verifies CRDT convergence, and validates sync protocol correctness.</p>
     <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/e2e-kv-store" target="_blank" rel="noopener">apps/e2e-kv-store</a>
   </div>
+  <div class="cb">
+    <h4 style="color:#a78bfa;">custom-key-store</h4>
+    <p style="margin-top:6px;">Demonstrates using a <strong>custom key type</strong> in a Calimero collection. Shows how to implement <span class="code">AsRef&lt;[u8]&gt;</span> (the SDK's <span class="code">StorageKey</span> requirement) for arbitrary structs or numeric types, which are otherwise rejected at compile time as collection keys.</p>
+    <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/custom-key-store" target="_blank" rel="noopener">apps/custom-key-store</a>
+  </div>
 </div>
 </div>
 
