@@ -17,11 +17,19 @@ use std::collections::BTreeMap;
 use thiserror::Error as ThisError;
 
 use calimero_context_config::types::ContextGroupId;
-use calimero_op::{Op, OpPayload};
+use calimero_context_config::MemberCapabilities;
+use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
+
+/// `CAN_JOIN_OPEN_SUBGROUPS` capability bit — gates inherited membership into an
+/// open subgroup (mirrors the live `MemberCapabilities` constant).
+const CAN_JOIN_OPEN_SUBGROUPS: u32 = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS;
+/// Max subgroup-tree depth the inheritance walk traverses (mirrors the live
+/// `MAX_NAMESPACE_DEPTH`).
+const MAX_NAMESPACE_DEPTH: usize = 16;
 
 /// Why an op was refused. One rejection type for every plane — the caller
 /// doesn't have to know which plane said no.
@@ -53,6 +61,30 @@ pub struct AclView {
     pub groups: BTreeMap<ContextGroupId, BTreeMap<PublicKey, GroupMemberRole>>,
     /// The scope's root admin at the cut (the admin plane).
     pub root_admin: Option<PublicKey>,
+    /// Per-group default capability bitmask at the cut (capability plane).
+    pub default_caps: BTreeMap<ContextGroupId, u32>,
+    /// Per-(group, member) explicit capability override at the cut. Takes
+    /// precedence over the group default for that member.
+    pub member_caps: BTreeMap<(ContextGroupId, PublicKey), u32>,
+    /// Live subgroup tree at the cut: child scope → (parent scope, restricted).
+    /// Only scopes whose latest `exists` is true appear. Drives the inherited-
+    /// membership parent walk (open chain to an ancestor the author belongs to).
+    pub subgroups: BTreeMap<ScopeId, SubgroupEdge>,
+    /// Per-group genesis admin at the cut (the subgroup creator, or the
+    /// namespace-root admin seeded at backfill). Mirrors the live
+    /// `GroupMeta.admin_identity`. An identity is a group admin iff it is this
+    /// or holds the `Admin` role in `groups[group]`.
+    pub group_admin: BTreeMap<ContextGroupId, PublicKey>,
+}
+
+/// A live subgroup's tree position + visibility at the cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubgroupEdge {
+    /// Parent scope this subgroup is nested under.
+    pub parent: ScopeId,
+    /// `true` = Restricted (a visibility wall that blocks inheritance through
+    /// it); `false` = Open.
+    pub restricted: bool,
 }
 
 /// Capabilities a scope **member** implicitly holds on a non-restricted
@@ -102,6 +134,107 @@ impl AclView {
             .any(|members| members.contains_key(author))
     }
 
+    /// Is `author` a member of `group` **at this cut** — direct, group admin, or
+    /// inherited through an open-subgroup chain — resolved entirely from the
+    /// folded view (no live-store reads). Faithful port of the live
+    /// `MembershipRepository::check_path` + the `acl_view_at` admin carve-out,
+    /// but over the at-cut state, so a membership the cut revoked is not granted.
+    ///
+    /// `root` is the immutable `(namespace_root_group, genesis_admin)` — the one
+    /// admin fact with no governance op (it lives in `GroupMeta` at namespace
+    /// genesis); pass `None` if unknown. Every *mutable* input (memberships,
+    /// caps, visibility, subgroup tree, subgroup-creator admin) comes from the
+    /// view, so the result honors the cut.
+    #[must_use]
+    pub fn is_member_at_cut(
+        &self,
+        group: ContextGroupId,
+        author: &PublicKey,
+        root: Option<(ContextGroupId, PublicKey)>,
+        default_cap_base: u32,
+    ) -> bool {
+        // Admin of `g` at the cut: a folded group admin (subgroup creator / an
+        // `Admin`-role holder) OR the immutable namespace-root genesis admin.
+        let is_admin = |g: ContextGroupId| -> bool {
+            self.is_group_admin(author, g)
+                || root.is_some_and(|(root_g, root_admin)| g == root_g && *author == root_admin)
+        };
+
+        // Direct member or admin of the target group. NOTE: an open-subgroup
+        // inheritance self-join (`MemberJoinedOpen`) is deliberately NOT folded as
+        // a direct membership (it carries no persistent direct row in the live
+        // model — its apply requires `check_path == Inherited` and creates no
+        // row); such membership is re-derived by the inheritance walk below, so it
+        // is correctly revoked when the anchor is removed.
+        if is_admin(group)
+            || self
+                .groups
+                .get(&group)
+                .is_some_and(|m| m.contains_key(author))
+        {
+            return true;
+        }
+
+        // Inherited: walk parents while the chain stays Open, mirroring
+        // `check_path`. The first direct-membership ancestor decides via its
+        // `CAN_JOIN_OPEN_SUBGROUPS` cap (recorded, not returned); an admin
+        // ancestor reached over the open chain grants immediately.
+        //
+        // `effective_cap`: the projection folds explicit `DefaultCapabilitiesSet`
+        // / `MemberCapabilitySet` ops, but a group's CREATION default cap is a
+        // store write, not an op — so when nothing is folded for the anchor we
+        // fall back to `default_cap_base` (the materialized default, immutable
+        // base state, passed by the caller). This mirrors live's
+        // `member_capability` = override.or(default).
+        let effective_cap = |g: &ContextGroupId| -> u32 {
+            let folded = self.capability(g, author);
+            if folded != 0 {
+                folded
+            } else {
+                default_cap_base
+            }
+        };
+
+        let mut anchor_is_member: Option<bool> = None;
+        let mut current = group;
+        for _ in 0..=MAX_NAMESPACE_DEPTH {
+            // `current` must be Open for inheritance to pass up through it.
+            let Some(edge) = self.subgroups.get(&ScopeId::from(current.to_bytes())) else {
+                return anchor_is_member.unwrap_or(false);
+            };
+            if edge.restricted {
+                return anchor_is_member.unwrap_or(false);
+            }
+            let parent = ContextGroupId::from(*edge.parent.as_bytes());
+            if is_admin(parent) {
+                return true;
+            }
+            if anchor_is_member.is_none()
+                && self
+                    .groups
+                    .get(&parent)
+                    .is_some_and(|m| m.contains_key(author))
+            {
+                anchor_is_member = Some(effective_cap(&parent) & CAN_JOIN_OPEN_SUBGROUPS != 0);
+            }
+            current = parent;
+        }
+        anchor_is_member.unwrap_or(false)
+    }
+
+    /// `member`'s effective capability bitmask in `group` at the cut: the
+    /// explicit per-member override if present, else the group default, else
+    /// `0`. Mirrors the live `member_capability` read used by inherited-
+    /// membership resolution (the `CAN_JOIN_OPEN_SUBGROUPS` gate).
+    #[must_use]
+    pub fn capability(&self, group: &ContextGroupId, member: &PublicKey) -> u32 {
+        self.member_caps
+            .get(&(*group, *member))
+            .copied()
+            .or_else(|| self.default_caps.get(group).copied())
+            .unwrap_or(0)
+    }
+
     /// Is `author` the owner of `object` — permitted to rotate its writer set?
     ///
     /// The `ADMIN` bit on the object confers ownership (owner = capability
@@ -115,6 +248,9 @@ impl AclView {
     /// Is `author` an `Admin` of `group` at the cut?
     #[must_use]
     pub fn is_group_admin(&self, author: &PublicKey, group: ContextGroupId) -> bool {
+        if self.group_admin.get(&group) == Some(author) {
+            return true;
+        }
         matches!(
             self.groups.get(&group).and_then(|m| m.get(author)),
             Some(GroupMemberRole::Admin)
@@ -186,6 +322,14 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 Err(Rejected::NotGroupAdmin)
             }
         }
+        OpPayload::SubgroupVisibilitySet { scope, .. } => {
+            // Visibility is a property of the subgroup; its admin sets it.
+            if acl_at_cut.is_group_admin(&op.author, ContextGroupId::from(*scope.as_bytes())) {
+                Ok(())
+            } else {
+                Err(Rejected::NotGroupAdmin)
+            }
+        }
         OpPayload::AdminChanged { .. }
         | OpPayload::PolicyUpdated { .. }
         | OpPayload::SubgroupCreated { .. }
@@ -197,6 +341,17 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 Err(Rejected::NotRootAdmin)
             }
         }
+        // Capability changes are an admin action on the target group.
+        OpPayload::DefaultCapabilitiesSet { group, .. }
+        | OpPayload::MemberCapabilitySet { group, .. } => {
+            if acl_at_cut.is_group_admin(&op.author, *group) {
+                Ok(())
+            } else {
+                Err(Rejected::NotGroupAdmin)
+            }
+        }
+        // A graph-only node mutates nothing, so there is nothing to authorize.
+        OpPayload::Noop => Ok(()),
     }
 }
 
@@ -234,6 +389,101 @@ mod tests {
             acl,
             ..Default::default()
         }
+    }
+
+    // Build a view: parent group with `member` (holding `caps`), an open
+    // subgroup `child` nested under `parent`. Mirrors the inheritance scenario.
+    fn inheritance_view(
+        parent: ContextGroupId,
+        child: ContextGroupId,
+        member: PublicKey,
+        caps: u32,
+        child_restricted: bool,
+        parent_has_member: bool,
+    ) -> AclView {
+        let mut groups: BTreeMap<ContextGroupId, BTreeMap<PublicKey, GroupMemberRole>> =
+            BTreeMap::new();
+        if parent_has_member {
+            groups.insert(
+                parent,
+                [(member, GroupMemberRole::Member)].into_iter().collect(),
+            );
+        }
+        let mut member_caps = BTreeMap::new();
+        member_caps.insert((parent, member), caps);
+        let mut subgroups = BTreeMap::new();
+        subgroups.insert(
+            ScopeId::from(child.to_bytes()),
+            SubgroupEdge {
+                parent: ScopeId::from(parent.to_bytes()),
+                restricted: child_restricted,
+            },
+        );
+        AclView {
+            groups,
+            member_caps,
+            subgroups,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn inherited_membership_requires_open_chain_and_cap() {
+        let parent = ContextGroupId::from([1u8; 32]);
+        let child = ContextGroupId::from([2u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+
+        // Open child + parent member with CAN_JOIN_OPEN_SUBGROUPS → inherits.
+        let v = inheritance_view(parent, child, member, CAN_JOIN_OPEN_SUBGROUPS, false, true);
+        assert!(v.is_member_at_cut(child, &member, None, 0));
+
+        // Open child but member lacks the cap → no inheritance.
+        let v = inheritance_view(parent, child, member, 0, false, true);
+        assert!(!v.is_member_at_cut(child, &member, None, 0));
+
+        // Restricted child → wall, no inheritance even with the cap.
+        let v = inheritance_view(parent, child, member, CAN_JOIN_OPEN_SUBGROUPS, true, true);
+        assert!(!v.is_member_at_cut(child, &member, None, 0));
+
+        // THE over-auth case: parent membership REVOKED at the cut (parent no
+        // longer has the member) → not a member of the child either, even with
+        // the cap still set. This is exactly what reading current live state got
+        // wrong; the at-cut view has no parent membership, so inheritance fails.
+        let v = inheritance_view(parent, child, member, CAN_JOIN_OPEN_SUBGROUPS, false, false);
+        assert!(!v.is_member_at_cut(child, &member, None, 0));
+    }
+
+    #[test]
+    fn inherited_via_parent_admin_and_root_genesis_admin() {
+        let parent = ContextGroupId::from([1u8; 32]);
+        let child = ContextGroupId::from([2u8; 32]);
+        let admin = PublicKey::from([0xAA; 32]);
+
+        // Parent's folded group admin, open child → inherits via admin (no cap
+        // needed, no direct parent membership row).
+        let mut v = inheritance_view(parent, child, admin, 0, false, false);
+        v.group_admin.insert(parent, admin);
+        assert!(v.is_member_at_cut(child, &admin, None, 0));
+
+        // Namespace-root genesis admin (no op) supplied via `root`: an open child
+        // directly under the root inherits for the root admin.
+        let root = ContextGroupId::from([9u8; 32]);
+        let mut subgroups = BTreeMap::new();
+        subgroups.insert(
+            ScopeId::from(child.to_bytes()),
+            SubgroupEdge {
+                parent: ScopeId::from(root.to_bytes()),
+                restricted: false,
+            },
+        );
+        let v = AclView {
+            subgroups,
+            ..Default::default()
+        };
+        assert!(v.is_member_at_cut(child, &admin, Some((root, admin)), 0));
+        // A non-admin without any membership does not inherit.
+        let other = PublicKey::from([0x33; 32]);
+        assert!(!v.is_member_at_cut(child, &other, Some((root, admin)), 0));
     }
 
     #[test]

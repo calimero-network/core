@@ -26,11 +26,24 @@ use calimero_storage::logical_clock::HybridTimestamp;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-/// Last-writer-wins stamp for a slot: the `(hlc, op_id)` of the op that last
-/// won it. Comparing as a tuple makes concurrent ops (equal `hlc`) tie-break
-/// deterministically by content-address `op_id`, so every node picks the same
-/// winner regardless of arrival order.
-type Stamp = (HybridTimestamp, [u8; 32]);
+/// Last-writer-wins stamp for a slot: `(hlc, generation, op_id)` of the op that
+/// last won it, compared as a tuple.
+///
+/// - `hlc` orders ops that carry a real wall/logical clock (the data and
+///   ACL-rotation planes). It dominates the comparison.
+/// - `generation` is the op's causal depth within the cut being resolved
+///   (`1 + max(parent generation)`, `0` at a root). It breaks ties when `hlc`
+///   is equal — which is the case for the **governance** plane, whose ops all
+///   carry `hlc = 0` (the source deltas are stamped with the default clock).
+///   Without it, an add → remove → re-add chain on one `(group, member)` slot
+///   would tie-break purely by `op_id` (content hash) — causally arbitrary, so
+///   a re-add could lose to the earlier remove. Generation makes the causally
+///   later op win. Only meaningful inside [`ScopeState::acl_view_at`], which
+///   knows each op's ancestry; the streaming `apply` path uses `0`.
+/// - `op_id` is the final, content-addressed tie-break for genuinely concurrent
+///   ops (equal `hlc` and `generation`), so every node picks the same winner
+///   regardless of arrival order.
+type Stamp = (HybridTimestamp, u32, [u8; 32]);
 
 fn wins(incoming: Stamp, current: Option<&Stamp>) -> bool {
     current.is_none_or(|cur| incoming > *cur)
@@ -75,6 +88,14 @@ pub struct ScopeState {
     policy: Vec<u8>,
     policy_clock: Option<Stamp>,
     subgroups: BTreeMap<ScopeId, SubgroupSlot>,
+    // --- capability plane (gates inherited-membership resolution) ---
+    default_caps: BTreeMap<ContextGroupId, u32>,
+    default_caps_clock: BTreeMap<ContextGroupId, Stamp>,
+    member_caps: BTreeMap<(ContextGroupId, PublicKey), u32>,
+    member_caps_clock: BTreeMap<(ContextGroupId, PublicKey), Stamp>,
+    // --- per-group admin (the subgroup creator / genesis admin) ---
+    group_admin: BTreeMap<ContextGroupId, PublicKey>,
+    group_admin_clock: BTreeMap<ContextGroupId, Stamp>,
 }
 
 impl ScopeState {
@@ -89,9 +110,16 @@ impl ScopeState {
         state
     }
 
-    /// Apply one op, last-writer-wins per affected slot.
+    /// Apply one op, last-writer-wins per affected slot. Streaming entry point
+    /// (no ancestry context), so it uses causal generation `0`; the cut-aware
+    /// [`Self::acl_view_at`] supplies real generations.
     pub fn apply(&mut self, op: &Op) {
-        let stamp: Stamp = (op.hlc, op.id);
+        self.apply_with_generation(op, 0);
+    }
+
+    /// Apply one op with an explicit causal `generation` for its LWW stamp.
+    pub fn apply_with_generation(&mut self, op: &Op, generation: u32) {
+        let stamp: Stamp = (op.hlc, generation, op.id);
         match &op.payload {
             OpPayload::Put { entity, value } => {
                 if wins(stamp, self.data_clock.get(entity)) {
@@ -162,11 +190,18 @@ impl ScopeState {
                 child,
                 parent,
                 restricted,
+                admin,
             } => {
                 let slot = self.subgroups.entry(*child).or_default();
                 lww_set(&mut slot.parent, stamp, *parent);
                 lww_set(&mut slot.restricted, stamp, *restricted);
                 lww_set(&mut slot.exists, stamp, true);
+                // The creator is the subgroup's genesis admin.
+                let g = ContextGroupId::from(*child.as_bytes());
+                if wins(stamp, self.group_admin_clock.get(&g)) {
+                    let _ = self.group_admin.insert(g, *admin);
+                    let _ = self.group_admin_clock.insert(g, stamp);
+                }
             }
             OpPayload::SubgroupReparented { child, new_parent } => {
                 let slot = self.subgroups.entry(*child).or_default();
@@ -176,16 +211,63 @@ impl ScopeState {
                 let slot = self.subgroups.entry(*scope).or_default();
                 lww_set(&mut slot.exists, stamp, false);
             }
+            OpPayload::SubgroupVisibilitySet { scope, restricted } => {
+                let slot = self.subgroups.entry(*scope).or_default();
+                lww_set(&mut slot.restricted, stamp, *restricted);
+            }
+            OpPayload::DefaultCapabilitiesSet {
+                group,
+                capabilities,
+            } => {
+                if wins(stamp, self.default_caps_clock.get(group)) {
+                    let _ = self.default_caps.insert(*group, *capabilities);
+                    let _ = self.default_caps_clock.insert(*group, stamp);
+                }
+            }
+            OpPayload::MemberCapabilitySet {
+                group,
+                member,
+                capabilities,
+            } => {
+                let key = (*group, *member);
+                if wins(stamp, self.member_caps_clock.get(&key)) {
+                    let _ = self.member_caps.insert(key, *capabilities);
+                    let _ = self.member_caps_clock.insert(key, stamp);
+                }
+            }
+            // A graph-only node: present in the log so an ancestry walk can
+            // traverse through it, but it folds to nothing.
+            OpPayload::Noop => {}
         }
     }
 
     /// The current authorization view (whole state).
     #[must_use]
     pub fn acl_view(&self) -> AclView {
+        let subgroups = self
+            .subgroups
+            .iter()
+            .filter(|(_, slot)| slot.exists.as_ref().is_some_and(|(_, live)| *live))
+            .filter_map(|(child, slot)| {
+                slot.parent.as_ref().map(|(_, parent)| {
+                    (
+                        *child,
+                        calimero_authz::SubgroupEdge {
+                            parent: *parent,
+                            restricted: slot.restricted.as_ref().is_some_and(|(_, r)| *r),
+                        },
+                    )
+                })
+            })
+            .collect();
         AclView {
             acl: self.acl.clone(),
             groups: self.groups.clone(),
             root_admin: self.root_admin,
+            default_caps: self.default_caps.clone(),
+            member_caps: self.member_caps.clone(),
+            subgroups,
+            group_admin: self.group_admin.clone(),
         }
     }
 
@@ -222,7 +304,81 @@ impl ScopeState {
                 }
             }
         }
-        Self::from_ops(ancestry).acl_view()
+
+        // Causal generation per ancestry op = longest path from a root
+        // (`1 + max(parent generation)`, `0` when no parent is in the ancestry).
+        // It orders causally-related governance ops (whose `hlc` is all `0`) so a
+        // re-add beats an earlier remove. Iterative post-order over the DAG (no
+        // cycles), so deep chains can't blow the stack.
+        let anc_by_id: HashMap<[u8; 32], &Op> = ancestry.iter().map(|op| (op.id, *op)).collect();
+        let mut generation: HashMap<[u8; 32], u32> = HashMap::new();
+        for &start in &ancestry {
+            if generation.contains_key(&start.id) {
+                continue;
+            }
+            let mut stack = vec![start.id];
+            while let Some(&top) = stack.last() {
+                let Some(top_op) = anc_by_id.get(&top) else {
+                    let _ = generation.insert(top, 0);
+                    let _ = stack.pop();
+                    continue;
+                };
+                let parents_in_anc: Vec<[u8; 32]> = top_op
+                    .parents
+                    .iter()
+                    .copied()
+                    .filter(|p| anc_by_id.contains_key(p))
+                    .collect();
+                let unresolved: Vec<[u8; 32]> = parents_in_anc
+                    .iter()
+                    .copied()
+                    .filter(|p| !generation.contains_key(p))
+                    .collect();
+                if unresolved.is_empty() {
+                    let g = parents_in_anc
+                        .iter()
+                        .map(|p| generation[p] + 1)
+                        .max()
+                        .unwrap_or(0);
+                    let _ = generation.insert(top, g);
+                    let _ = stack.pop();
+                } else {
+                    stack.extend(unresolved);
+                }
+            }
+        }
+
+        let mut state = Self::default();
+        for &op in &ancestry {
+            state.apply_with_generation(op, generation.get(&op.id).copied().unwrap_or(0));
+        }
+        state.acl_view()
+    }
+
+    /// Is the **complete** causal ancestry of `parents` present in `log` — i.e.
+    /// does the walk reach every referenced op without truncating at a missing
+    /// one? `acl_view_at` silently skips a missing ancestor (correct for a
+    /// legitimately out-of-slice cross-scope edge, but a *same-scope* gap yields
+    /// a truncated, possibly-stale view). The **authoritative grant** path must
+    /// not override live's reject on a truncated view: a missing mid-ancestry
+    /// removal would leave a since-removed member still folded as present. This
+    /// returns `false` the moment any referenced id is absent from `log`, so the
+    /// grant can abstain (defer to live) unless it has the whole history.
+    #[must_use]
+    pub fn cut_ancestry_complete(log: &[Op], parents: &[[u8; 32]]) -> bool {
+        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id, op)).collect();
+        let mut visited: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id) {
+                continue;
+            }
+            match by_id.get(&id) {
+                Some(op) => queue.extend(op.parents.iter().copied()),
+                None => return false,
+            }
+        }
+        true
     }
 
     /// The single convergence root over the whole projection (values + ACL +
@@ -324,6 +480,21 @@ impl ScopeState {
                 }
                 hasher.update([u8::from(slot.restricted.as_ref().is_some_and(|(_, r)| *r))]);
             }
+        }
+        // Capability plane (deterministic order via BTreeMap). Folded into the
+        // convergence root so a node's caps view can't silently diverge.
+        for (group, caps) in &self.default_caps {
+            hasher.update(group.to_bytes());
+            hasher.update(caps.to_le_bytes());
+        }
+        for ((group, member), caps) in &self.member_caps {
+            hasher.update(group.to_bytes());
+            hasher.update(AsRef::<[u8; 32]>::as_ref(member));
+            hasher.update(caps.to_le_bytes());
+        }
+        for (group, admin) in &self.group_admin {
+            hasher.update(group.to_bytes());
+            hasher.update(AsRef::<[u8; 32]>::as_ref(admin));
         }
         hasher.finalize().into()
     }
@@ -646,6 +817,112 @@ mod tests {
     }
 
     #[test]
+    fn re_add_after_remove_wins_at_zero_hlc_via_causal_generation() {
+        // Governance ops all carry hlc=0, so only causal generation orders them.
+        // An add → remove → re-add chain on one (group, member) slot must resolve
+        // to PRESENT at the re-add cut, not lose to the remove by op_id tie-break
+        // (the kick-and-readd bug).
+        let group = ContextGroupId::from([3u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+        let scope = ScopeId::from([0u8; 32]);
+        let author = PublicKey::from([1u8; 32]);
+        let zero = hlc(0);
+        let mk = |parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
+            let id = Op::compute_id(scope, &parents, &author, &zero, &payload);
+            Op {
+                id,
+                scope,
+                parents,
+                author,
+                hlc: zero,
+                payload,
+                expected_scope_root: [0u8; 32],
+                signature: [0u8; 64],
+            }
+        };
+        let add = mk(
+            vec![],
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Member,
+            },
+        );
+        let remove = mk(vec![add.id], OpPayload::MemberRemoved { group, member });
+        let readd = mk(
+            vec![remove.id],
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Admin,
+            },
+        );
+        let log = vec![add.clone(), remove.clone(), readd.clone()];
+
+        // At the re-add cut: present as Admin (generation readd > remove > add).
+        let at_readd = ScopeState::acl_view_at(&log, &[readd.id]);
+        assert_eq!(
+            at_readd.groups.get(&group).and_then(|m| m.get(&member)),
+            Some(&GroupMemberRole::Admin),
+            "re-add after remove must win by causal generation at hlc=0"
+        );
+
+        // At the remove cut: absent.
+        let at_remove = ScopeState::acl_view_at(&log, &[remove.id]);
+        assert_eq!(
+            at_remove.groups.get(&group).and_then(|m| m.get(&member)),
+            None,
+            "the remove cut drops the member"
+        );
+    }
+
+    #[test]
+    fn cut_ancestry_complete_detects_a_missing_mid_ancestry_op() {
+        // add → remove chain; the cut cites `remove`. With both folded the
+        // ancestry is complete; drop the mid-ancestry `add` (parent of `remove`)
+        // and the walk truncates → incomplete. This is the over-grant guard: a
+        // missing removal in the middle must NOT pass as an authoritative grant.
+        let group = ContextGroupId::from([3u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+        let scope = ScopeId::from([0u8; 32]);
+        let author = PublicKey::from([1u8; 32]);
+        let zero = hlc(0);
+        let mk = |parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
+            let id = Op::compute_id(scope, &parents, &author, &zero, &payload);
+            Op {
+                id,
+                scope,
+                parents,
+                author,
+                hlc: zero,
+                payload,
+                expected_scope_root: [0u8; 32],
+                signature: [0u8; 64],
+            }
+        };
+        let add = mk(
+            vec![],
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Member,
+            },
+        );
+        let remove = mk(vec![add.id], OpPayload::MemberRemoved { group, member });
+
+        // Complete log: ancestry of [remove] = {remove, add}, both present.
+        let complete = vec![add.clone(), remove.clone()];
+        assert!(ScopeState::cut_ancestry_complete(&complete, &[remove.id]));
+
+        // Missing the mid-ancestry `add` (remove's parent) → truncated → false.
+        let truncated = vec![remove.clone()];
+        assert!(!ScopeState::cut_ancestry_complete(&truncated, &[remove.id]));
+
+        // A cited head absent from the log → also incomplete.
+        assert!(!ScopeState::cut_ancestry_complete(&[], &[remove.id]));
+    }
+
+    #[test]
     fn scope_tree_create_reparent_delete_is_order_independent() {
         let child = ScopeId::from([0xC1; 32]);
         let p1 = ScopeId::from([0x11; 32]);
@@ -659,6 +936,7 @@ mod tests {
                     child,
                     parent: p1,
                     restricted: true,
+                    admin: PublicKey::from([7u8; 32]),
                 },
             ),
             op(

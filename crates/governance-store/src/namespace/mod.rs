@@ -28,7 +28,7 @@ pub use self::dag::{NamespaceDagService, NamespaceHead};
 pub(crate) use self::governance::classify_report_readiness;
 pub use self::governance::{
     apply_received_group_key, apply_signed_namespace_op, build_group_key_delivery,
-    collect_skeleton_delta_ids_for_group, namespace_groups_awaiting_key,
+    collect_skeleton_delta_ids_for_group, decrypt_group_op, namespace_groups_awaiting_key,
     sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult,
     KeyUnwrapFailure, NamespaceGovernance,
 };

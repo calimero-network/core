@@ -970,7 +970,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                             }
                         }
                         if !ops.is_empty() {
-                            match scope_projections.lock() {
+                            match scope_projections.write() {
                                 Ok(mut projections) => {
                                     for op in &ops {
                                         projections.ingest_op(op);

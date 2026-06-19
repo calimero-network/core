@@ -1515,6 +1515,35 @@ pub fn apply_signed_namespace_op(
     NamespaceGovernance::new(store, op.namespace_id).apply_signed_op(op)
 }
 
+/// Decrypt the cleartext [`GroupOp`] carried by a `NamespaceOp::Group` envelope
+/// **without applying it** — the read-only counterpart of the private
+/// `decrypt_and_apply_group_op`, for the unified-op projection shadow feed,
+/// which folds the cleartext membership op but must never re-run the mutation.
+///
+/// Mirrors the same key resolution the apply path uses: try the subgroup's own
+/// keyring first, then fall back to the parent namespace's key (issue #2256 —
+/// an Open subgroup is encrypted with the namespace key). `Ok(None)` when no
+/// key resolves locally, i.e. the op was never decryptable on this node and so
+/// there is nothing to fold.
+pub fn decrypt_group_op(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: ContextGroupId,
+    key_id: &[u8; 32],
+    encrypted: &EncryptedGroupOp,
+) -> EyreResult<Option<GroupOp>> {
+    let resolved = match GroupKeyring::new(store, group_id).load_key_by_id(key_id)? {
+        Some(k) => Some(k),
+        None => {
+            GroupKeyring::new(store, ContextGroupId::from(namespace_id)).load_key_by_id(key_id)?
+        }
+    };
+    match resolved {
+        Some(group_key) => Ok(Some(GroupKeyring::decrypt_op(&group_key, encrypted)?)),
+        None => Ok(None),
+    }
+}
+
 /// Build an ECDH-wrapped group key to deliver to `requester` in response
 /// to a `GroupKeyRequest`. See
 /// [`NamespaceGovernance::build_group_key_delivery`].
