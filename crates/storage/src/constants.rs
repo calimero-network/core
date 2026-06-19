@@ -61,8 +61,7 @@ mod tests {
         assert_eq!(GC_INTERVAL_NANOS, hours_to_nanos(12));
     }
 
-    #[test]
-    fn threshold_is_greater_than_retention() {
-        assert!(FULL_RESYNC_THRESHOLD_NANOS > TOMBSTONE_RETENTION_NANOS);
-    }
+    // Compile-time invariant: a full resync must be triggered only after a
+    // tombstone could have been collected, never before.
+    const _: () = assert!(FULL_RESYNC_THRESHOLD_NANOS > TOMBSTONE_RETENTION_NANOS);
 }

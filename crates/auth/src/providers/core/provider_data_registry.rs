@@ -39,8 +39,8 @@ impl AuthDataRegistry {
         self.types.insert(method, auth_type);
     }
 
-    fn get(&self, method: &str) -> Option<&Box<dyn AuthDataType>> {
-        self.types.get(method)
+    fn get(&self, method: &str) -> Option<&dyn AuthDataType> {
+        self.types.get(method).map(|t| &**t)
     }
 
     fn get_all_methods(&self) -> Vec<String> {

@@ -289,7 +289,7 @@ const _: () = {
         cmp as usize
     };
 
-    [[()][size_of_dyn]][ptr_is_good];
+    [[()][size_of_dyn]][ptr_is_good]
 };
 
 // pub struct DynResolve {

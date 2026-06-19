@@ -478,7 +478,6 @@ where
     ///
     /// # Errors
     /// Returns `ActionNotAllowed` if the executor is not in the writer set.
-    #[expect(clippy::unwrap_in_result, reason = "value entry id is well-formed")]
     pub fn insert(&mut self, value: T) -> Result<Option<T>, StoreError> {
         let executor: PublicKey = env::executor_id().into();
         let writers = self.current_writers();

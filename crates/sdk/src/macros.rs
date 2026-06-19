@@ -3,16 +3,16 @@
 macro_rules! __err__ {
     ($msg:literal $(,)?) => {{
         use $crate::types::__private::*;
-        (&&&&$crate::types::__private::Wrap(::std::format_args!($msg))).into_error()
+        (&&&&$crate::types::__private::Wrap(::std::format_args!($msg))).to_error()
     }};
     ($err:expr $(,)?) => {{
         #[allow(unused_imports, reason = "if expanding the next line fails, it reports this as unused")]
         use $crate::types::__private::*;
-        (&&&&$crate::types::__private::Wrap($err)).into_error()
+        (&&&&$crate::types::__private::Wrap($err)).to_error()
     }};
     ($fmt:expr, $($arg:tt)*) => {{
         use $crate::types::__private::*;
-        (&&&&$crate::types::__private::Wrap(&::std::format!($fmt, $($arg)*))).into_error()
+        (&&&&$crate::types::__private::Wrap(&::std::format!($fmt, $($arg)*))).to_error()
     }};
 }
 

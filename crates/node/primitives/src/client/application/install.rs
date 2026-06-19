@@ -41,9 +41,11 @@ impl NodeClient {
             source.to_string().into_boxed_str(),
             metadata.into_boxed_slice(),
             key::BlobMeta::new(BlobId::from([0; 32])),
-            package.to_owned().into_boxed_str(),
-            version.to_owned().into_boxed_str(),
-            "".to_owned().into_boxed_str(),
+            types::PackageInfo {
+                package: package.to_owned().into_boxed_str(),
+                version: version.to_owned().into_boxed_str(),
+                signer_id: String::new().into_boxed_str(),
+            },
         );
 
         let application_id = {
@@ -68,9 +70,7 @@ impl NodeClient {
         size: u64,
         source: &ApplicationSource,
         metadata: Vec<u8>,
-        package: &str,
-        version: &str,
-        signer_id: &str,
+        info: types::PackageInfo,
         services: Vec<types::ServiceMeta>,
     ) -> eyre::Result<ApplicationId> {
         let mut application = types::ApplicationMeta::new(
@@ -79,9 +79,7 @@ impl NodeClient {
             source.to_string().into_boxed_str(),
             metadata.into_boxed_slice(),
             key::BlobMeta::new(BlobId::from([0; 32])),
-            package.to_owned().into_boxed_str(),
-            version.to_owned().into_boxed_str(),
-            signer_id.to_owned().into_boxed_str(),
+            info,
         );
         application.services = services;
 
@@ -168,9 +166,11 @@ impl NodeClient {
             stored_size,
             source,
             bundle_metadata,
-            package,
-            version,
-            &signer_id,
+            types::PackageInfo {
+                package: package.as_str().into(),
+                version: version.as_str().into(),
+                signer_id: signer_id.into(),
+            },
             services,
         )
     }
@@ -227,11 +227,6 @@ impl NodeClient {
             manifest,
         )
         .await
-    }
-
-    /// Check if a path points to a bundle archive (.mpk - Mero Package Kit)
-    fn is_bundle_archive(path: &Utf8Path) -> bool {
-        path.extension().map(|ext| ext == "mpk").unwrap_or(false)
     }
 
     pub async fn install_application_from_path(
@@ -562,9 +557,7 @@ impl NodeClient {
                         }
                     }
 
-                    canonical_extract_candidate.try_into().map_err(|_| {
-                        eyre::eyre!("Failed to convert extract_dir path to Utf8PathBuf")
-                    })?
+                    canonical_extract_candidate
                 };
 
                 if !canonical_wasm.starts_with(&canonical_extract) {

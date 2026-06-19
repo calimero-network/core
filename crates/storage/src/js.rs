@@ -19,6 +19,11 @@ use calimero_primitives::identity::PublicKey;
 /// Macro support for deriving storage traits on the wrapper types.
 use calimero_storage_macros::AtomicUnit;
 
+/// Decoded `(key, value)` byte-pairs returned by JS collection iterators.
+type JsByteEntries = Vec<(Vec<u8>, Vec<u8>)>;
+/// Decoded `(public_key, value)` pairs returned by JS set iterators.
+type JsKeyedEntries = Vec<([u8; 32], Vec<u8>)>;
+
 /// A byte-oriented unordered map that integrates with Calimero storage.
 ///
 /// The map stores both keys and values as raw byte arrays (`Vec<u8>`). When
@@ -125,7 +130,7 @@ impl JsUnorderedMap {
     /// # Errors
     ///
     /// Propagates [`StoreError`] if reading from storage fails.
-    pub fn entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+    pub fn entries(&self) -> Result<JsByteEntries, StoreError> {
         let iter = self.map.entries()?;
         Ok(iter.collect::<Vec<_>>())
     }
@@ -217,6 +222,15 @@ impl JsVector {
     /// Returns any [`StoreError`] emitted by the underlying vector.
     pub fn len(&self) -> Result<usize, StoreError> {
         self.vector.len()
+    }
+
+    /// Returns `true` if there are no entries.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
     }
 
     /// Appends a value to the end of the vector.
@@ -333,6 +347,15 @@ impl JsUnorderedSet {
     /// Returns any [`StoreError`] produced by the set implementation.
     pub fn len(&self) -> Result<usize, StoreError> {
         self.set.len()
+    }
+
+    /// Returns `true` if there are no entries.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
     }
 
     /// Inserts `value` into the set, returning whether it was newly added.
@@ -706,7 +729,7 @@ impl JsUserStorage {
     /// # Errors
     ///
     /// Propagates [`StoreError`] if reading from storage fails.
-    pub fn entries_raw(&self) -> Result<Vec<([u8; 32], Vec<u8>)>, StoreError> {
+    pub fn entries_raw(&self) -> Result<JsKeyedEntries, StoreError> {
         let iter = self.entries()?;
         Ok(iter
             .into_iter()

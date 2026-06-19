@@ -13,6 +13,12 @@ impl<'a, T> Slice<'a, T> {
     }
 
     #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    #[inline]
     pub fn new<U: AsRef<[T]> + 'a>(_value: U) -> Self {
         unimplemented!("Slice construction is only permitted in wasm32")
     }

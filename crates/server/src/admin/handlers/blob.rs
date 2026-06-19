@@ -163,6 +163,7 @@ pub async fn upload_handler(
 /// Returns a list of all root blob IDs and their metadata. Root blobs are either:
 /// - Blobs that contain links to chunks (segmented large files)
 /// - Standalone blobs that aren't referenced as chunks by other blobs
+///
 /// This excludes individual chunk blobs to provide a cleaner user experience.
 pub async fn list_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
     info!("Listing blobs");

@@ -17,6 +17,8 @@ pub struct ScenarioIdentityDowngradeV2 {
 #[derive(BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct ScenarioIdentityDowngradeV1 {
+    // Old-schema field exercised by the downgrade migration under test.
+    #[allow(dead_code, reason = "old-schema field exercised by the migration")]
     wiki: AuthoredMap<String, LwwRegister<String>>,
 }
 

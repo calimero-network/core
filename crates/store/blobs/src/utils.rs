@@ -52,7 +52,7 @@ pub fn validate_path_component(component: &str, component_label: Option<&str>) {
 }
 
 #[cfg(test)]
-mod utils {
+mod tests {
     use super::*;
 
     #[test]

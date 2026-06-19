@@ -405,6 +405,7 @@ impl NodeClient {
     /// Returns a list of all root blob IDs and their metadata. Root blobs are either:
     /// - Blobs that contain links to chunks (segmented large files)
     /// - Standalone blobs that aren't referenced as chunks by other blobs
+    ///
     /// This excludes individual chunk blobs to provide a cleaner user experience.
     pub fn list_blobs(&self) -> eyre::Result<Vec<BlobInfo>> {
         let handle = self.datastore.clone().handle();

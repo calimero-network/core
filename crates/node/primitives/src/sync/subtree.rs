@@ -793,16 +793,13 @@ mod tests {
     // Heuristic Function Tests
     // =========================================================================
 
-    #[test]
-    fn test_heuristic_constants_are_sensible() {
-        // Verify the constants have sensible values
-        assert!(DEEP_TREE_THRESHOLD > 0);
-        assert!(DEEP_TREE_THRESHOLD < MAX_SUBTREE_DEPTH);
-        assert!(MAX_DIVERGENCE_RATIO > 0.0);
-        assert!(MAX_DIVERGENCE_RATIO < 1.0);
-        assert!(MAX_CLUSTERED_SUBTREES > 0);
-        assert!(MAX_CLUSTERED_SUBTREES <= MAX_SUBTREES_PER_REQUEST);
-    }
+    // Heuristic constants must hold sensible relationships; checked at compile time.
+    const _: () = assert!(DEEP_TREE_THRESHOLD > 0);
+    const _: () = assert!(DEEP_TREE_THRESHOLD < MAX_SUBTREE_DEPTH);
+    const _: () = assert!(MAX_DIVERGENCE_RATIO > 0.0);
+    const _: () = assert!(MAX_DIVERGENCE_RATIO < 1.0);
+    const _: () = assert!(MAX_CLUSTERED_SUBTREES > 0);
+    const _: () = assert!(MAX_CLUSTERED_SUBTREES <= MAX_SUBTREES_PER_REQUEST);
 
     #[test]
     fn test_should_use_subtree_prefetch_basic() {

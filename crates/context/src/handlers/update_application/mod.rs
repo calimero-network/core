@@ -1558,9 +1558,11 @@ mod tests {
             "file://test.wasm".into(),
             vec![].into(),
             key::BlobMeta::new([2u8; 32].into()),
-            "com.test.app".into(),
-            "1.0.0".into(),
-            signer_id.into(),
+            types::PackageInfo {
+                package: "com.test.app".into(),
+                version: "1.0.0".into(),
+                signer_id: signer_id.into(),
+            },
         )
     }
 

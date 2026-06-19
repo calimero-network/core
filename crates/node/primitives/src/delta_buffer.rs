@@ -343,13 +343,10 @@ mod tests {
         assert_eq!(d.governance_drain_attempts, 0);
     }
 
-    #[test]
-    fn governance_drain_attempts_constant_within_u8() {
-        // Constant must fit u8 (we store the counter as u8 to keep
-        // BufferedDelta compact). Sanity-check the bound.
-        assert!(MAX_GOVERNANCE_DRAIN_ATTEMPTS < u8::MAX);
-        assert!(MAX_GOVERNANCE_DRAIN_ATTEMPTS > 0);
-    }
+    // Constant must fit u8 (we store the counter as u8 to keep BufferedDelta
+    // compact). Checked at compile time.
+    const _: () = assert!(MAX_GOVERNANCE_DRAIN_ATTEMPTS < u8::MAX);
+    const _: () = assert!(MAX_GOVERNANCE_DRAIN_ATTEMPTS > 0);
 
     #[test]
     fn test_buffer_basic() {

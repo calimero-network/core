@@ -661,12 +661,12 @@ impl<T: Clone> DagStore<T> {
     /// A tuple containing:
     /// 1. The list of deltas found (`Vec<CausalDelta>`).
     /// 2. A "cursor" (`Vec<[u8; 32]>`) containing the next IDs to fetch. Client can pass this to `start_id` in
-    ///   the next call to resume the process. If the cursor is empty, the traversal is complete.
+    ///    the next call to resume the process. If the cursor is empty, the traversal is complete.
     ///
-    ///   NOTE: if the client requested more than a `limit` - the node will return only that
-    ///   amount, without raising an error. Only a warning log will be produced.
-    ///   In future, we might change it, if needed, but for now looks like a clean behaviour, the
-    ///   client should be responsible for the pagination himself.
+    ///    NOTE: if the client requested more than a `limit` - the node will return only that
+    ///    amount, without raising an error. Only a warning log will be produced.
+    ///    In future, we might change it, if needed, but for now looks like a clean behaviour, the
+    ///    client should be responsible for the pagination himself.
     pub fn get_deltas_since(
         &self,
         ancestor: [u8; 32],

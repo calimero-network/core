@@ -57,13 +57,13 @@ impl<'ast> AbiEmitter {
                     // Process parameters
                     for param in &method.sig.inputs {
                         if let syn::FnArg::Typed(pat_type) = param {
-                            self.collect_types_from_type(&pat_type.ty, referenced_types);
+                            Self::collect_types_from_type(&pat_type.ty, referenced_types);
                         }
                     }
 
                     // Process return type
                     if let syn::ReturnType::Type(_, ty) = &method.sig.output {
-                        self.collect_types_from_type(ty, referenced_types);
+                        Self::collect_types_from_type(ty, referenced_types);
                     }
                 }
             }
@@ -79,12 +79,12 @@ impl<'ast> AbiEmitter {
             match &variant.fields {
                 syn::Fields::Unnamed(fields) => {
                     for field in &fields.unnamed {
-                        self.collect_types_from_type(&field.ty, referenced_types);
+                        Self::collect_types_from_type(&field.ty, referenced_types);
                     }
                 }
                 syn::Fields::Named(fields) => {
                     for field in &fields.named {
-                        self.collect_types_from_type(&field.ty, referenced_types);
+                        Self::collect_types_from_type(&field.ty, referenced_types);
                     }
                 }
                 syn::Fields::Unit => {
@@ -100,12 +100,11 @@ impl<'ast> AbiEmitter {
         referenced_types: &mut std::collections::HashSet<String>,
     ) {
         for field in &item_struct.fields {
-            self.collect_types_from_type(&field.ty, referenced_types);
+            Self::collect_types_from_type(&field.ty, referenced_types);
         }
     }
 
     fn collect_types_from_type(
-        &self,
         ty: &Type,
         referenced_types: &mut std::collections::HashSet<String>,
     ) {
@@ -119,27 +118,27 @@ impl<'ast> AbiEmitter {
                     if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                         for arg in &args.args {
                             if let syn::GenericArgument::Type(ty) = arg {
-                                self.collect_types_from_type(ty, referenced_types);
+                                Self::collect_types_from_type(ty, referenced_types);
                             }
                         }
                     }
                 }
             }
             Type::Reference(type_ref) => {
-                self.collect_types_from_type(&type_ref.elem, referenced_types);
+                Self::collect_types_from_type(&type_ref.elem, referenced_types);
             }
             Type::Ptr(type_ptr) => {
-                self.collect_types_from_type(&type_ptr.elem, referenced_types);
+                Self::collect_types_from_type(&type_ptr.elem, referenced_types);
             }
             Type::Array(type_array) => {
-                self.collect_types_from_type(&type_array.elem, referenced_types);
+                Self::collect_types_from_type(&type_array.elem, referenced_types);
             }
             Type::Slice(type_slice) => {
-                self.collect_types_from_type(&type_slice.elem, referenced_types);
+                Self::collect_types_from_type(&type_slice.elem, referenced_types);
             }
             Type::Tuple(type_tuple) => {
                 for elem in &type_tuple.elems {
-                    self.collect_types_from_type(elem, referenced_types);
+                    Self::collect_types_from_type(elem, referenced_types);
                 }
             }
             _ => {}

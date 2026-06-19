@@ -128,8 +128,8 @@ pub fn identity_downgrades(old: &Manifest, new: &Manifest) -> Vec<IdentityDowngr
             // old→gated / new→plain, so it is NOT both-unresolvable and still
             // flags. An unresolvable→plain transition also still flags.
             Some(nf)
-                if !new_still_gated(&nf.type_, new)
-                    && !(is_unresolvable(&f.type_, old) && is_unresolvable(&nf.type_, new)) =>
+                if !(new_still_gated(&nf.type_, new)
+                    || (is_unresolvable(&f.type_, old) && is_unresolvable(&nf.type_, new))) =>
             {
                 out.push(IdentityDowngrade {
                     field: f.name.clone(),

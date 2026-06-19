@@ -95,14 +95,14 @@ impl ScopeIsh for DefaultScope {
 pub trait StoreScopeCompat {
     type Scope: ScopeIsh;
 
-    fn from_primitives_scope(self) -> Self::Scope;
+    fn into_store_scope(self) -> Self::Scope;
     fn into_primitives_scope(scope: Self::Scope) -> Self;
 }
 
 impl<T: Aliasable + ScopeIsh> StoreScopeCompat for T {
     type Scope = T;
 
-    fn from_primitives_scope(self) -> T {
+    fn into_store_scope(self) -> T {
         self
     }
 
@@ -114,7 +114,7 @@ impl<T: Aliasable + ScopeIsh> StoreScopeCompat for T {
 impl StoreScopeCompat for () {
     type Scope = DefaultScope;
 
-    fn from_primitives_scope(self) -> DefaultScope {
+    fn into_store_scope(self) -> DefaultScope {
         DefaultScope
     }
 
@@ -148,7 +148,7 @@ impl Alias {
         strict: bool,
     ) -> Option<[u8; SCOPE_SIZE]> {
         match scope {
-            Some(scope) => Some(scope.from_primitives_scope().as_scope()),
+            Some(scope) => Some(scope.into_store_scope().as_scope()),
             None if <T::Scope as StoreScopeCompat>::Scope::is_default() || !strict => {
                 Some(DefaultScope.as_scope())
             }

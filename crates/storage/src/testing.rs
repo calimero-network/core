@@ -113,6 +113,9 @@ type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
 /// A registered operation: a mutation applied to a loaded replica state.
 type Op<T> = Box<dyn Fn(&mut T)>;
 
+/// Named value-level invariants checked on each converged replica.
+type InvariantList<T> = Vec<(String, Box<dyn Fn(&T) -> bool>)>;
+
 fn new_store() -> Store {
     Rc::new(RefCell::new(HashMap::new()))
 }
@@ -157,7 +160,7 @@ pub struct Converge<T> {
     // alone is NOT correctness: deterministic LWW converges every replica to the
     // SAME wrong value, so a data-loss bug passes the hash check. Invariants let
     // a test assert the merged *value* is right.
-    invariants: Vec<(String, Box<dyn Fn(&T) -> bool>)>,
+    invariants: InvariantList<T>,
 }
 
 /// Start a CRDT convergence assertion for state type `T`, using [`Default`] as

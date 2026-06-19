@@ -48,7 +48,6 @@ impl AdminState {
     }
 }
 
-#[expect(clippy::print_stderr, reason = "Acceptable for CLI")]
 pub async fn start(
     config: ServerConfig,
     ctx_client: ContextClient,
@@ -118,12 +117,14 @@ pub async fn start(
     let mounted = mount_runtime_services(
         app,
         &config,
-        auth_service.clone(),
-        ctx_client,
-        node_client.clone(),
-        datastore.clone(),
-        shared_state,
-        prom_registry,
+        service_mounts::RuntimeServiceDeps {
+            auth_service: auth_service.clone(),
+            ctx_client,
+            node_client: node_client.clone(),
+            datastore: datastore.clone(),
+            shared_state,
+            prom_registry,
+        },
     );
     app = mounted.router;
     let mut service_count = mounted.added_count;

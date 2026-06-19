@@ -222,8 +222,6 @@ impl KeyManager {
             return Ok(false);
         }
 
-        let auth_methods = auth_methods;
-
         // Iterate through keys, deserializing one at a time until we find a match
         for key_path in keys {
             if let Some(data) = self.storage.get(&key_path).await? {

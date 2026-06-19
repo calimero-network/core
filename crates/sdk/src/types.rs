@@ -52,11 +52,11 @@ pub mod __private {
     pub struct Wrap<T>(pub T);
 
     pub trait ViaStr {
-        fn into_error(&self) -> Error;
+        fn to_error(&self) -> Error;
     }
 
     impl ViaStr for &&&Wrap<&str> {
-        fn into_error(&self) -> Error {
+        fn to_error(&self) -> Error {
             let Wrap(value) = self;
             Error {
                 error: (*value).into(),
@@ -67,11 +67,11 @@ pub mod __private {
     }
 
     pub trait ViaArguments {
-        fn into_error(&self) -> Error;
+        fn to_error(&self) -> Error;
     }
 
     impl ViaArguments for &&Wrap<Arguments<'_>> {
-        fn into_error(&self) -> Error {
+        fn to_error(&self) -> Error {
             let Wrap(value) = self;
 
             let Some(msg) = value.as_str() else {
@@ -82,19 +82,19 @@ pub mod __private {
                 };
             };
 
-            (&&&&Wrap(msg)).into_error()
+            (&&&&Wrap(msg)).to_error()
         }
     }
 
     pub trait ViaSerialize {
-        fn into_error(&self) -> Error;
+        fn to_error(&self) -> Error;
     }
 
     impl<T> ViaSerialize for &Wrap<T>
     where
         T: Serialize,
     {
-        fn into_error(&self) -> Error {
+        fn to_error(&self) -> Error {
             let Wrap(value) = self;
             Error {
                 error: serde_json::json!(value),
@@ -105,14 +105,14 @@ pub mod __private {
     }
 
     pub trait ViaError {
-        fn into_error(&self) -> Error;
+        fn to_error(&self) -> Error;
     }
 
     impl<T> ViaError for Wrap<T>
     where
         T: core::error::Error,
     {
-        fn into_error(&self) -> Error {
+        fn to_error(&self) -> Error {
             let Wrap(value) = self;
             Error {
                 error: value.to_string().into(),
@@ -153,9 +153,9 @@ mod tests {
     //     bail!(Displayable("something happened"));
     // }
 
-    macro_rules! into_error {
+    macro_rules! to_error {
         ($err:expr) => {
-            (&&&&Wrap($err)).into_error()
+            (&&&&Wrap($err)).to_error()
         };
     }
 
@@ -163,7 +163,7 @@ mod tests {
     fn test_specialization() {
         let err = "beltalowda";
 
-        let error = into_error!(err);
+        let error = to_error!(err);
 
         dbg!(&error);
         assert_eq!(error.flag, 0); // used `ViaStr`
@@ -174,7 +174,7 @@ mod tests {
             name: "felota".to_string(),
         };
 
-        let error = into_error!(err);
+        let error = to_error!(err);
 
         dbg!(&error);
         assert_eq!(error.flag, 2); // used `ViaSerialize`
@@ -183,7 +183,7 @@ mod tests {
 
         let err = Errorlike;
 
-        let error = into_error!(err);
+        let error = to_error!(err);
 
         dbg!(&error);
         assert_eq!(error.flag, 3); // used `ViaError`
@@ -192,7 +192,7 @@ mod tests {
 
         let err = format_args!("beratna");
 
-        let error = into_error!(err);
+        let error = to_error!(err);
 
         dbg!(&error);
         assert_eq!(error.flag, 0); // used `ViaStr` via `ViaArguments`
@@ -201,7 +201,7 @@ mod tests {
 
         let field = Displayable("bosmang");
 
-        let error = into_error!(format_args!("{field}"));
+        let error = to_error!(format_args!("{field}"));
 
         dbg!(&error);
         assert_eq!(error.flag, 1); // used `ViaArguments`
@@ -210,7 +210,7 @@ mod tests {
 
         let field = Displayable("ke");
 
-        let error = into_error!(format_args!("sasa {}", field));
+        let error = to_error!(format_args!("sasa {}", field));
 
         dbg!(&error);
         assert_eq!(error.flag, 1); // used `ViaArguments`

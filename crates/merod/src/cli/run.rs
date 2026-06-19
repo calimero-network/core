@@ -105,8 +105,7 @@ impl RunCommand {
             // Resolve relative RocksDB paths against the node's home directory
             if let AuthStorageConfig::RocksDB { path: storage_path } = &mut auth_config.storage {
                 if storage_path.is_relative() {
-                    let joined = path.as_std_path().join(&*storage_path);
-                    *storage_path = joined.try_into().expect("Invalid UTF-8 path");
+                    *storage_path = path.as_std_path().join(&*storage_path);
                 }
             }
 
@@ -115,18 +114,19 @@ impl RunCommand {
             // Also resolve paths for proxy mode if config exists
             if let AuthStorageConfig::RocksDB { path: storage_path } = &mut cfg.storage {
                 if storage_path.is_relative() {
-                    let joined = path.as_std_path().join(&*storage_path);
-                    *storage_path = joined.try_into().expect("Invalid UTF-8 path");
+                    *storage_path = path.as_std_path().join(&*storage_path);
                 }
             }
         }
         let server_config = ServerConfig::with_auth(
             server_source.listen,
             config.identity.keypair.clone(),
-            server_source.admin,
-            server_source.jsonrpc,
-            server_source.websocket,
-            server_source.sse,
+            calimero_server::config::ServiceConfigs {
+                admin: server_source.admin,
+                jsonrpc: server_source.jsonrpc,
+                websocket: server_source.websocket,
+                sse: server_source.sse,
+            },
             server_source.auth_mode,
             server_source.embedded_auth,
         );

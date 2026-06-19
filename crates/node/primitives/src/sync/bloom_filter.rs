@@ -652,7 +652,7 @@ mod tests {
 
         // Different IDs should produce different hashes
         let other_id = [0xCD; 32];
-        let (h1_other, h2_other) = DeltaIdBloomFilter::compute_hashes(&other_id);
+        let (h1_other, _h2_other) = DeltaIdBloomFilter::compute_hashes(&other_id);
         assert_ne!(h1_a, h1_other);
     }
 

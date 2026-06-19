@@ -23,7 +23,6 @@ pub async fn handler(
         .get_context(&context_id)
         .map_err(|err| parse_api_error(err).into_response());
 
-    #[expect(clippy::option_if_let_else, reason = "Clearer here")]
     match context {
         Ok(ctx) => match ctx {
             Some(mut context) => {

@@ -4,7 +4,6 @@ use std::fs;
 
 use std::sync::Arc;
 
-use base64::Engine;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_network_primitives::client::NetworkClient;
@@ -16,7 +15,7 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use futures_util::io::Cursor;

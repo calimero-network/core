@@ -473,7 +473,7 @@ where
                 .get_mut(id)?
                 .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
 
-            Ok(Entry::Occupied(OccupiedEntry { entry_mut }))
+            Ok(Entry::Occupied(Box::new(OccupiedEntry { entry_mut })))
         } else {
             Ok(Entry::Vacant(VacantEntry { map: self, key }))
         }
@@ -950,10 +950,7 @@ where
     S: StorageAdaptor,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        let l = self.entries().ok()?;
-        let r = other.entries().ok()?;
-
-        l.partial_cmp(r)
+        Some(self.cmp(other))
     }
 }
 
@@ -1109,7 +1106,7 @@ where
     S: StorageAdaptor,
 {
     /// An occupied entry.
-    Occupied(OccupiedEntry<'a, K, V, S>),
+    Occupied(Box<OccupiedEntry<'a, K, V, S>>),
     /// A vacant entry.
     Vacant(VacantEntry<'a, K, V, S>),
 }

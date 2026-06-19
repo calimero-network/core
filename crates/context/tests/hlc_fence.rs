@@ -127,9 +127,11 @@ fn install_application(store: &Store, app_id: ApplicationId, app_key: [u8; 32]) 
         "test://hlc-fence".to_owned().into_boxed_str(),
         Box::new([]),
         bytecode_blob,
-        "hlc-fence-test-pkg".to_owned().into_boxed_str(),
-        "1.0.0".to_owned().into_boxed_str(),
-        "hlc-fence-test-signer".to_owned().into_boxed_str(),
+        calimero_store::types::PackageInfo {
+            package: "hlc-fence-test-pkg".to_owned().into_boxed_str(),
+            version: "1.0.0".to_owned().into_boxed_str(),
+            signer_id: "hlc-fence-test-signer".to_owned().into_boxed_str(),
+        },
     );
     store
         .handle()

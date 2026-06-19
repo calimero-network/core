@@ -468,7 +468,6 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this collection
     /// * `crdt_type` - The CRDT type for merge dispatch
-    #[expect(clippy::expect_used, reason = "fatal error if cleanup fails")]
     pub(crate) fn reassign_deterministic_id_with_crdt_type(
         &mut self,
         field_name: &str,
@@ -556,7 +555,6 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// at insert, so their reassign can early-return once the collection id
     /// is correct), this always re-keys the children: the *children* are
     /// what carry the random ids, independent of the collection's own id.
-    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
     pub(crate) fn reassign_deterministic_id_with_indexed_children(
         &mut self,
         field_name: &str,

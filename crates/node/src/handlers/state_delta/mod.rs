@@ -2286,9 +2286,11 @@ mod tests {
                 "".into(),
                 Box::default(),
                 key::BlobMeta::new(BlobId::from([0; 32])),
-                "".into(),
-                "".into(),
-                "".into(),
+                calimero_store::types::PackageInfo {
+                    package: "".into(),
+                    version: "".into(),
+                    signer_id: "".into(),
+                },
             );
             let ctx_meta = ContextMeta::new(app_key, [0; 32], vec![], None);
 

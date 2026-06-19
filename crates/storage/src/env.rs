@@ -63,6 +63,16 @@ pub fn with_merge_mode<R>(f: impl FnOnce() -> R) -> R {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// Reference-counted host callback for reading a key's stored bytes.
+type StorageReadFn = std::rc::Rc<dyn Fn(&Key) -> Option<Vec<u8>>>;
+#[cfg(not(target_arch = "wasm32"))]
+/// Reference-counted host callback for writing a key's bytes.
+type StorageWriteFn = std::rc::Rc<dyn Fn(Key, &[u8]) -> bool>;
+#[cfg(not(target_arch = "wasm32"))]
+/// Reference-counted host callback for removing a key.
+type StorageRemoveFn = std::rc::Rc<dyn Fn(&Key) -> bool>;
+
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 /// Runtime-provided storage environment used by host functions.
 ///
@@ -73,9 +83,9 @@ pub fn with_merge_mode<R>(f: impl FnOnce() -> R) -> R {
 /// executing we install this environment thread-locally so every
 /// `Interface::<MainStorage>::*` call can reach the real context storage.
 pub struct RuntimeEnv {
-    storage_read: std::rc::Rc<dyn Fn(&Key) -> Option<Vec<u8>>>,
-    storage_write: std::rc::Rc<dyn Fn(Key, &[u8]) -> bool>,
-    storage_remove: std::rc::Rc<dyn Fn(&Key) -> bool>,
+    storage_read: StorageReadFn,
+    storage_write: StorageWriteFn,
+    storage_remove: StorageRemoveFn,
     context_id: [u8; 32],
     executor_id: [u8; 32],
 }
@@ -89,9 +99,9 @@ impl RuntimeEnv {
     /// duration of the host call but can still hand mutable access to the
     /// underlying storage when invoked from the storage crate.
     pub fn new(
-        storage_read: std::rc::Rc<dyn Fn(&Key) -> Option<Vec<u8>>>,
-        storage_write: std::rc::Rc<dyn Fn(Key, &[u8]) -> bool>,
-        storage_remove: std::rc::Rc<dyn Fn(&Key) -> bool>,
+        storage_read: StorageReadFn,
+        storage_write: StorageWriteFn,
+        storage_remove: StorageRemoveFn,
         context_id: [u8; 32],
         executor_id: [u8; 32],
     ) -> Self {
@@ -106,19 +116,19 @@ impl RuntimeEnv {
 
     #[must_use]
     /// Returns the storage read callback.
-    pub fn storage_read(&self) -> std::rc::Rc<dyn Fn(&Key) -> Option<Vec<u8>>> {
+    pub fn storage_read(&self) -> StorageReadFn {
         self.storage_read.clone()
     }
 
     #[must_use]
     /// Returns the storage write callback.
-    pub fn storage_write(&self) -> std::rc::Rc<dyn Fn(Key, &[u8]) -> bool> {
+    pub fn storage_write(&self) -> StorageWriteFn {
         self.storage_write.clone()
     }
 
     #[must_use]
     /// Returns the storage remove callback.
-    pub fn storage_remove(&self) -> std::rc::Rc<dyn Fn(&Key) -> bool> {
+    pub fn storage_remove(&self) -> StorageRemoveFn {
         self.storage_remove.clone()
     }
 
@@ -173,7 +183,6 @@ pub fn read_committed_root_entry() -> Option<Vec<u8>> {
 
 /// Commits the root hash to the runtime.
 ///
-#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
 pub fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
     imp::commit(root_hash, artifact);
 }
@@ -311,7 +320,6 @@ pub fn ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8
 ///
 /// In WASM, this calls the host function. In tests, returns a fixed value.
 #[must_use]
-#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
 pub fn context_id() -> [u8; 32] {
     imp::context_id()
 }
@@ -320,7 +328,6 @@ pub fn context_id() -> [u8; 32] {
 ///
 /// In WASM, this calls the host function. In tests, returns a fixed value.
 #[must_use]
-#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
 pub fn executor_id() -> [u8; 32] {
     imp::executor_id()
 }
@@ -329,7 +336,6 @@ pub fn executor_id() -> [u8; 32] {
 ///
 /// In WASM, this calls `calimero_sdk::env::log()`, which calls the host function.
 /// In tests, it uses plain `println!()`.
-#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
 pub fn log(message: &str) {
     imp::log(message);
 }
@@ -347,9 +353,14 @@ pub fn hlc_timestamp() -> HybridTimestamp {
 ///
 /// # Errors
 ///
-/// Returns `Err(())` if the remote timestamp is >5s in the future (drift protection).
-pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
-    imp::update_hlc(remote_ts)
+/// Error returned by [`update_hlc`] when a remote timestamp is too far in the
+/// future to accept (drift protection).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HlcDriftError;
+
+/// Returns [`HlcDriftError`] if the remote timestamp is >5s in the future (drift protection).
+pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), HlcDriftError> {
+    imp::update_hlc(remote_ts).map_err(|()| HlcDriftError)
 }
 
 /// Reset for testing.

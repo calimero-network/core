@@ -169,9 +169,11 @@ fn install_application(store: &Store, app_id: ApplicationId, app_key: [u8; 32], 
         "test://cascade".to_owned().into_boxed_str(),
         Box::new([]),
         bytecode_blob,
-        "cascade-test-pkg".to_owned().into_boxed_str(),
-        version.to_owned().into_boxed_str(),
-        "cascade-test-signer".to_owned().into_boxed_str(),
+        calimero_store::types::PackageInfo {
+            package: "cascade-test-pkg".to_owned().into_boxed_str(),
+            version: version.to_owned().into_boxed_str(),
+            signer_id: "cascade-test-signer".to_owned().into_boxed_str(),
+        },
     );
     let mut handle = store.handle();
     handle

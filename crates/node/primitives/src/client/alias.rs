@@ -6,6 +6,9 @@ use eyre::{bail, OptionExt};
 
 use super::NodeClient;
 
+/// A resolved alias entry: the alias, its target value, and optional scope.
+type AliasEntry<T, S> = (Alias<T>, T, Option<S>);
+
 impl NodeClient {
     pub fn create_alias<T>(
         &self,
@@ -81,7 +84,7 @@ impl NodeClient {
     pub fn list_aliases<T>(
         &self,
         scope: Option<T::Scope>,
-    ) -> eyre::Result<Vec<(Alias<T>, T, Option<T::Scope>)>>
+    ) -> eyre::Result<Vec<AliasEntry<T, T::Scope>>>
     where
         T: Aliasable + From<[u8; 32]>,
         T::Scope: Copy + PartialEq + StoreScopeCompat,

@@ -80,8 +80,9 @@ pub use wire::{
 /// before triggering a cascade. See
 /// docs/superpowers/specs/2026-05-22-namespace-cascade-app-upgrade-design.md.
 ///
-/// Schema v7: replaces the two ordered cascade ops (`CascadeTargetApplicationSet`
-/// + `CascadeGroupMigrationSet`) with a single atomic `CascadeUpgrade` op
+/// Schema v7: replaces the two ordered cascade ops
+/// (`CascadeTargetApplicationSet` + `CascadeGroupMigrationSet`) with a single
+/// atomic `CascadeUpgrade` op
 /// that carries `cascade_hlc` — a fence timestamp stamped once by the
 /// initiator so every node records an identical boundary. This eliminates
 /// the out-of-order apply window that existed between the two v6 ops.
@@ -393,7 +394,7 @@ impl GroupOp {
 /// Every delta in the DAG carries exactly one `NamespaceOp`:
 /// - `Root` ops are cleartext and visible to all namespace members.
 /// - `Group` ops have a cleartext `group_id` tag (for topic routing and
-///    skeleton storage) but the actual mutation is encrypted.
+///   skeleton storage) but the actual mutation is encrypted.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub enum NamespaceOp {
     /// Cleartext namespace-wide administrative operation.
@@ -656,7 +657,6 @@ pub fn namespace_signable_bytes(
 }
 
 /// Content hash for a namespace op (SHA-256 of [`namespace_signable_bytes`]).
-#[must_use]
 pub fn namespace_op_content_hash(
     signable: &SignableNamespaceOp,
 ) -> Result<[u8; 32], GovernanceError> {
@@ -846,7 +846,6 @@ pub fn signable_bytes(signable: &SignableGroupOp) -> Result<Vec<u8>, GovernanceE
 }
 
 /// Stable content id for idempotency: SHA-256 of [`signable_bytes`].
-#[must_use]
 pub fn op_content_hash(signable: &SignableGroupOp) -> Result<[u8; 32], GovernanceError> {
     let bytes = signable_bytes(signable)?;
     Ok(Sha256::digest(&bytes).into())

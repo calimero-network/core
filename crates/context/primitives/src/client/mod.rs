@@ -799,7 +799,7 @@ impl ContextRegistry {
     /// # Arguments
     ///
     /// * `start` - An optional `ContextId` from which to begin the stream. If `None`,
-    ///    the stream starts from the beginning.
+    ///   the stream starts from the beginning.
     ///
     /// # Returns
     ///
@@ -884,7 +884,7 @@ impl ContextRegistry {
     ///
     /// * `context_id` - The context to query for members.
     /// * `owned` - If `Some(true)`, the stream returns only members for which this node holds
-    ///    the private key. If `Some(false)` or `None`, it returns all members.
+    ///   the private key. If `Some(false)` or `None`, it returns all members.
     ///
     /// # Returns
     ///
@@ -1030,13 +1030,16 @@ impl ContextClient {
         &self,
         protocol: String,
         application_id: &ApplicationId,
-        service_name: Option<String>,
-        identity_secret: Option<PrivateKey>,
-        init_params: Vec<u8>,
-        seed: Option<[u8; DIGEST_SIZE]>,
-        group_id: ContextGroupId,
-        name: Option<String>,
+        params: CreateContextParams,
     ) -> eyre::Result<CreateContextResponse> {
+        let CreateContextParams {
+            service_name,
+            identity_secret,
+            init_params,
+            seed,
+            group_id,
+            name,
+        } = params;
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
@@ -1069,13 +1072,13 @@ impl ContextClient {
     /// # Arguments
     /// * `context_id` - The context to invite the new member to.
     /// * `inviter_id` - The public key of the existing member creating the invitation.
-    ///                  This node must have the corresponding private key for this identity.
+    ///   This node must have the corresponding private key for this identity.
     /// * `valid_for_seconds` - How long (in seconds) the invitation remains valid.
     /// * `_secret_salt` - Unused; a fresh random salt is generated internally.
     ///
     /// # Returns
     /// * A `Result` containing the `SignedOpenInvitation` if successful, or an error if
-    /// the inviter's private key is not found or signing fails.
+    ///   the inviter's private key is not found or signing fails.
     /// * Returns `Ok(None)` if the context configuration cannot be found locally.
     pub async fn invite_member(
         &self,
@@ -2243,9 +2246,11 @@ mod get_context_version_tests {
             "file://test.wasm".into(),
             vec![].into(),
             key::BlobMeta::new([2u8; 32].into()),
-            "com.test.app".into(),
-            "2.1.0".into(),
-            "signer".into(),
+            calimero_store::types::PackageInfo {
+                package: "com.test.app".into(),
+                version: "2.1.0".into(),
+                signer_id: "signer".into(),
+            },
         );
         let cid = ContextId::from([0x07; 32]);
         let ctx_meta = types::ContextMeta::new(app_key, [0u8; 32], vec![], None);
@@ -2339,4 +2344,14 @@ mod get_context_version_tests {
             .expect("context present");
         assert_eq!(ctx.name, None);
     }
+}
+
+/// Grouped inputs for [`ContextClient::create_context`].
+pub struct CreateContextParams {
+    pub service_name: Option<String>,
+    pub identity_secret: Option<PrivateKey>,
+    pub init_params: Vec<u8>,
+    pub seed: Option<[u8; DIGEST_SIZE]>,
+    pub group_id: ContextGroupId,
+    pub name: Option<String>,
 }

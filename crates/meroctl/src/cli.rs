@@ -151,10 +151,7 @@ impl RootCommand {
         let output = Output::new(self.args.output_format);
 
         // Some commands don't require a connection (like node commands)
-        let needs_connection = match &self.action {
-            SubCommands::Node(_) => false,
-            _ => true,
-        };
+        let needs_connection = !matches!(&self.action, SubCommands::Node(_));
 
         let connection = if needs_connection {
             Some(self.prepare_connection(output).await?)

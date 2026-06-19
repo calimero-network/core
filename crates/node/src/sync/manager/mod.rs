@@ -3724,9 +3724,11 @@ mod pending_upgrade_tests {
                     calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
                         [0u8; 32],
                     )),
-                    "stage-pkg".to_owned().into_boxed_str(),
-                    "1.0.0".to_owned().into_boxed_str(),
-                    "stage-signer".to_owned().into_boxed_str(),
+                    calimero_store::types::PackageInfo {
+                        package: "stage-pkg".to_owned().into_boxed_str(),
+                        version: "1.0.0".to_owned().into_boxed_str(),
+                        signer_id: "stage-signer".to_owned().into_boxed_str(),
+                    },
                 ),
             )
             .expect("put app row");
@@ -3751,9 +3753,11 @@ mod pending_upgrade_tests {
                     calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
                         [0u8; 32],
                     )),
-                    "stage-pkg".to_owned().into_boxed_str(),
-                    "1.0.0".to_owned().into_boxed_str(),
-                    "stage-signer".to_owned().into_boxed_str(),
+                    calimero_store::types::PackageInfo {
+                        package: "stage-pkg".to_owned().into_boxed_str(),
+                        version: "1.0.0".to_owned().into_boxed_str(),
+                        signer_id: "stage-signer".to_owned().into_boxed_str(),
+                    },
                 ),
             )
             .expect("put app row");

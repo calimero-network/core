@@ -103,9 +103,11 @@ impl StartCommand {
             watch_and_reload(
                 environment,
                 context_id,
-                watch_target,
-                artifact_path,
-                self.path.clone(),
+                ReloadPaths {
+                    watch_target,
+                    artifact_path,
+                    project_path: self.path.clone(),
+                },
                 self.no_build,
                 metadata,
                 member_public_key,
@@ -348,13 +350,16 @@ fn find_first_wasm_in(dir: &Path) -> Result<Option<Utf8PathBuf>> {
 async fn watch_and_reload(
     environment: &mut Environment,
     context_id: ContextId,
-    watch_target: Utf8PathBuf,
-    artifact_path: Utf8PathBuf,
-    project_path: Utf8PathBuf,
+    paths: ReloadPaths,
     no_build: bool,
     metadata: Vec<u8>,
     member_public_key: PublicKey,
 ) -> Result<()> {
+    let ReloadPaths {
+        watch_target,
+        artifact_path,
+        project_path,
+    } = paths;
     let is_project = project_path.as_std_path().is_dir();
     let watch_dir = if is_project {
         let src = watch_target.join("src");
@@ -464,4 +469,11 @@ async fn watch_and_reload(
     }
 
     Ok(())
+}
+
+/// The watch / build-output / project paths threaded into [`watch_and_reload`].
+struct ReloadPaths {
+    watch_target: Utf8PathBuf,
+    artifact_path: Utf8PathBuf,
+    project_path: Utf8PathBuf,
 }

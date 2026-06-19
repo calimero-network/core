@@ -18,7 +18,7 @@ use crate::store::MainStorage;
 ///
 /// # Type Parameters
 /// - `ALLOW_DECREMENT`: When `false` (default), acts as G-Counter (increment-only).
-///                      When `true`, acts as PN-Counter (supports decrement).
+///   When `true`, acts as PN-Counter (supports decrement).
 /// - `S`: Storage adaptor (defaults to `MainStorage`)
 ///
 /// # G-Counter Mode (ALLOW_DECREMENT = false)
