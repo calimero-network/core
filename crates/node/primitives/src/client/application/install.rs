@@ -5,9 +5,7 @@ use std::sync::Arc;
 
 use super::bundle;
 use crate::bundle::{BundleManifest, ManifestVerification};
-use calimero_primitives::application::{
-    Application, ApplicationBlob, ApplicationId, ApplicationSource,
-};
+use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};

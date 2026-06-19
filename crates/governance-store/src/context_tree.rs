@@ -87,7 +87,7 @@ impl<'a> ContextTreeService<'a> {
         let contexts = self.enumerate_contexts(0, usize::MAX)?;
         let mut handle = self.store.handle();
         for context_id in &contexts {
-            let identity_key = ContextIdentity::new(*context_id, (*member).into());
+            let identity_key = ContextIdentity::new(*context_id, *member);
             if handle.has(&identity_key)? {
                 handle.delete(&identity_key)?;
                 tracing::info!(

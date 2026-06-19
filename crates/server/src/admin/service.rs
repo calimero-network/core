@@ -75,7 +75,7 @@ pub(crate) fn setup(
 
     // Get the node prefix from env var
     let admin_path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
-        format!("{}{}", prefix, base_path)
+        format!("{prefix}{base_path}")
     } else {
         base_path.to_owned()
     };
@@ -386,7 +386,7 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
     // First check the environment variable, fall back to config if not present
     let path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
         info!("Using path prefix from environment: {}", prefix);
-        format!("{}{}", prefix, base_path)
+        format!("{prefix}{base_path}")
     } else {
         info!("No path prefix configured");
         base_path.to_owned()
@@ -423,7 +423,7 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
 async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> {
     // Get the full path prefix (node prefix + admin dashboard)
     let full_prefix = if let Ok(node_prefix) = std::env::var("NODE_PATH_PREFIX") {
-        format!("{}/admin-dashboard/", node_prefix)
+        format!("{node_prefix}/admin-dashboard/")
     } else {
         "/admin-dashboard/".to_owned()
     };
@@ -477,24 +477,24 @@ fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
         {
             // Get the node prefix from env var
             let base_path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
-                format!("{}/admin-dashboard", prefix)
+                format!("{prefix}/admin-dashboard")
             } else {
                 "/admin-dashboard".to_owned()
             };
 
             // Replace all instances of /admin-dashboard with the correct base path
             let modified_content = content
-                .replace("\"/admin-dashboard", &format!("\"{}", base_path))
-                .replace("'/admin-dashboard", &format!("'{}", base_path))
-                .replace("(/admin-dashboard", &format!("({}", base_path))
-                .replace(" /admin-dashboard", &format!(" {}", base_path))
+                .replace("\"/admin-dashboard", &format!("\"{base_path}"))
+                .replace("'/admin-dashboard", &format!("'{base_path}"))
+                .replace("(/admin-dashboard", &format!("({base_path}"))
+                .replace(" /admin-dashboard", &format!(" {base_path}"))
                 .replace(
                     "href=\"/admin-dashboard",
-                    &format!("href=\"{}/admin-dashboard", base_path),
+                    &format!("href=\"{base_path}/admin-dashboard"),
                 )
                 .replace(
                     "src=\"/admin-dashboard",
-                    &format!("src=\"{}/admin-dashboard", base_path),
+                    &format!("src=\"{base_path}/admin-dashboard"),
                 );
             modified_content.into_bytes()
         } else {
@@ -552,7 +552,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response<Body> {
         let body = json!({ "error": self.message }).to_string();
         Response::builder()
-            .status(&self.status_code)
+            .status(self.status_code)
             .header("Content-Type", "application/json")
             .body(Body::from(body))
             .unwrap()

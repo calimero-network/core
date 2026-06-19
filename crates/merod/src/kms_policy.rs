@@ -132,10 +132,10 @@ pub fn use_env_policy() -> bool {
 /// - verifies Fulcio certificate chain and GitHub workflow identity constraints
 pub async fn fetch_policy_from_release(version: &str) -> EyreResult<KmsAttestationPolicy> {
     let version = normalize_release_version(version)?;
-    let tag = format!("mero-kms-v{}", version);
-    let policy_url = format!("{}/{}/{}", POLICY_RELEASE_BASE, tag, POLICY_JSON_ASSET);
-    let signature_url = format!("{}/{}/{}", POLICY_RELEASE_BASE, tag, POLICY_SIG_ASSET);
-    let bundle_url = format!("{}/{}/{}", POLICY_RELEASE_BASE, tag, POLICY_BUNDLE_ASSET);
+    let tag = format!("mero-kms-v{version}");
+    let policy_url = format!("{POLICY_RELEASE_BASE}/{tag}/{POLICY_JSON_ASSET}");
+    let signature_url = format!("{POLICY_RELEASE_BASE}/{tag}/{POLICY_SIG_ASSET}");
+    let bundle_url = format!("{POLICY_RELEASE_BASE}/{tag}/{POLICY_BUNDLE_ASSET}");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .user_agent("merod/1.0")
@@ -234,8 +234,7 @@ async fn fetch_release_asset(
         Ok(resp) if resp.status().is_success() => match resp.text().await {
             Ok(body) => AssetFetchResult::Success(body),
             Err(err) => AssetFetchResult::Transient(format!(
-                "Failed to read {asset_name} response body: {}",
-                err
+                "Failed to read {asset_name} response body: {err}"
             )),
         },
         Ok(resp) => {
@@ -248,7 +247,7 @@ async fn fetch_release_asset(
                 AssetFetchResult::Permanent(error)
             }
         }
-        Err(err) => AssetFetchResult::Transient(format!("Failed to fetch {asset_name}: {}", err)),
+        Err(err) => AssetFetchResult::Transient(format!("Failed to fetch {asset_name}: {err}")),
     }
 }
 

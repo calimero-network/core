@@ -438,7 +438,7 @@ impl Manifest {
         let state_root_name = self
             .state_root
             .as_ref()
-            .ok_or_else(|| "No state_root defined in manifest")?;
+            .ok_or("No state_root defined in manifest")?;
 
         // Recursively collect all types referenced by the state root
         let mut collected_types = BTreeMap::new();
@@ -477,7 +477,7 @@ impl Manifest {
         // Get the type definition
         let type_def = all_types
             .get(type_name)
-            .ok_or_else(|| format!("Type '{}' not found in ABI types", type_name))?;
+            .ok_or_else(|| format!("Type '{type_name}' not found in ABI types"))?;
 
         // Add this type to collected types
         collected.insert(type_name.to_string(), type_def.clone());

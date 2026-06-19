@@ -377,7 +377,7 @@ impl NodeState {
         context_id: &ContextId,
     ) -> Option<calimero_node_primitives::delta_buffer::BufferedDelta> {
         let mut entry = self.governance_pending.get_mut(context_id)?;
-        let popped = entry.pop_front();
+
         // Don't remove the now-empty VecDeque here. A previous version of
         // this code did `drop(entry); remove(context_id)`, which had a
         // race: a concurrent `buffer_governance_pending` could insert a
@@ -388,7 +388,7 @@ impl NodeState {
         // accumulation ever matters, a periodic GC pass that holds the
         // entry-write-lock and `remove_if(|q| q.is_empty())` is the
         // race-free way to clean up.
-        popped
+        entry.pop_front()
     }
 
     /// Returns the current length of the governance-pending buffer for a

@@ -71,7 +71,7 @@ pub fn migrate_v1_to_v2() -> ScenarioFrozenStorageV2 {
 
     let old_state: ScenarioFrozenStorageV1 = BorshDeserialize::deserialize(&mut &old_bytes[..])
         .unwrap_or_else(|e| {
-            panic!("Migration failed: V1 deserialization error {:?}", e);
+            panic!("Migration failed: V1 deserialization error {e:?}");
         });
 
     app::emit!(Event::Migrated {
@@ -88,7 +88,7 @@ pub fn migrate_v1_to_v2() -> ScenarioFrozenStorageV2 {
     let derived = derived_doc_content(old_state.title.get());
     let new_hash = documents
         .insert(derived)
-        .unwrap_or_else(|e| panic!("Migration failed: derived-doc freeze error {:?}", e));
+        .unwrap_or_else(|e| panic!("Migration failed: derived-doc freeze error {e:?}"));
 
     ScenarioFrozenStorageV2 {
         documents,

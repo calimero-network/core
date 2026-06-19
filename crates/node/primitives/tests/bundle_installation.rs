@@ -4,7 +4,6 @@ use std::fs;
 
 use std::sync::Arc;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
@@ -41,7 +40,7 @@ fn create_test_bundle(
     abi_content: Option<&[u8]>,
     migrations: Vec<(&str, &[u8])>,
 ) -> Utf8PathBuf {
-    let bundle_path = temp_dir.path().join(format!("{}-{}.mpk", package, version));
+    let bundle_path = temp_dir.path().join(format!("{package}-{version}.mpk"));
     let bundle_file = fs::File::create(&bundle_path).unwrap();
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
@@ -51,7 +50,7 @@ fn create_test_bundle(
     let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
     // Create manifest.json (without signature initially)
-    let mut manifest = BundleManifest {
+    let manifest = BundleManifest {
         version: "1.0".to_string(),
         package: package.to_string(),
         app_version: version.to_string(),
@@ -475,8 +474,7 @@ async fn test_bundle_validation_missing_fields() {
             || error_msg.contains("empty")
             || error_msg.contains("manifest")
             || error_msg.contains("parse"),
-        "Error should mention missing package field, manifest issue, or parse error, got: {}",
-        error_msg
+        "Error should mention missing package field, manifest issue, or parse error, got: {error_msg}"
     );
 }
 
@@ -522,7 +520,7 @@ fn create_test_bundle_custom_wasm_path(
     wasm_path: &str,
     wasm_content: &[u8],
 ) -> Utf8PathBuf {
-    let bundle_path = temp_dir.path().join(format!("{}-{}.mpk", package, version));
+    let bundle_path = temp_dir.path().join(format!("{package}-{version}.mpk"));
     let bundle_file = fs::File::create(&bundle_path).unwrap();
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
@@ -719,8 +717,7 @@ async fn test_bundle_validation_empty_package() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("package") && error_msg.contains("empty"),
-        "Error should mention empty package field, got: {}",
-        error_msg
+        "Error should mention empty package field, got: {error_msg}"
     );
 }
 
@@ -774,8 +771,7 @@ async fn test_bundle_validation_empty_app_version() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("appVersion") || error_msg.contains("version"),
-        "Error should mention empty appVersion field, got: {}",
-        error_msg
+        "Error should mention empty appVersion field, got: {error_msg}"
     );
 }
 
@@ -831,8 +827,7 @@ async fn test_bundle_validation_missing_app_version() {
             || error_msg.contains("missing field")
             || error_msg.contains("version")
             || error_msg.contains("parse"),
-        "Error should mention missing appVersion field, got: {}",
-        error_msg
+        "Error should mention missing appVersion field, got: {error_msg}"
     );
 }
 
@@ -1184,8 +1179,7 @@ async fn test_install_application_from_bundle_blob_missing_blob() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("not found") || error_msg.contains("fatal"),
-        "Error should mention blob not found, got: {}",
-        error_msg
+        "Error should mention blob not found, got: {error_msg}"
     );
 }
 
@@ -1453,7 +1447,7 @@ fn create_unsigned_bundle(
 ) -> Utf8PathBuf {
     let bundle_path = temp_dir
         .path()
-        .join(format!("{}-{}-unsigned.mpk", package, version));
+        .join(format!("{package}-{version}-unsigned.mpk"));
     let bundle_file = fs::File::create(&bundle_path).unwrap();
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
@@ -1502,7 +1496,7 @@ fn create_tampered_bundle(
 ) -> Utf8PathBuf {
     let bundle_path = temp_dir
         .path()
-        .join(format!("{}-{}-tampered.mpk", package, version));
+        .join(format!("{package}-{version}-tampered.mpk"));
     let bundle_file = fs::File::create(&bundle_path).unwrap();
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
@@ -1584,7 +1578,7 @@ fn create_signer_id_mismatch_bundle(
 
     let bundle_path = temp_dir
         .path()
-        .join(format!("{}-{}-signer-mismatch.mpk", package, version));
+        .join(format!("{package}-{version}-signer-mismatch.mpk"));
     let bundle_file = fs::File::create(&bundle_path).unwrap();
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
@@ -1656,7 +1650,7 @@ fn create_test_bundle_with_key(
 ) -> Utf8PathBuf {
     let bundle_path = temp_dir
         .path()
-        .join(format!("{}-{}-keyed.mpk", package, version));
+        .join(format!("{package}-{version}-keyed.mpk"));
     let bundle_file = fs::File::create(&bundle_path).unwrap();
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
@@ -1759,8 +1753,7 @@ async fn test_bundle_installation_fails_with_invalid_signature() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("signature") || error_msg.contains("verification"),
-        "Error should mention signature verification failure, got: {}",
-        error_msg
+        "Error should mention signature verification failure, got: {error_msg}"
     );
 }
 
@@ -1795,8 +1788,7 @@ async fn test_bundle_installation_fails_signer_id_mismatch() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("signerId") || error_msg.contains("mismatch"),
-        "Error should mention signerId mismatch, got: {}",
-        error_msg
+        "Error should mention signerId mismatch, got: {error_msg}"
     );
 }
 
@@ -1878,9 +1870,8 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
     assert_ne!(
         app_id_a, app_id_b,
         "Same package with different signers should produce different ApplicationIds.\n\
-         app_id_a (signer S1): {}\n\
-         app_id_b (signer S2): {}",
-        app_id_a, app_id_b
+         app_id_a (signer S1): {app_id_a}\n\
+         app_id_b (signer S2): {app_id_b}"
     );
 
     // ASSERTION 2: app_id_a == app_id_c (same package + signer = same ApplicationId)
@@ -1888,9 +1879,8 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
     assert_eq!(
         app_id_a, app_id_c,
         "Same package with same signer should produce same ApplicationId (version upgrade).\n\
-         app_id_a (v1.0.0): {}\n\
-         app_id_c (v2.0.0): {}",
-        app_id_a, app_id_c
+         app_id_a (v1.0.0): {app_id_a}\n\
+         app_id_c (v2.0.0): {app_id_c}"
     );
 
     // Verify all applications can be retrieved
@@ -2141,8 +2131,7 @@ async fn test_bundle_validation_path_traversal_in_package() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("path traversal") || error_msg.contains("'..'"),
-        "Error should mention path traversal, got: {}",
-        error_msg
+        "Error should mention path traversal, got: {error_msg}"
     );
 }
 
@@ -2188,8 +2177,7 @@ async fn test_bundle_validation_path_traversal_in_version() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("path traversal") || error_msg.contains("'..'"),
-        "Error should mention path traversal, got: {}",
-        error_msg
+        "Error should mention path traversal, got: {error_msg}"
     );
 }
 
@@ -2235,8 +2223,7 @@ async fn test_bundle_validation_forward_slash_in_package() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("directory separator") || error_msg.contains("package"),
-        "Error should mention directory separator, got: {}",
-        error_msg
+        "Error should mention directory separator, got: {error_msg}"
     );
 }
 
@@ -2282,8 +2269,7 @@ async fn test_bundle_validation_backslash_in_package() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("directory separator") || error_msg.contains("package"),
-        "Error should mention directory separator, got: {}",
-        error_msg
+        "Error should mention directory separator, got: {error_msg}"
     );
 }
 
@@ -2329,8 +2315,7 @@ async fn test_bundle_validation_windows_absolute_path_in_package() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("absolute path") || error_msg.contains("package"),
-        "Error should mention absolute path, got: {}",
-        error_msg
+        "Error should mention absolute path, got: {error_msg}"
     );
 }
 
@@ -2341,7 +2326,7 @@ async fn test_bundle_validation_valid_package_names() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Test various valid package name formats
-    let valid_packages = vec![
+    let valid_packages = [
         "com.example.myapp",
         "my-app",
         "my_app_v2",
@@ -2354,7 +2339,7 @@ async fn test_bundle_validation_valid_package_names() {
         let bundle_path = create_test_bundle(
             &temp_dir,
             package,
-            &format!("1.0.{}", i), // Unique version to avoid conflicts
+            &format!("1.0.{i}"), // Unique version to avoid conflicts
             b"wasm content",
             None,
             vec![],

@@ -271,11 +271,10 @@ impl EditorState {
 
         Ok(format!(
             "Document Statistics:\n\
-             - Title: {}\n\
-             - Length: {} characters\n\
-             - Total edits: {}\n\
-             - Owner: {}",
-            title, length, total_edits, owner
+             - Title: {title}\n\
+             - Length: {length} characters\n\
+             - Total edits: {total_edits}\n\
+             - Owner: {owner}"
         ))
     }
 

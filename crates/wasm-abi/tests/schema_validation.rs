@@ -1,4 +1,4 @@
-use calimero_wasm_abi::schema::{Method, MethodIntent};
+use calimero_wasm_abi::schema::MethodIntent;
 use jsonschema::JSONSchema;
 use serde_json::Value;
 

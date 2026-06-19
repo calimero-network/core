@@ -318,7 +318,7 @@ pub async fn sse_handler(
                 .await
                 .event_counter
                 .fetch_add(1, Ordering::SeqCst);
-            let id_str = format!("{}-{}", session_id, event_id);
+            let id_str = format!("{session_id}-{event_id}");
 
             match command {
                 Command::Close(reason) => {
@@ -369,7 +369,7 @@ pub async fn sse_handler(
     });
     let initial_event = Event::default()
         .event(SseEvent::Message.as_str()) // Standard browser-compatible event type
-        .id(format!("{}-0", session_id))
+        .id(format!("{session_id}-0"))
         .retry(retry_timeout())
         .data(connect_data.to_string());
     let initial_stream = stream::once(async { Ok::<Event, Infallible>(initial_event) });

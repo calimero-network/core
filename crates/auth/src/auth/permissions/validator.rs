@@ -733,7 +733,7 @@ mod tests {
 
             let perms = validator.determine_required_permissions(&req);
             // Each parameterized route should return exactly one permission
-            assert!(!perms.is_empty(), "No permissions found for {}", path);
+            assert!(!perms.is_empty(), "No permissions found for {path}");
         }
 
         // Note: The performance benefit comes from:

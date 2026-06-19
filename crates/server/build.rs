@@ -179,8 +179,7 @@ fn cached_path_with_retry(cache: &Cache, src: &str, options: &Options) -> eyre::
             Ok(path) => return Ok(path),
             Err(err) => {
                 let report = eyre::Report::new(err).wrap_err(format!(
-                    "failed to fetch CALIMERO_WEBUI_SRC from {src} (attempt {attempt}/{})",
-                    CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS
+                    "failed to fetch CALIMERO_WEBUI_SRC from {src} (attempt {attempt}/{CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS})"
                 ));
 
                 if attempt == CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS {
@@ -206,7 +205,7 @@ fn target_dir() -> eyre::Result<PathBuf> {
 
     while out_dir.pop() {
         if let Some(name) = out_dir.file_name().and_then(|n| n.to_str()) {
-            if profile_names.iter().any(|&pn| pn == name) {
+            if profile_names.contains(&name) {
                 return Ok(out_dir);
             }
         }

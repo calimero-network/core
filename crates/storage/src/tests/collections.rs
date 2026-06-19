@@ -33,7 +33,7 @@ fn test_root_entry_has_no_crdt_type_so_merge_routes_via_registered_mergeable() {
     // fresh `Root::new` rather than stale state from a prior test.
     env::reset_for_testing();
 
-    let _root = Root::new(|| UnorderedMap::<String, String>::new());
+    let _root = Root::new(UnorderedMap::<String, String>::new);
 
     // Cross-reference the entry's id by calling `Root::entry_id()` directly
     // instead of hardcoding `[118; 32]`, so this test moves in lock-step with
@@ -70,7 +70,7 @@ fn test_root_entry_has_no_crdt_type_so_merge_routes_via_registered_mergeable() {
 
 #[test]
 fn test_unordered_map_basic_operations() {
-    let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+    let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
     assert!(map
         .insert("key".to_string(), "value".to_string())
@@ -131,7 +131,7 @@ fn test_unordered_map_basic_operations() {
 
 #[test]
 fn test_unordered_map_insert_and_get() {
-    let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+    let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
     assert!(map
         .insert("key1".to_string(), "value1".to_string())
@@ -160,16 +160,16 @@ fn test_unordered_map_insert_and_get() {
 
 #[test]
 fn test_unordered_map_update_value() {
-    let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+    let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
     assert!(map
         .insert("key".to_string(), "value".to_string())
         .expect("insert failed")
         .is_none());
-    assert!(!map
+    assert!(map
         .insert("key".to_string(), "new_value".to_string())
         .expect("insert failed")
-        .is_none());
+        .is_some());
 
     assert_eq!(
         map.get("key")
@@ -182,7 +182,7 @@ fn test_unordered_map_update_value() {
 
 #[test]
 fn test_unordered_map_remove() {
-    let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+    let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
     assert!(map
         .insert("key".to_string(), "value".to_string())
@@ -198,7 +198,7 @@ fn test_unordered_map_remove() {
 
 #[test]
 fn test_unordered_map_clear() {
-    let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+    let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
     assert!(map
         .insert("key1".to_string(), "value1".to_string())
@@ -217,7 +217,7 @@ fn test_unordered_map_clear() {
 
 #[test]
 fn test_unordered_map_len() {
-    let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+    let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
     assert_eq!(map.len().expect("len failed"), 0);
 
@@ -229,10 +229,10 @@ fn test_unordered_map_len() {
         .insert("key2".to_string(), "value2".to_string())
         .expect("insert failed")
         .is_none());
-    assert!(!map
+    assert!(map
         .insert("key2".to_string(), "value3".to_string())
         .expect("insert failed")
-        .is_none());
+        .is_some());
 
     assert_eq!(map.len().expect("len failed"), 2);
 
@@ -246,20 +246,20 @@ fn test_unordered_map_len() {
 
 #[test]
 fn test_unordered_map_contains() {
-    let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+    let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
     assert!(map
         .insert("key".to_string(), "value".to_string())
         .expect("insert failed")
         .is_none());
 
-    assert_eq!(map.contains("key").expect("contains failed"), true);
-    assert_eq!(map.contains("nonexistent").expect("contains failed"), false);
+    assert!(map.contains("key").expect("contains failed"));
+    assert!(!map.contains("nonexistent").expect("contains failed"));
 }
 
 #[test]
 fn test_unordered_map_entries() {
-    let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+    let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
 
     assert!(map
         .insert("key1".to_string(), "value1".to_string())
@@ -269,10 +269,10 @@ fn test_unordered_map_entries() {
         .insert("key2".to_string(), "value2".to_string())
         .expect("insert failed")
         .is_none());
-    assert!(!map
+    assert!(map
         .insert("key2".to_string(), "value3".to_string())
         .expect("insert failed")
-        .is_none());
+        .is_some());
 
     let entries: Vec<(String, String)> = map.entries().expect("entries failed").collect();
 
@@ -287,7 +287,7 @@ fn test_unordered_map_entries() {
 
 #[test]
 fn test_vector_push() {
-    let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+    let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
     let value = "test_data".to_string();
     let result = vector.push(value.clone());
@@ -297,21 +297,21 @@ fn test_vector_push() {
 
 #[test]
 fn test_vector_get() {
-    let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+    let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
     let value = "test_data".to_string();
-    let _ = vector.push(value.clone()).unwrap();
+    vector.push(value.clone()).unwrap();
     let retrieved_value = vector.get(0).unwrap().map(|v| v.into_inner());
     assert_eq!(retrieved_value, Some(value));
 }
 
 #[test]
 fn test_vector_update() {
-    let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+    let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
     let value1 = "test_data1".to_string();
     let value2 = "test_data2".to_string();
-    let _ = vector.push(value1.clone()).unwrap();
+    vector.push(value1.clone()).unwrap();
     let old = vector.update(0, value2.clone()).unwrap();
     let retrieved_value = vector.get(0).unwrap().map(|v| v.into_inner());
     assert_eq!(retrieved_value, Some(value2));
@@ -320,20 +320,20 @@ fn test_vector_update() {
 
 #[test]
 fn test_vector_get_non_existent() {
-    let vector = Root::new(|| Vector::<String>::new());
+    let vector = Root::new(Vector::<String>::new);
 
     match vector.get(0) {
         Ok(retrieved_value) => assert_eq!(retrieved_value, None),
-        Err(e) => panic!("Error occurred: {:?}", e),
+        Err(e) => panic!("Error occurred: {e:?}"),
     }
 }
 
 #[test]
 fn test_vector_pop() {
-    let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+    let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
     let value = "test_data".to_string();
-    let _ = vector.push(value.clone()).unwrap();
+    vector.push(value.clone()).unwrap();
     let popped_value = vector.pop().unwrap();
     assert_eq!(popped_value, Some(value));
     assert_eq!(vector.len().unwrap(), 0);
@@ -341,22 +341,22 @@ fn test_vector_pop() {
 
 #[test]
 fn test_vector_items() {
-    let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+    let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
     let value1 = "test_data1".to_string();
     let value2 = "test_data2".to_string();
-    let _ = vector.push(value1.clone()).unwrap();
-    let _ = vector.push(value2.clone()).unwrap();
+    vector.push(value1.clone()).unwrap();
+    vector.push(value2.clone()).unwrap();
     let items: Vec<String> = vector.iter().unwrap().collect();
     assert_eq!(items, vec![value1, value2]);
 }
 
 #[test]
 fn test_vector_contains() {
-    let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+    let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
     let value = "test_data".to_string();
-    let _ = vector.push(value.clone()).unwrap();
+    vector.push(value.clone()).unwrap();
     assert!(vector.contains(&value).unwrap());
     let non_existent_value = "non_existent".to_string();
     assert!(!vector.contains(&non_existent_value).unwrap());
@@ -364,10 +364,10 @@ fn test_vector_contains() {
 
 #[test]
 fn test_vector_clear() {
-    let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
+    let mut vector = Root::new(Vector::<_, MainStorage>::new);
 
     let value = "test_data".to_string();
-    let _ = vector.push(value.clone()).unwrap();
+    vector.push(value.clone()).unwrap();
     vector.clear().unwrap();
     assert_eq!(vector.len().unwrap(), 0);
 }
@@ -378,35 +378,27 @@ fn test_vector_clear() {
 
 #[test]
 fn test_unordered_set_operations() {
-    let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
+    let mut set = Root::new(UnorderedSet::<_, MainStorage>::new);
 
     assert!(set.insert("value1".to_string()).expect("insert failed"));
 
-    assert_eq!(
-        set.contains(&"value1".to_string())
-            .expect("contains failed"),
-        true
-    );
+    assert!(set
+        .contains(&"value1".to_string())
+        .expect("contains failed"));
 
     assert!(!set.insert("value1".to_string()).expect("insert failed"));
     assert!(set.insert("value2".to_string()).expect("insert failed"));
 
-    assert_eq!(set.contains("value3").expect("get failed"), false);
-    assert_eq!(set.contains("value2").expect("get failed"), true);
+    assert!(!set.contains("value3").expect("get failed"));
+    assert!(set.contains("value2").expect("get failed"));
 
-    assert_eq!(
-        set.remove("value1").expect("error while removing key"),
-        true
-    );
-    assert_eq!(
-        set.remove("value3").expect("error while removing key"),
-        false
-    );
+    assert!(set.remove("value1").expect("error while removing key"));
+    assert!(!set.remove("value3").expect("error while removing key"));
 }
 
 #[test]
 fn test_unordered_set_len() {
-    let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
+    let mut set = Root::new(UnorderedSet::<_, MainStorage>::new);
 
     assert!(set.insert("value1".to_string()).expect("insert failed"));
     assert!(set.insert("value2".to_string()).expect("insert failed"));
@@ -421,7 +413,7 @@ fn test_unordered_set_len() {
 
 #[test]
 fn test_unordered_set_clear() {
-    let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
+    let mut set = Root::new(UnorderedSet::<_, MainStorage>::new);
 
     assert!(set.insert("value1".to_string()).expect("insert failed"));
     assert!(set.insert("value2".to_string()).expect("insert failed"));
@@ -431,13 +423,13 @@ fn test_unordered_set_clear() {
     set.clear().expect("clear failed");
 
     assert_eq!(set.len().expect("len failed"), 0);
-    assert_eq!(set.contains("value1").expect("contains failed"), false);
-    assert_eq!(set.contains("value2").expect("contains failed"), false);
+    assert!(!set.contains("value1").expect("contains failed"));
+    assert!(!set.contains("value2").expect("contains failed"));
 }
 
 #[test]
 fn test_unordered_set_items() {
-    let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
+    let mut set = Root::new(UnorderedSet::<_, MainStorage>::new);
 
     assert!(set.insert("value1".to_string()).expect("insert failed"));
     assert!(set.insert("value2".to_string()).expect("insert failed"));

@@ -355,7 +355,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut v = Root::new(|| AuthoredVector::<u64>::new());
+        let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).expect("push");
 
         // The pusher's write stamps the binary's current target schema version.
@@ -381,7 +381,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut v = Root::new(|| AuthoredVector::<u64>::new());
+        let mut v = Root::new(AuthoredVector::<u64>::new);
         let idx = v.push(7).expect("push");
         assert_eq!(idx, 0);
         assert_eq!(v.get(0).unwrap(), Some(7));
@@ -394,7 +394,7 @@ mod tests {
     fn concurrent_pushes_from_two_users_preserve_per_entry_owner() {
         env::reset_for_testing();
 
-        let mut v = Root::new(|| AuthoredVector::<u64>::new());
+        let mut v = Root::new(AuthoredVector::<u64>::new);
 
         env::set_executor_id(ALICE);
         let a = v.push(1).unwrap();
@@ -415,7 +415,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut v = Root::new(|| AuthoredVector::<u64>::new());
+        let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
         v.update(0, 42).expect("owner update");
         assert_eq!(v.get(0).unwrap(), Some(42));
@@ -428,7 +428,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut v = Root::new(|| AuthoredVector::<u64>::new());
+        let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
 
         env::set_executor_id(BOB);
@@ -444,7 +444,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut v = Root::new(|| AuthoredVector::<u64>::new());
+        let mut v = Root::new(AuthoredVector::<u64>::new);
         let err = v.update(5, 1).expect_err("out-of-bounds update must fail");
         assert!(err.to_string().to_lowercase().contains("out of bounds"));
     }
@@ -455,7 +455,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut v = Root::new(|| AuthoredVector::<u64>::new());
+        let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
         v.tombstone(0).expect("owner tombstone");
         // u64::default() == 0
@@ -471,7 +471,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut v = Root::new(|| AuthoredVector::<u64>::new());
+        let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
 
         env::set_executor_id(BOB);
@@ -486,7 +486,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut v = Root::new(|| AuthoredVector::<u64>::new());
+        let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(10).unwrap();
         v.push(20).unwrap();
         env::set_executor_id(BOB);
@@ -502,7 +502,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let v = Root::new(|| AuthoredVector::<u64>::new());
+        let v = Root::new(AuthoredVector::<u64>::new);
         assert_eq!(v.owner_of(0).unwrap(), None);
     }
 }

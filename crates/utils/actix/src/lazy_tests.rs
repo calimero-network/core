@@ -21,7 +21,7 @@ impl Actor for Counter {
         assert_eq!(0, self.value);
 
         // `wait` here will execute before any queued messages
-        let _ignored = ctx.wait(async {}.into_actor(self).then(|_, act, _ctx| {
+        ctx.wait(async {}.into_actor(self).then(|_, act, _ctx| {
             assert_eq!(0, act.value);
             async {}.into_actor(act)
         }));

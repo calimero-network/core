@@ -80,7 +80,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
-use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor, ValueRef};
+use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor, StorageKey, ValueRef};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
@@ -300,7 +300,7 @@ where
     /// returned.
     pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, StoreError>
     where
-        K: AsRef<[u8]> + PartialEq + 'static,
+        K: StorageKey,
         V: 'static,
     {
         // Entries inherit this collection's own storage domain (Public for an
@@ -1099,6 +1099,8 @@ where
 
 /// A view into a single entry in a [`SortedMap`], which may either be occupied
 /// or vacant. Returned by [`SortedMap::entry`].
+#[must_use = "an Entry does nothing on its own; call `.or_insert(…)` / `.or_default()` \
+              (or match it) to read or modify the slot — dropping it is a no-op"]
 #[derive(Debug)]
 pub enum Entry<'a, K, V, S>
 where
@@ -1310,7 +1312,7 @@ mod tests {
 
     #[test]
     fn test_sorted_map_basic_operations() {
-        let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(SortedMap::<_, _, MainStorage>::new);
 
         assert!(map
             .insert("key".to_owned(), "value".to_owned())
@@ -1343,7 +1345,7 @@ mod tests {
 
     #[test]
     fn test_sorted_map_iterates_in_key_order_regardless_of_insertion_order() {
-        let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(SortedMap::<_, _, MainStorage>::new);
 
         // Insert deliberately out of order.
         for k in ["delta", "alpha", "charlie", "bravo", "echo"] {
@@ -1363,7 +1365,7 @@ mod tests {
 
     #[test]
     fn test_sorted_map_range() {
-        let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(SortedMap::<_, _, MainStorage>::new);
         for k in ["a", "b", "c", "d", "e", "f"] {
             map.insert(k.to_owned(), k.to_owned()).unwrap();
         }
@@ -1395,7 +1397,7 @@ mod tests {
 
     #[test]
     fn test_sorted_map_prefix() {
-        let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(SortedMap::<_, _, MainStorage>::new);
         for k in ["user:alice", "user:bob", "post:1", "user:carol", "post:2"] {
             map.insert(k.to_owned(), String::new()).unwrap();
         }
@@ -1417,7 +1419,7 @@ mod tests {
 
     #[test]
     fn test_sorted_map_pagination() {
-        let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(SortedMap::<_, _, MainStorage>::new);
         for i in 0..10u32 {
             // Zero-pad so lexicographic order matches numeric order.
             map.insert(format!("k{i:02}"), i).unwrap();
@@ -1443,7 +1445,7 @@ mod tests {
 
     #[test]
     fn test_sorted_map_first_last() {
-        let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(SortedMap::<_, _, MainStorage>::new);
         assert!(map.first().unwrap().is_none());
         assert!(map.last().unwrap().is_none());
 
@@ -1457,7 +1459,7 @@ mod tests {
 
     #[test]
     fn test_sorted_map_entry_api() {
-        let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(SortedMap::<_, _, MainStorage>::new);
 
         {
             let mut guard = map
@@ -1484,7 +1486,7 @@ mod tests {
 
     #[test]
     fn test_sorted_map_entry_or_default() {
-        let mut map = Root::new(|| SortedMap::<String, u64, MainStorage>::new());
+        let mut map = Root::new(SortedMap::<String, u64, MainStorage>::new);
 
         // Vacant: inserts `u64::default()` (0), guard write-back persists the bump.
         {
@@ -1523,7 +1525,7 @@ mod tests {
 
     #[test]
     fn test_sorted_map_remove_updates_order() {
-        let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(SortedMap::<_, _, MainStorage>::new);
         for k in ["a", "b", "c", "d"] {
             map.insert(k.to_owned(), k.to_owned()).unwrap();
         }
@@ -1537,7 +1539,7 @@ mod tests {
 
     #[test]
     fn test_sorted_map_get_mut_preserves_order() {
-        let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(SortedMap::<_, _, MainStorage>::new);
         for k in ["b", "a", "c"] {
             map.insert(k.to_owned(), 0u32).unwrap();
         }
@@ -1600,7 +1602,7 @@ mod tests {
 
     #[test]
     fn test_entry_occupied_is_used_in_match() {
-        let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(SortedMap::<_, _, MainStorage>::new);
         map.insert("k".to_owned(), "v".to_owned()).unwrap();
 
         let value = match map.entry("k".to_owned()).unwrap() {

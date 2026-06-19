@@ -530,7 +530,7 @@ pub(crate) async fn dispatch_deferred_root_merges(
         // so the merged write is strictly newer than either input
         // — necessary for the next sync round's LWW comparisons to
         // resolve consistently.
-        let existing_ts: u64 = (*existing_metadata.updated_at).into();
+        let existing_ts: u64 = *existing_metadata.updated_at;
         let incoming_ts: u64 = *incoming_hlc_ts;
 
         let request = MergeRootStateRequest {

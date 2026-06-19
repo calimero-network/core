@@ -52,7 +52,7 @@ pub struct BlobDeleteResponse {
 fn body_to_async_read(body: Body) -> impl AsyncRead {
     let byte_stream = body
         .into_data_stream()
-        .map(|result| result.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)));
+        .map(|result| result.map_err(std::io::Error::other));
 
     StreamReader::new(byte_stream).compat()
 }
@@ -151,7 +151,7 @@ pub async fn upload_handler(
             error!(error=?err, "Failed to upload blob");
             ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to store blob: {}", err),
+                message: format!("Failed to store blob: {err}"),
             }
             .into_response()
         }
@@ -286,9 +286,7 @@ pub async fn download_handler(
                 blob_id
             );
 
-            let stream = blob.map(|result| {
-                result.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
-            });
+            let stream = blob.map(|result| result.map_err(std::io::Error::other));
 
             build_blob_response_headers(&blob_metadata, blob_id)
                 .body(Body::from_stream(stream))
@@ -309,7 +307,7 @@ pub async fn download_handler(
             tracing::error!("Failed to retrieve blob {}: {:?}", blob_id, err);
             ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to retrieve blob: {}", err),
+                message: format!("Failed to retrieve blob: {err}"),
             }
             .into_response()
         }
@@ -360,7 +358,7 @@ pub async fn delete_handler(
             tracing::error!("Failed to delete blob {}: {:?}", blob_id, err);
             ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to delete blob: {}", err),
+                message: format!("Failed to delete blob: {err}"),
             }
             .into_response()
         }

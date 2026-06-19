@@ -133,7 +133,7 @@ mod tests {
     fn test_insert_nested_simple_crdt() {
         env::reset_for_testing();
 
-        let mut map = Root::new(|| UnorderedMap::<String, Counter>::new());
+        let mut map = Root::new(UnorderedMap::<String, Counter>::new);
         let counter = Counter::new();
 
         // Counter doesn't contain CRDTs, so uses standard insert
@@ -145,7 +145,7 @@ mod tests {
     fn test_insert_nested_lww_register() {
         env::reset_for_testing();
 
-        let mut map = Root::new(|| UnorderedMap::<String, LwwRegister<String>>::new());
+        let mut map = Root::new(UnorderedMap::<String, LwwRegister<String>>::new);
         let register = LwwRegister::new("Test Value".to_string());
 
         // LwwRegister doesn't contain CRDTs, so uses standard insert

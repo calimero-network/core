@@ -1,6 +1,5 @@
 use super::*;
 
-use super::*;
 use calimero_primitives::identity::PrivateKey;
 use rand::rngs::OsRng;
 
@@ -470,7 +469,7 @@ fn cascade_target_application_set_borsh_round_trip() {
             assert_eq!(app_key, [10u8; 32]);
             assert_eq!(target_application_id, sample_application_id(0x42));
         }
-        other => panic!("expected CascadeTargetApplicationSet, got {:?}", other),
+        other => panic!("expected CascadeTargetApplicationSet, got {other:?}"),
     }
 }
 
@@ -493,7 +492,7 @@ fn cascade_group_migration_set_borsh_round_trip() {
             assert_eq!(from_app_key, [9u8; 32]);
             assert_eq!(migration.as_deref(), Some(b"migrate_v1_to_v2".as_ref()));
         }
-        other => panic!("expected CascadeGroupMigrationSet, got {:?}", other),
+        other => panic!("expected CascadeGroupMigrationSet, got {other:?}"),
     }
 
     // Also cover migration = None.
@@ -511,7 +510,7 @@ fn cascade_group_migration_set_borsh_round_trip() {
             assert_eq!(from_app_key, [0u8; 32]);
             assert!(migration.is_none());
         }
-        other => panic!("expected CascadeGroupMigrationSet, got {:?}", other),
+        other => panic!("expected CascadeGroupMigrationSet, got {other:?}"),
     }
 }
 
@@ -577,9 +576,8 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
             assert_eq!(cascade_hlc, HybridTimestamp::zero());
         }
         other => panic!(
-            "frozen CascadeUpgrade bytes (discriminant 25) decoded as {:?}; a \
-             variant was inserted mid-enum, shifting prior variant tags",
-            other
+            "frozen CascadeUpgrade bytes (discriminant 25) decoded as {other:?}; a \
+             variant was inserted mid-enum, shifting prior variant tags"
         ),
     }
 }

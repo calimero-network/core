@@ -107,8 +107,8 @@ fn delta_id_changes_with_parents() {
     let actions = vec![];
     let hlc = crate::env::hlc_timestamp();
 
-    let id1 = CausalDelta::compute_id(&vec![[0; 32]], &actions, &hlc);
-    let id2 = CausalDelta::compute_id(&vec![[1; 32]], &actions, &hlc);
+    let id1 = CausalDelta::compute_id(&[[0; 32]], &actions, &hlc);
+    let id2 = CausalDelta::compute_id(&[[1; 32]], &actions, &hlc);
 
     // Should be different
     assert_ne!(id1, id2);
@@ -254,7 +254,7 @@ fn delta_clears_actions_after_commit() {
 
     // Commit
     let delta1 = commit_causal_delta(&[1; 32]).unwrap().unwrap();
-    assert!(delta1.actions.len() > 0);
+    assert!(!delta1.actions.is_empty());
 
     // Reset for second commit
     reset_for_testing();
@@ -269,7 +269,7 @@ fn delta_clears_actions_after_commit() {
     let delta2 = commit_causal_delta(&[2; 32]).unwrap().unwrap();
 
     // Should only have new action (context was cleared)
-    assert!(delta2.actions.len() > 0);
+    assert!(!delta2.actions.is_empty());
     assert_ne!(delta1.actions, delta2.actions);
 }
 

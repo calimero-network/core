@@ -773,8 +773,7 @@ fn stored_full_hash_stays_authoritative_through_ancestor_walks() {
         assert_eq!(
             index.full_hash(),
             recomputed,
-            "stored full_hash must equal independent recompute for id {:?}",
-            id
+            "stored full_hash must equal independent recompute for id {id:?}"
         );
         assert_ne!(
             index.full_hash(),

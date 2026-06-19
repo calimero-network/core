@@ -64,7 +64,7 @@ pub fn migrate_v1_to_v2() -> (ScenarioMigrationCheckFailV2, MigrationWitness) {
 
     let old_state: ScenarioMigrationCheckFailV1 =
         BorshDeserialize::deserialize(&mut &old_bytes[..]).unwrap_or_else(|e| {
-            panic!("Migration failed: V1 deserialization error {:?}", e);
+            panic!("Migration failed: V1 deserialization error {e:?}");
         });
 
     app::emit!(Event::Migrated {
@@ -86,7 +86,7 @@ pub fn migrate_v1_to_v2() -> (ScenarioMigrationCheckFailV2, MigrationWitness) {
     let mut items = old_state.items;
     let mut keys: Vec<String> = items
         .entries()
-        .unwrap_or_else(|e| panic!("Migration failed: V1 items iteration error {:?}", e))
+        .unwrap_or_else(|e| panic!("Migration failed: V1 items iteration error {e:?}"))
         .map(|(k, _)| k)
         .collect();
     keys.sort();
@@ -94,7 +94,7 @@ pub fn migrate_v1_to_v2() -> (ScenarioMigrationCheckFailV2, MigrationWitness) {
     if let Some(smallest) = keys.first() {
         items
             .remove(smallest)
-            .unwrap_or_else(|e| panic!("Migration failed: V2 items drop error {:?}", e));
+            .unwrap_or_else(|e| panic!("Migration failed: V2 items drop error {e:?}"));
     }
 
     (

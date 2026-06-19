@@ -5,7 +5,7 @@ use super::super::super::verify_post_apply_state_hashes;
 use super::context::GroupApplyCtx;
 use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError,
-    MembershipRepository, MetaRepository,
+    MembershipRepository, MetaRepository, NamespaceRepository,
 };
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
@@ -67,6 +67,110 @@ pub(crate) fn apply(
              inherited membership); skipping TeeMemberRemoved follow-up"
         );
     }
+    // A namespace-root removal of a `ReadOnlyTee` evicts it namespace-wide:
+    // the TEE's presence in any subgroup came from namespace-level
+    // attestation policy (`tee_subgroup_admit`), not the subgroup admin's
+    // choice, so root authority extends to it. Cascade per-receiver like a
+    // self-`MemberLeft` namespace-leave; scoped to `ReadOnlyTee` so
+    // normal-member Restricted-subgroup membership autonomy (#2256) is
+    // untouched. The per-subgroup cascade events are queued BEFORE the root
+    // events (below), but note this ordering is NOT a store-state causality:
+    // every event rides the emit-after-persist sink and is delivered only
+    // AFTER this apply returns and all mutations (root row included) are
+    // persisted. So a subscriber processing the subgroup `TeeMemberRemoved`
+    // already observes the root row removed; the queue order merely sequences
+    // the order subscribers see the events, not the state they read. Mirrors
+    // the `is_namespace_leave` block in `member_left.rs`, but DELIBERATELY
+    // omits the owner-self and per-descendant last-admin checks: a
+    // `ReadOnlyTee` is structurally never an owner or admin, so both are inert
+    // here and would mislead.
+    //
+    // Gate the namespace-root check behind the already-loaded role check:
+    // only a `ReadOnlyTee` removal cascades, so every non-TEE removal skips it.
+    if removed_role == Some(GroupMemberRole::ReadOnlyTee) {
+        let namespaces = NamespaceRepository::new(store);
+        // A namespace root is exactly a group with no parent edge, so a single
+        // O(1) `parent` lookup decides this — cheaper than walking the whole
+        // parent chain via `resolve`, and equivalent on a well-formed tree (a
+        // subgroup-level TEE removal has a parent and skips the cascade).
+        let is_namespace_root = namespaces.parent(group_id)?.is_none();
+        if is_namespace_root {
+            let membership = MembershipRepository::new(store);
+            let deny_list = DenyListRepository::new(store);
+            // `collect_descendants` returns the FULL subtree (every level, not
+            // just direct children) and excludes the root itself, so one pass
+            // covers each descendant group's own directly-registered contexts.
+            let descendants = namespaces.collect_descendants(group_id)?;
+            for sub in &descendants {
+                // Defensive: `collect_descendants` excludes the root, but were
+                // it ever to return `group_id` itself, the membership teardown
+                // below would mutate the ROOT's `GroupMember` rows BEFORE
+                // `verify_post_apply_state_hashes` runs — diverging the signed
+                // root hash on every honest receiver. Skip it so that
+                // hash-critical invariant stays scoped to the single intended
+                // root removal performed after this block.
+                if *sub == *group_id {
+                    continue;
+                }
+                // Capture the direct-row role BEFORE any mutation. `role_of`
+                // reads the `GroupMember` row; `cascade_remove_member` below is
+                // documented to touch only `ContextIdentity` (disjoint from
+                // `GroupMember`), but reading the role first makes the teardown
+                // gate independent of that load-bearing invariant — even if
+                // `cascade_remove_member` ever started touching `GroupMember`
+                // rows, this gate would stay correct.
+                let direct_role = membership.role_of(sub, member)?;
+                // `ContextIdentity` hygiene runs for EVERY descendant —
+                // INCLUDING Open subgroups the TEE only *inherited* into (no
+                // direct `GroupMember` row) yet still auto-followed contexts of
+                // (Fix B). Skipping those would strand the evicted node's
+                // `ContextIdentity` rows there. `cascade_remove_member` is an
+                // idempotent no-op where the TEE holds no rows and touches only
+                // `ContextIdentity` (disjoint from `GroupMember`), so it is
+                // group-state-hash-neutral.
+                cascade_remove_member_from_group_tree(store, sub, member)?;
+                // Membership teardown + role-scoped events fire only where the
+                // TEE holds a DIRECT row — inherited rows have no per-subgroup
+                // `GroupMember` to evict and never emitted a join event. The
+                // cascade ENTRY is gated on the ROOT role (the security
+                // boundary); this per-descendant role gate is only for the
+                // event split.
+                let Some(role) = direct_role else {
+                    continue;
+                };
+                // These per-descendant store writes are not transactional
+                // (mirrors `member_left.rs`): a mid-cascade store-IO error
+                // aborts apply via `?` rather than half-applying silently. That
+                // is safe, not lossy — the governance nonce/DAG head only
+                // advances AFTER the full mutation returns, so a failed apply is
+                // not nonce-deduplicated and re-applies on the next receipt,
+                // where the idempotent cascade completes the remaining rows.
+                membership.remove_member(sub, member)?;
+                // Deny-listing is intentionally gated to DIRECT rows (mirrors
+                // `member_left.rs`). A deny-list entry drops the member's
+                // state-delta traffic on the group's topics "until they
+                // re-join", and is cleared by a direct re-add. Inherited Open
+                // subgroups have no direct row and no subgroup-level re-join op
+                // to clear it: re-inheritance is re-evaluated from the root
+                // row. Marking them here would strand a stale entry that
+                // wrongly drops the traffic of a legitimately re-inherited node
+                // after a root re-admission. The `ContextIdentity` purge above
+                // is safe to run namespace-wide precisely because it is
+                // re-created on the next join/auto-follow; the deny-list is not.
+                deny_list.mark(sub, member)?;
+                ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
+                    group_id: sub.to_bytes(),
+                    member: *member,
+                });
+                if role == GroupMemberRole::ReadOnlyTee {
+                    ctx.queue_event(crate::op_events::OpEvent::TeeMemberRemoved {
+                        group_id: sub.to_bytes(),
+                        member: *member,
+                    });
+                }
+            }
+        }
+    }
     cascade_remove_member_from_group_tree(store, group_id, member)?;
     MembershipRepository::new(store).remove_member(group_id, member)?;
     // Add to deny-list: state deltas from this member will be
@@ -97,6 +201,13 @@ pub(crate) fn apply(
     // claim on every honest receiver. The pre-apply
     // simulation only models the single removal; any extra
     // mutation here is invisible to it.
+    //
+    // The ReadOnlyTee cascade loop above is hash-neutral for
+    // THIS check for two reasons: it touches only DESCENDANT
+    // groups (`compute_group_state_hash` for `group_id` scans
+    // only `group_id`-keyed rows, so other groups' `GroupMember`
+    // writes are out of scope), and the `*sub == *group_id`
+    // guard keeps the root itself out of that loop.
     ctx.divergence = verify_post_apply_state_hashes(
         store,
         group_id,

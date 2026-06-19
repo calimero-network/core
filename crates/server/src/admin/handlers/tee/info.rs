@@ -35,7 +35,7 @@ pub async fn handler(Extension(_state): Extension<Arc<AdminState>>) -> impl Into
 
             ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to get TEE info: {}", err),
+                message: format!("Failed to get TEE info: {err}"),
             }
             .into_response()
         }

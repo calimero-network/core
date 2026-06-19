@@ -694,7 +694,7 @@ pub async fn publish_and_await_ack_namespace(
                         continue;
                     }
                 }
-                if !acked_by.iter().any(|p| *p == ack.signer_pubkey) {
+                if !acked_by.contains(&ack.signer_pubkey) {
                     acked_by.push(ack.signer_pubkey);
                 }
                 if acked_by.len() >= min_acks {

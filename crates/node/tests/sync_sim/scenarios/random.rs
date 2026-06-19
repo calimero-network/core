@@ -111,7 +111,7 @@ impl RandomScenario {
 
         // Generate nodes
         for i in 0..self.config.node_count {
-            let mut node = SimNode::new(format!("node-{}", i));
+            let mut node = SimNode::new(format!("node-{i}"));
 
             // Check if this node should be fresh
             if self
@@ -233,7 +233,7 @@ impl RandomScenario {
         let mut nodes = Self::new(seed, config).generate();
 
         // Add exactly one fresh node
-        let fresh = SimNode::new(format!("node-{}", existing_count));
+        let fresh = SimNode::new(format!("node-{existing_count}"));
         nodes.push(fresh);
 
         nodes
@@ -362,10 +362,7 @@ mod tests {
             let overlap_ratio = shared as f64 / total as f64;
             assert!(
                 overlap_ratio > 0.3,
-                "overlap ratio {} should be > 0.3 (shared={}, total={})",
-                overlap_ratio,
-                shared,
-                total
+                "overlap ratio {overlap_ratio} should be > 0.3 (shared={shared}, total={total})"
             );
         }
     }
@@ -401,8 +398,7 @@ mod tests {
         let max_diff = counts.iter().max().unwrap() - counts.iter().min().unwrap();
         assert!(
             max_diff <= counts.iter().max().unwrap() / 2,
-            "entity counts {:?} should be similar",
-            counts
+            "entity counts {counts:?} should be similar"
         );
     }
 }

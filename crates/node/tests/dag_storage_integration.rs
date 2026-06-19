@@ -462,7 +462,7 @@ async fn test_dag_storage_deep_chain_out_of_order() {
         .map(|i| {
             let action = Action::Update {
                 id: ids[i - 1],
-                data: format!("value {}", i).into_bytes(),
+                data: format!("value {i}").into_bytes(),
                 ancestors: vec![],
                 metadata: Metadata::default(),
             };
@@ -486,7 +486,7 @@ async fn test_dag_storage_deep_chain_out_of_order() {
     // Verify storage has correct final state
     for i in 1..=10 {
         let stored = Interface::<MainStorage>::get(ids[i - 1]).unwrap();
-        assert_eq!(stored, format!("value {}", i).as_bytes());
+        assert_eq!(stored, format!("value {i}").as_bytes());
     }
 
     assert_eq!(dag.pending_stats().count, 0);
@@ -583,7 +583,7 @@ async fn test_dag_storage_stress_many_deltas() {
     for i in 1..=100 {
         let action = Action::Update {
             id,
-            data: format!("version {}", i).into_bytes(),
+            data: format!("version {i}").into_bytes(),
             ancestors: vec![],
             metadata: Metadata::new(i as u64, i as u64),
         };

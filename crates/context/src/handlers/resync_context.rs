@@ -38,13 +38,13 @@ impl Handler<ResyncContextRequest> for ContextManager {
                 let in_group = get_group_for_context(&datastore, &context_id)?.is_some();
                 let heads = datastore
                     .handle()
-                    .get(&key::ContextMeta::new(context_id.into()))?
+                    .get(&key::ContextMeta::new(context_id))?
                     .map_or(0, |m| m.dag_heads.len());
                 if let Err(refusal) = resync_admission(in_group, heads, force) {
                     bail!("context {context_id}: {refusal}");
                 }
 
-                let marker = key::ContextResyncRequested::new(context_id.into());
+                let marker = key::ContextResyncRequested::new(context_id);
                 datastore.handle().put(&marker, &())?;
                 // Roll the marker back if the sync can't even be enqueued, so a
                 // failed request can't leave the context stuck forcing snapshots.

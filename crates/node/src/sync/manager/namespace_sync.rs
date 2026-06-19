@@ -1062,7 +1062,7 @@ impl SyncManager {
                 Ok(other) => {
                     let detail = format!(
                         "unexpected response variant: {:?}",
-                        other.as_ref().map(|m| std::mem::discriminant(m))
+                        other.as_ref().map(std::mem::discriminant)
                     );
                     debug!(
                         namespace_id = %hex::encode(params.namespace_id),

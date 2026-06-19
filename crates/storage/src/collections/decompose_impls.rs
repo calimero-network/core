@@ -24,7 +24,7 @@ where
     fn decompose(&self) -> Result<Vec<(Self::Key, Self::Value)>, DecomposeError> {
         let entries = self
             .entries()
-            .map_err(|e| DecomposeError::StorageError(format!("Failed to get entries: {:?}", e)))?;
+            .map_err(|e| DecomposeError::StorageError(format!("Failed to get entries: {e:?}")))?;
 
         // Convert (K, V) to (CompositeKey, V)
         // For a nested map, we'll wrap the key in a CompositeKey
@@ -33,7 +33,7 @@ where
             .map(|(k, v)| {
                 // Serialize the key to bytes
                 let key_bytes = borsh::to_vec(&k).map_err(|e| {
-                    DecomposeError::StorageError(format!("Failed to serialize key: {:?}", e))
+                    DecomposeError::StorageError(format!("Failed to serialize key: {e:?}"))
                 })?;
 
                 // Create a CompositeKey from the serialized key
@@ -52,12 +52,12 @@ where
         for (composite_key, value) in entries {
             // Deserialize the key from composite key bytes
             let key = borsh::from_slice::<K>(composite_key.as_bytes()).map_err(|e| {
-                DecomposeError::StorageError(format!("Failed to deserialize key: {:?}", e))
+                DecomposeError::StorageError(format!("Failed to deserialize key: {e:?}"))
             })?;
 
             drop(
                 map.insert(key, value).map_err(|e| {
-                    DecomposeError::StorageError(format!("Failed to insert: {:?}", e))
+                    DecomposeError::StorageError(format!("Failed to insert: {e:?}"))
                 })?,
             );
         }
@@ -84,13 +84,13 @@ where
         // deterministic without an extra sort.
         let entries = self
             .entries()
-            .map_err(|e| DecomposeError::StorageError(format!("Failed to get entries: {:?}", e)))?;
+            .map_err(|e| DecomposeError::StorageError(format!("Failed to get entries: {e:?}")))?;
 
         let result = entries
             .into_iter()
             .map(|(k, v)| {
                 let key_bytes = borsh::to_vec(&k).map_err(|e| {
-                    DecomposeError::StorageError(format!("Failed to serialize key: {:?}", e))
+                    DecomposeError::StorageError(format!("Failed to serialize key: {e:?}"))
                 })?;
 
                 Ok((CompositeKey::from(key_bytes), v))
@@ -105,12 +105,12 @@ where
 
         for (composite_key, value) in entries {
             let key = borsh::from_slice::<K>(composite_key.as_bytes()).map_err(|e| {
-                DecomposeError::StorageError(format!("Failed to deserialize key: {:?}", e))
+                DecomposeError::StorageError(format!("Failed to deserialize key: {e:?}"))
             })?;
 
             drop(
                 map.insert(key, value).map_err(|e| {
-                    DecomposeError::StorageError(format!("Failed to insert: {:?}", e))
+                    DecomposeError::StorageError(format!("Failed to insert: {e:?}"))
                 })?,
             );
         }
@@ -138,17 +138,17 @@ where
         // Get length
         let len = self
             .len()
-            .map_err(|e| DecomposeError::StorageError(format!("Failed to get length: {:?}", e)))?;
+            .map_err(|e| DecomposeError::StorageError(format!("Failed to get length: {e:?}")))?;
 
         // Extract each element by index
         let mut result = Vec::with_capacity(len);
         for index in 0..len {
             if let Some(value) = self.get(index).map_err(|e| {
-                DecomposeError::StorageError(format!("Failed to get index {}: {:?}", index, e))
+                DecomposeError::StorageError(format!("Failed to get index {index}: {e:?}"))
             })? {
                 // Create composite key with index
                 let index_bytes = borsh::to_vec(&index).map_err(|e| {
-                    DecomposeError::StorageError(format!("Failed to serialize index: {:?}", e))
+                    DecomposeError::StorageError(format!("Failed to serialize index: {e:?}"))
                 })?;
 
                 result.push((CompositeKey::from(index_bytes), value.into_inner()));
@@ -168,7 +168,7 @@ where
             .into_iter()
             .map(|(composite_key, value)| {
                 let index = borsh::from_slice::<usize>(composite_key.as_bytes()).map_err(|e| {
-                    DecomposeError::StorageError(format!("Failed to deserialize index: {:?}", e))
+                    DecomposeError::StorageError(format!("Failed to deserialize index: {e:?}"))
                 })?;
                 Ok((index, value))
             })
@@ -184,13 +184,12 @@ where
             let (actual_index, val) = value;
             if actual_index != expected_index {
                 return Err(DecomposeError::InvalidValue(format!(
-                    "Vector has gap: expected index {}, got {}",
-                    expected_index, actual_index
+                    "Vector has gap: expected index {expected_index}, got {actual_index}"
                 )));
             }
             vector
                 .push(val)
-                .map_err(|e| DecomposeError::StorageError(format!("Failed to push: {:?}", e)))?;
+                .map_err(|e| DecomposeError::StorageError(format!("Failed to push: {e:?}")))?;
         }
 
         Ok(vector)
@@ -208,7 +207,7 @@ mod tests {
     fn test_unordered_map_decompose() {
         env::reset_for_testing();
 
-        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
         map.insert("key1".to_owned(), "value1".to_owned()).unwrap();
         map.insert("key2".to_owned(), "value2".to_owned()).unwrap();
 
@@ -220,7 +219,7 @@ mod tests {
     fn test_unordered_map_roundtrip() {
         env::reset_for_testing();
 
-        let mut original = Root::new(|| UnorderedMap::<String, u64>::new());
+        let mut original = Root::new(UnorderedMap::<String, u64>::new);
         original.insert("a".to_owned(), 1u64).unwrap();
         original.insert("b".to_owned(), 2u64).unwrap();
         original.insert("c".to_owned(), 3u64).unwrap();
@@ -262,7 +261,7 @@ mod tests {
     fn test_vector_decompose() {
         env::reset_for_testing();
 
-        let mut vec = Root::new(|| Vector::<_, MainStorage>::new());
+        let mut vec = Root::new(Vector::<_, MainStorage>::new);
         vec.push(10u64).unwrap();
         vec.push(20u64).unwrap();
         vec.push(30u64).unwrap();
@@ -275,7 +274,7 @@ mod tests {
     fn test_vector_roundtrip() {
         env::reset_for_testing();
 
-        let mut original = Root::new(|| Vector::<String>::new());
+        let mut original = Root::new(Vector::<String>::new);
         original.push("first".to_owned()).unwrap();
         original.push("second".to_owned()).unwrap();
         original.push("third".to_owned()).unwrap();

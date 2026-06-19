@@ -42,7 +42,7 @@ pub async fn check_for_update() {
     }
 
     if let Err(err) = _check_for_update().await {
-        eprintln!("Version check failed: {}", err);
+        eprintln!("Version check failed: {err}");
     }
 }
 

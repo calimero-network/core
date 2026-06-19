@@ -53,31 +53,30 @@ impl fmt::Display for AttestationError {
                     "TEE attestation is not supported on this platform (requires Linux with TDX)"
                 )
             }
-            Self::QuoteGenerationFailed(msg) => write!(f, "Failed to generate TDX quote: {}", msg),
-            Self::QuoteParsingFailed(msg) => write!(f, "Failed to parse TDX quote: {}", msg),
+            Self::QuoteGenerationFailed(msg) => write!(f, "Failed to generate TDX quote: {msg}"),
+            Self::QuoteParsingFailed(msg) => write!(f, "Failed to parse TDX quote: {msg}"),
             Self::QuoteConversionFailed(msg) => {
-                write!(f, "Failed to convert quote to serializable format: {}", msg)
+                write!(f, "Failed to convert quote to serializable format: {msg}")
             }
             Self::QuoteVerificationFailed(msg) => {
-                write!(f, "Failed to verify quote signature: {}", msg)
+                write!(f, "Failed to verify quote signature: {msg}")
             }
             Self::CollateralFetchFailed(msg) => {
-                write!(f, "Failed to fetch collateral from Intel PCS: {}", msg)
+                write!(f, "Failed to fetch collateral from Intel PCS: {msg}")
             }
-            Self::InvalidNonce(msg) => write!(f, "Invalid nonce: {}", msg),
-            Self::InvalidApplicationHash(msg) => write!(f, "Invalid application hash: {}", msg),
+            Self::InvalidNonce(msg) => write!(f, "Invalid nonce: {msg}"),
+            Self::InvalidApplicationHash(msg) => write!(f, "Invalid application hash: {msg}"),
             Self::NonceMismatch { expected, actual } => {
-                write!(f, "Nonce mismatch: expected {}, got {}", expected, actual)
+                write!(f, "Nonce mismatch: expected {expected}, got {actual}")
             }
             Self::ApplicationHashMismatch { expected, actual } => {
                 write!(
                     f,
-                    "Application hash mismatch: expected {}, got {}",
-                    expected, actual
+                    "Application hash mismatch: expected {expected}, got {actual}"
                 )
             }
-            Self::InfoRetrievalFailed(msg) => write!(f, "Failed to get TEE info: {}", msg),
-            Self::SystemTimeError(msg) => write!(f, "System time error: {}", msg),
+            Self::InfoRetrievalFailed(msg) => write!(f, "Failed to get TEE info: {msg}"),
+            Self::SystemTimeError(msg) => write!(f, "System time error: {msg}"),
         }
     }
 }

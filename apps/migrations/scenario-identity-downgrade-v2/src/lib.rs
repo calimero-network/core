@@ -33,7 +33,7 @@ pub fn migrate_v1_to_v2() -> ScenarioIdentityDowngradeV2 {
         panic!("Migration failed: no existing state. Create a V1 context first.");
     });
     let _old: ScenarioIdentityDowngradeV1 = BorshDeserialize::deserialize(&mut &old_bytes[..])
-        .unwrap_or_else(|e| panic!("Migration failed: V1 deserialization error {:?}", e));
+        .unwrap_or_else(|e| panic!("Migration failed: V1 deserialization error {e:?}"));
 
     // A real downgrade would copy entries into the plain map, discarding the
     // per-entry authorship — which is exactly why this is unsafe and why the

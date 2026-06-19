@@ -34,7 +34,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeSeq;
 use serde::Serialize;
 
-use super::{compute_id, Collection, CrdtType};
+use super::{compute_id, Collection, CrdtType, StorageKey};
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -214,7 +214,7 @@ where
     ///
     pub fn insert(&mut self, value: V) -> Result<bool, StoreError>
     where
-        V: AsRef<[u8]> + PartialEq + 'static,
+        V: StorageKey,
     {
         // Register this set type's nested-id re-key thunk so that when the set
         // is itself stored as a map/set/vector value, `insert`'s re-key path
@@ -497,34 +497,25 @@ mod tests {
 
     #[test]
     fn test_unordered_set_operations() {
-        let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
+        let mut set = Root::new(UnorderedSet::<_, MainStorage>::new);
 
         assert!(set.insert("value1".to_owned()).expect("insert failed"));
 
-        assert_eq!(
-            set.contains(&"value1".to_owned()).expect("contains failed"),
-            true
-        );
+        assert!(set.contains(&"value1".to_owned()).expect("contains failed"));
 
         assert!(!set.insert("value1".to_owned()).expect("insert failed"));
         assert!(set.insert("value2".to_owned()).expect("insert failed"));
 
-        assert_eq!(set.contains("value3").expect("get failed"), false);
-        assert_eq!(set.contains("value2").expect("get failed"), true);
+        assert!(!set.contains("value3").expect("get failed"));
+        assert!(set.contains("value2").expect("get failed"));
 
-        assert_eq!(
-            set.remove("value1").expect("error while removing key"),
-            true
-        );
-        assert_eq!(
-            set.remove("value3").expect("error while removing key"),
-            false
-        );
+        assert!(set.remove("value1").expect("error while removing key"));
+        assert!(!set.remove("value3").expect("error while removing key"));
     }
 
     #[test]
     fn test_unordered_set_len() {
-        let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
+        let mut set = Root::new(UnorderedSet::<_, MainStorage>::new);
 
         assert!(set.insert("value1".to_owned()).expect("insert failed"));
         assert!(set.insert("value2".to_owned()).expect("insert failed"));
@@ -539,7 +530,7 @@ mod tests {
 
     #[test]
     fn test_unordered_set_clear() {
-        let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
+        let mut set = Root::new(UnorderedSet::<_, MainStorage>::new);
 
         assert!(set.insert("value1".to_owned()).expect("insert failed"));
         assert!(set.insert("value2".to_owned()).expect("insert failed"));
@@ -549,13 +540,13 @@ mod tests {
         set.clear().expect("clear failed");
 
         assert_eq!(set.len().expect("len failed"), 0);
-        assert_eq!(set.contains("value1").expect("contains failed"), false);
-        assert_eq!(set.contains("value2").expect("contains failed"), false);
+        assert!(!set.contains("value1").expect("contains failed"));
+        assert!(!set.contains("value2").expect("contains failed"));
     }
 
     #[test]
     fn test_unordered_set_items() {
-        let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
+        let mut set = Root::new(UnorderedSet::<_, MainStorage>::new);
 
         assert!(set.insert("value1".to_owned()).expect("insert failed"));
         assert!(set.insert("value2".to_owned()).expect("insert failed"));

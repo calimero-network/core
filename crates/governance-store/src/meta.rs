@@ -90,7 +90,7 @@ impl<'a> MetaRepository<'a> {
     pub fn compute_state_hash(&self, group_id: &ContextGroupId) -> EyreResult<[u8; 32]> {
         let meta = self
             .load(group_id)?
-            .ok_or_else(|| MetaError::GroupNotFoundForHash)?;
+            .ok_or(MetaError::GroupNotFoundForHash)?;
 
         let mut members = MembershipRepository::new(self.store).list(group_id, 0, usize::MAX)?;
         members.sort_by(|a, b| a.0.cmp(&b.0));
@@ -116,7 +116,7 @@ impl<'a> MetaRepository<'a> {
     ) -> EyreResult<[u8; 32]> {
         let meta = self
             .load(group_id)?
-            .ok_or_else(|| MetaError::GroupNotFoundForHash)?;
+            .ok_or(MetaError::GroupNotFoundForHash)?;
 
         let mut members = MembershipRepository::new(self.store).list(group_id, 0, usize::MAX)?;
         members.retain(|(pk, _role)| pk != removed_member);

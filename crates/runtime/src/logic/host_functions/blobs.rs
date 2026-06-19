@@ -771,7 +771,7 @@ mod tests {
             position: 0,
         };
 
-        let debug_str = format!("{:?}", handle);
+        let debug_str = format!("{handle:?}");
         assert!(debug_str.contains("BlobReadHandle"));
         assert!(debug_str.contains("blob_id"));
         assert!(debug_str.contains("<stream>"));
@@ -789,7 +789,7 @@ mod tests {
             position: 0,
         });
 
-        let debug_str = format!("{:?}", read_handle);
+        let debug_str = format!("{read_handle:?}");
         assert!(debug_str.contains("Read"));
         assert!(debug_str.contains("BlobReadHandle"));
     }

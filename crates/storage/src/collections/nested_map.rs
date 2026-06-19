@@ -153,7 +153,7 @@ mod tests {
     fn test_nested_map_insert() {
         env::reset_for_testing();
 
-        let mut outer = Root::new(|| UnorderedMap::<String, UnorderedMap<String, String>>::new());
+        let mut outer = Root::new(UnorderedMap::<String, UnorderedMap<String, String>>::new);
 
         // Insert into nested map
         let result = outer.insert_nested(
@@ -170,7 +170,7 @@ mod tests {
     fn test_nested_map_get() {
         env::reset_for_testing();
 
-        let mut outer = Root::new(|| UnorderedMap::<String, UnorderedMap<String, String>>::new());
+        let mut outer = Root::new(UnorderedMap::<String, UnorderedMap<String, String>>::new);
 
         // Insert
         outer
@@ -190,7 +190,7 @@ mod tests {
     fn test_nested_map_concurrent_modification() {
         env::reset_for_testing();
 
-        let mut map1 = Root::new(|| UnorderedMap::<String, UnorderedMap<String, String>>::new());
+        let mut map1 = Root::new(UnorderedMap::<String, UnorderedMap<String, String>>::new);
 
         // Node 1: Insert title
         map1.insert_nested(
@@ -214,7 +214,7 @@ mod tests {
     fn test_nested_map_remove() {
         env::reset_for_testing();
 
-        let mut outer = Root::new(|| UnorderedMap::<String, UnorderedMap<String, String>>::new());
+        let mut outer = Root::new(UnorderedMap::<String, UnorderedMap<String, String>>::new);
 
         // Insert
         outer
@@ -240,7 +240,7 @@ mod tests {
     fn test_nested_map_contains() {
         env::reset_for_testing();
 
-        let mut outer = Root::new(|| UnorderedMap::<String, UnorderedMap<String, String>>::new());
+        let mut outer = Root::new(UnorderedMap::<String, UnorderedMap<String, String>>::new);
 
         // Insert
         outer
@@ -265,7 +265,7 @@ mod tests {
     fn test_nested_map_multiple_fields() {
         env::reset_for_testing();
 
-        let mut outer = Root::new(|| UnorderedMap::<String, UnorderedMap<String, String>>::new());
+        let mut outer = Root::new(UnorderedMap::<String, UnorderedMap<String, String>>::new);
 
         // Insert multiple fields
         outer

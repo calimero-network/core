@@ -235,7 +235,7 @@ mod tests {
         // But for this test, we'll use different entities to verify order
         for i in 1..=5 {
             let delta_id = delta_id_from_u64(i);
-            let operations = vec![make_insert_op(100 + i, &format!("delta_{}", i))];
+            let operations = vec![make_insert_op(100 + i, &format!("delta_{i}"))];
             rt.schedule_gossip_delta(
                 node_id.clone(),
                 delta_id,
@@ -280,7 +280,7 @@ mod tests {
             let entity = node.get_entity(&EntityId::from_u64(100 + i)).unwrap();
             assert_eq!(
                 entity.data,
-                format!("delta_{}", i).as_bytes(),
+                format!("delta_{i}").as_bytes(),
                 "Entity {} should have value from delta {} (FIFO order)",
                 100 + i,
                 i
@@ -310,7 +310,7 @@ mod tests {
             // All write to entity 999
             let operations = vec![StorageOp::Update {
                 id: EntityId::from_u64(999),
-                data: format!("value_{}", i).into_bytes(),
+                data: format!("value_{i}").into_bytes(),
                 metadata: EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
             }];
             rt.schedule_gossip_delta(
@@ -417,7 +417,7 @@ mod tests {
         for i in 0..10 {
             source.insert_entity(
                 EntityId::from_u64(i),
-                format!("initial_{}", i).into_bytes(),
+                format!("initial_{i}").into_bytes(),
                 CrdtType::lww_register("test"),
             );
         }
@@ -448,7 +448,7 @@ mod tests {
         // (These arrive during sync and must be buffered)
         for i in 10..15 {
             let delta_id = delta_id_from_u64(i);
-            let data = format!("concurrent_{}", i).into_bytes();
+            let data = format!("concurrent_{i}").into_bytes();
             // Use consistent metadata for both source and fresh
             let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 100);
             let operations = vec![StorageOp::Insert {
@@ -521,7 +521,7 @@ mod tests {
         // Send 5 deltas - should overflow buffer, evicting oldest 2
         for i in 1..=5 {
             let delta_id = delta_id_from_u64(i);
-            let operations = vec![make_insert_op(i, &format!("delta_{}", i))];
+            let operations = vec![make_insert_op(i, &format!("delta_{i}"))];
             rt.schedule_gossip_delta(
                 node_id.clone(),
                 delta_id,
@@ -602,7 +602,7 @@ mod tests {
         // Send 10 deltas - should cause 8 evictions
         for i in 1..=10 {
             let delta_id = delta_id_from_u64(i);
-            let operations = vec![make_insert_op(i, &format!("delta_{}", i))];
+            let operations = vec![make_insert_op(i, &format!("delta_{i}"))];
             rt.schedule_gossip_delta(
                 node_id.clone(),
                 delta_id,
@@ -647,7 +647,7 @@ mod tests {
         // Send 5 deltas - all should be dropped
         for i in 1..=5 {
             let delta_id = delta_id_from_u64(i);
-            let operations = vec![make_insert_op(i, &format!("delta_{}", i))];
+            let operations = vec![make_insert_op(i, &format!("delta_{i}"))];
             rt.schedule_gossip_delta(
                 node_id.clone(),
                 delta_id,

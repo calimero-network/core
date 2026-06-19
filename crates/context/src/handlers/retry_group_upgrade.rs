@@ -124,9 +124,6 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             act.active_propagators.remove(&group_id);
         }));
 
-        ActorResponse::reply(Ok(UpgradeGroupResponse {
-            group_id,
-            status: status.into(),
-        }))
+        ActorResponse::reply(Ok(UpgradeGroupResponse { group_id, status }))
     }
 }

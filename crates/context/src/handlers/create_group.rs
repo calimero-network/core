@@ -154,10 +154,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     target_application_id: effective_application_id,
                     upgrade_policy,
                     created_at: now,
-                    admin_identity: admin_identity.into(),
+                    admin_identity,
                     // Creator is the initial Owner. Transferable via
                     // `GroupOp::TransferOwnership`.
-                    owner_identity: admin_identity.into(),
+                    owner_identity: admin_identity,
                     migration: None,
                     auto_join: true,
                 };

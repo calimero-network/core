@@ -621,7 +621,7 @@ impl NetworkManager {
         let listener_id = self
             .swarm
             .listen_on(relayed_addr.clone())
-            .wrap_err_with(|| format!("Failed to listen on relayed addr {}", relayed_addr))?;
+            .wrap_err_with(|| format!("Failed to listen on relayed addr {relayed_addr}"))?;
 
         // Record the listener id so the ListenerClosed handler can route
         // recovery back to this relay peer even if the close event comes

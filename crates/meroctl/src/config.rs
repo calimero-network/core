@@ -115,15 +115,12 @@ impl Config {
             } => {
                 let config = load_config(path, node)
                     .await
-                    .wrap_err_with(|| format!("Failed to load config for local node '{}'", node))?;
+                    .wrap_err_with(|| format!("Failed to load config for local node '{node}'"))?;
                 let multiaddr = fetch_multiaddr(&config).wrap_err_with(|| {
-                    format!("Failed to fetch multiaddr for local node '{}'", node)
+                    format!("Failed to fetch multiaddr for local node '{node}'")
                 })?;
-                let url = multiaddr_to_url(&multiaddr, "").wrap_err_with(|| {
-                    format!(
-                        "Failed to convert multiaddr to URL for local node '{}'",
-                        node
-                    )
+                let url = multiaddr_to_url(multiaddr, "").wrap_err_with(|| {
+                    format!("Failed to convert multiaddr to URL for local node '{node}'")
                 })?;
 
                 ConnectionInfo::new(

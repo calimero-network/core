@@ -206,7 +206,7 @@ impl RootCommand {
             // Check if it's a local node at <home>/<node>
             let config = load_config(&self.args.home, node).await?;
             let multiaddr = fetch_multiaddr(&config)?;
-            let url = multiaddr_to_url(&multiaddr, "")?;
+            let url = multiaddr_to_url(multiaddr, "")?;
 
             // Pass the home directory (not home/node) so persist_node_in_config stores it as
             // NodeConnection::Local { path: home }.  get_connection later calls
@@ -218,8 +218,7 @@ impl RootCommand {
         } else if let Some(api_url) = &self.args.api {
             // Use specific API URL - check session cache first, then authenticate if needed
             let connection =
-                authenticate_with_session_cache(api_url, &api_url.to_string(), None, output)
-                    .await?;
+                authenticate_with_session_cache(api_url, api_url.as_ref(), None, output).await?;
             Ok(connection)
         } else {
             // Try to use active node
@@ -272,8 +271,8 @@ impl Report for CliError {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("ERROR").fg(Color::Red)]);
         let _ = table.add_row(vec![match self {
-            CliError::ClientError(e) => format!("Client Error: {}", e),
-            CliError::Other(e) => format!("Error: {:?}", e),
+            CliError::ClientError(e) => format!("Client Error: {e}"),
+            CliError::Other(e) => format!("Error: {e:?}"),
         }]);
         println!("{table}");
     }

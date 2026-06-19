@@ -817,7 +817,7 @@ impl E2eKvStore {
         let blob_id = parse_blob_id_base58(&blob_id_str)?;
 
         let current_counter = *self.file_counter.get();
-        let file_id = format!("file_{}", current_counter);
+        let file_id = format!("file_{current_counter}");
         self.file_counter.set(current_counter + 1);
 
         let uploader_id = env::executor_id();

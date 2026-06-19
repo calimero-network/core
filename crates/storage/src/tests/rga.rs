@@ -85,14 +85,13 @@ fn test_rga_insert_str_position_bug() {
     rga.insert_str(6, "Beautiful ").unwrap();
     let result = rga.get_text().unwrap();
 
-    eprintln!("Result: '{}'", result);
+    eprintln!("Result: '{result}'");
     eprintln!("Expected: 'Hello Beautiful World'");
 
     // Expected: "Hello Beautiful World"
     assert_eq!(
         result, "Hello Beautiful World",
-        "insert_str at position 6 should insert before 'World', got: '{}'",
-        result
+        "insert_str at position 6 should insert before 'World', got: '{result}'"
     );
 }
 
@@ -561,7 +560,7 @@ fn test_rga_serialize_deserialize() {
 
     // Check if text is preserved
     let text = rga2.get_text().unwrap();
-    println!("After deserialize: '{}'", text);
+    println!("After deserialize: '{text}'");
     println!("Length: {}", text.len());
 
     assert_eq!(
@@ -586,7 +585,7 @@ fn test_rga_serialize_deserialize_single_insert() {
     let rga2: ReplicatedGrowableArray = borsh::from_slice(&serialized).unwrap();
 
     let text = rga2.get_text().unwrap();
-    println!("After deserialize (single insert): '{}'", text);
+    println!("After deserialize (single insert): '{text}'");
 
     assert_eq!(text, "Hello", "Single insert should be preserved");
 }

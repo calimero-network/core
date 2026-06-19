@@ -85,8 +85,7 @@ pub fn valid_node_name(s: &str) -> Result<String, String> {
         .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
     {
         return Err(format!(
-            "Node name '{}' contains invalid characters. Only alphanumeric characters, hyphens (-), and underscores (_) are allowed",
-            s
+            "Node name '{s}' contains invalid characters. Only alphanumeric characters, hyphens (-), and underscores (_) are allowed"
         ));
     }
 
@@ -100,8 +99,7 @@ pub fn valid_url(s: &str) -> Result<String, String> {
     match url::Url::parse(s) {
         Ok(_) => Ok(s.to_string()),
         Err(e) => Err(format!(
-            "Invalid URL '{}': {}. Expected format: http(s)://hostname[:port][/path]",
-            s, e
+            "Invalid URL '{s}': {e}. Expected format: http(s)://hostname[:port][/path]"
         )),
     }
 }

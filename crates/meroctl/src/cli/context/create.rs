@@ -199,7 +199,7 @@ pub async fn create_context(
 ) -> Result<(ContextId, PublicKey)> {
     let response: GetApplicationResponse = client.get_application(&application_id).await?;
 
-    if !response.data.application.is_some() {
+    if response.data.application.is_none() {
         bail!("Application is not installed on node.")
     }
 

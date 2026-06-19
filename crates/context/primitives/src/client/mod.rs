@@ -255,10 +255,10 @@ impl ContextRegistry {
         // Human-readable name from the owning group's per-context metadata
         // record, when set.
         let name = handle
-            .get(&key::ContextGroupRef::new((*context_id).into()))?
+            .get(&key::ContextGroupRef::new(*context_id))?
             .and_then(|gid: [u8; 32]| {
                 handle
-                    .get(&key::GroupContextMetadata::new(gid, (*context_id).into()))
+                    .get(&key::GroupContextMetadata::new(gid, *context_id))
                     .ok()
                     .flatten()
             })
@@ -2302,11 +2302,11 @@ mod get_context_version_tests {
                 .put(&key::ContextMeta::new(cid), &ctx_meta)
                 .expect("seed ctx meta");
             handle
-                .put(&key::ContextGroupRef::new(cid.into()), &gid)
+                .put(&key::ContextGroupRef::new(cid), &gid)
                 .expect("seed group ref");
             handle
                 .put(
-                    &key::GroupContextMetadata::new(gid, cid.into()),
+                    &key::GroupContextMetadata::new(gid, cid),
                     &calimero_primitives::metadata::MetadataRecord {
                         name: Some("docs-workspace".to_owned()),
                         ..Default::default()

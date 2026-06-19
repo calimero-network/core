@@ -214,7 +214,7 @@ impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ParseError::MissingSeparator => write!(f, "Composite key missing separator '::'"),
-            ParseError::InvalidFormat(msg) => write!(f, "Invalid composite key format: {}", msg),
+            ParseError::InvalidFormat(msg) => write!(f, "Invalid composite key format: {msg}"),
         }
     }
 }

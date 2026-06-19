@@ -74,7 +74,7 @@ impl InstallCommand {
             client.install_dev_application(request).await?
         } else if let Some(app_url) = self.url.as_ref() {
             let request = InstallApplicationRequest::new(
-                Url::parse(&app_url)?,
+                Url::parse(app_url)?,
                 self.hash,
                 metadata,
                 Some(self.package.clone()),

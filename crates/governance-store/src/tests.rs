@@ -326,7 +326,7 @@ fn context_tree_service_register_move_detach_and_cascade_cleanup() {
     let mut handle = store.handle();
     handle
         .put(
-            &calimero_store::key::ContextIdentity::new(context, member.into()),
+            &calimero_store::key::ContextIdentity::new(context, member),
             &calimero_store::types::ContextIdentity {
                 private_key: None,
                 sender_key: Some([0u8; 32]),
@@ -337,7 +337,7 @@ fn context_tree_service_register_move_detach_and_cascade_cleanup() {
 
     tree_b.cascade_remove_member(&member).unwrap();
     let handle = store.handle();
-    let identity_key = calimero_store::key::ContextIdentity::new(context, member.into());
+    let identity_key = calimero_store::key::ContextIdentity::new(context, member);
     assert!(!handle.has(&identity_key).unwrap());
 
     tree_b.unregister_context(&context).unwrap();
@@ -1787,8 +1787,7 @@ fn is_open_chain_to_namespace_bails_on_depth_overflow() {
     assert!(
         res.is_err(),
         "is_open_chain_to_namespace must bail on MAX_NAMESPACE_DEPTH overflow, \
-         got {:?}",
-        res
+         got {res:?}"
     );
 }
 
@@ -3034,7 +3033,7 @@ fn restore_member_context_identities_writes_missing_rows() {
 
     let handle = store.handle();
     for ctx in [&ctx_a, &ctx_b] {
-        let key = calimero_store::key::ContextIdentity::new(*ctx, member.into());
+        let key = calimero_store::key::ContextIdentity::new(*ctx, member);
         let row = handle.get(&key).unwrap().expect("row should be created");
         assert_eq!(
             row.private_key,
@@ -3064,7 +3063,7 @@ fn restore_member_context_identities_no_op_when_not_local_rejoiner() {
 
     // No namespace identity at all → no-op.
     restore_member_context_identities(&store, &gid, &member).unwrap();
-    let key = calimero_store::key::ContextIdentity::new(ctx, member.into());
+    let key = calimero_store::key::ContextIdentity::new(ctx, member);
     assert!(
         !store.handle().has(&key).unwrap(),
         "no namespace identity stored → must not write a row"
@@ -3105,7 +3104,7 @@ fn restore_member_context_identities_is_idempotent() {
         let mut handle = store.handle();
         handle
             .put(
-                &calimero_store::key::ContextIdentity::new(ctx, member.into()),
+                &calimero_store::key::ContextIdentity::new(ctx, member),
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(original_sk),
                     sender_key: Some(original_sender),
@@ -3118,10 +3117,7 @@ fn restore_member_context_identities_is_idempotent() {
 
     let handle = store.handle();
     let row = handle
-        .get(&calimero_store::key::ContextIdentity::new(
-            ctx,
-            member.into(),
-        ))
+        .get(&calimero_store::key::ContextIdentity::new(ctx, member))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -3159,7 +3155,7 @@ fn restore_member_context_identities_repairs_keyless_row() {
         let mut handle = store.handle();
         handle
             .put(
-                &calimero_store::key::ContextIdentity::new(ctx, member.into()),
+                &calimero_store::key::ContextIdentity::new(ctx, member),
                 &calimero_store::types::ContextIdentity {
                     private_key: None,
                     sender_key: Some(delivered_sender),
@@ -3172,10 +3168,7 @@ fn restore_member_context_identities_repairs_keyless_row() {
 
     let row = store
         .handle()
-        .get(&calimero_store::key::ContextIdentity::new(
-            ctx,
-            member.into(),
-        ))
+        .get(&calimero_store::key::ContextIdentity::new(ctx, member))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -3241,7 +3234,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
         let mut handle = store.handle();
         handle
             .put(
-                &calimero_store::key::ContextIdentity::new(ctx, member_pk.into()),
+                &calimero_store::key::ContextIdentity::new(ctx, member_pk),
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(member_sk_bytes),
                     sender_key: Some([0x77; 32]),
@@ -3264,7 +3257,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     // Confirm cascade ran — row gone.
     {
         let handle = store.handle();
-        let key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+        let key = calimero_store::key::ContextIdentity::new(ctx, member_pk);
         assert!(
             !handle.has(&key).unwrap(),
             "cascade must have deleted the ContextIdentity row"
@@ -3288,7 +3281,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     apply_local_signed_group_op(&store, &readded).unwrap();
 
     let handle = store.handle();
-    let key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    let key = calimero_store::key::ContextIdentity::new(ctx, member_pk);
     let row = handle
         .get(&key)
         .unwrap()
@@ -3367,7 +3360,7 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
         let mut handle = store.handle();
         handle
             .put(
-                &calimero_store::key::ContextIdentity::new(ctx, member_pk.into()),
+                &calimero_store::key::ContextIdentity::new(ctx, member_pk),
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(member_sk_bytes),
                     sender_key: Some([0x33; 32]),
@@ -3385,7 +3378,7 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     )
     .unwrap();
     apply_local_signed_group_op(&store, &removed).unwrap();
-    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk);
     assert!(
         !store.handle().has(&id_key).unwrap(),
         "cascade must have deleted the ContextIdentity row before the rejoin test"
@@ -3493,7 +3486,7 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
     assert!(DenyListRepository::new(&store)
         .is_denied(&subgroup, &member_pk)
         .unwrap());
-    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk);
     assert!(!store.handle().has(&id_key).unwrap());
 
     // The local node IS the rejoiner — its namespace identity matches
@@ -3594,7 +3587,7 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
     apply_local_signed_group_op(&store, &added).unwrap();
 
     let handle = store.handle();
-    let key = calimero_store::key::ContextIdentity::new(ctx, rejoiner_pk.into());
+    let key = calimero_store::key::ContextIdentity::new(ctx, rejoiner_pk);
     assert!(
         !handle.has(&key).unwrap(),
         "non-rejoiner peers must NOT create a ContextIdentity row for someone else"
@@ -6169,6 +6162,66 @@ mod tee_member_removed_event_tests {
         (member_removed, tee_member_removed)
     }
 
+    /// Like [`count_removed_events_for`] but tallies TWO `(gid, member)`
+    /// tuples in a SINGLE drain. `count_removed_events_for` drains `rx`
+    /// to empty, so calling it twice (once per gid) after one apply
+    /// loses the second gid's events. The cascade tests need to assert
+    /// both the root and the subgroup pair from one apply, so they must
+    /// share one drain.
+    #[allow(clippy::type_complexity)]
+    fn count_removed_events_for_two(
+        rx: &mut tokio::sync::broadcast::Receiver<OpEvent>,
+        gid_a: [u8; 32],
+        gid_b: [u8; 32],
+        member: PublicKey,
+    ) -> ((usize, usize), (usize, usize)) {
+        use tokio::sync::broadcast::error::TryRecvError;
+        let (mut a_mr, mut a_tmr) = (0, 0);
+        let (mut b_mr, mut b_tmr) = (0, 0);
+        loop {
+            match rx.try_recv() {
+                Ok(OpEvent::MemberRemoved {
+                    group_id,
+                    member: m,
+                }) if m == member => {
+                    if group_id == gid_a {
+                        a_mr += 1;
+                    } else if group_id == gid_b {
+                        b_mr += 1;
+                    }
+                    // Events on any OTHER group_id are intentionally dropped:
+                    // `op_events` is a PROCESS-GLOBAL broadcast bus. The cascade
+                    // callers are `#[serial_test::serial]` (matching #2808), so
+                    // no other serial op-event test emits concurrently — but
+                    // serial does NOT exclude parallel *non-serial* tests, which
+                    // could still reuse this `member` key on the bus. An assert-
+                    // "no unexpected group_id" guard is therefore still unsound.
+                    // The exact-count assertions in the callers are nonetheless
+                    // contamination-proof because each caller's `gid_a`/`gid_b`
+                    // are byte patterns UNIQUE to that test and we filter
+                    // strictly on them: any other test sharing the member key
+                    // emits on its own (different) group_ids, which fall through
+                    // uncounted. Over-cascade WITHIN a test's own topology is
+                    // what the callers pin via those exact counts.
+                }
+                Ok(OpEvent::TeeMemberRemoved {
+                    group_id,
+                    member: m,
+                }) if m == member => {
+                    if group_id == gid_a {
+                        a_tmr += 1;
+                    } else if group_id == gid_b {
+                        b_tmr += 1;
+                    }
+                }
+                Ok(_) => {}
+                Err(TryRecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+        ((a_mr, a_tmr), (b_mr, b_tmr))
+    }
+
     /// Removing a `ReadOnlyTee` member via `GroupOp::MemberRemoved`
     /// must emit BOTH `MemberRemoved` and `TeeMemberRemoved` for the
     /// same `(group_id, member)`.
@@ -6268,6 +6321,303 @@ mod tee_member_removed_event_tests {
         assert_eq!(
             tmr, 0,
             "TeeMemberRemoved MUST NOT fire for a non-TEE removal (soft-leave path preserved)"
+        );
+    }
+
+    /// A namespace-root `MemberRemoved` of a `ReadOnlyTee` must cascade
+    /// into descendant subgroups — INCLUDING a `Restricted` subgroup —
+    /// removing the TEE's row there and emitting per-subgroup
+    /// `MemberRemoved` + `TeeMemberRemoved`. This lets a namespace owner
+    /// evict a TEE fleet node namespace-wide; sound because a TEE's
+    /// subgroup membership derives from namespace-level attestation
+    /// policy, not the subgroup admin's choice.
+    #[test]
+    #[serial_test::serial]
+    fn member_removed_root_readonly_tee_cascades_into_restricted_subgroup() {
+        use calimero_context_config::VisibilityMode;
+
+        let store = test_store();
+
+        // namespace (root) ── Restricted subgroup
+        let ns_gid = ContextGroupId::from([0xD0; 32]);
+        let subgroup = ContextGroupId::from([0xD1; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &subgroup)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
+            .unwrap();
+
+        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_pk = admin_sk.public_key();
+        let tee_pk = PublicKey::from([0xE1; 32]);
+
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MetaRepository::new(&store)
+            .save(&subgroup, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        // TEE has a direct row at BOTH the root and the Restricted subgroup.
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &tee_pk, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&subgroup, &tee_pk, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+
+        // Subscribe BEFORE apply so we don't miss the fire.
+        let mut rx = op_events::subscribe();
+
+        // Root admin removes the TEE at the namespace root.
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            ns_gid.to_bytes(),
+            vec![],
+            MetaRepository::new(&store)
+                .compute_state_hash(&ns_gid)
+                .unwrap(),
+            1,
+            dummy_member_removed_op(tee_pk),
+        )
+        .expect("sign MemberRemoved");
+        apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
+
+        // Cascade removed the TEE's row in the Restricted subgroup …
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&subgroup, &tee_pk)
+                .unwrap(),
+            None,
+            "root TEE removal MUST cascade into the Restricted subgroup row"
+        );
+        // … and the root row too.
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&ns_gid, &tee_pk)
+                .unwrap(),
+            None,
+            "root row must be removed"
+        );
+        // Cascade deny-lists the TEE in the subgroup.
+        assert!(
+            DenyListRepository::new(&store)
+                .is_denied(&subgroup, &tee_pk)
+                .unwrap(),
+            "cascade must deny-list the TEE in the subgroup"
+        );
+
+        let (root_pair, sub_pair) =
+            count_removed_events_for_two(&mut rx, ns_gid.to_bytes(), subgroup.to_bytes(), tee_pk);
+        assert_eq!(
+            sub_pair,
+            (1, 1),
+            "subgroup must see one MemberRemoved + one TeeMemberRemoved from the cascade"
+        );
+        assert_eq!(
+            root_pair,
+            (1, 1),
+            "root must see one MemberRemoved + one TeeMemberRemoved"
+        );
+    }
+
+    /// A root TEE removal must also purge the TEE's `ContextIdentity` rows in
+    /// an Open subgroup it only INHERITED into — i.e. where it auto-followed
+    /// contexts (Fix B) without ever holding a direct `GroupMember` row.
+    /// Those subgroups are excluded from the per-direct-row event loop, so the
+    /// regression guarded here is a stranded-identity leak: the cascade must
+    /// still run `cascade_remove_member` over every descendant, while the
+    /// per-subgroup `MemberRemoved`/`TeeMemberRemoved` events stay gated to
+    /// direct rows.
+    #[test]
+    #[serial_test::serial]
+    fn member_removed_root_readonly_tee_purges_inherited_open_subgroup_identity() {
+        use calimero_context_config::VisibilityMode;
+
+        let store = test_store();
+
+        // namespace (root) ── Open subgroup (TEE has NO direct row here)
+        let ns_gid = ContextGroupId::from([0xD4; 32]);
+        let subgroup = ContextGroupId::from([0xD5; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &subgroup)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .unwrap();
+
+        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_pk = admin_sk.public_key();
+        let tee_pk = PublicKey::from([0xE3; 32]);
+
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MetaRepository::new(&store)
+            .save(&subgroup, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        // TEE has a direct row ONLY at the root — in the Open subgroup its
+        // membership is inherited, so there is no `GroupMember` row there.
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &tee_pk, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+
+        // Auto-follow gave the inherited TEE a `ContextIdentity` row under a
+        // context registered in the Open subgroup, despite no direct row.
+        let context = ContextId::from([0xC5; 32]);
+        register_context_in_group(&store, &subgroup, &context).unwrap();
+        let identity_key = calimero_store::key::ContextIdentity::new(context, tee_pk);
+        {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &identity_key,
+                    &calimero_store::types::ContextIdentity {
+                        private_key: Some([7u8; 32]),
+                        sender_key: None,
+                    },
+                )
+                .unwrap();
+        }
+        assert!(
+            store.handle().has(&identity_key).unwrap(),
+            "test precondition: inherited ContextIdentity row exists"
+        );
+
+        let mut rx = op_events::subscribe();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            ns_gid.to_bytes(),
+            vec![],
+            MetaRepository::new(&store)
+                .compute_state_hash(&ns_gid)
+                .unwrap(),
+            1,
+            dummy_member_removed_op(tee_pk),
+        )
+        .expect("sign MemberRemoved");
+        apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
+
+        // The stranded inherited identity row is purged …
+        assert!(
+            !store.handle().has(&identity_key).unwrap(),
+            "root TEE removal MUST purge inherited Open-subgroup ContextIdentity rows"
+        );
+
+        // … but no per-subgroup membership event fires (no direct row), while
+        // the root still emits its pair. `tee_pk`/`subgroup` are unique to this
+        // test, so the shared-bus event counts are not contaminated.
+        let (root_pair, sub_pair) =
+            count_removed_events_for_two(&mut rx, ns_gid.to_bytes(), subgroup.to_bytes(), tee_pk);
+        assert_eq!(
+            sub_pair,
+            (0, 0),
+            "inherited subgroup (no direct row) must NOT emit cascade membership events"
+        );
+        assert_eq!(
+            root_pair,
+            (1, 1),
+            "root must see one MemberRemoved + one TeeMemberRemoved"
+        );
+    }
+
+    /// The mirror-image guard: a namespace-root `MemberRemoved` of a
+    /// regular `Member` must NOT cascade. The root row is removed
+    /// (today's behavior) but the `Restricted` subgroup row is
+    /// PRESERVED — the #2256 Restricted-subgroup membership wall holds
+    /// for non-TEE members.
+    #[test]
+    #[serial_test::serial]
+    fn member_removed_root_regular_member_does_not_cascade() {
+        use calimero_context_config::VisibilityMode;
+
+        let store = test_store();
+
+        // namespace (root) ── Restricted subgroup
+        let ns_gid = ContextGroupId::from([0xD2; 32]);
+        let subgroup = ContextGroupId::from([0xD3; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &subgroup)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
+            .unwrap();
+
+        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_pk = admin_sk.public_key();
+        let member_pk = PublicKey::from([0xE2; 32]);
+
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MetaRepository::new(&store)
+            .save(&subgroup, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        // Regular member has a direct row at BOTH root and subgroup.
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &member_pk, GroupMemberRole::Member)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&subgroup, &member_pk, GroupMemberRole::Member)
+            .unwrap();
+
+        let mut rx = op_events::subscribe();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            ns_gid.to_bytes(),
+            vec![],
+            MetaRepository::new(&store)
+                .compute_state_hash(&ns_gid)
+                .unwrap(),
+            1,
+            dummy_member_removed_op(member_pk),
+        )
+        .expect("sign MemberRemoved");
+        apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
+
+        // Root row removed (today's behavior) …
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&ns_gid, &member_pk)
+                .unwrap(),
+            None,
+            "root row must be removed"
+        );
+        // … but the Restricted subgroup row is PRESERVED — no cascade.
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&subgroup, &member_pk)
+                .unwrap(),
+            Some(GroupMemberRole::Member),
+            "regular-member root removal MUST NOT cascade — Restricted wall holds (#2256)"
+        );
+
+        let (root_pair, sub_pair) = count_removed_events_for_two(
+            &mut rx,
+            ns_gid.to_bytes(),
+            subgroup.to_bytes(),
+            member_pk,
+        );
+        assert_eq!(
+            sub_pair,
+            (0, 0),
+            "no cascade events for a non-TEE root removal"
+        );
+        assert_eq!(
+            root_pair,
+            (1, 0),
+            "root sees only MemberRemoved (no TeeMemberRemoved) for a regular member"
         );
     }
 

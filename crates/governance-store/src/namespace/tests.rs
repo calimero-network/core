@@ -2526,7 +2526,7 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
 
 #[test]
 fn min_acks_after_local_mutation_uses_publish_time_subscribers() {
-    let min_acks = super::min_acks_after_local_mutation(1, 0);
+    let min_acks = super::governance::min_acks_after_local_mutation(1, 0);
 
     assert_eq!(
         min_acks, 0,

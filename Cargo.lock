@@ -2647,6 +2647,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "custom-key-store"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

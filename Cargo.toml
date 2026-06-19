@@ -16,6 +16,7 @@ exclude = [
     "./apps/blobs",
     "./apps/collaborative-editor",
     "./apps/kv-store",
+    "./apps/custom-key-store",
     "./apps/migration-harness-example",
     "./apps/sorted-kv-store",
     "./apps/sorted-set-store",
@@ -124,6 +125,7 @@ members = [
 
     "./apps/scaffolding-e2e",
     "./apps/kv-store",
+    "./apps/custom-key-store",
     "./apps/migration-harness-example",
     "./apps/sorted-kv-store",
     "./apps/sorted-set-store",

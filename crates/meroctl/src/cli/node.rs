@@ -113,13 +113,13 @@ impl NodeCommand {
             NodeCommand::Add(cmd) => {
                 let location_type = detect_location_type(&cmd.location)?;
 
-                let output = environment.output.clone();
+                let output = environment.output;
 
                 let connection = match location_type {
                     LocationType::Local(path) => {
                         let config = load_config(&path, &cmd.name).await?;
                         let multiaddr = fetch_multiaddr(&config)?;
-                        let url = multiaddr_to_url(&multiaddr, "")?;
+                        let url = multiaddr_to_url(multiaddr, "")?;
 
                         let jwt_tokens = determine_auth_tokens(
                             &cmd,

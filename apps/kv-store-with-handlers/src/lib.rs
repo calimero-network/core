@@ -82,7 +82,7 @@ impl KvStore {
         Ok(self.items.len()?)
     }
 
-    pub fn get<'a>(&self, key: &'a str) -> app::Result<Option<String>> {
+    pub fn get(&self, key: &str) -> app::Result<Option<String>> {
         app::log!("Getting key: {:?}", key);
 
         Ok(self.items.get(key)?.map(|v| v.get().clone()))
@@ -95,7 +95,7 @@ impl KvStore {
         Ok(self.items.get(key)?.expect("key not found").get().clone())
     }
 
-    pub fn get_result<'a>(&self, key: &'a str) -> app::Result<String> {
+    pub fn get_result(&self, key: &str) -> app::Result<String> {
         app::log!("Getting key, possibly failing: {:?}", key);
 
         let Some(value) = self.get(key)? else {
@@ -133,7 +133,7 @@ impl KvStore {
 
     /// Handle insert events
     pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
-        self.log_handler_call("insert_handler", &format!("key={}, value={}", key, value))?;
+        self.log_handler_call("insert_handler", &format!("key={key}, value={value}"))?;
         // Add your insert-specific logic here
         // For example: send notifications, update external systems, etc.
         Ok(())
@@ -141,7 +141,7 @@ impl KvStore {
 
     /// Handle update events
     pub fn update_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
-        self.log_handler_call("update_handler", &format!("key={}, value={}", key, value))?;
+        self.log_handler_call("update_handler", &format!("key={key}, value={value}"))?;
         // Add your update-specific logic here
         // For example: log changes, update caches, etc.
         Ok(())
@@ -149,7 +149,7 @@ impl KvStore {
 
     /// Handle remove events
     pub fn remove_handler(&mut self, key: &str) -> app::Result<()> {
-        self.log_handler_call("remove_handler", &format!("key={}", key))?;
+        self.log_handler_call("remove_handler", &format!("key={key}"))?;
         // Add your remove-specific logic here
         // For example: cleanup external resources, etc.
         Ok(())

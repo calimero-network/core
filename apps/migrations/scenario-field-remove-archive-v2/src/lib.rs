@@ -47,7 +47,7 @@ pub fn migrate_v1_to_v2() -> ScenarioFieldRemoveArchiveV2 {
 
     let old_state: ScenarioFieldRemoveArchiveV1 =
         BorshDeserialize::deserialize(&mut &old_bytes[..]).unwrap_or_else(|e| {
-            panic!("Migration failed: V1 deserialization error {:?}", e);
+            panic!("Migration failed: V1 deserialization error {e:?}");
         });
 
     app::emit!(Event::Migrated {
@@ -60,7 +60,7 @@ pub fn migrate_v1_to_v2() -> ScenarioFieldRemoveArchiveV2 {
     archived_legacy
         .insert("latest".to_owned(), LwwRegister::new(legacy_value))
         .unwrap_or_else(|e| {
-            panic!("Migration failed: archive insert error {:?}", e);
+            panic!("Migration failed: archive insert error {e:?}");
         });
 
     ScenarioFieldRemoveArchiveV2 {

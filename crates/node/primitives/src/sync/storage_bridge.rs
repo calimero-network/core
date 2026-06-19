@@ -257,14 +257,14 @@ mod tests {
                     copied += 1;
                 }
             }
-            eprintln!("Copied {} ContextState records", copied);
+            eprintln!("Copied {copied} ContextState records");
             assert!(copied > 0, "should have copied records");
         }
 
         // Read from store2 via bridge (like the HashComparison responder)
         let env2 = create_runtime_env(&store2, context_id, identity);
         let read_result2 = with_runtime_env(env2, || Index::<MainStorage>::get_index(root_id));
-        eprintln!("Read from store2: {:?}", read_result2);
+        eprintln!("Read from store2: {read_result2:?}");
         assert!(
             read_result2.is_ok(),
             "get_index from snapshot-restored store should not error: {:?}",

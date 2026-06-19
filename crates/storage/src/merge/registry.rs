@@ -230,10 +230,10 @@ where
     let merge_fn: MergeFn = |existing, incoming, _existing_ts, _incoming_ts| {
         // Deserialize both states
         let mut existing_state = borsh::from_slice::<T>(existing)
-            .map_err(|e| format!("Failed to deserialize existing state: {}", e))?;
+            .map_err(|e| format!("Failed to deserialize existing state: {e}"))?;
 
         let incoming_state = borsh::from_slice::<T>(incoming)
-            .map_err(|e| format!("Failed to deserialize incoming state: {}", e))?;
+            .map_err(|e| format!("Failed to deserialize incoming state: {e}"))?;
 
         // Merge using Mergeable trait
         // CRITICAL: Use merge mode to prevent timestamp generation during merge.
@@ -242,11 +242,11 @@ where
         crate::env::with_merge_mode(|| {
             existing_state
                 .merge(&incoming_state)
-                .map_err(|e| format!("Merge failed: {}", e))
+                .map_err(|e| format!("Merge failed: {e}"))
         })?;
 
         // Serialize result
-        borsh::to_vec(&existing_state).map_err(|e| format!("Serialization failed: {}", e).into())
+        borsh::to_vec(&existing_state).map_err(|e| format!("Serialization failed: {e}").into())
     };
 
     with_registry_mut(|registry| {
@@ -275,6 +275,7 @@ where
 /// stays absent from production host builds, and this wrapper does nothing there
 /// either.
 #[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)] // test/internal plumbing — not part of the app-facing API
 pub fn register_crdt_merge_for_test<T>()
 where
     T: borsh::BorshSerialize + borsh::BorshDeserialize + crate::collections::Mergeable + 'static,
@@ -285,6 +286,7 @@ where
 
 /// Clear the merge registry (for testing only)
 #[cfg(any(test, feature = "testing"))]
+#[doc(hidden)] // test-only internal plumbing
 pub fn clear_merge_registry() {
     with_registry_mut(|registry| registry.clear());
 }
@@ -296,6 +298,7 @@ pub fn clear_merge_registry() {
 /// - `NoFunctionsRegistered` if no merge functions are registered (I5 violation)
 /// - `AllFunctionsFailed` if merge functions exist but none could merge the data
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
+#[doc(hidden)] // internal merge-dispatch plumbing — not part of the app-facing API
 pub fn try_merge_registered(
     existing: &[u8],
     incoming: &[u8],
@@ -423,8 +426,7 @@ mod tests {
                 err,
                 crate::collections::crdt_meta::MergeError::NoMergeFunctionRegistered
             ),
-            "Expected NoMergeFunctionRegistered error, got: {:?}",
-            err
+            "Expected NoMergeFunctionRegistered error, got: {err:?}"
         );
     }
 
@@ -461,8 +463,7 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "Bootstrap (created == updated, no merger) must accept incoming, got: {:?}",
-            result
+            "Bootstrap (created == updated, no merger) must accept incoming, got: {result:?}"
         );
         assert_eq!(
             result.unwrap(),
@@ -494,8 +495,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "Post-bootstrap with no merger must error (I5), got Ok: {:?}",
-            result
+            "Post-bootstrap with no merger must error (I5), got Ok: {result:?}"
         );
         assert!(
             matches!(

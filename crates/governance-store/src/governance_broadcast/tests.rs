@@ -497,8 +497,7 @@ async fn no_peers_with_min_acks_positive_returns_no_ack_received() {
 
     assert!(
         matches!(res, Err(GovernanceBroadcastError::NoAckReceived { .. })),
-        "min_acks=1 + NoPeersSubscribedToTopic must surface as NoAckReceived; got {:?}",
-        res
+        "min_acks=1 + NoPeersSubscribedToTopic must surface as NoAckReceived; got {res:?}"
     );
 }
 

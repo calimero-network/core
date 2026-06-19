@@ -82,9 +82,7 @@ impl<'a> NamespaceMembershipService<'a> {
         // Open-subgroup self-joiner with `contexts: true` (the post-#2422
         // default) would only auto-follow FUTURE contexts, not the ones
         // already registered when they joined.
-        Ok(build_auto_follow_set_if_enabled(
-            self.store, &group_id, member,
-        )?)
+        build_auto_follow_set_if_enabled(self.store, &group_id, member)
     }
 
     /// Validate an open invitation for the responder key-delivery path:

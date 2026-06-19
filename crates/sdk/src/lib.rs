@@ -83,7 +83,33 @@ pub mod app {
 
 #[doc(hidden)]
 pub mod __private {
-    pub use crate::returns::{IntoResult, WrappedReturn};
+    pub use crate::returns::{AppReturn, IntoResult, WrappedReturn};
+
+    /// The bound an *owned* app-method argument must satisfy: arguments are
+    /// decoded from the caller's JSON, so the type must be
+    /// `serde::de::DeserializeOwned`.
+    ///
+    /// SDK-owned alias over `DeserializeOwned` whose only job is to carry a clear
+    /// diagnostic — a non-deserializable argument otherwise fails inside the
+    /// generated input-struct's serde derive. Blanket-implemented, so exactly as
+    /// permissive as the bound it names. Borrowed (`&_`) arguments are validated
+    /// by that derive directly instead: their lifetime ties to the input buffer,
+    /// which a standalone owned assertion can't express.
+    #[diagnostic::on_unimplemented(
+        message = "(calimero)> `{Self}` can't be an app-method argument — it is not JSON-deserializable",
+        label = "not deserializable",
+        note = "method arguments are decoded from the caller's JSON. Derive `serde::Deserialize` \
+                (with `#[serde(crate = \"calimero_sdk::serde\")]`), or use a type that already \
+                implements it."
+    )]
+    pub trait AppArg: crate::serde::de::DeserializeOwned {}
+
+    impl<T: crate::serde::de::DeserializeOwned> AppArg for T {}
+
+    /// Naming `assert_app_arg::<T>` forces the `AppArg` bound on an owned argument
+    /// type, so a non-deserializable argument surfaces the `AppArg` diagnostic at
+    /// the method rather than deep in serde's derive.
+    pub fn assert_app_arg<T: AppArg>() {}
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

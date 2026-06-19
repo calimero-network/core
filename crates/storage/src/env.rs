@@ -799,7 +799,7 @@ mod mocked {
 
     /// Prints the log
     pub(super) fn log(message: &str) {
-        println!("{}", message);
+        println!("{message}");
     }
 
     /// Sets the thread-local executor ID. Only callable from this crate

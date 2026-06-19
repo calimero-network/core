@@ -515,8 +515,7 @@ fn concurrent_merge_splits_value_from_own_hash() {
         assert_eq!(
             stored, expected,
             "core#2571 (round {round}): converged on the wrong writer's value — \
-             expected the global LWW winner (t_sync's last write) but stored {:?}",
-            stored,
+             expected the global LWW winner (t_sync's last write) but stored {stored:?}",
         );
     }
 }

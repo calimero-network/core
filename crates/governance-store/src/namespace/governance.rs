@@ -1,7 +1,5 @@
 use crate::{
-    ApplyError, CapabilitiesError, DenyListRepository, GroupCreatedRejection,
-    GroupDeletedRejection, GroupKeyring, MemberJoinedOpenRejection, MembershipError,
-    MembershipRepository, MetaRepository, NamespaceError, NamespaceRepository,
+    DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
 };
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, KeyEnvelope, NamespaceOp, RootOp,
@@ -12,7 +10,7 @@ use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 use libp2p::gossipsub::TopicHash;
 
 use crate::governance_broadcast::{
@@ -24,10 +22,9 @@ use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::super::{
     apply_group_op_mutations, load_nonce_window, restore_member_context_identities,
-    store_nonce_window, PermissionChecker,
+    store_nonce_window,
 };
 use super::dag::{NamespaceDagService, NamespaceHead};
-use super::membership::NamespaceMembershipService;
 use super::op_log::NamespaceOpLogService;
 use super::retry::NamespaceRetryService;
 
@@ -869,8 +866,8 @@ impl<'a> NamespaceGovernance<'a> {
                 ),
                 upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
                 created_at: 0,
-                admin_identity: (*founder).into(),
-                owner_identity: (*founder).into(),
+                admin_identity: (*founder),
+                owner_identity: (*founder),
                 migration: None,
                 auto_join: true,
             };

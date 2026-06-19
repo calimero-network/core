@@ -261,7 +261,7 @@ mod tests {
         let mut handle = client.registry.datastore.handle();
         let key = key::ContextIdentity::new(context_id, public_key);
         let id_data = types::ContextIdentity {
-            private_key: Some(private_key_bytes.into()),
+            private_key: Some(private_key_bytes),
             sender_key: None,
         };
         handle.put(&key, &id_data).unwrap();

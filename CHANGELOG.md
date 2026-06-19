@@ -12,6 +12,21 @@
 - **`SortedSet<T>` collection** — the `BTreeSet` to `UnorderedSet`'s `HashSet`: an ordered set with `range`/`prefix`/`page`/`first`/`last`, same add-wins union merge and the same on-disk ordered index as `SortedMap` ([#2559])
 - **In-process unit-test harness (`calimero_sdk::testing::TestHost`)** - Exercise app logic as ordinary Rust under `cargo test` — no WASM build, no node, no merobox. `TestHost::new(MyApp::init)` runs methods via `call`/`view` against an in-memory mock host that records `app::emit!` events and `app::log!` lines and serves a configurable executor identity (`call_as` for multi-author CRDT tests). The `#[app::state]` macro generates the storage bridge; apps opt in with `calimero-storage`'s `testing` feature as a dev-dependency. All core example apps now ship `#[cfg(test)]` tests using it ([#2551])
 
+## [0.11.0-rc.6] - 2026-06-19
+
+### Added
+
+- **SDK compile-time misuse diagnostics** — common app-authoring mistakes (including guarded-storage misuse) now surface as compile-time errors, and the macro lint suite is revived as a CI gate ([#2795])
+- **SDK capability-trait diagnostics** — clearer compile-time errors for collection key types and at the RPC boundary ([#2801])
+- **Richer host-boundary panic messages** — panics crossing the app/host boundary now carry more actionable detail ([#2805])
+
+### Fixed
+
+- **Fleet TEE nodes replicate Open subgroups, and TEE eviction is namespace-wide** — a root-admitted `ReadOnlyTee` now auto-follows (replicates) the contexts of Open subgroups it inherits, instead of only being authorized for them. And a namespace-root `MemberRemoved` of a `ReadOnlyTee` now cascades through every descendant subgroup (including Restricted subgroups created by other members), so a namespace owner can evict a fleet TEE node namespace-wide with a single root removal. The cascade is scoped to `ReadOnlyTee`; normal-member Restricted-subgroup membership autonomy is unchanged ([#2809])
+- **`#[app::view]` resolves in downstream crates** — registered as a no-op marker so it no longer fails to resolve when used through a dependency ([#2799])
+- **Blob-aware same-id update skip** — the context update path now correctly skips a redundant blob update when the blob id is unchanged ([#2796])
+- **`LwwRegister::value_mut` drop-stamping guard** — guards against an incorrect last-writer timestamp being stamped on mutable-borrow drop ([#2806])
+
 ## [0.11.0-rc.5] - 2026-06-18
 
 ### Added
@@ -263,7 +278,8 @@ Integrations:
 
 <!-- versions -->
 
-[unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.5...HEAD
+[unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.6...HEAD
+[0.11.0-rc.6]: https://github.com/calimero-network/core/compare/0.11.0-rc.5...0.11.0-rc.6
 [0.11.0-rc.5]: https://github.com/calimero-network/core/compare/0.11.0-rc.4...0.11.0-rc.5
 [0.8.0]: https://github.com/calimero-network/core/compare/0.7.0...0.8.0
 [0.7.0]: https://github.com/calimero-network/core/compare/0.6.0...0.7.0
@@ -285,6 +301,13 @@ Integrations:
 
 <!-- patches -->
 
+[#2809]: https://github.com/calimero-network/core/pull/2809
+[#2805]: https://github.com/calimero-network/core/pull/2805
+[#2801]: https://github.com/calimero-network/core/pull/2801
+[#2806]: https://github.com/calimero-network/core/pull/2806
+[#2795]: https://github.com/calimero-network/core/pull/2795
+[#2799]: https://github.com/calimero-network/core/pull/2799
+[#2796]: https://github.com/calimero-network/core/pull/2796
 [#2772]: https://github.com/calimero-network/core/pull/2772
 [#2776]: https://github.com/calimero-network/core/pull/2776
 [#2792]: https://github.com/calimero-network/core/pull/2792
