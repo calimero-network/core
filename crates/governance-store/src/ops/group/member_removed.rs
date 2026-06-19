@@ -112,6 +112,14 @@ pub(crate) fn apply(
                 if *sub == *group_id {
                     continue;
                 }
+                // Capture the direct-row role BEFORE any mutation. `role_of`
+                // reads the `GroupMember` row; `cascade_remove_member` below is
+                // documented to touch only `ContextIdentity` (disjoint from
+                // `GroupMember`), but reading the role first makes the teardown
+                // gate independent of that load-bearing invariant — even if
+                // `cascade_remove_member` ever started touching `GroupMember`
+                // rows, this gate would stay correct.
+                let direct_role = membership.role_of(sub, member)?;
                 // `ContextIdentity` hygiene runs for EVERY descendant —
                 // INCLUDING Open subgroups the TEE only *inherited* into (no
                 // direct `GroupMember` row) yet still auto-followed contexts of
@@ -127,7 +135,7 @@ pub(crate) fn apply(
                 // cascade ENTRY is gated on the ROOT role (the security
                 // boundary); this per-descendant role gate is only for the
                 // event split.
-                let Some(role) = membership.role_of(sub, member)? else {
+                let Some(role) = direct_role else {
                     continue;
                 };
                 // These per-descendant store writes are not transactional

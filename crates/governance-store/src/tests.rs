@@ -6197,17 +6197,19 @@ mod tee_member_removed_event_tests {
                         b_mr += 1;
                     }
                     // Events on any OTHER group_id are intentionally dropped:
-                    // `op_events` is a PROCESS-GLOBAL broadcast bus and tests
-                    // run in parallel, so a concurrent test that reuses this
-                    // same fixed `member` key emits onto this receiver too. An
-                    // assert-"no unexpected group_id" guard would therefore be
-                    // unsound here. The exact-count assertions in the callers
-                    // are nonetheless contamination-proof because each caller's
-                    // `gid_a`/`gid_b` are byte patterns UNIQUE to that test and
-                    // we filter strictly on them: a concurrent test sharing the
-                    // member key emits on its own (different) group_ids, which
-                    // fall through uncounted. Over-cascade WITHIN a test's own
-                    // topology is what the callers pin via those exact counts.
+                    // `op_events` is a PROCESS-GLOBAL broadcast bus. The cascade
+                    // callers are `#[serial_test::serial]` (matching #2808), so
+                    // no other serial op-event test emits concurrently — but
+                    // serial does NOT exclude parallel *non-serial* tests, which
+                    // could still reuse this `member` key on the bus. An assert-
+                    // "no unexpected group_id" guard is therefore still unsound.
+                    // The exact-count assertions in the callers are nonetheless
+                    // contamination-proof because each caller's `gid_a`/`gid_b`
+                    // are byte patterns UNIQUE to that test and we filter
+                    // strictly on them: any other test sharing the member key
+                    // emits on its own (different) group_ids, which fall through
+                    // uncounted. Over-cascade WITHIN a test's own topology is
+                    // what the callers pin via those exact counts.
                 }
                 Ok(OpEvent::TeeMemberRemoved {
                     group_id,
