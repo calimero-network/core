@@ -123,7 +123,7 @@ where
 ///     // proceed with valid request
 /// }
 /// ```
-pub fn validate_request<T: Validate>(req: &T) -> Result<(), Response> {
+pub fn validate_request<T: Validate>(req: &T) -> Result<(), Box<Response>> {
     let errors = req.validate();
     if errors.is_empty() {
         Ok(())
@@ -134,10 +134,12 @@ pub fn validate_request<T: Validate>(req: &T) -> Result<(), Response> {
         } else {
             format!("Validation errors: {}", messages.join("; "))
         };
-        Err(ApiError {
-            status_code: StatusCode::BAD_REQUEST,
-            message,
-        }
-        .into_response())
+        Err(Box::new(
+            ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message,
+            }
+            .into_response(),
+        ))
     }
 }
