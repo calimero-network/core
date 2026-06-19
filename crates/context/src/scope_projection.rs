@@ -424,6 +424,25 @@ impl ScopeProjections {
     /// normal partial frontier (collect what's present), not a `None`.
     ///
     /// [`apply_backfill`]: Self::apply_backfill
+    /// The owning namespace's CURRENT governance heads for `group` — the cut that
+    /// represents "now" for a current-state membership read (resolve the group to
+    /// its namespace, then read that DAG's head record). `None` if the group can't
+    /// be resolved or the head record is unreadable. Pair with
+    /// [`member_at_cut`](Self::member_at_cut) (via the node's refreshing wrapper) to
+    /// answer "is X a member right now" off the projection instead of the live
+    /// materialized rows.
+    #[must_use]
+    pub fn namespace_current_heads(store: &Store, group: ContextGroupId) -> Option<Vec<[u8; 32]>> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        NamespaceDagService::new(store, namespace_id)
+            .read_head_record()
+            .ok()
+            .map(|head| head.parent_hashes)
+    }
+
     #[must_use]
     pub fn collect_namespace_ops(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
         let dag = NamespaceDagService::new(store, namespace_id);
