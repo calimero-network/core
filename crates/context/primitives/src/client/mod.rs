@@ -799,7 +799,7 @@ impl ContextRegistry {
     /// # Arguments
     ///
     /// * `start` - An optional `ContextId` from which to begin the stream. If `None`,
-    ///    the stream starts from the beginning.
+    ///   the stream starts from the beginning.
     ///
     /// # Returns
     ///
@@ -884,7 +884,7 @@ impl ContextRegistry {
     ///
     /// * `context_id` - The context to query for members.
     /// * `owned` - If `Some(true)`, the stream returns only members for which this node holds
-    ///    the private key. If `Some(false)` or `None`, it returns all members.
+    ///   the private key. If `Some(false)` or `None`, it returns all members.
     ///
     /// # Returns
     ///
@@ -1069,13 +1069,13 @@ impl ContextClient {
     /// # Arguments
     /// * `context_id` - The context to invite the new member to.
     /// * `inviter_id` - The public key of the existing member creating the invitation.
-    ///                  This node must have the corresponding private key for this identity.
+    ///   This node must have the corresponding private key for this identity.
     /// * `valid_for_seconds` - How long (in seconds) the invitation remains valid.
     /// * `_secret_salt` - Unused; a fresh random salt is generated internally.
     ///
     /// # Returns
     /// * A `Result` containing the `SignedOpenInvitation` if successful, or an error if
-    /// the inviter's private key is not found or signing fails.
+    ///   the inviter's private key is not found or signing fails.
     /// * Returns `Ok(None)` if the context configuration cannot be found locally.
     pub async fn invite_member(
         &self,

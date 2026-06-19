@@ -105,8 +105,7 @@ impl RunCommand {
             // Resolve relative RocksDB paths against the node's home directory
             if let AuthStorageConfig::RocksDB { path: storage_path } = &mut auth_config.storage {
                 if storage_path.is_relative() {
-                    let joined = path.as_std_path().join(&*storage_path);
-                    *storage_path = joined.try_into().expect("Invalid UTF-8 path");
+                    *storage_path = path.as_std_path().join(&*storage_path);
                 }
             }
 
@@ -115,8 +114,7 @@ impl RunCommand {
             // Also resolve paths for proxy mode if config exists
             if let AuthStorageConfig::RocksDB { path: storage_path } = &mut cfg.storage {
                 if storage_path.is_relative() {
-                    let joined = path.as_std_path().join(&*storage_path);
-                    *storage_path = joined.try_into().expect("Invalid UTF-8 path");
+                    *storage_path = path.as_std_path().join(&*storage_path);
                 }
             }
         }

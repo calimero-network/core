@@ -449,7 +449,7 @@ mod tests {
     fn derived_with_transforms_and_emit_fires() {
         let mut app = TestHost::new(DocV1::init);
         app.call(|s| s.set_title("hello".to_owned())).unwrap();
-        app.take_events(); // discard pre-migration events
+        let _ = app.take_events(); // discard pre-migration events
 
         let v2 = app.migrate(upper_migrate);
 

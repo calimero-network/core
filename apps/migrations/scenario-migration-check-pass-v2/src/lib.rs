@@ -40,7 +40,7 @@ pub struct SchemaInfo {
 
 #[derive(BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
-struct ScenarioMigrationCheckPassV1 {
+pub struct ScenarioMigrationCheckPassV1 {
     items: UnorderedMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,
 }

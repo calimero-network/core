@@ -133,10 +133,9 @@ impl NestedCrdtTest {
     // ===== SortedMap Operations =====
 
     pub fn set_sorted_score(&mut self, key: String, value: u64) -> app::Result<()> {
-        drop(
-            self.sorted_scores
-                .insert(key.clone(), LwwRegister::new(value))?,
-        );
+        let _ = self
+            .sorted_scores
+            .insert(key.clone(), LwwRegister::new(value))?;
 
         app::emit!(TestEvent::SortedScoreSet { key, value });
 

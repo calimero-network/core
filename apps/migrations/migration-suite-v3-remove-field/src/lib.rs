@@ -40,6 +40,11 @@ struct MigrationSuiteV2 {
     items: UnorderedMap<String, LwwRegister<String>>,
     description: LwwRegister<String>,
     counter: LwwRegister<u64>,
+    // Present only to be removed by the v3 migration under test.
+    #[allow(
+        dead_code,
+        reason = "old-schema field exercised by the remove-field migration"
+    )]
     notes: LwwRegister<String>,
 }
 

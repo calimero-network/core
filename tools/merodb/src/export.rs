@@ -1556,7 +1556,7 @@ fn try_manual_entity_index_decode(
     dead_code,
     reason = "Fields required for Borsh deserialization structure"
 )]
-struct ChildInfo {
+pub struct ChildInfo {
     id: Id,
     merkle_hash: [u8; 32],
     metadata: Metadata,
@@ -1624,7 +1624,7 @@ impl borsh::BorshDeserialize for Metadata {
     dead_code,
     reason = "Variants required for Borsh deserialization structure"
 )]
-enum StorageType {
+pub enum StorageType {
     Public,
     User {
         owner: Id,
@@ -1644,7 +1644,7 @@ enum StorageType {
     dead_code,
     reason = "Fields required for Borsh deserialization structure"
 )]
-struct SignatureData {
+pub struct SignatureData {
     signature: [u8; 64],
     nonce: u64,
     /// Optional signer-pubkey hint added by Shared storage for O(1) verifier lookup.
@@ -1653,7 +1653,7 @@ struct SignatureData {
 }
 
 #[derive(borsh::BorshDeserialize, Clone)]
-struct UpdatedAt(u64);
+pub struct UpdatedAt(u64);
 
 impl Deref for UpdatedAt {
     type Target = u64;

@@ -6,6 +6,7 @@
 //! - The test process actually panics; without `catch_unwind` the test fails.
 //! - With `catch_unwind`, the panic hook runs in the same process and may interact
 //!   with the test harness or stderr in non-deterministic ways.
+//!
 //! Running the real binary in a subprocess and using `Command::output()` gives
 //! deterministic, full stderr capture and no in-process panic.
 
