@@ -186,6 +186,57 @@
 </div>
 </div>
 
+<div class="card gd"><h2>AI Reviewer: Deterministic Source-to-Docs Routing</h2>
+<p>The repository's <code>.ai-reviewer.yaml</code> file contains a <code>documentation.source_to_docs_mapping</code> block that controls how changed source files are routed to their corresponding architecture documentation pages. This mapping is evaluated <strong>before</strong> any model call, so a matching glob produces a deterministic target page with no inference cost.</p>
+
+<h3>How the Mapping Works</h3>
+<p>Each entry in the block is an fnmatch-style glob matched against paths under <code>crates/**</code>. When a pull request changes a file that matches a glob, the router writes the listed <code>architecture/*.html</code> pages as the update targets. If a file matches no glob, the router falls back to model-based routing.</p>
+
+<h3>Covered Crates and Their Target Pages</h3>
+<ul>
+  <li><code>crates/auth/**</code> → <code>architecture/crates/auth.html</code></li>
+  <li><code>crates/node/**</code> → <code>architecture/crates/node.html</code>, <code>architecture/crates/sync.html</code></li>
+  <li><code>crates/context/**</code> → <code>architecture/crates/context.html</code></li>
+  <li><code>crates/network/**</code> → <code>architecture/crates/network.html</code></li>
+  <li><code>crates/server/**</code> → <code>architecture/crates/server.html</code></li>
+  <li><code>crates/runtime/**</code> → <code>architecture/crates/runtime.html</code></li>
+  <li><code>crates/dag/**</code> → <code>architecture/crates/sync.html</code></li>
+  <li><code>crates/sdk/**</code> → <code>architecture/crates/sdk.html</code></li>
+  <li><code>crates/meroctl/**</code> → <code>architecture/crates/tools.html</code></li>
+  <li><code>crates/merod/**</code> → <code>architecture/crates/tools.html</code></li>
+  <li><code>crates/store/**</code>, <code>crates/storage/**</code>, <code>crates/storage-macros/**</code> → <code>architecture/crates/store.html</code></li>
+  <li><code>crates/governance-store/**</code>, <code>crates/governance-types/**</code> → <code>architecture/crates/context.html</code></li>
+  <li><code>crates/authz/**</code> → <code>architecture/crates/auth.html</code></li>
+  <li><code>crates/op/**</code>, <code>crates/op-adapter/**</code> → <code>architecture/crates/sync.html</code></li>
+  <li><code>crates/config/**</code> → <code>architecture/system-overview.html</code></li>
+  <li><code>crates/tee-attestation/**</code> → <code>architecture/crates/server.html</code></li>
+</ul>
+
+<h3>Unmapped Crates (Model Fallback)</h3>
+<p>The following crates have no glob entry and are routed by the model at review time:</p>
+<ul>
+  <li><code>crates/crypto</code></li>
+  <li><code>crates/sys</code></li>
+  <li><code>crates/projection</code></li>
+  <li><code>crates/primitives</code></li>
+  <li><code>crates/prelude</code></li>
+  <li><code>crates/utils</code></li>
+  <li><code>crates/build-utils</code></li>
+  <li><code>crates/git-hooks</code></li>
+  <li><code>crates/wasm-abi</code></li>
+</ul>
+
+<h3>Maintenance Rules</h3>
+<ol>
+  <li>When a <strong>new crate</strong> is added under <code>crates/</code>, add a corresponding glob and at least one target page to <code>documentation.source_to_docs_mapping</code>.</li>
+  <li>When an <strong>architecture page is renamed or moved</strong>, update every mapping entry that references the old path, otherwise the router will silently produce a broken link.</li>
+  <li>When a crate is <strong>split or merged</strong>, update both the glob pattern and the target list. A single glob may list multiple target pages if the crate's content spans more than one document.</li>
+  <li>If routing behaves unexpectedly, check whether the changed file path is matched by an earlier, more general glob that shadows the intended entry — fnmatch evaluation stops at the <strong>first</strong> matching rule.</li>
+</ol>
+
+<h3>Why This Matters</h3>
+<p>Before this mapping existed, the Route stage used a model call to pick a target page. A wrong or empty prediction caused the documentation update to be <strong>silently skipped</strong>. Deterministic routing eliminates that failure mode for all 20 covered pages and makes the reviewer auditable: the mapping is a plain YAML file that can be reviewed, diffed, and tested independently of any model.</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
