@@ -5,8 +5,9 @@ use super::super::super::verify_post_apply_state_hashes;
 use super::context::GroupApplyCtx;
 use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError,
-    MembershipRepository, MetaRepository,
+    MembershipRepository, MetaRepository, NamespaceRepository,
 };
+use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
@@ -66,6 +67,47 @@ pub(crate) fn apply(
             "MemberRemoved apply: role_of returned None (no direct row — likely \
              inherited membership); skipping TeeMemberRemoved follow-up"
         );
+    }
+    // A namespace-root removal of a `ReadOnlyTee` evicts it namespace-wide:
+    // the TEE's presence in any subgroup came from namespace-level
+    // attestation policy (`tee_subgroup_admit`), not the subgroup admin's
+    // choice, so root authority extends to it. Cascade per-receiver like a
+    // self-`MemberLeft` namespace-leave; scoped to `ReadOnlyTee` so
+    // normal-member Restricted-subgroup membership autonomy (#2256) is
+    // untouched. Queue the cascade events BEFORE the root events (below) so
+    // the evicted node's per-subgroup self_purge resolves before namespace
+    // finalization. Mirrors the `is_namespace_leave` block in
+    // `member_left.rs`, but DELIBERATELY omits the owner-self and per-
+    // descendant last-admin checks: a `ReadOnlyTee` is structurally never an
+    // owner or admin, so both are inert here and would mislead.
+    let is_namespace_root = NamespaceRepository::new(store).resolve(group_id)? == *group_id;
+    if is_namespace_root && removed_role == Some(GroupMemberRole::ReadOnlyTee) {
+        let descendants = NamespaceRepository::new(store).collect_descendants(group_id)?;
+        // Capture (descendant, role) per direct row so the role-scoped
+        // `TeeMemberRemoved` follow-up can be gated per-group. Cascade ENTRY
+        // is gated on the ROOT role (the security boundary); this per-
+        // descendant role gate is only for the event.
+        let mut direct_descendants: Vec<(ContextGroupId, GroupMemberRole)> = Vec::new();
+        for sub in &descendants {
+            if let Some(role) = MembershipRepository::new(store).role_of(sub, member)? {
+                direct_descendants.push((*sub, role));
+            }
+        }
+        for (sub, role) in &direct_descendants {
+            cascade_remove_member_from_group_tree(store, sub, member)?;
+            MembershipRepository::new(store).remove_member(sub, member)?;
+            DenyListRepository::new(store).mark(sub, member)?;
+            ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
+                group_id: sub.to_bytes(),
+                member: *member,
+            });
+            if *role == GroupMemberRole::ReadOnlyTee {
+                ctx.queue_event(crate::op_events::OpEvent::TeeMemberRemoved {
+                    group_id: sub.to_bytes(),
+                    member: *member,
+                });
+            }
+        }
     }
     cascade_remove_member_from_group_tree(store, group_id, member)?;
     MembershipRepository::new(store).remove_member(group_id, member)?;

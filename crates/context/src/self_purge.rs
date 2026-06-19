@@ -628,13 +628,20 @@ fn clear_marker(store: &Store, ns_id: &ContextGroupId) -> bool {
 ///     (`decide_purge_action` returns `PurgeAction::Namespace` exclusively when
 ///     `gid == ns_id`). So every namespace reaching this predicate was evicted
 ///     at the root.
-///   * A namespace-root `MemberRemoved` apply removes ONLY the root
-///     `GroupMember` row; `cascade_remove_member_from_group_tree`
-///     (`governance-store::context_tree::cascade_remove_member`) deletes
-///     `ContextIdentity` rows, NOT descendant `GroupMember` rows. So a
-///     surviving descendant `GroupMember` row after a root eviction is
-///     **un-cascaded residue**, NOT live membership — exactly what the cascade
-///     here will clean up. Treating it as "re-admitted" was the bug.
+///   * A namespace-root `MemberRemoved` apply's row removal SPLITS by role:
+///     for a **`ReadOnlyTee`** removal the apply now cascades in-band and
+///     removes descendant `GroupMember` rows too (mirroring the self-leave
+///     namespace cascade — see `member_removed.rs`), so there is no residue;
+///     for a **non-TEE** removal it still removes ONLY the root row and
+///     descendant rows survive as residue. (`cascade_remove_member_from_group_tree`,
+///     `governance-store::context_tree::cascade_remove_member`, deletes
+///     `ContextIdentity` rows, NOT descendant `GroupMember` rows, in EITHER
+///     case.) So a surviving descendant `GroupMember` row after a root
+///     eviction is **un-cascaded residue**, NOT live membership — exactly what
+///     the cascade here will clean up. Treating it as "re-admitted" was the
+///     bug. Either way this predicate is correct because it only consults the
+///     ROOT row; descendant residue (TEE: none; non-TEE: possible) never
+///     reaches it.
 ///
 /// Root-row present ⇒ `Ok(false)` (genuinely re-admitted: TEE re-admission
 /// re-adds the root row via `MemberJoinedViaTeeAttestation`). Root-row
@@ -670,10 +677,13 @@ pub(crate) fn namespace_needs_reconcile(
 
     // Root-only: re-admission after a root eviction re-adds the namespace-root
     // `GroupMember` row. Its presence means we are a live member again; its
-    // absence means we are still evicted and a surviving descendant row is
-    // un-cascaded residue (the cascade removed the root row but not descendant
-    // membership rows), NOT live membership. Consulting descendants here would
-    // misread that residue as re-admission and abandon the purge.
+    // absence means we are still evicted. Any surviving descendant row is
+    // un-cascaded residue, NOT live membership — and for a ReadOnlyTee root
+    // eviction the apply now cascades descendant rows away in-band (see
+    // `member_removed.rs`), so there is typically no residue at all; for a
+    // non-TEE removal descendant rows can still survive as residue. Either way
+    // consulting descendants here would misread residue as re-admission and
+    // abandon the purge, so we look at the root row ONLY.
     if membership.role_of(&ns_id, &self_pk)?.is_some() {
         // Re-admitted at the namespace root → live member again.
         return Ok(false);

@@ -6164,6 +6164,52 @@ mod tee_member_removed_event_tests {
         (member_removed, tee_member_removed)
     }
 
+    /// Like [`count_removed_events_for`] but tallies TWO `(gid, member)`
+    /// tuples in a SINGLE drain. `count_removed_events_for` drains `rx`
+    /// to empty, so calling it twice (once per gid) after one apply
+    /// loses the second gid's events. The cascade tests need to assert
+    /// both the root and the subgroup pair from one apply, so they must
+    /// share one drain.
+    #[allow(clippy::type_complexity)]
+    fn count_removed_events_for_two(
+        rx: &mut tokio::sync::broadcast::Receiver<OpEvent>,
+        gid_a: [u8; 32],
+        gid_b: [u8; 32],
+        member: PublicKey,
+    ) -> ((usize, usize), (usize, usize)) {
+        use tokio::sync::broadcast::error::TryRecvError;
+        let (mut a_mr, mut a_tmr) = (0, 0);
+        let (mut b_mr, mut b_tmr) = (0, 0);
+        loop {
+            match rx.try_recv() {
+                Ok(OpEvent::MemberRemoved {
+                    group_id,
+                    member: m,
+                }) if m == member => {
+                    if group_id == gid_a {
+                        a_mr += 1;
+                    } else if group_id == gid_b {
+                        b_mr += 1;
+                    }
+                }
+                Ok(OpEvent::TeeMemberRemoved {
+                    group_id,
+                    member: m,
+                }) if m == member => {
+                    if group_id == gid_a {
+                        a_tmr += 1;
+                    } else if group_id == gid_b {
+                        b_tmr += 1;
+                    }
+                }
+                Ok(_) => {}
+                Err(TryRecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+        ((a_mr, a_tmr), (b_mr, b_tmr))
+    }
+
     /// Removing a `ReadOnlyTee` member via `GroupOp::MemberRemoved`
     /// must emit BOTH `MemberRemoved` and `TeeMemberRemoved` for the
     /// same `(group_id, member)`.
@@ -6261,6 +6307,197 @@ mod tee_member_removed_event_tests {
         assert_eq!(
             tmr, 0,
             "TeeMemberRemoved MUST NOT fire for a non-TEE removal (soft-leave path preserved)"
+        );
+    }
+
+    /// A namespace-root `MemberRemoved` of a `ReadOnlyTee` must cascade
+    /// into descendant subgroups — INCLUDING a `Restricted` subgroup —
+    /// removing the TEE's row there and emitting per-subgroup
+    /// `MemberRemoved` + `TeeMemberRemoved`. This lets a namespace owner
+    /// evict a TEE fleet node namespace-wide; sound because a TEE's
+    /// subgroup membership derives from namespace-level attestation
+    /// policy, not the subgroup admin's choice.
+    #[test]
+    fn member_removed_root_readonly_tee_cascades_into_restricted_subgroup() {
+        use calimero_context_config::VisibilityMode;
+
+        let store = test_store();
+
+        // namespace (root) ── Restricted subgroup
+        let ns_gid = ContextGroupId::from([0xD0; 32]);
+        let subgroup = ContextGroupId::from([0xD1; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &subgroup)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
+            .unwrap();
+
+        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_pk = admin_sk.public_key();
+        let tee_pk = PublicKey::from([0xE1; 32]);
+
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MetaRepository::new(&store)
+            .save(&subgroup, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        // TEE has a direct row at BOTH the root and the Restricted subgroup.
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &tee_pk, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&subgroup, &tee_pk, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+
+        // Subscribe BEFORE apply so we don't miss the fire.
+        let mut rx = op_events::subscribe();
+
+        // Root admin removes the TEE at the namespace root.
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            ns_gid.to_bytes(),
+            vec![],
+            MetaRepository::new(&store)
+                .compute_state_hash(&ns_gid)
+                .unwrap(),
+            1,
+            dummy_member_removed_op(tee_pk),
+        )
+        .expect("sign MemberRemoved");
+        apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
+
+        // Cascade removed the TEE's row in the Restricted subgroup …
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&subgroup, &tee_pk)
+                .unwrap(),
+            None,
+            "root TEE removal MUST cascade into the Restricted subgroup row"
+        );
+        // … and the root row too.
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&ns_gid, &tee_pk)
+                .unwrap(),
+            None,
+            "root row must be removed"
+        );
+        // Cascade deny-lists the TEE in the subgroup.
+        assert!(
+            DenyListRepository::new(&store)
+                .is_denied(&subgroup, &tee_pk)
+                .unwrap(),
+            "cascade must deny-list the TEE in the subgroup"
+        );
+
+        let (root_pair, sub_pair) =
+            count_removed_events_for_two(&mut rx, ns_gid.to_bytes(), subgroup.to_bytes(), tee_pk);
+        assert_eq!(
+            sub_pair,
+            (1, 1),
+            "subgroup must see one MemberRemoved + one TeeMemberRemoved from the cascade"
+        );
+        assert_eq!(
+            root_pair,
+            (1, 1),
+            "root must see one MemberRemoved + one TeeMemberRemoved"
+        );
+    }
+
+    /// The mirror-image guard: a namespace-root `MemberRemoved` of a
+    /// regular `Member` must NOT cascade. The root row is removed
+    /// (today's behavior) but the `Restricted` subgroup row is
+    /// PRESERVED — the #2256 Restricted-subgroup membership wall holds
+    /// for non-TEE members.
+    #[test]
+    fn member_removed_root_regular_member_does_not_cascade() {
+        use calimero_context_config::VisibilityMode;
+
+        let store = test_store();
+
+        // namespace (root) ── Restricted subgroup
+        let ns_gid = ContextGroupId::from([0xD2; 32]);
+        let subgroup = ContextGroupId::from([0xD3; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &subgroup)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
+            .unwrap();
+
+        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_pk = admin_sk.public_key();
+        let member_pk = PublicKey::from([0xE2; 32]);
+
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MetaRepository::new(&store)
+            .save(&subgroup, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        // Regular member has a direct row at BOTH root and subgroup.
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &member_pk, GroupMemberRole::Member)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&subgroup, &member_pk, GroupMemberRole::Member)
+            .unwrap();
+
+        let mut rx = op_events::subscribe();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            ns_gid.to_bytes(),
+            vec![],
+            MetaRepository::new(&store)
+                .compute_state_hash(&ns_gid)
+                .unwrap(),
+            1,
+            dummy_member_removed_op(member_pk),
+        )
+        .expect("sign MemberRemoved");
+        apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
+
+        // Root row removed (today's behavior) …
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&ns_gid, &member_pk)
+                .unwrap(),
+            None,
+            "root row must be removed"
+        );
+        // … but the Restricted subgroup row is PRESERVED — no cascade.
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&subgroup, &member_pk)
+                .unwrap(),
+            Some(GroupMemberRole::Member),
+            "regular-member root removal MUST NOT cascade — Restricted wall holds (#2256)"
+        );
+
+        let (root_pair, sub_pair) = count_removed_events_for_two(
+            &mut rx,
+            ns_gid.to_bytes(),
+            subgroup.to_bytes(),
+            member_pk,
+        );
+        assert_eq!(
+            sub_pair,
+            (0, 0),
+            "no cascade events for a non-TEE root removal"
+        );
+        assert_eq!(
+            root_pair,
+            (1, 0),
+            "root sees only MemberRemoved (no TeeMemberRemoved) for a regular member"
         );
     }
 
