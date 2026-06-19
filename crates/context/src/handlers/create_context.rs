@@ -293,7 +293,7 @@ impl Prepared<'_> {
                     continue;
                 }
 
-                // safety: the VacantEntry only lives as long as this function
+                // SAFETY: the VacantEntry only lives as long as this function
                 //         and the entry within the BTreeMap is constrained to
                 //         the lifetime of the BTreeMap before it is returned
                 let entry = unsafe {

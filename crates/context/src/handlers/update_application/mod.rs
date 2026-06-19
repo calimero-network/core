@@ -1246,15 +1246,15 @@ pub(crate) fn clear_migration_failed(datastore: &calimero_store::Store, context_
     }
 }
 
-/// Storage callback closures used by the `calimero-storage` runtime environment.
-///
-/// These closures bridge the `calimero-storage` [`Key`]-based interface to the
-/// underlying `calimero-store` [`key::ContextState`]-based KV store.
 /// Reference-counted host storage callbacks (read / write / remove).
 pub(crate) type ReadFn = Rc<dyn Fn(&Key) -> Option<Vec<u8>>>;
 pub(crate) type WriteFn = Rc<dyn Fn(Key, &[u8]) -> bool>;
 pub(crate) type RemoveFn = Rc<dyn Fn(&Key) -> bool>;
 
+/// Storage callback closures used by the `calimero-storage` runtime environment.
+///
+/// These closures bridge the `calimero-storage` [`Key`]-based interface to the
+/// underlying `calimero-store` [`key::ContextState`]-based KV store.
 pub(crate) struct StorageCallbacks {
     pub(crate) read: ReadFn,
     pub(crate) write: WriteFn,

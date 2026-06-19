@@ -1107,12 +1107,10 @@ mod tests {
 
         // Read all keys and verify values.
         for i in 0..5 {
-            let _key = format!("key_{i}");
             let expected_value = format!("value_{i}");
 
-            let _key_ptr = (100 + i * 100) as u64;
+            // Reuse the key descriptor prepared in the write loop above.
             let key_buf_ptr = (16 + i * 32) as u64;
-            // Reuse the already prepared descriptors.
 
             let register_id = (i + 10) as u64;
             let res = host.storage_read(key_buf_ptr, register_id).unwrap();

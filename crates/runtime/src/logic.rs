@@ -470,7 +470,13 @@ impl VMLogic<'_> {
         // The runtime's catch_unwind wrapper ensures finish() is always called,
         // even when execution fails mid-way or panics occur.
         if let Some(memory) = self.memory {
-            let _ = memory;
+            // Explicit drop documents the intended wasmer-memory cleanup (see above);
+            // clippy::drop_non_drop fires because the handle has no Drop glue itself.
+            #[allow(
+                clippy::drop_non_drop,
+                reason = "explicit drop documents wasmer memory cleanup intent"
+            )]
+            drop(memory);
             trace!(target: "runtime::logic", "VMLogic::finish: cleaned up WASM memory");
         }
 
