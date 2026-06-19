@@ -150,7 +150,7 @@ pub fn estimate_max_depth(entity_count: u64) -> u32 {
         // log2(n) ≈ 64 - leading_zeros(n)
         // For a balanced tree, depth is roughly log2(entity_count)
         let log2_approx = 64u32.saturating_sub(entity_count.leading_zeros());
-        log2_approx.max(1).min(32)
+        log2_approx.clamp(1, 32)
     }
 }
 

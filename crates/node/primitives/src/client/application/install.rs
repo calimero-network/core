@@ -229,11 +229,6 @@ impl NodeClient {
         .await
     }
 
-    /// Check if a path points to a bundle archive (.mpk - Mero Package Kit)
-    fn is_bundle_archive(path: &Utf8Path) -> bool {
-        path.extension().map(|ext| ext == "mpk").unwrap_or(false)
-    }
-
     pub async fn install_application_from_path(
         &self,
         path: Utf8PathBuf,
@@ -562,9 +557,7 @@ impl NodeClient {
                         }
                     }
 
-                    canonical_extract_candidate.try_into().map_err(|_| {
-                        eyre::eyre!("Failed to convert extract_dir path to Utf8PathBuf")
-                    })?
+                    canonical_extract_candidate
                 };
 
                 if !canonical_wasm.starts_with(&canonical_extract) {

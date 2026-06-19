@@ -10,13 +10,9 @@ use calimero_primitives::blobs::BlobId;
 use calimero_store::key;
 use calimero_store::key::AsKeyParts;
 use eyre::bail;
-use futures_util::TryStreamExt;
-use sha2::Digest;
 use tracing::{debug, warn};
 
 use super::NodeClient;
-
-const MAX_ERROR_BODY_LEN: usize = 256;
 
 impl NodeClient {
     pub fn get_application(
@@ -184,9 +180,7 @@ impl NodeClient {
                         }
                     }
 
-                    canonical_extract_candidate.try_into().map_err(|_| {
-                        eyre::eyre!("Failed to convert extract_dir path to Utf8PathBuf")
-                    })?
+                    canonical_extract_candidate
                 };
 
                 // Ensure canonical_wasm is within canonical_extract
