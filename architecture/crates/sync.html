@@ -247,6 +247,7 @@
   <p style="margin-bottom:10px;">When the live membership resolver rejects a delta (<span class="code">DeltaAuthOutcome::MembershipReject</span>), the node no longer drops it immediately. Instead it calls <span class="code">projection_member_at_cut_authoritative</span>, which first refreshes the projection fold via <span class="code">refresh_projection_for_cut</span> and then reads membership with the authoritative (complete-ancestry, no materialized-fallback) check. If the projection returns <span class="code">Some(true)</span> the delta falls through to the normal apply path; <span class="code">None</span> or <span class="code">Some(false)</span> still reject.</p>
   <p style="margin-bottom:10px;">This makes the <strong>projection the final arbiter of membership</strong> on the primary gossip ingestion path — live's result is a cross-check, not the last word. A divergence-gate warning (<span class="code">unified_projection_divergence</span> / <span class="code">membership-cut-grant</span>) is emitted whenever the projection overrides a live reject, and <span class="code">observe_peer_identity</span> is called on the grant path so projection-only peers continue to feed sync peer selection.</p>
   <p><strong>Scope:</strong> This override applies only to the primary gossip path (<span class="code">handle_state_delta</span>). Other <span class="code">MembershipReject</span> sites — sync delta-request and parent-fetch replay — intentionally remain live-only.</p>
+  <p style="margin-top:10px;"><strong>Visibility:</strong> <span class="code">projection_member_at_cut</span> is now <span class="code">pub(crate)</span> so the sync manager can call it directly, ensuring both the data-write path and the inbound-sync authorization path fold the projection through the same refreshing backfill logic.</p>
   <div class="typedef" style="margin-top:12px;">
 <span class="comment">// Grant path: refresh fold then authoritative read</span><br>
 <span class="kw">pub fn</span> <span class="field">projection_member_at_cut_authoritative</span>(<br>
@@ -293,6 +294,23 @@
 ) -&gt; <span class="ty">Option</span>&lt;bool&gt;
   </div>
   <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> Monitor for <span class="code">unified_projection_divergence</span> warn logs on the drain path during the F5 migration window. Update any metric dashboards to handle the new <span class="code">"not_member"</span> label and the absence of <span class="code">"lookup_error"</span> on <span class="code">governance_drain_outcome</span>.</p>
+</div>
+
+<div class="cb" style="margin-bottom:18px; border-left:3px solid #06b6d4; padding-left:14px;">
+  <h4 style="color:#06b6d4; margin-bottom:8px;">Inbound-Sync Peer Authorization (<span class="code">peer_is_group_member</span>)</h4>
+  <p style="margin-bottom:10px;">A new private method <span class="code">SyncManager::peer_is_group_member</span> encapsulates membership authorization for inbound sync peers. It first checks <span class="code">MembershipRepository::is_member</span> (live resolver), then resolves the current governance heads via <span class="code">ScopeProjections::namespace_current_heads</span> and calls <span class="code">projection_member_at_cut</span> to obtain the projection's verdict. When the two disagree a <span class="code">unified_projection_divergence</span> warning is emitted with plane <span class="code">membership-sync</span>. The projection answer is used as the authoritative decision; if the projection returns <span class="code">None</span> (cold or partially folded governance), the method falls back to the live result so no peer is spuriously rejected while governance ancestry is still being caught up — the existing catch-up retry will re-resolve once governance advances.</p>
+  <p style="margin-bottom:10px;">Two call sites inside <span class="code">SyncManager</span> that previously called <span class="code">MembershipRepository::new(store).is_member(...)</span> directly — the materialization-wait verification and the inherited-member check in <span class="code">verify_inbound_member</span> — now call <span class="code">self.peer_is_group_member(...)</span>, so the projection-first logic with gated cross-check applies uniformly to all inbound peer authorization.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Authorizes an inbound sync peer: projection-first, live fallback</span><br>
+<span class="kw">async fn</span> <span class="field">peer_is_group_member</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;group_id: <span class="ty">GroupId</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;peer_id: <span class="ty">PeerId</span>,<br>
+) -&gt; <span class="ty">Result</span>&lt;bool&gt;<br><br>
+<span class="comment">// projection returns None → fall back to live; Some(x) → authoritative</span><br>
+<span class="comment">// divergence logged as unified_projection_divergence plane=membership-sync</span>
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> Monitor <span class="code">unified_projection_divergence</span> warn logs with <span class="code">plane = "membership-sync"</span> during governance catch-up windows. A <span class="code">None</span> projection result is not an error — it means governance ancestry is still being folded and the live result is used as a safe temporary answer.</p>
 </div>
 
 <div class="g2" style="margin-bottom:16px;">
