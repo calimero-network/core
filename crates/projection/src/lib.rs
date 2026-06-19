@@ -88,6 +88,14 @@ pub struct ScopeState {
     policy: Vec<u8>,
     policy_clock: Option<Stamp>,
     subgroups: BTreeMap<ScopeId, SubgroupSlot>,
+    // --- capability plane (gates inherited-membership resolution) ---
+    default_caps: BTreeMap<ContextGroupId, u32>,
+    default_caps_clock: BTreeMap<ContextGroupId, Stamp>,
+    member_caps: BTreeMap<(ContextGroupId, PublicKey), u32>,
+    member_caps_clock: BTreeMap<(ContextGroupId, PublicKey), Stamp>,
+    // --- per-group admin (the subgroup creator / genesis admin) ---
+    group_admin: BTreeMap<ContextGroupId, PublicKey>,
+    group_admin_clock: BTreeMap<ContextGroupId, Stamp>,
 }
 
 impl ScopeState {
@@ -182,11 +190,18 @@ impl ScopeState {
                 child,
                 parent,
                 restricted,
+                admin,
             } => {
                 let slot = self.subgroups.entry(*child).or_default();
                 lww_set(&mut slot.parent, stamp, *parent);
                 lww_set(&mut slot.restricted, stamp, *restricted);
                 lww_set(&mut slot.exists, stamp, true);
+                // The creator is the subgroup's genesis admin.
+                let g = ContextGroupId::from(*child.as_bytes());
+                if wins(stamp, self.group_admin_clock.get(&g)) {
+                    let _ = self.group_admin.insert(g, *admin);
+                    let _ = self.group_admin_clock.insert(g, stamp);
+                }
             }
             OpPayload::SubgroupReparented { child, new_parent } => {
                 let slot = self.subgroups.entry(*child).or_default();
@@ -195,6 +210,30 @@ impl ScopeState {
             OpPayload::SubgroupDeleted { scope } => {
                 let slot = self.subgroups.entry(*scope).or_default();
                 lww_set(&mut slot.exists, stamp, false);
+            }
+            OpPayload::SubgroupVisibilitySet { scope, restricted } => {
+                let slot = self.subgroups.entry(*scope).or_default();
+                lww_set(&mut slot.restricted, stamp, *restricted);
+            }
+            OpPayload::DefaultCapabilitiesSet {
+                group,
+                capabilities,
+            } => {
+                if wins(stamp, self.default_caps_clock.get(group)) {
+                    let _ = self.default_caps.insert(*group, *capabilities);
+                    let _ = self.default_caps_clock.insert(*group, stamp);
+                }
+            }
+            OpPayload::MemberCapabilitySet {
+                group,
+                member,
+                capabilities,
+            } => {
+                let key = (*group, *member);
+                if wins(stamp, self.member_caps_clock.get(&key)) {
+                    let _ = self.member_caps.insert(key, *capabilities);
+                    let _ = self.member_caps_clock.insert(key, stamp);
+                }
             }
             // A graph-only node: present in the log so an ancestry walk can
             // traverse through it, but it folds to nothing.
@@ -205,10 +244,30 @@ impl ScopeState {
     /// The current authorization view (whole state).
     #[must_use]
     pub fn acl_view(&self) -> AclView {
+        let subgroups = self
+            .subgroups
+            .iter()
+            .filter(|(_, slot)| slot.exists.as_ref().is_some_and(|(_, live)| *live))
+            .filter_map(|(child, slot)| {
+                slot.parent.as_ref().map(|(_, parent)| {
+                    (
+                        *child,
+                        calimero_authz::SubgroupEdge {
+                            parent: *parent,
+                            restricted: slot.restricted.as_ref().is_some_and(|(_, r)| *r),
+                        },
+                    )
+                })
+            })
+            .collect();
         AclView {
             acl: self.acl.clone(),
             groups: self.groups.clone(),
             root_admin: self.root_admin,
+            default_caps: self.default_caps.clone(),
+            member_caps: self.member_caps.clone(),
+            subgroups,
+            group_admin: self.group_admin.clone(),
         }
     }
 
@@ -395,6 +454,21 @@ impl ScopeState {
                 }
                 hasher.update([u8::from(slot.restricted.as_ref().is_some_and(|(_, r)| *r))]);
             }
+        }
+        // Capability plane (deterministic order via BTreeMap). Folded into the
+        // convergence root so a node's caps view can't silently diverge.
+        for (group, caps) in &self.default_caps {
+            hasher.update(group.to_bytes());
+            hasher.update(caps.to_le_bytes());
+        }
+        for ((group, member), caps) in &self.member_caps {
+            hasher.update(group.to_bytes());
+            hasher.update(AsRef::<[u8; 32]>::as_ref(member));
+            hasher.update(caps.to_le_bytes());
+        }
+        for (group, admin) in &self.group_admin {
+            hasher.update(group.to_bytes());
+            hasher.update(AsRef::<[u8; 32]>::as_ref(admin));
         }
         hasher.finalize().into()
     }
@@ -790,6 +864,7 @@ mod tests {
                     child,
                     parent: p1,
                     restricted: true,
+                    admin: PublicKey::from([7u8; 32]),
                 },
             ),
             op(

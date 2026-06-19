@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use thiserror::Error as ThisError;
 
 use calimero_context_config::types::ContextGroupId;
-use calimero_op::{Op, OpPayload};
+use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
@@ -53,6 +53,30 @@ pub struct AclView {
     pub groups: BTreeMap<ContextGroupId, BTreeMap<PublicKey, GroupMemberRole>>,
     /// The scope's root admin at the cut (the admin plane).
     pub root_admin: Option<PublicKey>,
+    /// Per-group default capability bitmask at the cut (capability plane).
+    pub default_caps: BTreeMap<ContextGroupId, u32>,
+    /// Per-(group, member) explicit capability override at the cut. Takes
+    /// precedence over the group default for that member.
+    pub member_caps: BTreeMap<(ContextGroupId, PublicKey), u32>,
+    /// Live subgroup tree at the cut: child scope → (parent scope, restricted).
+    /// Only scopes whose latest `exists` is true appear. Drives the inherited-
+    /// membership parent walk (open chain to an ancestor the author belongs to).
+    pub subgroups: BTreeMap<ScopeId, SubgroupEdge>,
+    /// Per-group genesis admin at the cut (the subgroup creator, or the
+    /// namespace-root admin seeded at backfill). Mirrors the live
+    /// `GroupMeta.admin_identity`. An identity is a group admin iff it is this
+    /// or holds the `Admin` role in `groups[group]`.
+    pub group_admin: BTreeMap<ContextGroupId, PublicKey>,
+}
+
+/// A live subgroup's tree position + visibility at the cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubgroupEdge {
+    /// Parent scope this subgroup is nested under.
+    pub parent: ScopeId,
+    /// `true` = Restricted (a visibility wall that blocks inheritance through
+    /// it); `false` = Open.
+    pub restricted: bool,
 }
 
 /// Capabilities a scope **member** implicitly holds on a non-restricted
@@ -102,6 +126,19 @@ impl AclView {
             .any(|members| members.contains_key(author))
     }
 
+    /// `member`'s effective capability bitmask in `group` at the cut: the
+    /// explicit per-member override if present, else the group default, else
+    /// `0`. Mirrors the live `member_capability` read used by inherited-
+    /// membership resolution (the `CAN_JOIN_OPEN_SUBGROUPS` gate).
+    #[must_use]
+    pub fn capability(&self, group: &ContextGroupId, member: &PublicKey) -> u32 {
+        self.member_caps
+            .get(&(*group, *member))
+            .copied()
+            .or_else(|| self.default_caps.get(group).copied())
+            .unwrap_or(0)
+    }
+
     /// Is `author` the owner of `object` — permitted to rotate its writer set?
     ///
     /// The `ADMIN` bit on the object confers ownership (owner = capability
@@ -115,6 +152,9 @@ impl AclView {
     /// Is `author` an `Admin` of `group` at the cut?
     #[must_use]
     pub fn is_group_admin(&self, author: &PublicKey, group: ContextGroupId) -> bool {
+        if self.group_admin.get(&group) == Some(author) {
+            return true;
+        }
         matches!(
             self.groups.get(&group).and_then(|m| m.get(author)),
             Some(GroupMemberRole::Admin)
@@ -186,6 +226,14 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 Err(Rejected::NotGroupAdmin)
             }
         }
+        OpPayload::SubgroupVisibilitySet { scope, .. } => {
+            // Visibility is a property of the subgroup; its admin sets it.
+            if acl_at_cut.is_group_admin(&op.author, ContextGroupId::from(*scope.as_bytes())) {
+                Ok(())
+            } else {
+                Err(Rejected::NotGroupAdmin)
+            }
+        }
         OpPayload::AdminChanged { .. }
         | OpPayload::PolicyUpdated { .. }
         | OpPayload::SubgroupCreated { .. }
@@ -195,6 +243,15 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 Ok(())
             } else {
                 Err(Rejected::NotRootAdmin)
+            }
+        }
+        // Capability changes are an admin action on the target group.
+        OpPayload::DefaultCapabilitiesSet { group, .. }
+        | OpPayload::MemberCapabilitySet { group, .. } => {
+            if acl_at_cut.is_group_admin(&op.author, *group) {
+                Ok(())
+            } else {
+                Err(Rejected::NotGroupAdmin)
             }
         }
         // A graph-only node mutates nothing, so there is nothing to authorize.

@@ -19,6 +19,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::{GroupOp, RootOp};
 use calimero_op::{OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::rotation_log::RotationLogEntry;
@@ -126,6 +127,28 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
         GroupOp::TransferOwnership { new_owner } => Some(OpPayload::AdminChanged {
             new_admin: *new_owner,
         }),
+        // Capability plane — folded so the projection can resolve inherited
+        // membership (the `CAN_JOIN_OPEN_SUBGROUPS` bit) at the cut.
+        GroupOp::DefaultCapabilitiesSet { capabilities } => {
+            Some(OpPayload::DefaultCapabilitiesSet {
+                group,
+                capabilities: *capabilities,
+            })
+        }
+        GroupOp::MemberCapabilitySet {
+            member,
+            capabilities,
+        } => Some(OpPayload::MemberCapabilitySet {
+            group,
+            member: *member,
+            capabilities: *capabilities,
+        }),
+        // Visibility plane — the Open/Restricted wall that gates inheritance.
+        // Live mode byte: 0 = Open, anything else = Restricted.
+        GroupOp::SubgroupVisibilitySet { mode } => Some(OpPayload::SubgroupVisibilitySet {
+            scope: ScopeId::from(group.to_bytes()),
+            restricted: *mode != 0,
+        }),
         _ => None,
     }
 }
@@ -154,8 +177,13 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
 ///
 /// **Returns `None`** (out-of-model by design): `KeyDelivery` — key transport,
 /// which rides its own channel and never enters the auth projection.
+///
+/// `signer` is the op's outer-`SignedNamespaceOp` signer — needed for
+/// `GroupCreated`, whose creator becomes the new subgroup's genesis admin
+/// (mirrors the live `GroupMeta.admin_identity = GroupCreated.signer`). It is
+/// ignored by every other variant.
 #[must_use]
-pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
+pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload> {
     match op {
         RootOp::AdminChanged { new_admin } => Some(OpPayload::AdminChanged {
             new_admin: *new_admin,
@@ -187,7 +215,11 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         } => Some(OpPayload::SubgroupCreated {
             child: ScopeId::from(*group_id),
             parent: ScopeId::from(*parent_id),
-            restricted: false,
+            // A new subgroup's visibility is Restricted by default (absent
+            // visibility key resolves to Restricted live); a later
+            // `SubgroupVisibilitySet` opens it.
+            restricted: true,
+            admin: signer,
         }),
         RootOp::GroupReparented {
             child_group_id,
@@ -461,11 +493,15 @@ mod tests {
                 new_admin: new_owner,
             })
         );
-        // Out-of-model ops (capabilities, metadata, config, …) → None.
+        // Out-of-model ops (metadata, config, …) → None.
         assert_eq!(payload_from_group_op(group, &GroupOp::Noop), None);
+        // Capability plane is now folded (gates inherited membership).
         assert_eq!(
             payload_from_group_op(group, &GroupOp::DefaultCapabilitiesSet { capabilities: 7 }),
-            None
+            Some(OpPayload::DefaultCapabilitiesSet {
+                group,
+                capabilities: 7,
+            })
         );
     }
 
@@ -476,22 +512,31 @@ mod tests {
         let gid = [3u8; 32];
 
         assert_eq!(
-            payload_from_root_op(&RootOp::AdminChanged { new_admin: admin }),
+            payload_from_root_op(
+                &RootOp::AdminChanged { new_admin: admin },
+                PublicKey::from([1u8; 32])
+            ),
             Some(OpPayload::AdminChanged { new_admin: admin })
         );
         assert_eq!(
-            payload_from_root_op(&RootOp::PolicyUpdated {
-                policy_bytes: vec![1, 2, 3],
-            }),
+            payload_from_root_op(
+                &RootOp::PolicyUpdated {
+                    policy_bytes: vec![1, 2, 3],
+                },
+                PublicKey::from([1u8; 32])
+            ),
             Some(OpPayload::PolicyUpdated {
                 policy_bytes: vec![1, 2, 3],
             })
         );
         assert_eq!(
-            payload_from_root_op(&RootOp::MemberJoinedOpen {
-                member: m,
-                group_id: gid,
-            }),
+            payload_from_root_op(
+                &RootOp::MemberJoinedOpen {
+                    member: m,
+                    group_id: gid,
+                },
+                PublicKey::from([1u8; 32])
+            ),
             Some(OpPayload::MemberAdded {
                 group: ContextGroupId::from(gid),
                 member: m,
@@ -515,10 +560,13 @@ mod tests {
             app_key: None,
         };
         assert_eq!(
-            payload_from_root_op(&RootOp::MemberJoined {
-                member: m,
-                signed_invitation: signed_invitation.clone(),
-            }),
+            payload_from_root_op(
+                &RootOp::MemberJoined {
+                    member: m,
+                    signed_invitation: signed_invitation.clone(),
+                },
+                PublicKey::from([1u8; 32])
+            ),
             Some(OpPayload::MemberAdded {
                 group: ContextGroupId::from(gid),
                 member: m,
@@ -528,11 +576,14 @@ mod tests {
         // `MemberJoinedAt` (the timestamped invitation join `join_group` emits)
         // decodes identically — it is NOT out-of-model.
         assert_eq!(
-            payload_from_root_op(&RootOp::MemberJoinedAt {
-                member: m,
-                signed_invitation,
-                joined_at: 42,
-            }),
+            payload_from_root_op(
+                &RootOp::MemberJoinedAt {
+                    member: m,
+                    signed_invitation,
+                    joined_at: 42,
+                },
+                PublicKey::from([1u8; 32])
+            ),
             Some(OpPayload::MemberAdded {
                 group: ContextGroupId::from(gid),
                 member: m,
@@ -541,33 +592,43 @@ mod tests {
         );
         let parent = [0x70; 32]; // placeholder parent id
         assert_eq!(
-            payload_from_root_op(&RootOp::GroupCreated {
-                group_id: gid,
-                parent_id: parent,
-            }),
+            payload_from_root_op(
+                &RootOp::GroupCreated {
+                    group_id: gid,
+                    parent_id: parent,
+                },
+                PublicKey::from([1u8; 32])
+            ),
             Some(OpPayload::SubgroupCreated {
                 child: ScopeId::from(gid),
                 parent: ScopeId::from(parent),
-                restricted: false,
+                restricted: true,
+                admin: PublicKey::from([1u8; 32]),
             })
         );
         // Scope-tree restructure ops now map to the structural OpPayload arms.
         assert_eq!(
-            payload_from_root_op(&RootOp::GroupReparented {
-                child_group_id: gid,
-                new_parent_id: [9u8; 32],
-            }),
+            payload_from_root_op(
+                &RootOp::GroupReparented {
+                    child_group_id: gid,
+                    new_parent_id: [9u8; 32],
+                },
+                PublicKey::from([1u8; 32])
+            ),
             Some(OpPayload::SubgroupReparented {
                 child: ScopeId::from(gid),
                 new_parent: ScopeId::from([9u8; 32]),
             })
         );
         assert_eq!(
-            payload_from_root_op(&RootOp::GroupDeleted {
-                root_group_id: gid,
-                cascade_group_ids: vec![],
-                cascade_context_ids: vec![],
-            }),
+            payload_from_root_op(
+                &RootOp::GroupDeleted {
+                    root_group_id: gid,
+                    cascade_group_ids: vec![],
+                    cascade_context_ids: vec![],
+                },
+                PublicKey::from([1u8; 32])
+            ),
             Some(OpPayload::SubgroupDeleted {
                 scope: ScopeId::from(gid),
             })

@@ -121,17 +121,42 @@ pub enum OpPayload {
     /// Replace the scope's policy bytes.
     PolicyUpdated { policy_bytes: Vec<u8> },
     /// Create a child subgroup scope nested under `parent`. A `restricted`
-    /// subgroup's very existence is hidden from non-members.
+    /// subgroup's very existence is hidden from non-members. `admin` is the
+    /// creator — the subgroup's genesis admin (mirrors the live
+    /// `GroupMeta.admin_identity = GroupCreated.signer`), so admin authority is
+    /// resolvable from the projection without a separate membership op.
     SubgroupCreated {
         child: ScopeId,
         parent: ScopeId,
         restricted: bool,
+        admin: PublicKey,
     },
     /// Move a subgroup scope under a new parent (a scope-tree restructure).
     SubgroupReparented { child: ScopeId, new_parent: ScopeId },
     /// Delete a subgroup scope. Deleting a subtree is expressed as one
     /// `SubgroupDeleted` per cascaded scope.
     SubgroupDeleted { scope: ScopeId },
+    /// Set a subgroup's visibility post-creation. `restricted == false` means
+    /// Open (members of an open subgroup's open ancestor chain inherit
+    /// membership); `true` means Restricted (a visibility wall). Mirrors the
+    /// live `SubgroupVisibilitySet` op.
+    SubgroupVisibilitySet { scope: ScopeId, restricted: bool },
+
+    // ---- capability plane (drives inherited-membership resolution) ----
+    /// Set `group`'s default member-capability bitmask (applied to members
+    /// without an explicit override). The `CAN_JOIN_OPEN_SUBGROUPS` bit gates
+    /// inheritance into open subgroups.
+    DefaultCapabilitiesSet {
+        group: ContextGroupId,
+        capabilities: u32,
+    },
+    /// Set `member`'s explicit capability bitmask in `group` (overrides the
+    /// group default for that member).
+    MemberCapabilitySet {
+        group: ContextGroupId,
+        member: PublicKey,
+        capabilities: u32,
+    },
 
     // ---- graph-only ----
     /// A node that changes no projection state but occupies its place in the

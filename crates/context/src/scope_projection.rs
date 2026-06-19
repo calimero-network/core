@@ -26,7 +26,7 @@ use calimero_governance_store::{
 };
 use calimero_governance_types::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
-use calimero_op_adapter::{payload_from_root_op, set_writers_payload};
+use calimero_op_adapter::{payload_from_group_op, payload_from_root_op, set_writers_payload};
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
@@ -67,35 +67,6 @@ fn build_op(
         payload,
         expected_scope_root: [0u8; 32],
         signature: [0u8; 64],
-    }
-}
-
-/// The unified-op membership [`OpPayload`] a decrypted [`GroupOp`] produces, or
-/// `None` if the variant doesn't change membership (capability / metadata /
-/// context / ownership ops). Role-change variants are an LWW upsert
-/// (`MemberAdded` with the new role); removals and self-leaves are
-/// `MemberRemoved`.
-fn group_membership_payload(group_op: &GroupOp, group: ContextGroupId) -> Option<OpPayload> {
-    match group_op {
-        GroupOp::MemberAdded { member, role } | GroupOp::MemberRoleSet { member, role } => {
-            Some(OpPayload::MemberAdded {
-                group,
-                member: *member,
-                role: role.clone(),
-            })
-        }
-        GroupOp::MemberJoinedViaTeeAttestation { member, .. } => Some(OpPayload::MemberAdded {
-            group,
-            member: *member,
-            role: GroupMemberRole::Member,
-        }),
-        GroupOp::MemberRemoved { member, .. } | GroupOp::MemberLeft { member, .. } => {
-            Some(OpPayload::MemberRemoved {
-                group,
-                member: *member,
-            })
-        }
-        _ => None,
     }
 }
 
@@ -239,9 +210,11 @@ pub fn op_from_namespace_op(
     parents: &[[u8; 32]],
 ) -> Op {
     let payload = match &signed.op {
-        NamespaceOp::Root(root) => payload_from_root_op(root).unwrap_or(OpPayload::Noop),
+        NamespaceOp::Root(root) => {
+            payload_from_root_op(root, signed.signer).unwrap_or(OpPayload::Noop)
+        }
         NamespaceOp::Group { group_id, .. } => decrypted_group_op
-            .and_then(|g| group_membership_payload(g, ContextGroupId::from(*group_id)))
+            .and_then(|g| payload_from_group_op(ContextGroupId::from(*group_id), g))
             .unwrap_or(OpPayload::Noop),
     };
     build_op(
@@ -1038,10 +1011,10 @@ mod tests {
         reg.ingest_op(&remove);
         assert_eq!(reg.role_of(&ns_scope, &group, &member), None);
 
-        // A non-membership group op folds as a Noop node (still recorded).
+        // A truly out-of-model group op folds as a Noop node (still recorded).
         let other = op_from_namespace_op(
             &signed_group(ns, signer, group),
-            Some(&GroupOp::TransferOwnership { new_owner: member }),
+            Some(&GroupOp::Noop),
             [0xEF; 32],
             hlc(11),
             &[],
