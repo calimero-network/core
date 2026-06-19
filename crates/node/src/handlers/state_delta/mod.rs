@@ -958,32 +958,23 @@ pub async fn handle_state_delta(
                 group_id = ?group,
                 "cross-DAG check: author authorized at governance cut"
             );
-            // Record the (peer, identity) pair now that we know the signature
-            // verified AND the author is an authorized member at the named
-            // cut. Consumed by anchor-preferred sync peer selection; the group
-            // + role at the cut also write through to the durable
-            // `peer_identity_cache`. See `NodeState::peer_identities`.
-            node_state.observe_peer_identity(
-                source,
-                author_id,
-                Some(ObservedMembership {
-                    group_id: group,
-                    role,
-                }),
-            );
 
-            // Decision-site shadow (additive, acts on live): the unified-op
-            // projection — backfilled from persisted governance + maintained by
-            // the live feed — should also see this author as a member at the cut
-            // the live decision just authorized against. A disagreement is logged
-            // behind the divergence marker (watched in e2e); the live decision is
-            // unaffected. This is the projection's first reader at the auth
-            // boundary — the precursor to the cutover flip.
+            // CUTOVER FLIP (F4): the unified-op projection is now a load-bearing
+            // co-authorizer, not just a shadow. The live resolver authorized this
+            // delta; the projection must ALSO see the author as a member at the
+            // cut. If it does NOT, we now DENY (return) rather than merely log.
+            //
+            // Safety of acting here: this only ever ANDs with the live authorize
+            // — it can never grant a write live rejected (the unvalidated
+            // permissive direction), so it cannot over-authorize. It can only
+            // *additionally reject*, and forward divergence has been driven to
+            // zero across e2e; were the projection ever to wrongly deny, the
+            // dropped delta would fail an e2e convergence scenario AND trip the
+            // (hard) divergence gate — caught on this do-not-merge branch before
+            // any merge. `None` (projection can't form an answer, e.g. namespace
+            // unresolvable) defers to live's authorize.
             if let Some(gp) = governance_position.as_ref() {
                 let heads = &gp.governance_dag_heads;
-
-                // Forward shadow: the projection should ALSO see this author as a
-                // member at the cut the live decision just authorized against.
                 let projected =
                     projection_member_at_cut(&node_state, datastore, group, &author_id, heads);
                 if projected == Some(false) {
@@ -1014,10 +1005,25 @@ pub async fn handle_state_delta(
                         author_in_any,
                         decision_group_in_view,
                         decision_group_size,
-                        "projection sees non-member at the cut where the live decision authorized"
+                        "projection denied a write the live resolver authorized — rejecting (cutover gate)"
                     );
+                    return Ok(());
                 }
             }
+
+            // Both authorities concur (or the projection abstained). Record the
+            // (peer, identity) pair now that the signature verified AND the author
+            // is an authorized member at the named cut. Consumed by
+            // anchor-preferred sync peer selection; the group + role at the cut
+            // also write through to the durable `peer_identity_cache`.
+            node_state.observe_peer_identity(
+                source,
+                author_id,
+                Some(ObservedMembership {
+                    group_id: group,
+                    role,
+                }),
+            );
         }
         DeltaAuthOutcome::Reject(reason) => {
             // NOTE: no projection shadow on this path. Rejects are the

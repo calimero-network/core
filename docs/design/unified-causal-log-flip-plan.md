@@ -84,10 +84,27 @@ the divergence step stays **informational**; it flips back to a hard gate as the
 last step here.
 
 ## F4 — the flip (gated: do not merge until divergence==0 e2e)
-Replace `authorize_delta_at_edge` + `writers_at_authenticated` with the single
-`authorize(op, projection.acl_view_at(parents))` decision. Subsumes the #2763
-pull-side membership gate (a non-member's ops never authorize). Atomic within
-the slice — no window where two gates run with different outcomes.
+Once divergence reached zero across e2e (the hard gate), the flip lands in two
+sub-steps so the security boundary moves under continuous validation rather than
+in one leap.
+
+**F4a — projection as a load-bearing co-authorizer (DONE).** At the data-write
+edge's `Authorized` arm, the projection's `member_at_cut` must now CONCUR: a
+`Some(false)` DENIES the write (rejects) instead of merely logging the divergence
+marker. This only ANDs with the live authorize, so it can never grant a write
+live rejected (the still-unvalidated permissive direction) — it cannot
+over-authorize. It can only additionally reject, and with forward divergence at
+zero a wrong denial would both fail an e2e convergence scenario and trip the hard
+gate. `None` (no projection answer) defers to live. RwLock makes this a cheap
+concurrent read; the prior `Mutex` + an `if let`-scrutinee lock self-deadlocked
+(fixed).
+
+**F4b — sole authority (next).** Validate the inverse/permissive direction
+(projection authorizing where live rejects) with a reject-arm cross-check — now
+safe as a refresh-free RwLock read — and, once zero, replace
+`authorize_delta_at_edge` + `writers_at_authenticated` outright with
+`authorize(op, projection.acl_view_at(parents))` as the single decision. Subsumes
+the #2763 pull-side membership gate.
 
 ## F5 — delete the old folds (~3,500 LOC), after F4 soaks
 `rotation_log.rs`/`rotation_log_reader.rs`, `governance_dag.rs`,
