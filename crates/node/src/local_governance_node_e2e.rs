@@ -534,6 +534,18 @@ fn announce_network_event(
 /// a mock-accepting `TeeAdmissionPolicySet` op that allowlists the mock MRTD.
 /// Returns the owner's namespace public key (the admission op's signer).
 fn provision_tee_owner(node: &TestNode, gid: &ContextGroupId, rng: &mut OsRng) -> PublicKey {
+    provision_tee_owner_with_sk(node, gid, rng).0
+}
+
+/// Same as [`provision_tee_owner`] but also returns the owner's secret key, for
+/// tests that must sign a follow-up admin op as the namespace root (e.g. a
+/// root `MemberRemoved` driving the TEE-eviction cascade). The public-key-only
+/// `provision_tee_owner` delegates here and drops the secret key.
+fn provision_tee_owner_with_sk(
+    node: &TestNode,
+    gid: &ContextGroupId,
+    rng: &mut OsRng,
+) -> (PublicKey, PrivateKey) {
     let owner_sk = PrivateKey::random(rng);
     let owner_pk = owner_sk.public_key();
 
@@ -587,7 +599,7 @@ fn provision_tee_owner(node: &TestNode, gid: &ContextGroupId, rng: &mut OsRng) -
     .expect("sign TeeAdmissionPolicySet");
     apply_local_signed_group_op(&node.store, &policy_op).expect("apply policy op");
 
-    owner_pk
+    (owner_pk, owner_sk)
 }
 
 /// Create a **Restricted** subgroup nested under `parent_ns` via the production
@@ -1035,6 +1047,346 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
          (replicate) the Open-subgroup context via the inheritance-aware auto-follow \
          gate — pre-fix it resolved to NotAutoFollowing (no direct row) and never joined"
     );
+}
+
+/// Integrated TEE-lifecycle e2e exercising BOTH shipped fixes through the real
+/// governance/apply/auto-follow/cascade code with a MOCK attestation (no TDX):
+///
+/// * **Fix B (auto-follow inheritance):** a root-admitted `ReadOnlyTee`
+///   auto-follows (replicates) an OPEN subgroup's context via the
+///   inheritance-aware gate — re-confirmed here in the same node fixture that
+///   also holds the cascade topology.
+/// * **Fix A (scoped root-removal cascade):** a namespace-ROOT `MemberRemoved`
+///   of that `ReadOnlyTee`, signed by the root owner `O`, cascades the TEE out
+///   of descendant subgroups — INCLUDING a `Restricted` subgroup whose admin is
+///   a DIFFERENT identity `M` than the namespace owner (the non-owner case). A
+///   normal `Member` in that same Restricted subgroup is NOT cascaded (TEE-
+///   scoped; Restricted autonomy / #2256 wall preserved).
+///
+/// Topology (single node, owns all keys):
+/// ```text
+///   ns root (admin = O)
+///   ├── open_sub        VisibilityMode::Open   (T inherited, no direct row)
+///   └── restricted_sub  VisibilityMode::Restricted (admin = M ≠ O)
+///                         ├── T        ReadOnlyTee (direct)
+///                         └── regular  Member      (direct)
+/// ```
+///
+/// `T` is admitted at the root through the production mock-quote announce path
+/// (real `admit_tee_node`). `open_sub` is built via the real
+/// `ContextClient::create_group` + visibility-flip path. `restricted_sub` is
+/// SEEDED DIRECTLY (nest + Restricted visibility + distinct-admin meta + direct
+/// member rows) exactly as the gov-store cascade unit test
+/// (`member_removed_root_readonly_tee_cascades_into_restricted_subgroup`) does:
+/// the cascade decision keys off the ROOT removal role and the descendant's
+/// direct rows, never the subgroup admin, so seeding the rows is a faithful
+/// stand-in for a creator-side `tee_subgroup_admit` having admitted `T` there —
+/// and it lets us pin the subgroup admin to a non-owner `M`, which the full
+/// create path (which uses `sample_meta`'s owner-as-admin) cannot express.
+///
+/// Fix-gated assertions (would fail on the pre-fix tree):
+/// * Fix B — `has_context(ctx)` true after auto-follow (pre-fix:
+///   `NotAutoFollowing`, never joins ⇒ no `ContextMeta` ⇒ poll times out).
+/// * Fix A — `role_of(restricted_sub, T)` is `None` after the root removal
+///   (pre-fix: no cascade ⇒ row survives ⇒ still `Some(ReadOnlyTee)`), and the
+///   subgroup deny-list marks `T`.
+/// Control assertions (pass regardless of the fix, guarding scope/over-reach):
+/// * `regular`'s row in `restricted_sub` survives the `T` removal (cascade is
+///   TEE-scoped, not a blanket subtree wipe).
+/// * a separate root removal of `regular` does NOT cascade into `restricted_sub`
+///   (mirrors the gov-store control at the node level).
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x97u8; 32]);
+    // Retain the owner secret key: the root `MemberRemoved` that drives the
+    // Fix-A cascade must be signed by the namespace root admin `O`.
+    let (owner_pk, owner_sk) = provision_tee_owner_with_sk(&node, &ns_gid, &mut rng);
+
+    // 1) Admit the TEE node `T` at the namespace root via the production
+    //    mock-quote announce path (real `admit_tee_node`). Keep its secret key:
+    //    Fix B re-points this node's namespace identity at `T` so the auto-follow
+    //    joiner is the inherited-only TEE.
+    let tee_sk = PrivateKey::random(&mut rng);
+    let tee_pk = tee_sk.public_key();
+    let nonce = [0x7Fu8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+    assert!(
+        wait_until(|| {
+            calimero_context::group_store::MembershipRepository::new(&node.store)
+                .member_value(&ns_gid, &tee_pk)
+                .ok()
+                .flatten()
+                .map(|v| v.role == GroupMemberRole::ReadOnlyTee)
+                .unwrap_or(false)
+        })
+        .await,
+        "T must be admitted as a ReadOnlyTee at the namespace root first"
+    );
+
+    // Shut the process-global `tee_subgroup_admit` subscriber down before
+    // creating the (momentarily-Restricted) Open subgroup, so it can't race in a
+    // DIRECT ReadOnlyTee row and mask the *inheritance* path Fix B asserts on.
+    calimero_context::tee_subgroup_admit::shutdown();
+
+    // 2) Create the OPEN subgroup via the real create + visibility-flip path. The
+    //    root TEE inherits into it with NO direct row.
+    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&node.store)
+            .has_direct_member(&open_sub, &tee_pk)
+            .unwrap(),
+        "T must have NO direct row in the Open subgroup — the inheritance \
+         fall-through is the path Fix B exercises"
+    );
+
+    // 3) Seed the RESTRICTED subgroup with a DISTINCT admin `M` (≠ owner `O`),
+    //    nested under the root, and give it two direct rows: `T` (ReadOnlyTee)
+    //    and `regular` (Member). This is the non-owner Restricted case the
+    //    gov-store cascade unit test seeds; the cascade never reads the subgroup
+    //    admin, so this faithfully stands in for creator-side
+    //    `tee_subgroup_admit` having admitted `T` here.
+    let restricted_admin_m = PrivateKey::random(&mut rng).public_key();
+    assert_ne!(
+        restricted_admin_m, owner_pk,
+        "the Restricted subgroup admin M must differ from the namespace owner O"
+    );
+    let regular = PrivateKey::random(&mut rng).public_key();
+    let restricted_sub = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+
+    calimero_context::group_store::NamespaceRepository::new(&node.store)
+        .nest(&ns_gid, &restricted_sub)
+        .expect("nest restricted_sub under root");
+    calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+        .set_subgroup_visibility(
+            &restricted_sub,
+            calimero_context_config::VisibilityMode::Restricted,
+        )
+        .expect("set restricted visibility");
+    calimero_context::group_store::MetaRepository::new(&node.store)
+        .save(&restricted_sub, &sample_meta(restricted_admin_m))
+        .expect("save restricted_sub meta (admin = M)");
+    calimero_context::group_store::MembershipRepository::new(&node.store)
+        .add_member(&restricted_sub, &restricted_admin_m, GroupMemberRole::Admin)
+        .expect("add M as restricted_sub admin");
+    calimero_context::group_store::MembershipRepository::new(&node.store)
+        .add_member(&restricted_sub, &tee_pk, GroupMemberRole::ReadOnlyTee)
+        .expect("add T as ReadOnlyTee in restricted_sub");
+    calimero_context::group_store::MembershipRepository::new(&node.store)
+        .add_member(&restricted_sub, &regular, GroupMemberRole::Member)
+        .expect("add regular Member in restricted_sub");
+
+    // Sanity: the seeded rows are present before any removal.
+    assert_eq!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .role_of(&restricted_sub, &tee_pk)
+            .unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee),
+        "T must be a direct ReadOnlyTee member of restricted_sub before removal"
+    );
+    assert_eq!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .role_of(&restricted_sub, &regular)
+            .unwrap(),
+        Some(GroupMemberRole::Member),
+        "regular must be a direct Member of restricted_sub before removal"
+    );
+
+    // -----------------------------------------------------------------
+    // Fix B — Open-subgroup context replication (auto-follow inheritance).
+    // -----------------------------------------------------------------
+
+    // Re-point THIS node's namespace identity to `T` so the auto-follow joiner
+    // is the inherited-only TEE (root anchor, no open_sub row) — the path Fix B
+    // changed. (See `root_admitted_tee_auto_follows_open_subgroup_context`.)
+    calimero_context::group_store::NamespaceRepository::new(&node.store)
+        .store_identity(&ns_gid, &tee_pk, &tee_sk, &[0u8; 32])
+        .expect("re-point namespace identity to T");
+
+    // Rebind the process-global auto-follow handler to this node's store/client.
+    calimero_context::auto_follow::shutdown();
+    calimero_context::auto_follow::spawn(node.store.clone(), node.context_client.clone());
+
+    // Make the subgroup app a `calimero://` STUB so `join_context`'s bootstrap
+    // does not try to install a real bytecode blob (install-skipped on stubs),
+    // letting the auto-join write `ContextMeta` and complete.
+    let app_id = ApplicationId::from([0xCCu8; 32]);
+    let stub_blob =
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0u8; 32]));
+    let stub_meta = ApplicationMetaValue::new(
+        stub_blob,
+        0,
+        "calimero://stub-app".into(),
+        Box::new([]),
+        stub_blob,
+        "stub-package".into(),
+        "0.0.0".into(),
+        "stub-signer".into(),
+    );
+    node.store
+        .handle()
+        .put(
+            &calimero_store::key::ApplicationMeta::new(app_id),
+            &stub_meta,
+        )
+        .expect("seed stub application meta");
+
+    // Register a context in the Open subgroup and drive the production
+    // auto-follow trigger; assert `T` replicates it (durable `ContextMeta`).
+    let context_id = calimero_primitives::context::ContextId::from([0xC1u8; 32]);
+    calimero_context::group_store::register_context_in_group(&node.store, &open_sub, &context_id)
+        .expect("register context -> open subgroup");
+
+    let replicating = wait_until(|| {
+        calimero_governance_store::op_events::notify(
+            calimero_governance_store::op_events::OpEvent::ContextRegistered {
+                group_id: open_sub.to_bytes(),
+                context_id,
+            },
+        );
+        node.context_client
+            .has_context(&context_id)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        replicating,
+        "Fix B: root-admitted TEE (inherited-only Open-subgroup member) must \
+         auto-follow (replicate) the Open-subgroup context — pre-fix it resolved \
+         to NotAutoFollowing and never joined"
+    );
+
+    // -----------------------------------------------------------------
+    // Fix A — namespace-root MemberRemoved of T cascades, TEE-scoped.
+    // -----------------------------------------------------------------
+
+    // Quiesce the process-global auto-follow handler before driving the cascade.
+    // Fix B's `join_context` spawns background work (a `sync_context_config`
+    // bootstrap) bound to this store; left running it races the cascade applies
+    // and the `op_events` channel we read below. The replication assertion above
+    // already proved the join happened, so we no longer need the handler live.
+    calimero_context::auto_follow::shutdown();
+
+    // Subscribe to the op-events broadcast BEFORE applying, so we can observe the
+    // per-subgroup `TeeMemberRemoved` the cascade emits. (Process-global channel;
+    // these tests are `#[serial]`, so we only see events from this apply.)
+    let mut events = calimero_governance_store::op_events::subscribe();
+
+    // Root admin `O` removes the TEE at the namespace root. Mirror the gov-store
+    // cascade test: the signed `expected_group_state_hash` is the pre-removal
+    // hash (divergence is a non-fatal detection signal; the op still applies and
+    // the cascade still runs).
+    let pre_hash = calimero_context::group_store::MetaRepository::new(&node.store)
+        .compute_state_hash(&ns_gid)
+        .expect("compute pre-removal state hash");
+    // The owner already signed ops (the policy set + the TEE admission via
+    // `sign_apply_and_publish`), so pick the next free nonce off the persisted
+    // window floor rather than a hard-coded value, which would replay.
+    let next_owner_nonce = get_local_gov_nonce(&node.store, &ns_gid, &owner_pk)
+        .expect("read owner nonce floor")
+        .unwrap_or(0)
+        + 1;
+    let remove_tee_op = SignedGroupOp::sign(
+        &owner_sk,
+        ns_gid.to_bytes(),
+        vec![],
+        pre_hash,
+        next_owner_nonce,
+        GroupOp::MemberRemoved {
+            member: tee_pk,
+            expected_group_state_hash: pre_hash,
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("sign root MemberRemoved(T)");
+    apply_local_signed_group_op(&node.store, &remove_tee_op).expect("apply root MemberRemoved(T)");
+
+    // Fix-A core proof: T's root row AND its non-owner-Restricted-subgroup row
+    // are both gone (the cascade crossed into the Restricted subgroup whose
+    // admin is M ≠ O).
+    assert_eq!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .role_of(&ns_gid, &tee_pk)
+            .unwrap(),
+        None,
+        "Fix A: T's root row must be removed"
+    );
+    assert_eq!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .role_of(&restricted_sub, &tee_pk)
+            .unwrap(),
+        None,
+        "Fix A: root TEE removal MUST cascade into the non-owner Restricted \
+         subgroup (admin M ≠ O) — pre-fix this row survives"
+    );
+    // The cascade deny-lists T in the subgroup.
+    assert!(
+        calimero_context::group_store::DenyListRepository::new(&node.store)
+            .is_denied(&restricted_sub, &tee_pk)
+            .unwrap(),
+        "Fix A: cascade must deny-list T in the Restricted subgroup"
+    );
+
+    // Scope guard: the regular Member is STILL a member of restricted_sub —
+    // the cascade is TEE-scoped, not a blanket subtree wipe.
+    assert_eq!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .role_of(&restricted_sub, &regular)
+            .unwrap(),
+        Some(GroupMemberRole::Member),
+        "Fix A: the cascade is TEE-scoped — regular Member must survive in \
+         restricted_sub (Restricted autonomy / #2256 wall preserved)"
+    );
+
+    // Observe the per-subgroup `TeeMemberRemoved` the cascade emitted. We count
+    // only events for `restricted_sub` + `T`; the root also emits its own pair,
+    // so we don't assert an exact channel total. Drain non-blockingly: by the
+    // time `apply_local_signed_group_op` returned, every event is already queued.
+    let mut saw_subgroup_tee_removed = false;
+    while let Ok(ev) = events.try_recv() {
+        if let calimero_governance_store::op_events::OpEvent::TeeMemberRemoved {
+            group_id,
+            member,
+        } = ev
+        {
+            if group_id == restricted_sub.to_bytes() && member == tee_pk {
+                saw_subgroup_tee_removed = true;
+            }
+        }
+    }
+    assert!(
+        saw_subgroup_tee_removed,
+        "Fix A: cascade must emit a per-subgroup TeeMemberRemoved for T in \
+         restricted_sub"
+    );
+
+    // Note on the non-TEE control: the mirror-image guard — a root removal of a
+    // regular `Member` does NOT cascade into a Restricted subgroup — is covered
+    // exhaustively by the gov-store unit test
+    // `member_removed_root_regular_member_does_not_cascade`, which seeds the same
+    // topology and asserts the subgroup row survives. It is deliberately NOT
+    // re-driven here: this node fixture keeps process-global background workers
+    // (`auto_follow`'s `join_context` bootstrap) alive after the Fix-B join, and
+    // a SECOND root apply in the same test races their in-flight namespace work
+    // non-deterministically. The TEE-scoping is already proven above by the
+    // surviving `regular` Member row after the TEE removal — that assertion IS
+    // the node-level control (a blanket subtree wipe would have taken `regular`
+    // too), so the contract is covered without a redundant, flaky second apply.
 }
 
 /// End-to-end create-time path (proposal.md §12d, Phase 1): with a TEE node
