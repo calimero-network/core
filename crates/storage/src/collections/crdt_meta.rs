@@ -170,6 +170,9 @@ impl From<crate::collections::error::StoreError> for MergeError {
 /// Trait for CRDTs that can be decomposed into field entries
 ///
 /// Used for structured storage of nested CRDTs.
+/// A flat list of decomposed `(key, value)` field entries.
+pub type DecomposedEntries<K, V> = Vec<(K, V)>;
+
 pub trait Decomposable {
     /// The key type for decomposed entries
     type Key: AsRef<[u8]> + BorshSerialize + BorshDeserialize;
@@ -181,14 +184,16 @@ pub trait Decomposable {
     /// # Errors
     ///
     /// Returns error if decomposition fails
-    fn decompose(&self) -> Result<Vec<(Self::Key, Self::Value)>, DecomposeError>;
+    fn decompose(&self) -> Result<DecomposedEntries<Self::Key, Self::Value>, DecomposeError>;
 
     /// Reconstruct from field entries
     ///
     /// # Errors
     ///
     /// Returns error if reconstruction fails
-    fn recompose(entries: Vec<(Self::Key, Self::Value)>) -> Result<Self, DecomposeError>
+    fn recompose(
+        entries: DecomposedEntries<Self::Key, Self::Value>,
+    ) -> Result<Self, DecomposeError>
     where
         Self: Sized;
 }

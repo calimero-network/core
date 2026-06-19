@@ -1545,6 +1545,13 @@ mod tests {
 
     /// Run the `#[app::state]` input validation (which includes the
     /// borsh-attribute guard) over `item`, returning whether it was accepted.
+    // The `accepted` binding ends the `StateImpl` borrow of `args` at the `;`,
+    // before `args` is dropped; folding it into the tail expression (as
+    // `let_and_return` suggests) extends that borrow and fails to compile.
+    #[allow(
+        clippy::let_and_return,
+        reason = "binding ends the borrow of `args` before drop"
+    )]
     fn state_accepts(item: StructOrEnumItem) -> bool {
         let args = StateArgs {
             emits: None,

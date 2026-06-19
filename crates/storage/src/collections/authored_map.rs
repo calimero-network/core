@@ -232,6 +232,15 @@ where
         self.inner.len()
     }
 
+    /// Returns `true` if there are no entries.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
+    }
+
     /// Returns the entry's stamped `schema_version`, or `None` if the key is
     /// absent or the entry was never stamped (legacy). Reads the Merkle-invisible
     /// `Metadata.schema_version`; used to skip already-migrated entries.

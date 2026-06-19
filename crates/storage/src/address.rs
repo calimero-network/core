@@ -65,7 +65,6 @@ impl Id {
 }
 
 impl Display for Id {
-    #[expect(clippy::use_debug, reason = "fine for now")]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", hex::encode(self.bytes))
     }

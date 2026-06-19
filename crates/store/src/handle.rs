@@ -67,10 +67,6 @@ impl<L: ReadLayer> Handle<L> {
     /// The iterator sees a frozen point-in-time view of the database,
     /// unaffected by concurrent writes. Essential for operations that
     /// need to iterate over consistent state (e.g., snapshot generation).
-    #[expect(
-        clippy::iter_not_returning_iterator,
-        reason = "TODO: This should be implemented"
-    )]
     #[expect(clippy::type_complexity, reason = "Acceptable here")]
     pub fn iter_snapshot<E: Entry<Key: FromKeyParts>>(
         &self,

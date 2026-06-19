@@ -14,7 +14,7 @@ pub enum SelfType<'a> {
 
 pub enum LogicArg<'a> {
     Receiver(SelfType<'a>),
-    Typed(LogicArgTyped<'a>),
+    Typed(Box<LogicArgTyped<'a>>),
 }
 
 pub struct LogicArgTyped<'a> {
@@ -102,10 +102,10 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
 
                 errors.check()?;
 
-                Ok(LogicArg::Typed(LogicArgTyped {
+                Ok(LogicArg::Typed(Box::new(LogicArgTyped {
                     ident: &ident.ident,
                     ty,
-                }))
+                })))
             }
         }
     }

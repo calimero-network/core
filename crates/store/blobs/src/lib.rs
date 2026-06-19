@@ -316,10 +316,6 @@ impl Blob {
             return Ok(None);
         };
 
-        #[expect(
-            clippy::semicolon_if_nothing_returned,
-            reason = "False positive; not possible with macro"
-        )]
         let stream = Box::pin(try_stream!({
             let mut chunk_index: u64 = 0;
             trace!(
@@ -380,7 +376,6 @@ impl Debug for Blob {
 }
 
 #[derive(Debug, ThisError)]
-#[expect(variant_size_differences, reason = "Doesn't matter here")]
 #[non_exhaustive]
 pub enum BlobError {
     #[error("encountered a dangling Blob ID: `{id}`, the blob store may be corrupt")]

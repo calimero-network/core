@@ -274,6 +274,15 @@ where
         self.inner.len()
     }
 
+    /// Returns `true` if there are no entries.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
+    }
+
     /// Get the value for a key in the set.
     ///
     /// # Errors

@@ -85,7 +85,6 @@ impl MigrateMyEntriesSummary {
 ///
 /// * `Some(Vec<u8>)` - The raw serialized state bytes (user data only) if state exists
 /// * `None` - If no state has been stored yet
-
 #[must_use]
 pub fn read_raw() -> Option<Vec<u8>> {
     let root_key = root_storage_key();

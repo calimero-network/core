@@ -93,6 +93,11 @@ macro_rules! wasm_imports {
                 }
             } else {
                 $(
+                    /// # Safety
+                    ///
+                    /// Host-import stub: on non-wasm32 targets calling it always
+                    /// panics; on wasm32 the caller must uphold the host ABI contract
+                    /// for this import.
                     #[allow(unused_variables, reason = "Needed due to macro expansion")]
                     pub unsafe fn $func_name($($arg: $arg_ty),*) $(-> $returns)? {
                         panic!("host function `{}` is only available when compiled for wasm32", stringify!($func_name));

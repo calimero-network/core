@@ -127,7 +127,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
                     type_: &type_,
                     item: method,
                 }) {
-                    Ok(LogicMethod::Public(method)) => methods.push(method),
+                    Ok(LogicMethod::Public(method)) => methods.push(*method),
                     Ok(LogicMethod::Private) => {}
                     Err(err) => errors.combine(&err),
                 }

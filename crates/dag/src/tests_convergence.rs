@@ -154,30 +154,17 @@ enum CrdtOperation {
 /// Applier that simulates CRDT merge behavior
 struct CrdtApplier {
     state: Arc<Mutex<CrdtState>>,
-    applied_order: Arc<Mutex<Vec<[u8; 32]>>>,
-    /// For tracking which deltas were merges vs sequential
-    merge_deltas: Arc<Mutex<Vec<[u8; 32]>>>,
 }
 
 impl CrdtApplier {
     fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(CrdtState::new())),
-            applied_order: Arc::new(Mutex::new(Vec::new())),
-            merge_deltas: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     async fn get_state(&self) -> CrdtState {
         self.state.lock().await.clone()
-    }
-
-    async fn get_applied_order(&self) -> Vec<[u8; 32]> {
-        self.applied_order.lock().await.clone()
-    }
-
-    async fn get_merge_deltas(&self) -> Vec<[u8; 32]> {
-        self.merge_deltas.lock().await.clone()
     }
 }
 
@@ -198,7 +185,6 @@ impl DeltaApplier<CrdtOperation> for CrdtApplier {
             }
         }
 
-        self.applied_order.lock().await.push(delta.id);
         Ok(())
     }
 }

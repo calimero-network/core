@@ -121,7 +121,7 @@ use crate::state::AppState;
     message = "(calimero)> `{Self}` is not an app event",
     label = "not an `#[app::event]` type",
     note = "only an enum annotated with `#[app::event]` can be emitted. Define one and emit a \
-            variant: `#[app::event] pub enum Event { Something }` then `app::emit!(Event::Something)`."
+            variant: `#[app::event] pub enum Event {{ Something }}` then `app::emit!(Event::Something)`."
 )]
 pub trait AppEvent {
     /// Returns the event kind/type as a string.
@@ -297,7 +297,7 @@ use reflect::Reflect;
     message = "(calimero)> `{Self}` cannot be emitted — it is not an app event",
     label = "not an `#[app::event]` type",
     note = "`app::emit!(...)` only accepts an enum annotated with `#[app::event]`. \
-            Define `#[app::event] pub enum Event { ... }` and emit one of its variants."
+            Define `#[app::event] pub enum Event {{ ... }}` and emit one of its variants."
 )]
 pub trait AppEventExt: AppEvent + Reflect {
     // todo! experiment with &dyn AppEventExt downcast_ref to &Self

@@ -910,14 +910,12 @@ mod user_storage_signature_verification {
         } = action
         {
             if let StorageType::User {
-                ref mut signature_data,
+                signature_data: Some(ref mut sig_data),
                 ..
             } = metadata.storage_type
             {
-                if let Some(ref mut sig_data) = signature_data {
-                    sig_data.signature[0] ^= 0xFF; // Flip bits
-                    sig_data.signature[31] ^= 0xFF;
-                }
+                sig_data.signature[0] ^= 0xFF; // Flip bits
+                sig_data.signature[31] ^= 0xFF;
             }
         }
 

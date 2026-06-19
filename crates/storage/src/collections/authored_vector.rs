@@ -222,6 +222,15 @@ where
         self.inner.len()
     }
 
+    /// Returns `true` if there are no entries.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
+    }
+
     #[cfg(test)]
     pub(crate) fn entry_id_at(
         &self,

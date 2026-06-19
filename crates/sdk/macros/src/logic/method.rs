@@ -12,7 +12,7 @@ use crate::logic::ty::{LogicTy, LogicTyInput};
 use crate::reserved::{idents, lifetimes};
 
 pub enum LogicMethod<'a> {
-    Public(PublicLogicMethod<'a>),
+    Public(Box<PublicLogicMethod<'a>>),
     Private,
 }
 
@@ -523,7 +523,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                     (LogicArg::Receiver(_), Some(_)) => { /* handled by rustc */ }
                     (LogicArg::Typed(arg), _) => {
                         has_refs |= arg.ty.ref_;
-                        args.push(arg);
+                        args.push(*arg);
                     }
                 },
                 Err(err) => errors.combine(&err),
@@ -585,7 +585,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
 
         errors.check()?;
 
-        Ok(LogicMethod::Public(PublicLogicMethod {
+        Ok(LogicMethod::Public(Box::new(PublicLogicMethod {
             name,
             self_: input.type_.clone(),
             self_type,
@@ -593,7 +593,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             ret,
             has_refs,
             modifiers,
-        }))
+        })))
     }
 }
 

@@ -449,47 +449,39 @@ mod tests {
 
         assert!(
             expanded.contains("extern \"C\""),
-            "expected WASM extern \"C\" export in expansion: {}",
-            expanded
+            "expected WASM extern \"C\" export in expansion: {expanded}",
         );
         assert!(
             expanded.contains("value_return"),
-            "expected value_return call in expansion: {}",
-            expanded
+            "expected value_return call in expansion: {expanded}",
         );
         assert!(
             expanded.contains("__migration_logic"),
-            "expected inner __migration_logic in expansion: {}",
-            expanded
+            "expected inner __migration_logic in expansion: {expanded}",
         );
         assert!(
             expanded.contains("no_mangle"),
-            "expected #[no_mangle] in expansion: {}",
-            expanded
+            "expected #[no_mangle] in expansion: {expanded}",
         );
         assert!(
             expanded.contains("event :: register"),
-            "expected event::register call in expansion: {}",
-            expanded
+            "expected event::register call in expansion: {expanded}",
         );
         assert!(
             expanded.contains("register_schema_version"),
             "expected app::register_schema_version call in expansion (PR-6c: migrate must \
              register the new state's SCHEMA_VERSION so app::schema_version() reflects the \
-             migrated target on a real node, not the unversioned 0): {}",
-            expanded
+             migrated target on a real node, not the unversioned 0): {expanded}",
         );
         assert!(
             expanded.contains("__assign_deterministic_ids"),
             "expected __assign_deterministic_ids call in expansion (CIP I9 cross-node \
-             determinism for migrate-created collections): {}",
-            expanded
+             determinism for migrate-created collections): {expanded}",
         );
         assert!(
             expanded.contains("with_merge_mode"),
             "expected with_merge_mode wrap in expansion (CIP I9 cross-node determinism: \
-             suppresses LwwRegister/Element node-local timestamps during migrate): {}",
-            expanded
+             suppresses LwwRegister/Element node-local timestamps during migrate): {expanded}",
         );
     }
 
@@ -504,33 +496,27 @@ mod tests {
 
         assert!(
             out.contains("extern \"C\""),
-            "expected WASM extern \"C\" export in expansion: {}",
-            out
+            "expected WASM extern \"C\" export in expansion: {out}",
         );
         assert!(
             out.contains("__calimero_migration_check"),
-            "expected #[no_mangle] __calimero_migration_check export name in expansion: {}",
-            out
+            "expected #[no_mangle] __calimero_migration_check export name in expansion: {out}",
         );
         assert!(
             out.contains("read_raw"),
-            "expected read_raw() to load the old v1 root in expansion: {}",
-            out
+            "expected read_raw() to load the old v1 root in expansion: {out}",
         );
         assert!(
             out.contains("input"),
-            "expected env::input() to load the produced v2 root bytes in expansion: {}",
-            out
+            "expected env::input() to load the produced v2 root bytes in expansion: {out}",
         );
         assert!(
             out.contains("value_return"),
-            "expected value_return of the borsh Ok::<bool, _> result in expansion: {}",
-            out
+            "expected value_return of the borsh Ok::<bool, _> result in expansion: {out}",
         );
         assert!(
             out.contains("no_mangle"),
-            "expected #[no_mangle] in expansion: {}",
-            out
+            "expected #[no_mangle] in expansion: {out}",
         );
     }
 
@@ -545,14 +531,12 @@ mod tests {
 
         assert!(
             out.contains("my_check"),
-            "expected function name in expansion: {}",
-            out
+            "expected function name in expansion: {out}",
         );
         assert!(
             out.contains("not (target_arch = \"wasm32\")")
                 || out.contains("not(target_arch = \"wasm32\")"),
-            "expected native cfg stub in expansion: {}",
-            out
+            "expected native cfg stub in expansion: {out}",
         );
     }
 
@@ -568,14 +552,12 @@ mod tests {
 
         assert!(
             expanded.contains("my_migrate"),
-            "expected function name in expansion: {}",
-            expanded
+            "expected function name in expansion: {expanded}",
         );
         assert!(
             expanded.contains("not (target_arch = \"wasm32\")")
                 || expanded.contains("not(target_arch = \"wasm32\")"),
-            "expected native cfg stub in expansion: {}",
-            expanded
+            "expected native cfg stub in expansion: {expanded}",
         );
     }
 
@@ -590,19 +572,16 @@ mod tests {
 
         assert!(
             expanded.contains("emit_migration_witness"),
-            "tuple return must emit the transient witness: {}",
-            expanded
+            "tuple return must emit the transient witness: {expanded}",
         );
         // Registration uses the FIRST tuple element (the new state type), not the tuple.
         assert!(
             expanded.contains("register :: < V2 >"),
-            "event/schema registration must target the state type V2: {}",
-            expanded
+            "event/schema registration must target the state type V2: {expanded}",
         );
         assert!(
             expanded.contains("__assign_deterministic_ids"),
-            "state still gets deterministic ids under merge mode: {}",
-            expanded
+            "state still gets deterministic ids under merge mode: {expanded}",
         );
     }
 
@@ -615,13 +594,11 @@ mod tests {
 
         assert!(
             !expanded.contains("emit_migration_witness"),
-            "a non-tuple return must NOT emit a witness: {}",
-            expanded
+            "a non-tuple return must NOT emit a witness: {expanded}",
         );
         assert!(
             expanded.contains("value_return"),
-            "single return still produces the committed state via value_return: {}",
-            expanded
+            "single return still produces the committed state via value_return: {expanded}",
         );
     }
 
@@ -637,14 +614,12 @@ mod tests {
         // Input is decoded as the (new_bytes, Option<witness_bytes>) tuple.
         assert!(
             expanded.contains("__witness_opt"),
-            "check input must be decoded as a (new, witness) tuple: {}",
-            expanded
+            "check input must be decoded as a (new, witness) tuple: {expanded}",
         );
         // The witness param is bound (panics if the migrate emitted none).
         assert!(
             expanded.contains("declares a witness parameter"),
-            "3-arg check must bind the witness and guard its absence: {}",
-            expanded
+            "3-arg check must bind the witness and guard its absence: {expanded}",
         );
     }
 
@@ -657,19 +632,16 @@ mod tests {
 
         assert!(
             !expanded.contains("compile_error"),
-            "the 2-arg form must remain valid: {}",
-            expanded
+            "the 2-arg form must remain valid: {expanded}",
         );
         // Still decodes the tuple input shape (the witness slot is simply ignored).
         assert!(
             expanded.contains("__witness_opt"),
-            "2-arg check still decodes the repacked tuple input: {}",
-            expanded
+            "2-arg check still decodes the repacked tuple input: {expanded}",
         );
         assert!(
             !expanded.contains("declares a witness parameter"),
-            "2-arg check must NOT bind a witness parameter: {}",
-            expanded
+            "2-arg check must NOT bind a witness parameter: {expanded}",
         );
     }
 }

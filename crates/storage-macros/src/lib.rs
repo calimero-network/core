@@ -77,14 +77,9 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 /// # See also
 ///
 /// * [`Collection`] - For defining a collection of child elements, for use with
-///                    [`AtomicUnit`] (the parent and children are all atomic
-///                    units, with the collection being the grouping mechanism
-///                    at field level on the parent).
+///   [`AtomicUnit`] (the parent and children are all atomic units, with the
+///   collection being the grouping mechanism at field level on the parent).
 ///
-#[expect(
-    clippy::too_many_lines,
-    reason = "Okay for now - will be restructured later"
-)]
 #[proc_macro_derive(AtomicUnit, attributes(collection, storage))]
 pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(input as DeriveInput);
@@ -215,8 +210,8 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 /// # See also
 ///
 /// * [`AtomicUnit`] - For defining a single atomic unit of data that either
-///                    stands alone, or owns one or more collections, or is a
-///                    child in a collection.
+///   stands alone, or owns one or more collections, or is a child in a
+///   collection.
 #[proc_macro_derive(Collection, attributes(children))]
 pub fn collection_derive(input: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(input as DeriveInput);

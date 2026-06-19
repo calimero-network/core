@@ -292,7 +292,6 @@ where
     ///
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this map
-    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
     pub fn reassign_deterministic_id(&mut self, field_name: &str)
     where
         K: AsRef<[u8]> + PartialEq + 'static,
@@ -421,6 +420,15 @@ where
         self.inner.len()
     }
 
+    /// Returns `true` if there are no entries.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
+    }
+
     /// Get the value for a key in the map.
     ///
     /// Returns a read-only [`ValueRef`] guard (an owned, deserialized copy that
@@ -498,7 +506,7 @@ where
                 .get_mut(id)?
                 .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
 
-            Ok(Entry::Occupied(OccupiedEntry { entry_mut }))
+            Ok(Entry::Occupied(Box::new(OccupiedEntry { entry_mut })))
         } else {
             // 3. If it doesn't exist, no `EntryMut` was created.
             Ok(Entry::Vacant(VacantEntry { map: self, key }))
@@ -787,7 +795,7 @@ where
     S: StorageAdaptor,
 {
     /// An occupied entry.
-    Occupied(OccupiedEntry<'a, K, V, S>),
+    Occupied(Box<OccupiedEntry<'a, K, V, S>>),
     /// A vacant entry.
     Vacant(VacantEntry<'a, K, V, S>),
 }

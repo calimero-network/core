@@ -244,7 +244,7 @@ impl Mergeable for ReplicatedGrowableArray {
             // re-insert, corrupting the array. A genuine absence is `Ok(None)`.
             if self.chars.get(&key)?.is_none() {
                 // Character exists in other but not in self - add it
-                drop(self.chars.insert(key, char_data)?);
+                let _ = self.chars.insert(key, char_data)?;
             }
             // If character exists in both, keep ours (they should be identical anyway,
             // since characters are immutable once inserted)
