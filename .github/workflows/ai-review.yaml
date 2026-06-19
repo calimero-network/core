@@ -56,9 +56,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Tracks calimero-network/ai-code-reviewer @master so reviews always run the
-      # latest doc-update pipeline. Both repos are first-party. If you need a review
-      # gate before upstream changes run with this repo's secrets, pin to a SHA here.
+      # Tracks ai-code-reviewer @master (pin a SHA here for a deliberate review gate).
       - name: Install ai-code-reviewer
         run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@master
 

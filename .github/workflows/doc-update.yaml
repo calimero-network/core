@@ -55,8 +55,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Tracks @master (same as ai-review.yaml) so both workflows install the
-      # latest ai-code-reviewer. Pin to a SHA here if you need a review gate.
+      # Tracks ai-code-reviewer @master (pin a SHA here for a review gate).
       - name: Install ai-code-reviewer
         run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@master
 
