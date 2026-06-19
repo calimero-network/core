@@ -193,6 +193,13 @@ pub(crate) fn apply(
     // claim on every honest receiver. The pre-apply
     // simulation only models the single removal; any extra
     // mutation here is invisible to it.
+    //
+    // The ReadOnlyTee cascade loop above is hash-neutral for
+    // THIS check for two reasons: it touches only DESCENDANT
+    // groups (`compute_group_state_hash` for `group_id` scans
+    // only `group_id`-keyed rows, so other groups' `GroupMember`
+    // writes are out of scope), and the `*sub == *group_id`
+    // guard keeps the root itself out of that loop.
     ctx.divergence = verify_post_apply_state_hashes(
         store,
         group_id,
