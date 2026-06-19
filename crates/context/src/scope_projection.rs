@@ -301,6 +301,18 @@ impl ScopeProjections {
         Some(ScopeState::acl_view_at(log, parents))
     }
 
+    /// Is the full causal ancestry of `parents` folded in `scope`'s log (no
+    /// truncation)? `false` if the scope is unfed or any ancestor is missing.
+    /// The authoritative-grant gate (see [`member_at_cut_authoritative`]).
+    ///
+    /// [`member_at_cut_authoritative`]: Self::member_at_cut_authoritative
+    #[must_use]
+    pub fn cut_ancestry_complete(&self, scope: &ScopeId, parents: &[[u8; 32]]) -> bool {
+        self.logs
+            .get(scope)
+            .is_some_and(|log| ScopeState::cut_ancestry_complete(log, parents))
+    }
+
     /// Rebuild this namespace's governance scopes from **persisted** source
     /// state — the startup/backfill path, so a just-restarted node's projection
     /// isn't empty (an empty projection can't be authoritative). The projection
@@ -581,13 +593,14 @@ impl ScopeProjections {
             .to_bytes();
         let scope = ScopeId::from(namespace_id);
 
-        // Require the COMPLETE cited ancestry to be folded: every head must be in
-        // this scope's log. If any is missing, the at-cut walk would resolve over
-        // a truncated ancestry (possibly missing a removal) — not authoritative,
-        // so we abstain (`None`) and defer to live's reject rather than risk an
-        // over-grant.
-        let seen = self.seen.get(&scope)?;
-        if !heads.iter().all(|h| seen.contains(h)) {
+        // Require the COMPLETE cited ANCESTRY to be folded — not merely the heads.
+        // `acl_view_at` silently truncates at a missing mid-ancestry op, which
+        // would leave a since-removed member still folded as present (the
+        // over-grant in group-remove-from-root-revokes-inherited: the root-removal
+        // op was absent from the log, so the inherited walk still saw the member
+        // in the root). If the ancestry isn't whole, abstain (`None`) and defer to
+        // live's reject rather than grant on a truncated, possibly-stale view.
+        if !self.cut_ancestry_complete(&scope, heads) {
             return None;
         }
 

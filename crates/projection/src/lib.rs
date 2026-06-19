@@ -355,6 +355,32 @@ impl ScopeState {
         state.acl_view()
     }
 
+    /// Is the **complete** causal ancestry of `parents` present in `log` — i.e.
+    /// does the walk reach every referenced op without truncating at a missing
+    /// one? `acl_view_at` silently skips a missing ancestor (correct for a
+    /// legitimately out-of-slice cross-scope edge, but a *same-scope* gap yields
+    /// a truncated, possibly-stale view). The **authoritative grant** path must
+    /// not override live's reject on a truncated view: a missing mid-ancestry
+    /// removal would leave a since-removed member still folded as present. This
+    /// returns `false` the moment any referenced id is absent from `log`, so the
+    /// grant can abstain (defer to live) unless it has the whole history.
+    #[must_use]
+    pub fn cut_ancestry_complete(log: &[Op], parents: &[[u8; 32]]) -> bool {
+        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id, op)).collect();
+        let mut visited: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id) {
+                continue;
+            }
+            match by_id.get(&id) {
+                Some(op) => queue.extend(op.parents.iter().copied()),
+                None => return false,
+            }
+        }
+        true
+    }
+
     /// The single convergence root over the whole projection (values + ACL +
     /// groups). See [`calimero_op::scope_root`].
     #[must_use]
@@ -848,6 +874,52 @@ mod tests {
             None,
             "the remove cut drops the member"
         );
+    }
+
+    #[test]
+    fn cut_ancestry_complete_detects_a_missing_mid_ancestry_op() {
+        // add → remove chain; the cut cites `remove`. With both folded the
+        // ancestry is complete; drop the mid-ancestry `add` (parent of `remove`)
+        // and the walk truncates → incomplete. This is the over-grant guard: a
+        // missing removal in the middle must NOT pass as an authoritative grant.
+        let group = ContextGroupId::from([3u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+        let scope = ScopeId::from([0u8; 32]);
+        let author = PublicKey::from([1u8; 32]);
+        let zero = hlc(0);
+        let mk = |parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
+            let id = Op::compute_id(scope, &parents, &author, &zero, &payload);
+            Op {
+                id,
+                scope,
+                parents,
+                author,
+                hlc: zero,
+                payload,
+                expected_scope_root: [0u8; 32],
+                signature: [0u8; 64],
+            }
+        };
+        let add = mk(
+            vec![],
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Member,
+            },
+        );
+        let remove = mk(vec![add.id], OpPayload::MemberRemoved { group, member });
+
+        // Complete log: ancestry of [remove] = {remove, add}, both present.
+        let complete = vec![add.clone(), remove.clone()];
+        assert!(ScopeState::cut_ancestry_complete(&complete, &[remove.id]));
+
+        // Missing the mid-ancestry `add` (remove's parent) → truncated → false.
+        let truncated = vec![remove.clone()];
+        assert!(!ScopeState::cut_ancestry_complete(&truncated, &[remove.id]));
+
+        // A cited head absent from the log → also incomplete.
+        assert!(!ScopeState::cut_ancestry_complete(&[], &[remove.id]));
     }
 
     #[test]
