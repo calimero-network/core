@@ -122,6 +122,7 @@ pub(crate) struct ReplayBufferedDeltaInput {
 /// 4. Requests missing parents if needed
 /// 5. Executes event handlers
 /// 6. Re-emits events to WebSocket clients
+///
 /// Apply path for an authorized state delta — runs the snapshot-sync buffer
 /// check, decryption, DAG insert, handler execution, and heartbeat broadcast.
 ///
@@ -1018,6 +1019,10 @@ pub async fn handle_state_delta(
 /// child's stored events along in its `AddDeltaResult`; callers *must* run
 /// `execute_cascaded_events` on the returned list, otherwise handler execution
 /// for cascaded children silently never happens.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args on a consensus sync/handler path; no cohesive grouping"
+)]
 async fn request_missing_deltas(
     network_client: calimero_network_primitives::client::NetworkClient,
     sync_timeout: std::time::Duration,

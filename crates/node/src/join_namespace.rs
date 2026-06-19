@@ -405,6 +405,10 @@ pub async fn await_namespace_ready(
 ///
 /// Callers who want fine-grained control should call `join_namespace`
 /// and `await_namespace_ready` directly.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args on a consensus sync/handler path; no cohesive grouping"
+)]
 pub async fn join_and_wait_ready(
     store: &Store,
     node_client: &NodeClient,

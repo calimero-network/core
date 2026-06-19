@@ -1119,14 +1119,16 @@ mod tests {
 
     #[test]
     fn test_stats_tracking() {
-        let mut stats = LevelWiseStats::default();
-        stats.levels_synced = 2;
-        stats.nodes_compared = 100;
-        stats.entities_merged = 25;
-        stats.nodes_skipped = 75;
-        stats.max_nodes_per_level = 50;
-        stats.requests_sent = 3;
-        stats.root_hash_verified = true;
+        let stats = LevelWiseStats {
+            levels_synced: 2,
+            nodes_compared: 100,
+            entities_merged: 25,
+            nodes_skipped: 75,
+            max_nodes_per_level: 50,
+            requests_sent: 3,
+            root_hash_verified: true,
+            ..Default::default()
+        };
 
         assert_eq!(stats.levels_synced, 2);
         assert_eq!(stats.nodes_compared, 100);

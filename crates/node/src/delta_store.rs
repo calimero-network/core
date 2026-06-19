@@ -35,6 +35,9 @@ use tracing::{debug, info, warn};
 
 use crate::sync::rotation_log_reader;
 
+/// Shared, swappable parent-topology map keyed by delta id.
+type TopologyHandle = Arc<RwLock<Arc<IndexMap<[u8; 32], Vec<[u8; 32]>>>>>;
+
 /// Maximum entries in the applier-local topology mirror. Exceeding this
 /// triggers oldest-first eviction (insertion-ordered via `IndexMap`)
 /// down to 90% of the cap. Applied both inside `apply()` (steady state)
@@ -148,6 +151,12 @@ impl AnchorPendingBuffer {
     /// Buffer `input` under `anchor`. Returns `Ok(())` if buffered; returns
     /// `Err(input)` (handing ownership back) if it was already buffered or the
     /// global cap is reached, so the caller can fall back to the normal path.
+    // The Err variant deliberately hands `input` ownership back so the caller
+    // can fall back to the normal path; boxing would defeat that.
+    #[allow(
+        clippy::result_large_err,
+        reason = "Err returns the input back for caller fallback"
+    )]
     fn buffer(&mut self, anchor: Id, input: BatchDeltaInput) -> Result<(), BatchDeltaInput> {
         if self.seen.contains(&input.delta.id) {
             return Err(input);
@@ -181,6 +190,7 @@ impl AnchorPendingBuffer {
     }
 
     /// Total buffered deltas across all anchors.
+    #[cfg(test)]
     fn len(&self) -> usize {
         self.seen.len()
     }
@@ -282,7 +292,7 @@ struct ContextStorageApplier {
     /// hot sync path. With the inner `Arc`, reads bump a refcount and
     /// writers `Arc::make_mut` to clone-on-first-write only when a reader
     /// snapshot is still live.
-    topology: Arc<RwLock<Arc<IndexMap<[u8; 32], Vec<[u8; 32]>>>>>,
+    topology: TopologyHandle,
     /// Armed by [`DeltaStore::add_delta_internal`] around its `dag.add_delta`
     /// call so the inbound `apply()` *retains* the per-context execution lock
     /// (stashing the guard in [`Self::apply_lock_slot`]) instead of releasing
@@ -982,10 +992,10 @@ fn cap_topology(topology: &mut IndexMap<[u8; 32], Vec<[u8; 32]>>) {
     drop(topology.drain(0..excess));
 }
 
-/// Read a `RotationLog` directly from the datastore for a given context
-/// + entity, bypassing `calimero_storage::rotation_log::load` (which
-/// goes through the `RUNTIME_ENV` thread-local that's only installed
-/// inside `context_client.execute()`).
+/// Read a `RotationLog` directly from the datastore for a given
+/// context + entity, bypassing `calimero_storage::rotation_log::load`
+/// (which goes through the `RUNTIME_ENV` thread-local that's only
+/// installed inside `context_client.execute()`).
 ///
 /// The on-disk shape mirrors what
 /// `calimero_node_primitives::sync::storage_bridge::create_runtime_env`

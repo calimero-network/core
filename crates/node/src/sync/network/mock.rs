@@ -61,6 +61,10 @@ use tokio::time;
 use super::SyncNetwork;
 
 /// Per-call directive for a mocked `open_stream` response.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "test mock directive enum, low instance count"
+)]
 pub(crate) enum OpenStreamResponse {
     /// Hand back a successfully-opened stream — an in-memory
     /// `Stream::test_pair()` end. Lets tests exercise the
