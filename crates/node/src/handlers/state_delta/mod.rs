@@ -774,10 +774,16 @@ fn projection_member_at_cut(
     // (the governance apply path shares the lock). Gate under a brief READ lock,
     // walk lock-free, take the WRITE lock only to ingest, then a READ for the
     // compare.
-    if let Some(namespace_id) = node_state
+    //
+    // CRITICAL: the read guard MUST be bound to a `let` and dropped before the
+    // write lock is taken. Writing `if let Some(ns) = read().namespace_to_refresh()`
+    // keeps the read guard alive for the whole `if let` body (Rust temporary
+    // lifetime), so the `write()` inside would deadlock against the read held by
+    // this same thread.
+    let needs_backfill = node_state
         .read_scope_projections()
-        .namespace_to_refresh(datastore, group, heads)
-    {
+        .namespace_to_refresh(datastore, group, heads);
+    if let Some(namespace_id) = needs_backfill {
         if let Some(ops) = ScopeProjections::collect_namespace_ops(datastore, namespace_id) {
             node_state
                 .write_scope_projections()
