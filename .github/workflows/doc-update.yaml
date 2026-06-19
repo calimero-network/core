@@ -55,10 +55,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Pinned to the same SHA as ai-review.yaml so both workflows install
-      # the audited version of ai-code-reviewer. Bump deliberately.
+      # Tracks ai-code-reviewer master, same as ai-review.yaml, so both
+      # workflows always run the latest reviewer without a manual bump.
+      # See the secrets trade-off note in ai-review.yaml.
       - name: Install ai-code-reviewer
-        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@485b32abf334f1518dcadc9c3762ea98705e696c
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@master
 
       # Mint a short-lived MeroReviewer App installation token. Unlike the
       # default GITHUB_TOKEN, an App token is not subject to the org/repo
