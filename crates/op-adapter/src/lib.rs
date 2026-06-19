@@ -79,20 +79,21 @@ fn role_from_invited_role(value: u8) -> GroupMemberRole {
 /// - `TransferOwnership` → `AdminChanged` (owner ⇔ ADMIN; the op is authored in
 ///   the *group's* scope, so it sets that scope's root admin).
 ///
-/// **Out-of-model (`None`, by design — not gaps).** Everything else, because
-/// the unified `authorize` decision is **role**-based (`is_group_admin` ⇔
-/// `role == Admin`, `is_owner` ⇔ root admin) — exactly like today's membership
-/// check. Ops that never enter that decision don't belong in the auth
-/// projection (`scope_root`):
-/// - capability refinement (`MemberCapabilitySet`, `DefaultCapabilitiesSet`,
-///   `ContextCapabilityGranted`/`Revoked`) — a separate, deferred permission
-///   layer that keeps the simple role lattice unchanged;
+/// **Inheritance-relevant planes (folded — they drive at-cut membership):**
+/// - capability: `DefaultCapabilitiesSet` / `MemberCapabilitySet` → the
+///   `CAN_JOIN_OPEN_SUBGROUPS` bit gates inheritance into open subgroups, so the
+///   projection must resolve it at the cut;
+/// - visibility: `SubgroupVisibilitySet` → the Open/Restricted wall that gates
+///   the inheritance parent-walk.
+///
+/// **Out-of-model (`None`, by design — not gaps).** Ops that never enter the
+/// authorization decision:
 /// - app / upgrade / migration config (`UpgradePolicySet`,
 ///   `TargetApplicationSet`, `GroupMigrationSet`, the `Cascade*` ops) — owned by
 ///   the app-version machinery;
 /// - metadata (`GroupMetadataSet`, `MemberMetadataSet`, `ContextMetadataSet`),
-///   subgroup-visibility and TEE-admission *policy* (`SubgroupVisibilitySet`,
-///   `TeeAdmissionPolicySet`), auto-follow (`MemberSetAutoFollow`);
+///   TEE-admission *policy* (`TeeAdmissionPolicySet`), auto-follow
+///   (`MemberSetAutoFollow`);
 /// - the context↔group binding (`ContextRegistered`/`ContextDetached`,
 ///   `GroupDelete`) — `authorize` derives a context's group from that binding
 ///   *at auth time* (the context→group lookup), so it lives in that index, not

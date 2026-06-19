@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    MembershipPath, MembershipRepository, MetaRepository, NamespaceDagService,
-    NamespaceOpLogService, NamespaceRepository,
+    MembershipRepository, MetaRepository, NamespaceDagService, NamespaceOpLogService,
+    NamespaceRepository,
 };
 use calimero_governance_types::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
@@ -502,67 +502,39 @@ impl ScopeProjections {
             .to_bytes();
         let scope = ScopeId::from(namespace_id);
 
-        // The part under test: membership established by governance ops
-        // (`MemberJoined` / `MemberAdded`) reachable from the cut, folded from the
-        // op-log the live feed + backfill maintain. A real feed gap — an op the
-        // projection failed to fold — shows up as this NOT seeing the author while
-        // the live decision authorized, which is exactly what the divergence
-        // marker catches. A scope with no log at all (`acl_view_at` is `None`)
-        // likewise falls through to a real divergence unless the author is a
-        // genuine non-op member below.
+        // Resolve membership entirely from the AT-CUT folded view: direct, group
+        // admin (subgroup creator / `Admin` role), or inherited through an open-
+        // subgroup chain — a faithful port of the live `check_path` +
+        // `acl_view_at` carve-outs, but over the cut's state, so a membership the
+        // cut revoked (e.g. remove-from-root) is NOT granted. The ONLY live read
+        // is the immutable namespace-root genesis admin (no governance op carries
+        // it); every mutable input — memberships, caps, visibility, the subgroup
+        // tree, subgroup-creator admin — comes from the fold.
         let view = self.acl_view_at(&scope, heads);
-        let in_group_at_cut = view.as_ref().is_some_and(|view| {
-            view.groups
-                .get(&group)
-                .is_some_and(|members| members.contains_key(author))
-        });
-        if in_group_at_cut {
-            return Some(true);
-        }
-
-        // Base state that is NOT a governance op in this namespace's DAG, so the
-        // op-log legitimately cannot carry it. Honor exactly the two such cases
-        // the live resolver does (see `calimero_governance_store::acl_view_at`),
-        // and nothing more:
-        //   (a) genesis admin — the creator's membership lives in
-        //       `GroupMeta::admin_identity`, with no self-`MemberJoined` op;
-        //   (b) inherited membership — established by an op in a PARENT group's
-        //       DAG, reachable only via the parent walk (`check_path` =>
-        //       `Inherited`).
-        // Direct membership (`has_direct_member` / `role_of`) is deliberately NOT
-        // honored here: those rows come from `MemberJoined` / `MemberAdded` ops
-        // the projection IS meant to fold, so a miss there must surface as a
-        // divergence — not be masked by reading the live store back.
-        //
-        // TODO(cutover): fold genesis admin + inherited membership into the
-        // scope's base `ScopeState` so the projection's `authorize` is complete
-        // on its own, without consulting the live membership repository here.
-        let is_genesis_admin = MetaRepository::new(store)
-            .load(&group)
+        let root_group = ContextGroupId::from(namespace_id);
+        let root = MetaRepository::new(store)
+            .load(&root_group)
             .ok()
             .flatten()
-            .is_some_and(|meta| meta.admin_identity == *author);
-        if is_genesis_admin {
-            return Some(true);
-        }
-        if matches!(
-            MembershipRepository::new(store).check_path(&group, author),
-            Ok(MembershipPath::Inherited { .. })
-        ) {
+            .map(|meta| (root_group, meta.admin_identity));
+        if view
+            .as_ref()
+            .is_some_and(|v| v.is_member_at_cut(group, author, root))
+        {
             return Some(true);
         }
 
-        // (c) materialized-only membership — the decision group is ENTIRELY
-        // absent from the fold (no member folded for it at all), yet the live
-        // store has the author as a direct member. This is a restricted
-        // subgroup whose membership reached this node as materialized
-        // `GroupMember` rows via governance sync (or whose member ops this node
-        // can't decrypt), not as foldable ops — so the op-log legitimately can't
-        // carry it, exactly like the live resolver's `heads_equal` materialized
-        // fast-path. Gated on the group being WHOLLY unfolded (not a single
-        // missing member) so it can't mask a real op-fold drop, which would
-        // leave the group's other members folded. F4 needs this same fallback:
-        // the flip authorizes such writes off materialized state, as live does.
+        // Materialized-only fallback — the decision group is ENTIRELY absent from
+        // the fold (no member folded for it at all), yet the live store has the
+        // author as a direct member. This is a restricted subgroup whose
+        // membership reached this node as materialized `GroupMember` rows via
+        // governance sync (or whose member ops this node can't decrypt), not as
+        // foldable ops — so the op-log legitimately can't carry it, exactly like
+        // the live resolver's `heads_equal` materialized fast-path. Gated on the
+        // group being WHOLLY unfolded so it can't mask a real op-fold drop (which
+        // would leave the group's other members folded). This is the one
+        // remaining current-state read; the flip authorizes such writes off
+        // materialized state, as live does.
         let group_wholly_unfolded = view.as_ref().is_none_or(|v| !v.groups.contains_key(&group));
         if group_wholly_unfolded
             && MembershipRepository::new(store)
