@@ -777,6 +777,8 @@ where
 /// occupied or vacant.
 ///
 /// This `enum` is returned by the `UnorderedMap::entry` method.
+#[must_use = "an Entry does nothing on its own; call `.or_insert(…)` / `.or_default()` \
+              (or match it) to read or modify the slot — dropping it is a no-op"]
 #[derive(Debug)]
 pub enum Entry<'a, K, V, S>
 where

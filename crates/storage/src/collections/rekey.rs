@@ -60,6 +60,10 @@ use crate::address::Id;
 /// error at the impl site, E0478). So every `RekeyTarget` type satisfies the
 /// `+ 'static` bound the dispatch macros below want — there is no way to write a
 /// non-`'static` impl that would silently take the no-op arm.
+///
+/// `#[doc(hidden)]`: `pub` only so macro-generated `impl`s in app crates can
+/// name it; app authors never implement or reference it directly.
+#[doc(hidden)]
 pub trait RekeyTarget: Any {
     /// Re-key this value's nested collection ids relative to `parent_id` (the
     /// deterministic entity id under which this value is stored). Idempotent.

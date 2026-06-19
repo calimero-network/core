@@ -275,6 +275,7 @@ where
 /// stays absent from production host builds, and this wrapper does nothing there
 /// either.
 #[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)] // test/internal plumbing — not part of the app-facing API
 pub fn register_crdt_merge_for_test<T>()
 where
     T: borsh::BorshSerialize + borsh::BorshDeserialize + crate::collections::Mergeable + 'static,
@@ -285,6 +286,7 @@ where
 
 /// Clear the merge registry (for testing only)
 #[cfg(any(test, feature = "testing"))]
+#[doc(hidden)] // test-only internal plumbing
 pub fn clear_merge_registry() {
     with_registry_mut(|registry| registry.clear());
 }
@@ -296,6 +298,7 @@ pub fn clear_merge_registry() {
 /// - `NoFunctionsRegistered` if no merge functions are registered (I5 violation)
 /// - `AllFunctionsFailed` if merge functions exist but none could merge the data
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
+#[doc(hidden)] // internal merge-dispatch plumbing — not part of the app-facing API
 pub fn try_merge_registered(
     existing: &[u8],
     incoming: &[u8],
