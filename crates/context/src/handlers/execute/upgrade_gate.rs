@@ -258,9 +258,11 @@ mod tests {
                     String::new().into_boxed_str(),
                     Box::new([]),
                     calimero_store::key::BlobMeta::new([0u8; 32].into()),
-                    String::new().into_boxed_str(),
-                    String::new().into_boxed_str(),
-                    String::new().into_boxed_str(),
+                    calimero_store::types::PackageInfo {
+                        package: String::new().into_boxed_str(),
+                        version: String::new().into_boxed_str(),
+                        signer_id: String::new().into_boxed_str(),
+                    },
                 ),
             )
             .unwrap();

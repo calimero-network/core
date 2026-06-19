@@ -637,9 +637,11 @@ async fn create_restricted_subgroup(
         "test://app".into(),
         Box::new([]),
         calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0xDDu8; 32])),
-        "test-package".into(),
-        "0.0.0".into(),
-        "test-signer".into(),
+        calimero_store::types::PackageInfo {
+            package: "test-package".into(),
+            version: "0.0.0".into(),
+            signer_id: "test-signer".into(),
+        },
     );
     node.store
         .handle()
@@ -994,9 +996,11 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
         "calimero://stub-app".into(),
         Box::new([]),
         stub_blob,
-        "stub-package".into(),
-        "0.0.0".into(),
-        "stub-signer".into(),
+        calimero_store::types::PackageInfo {
+            package: "stub-package".into(),
+            version: "0.0.0".into(),
+            signer_id: "stub-signer".into(),
+        },
     );
     node.store
         .handle()
@@ -1234,9 +1238,11 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
         "calimero://stub-app".into(),
         Box::new([]),
         stub_blob,
-        "stub-package".into(),
-        "0.0.0".into(),
-        "stub-signer".into(),
+        calimero_store::types::PackageInfo {
+            package: "stub-package".into(),
+            version: "0.0.0".into(),
+            signer_id: "stub-signer".into(),
+        },
     );
     node.store
         .handle()

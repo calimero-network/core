@@ -135,9 +135,11 @@ impl SyncManager {
                     calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
                         [0u8; 32],
                     )),
-                    "unknown".to_owned().into_boxed_str(),
-                    "0.0.0".to_owned().into_boxed_str(),
-                    String::new().into_boxed_str(),
+                    calimero_store::types::PackageInfo {
+                        package: "unknown".to_owned().into_boxed_str(),
+                        version: "0.0.0".to_owned().into_boxed_str(),
+                        signer_id: String::new().into_boxed_str(),
+                    },
                 ),
             )?;
             context.application_id

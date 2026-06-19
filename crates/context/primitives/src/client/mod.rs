@@ -2243,9 +2243,11 @@ mod get_context_version_tests {
             "file://test.wasm".into(),
             vec![].into(),
             key::BlobMeta::new([2u8; 32].into()),
-            "com.test.app".into(),
-            "2.1.0".into(),
-            "signer".into(),
+            calimero_store::types::PackageInfo {
+                package: "com.test.app".into(),
+                version: "2.1.0".into(),
+                signer_id: "signer".into(),
+            },
         );
         let cid = ContextId::from([0x07; 32]);
         let ctx_meta = types::ContextMeta::new(app_key, [0u8; 32], vec![], None);

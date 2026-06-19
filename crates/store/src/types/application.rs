@@ -71,18 +71,29 @@ impl BorshDeserialize for ApplicationMeta {
     }
 }
 
+/// Package-manifest fields of an [`ApplicationMeta`] (name, version, signer).
+#[derive(Debug, Clone)]
+pub struct PackageInfo {
+    pub package: Box<str>,
+    pub version: Box<str>,
+    pub signer_id: Box<str>,
+}
+
 impl ApplicationMeta {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         bytecode: key::BlobMeta,
         size: u64,
         source: Box<str>,
         metadata: Box<[u8]>,
         compiled: key::BlobMeta,
-        package: Box<str>,
-        version: Box<str>,
-        signer_id: Box<str>,
+        info: PackageInfo,
     ) -> Self {
+        let PackageInfo {
+            package,
+            version,
+            signer_id,
+        } = info;
         Self {
             bytecode,
             size,

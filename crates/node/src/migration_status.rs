@@ -1309,9 +1309,11 @@ mod tests {
             "test://loaded".to_owned().into_boxed_str(),
             Box::new([]),
             blob,
-            "loaded-test-pkg".to_owned().into_boxed_str(),
-            version.to_owned().into_boxed_str(),
-            "loaded-test-signer".to_owned().into_boxed_str(),
+            calimero_store::types::PackageInfo {
+                package: "loaded-test-pkg".to_owned().into_boxed_str(),
+                version: version.to_owned().into_boxed_str(),
+                signer_id: "loaded-test-signer".to_owned().into_boxed_str(),
+            },
         );
         let mut handle = store.handle();
         handle

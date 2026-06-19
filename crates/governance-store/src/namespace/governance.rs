@@ -1265,9 +1265,11 @@ impl<'a> NamespaceGovernance<'a> {
                         effective_source.into_boxed_str(),
                         Vec::new().into_boxed_slice(),
                         blob_meta,
-                        String::new().into_boxed_str(),
-                        String::new().into_boxed_str(),
-                        String::new().into_boxed_str(),
+                        calimero_store::types::PackageInfo {
+                            package: String::new().into_boxed_str(),
+                            version: String::new().into_boxed_str(),
+                            signer_id: String::new().into_boxed_str(),
+                        },
                     );
                     let mut wh = self.store.handle();
                     wh.put(&app_key, &stub)?;

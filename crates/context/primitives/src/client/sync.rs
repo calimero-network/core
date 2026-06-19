@@ -330,9 +330,11 @@ impl ContextClient {
                         "calimero://pending-blob-share".to_owned().into_boxed_str(),
                         Vec::new().into_boxed_slice(),
                         zero_blob,
-                        String::new().into_boxed_str(),
-                        String::new().into_boxed_str(),
-                        String::new().into_boxed_str(),
+                        types::PackageInfo {
+                            package: String::new().into_boxed_str(),
+                            version: String::new().into_boxed_str(),
+                            signer_id: String::new().into_boxed_str(),
+                        },
                     );
                     handle.put(&app_key, &stub_meta)?;
                     debug!(
