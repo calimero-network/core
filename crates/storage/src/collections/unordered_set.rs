@@ -34,7 +34,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeSeq;
 use serde::Serialize;
 
-use super::{compute_id, Collection, CrdtType};
+use super::{compute_id, Collection, CrdtType, StorageKey};
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -214,7 +214,7 @@ where
     ///
     pub fn insert(&mut self, value: V) -> Result<bool, StoreError>
     where
-        V: AsRef<[u8]> + PartialEq + 'static,
+        V: StorageKey,
     {
         // Register this set type's nested-id re-key thunk so that when the set
         // is itself stored as a map/set/vector value, `insert`'s re-key path

@@ -85,6 +85,31 @@ pub trait Mergeable {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError>;
 }
 
+/// Marker for types usable as a **key** in a Calimero collection
+/// (`UnorderedMap`/`SortedMap` keys, `UnorderedSet`/`SortedSet` elements).
+///
+/// Keys are addressed by their byte representation, so the type must be
+/// `AsRef<[u8]>` (plus borsh-(de)serializable, `PartialEq`, and `'static` — the
+/// requirements every key path already imposes). This is an SDK-owned alias over
+/// those bounds whose only job is to carry a clear diagnostic: a numeric key
+/// like `u64` satisfies everything *except* `AsRef<[u8]>` and would otherwise
+/// fail with a bare "`AsRef<[u8]>` is not implemented" error at some method call.
+/// Blanket-implemented, so it is exactly as permissive as the bounds it names.
+#[diagnostic::on_unimplemented(
+    message = "(calimero)> `{Self}` can't be used as a collection key — keys must be byte-encodable",
+    label = "not a storage key",
+    note = "collection keys are addressed by their bytes, so the key type must implement \
+            `AsRef<[u8]>` (and be borsh-(de)serializable + `PartialEq` + `'static`). Use `String`, \
+            `Vec<u8>`, a `[u8; N]`, or a newtype that implements `AsRef<[u8]>`; a numeric key needs \
+            an explicit byte encoding."
+)]
+pub trait StorageKey:
+    BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static
+{
+}
+
+impl<T: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static> StorageKey for T {}
+
 /// Errors that can occur during CRDT merging
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeError {

@@ -28,7 +28,7 @@ pub use rga::ReplicatedGrowableArray;
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod crdt_meta;
-pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageStrategy};
+pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageKey, StorageStrategy};
 // Re-export of the `Mergeable` *derive macro*, whose single canonical
 // implementation lives in `calimero-sdk-macros` (it shares the forbidden-type
 // field lint with `#[app::state]`, which is why it can't live in this crate's

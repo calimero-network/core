@@ -1,0 +1,17 @@
+error[E0277]: (calimero)> `u64` can't be used as a collection key — keys must be byte-encodable
+  --> tests/macros/error_non_byte_key.rs:23:13
+   |
+23 |         map.insert(1u64, "x".to_owned().into())?;
+   |             ^^^^^^ not a storage key
+   |
+   = help: the trait `AsRef<[u8]>` is not implemented for `u64`
+   = note: collection keys are addressed by their bytes, so the key type must implement `AsRef<[u8]>` (and be borsh-(de)serializable + `PartialEq` + `'static`). Use `String`, `Vec<u8>`, a `[u8; N]`, or a newtype that implements `AsRef<[u8]>`; a numeric key needs an explicit byte encoding.
+   = note: required for `u64` to implement `StorageKey`
+note: required by a bound in `calimero_storage::collections::UnorderedMap::<K, V, S>::insert`
+  --> $WORKSPACE/crates/storage/src/collections/unordered_map.rs
+   |
+   |     pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, StoreError>
+   |            ------ required by a bound in this associated function
+   |     where
+   |         K: StorageKey,
+   |            ^^^^^^^^^^ required by this bound in `UnorderedMap::<K, V, S>::insert`
