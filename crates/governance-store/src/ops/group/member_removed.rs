@@ -85,16 +85,15 @@ pub(crate) fn apply(
     // `ReadOnlyTee` is structurally never an owner or admin, so both are inert
     // here and would mislead.
     //
-    // Gate the namespace-root resolution behind the already-loaded role
-    // check: `resolve` walks the parent chain (O(depth)) and only a
-    // `ReadOnlyTee` removal cascades, so every non-TEE removal skips the walk.
+    // Gate the namespace-root check behind the already-loaded role check:
+    // only a `ReadOnlyTee` removal cascades, so every non-TEE removal skips it.
     if removed_role == Some(GroupMemberRole::ReadOnlyTee) {
         let namespaces = NamespaceRepository::new(store);
-        // Relies on `resolve` being reflexive for roots: `resolve(root) ==
-        // root`. So equality here means `group_id` IS the namespace root (a
-        // subgroup-level TEE removal resolves to a different root and skips the
-        // cascade).
-        let is_namespace_root = namespaces.resolve(group_id)? == *group_id;
+        // A namespace root is exactly a group with no parent edge, so a single
+        // O(1) `parent` lookup decides this — cheaper than walking the whole
+        // parent chain via `resolve`, and equivalent on a well-formed tree (a
+        // subgroup-level TEE removal has a parent and skips the cascade).
+        let is_namespace_root = namespaces.parent(group_id)?.is_none();
         if is_namespace_root {
             let membership = MembershipRepository::new(store);
             let deny_list = DenyListRepository::new(store);
@@ -103,6 +102,16 @@ pub(crate) fn apply(
             // covers each descendant group's own directly-registered contexts.
             let descendants = namespaces.collect_descendants(group_id)?;
             for sub in &descendants {
+                // Defensive: `collect_descendants` excludes the root, but were
+                // it ever to return `group_id` itself, the membership teardown
+                // below would mutate the ROOT's `GroupMember` rows BEFORE
+                // `verify_post_apply_state_hashes` runs — diverging the signed
+                // root hash on every honest receiver. Skip it so that
+                // hash-critical invariant stays scoped to the single intended
+                // root removal performed after this block.
+                if *sub == *group_id {
+                    continue;
+                }
                 // `ContextIdentity` hygiene runs for EVERY descendant —
                 // INCLUDING Open subgroups the TEE only *inherited* into (no
                 // direct `GroupMember` row) yet still auto-followed contexts of
@@ -121,6 +130,13 @@ pub(crate) fn apply(
                 let Some(role) = membership.role_of(sub, member)? else {
                     continue;
                 };
+                // These per-descendant store writes are not transactional
+                // (mirrors `member_left.rs`): a mid-cascade store-IO error
+                // aborts apply via `?` rather than half-applying silently. That
+                // is safe, not lossy — the governance nonce/DAG head only
+                // advances AFTER the full mutation returns, so a failed apply is
+                // not nonce-deduplicated and re-applies on the next receipt,
+                // where the idempotent cascade completes the remaining rows.
                 membership.remove_member(sub, member)?;
                 // Deny-listing is intentionally gated to DIRECT rows (mirrors
                 // `member_left.rs`). A deny-list entry drops the member's
