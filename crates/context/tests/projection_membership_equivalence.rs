@@ -64,7 +64,10 @@ fn sign_invitation(
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
         group_id: group,
-        expiration_timestamp: 365 * 24 * 3600,
+        // Far-future absolute expiry: a small relative value resolves to ~1971 as
+        // an absolute wall-clock and would silently break these tests the day the
+        // apply path starts enforcing invitation expiry.
+        expiration_timestamp: u64::MAX,
         secret_salt: [0x42; 32],
         invited_role: role,
     };
@@ -241,6 +244,10 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         live_member_after_join,
         "live: joiner inherits subgroup access"
     );
+    // This `Some(true)` is driven by the at-cut FOLD, not the materialized
+    // fallback: `MemberJoinedOpen` writes no direct subgroup row, so
+    // `member_at_cut`'s `role_of(subgroup, joiner)` fallback finds nothing and the
+    // inheritance walk over the folded ancestry is what must resolve membership.
     assert_eq!(
         proj.member_at_cut(&store, subgroup, &joiner, &[id2]),
         Some(true),
@@ -250,6 +257,14 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
     // (3) admin removes the joiner from the NAMESPACE ROOT only (a GroupOp on the
     // root). Live: removes the root row; the subgroup has no direct row, so the
     // inheritance walk now finds no anchor → revoked.
+    //
+    // The store side uses the repo write directly rather than
+    // `apply_signed_namespace_op`: a `MemberRemoved` is an ENCRYPTED `GroupOp`, and
+    // round-tripping it through the signed-apply path needs a real per-group key +
+    // ciphertext this harness doesn't model (the joins above are cleartext
+    // `RootOp`s, hence applied through the signed path). The equivalence under test
+    // is fold-vs-materialized-membership; `remove_member` yields the same
+    // `is_member` result a real node's apply would, which is all `is_member` reads.
     let removal = GroupOp::MemberRemoved {
         member: joiner,
         expected_group_state_hash: [0u8; 32],
