@@ -17,6 +17,9 @@ use eyre::Result as EyreResult;
 use super::collect_keys_with_prefix;
 use crate::AbsorbRecord;
 
+/// Absorb records keyed by their (entity, field) id pair.
+type AbsorbEntries = Vec<(([u8; 32], [u8; 32]), AbsorbRecord)>;
+
 /// Typed Repository for the per-context absorb buffer.
 ///
 /// Holds one [`AbsorbRecord`] per `(context, producing_app_key, delta_id)`
@@ -88,10 +91,7 @@ impl<'a> AbsorbRepository<'a> {
     /// contiguous per-context block; otherwise any smaller context present in
     /// the CF fails `belongs` on the very first key and terminates the scan
     /// early. Mirrors `CapabilitiesRepository::enumerate_members`.
-    pub fn enumerate_pending(
-        &self,
-        context_id: &ContextId,
-    ) -> EyreResult<Vec<(([u8; 32], [u8; 32]), AbsorbRecord)>> {
+    pub fn enumerate_pending(&self, context_id: &ContextId) -> EyreResult<AbsorbEntries> {
         let target = *context_id.as_ref();
         let keys = collect_keys_with_prefix(
             self.store,

@@ -602,6 +602,9 @@ impl<'a> NamespaceGovernance<'a> {
     /// visible) and passes it in here. Recomputing inside this function
     /// would shift the hash forward and every member-mutating op would
     /// permanently bail on the receiver's staleness check.
+    // Gossip-publish entry on the namespace governance path: transport handles,
+    // the op, and ack/gate sizing are orthogonal with no cohesive grouping.
+    #[allow(clippy::too_many_arguments, reason = "orthogonal broadcast-path args")]
     pub(crate) async fn sign_and_publish_post_gate(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
@@ -644,6 +647,9 @@ impl<'a> NamespaceGovernance<'a> {
     /// * `true` (group-op apply-and-publish path) — the local mutation is
     ///   already committed, so a publish failure is swallowed into a
     ///   `Degraded` [`DeliveryReport`] and propagation falls to sync.
+    // Gossip-publish entry on the namespace governance path: transport handles,
+    // the op, and ack/gate sizing are orthogonal with no cohesive grouping.
+    #[allow(clippy::too_many_arguments, reason = "orthogonal broadcast-path args")]
     async fn publish_post_gate(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
@@ -1507,6 +1513,35 @@ pub fn apply_signed_namespace_op(
     op: &SignedNamespaceOp,
 ) -> EyreResult<ApplyNamespaceOpResult> {
     NamespaceGovernance::new(store, op.namespace_id).apply_signed_op(op)
+}
+
+/// Decrypt the cleartext [`GroupOp`] carried by a `NamespaceOp::Group` envelope
+/// **without applying it** — the read-only counterpart of the private
+/// `decrypt_and_apply_group_op`, for the unified-op projection shadow feed,
+/// which folds the cleartext membership op but must never re-run the mutation.
+///
+/// Mirrors the same key resolution the apply path uses: try the subgroup's own
+/// keyring first, then fall back to the parent namespace's key (issue #2256 —
+/// an Open subgroup is encrypted with the namespace key). `Ok(None)` when no
+/// key resolves locally, i.e. the op was never decryptable on this node and so
+/// there is nothing to fold.
+pub fn decrypt_group_op(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: ContextGroupId,
+    key_id: &[u8; 32],
+    encrypted: &EncryptedGroupOp,
+) -> EyreResult<Option<GroupOp>> {
+    let resolved = match GroupKeyring::new(store, group_id).load_key_by_id(key_id)? {
+        Some(k) => Some(k),
+        None => {
+            GroupKeyring::new(store, ContextGroupId::from(namespace_id)).load_key_by_id(key_id)?
+        }
+    };
+    match resolved {
+        Some(group_key) => Ok(Some(GroupKeyring::decrypt_op(&group_key, encrypted)?)),
+        None => Ok(None),
+    }
 }
 
 /// Build an ECDH-wrapped group key to deliver to `requester` in response

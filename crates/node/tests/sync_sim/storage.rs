@@ -54,6 +54,9 @@ use calimero_storage::store::{Key, MainStorage};
 use calimero_store::db::InMemoryDB;
 use calimero_store::{key, types, Store};
 
+type ReadCb = Rc<dyn Fn(&Key) -> Option<Vec<u8>>>;
+type WriteCb = Rc<dyn Fn(Key, &[u8]) -> bool>;
+
 /// In-memory storage for simulation.
 ///
 /// Wraps a `calimero_store::Store` backed by `InMemoryDB` and provides
@@ -133,7 +136,7 @@ impl SimStorage {
         let context_id = self.context_id;
 
         // Read callback - converts storage Key to ContextState key and reads
-        let read: Rc<dyn Fn(&Key) -> Option<Vec<u8>>> = {
+        let read: ReadCb = {
             let handle = store.handle();
             let ctx_id = context_id;
             Rc::new(move |key: &Key| {
@@ -148,7 +151,7 @@ impl SimStorage {
         };
 
         // Write callback - converts storage Key to ContextState and writes
-        let write: Rc<dyn Fn(Key, &[u8]) -> bool> = {
+        let write: WriteCb = {
             let handle_cell: Rc<RefCell<_>> = Rc::new(RefCell::new(store.handle()));
             let ctx_id = context_id;
             Rc::new(move |key: Key, value: &[u8]| {
@@ -226,6 +229,7 @@ impl SimStorage {
     }
 
     /// Recursively count entities in the tree.
+    #[allow(clippy::only_used_in_recursion, reason = "test tree-walk helper")]
     fn count_entities_recursive(&self, id: Id) -> usize {
         let index = match Index::<MainStorage>::get_index(id).ok().flatten() {
             Some(idx) => idx,
@@ -251,6 +255,7 @@ impl SimStorage {
     }
 
     /// Recursively count leaf nodes.
+    #[allow(clippy::only_used_in_recursion, reason = "test tree-walk helper")]
     fn count_leaves_recursive(&self, id: Id, is_root: bool) -> usize {
         let index = match Index::<MainStorage>::get_index(id).ok().flatten() {
             Some(idx) => idx,
@@ -297,6 +302,7 @@ impl SimStorage {
     }
 
     /// Recursively compute depth of the tree.
+    #[allow(clippy::only_used_in_recursion, reason = "test tree-walk helper")]
     fn compute_depth_recursive(&self, id: Id) -> u32 {
         let index = match Index::<MainStorage>::get_index(id).ok().flatten() {
             Some(idx) => idx,

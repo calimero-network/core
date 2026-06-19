@@ -115,9 +115,13 @@ pub(crate) struct NodeMetrics {
 
     // Process resource gauges — polled periodically on linux via
     // /proc/self/status + /proc/self/fd; no-op on other platforms.
+    #[allow(dead_code, reason = "recorded by the linux-only /proc resource poller")]
     pub(crate) process_resident_memory_bytes: Gauge,
+    #[allow(dead_code, reason = "recorded by the linux-only /proc resource poller")]
     pub(crate) process_virtual_memory_bytes: Gauge,
+    #[allow(dead_code, reason = "recorded by the linux-only /proc resource poller")]
     pub(crate) process_threads: Gauge,
+    #[allow(dead_code, reason = "recorded by the linux-only /proc resource poller")]
     pub(crate) process_open_fds: Gauge,
 }
 

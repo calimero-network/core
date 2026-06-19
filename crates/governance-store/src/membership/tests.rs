@@ -23,6 +23,7 @@ use super::super::test_fixtures::{
     test_store,
 };
 use super::super::*;
+use super::TeeAttestationClaims;
 
 #[test]
 fn add_and_check_membership() {
@@ -179,13 +180,43 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
 
     let policy = membership.read_required_tee_admission_policy().unwrap();
     assert!(membership
-        .validate_tee_attestation_allowlists(&policy, "m1", "r0", "x", "y", "z", "ok")
+        .validate_tee_attestation_allowlists(
+            &policy,
+            &TeeAttestationClaims {
+                mrtd: "m1",
+                rtmr0: "r0",
+                rtmr1: "x",
+                rtmr2: "y",
+                rtmr3: "z",
+                tcb_status: "ok"
+            },
+        )
         .is_ok());
     assert!(membership
-        .validate_tee_attestation_allowlists(&policy, "wrong", "r0", "x", "y", "z", "ok")
+        .validate_tee_attestation_allowlists(
+            &policy,
+            &TeeAttestationClaims {
+                mrtd: "wrong",
+                rtmr0: "r0",
+                rtmr1: "x",
+                rtmr2: "y",
+                rtmr3: "z",
+                tcb_status: "ok"
+            },
+        )
         .is_err());
     assert!(membership
-        .validate_tee_attestation_allowlists(&policy, "m1", "wrong", "x", "y", "z", "ok")
+        .validate_tee_attestation_allowlists(
+            &policy,
+            &TeeAttestationClaims {
+                mrtd: "m1",
+                rtmr0: "wrong",
+                rtmr1: "x",
+                rtmr2: "y",
+                rtmr3: "z",
+                tcb_status: "ok"
+            },
+        )
         .is_err());
 
     let tee_joined = PrivateKey::random(&mut rng).public_key();

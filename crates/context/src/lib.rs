@@ -1,4 +1,3 @@
-#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
 use calimero_governance_store::{
@@ -510,9 +509,10 @@ pub struct ContextManager {
     /// Per-scope unified-op projections, maintained alongside the existing
     /// governance apply (additive — nothing reads it yet). The namespace
     /// governance handler folds each applied op into its scope's projection;
-    /// see [`scope_projection`]. Shared behind a mutex so the apply handler's
-    /// async body can ingest without holding `&mut self` across the await.
-    pub(crate) scope_projections: Arc<std::sync::Mutex<scope_projection::ScopeProjections>>,
+    /// see [`scope_projection`]. Shared behind an `RwLock` so the decision-site
+    /// reads run concurrently while the apply handler's async body ingests
+    /// (write) without holding `&mut self` across the await.
+    pub(crate) scope_projections: Arc<std::sync::RwLock<scope_projection::ScopeProjections>>,
 }
 
 /// Creates a new `ContextManager`.
@@ -549,7 +549,7 @@ impl ContextManager {
             ack_router,
             config: ContextManagerConfig::default(),
             vm_limits: calimero_runtime::logic::VMLimits::default(),
-            scope_projections: Arc::new(std::sync::Mutex::new(
+            scope_projections: Arc::new(std::sync::RwLock::new(
                 scope_projection::ScopeProjections::new(),
             )),
         }
@@ -561,6 +561,20 @@ impl ContextManager {
     #[must_use]
     pub fn with_vm_limits(mut self, vm_limits: calimero_runtime::logic::VMLimits) -> Self {
         self.vm_limits = vm_limits;
+        self
+    }
+
+    /// Use a **shared** unified-op projection registry instead of the
+    /// internally-created one. Builder-style so node startup can hand the same
+    /// `Arc` to both this manager (which feeds the projection) and the node side
+    /// (which reads it at the data-write decision). Callers that don't set it
+    /// keep their own private registry (tests, any non-node embedder).
+    #[must_use]
+    pub fn with_scope_projections(
+        mut self,
+        projections: Arc<std::sync::RwLock<scope_projection::ScopeProjections>>,
+    ) -> Self {
+        self.scope_projections = projections;
         self
     }
 

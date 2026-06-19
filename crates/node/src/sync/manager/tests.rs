@@ -1,5 +1,3 @@
-use super::*;
-
 use calimero_node_primitives::sync::{
     build_handshake_from_raw, estimate_entity_count, estimate_max_depth, SyncHandshake,
 };
@@ -208,7 +206,7 @@ fn test_max_depth_calculation() {
             0
         } else {
             let log2_approx = 64u32.saturating_sub(entity_count.leading_zeros());
-            (log2_approx / 4).max(1).min(32)
+            (log2_approx / 4).clamp(1, 32)
         };
 
         assert!(

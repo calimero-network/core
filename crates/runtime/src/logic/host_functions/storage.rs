@@ -13,7 +13,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `src_key_ptr` - A pointer to the key source-buffer in guest memory.
     /// * `dest_register_id` - The ID of the destination register in host memory where
-    /// to place the value (if found).
+    ///   to place the value (if found).
     ///
     /// # Returns
     ///
@@ -79,7 +79,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `src_key_ptr` - A pointer to the key source-buffer in guest memory.
     /// * `dest_register_id` - The ID of the destination register in host memory where to place
-    /// the value (if found).
+    ///   the value (if found).
     ///
     /// # Returns
     ///
@@ -153,7 +153,7 @@ impl VMHostFunctions<'_> {
     /// * `src_key_ptr` - A pointer to the key source-buffer in guest memory.
     /// * `src_value_ptr` - A pointer to the value source-buffer in guest memory.
     /// * `dest_register_id` - The ID of the destination register in host memory where to place
-    /// the old value (if found).
+    ///   the old value (if found).
     ///
     /// # Returns
     ///
@@ -343,9 +343,7 @@ impl VMHostFunctions<'_> {
 
         // Access private storage
         let value = self.with_logic_mut(|logic| {
-            let Some(ref mut private_storage) = logic.private_storage else {
-                return None;
-            };
+            let private_storage = logic.private_storage.as_mut()?;
             private_storage.remove(&key)
         });
 
@@ -779,9 +777,11 @@ mod tests {
     #[test]
     fn test_storage_read_key_too_long() {
         let mut storage = SimpleMockStorage::new();
-        let mut limits = VMLimits::default();
         // Set a small key size limit for testing.
-        limits.max_storage_key_size = std::num::NonZeroU64::new(10).unwrap();
+        let limits = VMLimits {
+            max_storage_key_size: std::num::NonZeroU64::new(10).unwrap(),
+            ..Default::default()
+        };
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
 
@@ -805,9 +805,11 @@ mod tests {
     #[test]
     fn test_storage_write_key_too_long() {
         let mut storage = SimpleMockStorage::new();
-        let mut limits = VMLimits::default();
         // Set a small key size limit for testing.
-        limits.max_storage_key_size = std::num::NonZeroU64::new(10).unwrap();
+        let limits = VMLimits {
+            max_storage_key_size: std::num::NonZeroU64::new(10).unwrap(),
+            ..Default::default()
+        };
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
 
@@ -839,9 +841,11 @@ mod tests {
     #[test]
     fn test_storage_write_value_too_long() {
         let mut storage = SimpleMockStorage::new();
-        let mut limits = VMLimits::default();
         // Set a small value size limit for testing.
-        limits.max_storage_value_size = std::num::NonZeroU64::new(10).unwrap();
+        let limits = VMLimits {
+            max_storage_value_size: std::num::NonZeroU64::new(10).unwrap(),
+            ..Default::default()
+        };
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
 
@@ -873,9 +877,11 @@ mod tests {
     #[test]
     fn test_storage_remove_key_too_long() {
         let mut storage = SimpleMockStorage::new();
-        let mut limits = VMLimits::default();
         // Set a small key size limit for testing.
-        limits.max_storage_key_size = std::num::NonZeroU64::new(10).unwrap();
+        let limits = VMLimits {
+            max_storage_key_size: std::num::NonZeroU64::new(10).unwrap(),
+            ..Default::default()
+        };
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
 
@@ -1101,12 +1107,10 @@ mod tests {
 
         // Read all keys and verify values.
         for i in 0..5 {
-            let key = format!("key_{i}");
             let expected_value = format!("value_{i}");
 
-            let key_ptr = (100 + i * 100) as u64;
+            // Reuse the key descriptor prepared in the write loop above.
             let key_buf_ptr = (16 + i * 32) as u64;
-            // Reuse the already prepared descriptors.
 
             let register_id = (i + 10) as u64;
             let res = host.storage_read(key_buf_ptr, register_id).unwrap();

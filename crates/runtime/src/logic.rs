@@ -427,7 +427,7 @@ impl VMLogic<'_> {
     /// # Arguments
     ///
     /// * `err` - An optional `FunctionCallError` that occurred during execution (e.g., a trap).
-    ///           If `None`, the outcome is determined by the `returns` field.
+    ///   If `None`, the outcome is determined by the `returns` field.
     #[must_use]
     pub fn finish(mut self, err: Option<FunctionCallError>) -> Outcome {
         let log_count = self.logs.len();
@@ -470,6 +470,12 @@ impl VMLogic<'_> {
         // The runtime's catch_unwind wrapper ensures finish() is always called,
         // even when execution fails mid-way or panics occur.
         if let Some(memory) = self.memory {
+            // Explicit drop documents the intended wasmer-memory cleanup (see above);
+            // clippy::drop_non_drop fires because the handle has no Drop glue itself.
+            #[allow(
+                clippy::drop_non_drop,
+                reason = "explicit drop documents wasmer memory cleanup intent"
+            )]
             drop(memory);
             trace!(target: "runtime::logic", "VMLogic::finish: cleaned up WASM memory");
         }

@@ -22,12 +22,3 @@ serde_json.workspace = true
 
 [package.metadata.workspaces]
 independent = true
-
-[profile.app-release]
-inherits = "release"
-codegen-units = 1
-opt-level = "z"
-lto = true
-debug = false
-panic = "abort"
-overflow-checks = true 

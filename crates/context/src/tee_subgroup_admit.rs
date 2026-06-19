@@ -152,7 +152,7 @@ async fn run(
         // harmless. `Store` and `ContextClient` are cheap, shared-backing clones.
         let store = store.clone();
         let context_client = context_client.clone();
-        let _ = tokio::spawn(async move {
+        tokio::spawn(async move {
             match trigger {
                 AdmitTrigger::NewSubgroup {
                     namespace_id,

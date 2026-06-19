@@ -72,6 +72,8 @@ use core::num::NonZeroU128;
 use ed25519_dalek::SigningKey;
 use tokio::sync::RwLock;
 
+type TopologyMap = Arc<RwLock<IndexMap<[u8; 32], Vec<[u8; 32]>>>>;
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -126,7 +128,7 @@ struct SharedRotationApplier {
     /// successful apply. Used as the snapshot the `happens_before`
     /// closure runs against during resolution. `IndexMap` to mirror
     /// production's deterministic insertion-order iteration.
-    topology: Arc<RwLock<IndexMap<[u8; 32], Vec<[u8; 32]>>>>,
+    topology: TopologyMap,
     /// Successful-apply log (id + action count + serialized artifact
     /// size) for assertions.
     applied: Arc<RwLock<Vec<AppliedDelta>>>,

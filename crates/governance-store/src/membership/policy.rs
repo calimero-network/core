@@ -79,24 +79,9 @@ impl<'a> MembershipPolicy<'a> {
     pub fn validate_tee_attestation_allowlists(
         &self,
         policy: &TeeAdmissionPolicy,
-        mrtd: &str,
-        rtmr0: &str,
-        rtmr1: &str,
-        rtmr2: &str,
-        rtmr3: &str,
-        tcb_status: &str,
+        claims: &TeeAttestationClaims<'_>,
     ) -> EyreResult<()> {
-        self.validate_tee_attestation_allowlists_record(
-            policy,
-            &TeeAttestationClaims {
-                mrtd,
-                rtmr0,
-                rtmr1,
-                rtmr2,
-                rtmr3,
-                tcb_status,
-            },
-        )
+        self.validate_tee_attestation_allowlists_record(policy, claims)
     }
 
     pub fn validate_tee_attestation_allowlists_record(

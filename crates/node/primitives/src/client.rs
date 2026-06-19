@@ -224,6 +224,10 @@ pub struct NodeClient {
 
 impl NodeClient {
     #[must_use]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "orthogonal service dependencies wired into the NodeClient constructor"
+    )]
     pub fn new(
         datastore: Store,
         blob_manager: BlobManager,
@@ -513,6 +517,10 @@ impl NodeClient {
         self.network_client.network_status().await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "orthogonal args (delta payload, crypto identity, governance position) on the split-brain-critical broadcast path; no cohesive grouping"
+    )]
     pub async fn broadcast(
         &self,
         context: &Context,

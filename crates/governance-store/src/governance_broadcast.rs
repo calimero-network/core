@@ -514,6 +514,9 @@ impl BroadcastTransport for calimero_network_primitives::client::NetworkClient {
 /// `report.acked_by` at the call site — at that point the helper to
 /// turn a partial report into `Err` will be added alongside the first
 /// caller that needs it.
+// Gossip-publish entry on the namespace governance path: transport handles,
+// the op, and ack/gate sizing are orthogonal with no cohesive grouping.
+#[allow(clippy::too_many_arguments, reason = "orthogonal broadcast-path args")]
 pub async fn publish_and_await_ack_namespace(
     store: &Store,
     transport: &dyn BroadcastTransport,

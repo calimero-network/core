@@ -206,8 +206,6 @@ impl SessionTracker {
         };
         let failure_count = state.failure_count();
         let last_error = state.last_error().map(ToOwned::to_owned);
-        // Drop the borrow of `self.state` before touching the sink/emitter.
-        drop(state);
         self.publish_state(ctx, phase, failure_count, last_error);
     }
 

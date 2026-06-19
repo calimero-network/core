@@ -448,6 +448,10 @@ pub(super) fn handle_namespace_state_heartbeat(
 /// callers don't know which specific ancestor ids are still missing — the
 /// pending chain can be arbitrarily deep, and the responder caps at
 /// `MAX_BACKFILL_OPS` per response anyway.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args on a consensus sync/handler path; no cohesive grouping"
+)]
 async fn resolve_namespace_pending(
     context_client: &calimero_context_client::client::ContextClient,
     node_client: &calimero_node_primitives::client::NodeClient,
@@ -533,6 +537,10 @@ async fn resolve_namespace_pending(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args on a consensus sync/handler path; no cohesive grouping"
+)]
 async fn fetch_and_apply_namespace_backfill(
     context_client: &calimero_context_client::client::ContextClient,
     node_client: &calimero_node_primitives::client::NodeClient,

@@ -134,7 +134,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `fd` - The file descriptor obtained from `blob_create()` operation.
     /// * `src_data_ptr` - A pointer to a source-buffer `sys::Buffer` in guest memory
-    /// containing the data chunk to write.
+    ///   containing the data chunk to write.
     ///
     /// # Returns
     ///
@@ -205,7 +205,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `fd` - The file descriptor to close.
     /// * `dest_blob_id_ptr` - A pointer to a 32-byte destination buffer `sys::BufferMut`
-    /// in guest memory where the final `BlobId` will be written (for write handles).
+    ///   in guest memory where the final `BlobId` will be written (for write handles).
     ///
     /// # Returns
     ///
@@ -214,7 +214,7 @@ impl VMHostFunctions<'_> {
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if the `blob_id_ptr` buffer is not 32 bytes
-    /// or if memory access fails for a descriptor buffer.
+    ///   or if memory access fails for a descriptor buffer.
     /// * `HostError::InvalidBlobHandle` if the `fd` is invalid.
     /// * `HostError::BlobsNotSupported` if the node client is not supported or upload operation fails.
     pub fn blob_close(&mut self, fd: u64, dest_blob_id_ptr: u64) -> VMLogicResult<u32> {
@@ -272,9 +272,9 @@ impl VMHostFunctions<'_> {
     /// # Arguments
     ///
     /// * `src_blob_id_ptr` - pointer to a 32-byte source-buffer `sys::Buffer` in guest memory,
-    /// containing the 32-byte `BlobId`.
+    ///   containing the 32-byte `BlobId`.
     /// * `src_context_id_ptr` - pointer to a 32-byte source-buffer `sys::Buffer` in guest memory,
-    /// containing the 32-byte `ContextId`.
+    ///   containing the 32-byte `ContextId`.
     ///
     /// # Returns
     ///
@@ -328,7 +328,7 @@ impl VMHostFunctions<'_> {
     /// # Arguments
     ///
     /// * `src_blob_id_ptr` - pointer to a 32-byte source-buffer `sys::Buffer` in guest memory,
-    /// containing the 32-byte `BlobId`.
+    ///   containing the 32-byte `BlobId`.
     ///
     /// # Returns
     ///
@@ -394,7 +394,7 @@ impl VMHostFunctions<'_> {
     ///
     /// * `fd` - The file descriptor obtained from `blob_open`.
     /// * `dest_data_ptr` - A pointer to a destination buffer `sys::BufferMut` in guest memory where
-    /// the read data will be stored
+    ///   the read data will be stored
     ///
     /// # Returns
     ///

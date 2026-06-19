@@ -274,7 +274,7 @@ fn round(cluster: &mut Cluster, writes: &[(usize, &str, Value)]) -> Vec<[u8; 32]
 
     let n = cluster.len();
     let mut roots = vec![None::<[u8; 32]>; n];
-    for node in 0..n {
+    for (node, root) in roots.iter_mut().enumerate() {
         for (origin, artifact) in &deltas {
             if *origin == node {
                 continue;
@@ -282,7 +282,7 @@ fn round(cluster: &mut Cluster, writes: &[(usize, &str, Value)]) -> Vec<[u8; 32]
             let m = cluster.module;
             let h = apply_delta(m, &mut cluster.nodes[node], artifact)
                 .unwrap_or_else(|e| panic!("apply on node {node} failed: {e}"));
-            roots[node] = Some(h);
+            *root = Some(h);
         }
     }
     // Every node must have applied at least one foreign delta, otherwise its

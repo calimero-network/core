@@ -175,12 +175,7 @@ pub struct SyncManager {
             oneshot::Sender<eyre::Result<JoinBundle>>,
         )>,
     >,
-    pub(super) open_subgroup_join_rx: Option<
-        mpsc::Receiver<(
-            OpenSubgroupJoinParams,
-            oneshot::Sender<eyre::Result<Vec<u8>>>,
-        )>,
-    >,
+    pub(super) open_subgroup_join_rx: Option<OpenSubgroupJoinRx>,
 
     /// Dispatch handle for the dedicated `SyncSessionActor` (#2316).
     /// Set via [`SyncManager::set_session_handles`] after the actor is
@@ -210,9 +205,7 @@ pub struct SyncManager {
     /// resolves to a real blob would otherwise issue one doomed BlobShare per
     /// sync tick forever; with the memo a failed stage retries at most every
     /// few minutes. Shared across clones (initiator/responder handles).
-    pub(super) stale_blob_attempts: Arc<
-        std::sync::Mutex<std::collections::HashMap<(ContextId, [u8; 32]), (Option<Instant>, u32)>>,
-    >,
+    pub(super) stale_blob_attempts: StaleBlobAttempts,
 
     /// Reconcile-after-divergence orchestrator. Owns the orchestration
     /// for [`Self::reconcile_after_divergence`]; that method is a thin
@@ -357,6 +350,10 @@ where
 }
 
 impl SyncManager {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "orthogonal args on a consensus sync/handler path; no cohesive grouping"
+    )]
     pub(crate) fn new(
         sync_config: SyncConfig,
         node_client: NodeClient,
@@ -421,6 +418,7 @@ impl SyncManager {
     /// keep the construction-time `Arc` and their network calls on the
     /// reconcile / protocol-dispatch paths bypass the mock.
     #[cfg(test)]
+    #[allow(dead_code, reason = "test utility for swapping in a mock SyncNetwork")]
     pub(crate) fn set_sync_network(&mut self, sync_network: Arc<dyn super::network::SyncNetwork>) {
         self.sync_network = Arc::clone(&sync_network);
         self.reconciler = super::reconciler::Reconciler::new(
@@ -2139,7 +2137,8 @@ impl SyncManager {
                                     | DeltaAuthOutcome::Ungated => {
                                         // Authorized at the cited cut — proceed.
                                     }
-                                    DeltaAuthOutcome::Reject(reason) => {
+                                    DeltaAuthOutcome::Reject(reason)
+                                    | DeltaAuthOutcome::MembershipReject { reason, .. } => {
                                         warn!(
                                             %context_id,
                                             %author,
@@ -2777,6 +2776,7 @@ impl SyncManager {
     ///   `NotMaterialized` (verified member, context not yet materialised); or
     /// - silently, with NO close message, when the dialer disconnected during
     ///   the wait (the peer is already gone).
+    ///
     /// See the race-window rationale inline below.
     async fn resolve_inbound_context(
         &self,
@@ -3775,6 +3775,15 @@ mod namespace_sync;
 // via `super::super::` (they now live in `namespace_sync`).
 #[cfg(test)]
 use namespace_sync::{resolve_namespace_id, should_backfill_governance};
+
+/// Channel for inbound open-subgroup join requests with their reply senders.
+type OpenSubgroupJoinRx = mpsc::Receiver<(
+    OpenSubgroupJoinParams,
+    oneshot::Sender<eyre::Result<Vec<u8>>>,
+)>;
+/// Per-(context, blob) stale-blob retry bookkeeping: (last attempt, count).
+type StaleBlobAttempts =
+    Arc<std::sync::Mutex<std::collections::HashMap<(ContextId, [u8; 32]), (Option<Instant>, u32)>>>;
 
 #[cfg(test)]
 mod tests;

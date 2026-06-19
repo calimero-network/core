@@ -54,7 +54,7 @@ async fn detect_host_info() -> eyre::Result<TeeInfo> {
             .await
         {
             if let Ok(image) = response.text().await {
-                let image_name = image.split('/').last().unwrap_or(&image).to_owned();
+                let image_name = image.split('/').next_back().unwrap_or(&image).to_owned();
 
                 return Ok(TeeInfo {
                     cloud_provider: "gcp".to_owned(),

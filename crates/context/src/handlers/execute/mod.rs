@@ -970,7 +970,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                             }
                         }
                         if !ops.is_empty() {
-                            match scope_projections.lock() {
+                            match scope_projections.write() {
                                 Ok(mut projections) => {
                                     for op in &ops {
                                         projections.ingest_op(op);
@@ -1697,6 +1697,10 @@ impl ContextManager {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args (runtime deps, context identity, crypto keys, module) on a split-brain-critical handler; no cohesive grouping"
+)]
 async fn internal_execute(
     datastore: Store,
     node_client: &NodeClient,

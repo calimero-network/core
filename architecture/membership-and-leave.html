@@ -89,6 +89,26 @@ This distinction is critical for leave operations. <b>Leave deletes a direct row
 path to membership is inheritance, there is no row to delete — the member must leave whichever
 ancestor provides the inheritance.
 </p>
+<p>
+In the governance-DAG projection layer, this distinction is reflected by the fold rule for
+<code>RootOp::MemberJoinedOpen</code>: it folds to <code>OpPayload::Noop</code> rather than
+<code>OpPayload::MemberAdded</code>. No persistent <code>GroupMember</code> node is written for
+an open-subgroup inheritance join; instead, <code>AclView::is_member_at_cut</code> re-derives
+membership at query time via the anchor-root membership + subgroup tree + visibility +
+<code>CAN_JOIN_OPEN_SUBGROUPS</code> capability walk — exactly mirroring the live store. This
+means inherited access is automatically revoked when the member is removed from the root group
+and restored if they rejoin, with no over-grant surviving root-anchor removal.
+</p>
+<p>
+In the governance-DAG projection layer, this distinction is reflected by the fold rule for
+<code>RootOp::MemberJoinedOpen</code>: it folds to <code>OpPayload::Noop</code> rather than
+<code>OpPayload::MemberAdded</code>. No persistent <code>GroupMember</code> node is written for
+an open-subgroup inheritance join; instead, <code>AclView::is_member_at_cut</code> re-derives
+membership at query time via the anchor-root membership + subgroup tree + visibility +
+<code>CAN_JOIN_OPEN_SUBGROUPS</code> capability walk — exactly mirroring the live store. This
+means inherited access is automatically revoked when the member is removed from the root group
+and restored if they rejoin, with no over-grant surviving root-anchor removal.
+</p>
 
 <h3>Visibility (Open vs Restricted)</h3>
 <p>
