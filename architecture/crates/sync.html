@@ -262,6 +262,39 @@
   <p style="margin-top:10px; font-size:12px; color:#6b6b80;">Both <span class="code">projection_member_at_cut</span> (deny arm) and <span class="code">projection_member_at_cut_authoritative</span> (grant arm) call <span class="code">refresh_projection_for_cut</span> so both arms see the same fold state.</p>
 </div>
 
+<div class="cb" style="margin-bottom:18px; border-left:3px solid #8b5cf6; padding-left:14px;">
+  <h4 style="color:#8b5cf6; margin-bottom:8px;">Projection-Authoritative Drain (<span class="code">drain_governance_pending</span>)</h4>
+  <p style="margin-bottom:10px;">State deltas that arrived before their governance ancestry was locally available are buffered and re-evaluated by <span class="code">drain_governance_pending</span> once new governance ops are applied. This drain now uses <span class="code">member_at_cut_authoritative</span> (projection) as its <strong>sole decision authority</strong>, replacing the previous <span class="code">acl_view_at</span> (live DAG walk) primary path.</p>
+  <p style="margin-bottom:10px;">The three projection outcomes map directly to the three drain outcomes:</p>
+  <ul style="margin:0 0 10px 18px; color:#c9c9d4; font-family:'DM Sans',sans-serif; font-size:14px; line-height:1.8;">
+    <li><span class="code">Some(true)</span> → <strong>re-apply</strong> — delta is re-submitted to the normal apply path.</li>
+    <li><span class="code">Some(false)</span> → <strong>drop</strong> — delta is discarded; the author is definitively not a member at that cut.</li>
+    <li><span class="code">None</span> → <strong>re-buffer</strong> — governance ancestry is still incomplete; the delta stays pending for the next drain cycle.</li>
+  </ul>
+  <p style="margin-bottom:10px;">Because the projection never returns an error, the previous <span class="code">Err</span> match arm that dropped a buffered delta and recorded a <span class="code">"lookup_error"</span> metric has been eliminated entirely.</p>
+  <h4 style="margin-top:14px; margin-bottom:8px;">Divergence Cross-check</h4>
+  <p style="margin-bottom:10px;">On decisive verdicts (<span class="code">Some(true)</span> or <span class="code">Some(false)</span>), <span class="code">acl_view_at</span> is still called as a secondary cross-check to detect disagreement between the projection and the live resolver. On disagreement a <span class="code">unified_projection_divergence</span> warning is emitted:</p>
+  <ul style="margin:0 0 10px 18px; color:#c9c9d4; font-family:'DM Sans',sans-serif; font-size:14px; line-height:1.8;">
+    <li><span class="code">Some(true)</span> + live returns <span class="code">Removed</span> or <span class="code">NeverMember</span> → <span class="code">plane = "membership-cut-grant"</span> (dangerous grant-plane divergence).</li>
+    <li><span class="code">Some(false)</span> + live returns <span class="code">Member</span> → <span class="code">plane = "membership-cut"</span> (deny-plane divergence).</li>
+  </ul>
+  <p style="margin-bottom:10px;"><span class="code">acl_view_at</span> is deliberately <strong>not</strong> called on <span class="code">None</span> to avoid false positives while ancestry is still being folded.</p>
+  <h4 style="margin-top:14px; margin-bottom:8px;">Metric Changes</h4>
+  <p style="margin-bottom:10px;">The <span class="code">governance_drain_outcome</span> metric label for drop events is now best-effort rather than authoritative. It is derived from the live resolver's secondary response: <span class="code">"removed"</span> if live says Removed, <span class="code">"never_member"</span> if live says NeverMember, and the new fallback <span class="code">"not_member"</span> if the live resolver disagrees or is inconclusive. The <span class="code">"lookup_error"</span> label is no longer emitted.</p>
+  <p style="margin-bottom:10px;">The debug log emitted when a delta is re-buffered no longer includes a <span class="code">needed_count</span> field, because the projection returns a boolean <span class="code">None</span> rather than a structured variant enumerating missing DAG heads.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Drain outcomes — now driven by projection</span><br>
+<span class="comment">// Some(true)  → re-apply</span><br>
+<span class="comment">// Some(false) → drop  (metric label: "removed" | "never_member" | "not_member")</span><br>
+<span class="comment">// None        → re-buffer (no needed_count in log)</span><br>
+<span class="kw">pub fn</span> <span class="field">member_at_cut_authoritative</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;ctx: &amp;<span class="ty">DeltaContext</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;cut: &amp;<span class="ty">Cut</span>,<br>
+) -&gt; <span class="ty">Option</span>&lt;bool&gt;
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> Monitor for <span class="code">unified_projection_divergence</span> warn logs on the drain path during the F5 migration window. Update any metric dashboards to handle the new <span class="code">"not_member"</span> label and the absence of <span class="code">"lookup_error"</span> on <span class="code">governance_drain_outcome</span>.</p>
+</div>
+
 <div class="g2" style="margin-bottom:16px;">
   <div class="cb">
     <h4 style="color:#10b981;">Real-time Gossip</h4>
