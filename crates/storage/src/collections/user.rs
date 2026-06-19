@@ -212,6 +212,7 @@ where
 }
 
 // Implement Mergeable so it correctly merges in #[app::state]
+#[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for UserStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + 'static,

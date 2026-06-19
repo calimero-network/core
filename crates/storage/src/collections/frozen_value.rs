@@ -14,6 +14,7 @@ use core::ops::Deref;
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrozenValue<T>(pub T);
 
+#[diagnostic::do_not_recommend]
 impl<T> Mergeable for FrozenValue<T> {
     /// Merging a frozen value does nothing, as it is immutable.
     fn merge(&mut self, _other: &Self) -> Result<(), MergeError> {

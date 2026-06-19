@@ -35,6 +35,17 @@ fi
 # Spot checks with jq
 echo "Running jq spot checks..."
 
+# A #[app::view] method must surface intent=read_only, and a #[app::xcall]
+# method must surface xcall_callable=true, in the emitted ABI.
+if ! jq -e '.methods[] | select(.name=="view_constant").intent == "read_only"' "$OUT" >/dev/null; then
+    echo "ERROR: view_constant (#[app::view]) missing intent=read_only"
+    exit 1
+fi
+if ! jq -e '.methods[] | select(.name=="xcall_noop").xcall_callable == true' "$OUT" >/dev/null; then
+    echo "ERROR: xcall_noop (#[app::xcall]) missing xcall_callable=true"
+    exit 1
+fi
+
 # Check nullable on opt methods
 if ! jq -e '.methods[] | select(.name=="opt_u32").params[0].nullable == true' "$OUT" >/dev/null; then
     echo "ERROR: opt_u32 method parameter missing nullable=true"

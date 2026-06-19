@@ -1,0 +1,16 @@
+error: unused `ValueRef` that must be used
+  --> tests/macros/error_value_ref_must_use.rs:32:9
+   |
+32 |         self.items.get(&key).unwrap().unwrap();
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this is a read-only copy from storage; dropping it makes the `get` a no-op. To mutate and persist use `get_mut`/`entry().or_default()`; to keep a copy bind it
+note: the lint level is defined here
+  --> tests/macros/error_value_ref_must_use.rs:5:9
+   |
+5  | #![deny(unused_must_use)]
+   |         ^^^^^^^^^^^^^^^
+help: use `let _ = ...` to ignore the resulting value
+   |
+32 |         let _ = self.items.get(&key).unwrap().unwrap();
+   |         +++++++

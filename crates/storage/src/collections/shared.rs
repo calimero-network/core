@@ -614,6 +614,7 @@ where
 // value is a separate entity (merged per-entity), the writer set converges via
 // the rotation log, and `frozen` is genesis-immutable and deliberately not
 // adopted from the peer (so a forged root-state delta can't freeze rotation).
+#[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for WriterSetCell<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable,

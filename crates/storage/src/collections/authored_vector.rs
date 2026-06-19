@@ -278,6 +278,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<V, S> Mergeable for AuthoredVector<V, S>
 where
     V: BorshSerialize + BorshDeserialize + Mergeable + Clone,

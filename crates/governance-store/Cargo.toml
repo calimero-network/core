@@ -42,3 +42,6 @@ calimero-utils-actix.workspace = true
 # against this crate's live membership resolver over the same op sequences.
 calimero-op.workspace = true
 calimero-projection.workspace = true
+# Serializes the op-event tests, which observe a process-global broadcast bus
+# (`op_events`) and would otherwise cross-talk / flood under parallel execution.
+serial_test.workspace = true

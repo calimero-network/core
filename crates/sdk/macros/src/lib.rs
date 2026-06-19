@@ -185,9 +185,8 @@ pub fn init(_args: TokenStream, input: TokenStream) -> TokenStream {
 /// `Method.xcall_callable`; on its own it does not modify the method. The node
 /// uses the flag to restrict `xcall` dispatch to declared entry points.
 ///
-/// Must be a registered attribute (not just read syntactically like
-/// `#[app::view]`) so it resolves at the method site when `#[app::logic]`
-/// re-emits the impl verbatim.
+/// Must be a registered attribute so it resolves at the method site when
+/// `#[app::logic]` re-emits the impl verbatim (as `#[app::view]` also is).
 ///
 /// # Usage
 ///
@@ -197,6 +196,28 @@ pub fn init(_args: TokenStream, input: TokenStream) -> TokenStream {
 /// target's return value would go nowhere).
 #[proc_macro_attribute]
 pub fn xcall(_args: TokenStream, input: TokenStream) -> TokenStream {
+    // this is a no-op, the attribute is just a marker
+    input
+}
+
+/// Marks a logic method as read-only (a "view").
+///
+/// A marker consumed by `#[app::logic]` and recorded in the ABI as
+/// `Method.intent = read_only`; on its own it does not modify the method. The
+/// node can take a shared read lock (instead of an exclusive write lock) for
+/// such methods.
+///
+/// Like `#[app::xcall]`, it must be a registered attribute so it resolves at
+/// the method site when `#[app::logic]` re-emits the impl verbatim.
+///
+/// # Usage
+///
+/// Apply `#[app::view]` to a public, read-only (`&self`) logic method. Mutual
+/// exclusivity with `#[app::init]` / `#[app::xcall]` and a `&mut self` receiver
+/// are rejected at compile time; the deeper read-only contract (no mutation
+/// reached through `&self`) is enforced by the node at runtime.
+#[proc_macro_attribute]
+pub fn view(_args: TokenStream, input: TokenStream) -> TokenStream {
     // this is a no-op, the attribute is just a marker
     input
 }

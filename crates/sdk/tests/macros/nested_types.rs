@@ -1,26 +1,39 @@
-//! Tests for nested types in SDK macros
+//! `#[app::state]` / `#[app::logic]` correctly handle deeply-nested types.
 //!
-//! This file tests that the SDK macros correctly handle nested structures,
-//! including nested Option types, Vec of structs, and deeply nested types.
+//! Each scenario keeps its original fields; bare value types are wrapped in
+//! `LwwRegister<T>` — the CRDT form for a single value. `LwwRegister<T>` derefs
+//! to `T`, so the `&self.field` accessors compile unchanged; mutation goes
+//! through `.set(...)`.
 
 use calimero_sdk::app;
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_storage::collections::LwwRegister;
 
 // Test nested Option types
 #[app::state]
 struct StateWithNestedOptions {
-    nested_option: Option<Option<String>>,
-    option_vec: Option<Vec<String>>,
-    vec_option: Vec<Option<String>>,
+    nested_option: LwwRegister<Option<Option<String>>>,
+    option_vec: LwwRegister<Option<Vec<String>>>,
+    vec_option: LwwRegister<Vec<Option<String>>>,
 }
 
 #[app::logic]
 impl StateWithNestedOptions {
+    #[app::init]
+    pub fn init() -> StateWithNestedOptions {
+        StateWithNestedOptions {
+            nested_option: LwwRegister::new(None),
+            option_vec: LwwRegister::new(None),
+            vec_option: LwwRegister::new(Vec::new()),
+        }
+    }
+
     pub fn get_nested_option(&self) -> &Option<Option<String>> {
         &self.nested_option
     }
 
     pub fn set_nested_option(&mut self, value: Option<Option<String>>) {
-        self.nested_option = value;
+        self.nested_option.set(value);
     }
 
     pub fn get_option_vec(&self) -> &Option<Vec<String>> {
@@ -32,15 +45,17 @@ impl StateWithNestedOptions {
     }
 }
 
-// Test nested struct types
-// Note: In production use, these nested types would need to implement
-// serialization traits (e.g., BorshSerialize, BorshDeserialize) for
-// actual runtime persistence. This test focuses on macro expansion.
+// Test nested struct types — user types nested inside CRDT fields must be
+// borsh-(de)serializable and `Clone` (the `LwwRegister<T>: Mergeable` bound).
+#[derive(Clone, BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
 struct InnerData {
     value: String,
     count: u64,
 }
 
+#[derive(Clone, BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
 struct MiddleLayer {
     data: InnerData,
     items: Vec<InnerData>,
@@ -48,12 +63,26 @@ struct MiddleLayer {
 
 #[app::state]
 struct StateWithNestedStructs {
-    middle: MiddleLayer,
-    optional_middle: Option<MiddleLayer>,
+    middle: LwwRegister<MiddleLayer>,
+    optional_middle: LwwRegister<Option<MiddleLayer>>,
 }
 
 #[app::logic]
 impl StateWithNestedStructs {
+    #[app::init]
+    pub fn init() -> StateWithNestedStructs {
+        StateWithNestedStructs {
+            middle: LwwRegister::new(MiddleLayer {
+                data: InnerData {
+                    value: String::new(),
+                    count: 0,
+                },
+                items: Vec::new(),
+            }),
+            optional_middle: LwwRegister::new(None),
+        }
+    }
+
     pub fn get_middle(&self) -> &MiddleLayer {
         &self.middle
     }
@@ -66,14 +95,24 @@ impl StateWithNestedStructs {
 // Test nested tuple types
 #[app::state]
 struct StateWithTuples {
-    simple_tuple: (String, u64),
-    nested_tuple: ((String, u64), (bool, i32)),
-    tuple_vec: Vec<(String, u64)>,
-    option_tuple: Option<(String, Vec<u8>)>,
+    simple_tuple: LwwRegister<(String, u64)>,
+    nested_tuple: LwwRegister<((String, u64), (bool, i32))>,
+    tuple_vec: LwwRegister<Vec<(String, u64)>>,
+    option_tuple: LwwRegister<Option<(String, Vec<u8>)>>,
 }
 
 #[app::logic]
 impl StateWithTuples {
+    #[app::init]
+    pub fn init() -> StateWithTuples {
+        StateWithTuples {
+            simple_tuple: LwwRegister::new((String::new(), 0)),
+            nested_tuple: LwwRegister::new(((String::new(), 0), (false, 0))),
+            tuple_vec: LwwRegister::new(Vec::new()),
+            option_tuple: LwwRegister::new(None),
+        }
+    }
+
     pub fn get_simple_tuple(&self) -> &(String, u64) {
         &self.simple_tuple
     }
@@ -94,18 +133,26 @@ impl StateWithTuples {
 // Test deeply nested types (3+ levels)
 #[app::state]
 struct DeeplyNested {
-    deep: Option<Vec<Option<Vec<String>>>>,
-    deep_tuple: Option<(Vec<Option<String>>, Option<Vec<u64>>)>,
+    deep: LwwRegister<Option<Vec<Option<Vec<String>>>>>,
+    deep_tuple: LwwRegister<Option<(Vec<Option<String>>, Option<Vec<u64>>)>>,
 }
 
 #[app::logic]
 impl DeeplyNested {
+    #[app::init]
+    pub fn init() -> DeeplyNested {
+        DeeplyNested {
+            deep: LwwRegister::new(None),
+            deep_tuple: LwwRegister::new(None),
+        }
+    }
+
     pub fn get_deep(&self) -> &Option<Vec<Option<Vec<String>>>> {
         &self.deep
     }
 
     pub fn set_deep(&mut self, value: Option<Vec<Option<Vec<String>>>>) {
-        self.deep = value;
+        self.deep.set(value);
     }
 }
 
@@ -115,6 +162,11 @@ struct NestedMethodTypes;
 
 #[app::logic]
 impl NestedMethodTypes {
+    #[app::init]
+    pub fn init() -> NestedMethodTypes {
+        NestedMethodTypes
+    }
+
     pub fn nested_arg(&self, arg: Option<Vec<Option<String>>>) -> bool {
         arg.is_some()
     }
@@ -134,12 +186,20 @@ impl NestedMethodTypes {
 // Test array types with nested content
 #[app::state]
 struct StateWithArrays {
-    fixed_array: [String; 3],
-    nested_array: [Option<String>; 2],
+    fixed_array: LwwRegister<[String; 3]>,
+    nested_array: LwwRegister<[Option<String>; 2]>,
 }
 
 #[app::logic]
 impl StateWithArrays {
+    #[app::init]
+    pub fn init() -> StateWithArrays {
+        StateWithArrays {
+            fixed_array: LwwRegister::new([String::new(), String::new(), String::new()]),
+            nested_array: LwwRegister::new([None, None]),
+        }
+    }
+
     pub fn get_fixed_array(&self) -> &[String; 3] {
         &self.fixed_array
     }

@@ -1,0 +1,18 @@
+error: (calimero)> a `#[app::view]` method is read-only but takes `&mut self` — the node runs it under a shared read lock, so mutating state through it is unsound. Use `&self`, or drop `#[app::view]` if the method must mutate.
+  --> tests/macros/error_view_mutates.rs:16:16
+   |
+16 |     pub fn bad(&mut self) {}
+   |                ^
+
+error[E0277]: (calimero)> no method named `#[app::init]` found for type `S`
+ --> tests/macros/error_view_mutates.rs:6:8
+  |
+6 | struct S;
+  |        ^ add an `#[app::init]` method to this type
+  |
+  = help: the trait `AppStateInit` is not implemented for `S`
+note: required by a bound in `AppState`
+ --> src/state.rs
+  |
+  | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
+  |                                                         ^^^^^^^^^^^^ required by this bound in `AppState`

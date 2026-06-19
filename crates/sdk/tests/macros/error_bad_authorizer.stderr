@@ -1,0 +1,131 @@
+error[E0277]: (calimero)> `NotAnAuthorizer` is not an access-control policy for `PermissionedStorage`
+  --> tests/macros/error_bad_authorizer.rs:10:11
+   |
+10 |     data: PermissionedStorage<LwwRegister<String>, NotAnAuthorizer>,
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not an `Authorizer`
+   |
+   = help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
+   = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+   = help: the following other types implement trait `Authorizer`:
+             OwnerAcl
+             ProtocolAuthorizer
+             WriterSetAcl
+note: required by a bound in `PermissionedStorage`
+  --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
+   |
+   | pub struct PermissionedStorage<T, A = WriterSetAcl>
+   |            ------------------- required by a bound in this struct
+...
+   |     A: Authorizer,
+   |        ^^^^^^^^^^ required by this bound in `PermissionedStorage`
+
+error[E0277]: (calimero)> `NotAnAuthorizer` is not an access-control policy for `PermissionedStorage`
+ --> tests/macros/error_bad_authorizer.rs:8:1
+  |
+8 | #[app::state]
+  | ^^^^^^^^^^^^^ not an `Authorizer`
+  |
+  = help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
+  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+  = help: the following other types implement trait `Authorizer`:
+            OwnerAcl
+            ProtocolAuthorizer
+            WriterSetAcl
+  = note: required for `PermissionedStorage<calimero_storage::collections::LwwRegister<std::string::String>, NotAnAuthorizer>` to implement `BorshSerialize`
+  = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: (calimero)> `NotAnAuthorizer` is not an access-control policy for `PermissionedStorage`
+ --> tests/macros/error_bad_authorizer.rs:8:1
+  |
+8 | #[app::state]
+  | ^^^^^^^^^^^^^ not an `Authorizer`
+  |
+  = help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
+  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+  = help: the following other types implement trait `Authorizer`:
+            OwnerAcl
+            ProtocolAuthorizer
+            WriterSetAcl
+note: required by a bound in `PermissionedStorage`
+ --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
+  |
+  | pub struct PermissionedStorage<T, A = WriterSetAcl>
+  |            ------------------- required by a bound in this struct
+...
+  |     A: Authorizer,
+  |        ^^^^^^^^^^ required by this bound in `PermissionedStorage`
+  = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: (calimero)> `PermissionedStorage<calimero_storage::collections::LwwRegister<std::string::String>, NotAnAuthorizer>` cannot be stored in replicated state — it is not a CRDT
+ --> tests/macros/error_bad_authorizer.rs:8:1
+  |
+8 | #[app::state]
+  | ^^^^^^^^^^^^^ this type has no merge semantics
+  |
+  = help: the trait `Mergeable` is not implemented for `PermissionedStorage<calimero_storage::collections::LwwRegister<std::string::String>, NotAnAuthorizer>`
+  = note: every `#[app::state]` field and every collection value must be `Mergeable` so replicas converge.
+  = note: fixes: wrap a plain value in `LwwRegister<PermissionedStorage<calimero_storage::collections::LwwRegister<std::string::String>, NotAnAuthorizer>>` (last-write-wins) or `Counter`; use `UnorderedMap`/`UnorderedSet`/`Vector` for collections; or `#[derive(Mergeable)]` on your own struct (every field must itself be `Mergeable`).
+  = help: the trait `Mergeable` is implemented for `S`
+  = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: (calimero)> `NotAnAuthorizer` is not an access-control policy for `PermissionedStorage`
+ --> tests/macros/error_bad_authorizer.rs:8:1
+  |
+8 | #[app::state]
+  | ^^^^^^^^^^^^^ not an `Authorizer`
+  |
+  = help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
+  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+  = help: the following other types implement trait `Authorizer`:
+            OwnerAcl
+            ProtocolAuthorizer
+            WriterSetAcl
+note: required by a bound in `PermissionedStorage`
+ --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
+  |
+  | pub struct PermissionedStorage<T, A = WriterSetAcl>
+  |            ------------------- required by a bound in this struct
+...
+  |     A: Authorizer,
+  |        ^^^^^^^^^^ required by this bound in `PermissionedStorage`
+  = note: this error originates in the macro `::calimero_storage::register_rekey_if_supported` which comes from the expansion of the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: (calimero)> `NotAnAuthorizer` is not an access-control policy for `PermissionedStorage`
+ --> tests/macros/error_bad_authorizer.rs:8:1
+  |
+8 | #[app::state]
+  | ^^^^^^^^^^^^^ not an `Authorizer`
+  |
+  = help: the trait `Authorizer` is not implemented for `NotAnAuthorizer`
+  = note: the policy parameter must implement `Authorizer`. Use a built-in: `WriterSetAcl` (any writer, the `SharedStorage<T>` default), `OwnerAcl` (single owner, via `Ownable<T>`), or `ProtocolAuthorizer` (per-op `OpMask`) — or implement `Authorizer` as a pure function of `(who, op, caps)` with no I/O.
+  = help: the following other types implement trait `Authorizer`:
+            OwnerAcl
+            ProtocolAuthorizer
+            WriterSetAcl
+note: required by a bound in `PermissionedStorage`
+ --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
+  |
+  | pub struct PermissionedStorage<T, A = WriterSetAcl>
+  |            ------------------- required by a bound in this struct
+...
+  |     A: Authorizer,
+  |        ^^^^^^^^^^ required by this bound in `PermissionedStorage`
+  = note: this error originates in the macro `::calimero_storage::register_rekey_if_supported` which comes from the expansion of the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: the method `reassign_deterministic_id` exists for struct `PermissionedStorage<LwwRegister<String>, NotAnAuthorizer>`, but its trait bounds were not satisfied
+ --> tests/macros/error_bad_authorizer.rs:8:1
+  |
+6 | struct NotAnAuthorizer;
+  | ---------------------- doesn't satisfy `NotAnAuthorizer: Authorizer`
+7 |
+8 | #[app::state]
+  | ^^^^^^^^^^^^^ method cannot be called due to unsatisfied trait bounds
+  |
+  = note: the following trait bounds were not satisfied:
+          `NotAnAuthorizer: Authorizer`
+note: the trait `Authorizer` must be implemented
+ --> $WORKSPACE/crates/storage/src/collections/permissioned.rs
+  |
+  | pub trait Authorizer {
+  | ^^^^^^^^^^^^^^^^^^^^
+  = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)

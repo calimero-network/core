@@ -1,0 +1,18 @@
+error: (calimero)> this method name is reserved by the SDK's code generation — pick another. Names starting with `__calimero` (and the generated runtime exports) collide with emitted symbols.
+  --> tests/macros/error_reserved_method_name.rs:15:12
+   |
+15 |     pub fn __calimero_internal(&self) {}
+   |            ^^^^^^^^^^^^^^^^^^^
+
+error[E0277]: (calimero)> no method named `#[app::init]` found for type `S`
+ --> tests/macros/error_reserved_method_name.rs:6:8
+  |
+6 | struct S;
+  |        ^ add an `#[app::init]` method to this type
+  |
+  = help: the trait `AppStateInit` is not implemented for `S`
+note: required by a bound in `AppState`
+ --> src/state.rs
+  |
+  | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
+  |                                                         ^^^^^^^^^^^^ required by this bound in `AppState`

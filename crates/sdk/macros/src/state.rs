@@ -387,7 +387,18 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
 
         let (ident, generics) = match input.item {
             StructOrEnumItem::Struct(item) => (&item.ident, &item.generics),
-            StructOrEnumItem::Enum(item) => (&item.ident, &item.generics),
+            StructOrEnumItem::Enum(item) => {
+                // No `Mergeable` impl is generated for an enum, so the unconditional
+                // wasm merge-registration hook (`register_crdt_merge::<Self>()`,
+                // which requires `Mergeable`) fails to build for `wasm32` — the
+                // real app target — even though it compiles on the host. Reject it
+                // up front; an enum that models one-of-N belongs inside
+                // `LwwRegister<_>` as a struct field.
+                return Err(errors.finish(SynError::new_spanned(
+                    &item.enum_token,
+                    ParseError::StateMustBeStruct,
+                )));
+            }
         };
 
         if ident == &*idents::input() {
@@ -1590,12 +1601,15 @@ mod tests {
             })),
             "`#[borsh(init = ...)]` is legitimate and must pass through",
         );
+        // Enums are rejected as state outright (no `Mergeable` impl is generated,
+        // so the wasm merge-registration hook fails to build) — independent of any
+        // borsh attribute like `use_discriminant`.
         assert!(
-            state_accepts(StructOrEnumItem::Enum(parse_quote! {
+            !state_accepts(StructOrEnumItem::Enum(parse_quote! {
                 #[borsh(use_discriminant = true)]
                 pub enum E { A = 1, B = 2 }
             })),
-            "`#[borsh(use_discriminant = ...)]` is legitimate and must pass through",
+            "enum states must be rejected",
         );
 
         // And the common case — no item-level borsh attribute — is accepted.

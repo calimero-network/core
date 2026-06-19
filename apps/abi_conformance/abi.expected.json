@@ -919,6 +919,22 @@
       "returns": {
         "$ref": "Status"
       }
+    },
+    {
+      "name": "view_constant",
+      "params": [],
+      "returns": {
+        "kind": "u32"
+      },
+      "intent": "read_only"
+    },
+    {
+      "name": "xcall_noop",
+      "params": [],
+      "returns": {
+        "kind": "unit"
+      },
+      "xcall_callable": true
     }
   ],
   "events": [

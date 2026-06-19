@@ -11,17 +11,14 @@ use crate::{
     CapabilitiesRepository, GroupDeletedRejection, GroupKeyring, MembershipRepository,
     MetaRepository, NamespaceRepository,
 };
-use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_store::Store;
 
 use super::super::test_fixtures::{
-    dummy_member_removed_op, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
-    test_store,
+    nest_for_test, sample_meta_with_admin, test_group_id, test_meta, test_store,
 };
 use super::super::*;
 
