@@ -71,19 +71,12 @@ impl ToTokens for PublicLogicMethod<'_> {
         let arg_idents = args.iter().map(|arg| arg.ident).collect::<Vec<_>>();
 
         // Baked into the host-boundary (de)serialization panics below so a
-        // malformed call reports *which* method failed and *what shape* was
-        // expected — the raw serde error alone names neither, which is where app
-        // authors lose the most time when wiring a client. Both are compile-time
-        // string literals (the signature is small, so no `max_log_size` concern).
+        // malformed call reports *which* method failed (and, for arg-bearing
+        // methods, *what shape* was expected) — the raw serde error alone names
+        // neither, which is where app authors lose the most time wiring a client.
+        // A compile-time string literal; the method name is always available, the
+        // argument schema is built per-branch (only the args path needs it).
         let method_name = name.to_string();
-        let arg_schema = {
-            let fields = args
-                .iter()
-                .map(|arg| format!("{}: {}", arg.ident, arg.ty.to_token_stream()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{{ {fields} }}")
-        };
 
         let init_method = modifiers
             .iter()
@@ -106,7 +99,7 @@ impl ToTokens for PublicLogicMethod<'_> {
                         {
                             if !fields.is_empty() {
                                 ::calimero_sdk::env::panic_str(&format!(
-                                    "{}: takes no arguments, but the call sent JSON field(s): {:?}",
+                                    "{}: takes no arguments, but the call sent unknown field(s): {:?}",
                                     #method_name,
                                     fields.keys().collect::<::std::vec::Vec<_>>()
                                 ));
@@ -139,6 +132,30 @@ impl ToTokens for PublicLogicMethod<'_> {
                 .filter(|arg| !arg.ty.ref_)
                 .map(|arg| &arg.ty)
                 .collect::<::std::vec::Vec<_>>();
+
+            // Expected-argument hint for the deserialize panics, e.g.
+            // `{ key: String, value: String }`. Only built here (the args path).
+            // `to_token_stream()` renders the *sanitized* type, which spaces out
+            // punctuation and carries the internal reserved input lifetime for
+            // borrowed args; strip that lifetime and collapse the spacing so the
+            // hint reads like source (`&str` → not `& 'CALIMERO_INPUT str`).
+            let reserved_lt = lifetimes::input().to_token_stream().to_string();
+            let arg_schema = {
+                let fields = args
+                    .iter()
+                    .map(|arg| {
+                        let ty = arg
+                            .ty
+                            .to_token_stream()
+                            .to_string()
+                            .replace(&reserved_lt, "");
+                        let ty = ty.split_whitespace().collect::<Vec<_>>().join(" ");
+                        format!("{}: {}", arg.ident, ty)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{ {fields} }}")
+            };
 
             quote_spanned! {name.span()=>
                 #[derive(::calimero_sdk::serde::Deserialize)]
