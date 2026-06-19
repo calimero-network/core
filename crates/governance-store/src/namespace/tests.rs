@@ -665,7 +665,7 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
     // rather than silently succeeding with in-order ops.
     let max_attempts = 64;
     let mut found = false;
-    let mut raw_nonces: Vec<u64> = Vec::new();
+    let raw_nonces: Vec<u64>;
     for _ in 0..max_attempts {
         let signer_sk = PrivateKey::random(&mut rng);
         let signed_ops: Vec<SignedNamespaceOp> = (1u64..=4)

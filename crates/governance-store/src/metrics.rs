@@ -655,11 +655,11 @@ mod tests {
     ///
     /// As with `self_purge_failures_register_and_encode`, we build the family
     /// + registry locally rather than going through the process-global
-    /// `GROUP_STORE_METRICS` sink (a `OnceLock` another test may have set), so
-    /// the assertion targets *this* registry. The label-building logic
-    /// (`ReconcileOutcome::as_label`) is what we assert on; the
-    /// no-op-without-sink behaviour of the public recorder is covered by the
-    /// early-return and exercised below.
+    ///   `GROUP_STORE_METRICS` sink (a `OnceLock` another test may have set), so
+    ///   the assertion targets *this* registry. The label-building logic
+    ///   (`ReconcileOutcome::as_label`) is what we assert on; the
+    ///   no-op-without-sink behaviour of the public recorder is covered by the
+    ///   early-return and exercised below.
     #[test]
     fn self_purge_reconcile_register_and_encode() {
         let mut registry = Registry::default();

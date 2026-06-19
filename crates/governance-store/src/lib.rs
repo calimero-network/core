@@ -122,6 +122,9 @@ use self::local_state::{append_op_log_entry, set_op_head};
 #[cfg(test)]
 use self::upgrades::extract_application_id;
 
+/// A resolved member identity: public key plus its two associated 32-byte keys.
+pub type ResolvedIdentity = (PublicKey, [u8; 32], [u8; 32]);
+
 // ---------------------------------------------------------------------------
 // Typed errors for group store operations
 // ---------------------------------------------------------------------------
@@ -570,9 +573,7 @@ impl<'a> GroupHandle<'a> {
     pub fn resolve_namespace(&self) -> EyreResult<ContextGroupId> {
         NamespaceRepository::new(self.store).resolve(&self.group_id)
     }
-    pub fn resolve_namespace_identity(
-        &self,
-    ) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+    pub fn resolve_namespace_identity(&self) -> EyreResult<Option<ResolvedIdentity>> {
         NamespaceRepository::new(self.store).resolve_identity(&self.group_id)
     }
     pub fn get_or_create_namespace_identity(
@@ -630,7 +631,7 @@ impl<'a> NamespaceHandle<'a> {
         self.namespace_id
     }
 
-    pub fn get_identity(&self) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+    pub fn get_identity(&self) -> EyreResult<Option<ResolvedIdentity>> {
         NamespaceRepository::new(self.store).identity(&ContextGroupId::from(self.namespace_id))
     }
 
@@ -825,6 +826,7 @@ pub fn now_secs() -> u64 {
 ///    Once the network has fully rolled forward to signed-claim ops
 ///    the zero sentinel becomes dead and can be removed; the
 ///    empty-list "no contexts" case stays valid forever.
+///
 /// Re-export of the cross-crate `DivergenceReport` carried inside
 /// `NamespaceApplyOutcome::Applied`. Defined in `calimero-context-client`
 /// because the message type that carries it lives there, and

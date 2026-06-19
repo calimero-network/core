@@ -481,7 +481,7 @@ impl<'a> NamespaceRepository<'a> {
     pub fn identity(
         &self,
         namespace_id: &ContextGroupId,
-    ) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+    ) -> EyreResult<Option<crate::ResolvedIdentity>> {
         Ok(self
             .identity_record(namespace_id)?
             .map(|record| (record.public_key, record.private_key, record.sender_key)))
@@ -527,7 +527,7 @@ impl<'a> NamespaceRepository<'a> {
     pub fn resolve_identity(
         &self,
         group_id: &ContextGroupId,
-    ) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+    ) -> EyreResult<Option<crate::ResolvedIdentity>> {
         Ok(self
             .resolve_identity_record(group_id)?
             .map(|record| (record.public_key, record.private_key, record.sender_key)))
