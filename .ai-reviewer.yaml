@@ -35,7 +35,7 @@ documentation:
   source_to_docs_mapping:
     # Per-crate internals pages (architecture/crates/*.html)
     "crates/auth/**": ["architecture/crates/auth.html"]
-    "crates/node/**": ["architecture/crates/node.html"]
+    "crates/node/**": ["architecture/crates/node.html", "architecture/crates/sync.html"]
     "crates/context/**": ["architecture/crates/context.html", "architecture/membership-and-leave.html"]
     "crates/network/**": ["architecture/crates/network.html", "architecture/wire-protocol.html"]
     "crates/server/**": ["architecture/crates/server.html"]
