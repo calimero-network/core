@@ -134,8 +134,7 @@ impl Serialize for StorageError {
             | Self::UnexpectedId(id)
             | Self::NotFound(id) => serializer.serialize_str(&id.to_string()),
             Self::InvalidTimestamp(timestamp, local_time) => serializer.serialize_str(&format!(
-                "Invalid timestamp {} for an action, too far in the future (local time: {}).",
-                timestamp, local_time
+                "Invalid timestamp {timestamp} for an action, too far in the future (local time: {local_time})."
             )),
             Self::InvalidData(ref msg) => serializer.serialize_str(msg),
             Self::InvalidSignature => serializer.serialize_str("Invalid signature"),
@@ -144,7 +143,7 @@ impl Serialize for StorageError {
             )),
             Self::NonceReplay(ref data) => {
                 let (pk, nonce) = &**data;
-                serializer.serialize_str(&format!("Nonce replay for {}: {}", pk, nonce))
+                serializer.serialize_str(&format!("Nonce replay for {pk}: {nonce}"))
             }
             Self::StoreError(ref err) => serializer.serialize_str(&err.to_string()),
             Self::DuplicateRotationInDelta(delta_id) => serializer.serialize_str(&format!(

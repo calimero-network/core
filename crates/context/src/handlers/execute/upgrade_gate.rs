@@ -269,7 +269,7 @@ mod tests {
                 &calimero_store::key::ContextMeta::new(*ctx),
                 &ContextMeta::new(
                     calimero_store::key::ApplicationMeta::new(app_id),
-                    [0u8; 32].into(),
+                    [0u8; 32],
                     vec![],
                     None,
                 ),

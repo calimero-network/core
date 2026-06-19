@@ -513,6 +513,12 @@ pub struct UpdateContextApplicationResponse {
     pub data: Empty,
 }
 
+impl Default for UpdateContextApplicationResponse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UpdateContextApplicationResponse {
     pub const fn new() -> Self {
         Self { data: Empty {} }
@@ -600,6 +606,12 @@ pub struct CreateAliasResponse {
     pub data: Empty,
 }
 
+impl Default for CreateAliasResponse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CreateAliasResponse {
     pub const fn new() -> Self {
         Self { data: Empty {} }
@@ -610,6 +622,12 @@ impl CreateAliasResponse {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteAliasResponse {
     pub data: Empty,
+}
+
+impl Default for DeleteAliasResponse {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DeleteAliasResponse {
@@ -853,6 +871,12 @@ pub struct GrantPermissionResponse {
     pub data: Empty,
 }
 
+impl Default for GrantPermissionResponse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GrantPermissionResponse {
     pub const fn new() -> Self {
         Self { data: Empty {} }
@@ -890,6 +914,12 @@ pub struct RevokePermissionResponse {
     pub data: Empty,
 }
 
+impl Default for RevokePermissionResponse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RevokePermissionResponse {
     pub const fn new() -> Self {
         Self { data: Empty {} }
@@ -900,6 +930,12 @@ impl RevokePermissionResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SyncContextResponse {
     pub data: Empty,
+}
+
+impl Default for SyncContextResponse {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SyncContextResponse {
@@ -1030,31 +1066,31 @@ impl TryFrom<tdx_quote::Quote> for Quote {
                 version: quote.header.version,
                 attestation_key_type: quote.header.attestation_key_type as u16,
                 tee_type: quote.header.tee_type as u32,
-                qe_vendor_id: hex::encode(&quote.header.qe_vendor_id),
-                user_data: hex::encode(&quote.header.user_data),
+                qe_vendor_id: hex::encode(quote.header.qe_vendor_id),
+                user_data: hex::encode(quote.header.user_data),
             },
             body: QuoteBody {
                 tdx_version: match quote.body.tdx_version {
                     tdx_quote::TDXVersion::One => "1.0".to_string(),
                     tdx_quote::TDXVersion::OnePointFive => "1.5".to_string(),
                 },
-                tee_tcb_svn: hex::encode(&quote.body.tee_tcb_svn),
-                mrseam: hex::encode(&quote.body.mrseam),
-                mrsignerseam: hex::encode(&quote.body.mrsignerseam),
-                seamattributes: hex::encode(&quote.body.seamattributes),
-                tdattributes: hex::encode(&quote.body.tdattributes),
-                xfam: hex::encode(&quote.body.xfam),
+                tee_tcb_svn: hex::encode(quote.body.tee_tcb_svn),
+                mrseam: hex::encode(quote.body.mrseam),
+                mrsignerseam: hex::encode(quote.body.mrsignerseam),
+                seamattributes: hex::encode(quote.body.seamattributes),
+                tdattributes: hex::encode(quote.body.tdattributes),
+                xfam: hex::encode(quote.body.xfam),
                 mrtd,
-                mrconfigid: hex::encode(&quote.body.mrconfigid),
-                mrowner: hex::encode(&quote.body.mrowner),
-                mrownerconfig: hex::encode(&quote.body.mrownerconfig),
+                mrconfigid: hex::encode(quote.body.mrconfigid),
+                mrowner: hex::encode(quote.body.mrowner),
+                mrownerconfig: hex::encode(quote.body.mrownerconfig),
                 rtmr0,
                 rtmr1,
                 rtmr2,
                 rtmr3,
                 reportdata,
-                tee_tcb_svn_2: quote.body.tee_tcb_svn_2.map(|v| hex::encode(&v)),
-                mrservicetd: quote.body.mrservicetd.map(|v| hex::encode(&v)),
+                tee_tcb_svn_2: quote.body.tee_tcb_svn_2.map(hex::encode),
+                mrservicetd: quote.body.mrservicetd.map(hex::encode),
             },
             signature: hex::encode(quote.signature.to_bytes()),
             attestation_key: hex::encode(quote.attestation_key.to_sec1_bytes()),
@@ -1385,9 +1421,8 @@ use crate::validation::{
         validate_bytes_size, validate_hex_string, validate_optional_hex_string,
         validate_optional_string_length, validate_string_length, validate_url,
     },
-    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_METHOD_NAME_LENGTH,
-    MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH, MAX_QUOTE_B64_LENGTH,
-    MAX_VERSION_LENGTH,
+    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_NONCE_LENGTH,
+    MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VERSION_LENGTH,
 };
 
 impl Validate for InstallApplicationRequest {
@@ -2909,8 +2944,8 @@ mod tests {
         let context_id = ContextId::from([0xAA; 32]);
         let member_pk = PublicKey::from([0xBB; 32]);
         let json = serde_json::json!({
-            "contextId": serde_json::to_value(&context_id).unwrap(),
-            "memberPublicKey": serde_json::to_value(&member_pk).unwrap()
+            "contextId": serde_json::to_value(context_id).unwrap(),
+            "memberPublicKey": serde_json::to_value(member_pk).unwrap()
         });
 
         let resp: CreateContextResponseData = serde_json::from_value(json).unwrap();

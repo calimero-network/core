@@ -1279,8 +1279,8 @@ mod tests {
             target_application_id: ApplicationId::from([0xCC; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
-            admin_identity: admin.into(),
-            owner_identity: admin.into(),
+            admin_identity: admin,
+            owner_identity: admin,
             migration: None,
             auto_join: false,
         }

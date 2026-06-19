@@ -569,7 +569,7 @@ mod tests {
     fn test_long_json_message_truncated() {
         let s = reqwest::StatusCode::BAD_REQUEST;
         let long_msg = "x".repeat(400);
-        let body = format!(r#"{{"message":"{}"}}"#, long_msg);
+        let body = format!(r#"{{"message":"{long_msg}"}}"#);
         let result = extract_error_message(&body, s);
         // "HTTP 400: " (10 chars) + 300 x's + "…" (1 char) = 312 chars
         assert!(result.starts_with("HTTP 400: "));

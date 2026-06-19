@@ -1070,7 +1070,7 @@ mod tests {
         let host = logic.host_functions(store.as_store_mut());
 
         // Get the memory size - one page is 64KB (65536 bytes)
-        let memory_size = host.borrow_memory().data_size() as u64;
+        let memory_size = host.borrow_memory().data_size();
 
         // Test case 1: ptr + len exceeds memory size
         let data_ptr = memory_size - 10; // 10 bytes before end of memory
@@ -1132,7 +1132,7 @@ mod tests {
         let host = logic.host_functions(store.as_store_mut());
 
         // Get the memory size - one page is 64KB (65536 bytes)
-        let memory_size = host.borrow_memory().data_size() as u64;
+        let memory_size = host.borrow_memory().data_size();
 
         // Test case 1: ptr + len exceeds memory size
         let data_ptr = memory_size - 10; // 10 bytes before end of memory
@@ -1206,7 +1206,7 @@ mod tests {
         assert_eq!(result, test_data);
 
         // Test at the edge of memory (valid access)
-        let memory_size = host.borrow_memory().data_size() as u64;
+        let memory_size = host.borrow_memory().data_size();
         let edge_data = b"edge";
         let edge_ptr = memory_size - edge_data.len() as u64;
         host.borrow_memory().write(edge_ptr, edge_data).unwrap();

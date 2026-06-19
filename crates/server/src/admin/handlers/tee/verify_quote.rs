@@ -78,7 +78,7 @@ async fn verify_quote(req: TeeVerifyQuoteRequest) -> Result<TeeVerifyQuoteRespon
         error!(error=?err, "Failed to decode base64 quote");
         ApiError {
             status_code: StatusCode::BAD_REQUEST,
-            message: format!("Invalid base64 quote: {}", err),
+            message: format!("Invalid base64 quote: {err}"),
         }
     })?;
 

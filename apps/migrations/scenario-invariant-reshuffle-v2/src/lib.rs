@@ -63,7 +63,7 @@ pub fn migrate_v1_to_v2() -> ScenarioInvariantReshuffleV2 {
 
     let old_state: ScenarioInvariantReshuffleV1 =
         BorshDeserialize::deserialize(&mut &old_bytes[..]).unwrap_or_else(|e| {
-            panic!("Migration failed: V1 deserialization error {:?}", e);
+            panic!("Migration failed: V1 deserialization error {e:?}");
         });
 
     app::emit!(Event::Migrated {
@@ -88,15 +88,12 @@ pub fn migrate_v1_to_v2() -> ScenarioInvariantReshuffleV2 {
     let mut total: u64 = 0;
     let mut per_item: UnorderedMap<String, LwwRegister<u64>> = UnorderedMap::new();
     for (k, v) in old_state.per_item_counts.entries().unwrap_or_else(|e| {
-        panic!(
-            "Migration failed: V1 per_item_counts iteration error {:?}",
-            e
-        );
+        panic!("Migration failed: V1 per_item_counts iteration error {e:?}");
     }) {
         let n = *v.get();
         total += n;
         per_item.insert(k, n.into()).unwrap_or_else(|e| {
-            panic!("Migration failed: V2 per_item insert error {:?}", e);
+            panic!("Migration failed: V2 per_item insert error {e:?}");
         });
     }
 

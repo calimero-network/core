@@ -15,7 +15,7 @@ use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
+use calimero_primitives::metadata::MetadataRecord;
 use calimero_store::key::FromKeyParts;
 use calimero_store::key::{
     AsKeyParts, GroupMemberValue, GroupMetaValue, GroupOpHeadValue, GroupUpgradeValue,

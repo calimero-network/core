@@ -101,7 +101,7 @@ impl fmt::Display for SimTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let millis = self.as_millis();
         if millis < 1000 {
-            write!(f, "{}ms", millis)
+            write!(f, "{millis}ms")
         } else {
             write!(f, "{:.2}s", millis as f64 / 1000.0)
         }
@@ -183,7 +183,7 @@ impl fmt::Display for SimDuration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let millis = self.as_millis();
         if millis < 1000 {
-            write!(f, "{}ms", millis)
+            write!(f, "{millis}ms")
         } else {
             write!(f, "{:.2}s", millis as f64 / 1000.0)
         }

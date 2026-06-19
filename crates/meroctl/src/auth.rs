@@ -50,11 +50,9 @@ pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
         "Opening browser for authentication — you have 2 minutes to complete sign-in.",
     ));
 
-    if let Err(e) = webbrowser::open(&auth_url.to_string()) {
-        let warning_msg = format!(
-            "Failed to open browser: {}. Please manually open this URL: {}",
-            e, auth_url
-        );
+    if let Err(e) = webbrowser::open(auth_url.as_ref()) {
+        let warning_msg =
+            format!("Failed to open browser: {e}. Please manually open this URL: {auth_url}");
         output.write(&WarnLine(&warning_msg));
     }
 
@@ -284,7 +282,7 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
         if let Err(e) = result {
             if let Ok(mut guard) = tx.lock() {
                 if let Some(sender) = guard.take() {
-                    drop(sender.send(Err(format!("Server error: {}", e))));
+                    drop(sender.send(Err(format!("Server error: {e}"))));
                 }
             }
         }
@@ -300,7 +298,7 @@ fn build_auth_url(api_url: &Url, callback_port: u16) -> Result<Url> {
         .query_pairs_mut()
         .append_pair(
             "callback-url",
-            &format!("http://127.0.0.1:{}/callback", callback_port),
+            &format!("http://127.0.0.1:{callback_port}/callback"),
         )
         .append_pair("app-url", api_url.as_str().trim_end_matches('/'))
         .append_pair("permissions", "admin");
@@ -504,9 +502,9 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
         // Open the OAuth URL in the browser
         if let Err(e) = self.output.open_browser(&auth_url) {
             self.output
-                .display_error(&format!("Failed to open browser: {}", e));
+                .display_error(&format!("Failed to open browser: {e}"));
             self.output
-                .display_message(&format!("Please manually visit: {}", auth_url));
+                .display_message(&format!("Please manually visit: {auth_url}"));
         }
 
         // Wait for the OAuth callback
@@ -534,7 +532,7 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
             }
             Err(e) => {
                 self.output
-                    .display_error(&format!("OAuth authentication failed: {}", e));
+                    .display_error(&format!("OAuth authentication failed: {e}"));
                 Err(eyre!("OAuth authentication failed: {}", e))
             }
         }
@@ -565,9 +563,9 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
         // Try to open the authentication URL in the browser
         if let Err(e) = self.output.open_browser(api_url) {
             self.output
-                .display_error(&format!("Failed to open browser: {}", e));
+                .display_error(&format!("Failed to open browser: {e}"));
             self.output
-                .display_message(&format!("Please manually visit: {}", api_url));
+                .display_message(&format!("Please manually visit: {api_url}"));
         }
 
         // Wait for user to complete authentication
@@ -627,7 +625,7 @@ impl auth::MeroctlOutputHandler for MeroctlOutputWrapper {
     fn wait_for_input(&self, prompt: &str) -> Result<String> {
         use std::io::{self, Write};
 
-        print!("{}", prompt);
+        print!("{prompt}");
         io::stdout().flush()?;
 
         let mut input = String::new();

@@ -675,11 +675,8 @@ mod tests {
 
         // Simulate middleware error handling
         let mut headers = HeaderMap::new();
-        match &err {
-            crate::AuthError::TokenExpired => {
-                headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
-            }
-            _ => {}
+        if let crate::AuthError::TokenExpired = &err {
+            headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
         }
 
         assert_eq!(
@@ -713,11 +710,8 @@ mod tests {
         let err = crate::AuthError::InvalidRequest("Missing Authorization header".to_string());
 
         let mut headers = HeaderMap::new();
-        match &err {
-            crate::AuthError::InvalidRequest(_) => {
-                headers.insert("X-Auth-Error", "invalid_request".parse().unwrap());
-            }
-            _ => {}
+        if let crate::AuthError::InvalidRequest(_) = &err {
+            headers.insert("X-Auth-Error", "invalid_request".parse().unwrap());
         }
 
         assert_eq!(
@@ -1095,7 +1089,7 @@ mod tests {
     #[test]
     fn test_permissions_header_format() {
         // Test X-Auth-Permissions header with multiple permissions
-        let permissions = vec!["admin", "read", "write"];
+        let permissions = ["admin", "read", "write"];
         let permissions_str = permissions.join(",");
 
         let mut headers = HeaderMap::new();

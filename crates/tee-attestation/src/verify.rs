@@ -53,7 +53,7 @@ pub async fn verify_attestation(
     // Parse TDX quote
     let tdx_quote = TdxQuote::from_bytes(quote_bytes).map_err(|err| {
         error!(error=?err, "Failed to parse TDX quote");
-        AttestationError::QuoteParsingFailed(format!("{:?}", err))
+        AttestationError::QuoteParsingFailed(format!("{err:?}"))
     })?;
 
     info!("Quote parsed successfully");
@@ -66,7 +66,7 @@ pub async fn verify_attestation(
     // Fetch collateral from Intel PCS
     let collateral = get_collateral_from_pcs(quote_bytes).await.map_err(|err| {
         error!(error=?err, "Failed to fetch collateral from Intel PCS");
-        AttestationError::CollateralFetchFailed(format!("{:?}", err))
+        AttestationError::CollateralFetchFailed(format!("{err:?}"))
     })?;
 
     info!("Collateral fetched from Intel PCS");

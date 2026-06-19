@@ -95,22 +95,19 @@ impl ContextIdentityCommand {
                 if let Some(existing_identity) = lookup_result.data.value {
                     if existing_identity == identity {
                         environment.output.write(&ErrorLine(&format!(
-                            "Default alias already points to '{}'. Use --force to overwrite.",
-                            existing_identity
+                            "Default alias already points to '{existing_identity}'. Use --force to overwrite."
                         )));
                         return Ok(());
                     }
 
                     if !force {
                         environment.output.write(&ErrorLine(&format!(
-                            "Default alias already points to '{}'. Use --force to overwrite.",
-                            existing_identity
+                            "Default alias already points to '{existing_identity}'. Use --force to overwrite."
                         )));
                         return Ok(());
                     }
                     environment.output.write(&ErrorLine(&format!(
-                        "Overwriting existing default alias from '{}' to '{}'",
-                        existing_identity, identity
+                        "Overwriting existing default alias from '{existing_identity}' to '{identity}'"
                     )));
                     let _ = client
                         .delete_alias(default_alias, Some(context_id))

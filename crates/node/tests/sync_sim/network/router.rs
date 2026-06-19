@@ -194,7 +194,7 @@ impl NetworkRouter {
             } else {
                 0
             };
-            delivery_delay = delivery_delay + SimDuration::from_micros(reorder_delay_micros as u64);
+            delivery_delay += SimDuration::from_micros(reorder_delay_micros as u64);
         }
 
         let delivery_time = now + delivery_delay;
@@ -444,8 +444,8 @@ mod tests {
         // So delays should be between 10ms and 60ms
         for time in &delivery_times {
             let delay_ms = time.as_millis();
-            assert!(delay_ms >= 10, "delay {} should be >= 10", delay_ms);
-            assert!(delay_ms <= 60, "delay {} should be <= 60", delay_ms);
+            assert!(delay_ms >= 10, "delay {delay_ms} should be >= 10");
+            assert!(delay_ms <= 60, "delay {delay_ms} should be <= 60");
         }
     }
 }

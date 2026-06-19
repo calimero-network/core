@@ -335,7 +335,7 @@ impl FromStr for Permission {
                         PackagePermission::GetLatestVersion(scope),
                     )),
                     "" => Ok(Permission::Package(PackagePermission::All)),
-                    _ => Err(format!("Unknown package action: {}", action)),
+                    _ => Err(format!("Unknown package action: {action}")),
                 }
             }
 
@@ -503,15 +503,15 @@ impl fmt::Display for Permission {
                 PackagePermission::All => write!(f, "package"),
                 PackagePermission::ListPackages(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
-                    write!(f, "package:list-packages{}", params)
+                    write!(f, "package:list-packages{params}")
                 }
                 PackagePermission::ListVersions(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
-                    write!(f, "package:list-versions{}", params)
+                    write!(f, "package:list-versions{params}")
                 }
                 PackagePermission::GetLatestVersion(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
-                    write!(f, "package:get-latest-version{}", params)
+                    write!(f, "package:get-latest-version{params}")
                 }
             },
             Permission::Blob(blob_perm) => match blob_perm {
@@ -846,21 +846,18 @@ mod tests {
     fn test_permission_display() {
         // Test Display trait implementation
         let perm = Permission::Admin(AdminPermission);
-        assert_eq!(format!("{}", perm), "admin");
+        assert_eq!(format!("{perm}"), "admin");
         assert_eq!(perm.to_string(), "admin");
 
         let perm = Permission::Keys(KeyPermission::Create);
-        assert_eq!(format!("{}", perm), "keys:create");
+        assert_eq!(format!("{perm}"), "keys:create");
         assert_eq!(perm.to_string(), "keys:create");
 
         let perm = Permission::Context(ContextPermission::Alias(AliasPermission::Lookup(
             AliasType::Identity,
             ResourceScope::Specific(vec!["ctx-123".to_string()]),
         )));
-        assert_eq!(
-            format!("{}", perm),
-            "context:alias:lookup:identity[ctx-123]"
-        );
+        assert_eq!(format!("{perm}"), "context:alias:lookup:identity[ctx-123]");
         assert_eq!(perm.to_string(), "context:alias:lookup:identity[ctx-123]");
     }
 

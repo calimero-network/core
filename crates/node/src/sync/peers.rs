@@ -275,7 +275,6 @@ mod tests {
 
     use super::*;
     use crate::sync::network::mock::MockSyncNetwork;
-    use crate::sync::state_access_mock::MockSyncStateAccess;
 
     fn ctx(byte: u8) -> ContextId {
         ContextId::from([byte; 32])

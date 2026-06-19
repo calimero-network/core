@@ -46,7 +46,7 @@ pub fn derive_signer_id_did_key(pubkey: &[u8; 32]) -> String {
     // Encode with base58btc (multibase 'z' prefix)
     let encoded = bs58::encode(&multicodec_key).into_string();
 
-    format!("did:key:z{}", encoded)
+    format!("did:key:z{encoded}")
 }
 
 /// Canonicalizes a manifest JSON value using RFC 8785 (JCS).
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn test_decode_public_key_invalid_length() {
-        let short_key = URL_SAFE_NO_PAD.encode(&[0u8; 16]);
+        let short_key = URL_SAFE_NO_PAD.encode([0u8; 16]);
         let result = decode_public_key(&short_key);
         assert!(result.is_err());
         assert!(result
@@ -522,14 +522,14 @@ mod tests {
     #[test]
     fn test_decode_signature_valid() {
         let sig_bytes = [0u8; 64];
-        let encoded = URL_SAFE_NO_PAD.encode(&sig_bytes);
+        let encoded = URL_SAFE_NO_PAD.encode(sig_bytes);
         let decoded = decode_signature(&encoded).unwrap();
         assert_eq!(decoded, sig_bytes);
     }
 
     #[test]
     fn test_decode_signature_invalid_length() {
-        let short_sig = URL_SAFE_NO_PAD.encode(&[0u8; 32]);
+        let short_sig = URL_SAFE_NO_PAD.encode([0u8; 32]);
         let result = decode_signature(&short_sig);
         assert!(result.is_err());
         assert!(result

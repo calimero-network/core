@@ -14,8 +14,7 @@ use calimero_context::group_store::{
 };
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::{
-    ContextGroupId, GovernanceParentEdge, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
-    SignerId,
+    ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
 use calimero_dag::DagStore;
@@ -1548,7 +1547,7 @@ fn cascade_removal_on_member_kick() {
     {
         use calimero_store::key::ContextIdentity;
         let mut handle = store.handle();
-        let key = ContextIdentity::new(context_id, member_pk.into());
+        let key = ContextIdentity::new(context_id, member_pk);
         handle
             .put(
                 &key,
@@ -1563,7 +1562,7 @@ fn cascade_removal_on_member_kick() {
     {
         use calimero_store::key::ContextIdentity;
         let handle = store.handle();
-        let key = ContextIdentity::new(context_id, member_pk.into());
+        let key = ContextIdentity::new(context_id, member_pk);
         assert!(
             handle.has(&key).unwrap(),
             "member should be in context before kick"
@@ -1590,7 +1589,7 @@ fn cascade_removal_on_member_kick() {
     {
         use calimero_store::key::ContextIdentity;
         let handle = store.handle();
-        let key = ContextIdentity::new(context_id, member_pk.into());
+        let key = ContextIdentity::new(context_id, member_pk);
         assert!(
             !handle.has(&key).unwrap(),
             "member should be cascade-removed from context"
@@ -1630,7 +1629,7 @@ fn cascade_removal_deterministic_across_nodes() {
         use calimero_store::key::ContextIdentity;
         let mut handle = store.handle();
         for ctx in [ctx1, ctx2] {
-            let key = ContextIdentity::new(ctx, member_pk.into());
+            let key = ContextIdentity::new(ctx, member_pk);
             handle
                 .put(
                     &key,
@@ -1659,7 +1658,7 @@ fn cascade_removal_deterministic_across_nodes() {
         use calimero_store::key::ContextIdentity;
         let handle = store.handle();
         for ctx in [ctx1, ctx2] {
-            let key = ContextIdentity::new(ctx, member_pk.into());
+            let key = ContextIdentity::new(ctx, member_pk);
             assert!(
                 !handle.has(&key).unwrap(),
                 "{label}: member should be cascade-removed from context {}",

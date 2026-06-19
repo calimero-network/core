@@ -142,12 +142,12 @@ impl std::fmt::Display for MergeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MergeError::IncompatibleStates => write!(f, "Incompatible CRDT states"),
-            MergeError::StorageError(msg) => write!(f, "Storage error: {}", msg),
+            MergeError::StorageError(msg) => write!(f, "Storage error: {msg}"),
             MergeError::TypeMismatch => write!(f, "Cannot merge different CRDT types"),
             MergeError::WasmRequired { type_name } => {
-                write!(f, "WASM callback required for type: {}", type_name)
+                write!(f, "WASM callback required for type: {type_name}")
             }
-            MergeError::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
+            MergeError::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
             MergeError::NoMergeFunctionRegistered => {
                 write!(
                     f,
@@ -207,9 +207,9 @@ pub enum DecomposeError {
 impl std::fmt::Display for DecomposeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DecomposeError::MissingField(field) => write!(f, "Missing field: {}", field),
-            DecomposeError::InvalidValue(msg) => write!(f, "Invalid value: {}", msg),
-            DecomposeError::StorageError(msg) => write!(f, "Storage error: {}", msg),
+            DecomposeError::MissingField(field) => write!(f, "Missing field: {field}"),
+            DecomposeError::InvalidValue(msg) => write!(f, "Invalid value: {msg}"),
+            DecomposeError::StorageError(msg) => write!(f, "Storage error: {msg}"),
         }
     }
 }

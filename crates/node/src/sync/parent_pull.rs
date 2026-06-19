@@ -164,7 +164,7 @@ mod tests {
                     assert_eq!(&p, expected, "scheduler returned wrong peer");
                     budget.record_attempt(p);
                 }
-                other => panic!("expected Peer, got {:?}", other),
+                other => panic!("expected Peer, got {other:?}"),
             }
         }
 

@@ -446,8 +446,8 @@ async fn test_e2e_divergence_scenario() {
     let state1 = applier1.get_state().await;
     let state2 = applier2.get_state().await;
 
-    println!("Node-1 state: {:?}", state1);
-    println!("Node-2 state: {:?}", state2);
+    println!("Node-1 state: {state1:?}");
+    println!("Node-2 state: {state2:?}");
     println!("Node-1 hash: {:?}", state1.compute_hash());
     println!("Node-2 hash: {:?}", state2.compute_hash());
 

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context::governance_broadcast::ObserveDelivery;
-use calimero_context::group_store;
 use calimero_context::group_store::NamespaceRepository;
 use calimero_context_client::group::{JoinContextRequest, ListGroupContextsRequest};
 use calimero_context_config::types::ContextGroupId;
@@ -65,7 +64,7 @@ pub async fn handler(
         "Using namespace identity for fleet join"
     );
 
-    let pk_hash: [u8; 32] = Sha256::digest(&*our_public_key).into();
+    let pk_hash: [u8; 32] = Sha256::digest(*our_public_key).into();
     let nonce: [u8; 32] = rand::random();
     let report_data = build_report_data(&nonce, Some(&pk_hash));
 

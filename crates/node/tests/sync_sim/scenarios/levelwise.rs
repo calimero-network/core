@@ -79,13 +79,11 @@ fn test_wide_shallow_tree_sync() {
 
     assert!(
         alice_depth <= 2,
-        "Alice should have shallow tree, got depth {}",
-        alice_depth
+        "Alice should have shallow tree, got depth {alice_depth}"
     );
     assert!(
         bob_depth <= 2,
-        "Bob should have shallow tree, got depth {}",
-        bob_depth
+        "Bob should have shallow tree, got depth {bob_depth}"
     );
 }
 
@@ -234,7 +232,7 @@ fn test_only_differing_subtrees() {
     // Shared entities (identical on both)
     for i in 1..=10 {
         let id = EntityId::from_u64(i);
-        let data = format!("shared-{}", i).into_bytes();
+        let data = format!("shared-{i}").into_bytes();
         let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 100);
 
         alice.insert_entity_with_metadata(id, data.clone(), metadata.clone());
@@ -246,7 +244,7 @@ fn test_only_differing_subtrees() {
         let id = EntityId::from_u64(i);
         alice.insert_entity_with_metadata(
             id,
-            format!("alice-{}", i).into_bytes(),
+            format!("alice-{i}").into_bytes(),
             EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
@@ -255,7 +253,7 @@ fn test_only_differing_subtrees() {
         let id = EntityId::from_u64(i);
         bob.insert_entity_with_metadata(
             id,
-            format!("bob-{}", i).into_bytes(),
+            format!("bob-{i}").into_bytes(),
             EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
@@ -313,7 +311,7 @@ fn test_thousand_children_level() {
     // Create trees with 1000+ entities
     for i in 0..1000 {
         let id = EntityId::from_u64(i);
-        let data = format!("entity-{}", i).into_bytes();
+        let data = format!("entity-{i}").into_bytes();
         let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 10);
 
         alice.insert_entity_with_metadata(id, data.clone(), metadata.clone());
@@ -326,7 +324,7 @@ fn test_thousand_children_level() {
     // Bob has some unique entities
     for i in 1000..1100 {
         let id = EntityId::from_u64(i);
-        let data = format!("bob-unique-{}", i).into_bytes();
+        let data = format!("bob-unique-{i}").into_bytes();
         let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 10);
         bob.insert_entity_with_metadata(id, data, metadata);
     }
@@ -365,8 +363,7 @@ fn test_empty_tree_handling() {
 
     assert!(
         matches!(protocol, SelectedProtocol::Snapshot { .. }),
-        "Fresh node should use Snapshot, got {:?}",
-        protocol
+        "Fresh node should use Snapshot, got {protocol:?}"
     );
 
     // But we can force LevelWise for testing edge case
@@ -485,13 +482,11 @@ mod protocol_selection_tests {
 
         assert!(
             depth_a <= 2,
-            "force_levelwise should produce depth <= 2, got {}",
-            depth_a
+            "force_levelwise should produce depth <= 2, got {depth_a}"
         );
         assert!(
             depth_b <= 2,
-            "force_levelwise should produce depth <= 2, got {}",
-            depth_b
+            "force_levelwise should produce depth <= 2, got {depth_b}"
         );
     }
 

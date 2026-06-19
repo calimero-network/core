@@ -92,8 +92,7 @@ impl ContextIdentityAliasCommand {
 
                 if !identity_exists {
                     environment.output.write(&ErrorLine(&format!(
-                        "Identity '{}' does not exist in context '{}'",
-                        identity, context
+                        "Identity '{identity}' does not exist in context '{context}'"
                     )));
                     return Ok(());
                 }
@@ -103,23 +102,18 @@ impl ContextIdentityAliasCommand {
                 if let Some(existing_identity) = lookup_result.data.value {
                     if existing_identity == identity {
                         environment.output.write(&ErrorLine(&format!(
-                            "Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
-                            name,
-                            existing_identity
+                            "Alias '{name}' already exists and points to '{existing_identity}'. Use --force to overwrite."
                         )));
                         return Ok(());
                     }
                     if !force {
                         environment.output.write(&ErrorLine(&format!(
-                            "Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
-                            name,
-                            existing_identity
+                            "Alias '{name}' already exists and points to '{existing_identity}'. Use --force to overwrite."
                         )));
                         return Ok(());
                     }
                     environment.output.write(&ErrorLine(&format!(
-                        "Overwriting existing alias '{}' from '{}' to '{}'",
-                        name, existing_identity, identity
+                        "Overwriting existing alias '{name}' from '{existing_identity}' to '{identity}'"
                     )));
                     let _ignored = client
                         .delete_alias(name, Some(context_id))

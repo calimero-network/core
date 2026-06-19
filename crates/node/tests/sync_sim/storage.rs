@@ -258,7 +258,7 @@ impl SimStorage {
         };
 
         let children = index.children();
-        let has_children = children.as_ref().map_or(false, |c| !c.is_empty());
+        let has_children = children.as_ref().is_some_and(|c| !c.is_empty());
 
         if has_children {
             // Internal node: count children recursively
@@ -304,7 +304,7 @@ impl SimStorage {
         };
 
         let children = index.children();
-        if children.is_none() || children.as_ref().map_or(true, |c| c.is_empty()) {
+        if children.is_none() || children.as_ref().is_none_or(|c| c.is_empty()) {
             // Leaf node
             return 1;
         }
@@ -715,10 +715,10 @@ mod tests {
 
         // Verify entity was created
         let count = storage.entity_count();
-        eprintln!("entity_count after update_entity_data: {}", count);
+        eprintln!("entity_count after update_entity_data: {count}");
 
         // Should have at least 2: root + the new entity
-        assert!(count >= 2, "should have root + entity, got {}", count);
+        assert!(count >= 2, "should have root + entity, got {count}");
 
         // Verify data is readable
         let data = storage.get_entity_data(entity_id);
@@ -783,7 +783,7 @@ mod tests {
 
         // Original should be able to read the data written via clone
         let original_data = storage.get_entity_data(entity_id);
-        eprintln!("original sees data: {:?}", original_data);
+        eprintln!("original sees data: {original_data:?}");
         assert_eq!(
             original_data,
             Some(b"hello".to_vec()),

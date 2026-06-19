@@ -100,7 +100,7 @@ impl DeltaIdBloomFilter {
             (k.ceil() as u8).clamp(MIN_NUM_HASHES, MAX_NUM_HASHES)
         };
 
-        let num_bytes = (num_bits + 7) / 8;
+        let num_bytes = num_bits.div_ceil(8);
 
         Self {
             bits: vec![0; num_bytes],
@@ -121,7 +121,7 @@ impl DeltaIdBloomFilter {
         let num_bits = num_bits.max(MIN_NUM_BITS);
         let num_hashes = num_hashes.clamp(MIN_NUM_HASHES, MAX_NUM_HASHES);
 
-        let num_bytes = (num_bits + 7) / 8;
+        let num_bytes = num_bits.div_ceil(8);
         Self {
             bits: vec![0; num_bytes],
             num_bits,
@@ -478,10 +478,8 @@ mod tests {
 
         let actual_fp_rate = false_positives as f64 / test_count as f64;
         assert!(
-            actual_fp_rate < target_fp_rate as f64 * 3.0,
-            "FP rate {} too high (target {})",
-            actual_fp_rate,
-            target_fp_rate
+            actual_fp_rate < target_fp_rate * 3.0,
+            "FP rate {actual_fp_rate} too high (target {target_fp_rate})"
         );
     }
 
@@ -625,9 +623,7 @@ mod tests {
             let filter = DeltaIdBloomFilter::new(100, fp_rate);
             assert!(
                 filter.bit_count() > 0,
-                "Filter with fp_rate {} ({}) should have positive bit count",
-                fp_rate,
-                description
+                "Filter with fp_rate {fp_rate} ({description}) should have positive bit count"
             );
         }
     }
@@ -806,7 +802,7 @@ mod tests {
         assert!(filter.is_valid());
 
         // bits.len() should be >= (num_bits + 7) / 8
-        let required_bytes = (filter.bit_count() + 7) / 8;
+        let required_bytes = filter.bit_count().div_ceil(8);
         assert!(filter.bits().len() >= required_bytes);
     }
 

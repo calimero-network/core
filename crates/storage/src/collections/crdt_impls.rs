@@ -571,11 +571,10 @@ mod tests {
             CrdtType::LwwRegister { inner_type } => {
                 assert!(
                     inner_type.contains("String"),
-                    "inner_type should contain 'String', got: {}",
-                    inner_type
+                    "inner_type should contain 'String', got: {inner_type}"
                 );
             }
-            other => panic!("Expected LwwRegister, got: {:?}", other),
+            other => panic!("Expected LwwRegister, got: {other:?}"),
         }
         assert!(!LwwRegister::<String>::can_contain_crdts());
     }
@@ -612,17 +611,15 @@ mod tests {
             } => {
                 assert!(
                     key_type.contains("String"),
-                    "key_type should contain 'String', got: {}",
-                    key_type
+                    "key_type should contain 'String', got: {key_type}"
                 );
                 // Value type is Counter (a CRDT), not u64 - type_name returns full path
                 assert!(
                     value_type.contains("Counter"),
-                    "value_type should contain 'Counter', got: {}",
-                    value_type
+                    "value_type should contain 'Counter', got: {value_type}"
                 );
             }
-            other => panic!("Expected UnorderedMap, got: {:?}", other),
+            other => panic!("Expected UnorderedMap, got: {other:?}"),
         }
         assert!(TestMap::can_contain_crdts()); // Maps CAN contain CRDTs!
     }
@@ -984,7 +981,7 @@ mod tests {
 
         // Test Deref
         let reg = LwwRegister::new("Hello".to_owned());
-        let s: &str = &*reg; // Deref to &String, then &str
+        let s: &str = &reg; // Deref to &String, then &str
         assert_eq!(s, "Hello");
 
         // Test AsRef
@@ -1018,10 +1015,10 @@ mod tests {
 
         // Test Display
         let display_reg = LwwRegister::new("Display Test".to_owned());
-        assert_eq!(format!("{}", display_reg), "Display Test");
+        assert_eq!(format!("{display_reg}"), "Display Test");
 
         let num_display = LwwRegister::new(123);
-        assert_eq!(format!("{}", num_display), "123");
+        assert_eq!(format!("{num_display}"), "123");
     }
 
     #[test]

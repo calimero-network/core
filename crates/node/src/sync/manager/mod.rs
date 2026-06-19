@@ -1568,7 +1568,7 @@ impl SyncManager {
             .context_client
             .datastore_handle()
             .get(&calimero_store::key::ContextResyncRequested::new(
-                context_id.into(),
+                context_id,
             ))?
             .is_some();
 

@@ -52,7 +52,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use bs58;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;

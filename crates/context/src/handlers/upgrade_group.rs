@@ -296,7 +296,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 
                     Ok(UpgradeGroupResponse {
                         group_id,
-                        status: completed_status.into(),
+                        status: completed_status,
                     })
                 }
                 .into_actor(self),
@@ -326,7 +326,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         };
 
         if let Err(err) = UpgradesRepository::new(&self.datastore).save(&group_id, &upgrade_value) {
-            return ActorResponse::reply(Err(err.into()));
+            return ActorResponse::reply(Err(err));
         }
 
         // --- Async: run canary upgrade ---
@@ -534,13 +534,13 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 
                         return Ok(UpgradeGroupResponse {
                             group_id: group_id_clone,
-                            status: completed_status.into(),
+                            status: completed_status,
                         });
                     }
 
                     Ok(UpgradeGroupResponse {
                         group_id: group_id_clone,
-                        status: status.into(),
+                        status,
                     })
                 }
             },
@@ -1141,7 +1141,7 @@ pub(crate) async fn propagate_upgrade(
     // Build the list of contexts to upgrade (excluding the canary)
     let mut pending: Vec<ContextId> = contexts
         .into_iter()
-        .filter(|cid| skip_context.map_or(true, |skip| *cid != skip))
+        .filter(|cid| skip_context != Some(*cid))
         .collect();
 
     // If the canary was removed from the group between the initial upgrade
@@ -1761,7 +1761,7 @@ fn dispatch_cascade(
 
         Ok(UpgradeGroupResponse {
             group_id,
-            status: signed_status.into(),
+            status: signed_status,
         })
     }))
 }

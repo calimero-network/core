@@ -48,7 +48,7 @@ impl<'a> PermissionChecker<'a> {
         // callers that match on `MembershipError::NotAdmin` keep working.
         bail!(MembershipError::NotAdmin {
             group_id: format!("{:?}", self.group_id),
-            identity: format!("{:?}", identity),
+            identity: format!("{identity:?}"),
         });
     }
 

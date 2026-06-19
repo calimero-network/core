@@ -35,7 +35,7 @@ impl From<reqwest::Error> for ClientError {
             }
         } else if err.is_connect() {
             ClientError::Network {
-                message: format!("Connection failed: {}", err),
+                message: format!("Connection failed: {err}"),
             }
         } else if err.is_status() {
             if let Some(status) = err.status() {
@@ -44,12 +44,12 @@ impl From<reqwest::Error> for ClientError {
                 }
             } else {
                 ClientError::Network {
-                    message: format!("HTTP error: {}", err),
+                    message: format!("HTTP error: {err}"),
                 }
             }
         } else {
             ClientError::Network {
-                message: format!("Network error: {}", err),
+                message: format!("Network error: {err}"),
             }
         }
     }
@@ -58,7 +58,7 @@ impl From<reqwest::Error> for ClientError {
 impl From<serde_json::Error> for ClientError {
     fn from(err: serde_json::Error) -> Self {
         ClientError::Internal {
-            message: format!("Serialization error: {}", err),
+            message: format!("Serialization error: {err}"),
         }
     }
 }
@@ -73,7 +73,7 @@ impl From<std::io::Error> for ClientError {
                 message: "Permission denied".to_owned(),
             },
             _ => ClientError::Storage {
-                message: format!("IO error: {}", err),
+                message: format!("IO error: {err}"),
             },
         }
     }
@@ -82,7 +82,7 @@ impl From<std::io::Error> for ClientError {
 impl From<url::ParseError> for ClientError {
     fn from(err: url::ParseError) -> Self {
         ClientError::Network {
-            message: format!("Invalid URL: {}", err),
+            message: format!("Invalid URL: {err}"),
         }
     }
 }

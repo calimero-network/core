@@ -8,8 +8,7 @@ fn test_validate_path_component_valid() {
     for path in valid_paths {
         assert!(
             bundle::validate_path_component(path, "test").is_ok(),
-            "Valid path '{}' should pass validation",
-            path
+            "Valid path '{path}' should pass validation"
         );
     }
 }
@@ -20,8 +19,7 @@ fn test_validate_path_component_path_traversal() {
     for path in invalid_paths {
         assert!(
             bundle::validate_path_component(path, "test").is_err(),
-            "Path traversal '{}' should be rejected",
-            path
+            "Path traversal '{path}' should be rejected"
         );
     }
 }
@@ -32,8 +30,7 @@ fn test_validate_path_component_directory_separators() {
     for path in invalid_paths {
         assert!(
             bundle::validate_path_component(path, "test").is_err(),
-            "Path with separator '{}' should be rejected",
-            path
+            "Path with separator '{path}' should be rejected"
         );
     }
 }
@@ -53,8 +50,7 @@ fn test_validate_path_component_windows_drive() {
     for path in invalid_paths {
         assert!(
             bundle::validate_path_component(path, "test").is_err(),
-            "Windows drive path '{}' should be rejected",
-            path
+            "Windows drive path '{path}' should be rejected"
         );
     }
 }
@@ -73,8 +69,7 @@ fn test_validate_artifact_path_valid() {
     for path in valid_paths {
         assert!(
             bundle::validate_artifact_path(path, "test").is_ok(),
-            "Valid artifact path '{}' should pass validation",
-            path
+            "Valid artifact path '{path}' should pass validation"
         );
     }
 }
@@ -120,8 +115,7 @@ fn test_validate_artifact_path_absolute_windows() {
     for path in invalid_paths {
         assert!(
             bundle::validate_artifact_path(path, "test").is_err(),
-            "Windows absolute path '{}' should be rejected",
-            path
+            "Windows absolute path '{path}' should be rejected"
         );
     }
 }
@@ -132,8 +126,7 @@ fn test_validate_artifact_path_traversal() {
     for path in invalid_paths {
         assert!(
             bundle::validate_artifact_path(path, "test").is_err(),
-            "Path traversal '{}' should be rejected",
-            path
+            "Path traversal '{path}' should be rejected"
         );
     }
 }

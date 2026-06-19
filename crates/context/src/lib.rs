@@ -27,7 +27,6 @@ use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, RwLock};
 
 use calimero_governance_store::metrics::Metrics;
-use calimero_wasm_abi::schema::MethodIntent;
 
 pub mod activation;
 pub mod auto_follow;

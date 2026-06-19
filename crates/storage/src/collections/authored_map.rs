@@ -364,7 +364,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).expect("insert");
 
         assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(1));
@@ -378,7 +378,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
 
         let err = map
@@ -397,7 +397,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
         map.update(&"apple".to_owned(), 42).expect("owner update");
 
@@ -411,7 +411,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
 
         env::set_executor_id(BOB);
@@ -432,7 +432,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
         let err = map
             .update(&"ghost".to_owned(), 1)
             .expect_err("missing key update must fail");
@@ -449,7 +449,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
 
         let removed = map.remove(&"apple".to_owned()).unwrap();
@@ -464,7 +464,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
 
         env::set_executor_id(BOB);
@@ -481,7 +481,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
         assert_eq!(map.remove(&"ghost".to_owned()).unwrap(), None);
     }
 
@@ -490,7 +490,7 @@ mod tests {
     fn different_users_own_disjoint_keys_in_shared_keyspace() {
         env::reset_for_testing();
 
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
 
         env::set_executor_id(ALICE);
         map.insert("alice_key".to_owned(), 1).unwrap();
@@ -524,7 +524,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let map = Root::new(AuthoredMap::<String, u64>::new);
         assert_eq!(map.owner_of(&"ghost".to_owned()).unwrap(), None);
     }
 
@@ -563,7 +563,7 @@ mod tests {
         env::set_executor_id(ALICE);
 
         // Insert at the default (unversioned 0) target — the "v1" stamp.
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("k".to_owned(), 1).unwrap();
         assert_eq!(map.entry_schema_version(&"k".to_owned()).unwrap(), Some(0));
 
@@ -619,7 +619,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut map = Root::new(|| AuthoredMap::<String, LwwRegister<String>>::new());
+        let mut map = Root::new(AuthoredMap::<String, LwwRegister<String>>::new);
         map.insert("k".to_owned(), LwwRegister::new("v1".to_owned()))
             .unwrap();
         assert_eq!(map.entry_schema_version(&"k".to_owned()).unwrap(), Some(0));
@@ -645,7 +645,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
 
         // An owner write stamps the binary's current target schema version
@@ -672,7 +672,7 @@ mod tests {
         env::reset_for_testing();
         env::set_executor_id(ALICE);
 
-        let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+        let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("a".to_owned(), 1).unwrap();
         map.insert("b".to_owned(), 2).unwrap();
         env::set_executor_id(BOB);

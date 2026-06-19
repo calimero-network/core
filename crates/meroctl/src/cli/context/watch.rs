@@ -66,7 +66,7 @@ impl Report for ExecutionOutput<'_> {
     fn report(&self) {
         println!("Command executed: {}", self.cmd.join(" "));
         if let Some(status) = self.status {
-            println!("Exit status: {}", status);
+            println!("Exit status: {status}");
         }
         if !self.stdout.is_empty() {
             println!("Stdout: {}", self.stdout);
@@ -79,7 +79,7 @@ impl Report for ExecutionOutput<'_> {
 
 impl Report for Response {
     fn report(&self) {
-        println!("Received response: {:?}", self);
+        println!("Received response: {self:?}");
     }
 }
 
@@ -114,7 +114,7 @@ impl WatchCommand {
 
         environment
             .output
-            .write(&InfoLine(&format!("Subscribed to context {}", context_id)));
+            .write(&InfoLine(&format!("Subscribed to context {context_id}")));
 
         if let Some(cmd) = &self.exec {
             environment.output.write(&InfoLine(&format!(

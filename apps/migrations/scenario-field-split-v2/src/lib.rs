@@ -48,7 +48,7 @@ pub fn migrate_v1_to_v2() -> ScenarioFieldSplitV2 {
 
     let old_state: ScenarioFieldSplitV1 = BorshDeserialize::deserialize(&mut &old_bytes[..])
         .unwrap_or_else(|e| {
-            panic!("Migration failed: V1 deserialization error {:?}", e);
+            panic!("Migration failed: V1 deserialization error {e:?}");
         });
 
     app::emit!(Event::Migrated {

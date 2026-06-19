@@ -302,8 +302,7 @@ impl VMHostFunctions<'_> {
         self.with_logic_mut(|logic| -> VMLogicResult<()> {
             logic
                 .registers
-                .set(logic.limits, dest_register_id, logic.context.context_id)
-                .map_err(VMLogicError::from)?;
+                .set(logic.limits, dest_register_id, logic.context.context_id)?;
             Ok(())
         })?;
 
@@ -936,10 +935,7 @@ impl VMHostFunctions<'_> {
 
             if let Some(bytes) = maybe_bytes {
                 let value_len = bytes.len();
-                logic
-                    .registers
-                    .set(logic.limits, dest_register_id, bytes)
-                    .map_err(VMLogicError::from)?;
+                logic.registers.set(logic.limits, dest_register_id, bytes)?;
 
                 info!(
                     target: "runtime::host::system",

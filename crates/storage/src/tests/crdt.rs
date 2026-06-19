@@ -541,7 +541,7 @@ fn many_sequential_updates() {
     // Apply 20 sequential updates (reduced from 100 for speed)
     for i in 1..=20 {
         std::thread::sleep(std::time::Duration::from_micros(100));
-        page.title = format!("Version {}", i);
+        page.title = format!("Version {i}");
         page.element_mut().update();
 
         let action = Action::Update {
@@ -584,7 +584,7 @@ fn rapid_add_delete_cycles() {
             TestInterface::apply_action(action, &ApplyContext::empty()).unwrap();
         } else {
             // Update (resurrect if was deleted)
-            page.title = format!("Version {}", i);
+            page.title = format!("Version {i}");
             page.element_mut().update();
 
             let action = Action::Update {

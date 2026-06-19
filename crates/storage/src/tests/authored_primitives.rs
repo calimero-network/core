@@ -150,7 +150,7 @@ fn authored_map_update_with_forged_owner_claim_is_rejected() {
 
     // Alice inserts the entry (stamped owner = Alice).
     env::set_executor_id(*alice_pk.digest());
-    let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+    let mut map = Root::new(AuthoredMap::<String, u64>::new);
     map.insert("apple".to_owned(), 1).expect("alice insert");
 
     let entry_id = map.entry_id(&"apple".to_owned());
@@ -168,7 +168,7 @@ fn authored_map_update_with_forged_owner_claim_is_rejected() {
 
     match MainInterface::apply_action(forged, &ApplyContext::empty()) {
         Err(StorageError::InvalidSignature) => {}
-        other => panic!("expected InvalidSignature, got {:?}", other),
+        other => panic!("expected InvalidSignature, got {other:?}"),
     }
 
     // Silence unused_variables warning on alice_sk (not used in this path).
@@ -187,7 +187,7 @@ fn authored_map_delete_by_non_owner_is_rejected() {
     let (bob_sk, bob_pk) = create_test_keypair();
 
     env::set_executor_id(*alice_pk.digest());
-    let mut map = Root::new(|| AuthoredMap::<String, u64>::new());
+    let mut map = Root::new(AuthoredMap::<String, u64>::new);
     map.insert("apple".to_owned(), 1).expect("alice insert");
 
     let entry_id = map.entry_id(&"apple".to_owned());
@@ -204,7 +204,7 @@ fn authored_map_delete_by_non_owner_is_rejected() {
 
     match MainInterface::apply_action(forged, &ApplyContext::empty()) {
         Err(StorageError::InvalidSignature) => {}
-        other => panic!("expected InvalidSignature, got {:?}", other),
+        other => panic!("expected InvalidSignature, got {other:?}"),
     }
 }
 
@@ -218,7 +218,7 @@ fn authored_vector_update_with_forged_owner_claim_is_rejected() {
     let (bob_sk, _bob_pk) = create_test_keypair();
 
     env::set_executor_id(*alice_pk.digest());
-    let mut v = Root::new(|| AuthoredVector::<u64>::new());
+    let mut v = Root::new(AuthoredVector::<u64>::new);
     v.push(7).expect("alice push");
 
     let entry_id = v
@@ -236,7 +236,7 @@ fn authored_vector_update_with_forged_owner_claim_is_rejected() {
 
     match MainInterface::apply_action(forged, &ApplyContext::empty()) {
         Err(StorageError::InvalidSignature) => {}
-        other => panic!("expected InvalidSignature, got {:?}", other),
+        other => panic!("expected InvalidSignature, got {other:?}"),
     }
 }
 
@@ -250,7 +250,7 @@ fn authored_vector_delete_by_non_owner_is_rejected() {
     let (bob_sk, bob_pk) = create_test_keypair();
 
     env::set_executor_id(*alice_pk.digest());
-    let mut v = Root::new(|| AuthoredVector::<u64>::new());
+    let mut v = Root::new(AuthoredVector::<u64>::new);
     v.push(7).expect("alice push");
 
     let entry_id = v
@@ -267,6 +267,6 @@ fn authored_vector_delete_by_non_owner_is_rejected() {
 
     match MainInterface::apply_action(forged, &ApplyContext::empty()) {
         Err(StorageError::InvalidSignature) => {}
-        other => panic!("expected InvalidSignature, got {:?}", other),
+        other => panic!("expected InvalidSignature, got {other:?}"),
     }
 }

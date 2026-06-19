@@ -213,7 +213,7 @@ impl KvStore {
     pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
         app::log!("Adding frozen value: {:?}", value);
 
-        let hash = self.frozen_items.insert(value.clone().into())?;
+        let hash = self.frozen_items.insert(value.clone())?;
 
         app::emit!(Event::FrozenAdded {
             hash,
@@ -234,8 +234,7 @@ impl KvStore {
         Ok(self
             .frozen_items
             .get(&hash)?
-            .map(|v| v.clone())
-            .ok_or_else(|| Error::FrozenNotFound("Frozen value is not found"))?)
+            .ok_or(Error::FrozenNotFound("Frozen value is not found"))?)
     }
 
     // --- Original KvStore Methods (Public) ---

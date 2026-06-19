@@ -90,20 +90,20 @@ impl CausalDelta {
                     id, data, metadata, ..
                 } => {
                     let id_bytes: [u8; 32] = (*id).into();
-                    hasher.update(&id_bytes);
+                    hasher.update(id_bytes);
                     hasher.update(data);
                     // Metadata and ancestors excluded - they contain timestamps
                     hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
                 Action::DeleteRef { id, metadata, .. } => {
                     let id_bytes: [u8; 32] = (*id).into();
-                    hasher.update(&id_bytes);
+                    hasher.update(id_bytes);
                     // deleted_at excluded - it's a timestamp
                     hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
                 Action::Compare { id } => {
                     let id_bytes: [u8; 32] = (*id).into();
-                    hasher.update(&id_bytes);
+                    hasher.update(id_bytes);
                 }
             }
         }
@@ -230,7 +230,7 @@ impl DeltaContext {
 
     /// Get HLC timestamp, creating default if empty
     fn get_hlc(&mut self) -> HybridTimestamp {
-        self.max_hlc.unwrap_or_else(|| env::hlc_timestamp())
+        self.max_hlc.unwrap_or_else(env::hlc_timestamp)
     }
 }
 
@@ -384,6 +384,62 @@ pub fn reset_delta_context() {
     });
 }
 
+// Helper function to hash Metadata storage type
+fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
+    match &metadata.storage_type {
+        StorageType::Public | StorageType::Frozen => {
+            hasher.update(borsh::to_vec(&metadata.storage_type).unwrap_or_default());
+        }
+        StorageType::User {
+            owner,
+            signature_data,
+        } => {
+            // Hash the User variant *without* the signature
+            let partial_type = StorageType::User {
+                owner: *owner,
+                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
+                    nonce: sig_data.nonce,
+                    signature: [0; 64], // Use placeholder for hash
+                    signer: sig_data.signer,
+                }),
+            };
+            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
+        }
+        StorageType::Shared {
+            writers,
+            signature_data,
+        } => {
+            // Hash the Shared variant *without* the signature
+            let partial_type = StorageType::Shared {
+                writers: writers.clone(),
+                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
+                    nonce: sig_data.nonce,
+                    signature: [0; 64], // Use placeholder for hash
+                    signer: sig_data.signer,
+                }),
+            };
+            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
+        }
+        StorageType::SharedMember {
+            anchor,
+            signature_data,
+        } => {
+            // Hash the SharedMember variant *without* the signature. Only the
+            // anchor id is committed — the writer set lives at the anchor, so a
+            // rotation leaves every member's hash unchanged.
+            let partial_type = StorageType::SharedMember {
+                anchor: *anchor,
+                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
+                    nonce: sig_data.nonce,
+                    signature: [0; 64], // Use placeholder for hash
+                    signer: sig_data.signer,
+                }),
+            };
+            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
+        }
+    }
+}
+
 #[cfg(test)]
 mod borsh_roundtrip_tests {
     //! `StorageDelta` has a custom `BorshDeserialize` impl that branches
@@ -531,61 +587,5 @@ mod borsh_roundtrip_tests {
             result.is_err(),
             "expected error for unknown tag, got {result:?}"
         );
-    }
-}
-
-// Helper function to hash Metadata storage type
-fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
-    match &metadata.storage_type {
-        StorageType::Public | StorageType::Frozen => {
-            hasher.update(borsh::to_vec(&metadata.storage_type).unwrap_or_default());
-        }
-        StorageType::User {
-            owner,
-            signature_data,
-        } => {
-            // Hash the User variant *without* the signature
-            let partial_type = StorageType::User {
-                owner: *owner,
-                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
-                    nonce: sig_data.nonce,
-                    signature: [0; 64], // Use placeholder for hash
-                    signer: sig_data.signer,
-                }),
-            };
-            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
-        }
-        StorageType::Shared {
-            writers,
-            signature_data,
-        } => {
-            // Hash the Shared variant *without* the signature
-            let partial_type = StorageType::Shared {
-                writers: writers.clone(),
-                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
-                    nonce: sig_data.nonce,
-                    signature: [0; 64], // Use placeholder for hash
-                    signer: sig_data.signer,
-                }),
-            };
-            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
-        }
-        StorageType::SharedMember {
-            anchor,
-            signature_data,
-        } => {
-            // Hash the SharedMember variant *without* the signature. Only the
-            // anchor id is committed — the writer set lives at the anchor, so a
-            // rotation leaves every member's hash unchanged.
-            let partial_type = StorageType::SharedMember {
-                anchor: *anchor,
-                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
-                    nonce: sig_data.nonce,
-                    signature: [0; 64], // Use placeholder for hash
-                    signer: sig_data.signer,
-                }),
-            };
-            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
-        }
     }
 }

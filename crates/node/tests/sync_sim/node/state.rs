@@ -548,9 +548,8 @@ impl SimNode {
         let orphan_count = self.buffered_operations.len();
         debug_assert!(
             orphan_count == 0,
-            "Found {} orphaned buffered operations (delta_id not in delta_buffer). \
-             This indicates a bug in the buffering logic.",
-            orphan_count
+            "Found {orphan_count} orphaned buffered operations (delta_id not in delta_buffer). \
+             This indicates a bug in the buffering logic."
         );
 
         // Clear any remaining orphaned operations (graceful degradation in release)
@@ -1177,10 +1176,9 @@ mod tests {
         assert_eq!(real, 3, "Should have 3 real entities");
         assert!(
             total > 3,
-            "Tree should have intermediate nodes: got {}",
-            total
+            "Tree should have intermediate nodes: got {total}"
         );
-        assert!(depth > 1, "Tree should have depth > 1: got {}", depth);
+        assert!(depth > 1, "Tree should have depth > 1: got {depth}");
 
         // iter_entities should only return the 3 real entities
         let entities: Vec<_> = node.iter_entities().collect();
@@ -1239,9 +1237,7 @@ mod tests {
         assert_eq!(real, 2);
         assert!(
             total_after_second < total_after_first + 4,
-            "Should reuse intermediate nodes: first={}, second={}",
-            total_after_first,
-            total_after_second
+            "Should reuse intermediate nodes: first={total_after_first}, second={total_after_second}"
         );
     }
 }

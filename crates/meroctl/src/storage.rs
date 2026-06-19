@@ -18,6 +18,12 @@ pub struct JwtToken {
 #[derive(Debug, Clone, Copy)]
 pub struct FileTokenStorage;
 
+impl Default for FileTokenStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileTokenStorage {
     /// Create a new file token storage instance
     pub fn new() -> Self {

@@ -130,7 +130,7 @@ impl<T> EntryHandle<T> {
         };
 
         let state = T::try_from_slice(&data)
-            .map_err(|e| crate::types::Error::msg(&format!("Failed to deserialize state: {e}")))?;
+            .map_err(|e| crate::types::Error::msg(format!("Failed to deserialize state: {e}")))?;
 
         Ok(Some(EntryRef {
             data: state,
@@ -235,7 +235,7 @@ impl<T> EntryHandle<T> {
             f(&mut entry_mut);
         }
         // Drop of EntryMut writes; explicit save keeps semantics clear.
-        let _ = entry.save()?;
+        entry.save()?;
         Ok(())
     }
 }
@@ -297,7 +297,7 @@ impl<T> EntryRef<T> {
         T: BorshSerialize,
     {
         let data = borsh::to_vec(&self.data)
-            .map_err(|e| crate::types::Error::msg(&format!("Failed to serialize state: {e}")))?;
+            .map_err(|e| crate::types::Error::msg(format!("Failed to serialize state: {e}")))?;
 
         // Use private storage functions (node-local, NOT synchronized)
         let _ = env::private_storage_write(self.key, &data);

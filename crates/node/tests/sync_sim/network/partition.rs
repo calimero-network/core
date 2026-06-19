@@ -73,7 +73,7 @@ impl ActivePartition {
     /// Check if this partition is active at the given time.
     fn is_active_at(&self, now: SimTime) -> bool {
         let started = self.start_time <= now;
-        let not_ended = self.end_time.map_or(true, |end| end > now);
+        let not_ended = self.end_time.is_none_or(|end| end > now);
         started && not_ended
     }
 }
@@ -125,7 +125,7 @@ impl PartitionManager {
     pub fn is_partitioned(&mut self, from: &NodeId, to: &NodeId, now: SimTime) -> bool {
         // Remove fully expired partitions (end_time has passed)
         self.partitions
-            .retain(|p| p.end_time.map_or(true, |end| end > now));
+            .retain(|p| p.end_time.is_none_or(|end| end > now));
 
         // Check each partition that is active at this time
         for partition in &self.partitions {

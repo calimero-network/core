@@ -448,9 +448,8 @@ impl BorshDeserialize for GovernanceParentEdge {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "GovernanceParentEdge.governance_dag_heads length {} exceeds \
-                     MAX_GOVERNANCE_DAG_HEADS={}",
-                    len, MAX_GOVERNANCE_DAG_HEADS,
+                    "GovernanceParentEdge.governance_dag_heads length {len} exceeds \
+                     MAX_GOVERNANCE_DAG_HEADS={MAX_GOVERNANCE_DAG_HEADS}",
                 ),
             ));
         }
@@ -1081,7 +1080,7 @@ mod tests {
     fn governance_edge_serde_rejects_duplicate_heads() {
         // JSON path mirrors borsh — duplicates rejected at decode time.
         let h = (0..32).map(|_| "171").collect::<Vec<_>>().join(",");
-        let json = format!(r#"{{"governance_dag_heads":[[{}],[{}]]}}"#, h, h,);
+        let json = format!(r#"{{"governance_dag_heads":[[{h}],[{h}]]}}"#,);
         let err = serde_json::from_str::<GovernanceParentEdge>(&json)
             .expect_err("duplicate heads must reject");
         assert!(

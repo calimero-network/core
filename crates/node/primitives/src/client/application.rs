@@ -2,28 +2,17 @@ pub mod bundle;
 mod install;
 mod query;
 
-use std::io::{self, ErrorKind};
 use std::sync::Arc;
 
-use crate::bundle::{BundleManifest, ManifestVerification};
-use calimero_primitives::application::{
-    Application, ApplicationBlob, ApplicationId, ApplicationSource,
-};
+use crate::bundle::BundleManifest;
+use calimero_primitives::application::{Application, ApplicationBlob, ApplicationId};
 use calimero_primitives::blobs::BlobId;
-use calimero_primitives::hash::Hash;
+use calimero_store::key;
 use calimero_store::key::AsKeyParts;
-use calimero_store::{key, types};
-use camino::{Utf8Path, Utf8PathBuf};
 use eyre::bail;
-use flate2::read::GzDecoder;
-use futures_util::{io::Cursor, TryStreamExt};
-use reqwest::Url;
-use sha2::{Digest, Sha256};
-use std::fs;
-use tar::Archive;
-use tokio::fs::File;
-use tokio_util::compat::TokioAsyncReadCompatExt;
-use tracing::{debug, trace, warn};
+use futures_util::TryStreamExt;
+use sha2::Digest;
+use tracing::{debug, warn};
 
 use super::NodeClient;
 

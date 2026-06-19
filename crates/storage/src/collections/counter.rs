@@ -488,8 +488,7 @@ impl<S: StorageAdaptor> Counter<true, S> {
             // Safe conversion: check if u64 fits in i64
             let count_i64 = i64::try_from(count).map_err(|_| {
                 StorageError::InvalidData(format!(
-                    "Counter value {} exceeds i64::MAX, cannot represent in signed counter",
-                    count
+                    "Counter value {count} exceeds i64::MAX, cannot represent in signed counter"
                 ))
             })?;
 
@@ -506,8 +505,7 @@ impl<S: StorageAdaptor> Counter<true, S> {
             // Safe conversion: check if u64 fits in i64
             let count_i64 = i64::try_from(count).map_err(|_| {
                 StorageError::InvalidData(format!(
-                    "Counter value {} exceeds i64::MAX, cannot represent in signed counter",
-                    count
+                    "Counter value {count} exceeds i64::MAX, cannot represent in signed counter"
                 ))
             })?;
 
@@ -553,7 +551,7 @@ mod tests {
     #[should_panic(expected = "migration")]
     fn increment_panics_during_migration() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| GCounter::new());
+        let mut counter = Root::new(GCounter::new);
         // `increment()` stamps the current node's identity; running it inside a
         // migrate body (merge mode is active) would key the delta differently on
         // every node and diverge the network. It must refuse, loudly.
@@ -565,7 +563,7 @@ mod tests {
     #[test]
     fn increment_for_is_allowed_during_migration() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| GCounter::new());
+        let mut counter = Root::new(GCounter::new);
         // The deterministic replay API (explicit executor id) stays usable in a
         // migrate body — that is the sanctioned way to rebuild a counter.
         crate::env::with_merge_mode(|| {
@@ -578,7 +576,7 @@ mod tests {
     #[should_panic(expected = "migration")]
     fn decrement_panics_during_migration() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| PNCounter::new());
+        let mut counter = Root::new(PNCounter::new);
         // `decrement` mirrors `increment` — it stamps the running node's id, so it
         // must refuse inside a migrate (merge mode) for the same reason.
         crate::env::with_merge_mode(|| {
@@ -589,7 +587,7 @@ mod tests {
     #[test]
     fn decrement_for_is_allowed_during_migration() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| PNCounter::new());
+        let mut counter = Root::new(PNCounter::new);
         crate::env::with_merge_mode(|| {
             counter.decrement_for(&[1u8; 32]).unwrap();
         });
@@ -601,7 +599,7 @@ mod tests {
     #[test]
     fn test_gcounter_increment() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| GCounter::new());
+        let mut counter = Root::new(GCounter::new);
         let executor_id = [91u8; 32];
 
         counter.increment_for(&executor_id).unwrap();
@@ -619,14 +617,14 @@ mod tests {
     #[test]
     fn test_gcounter_starts_at_zero() {
         crate::env::reset_for_testing();
-        let counter = Root::new(|| GCounter::new());
+        let counter = Root::new(GCounter::new);
         assert_eq!(counter.value().unwrap(), 0);
     }
 
     #[test]
     fn test_gcounter_multiple_executors() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| GCounter::new());
+        let mut counter = Root::new(GCounter::new);
         let executor_a = [92u8; 32];
         let executor_b = [93u8; 32];
 
@@ -642,7 +640,7 @@ mod tests {
     #[test]
     fn test_gcounter_value_unsigned() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| Counter::<false>::new());
+        let mut counter = Root::new(Counter::<false>::new);
         let executor_id = [94u8; 32];
 
         counter.increment_for(&executor_id).unwrap();
@@ -657,7 +655,7 @@ mod tests {
     #[test]
     fn test_pncounter_increment_and_decrement() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| PNCounter::new());
+        let mut counter = Root::new(PNCounter::new);
         let executor_id = [95u8; 32];
 
         // Start at 0
@@ -690,7 +688,7 @@ mod tests {
     #[test]
     fn test_pncounter_multiple_executors() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| PNCounter::new());
+        let mut counter = Root::new(PNCounter::new);
         let executor_a = [96u8; 32];
         let executor_b = [97u8; 32];
 
@@ -724,7 +722,7 @@ mod tests {
     #[test]
     fn test_pncounter_value_signed() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| Counter::<true>::new());
+        let mut counter = Root::new(Counter::<true>::new);
         let executor_id = [98u8; 32];
 
         counter.increment_for(&executor_id).unwrap();
@@ -739,7 +737,7 @@ mod tests {
     #[test]
     fn test_pncounter_starts_at_zero() {
         crate::env::reset_for_testing();
-        let counter = Root::new(|| PNCounter::new());
+        let counter = Root::new(PNCounter::new);
         assert_eq!(counter.value().unwrap(), 0);
     }
 
@@ -748,7 +746,7 @@ mod tests {
     #[test]
     fn test_gcounter_overflow_detection() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| GCounter::new());
+        let mut counter = Root::new(GCounter::new);
         let executor_id = [99u8; 32];
 
         // Manually insert a value near u64::MAX to trigger overflow
@@ -773,7 +771,7 @@ mod tests {
     #[test]
     fn test_pncounter_cast_overflow_detection() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| PNCounter::new());
+        let mut counter = Root::new(PNCounter::new);
         let executor_id = [101u8; 32];
 
         // Manually insert a value that exceeds i64::MAX
@@ -791,7 +789,7 @@ mod tests {
     #[test]
     fn test_pncounter_addition_overflow_detection() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| PNCounter::new());
+        let mut counter = Root::new(PNCounter::new);
 
         // Insert two values that individually fit in i64 but sum > i64::MAX
         let executor_a = [102u8; 32];
@@ -814,7 +812,7 @@ mod tests {
     #[test]
     fn test_pncounter_subtraction_overflow_detection() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| PNCounter::new());
+        let mut counter = Root::new(PNCounter::new);
 
         // Create a scenario where pos - neg would underflow i64::MIN
         let executor_id = [104u8; 32];
@@ -839,7 +837,7 @@ mod tests {
     #[test]
     fn test_gcounter_no_false_positives() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| GCounter::new());
+        let mut counter = Root::new(GCounter::new);
 
         // Add some large but valid values
         for i in 0..10 {
@@ -856,7 +854,7 @@ mod tests {
     #[test]
     fn test_pncounter_no_false_positives() {
         crate::env::reset_for_testing();
-        let mut counter = Root::new(|| PNCounter::new());
+        let mut counter = Root::new(PNCounter::new);
 
         // Add some large but valid values
         let executor_a = [116u8; 32];
@@ -911,8 +909,7 @@ mod tests {
         let err_str = err.to_string();
         assert!(
             err_str.contains("Not all bytes read") || err_str.contains("Unexpected length"),
-            "Error should indicate leftover data, got: {}",
-            err_str
+            "Error should indicate leftover data, got: {err_str}"
         );
     }
 
@@ -980,8 +977,7 @@ mod tests {
         let err_str = err.to_string();
         assert!(
             err_str.contains("Not all bytes read") || err_str.contains("Unexpected length"),
-            "Error should indicate leftover data, got: {}",
-            err_str
+            "Error should indicate leftover data, got: {err_str}"
         );
     }
 

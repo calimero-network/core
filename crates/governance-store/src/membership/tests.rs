@@ -1053,8 +1053,7 @@ fn membership_path_inherited_admin_overrides_anchor_cap_denial() {
             );
         }
         other => panic!(
-            "expected Inherited{{ via_admin: true, anchor: ns }} for parent admin, got {:?}",
-            other
+            "expected Inherited{{ via_admin: true, anchor: ns }} for parent admin, got {other:?}"
         ),
     }
 

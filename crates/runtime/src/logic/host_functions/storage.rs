@@ -706,10 +706,7 @@ mod tests {
         // Verify the storage removal was successful.
         assert_eq!(res, 1);
         // Verify the storage doesn't have a specified key anymore.
-        assert_eq!(
-            host.borrow_logic().storage.has(&key.as_bytes().to_vec()),
-            false
-        );
+        assert!(!host.borrow_logic().storage.has(&key.as_bytes().to_vec()));
         // Verify the removed value was put into the host register.
         assert_eq!(
             host.borrow_logic().registers.get(register_id).unwrap(),
@@ -1084,8 +1081,8 @@ mod tests {
 
         // Write multiple keys.
         for i in 0..5 {
-            let key = format!("key_{}", i);
-            let value = format!("value_{}", i);
+            let key = format!("key_{i}");
+            let value = format!("value_{i}");
 
             let key_ptr = (100 + i * 100) as u64;
             write_str(&host, key_ptr, &key);
@@ -1104,8 +1101,8 @@ mod tests {
 
         // Read all keys and verify values.
         for i in 0..5 {
-            let key = format!("key_{}", i);
-            let expected_value = format!("value_{}", i);
+            let key = format!("key_{i}");
+            let expected_value = format!("value_{i}");
 
             let key_ptr = (100 + i * 100) as u64;
             let key_buf_ptr = (16 + i * 32) as u64;

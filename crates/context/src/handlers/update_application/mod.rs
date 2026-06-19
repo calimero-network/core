@@ -335,7 +335,7 @@ fn app_version_changed_event(
     from_version: Option<String>,
     to_version: Option<String>,
 ) -> Option<NodeEvent> {
-    (old_application_id != new_application_id).then(|| {
+    (old_application_id != new_application_id).then_some({
         NodeEvent::Context(ContextEvent {
             context_id,
             payload: ContextEventPayload::AppVersionChanged(AppVersionChangedPayload {
@@ -1823,21 +1823,18 @@ mod tests {
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_err(),
-            "AppKey continuity check should reject downgrade from signed to unsigned: {:?}",
-            result
+            "AppKey continuity check should reject downgrade from signed to unsigned: {result:?}"
         );
 
         // Verify the error message contains the expected content
         let error_message = result.unwrap_err().to_string();
         assert!(
             error_message.contains("Security downgrade rejected"),
-            "Error should mention security downgrade rejection: {}",
-            error_message
+            "Error should mention security downgrade rejection: {error_message}"
         );
         assert!(
             error_message.contains("signed application"),
-            "Error should mention signed application: {}",
-            error_message
+            "Error should mention signed application: {error_message}"
         );
     }
 
@@ -1917,13 +1914,11 @@ mod tests {
         let error_message = result.unwrap_err().to_string();
         assert!(
             error_message.contains("AppKey continuity violation"),
-            "Error should mention AppKey continuity violation: {}",
-            error_message
+            "Error should mention AppKey continuity violation: {error_message}"
         );
         assert!(
             error_message.contains("signerId mismatch"),
-            "Error should mention signerId mismatch: {}",
-            error_message
+            "Error should mention signerId mismatch: {error_message}"
         );
     }
 
@@ -1959,8 +1954,7 @@ mod tests {
         let error_message = result.unwrap_err().to_string();
         assert!(
             error_message.contains("not found"),
-            "Error should mention app not found: {}",
-            error_message
+            "Error should mention app not found: {error_message}"
         );
     }
 
@@ -2005,8 +1999,7 @@ mod tests {
         let error_message = result.unwrap_err().to_string();
         assert!(
             error_message.contains("signerId mismatch"),
-            "Error should indicate signerId mismatch: {}",
-            error_message
+            "Error should indicate signerId mismatch: {error_message}"
         );
     }
 

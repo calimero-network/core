@@ -395,7 +395,7 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
                 // up front; an enum that models one-of-N belongs inside
                 // `LwwRegister<_>` as a struct field.
                 return Err(errors.finish(SynError::new_spanned(
-                    &item.enum_token,
+                    item.enum_token,
                     ParseError::StateMustBeStruct,
                 )));
             }

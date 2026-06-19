@@ -840,7 +840,7 @@ mod user_storage_signature_verification {
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidSignature) => {}
-            other => panic!("Expected InvalidSignature error, got {:?}", other),
+            other => panic!("Expected InvalidSignature error, got {other:?}"),
         }
     }
 
@@ -882,11 +882,10 @@ mod user_storage_signature_verification {
             Err(StorageError::InvalidData(msg)) => {
                 assert!(
                     msg.contains("signed"),
-                    "Error should mention signing: {}",
-                    msg
+                    "Error should mention signing: {msg}"
                 );
             }
-            other => panic!("Expected InvalidData error, got {:?}", other),
+            other => panic!("Expected InvalidData error, got {other:?}"),
         }
     }
 
@@ -927,7 +926,7 @@ mod user_storage_signature_verification {
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidSignature) => {}
-            other => panic!("Expected InvalidSignature error, got {:?}", other),
+            other => panic!("Expected InvalidSignature error, got {other:?}"),
         }
     }
 
@@ -1214,7 +1213,7 @@ mod user_storage_replay_protection {
         // Multiple updates with increasing nonces
         for i in 2..=5 {
             sleep(Duration::from_millis(2));
-            page.title = format!("Version {}", i);
+            page.title = format!("Version {i}");
             let serialized = to_vec(&page).unwrap();
             let nonce = env::time_now();
 
@@ -1228,8 +1227,7 @@ mod user_storage_replay_protection {
             );
             assert!(
                 MainInterface::apply_action(action, &ApplyContext::empty()).is_ok(),
-                "Update {} should succeed",
-                i
+                "Update {i} should succeed"
             );
         }
 
@@ -2019,11 +2017,10 @@ mod frozen_storage_verification {
             Err(StorageError::InvalidData(msg)) => {
                 assert!(
                     msg.contains("corruption") || msg.contains("hash"),
-                    "Error should mention corruption or hash: {}",
-                    msg
+                    "Error should mention corruption or hash: {msg}"
                 );
             }
-            other => panic!("Expected InvalidData error, got {:?}", other),
+            other => panic!("Expected InvalidData error, got {other:?}"),
         }
     }
 
@@ -2080,11 +2077,10 @@ mod frozen_storage_verification {
             Err(StorageError::ActionNotAllowed(msg)) => {
                 assert!(
                     msg.contains("Frozen") && msg.contains("updated"),
-                    "Error should mention Frozen and updated: {}",
-                    msg
+                    "Error should mention Frozen and updated: {msg}"
                 );
             }
-            other => panic!("Expected ActionNotAllowed error, got {:?}", other),
+            other => panic!("Expected ActionNotAllowed error, got {other:?}"),
         }
     }
 
@@ -2129,11 +2125,10 @@ mod frozen_storage_verification {
             Err(StorageError::ActionNotAllowed(msg)) => {
                 assert!(
                     msg.contains("Frozen") && msg.contains("deleted"),
-                    "Error should mention Frozen and deleted: {}",
-                    msg
+                    "Error should mention Frozen and deleted: {msg}"
                 );
             }
-            other => panic!("Expected ActionNotAllowed error, got {:?}", other),
+            other => panic!("Expected ActionNotAllowed error, got {other:?}"),
         }
     }
 
@@ -2168,11 +2163,10 @@ mod frozen_storage_verification {
             Err(StorageError::InvalidData(msg)) => {
                 assert!(
                     msg.contains("small") || msg.contains("size"),
-                    "Error should mention size: {}",
-                    msg
+                    "Error should mention size: {msg}"
                 );
             }
-            other => panic!("Expected InvalidData error, got {:?}", other),
+            other => panic!("Expected InvalidData error, got {other:?}"),
         }
     }
 
@@ -2250,7 +2244,7 @@ mod timestamp_drift_protection {
             Err(StorageError::InvalidTimestamp(ts, local)) => {
                 assert!(ts > local + DRIFT_TOLERANCE_NANOS);
             }
-            other => panic!("Expected InvalidTimestamp error, got {:?}", other),
+            other => panic!("Expected InvalidTimestamp error, got {other:?}"),
         }
     }
 
@@ -2333,7 +2327,7 @@ mod timestamp_drift_protection {
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidTimestamp(_, _)) => {}
-            other => panic!("Expected InvalidTimestamp error, got {:?}", other),
+            other => panic!("Expected InvalidTimestamp error, got {other:?}"),
         }
     }
 }
@@ -2449,9 +2443,9 @@ mod storage_type_edge_cases {
         assert!(result.is_err());
         match result {
             Err(StorageError::ActionNotAllowed(msg)) => {
-                assert!(msg.contains("owner"), "Error should mention owner: {}", msg);
+                assert!(msg.contains("owner"), "Error should mention owner: {msg}");
             }
-            other => panic!("Expected ActionNotAllowed error, got {:?}", other),
+            other => panic!("Expected ActionNotAllowed error, got {other:?}"),
         }
     }
 
@@ -2513,7 +2507,7 @@ mod storage_type_edge_cases {
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidSignature) => {}
-            other => panic!("Expected InvalidSignature error, got {:?}", other),
+            other => panic!("Expected InvalidSignature error, got {other:?}"),
         }
     }
 
@@ -2559,11 +2553,10 @@ mod storage_type_edge_cases {
             Err(StorageError::InvalidData(msg)) => {
                 assert!(
                     msg.contains("signed"),
-                    "Error should mention signing: {}",
-                    msg
+                    "Error should mention signing: {msg}"
                 );
             }
-            other => panic!("Expected InvalidData error, got {:?}", other),
+            other => panic!("Expected InvalidData error, got {other:?}"),
         }
     }
 
@@ -2596,11 +2589,10 @@ mod storage_type_edge_cases {
             Err(StorageError::ActionNotAllowed(msg)) => {
                 assert!(
                     msg.contains("StorageType"),
-                    "Error should mention StorageType: {}",
-                    msg
+                    "Error should mention StorageType: {msg}"
                 );
             }
-            other => panic!("Expected ActionNotAllowed error, got {:?}", other),
+            other => panic!("Expected ActionNotAllowed error, got {other:?}"),
         }
     }
 
@@ -2650,11 +2642,10 @@ mod storage_type_edge_cases {
             Err(StorageError::ActionNotAllowed(msg)) => {
                 assert!(
                     msg.contains("StorageType"),
-                    "Error should mention StorageType: {}",
-                    msg
+                    "Error should mention StorageType: {msg}"
                 );
             }
-            other => panic!("Expected ActionNotAllowed error, got {:?}", other),
+            other => panic!("Expected ActionNotAllowed error, got {other:?}"),
         }
     }
 
@@ -2704,7 +2695,7 @@ mod storage_type_edge_cases {
         assert!(result.is_err());
         match result {
             Err(StorageError::NonceReplay(_)) => {}
-            other => panic!("Expected NonceReplay error, got {:?}", other),
+            other => panic!("Expected NonceReplay error, got {other:?}"),
         }
 
         // Entity should still exist

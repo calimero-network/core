@@ -64,15 +64,15 @@ pub struct ConsoleOutputHandler;
 
 impl OutputHandler for ConsoleOutputHandler {
     fn display_message(&self, message: &str) {
-        println!("{}", message);
+        println!("{message}");
     }
 
     fn display_error(&self, error: &str) {
-        eprintln!("Error: {}", error);
+        eprintln!("Error: {error}");
     }
 
     fn display_success(&self, message: &str) {
-        println!("✓ {}", message);
+        println!("✓ {message}");
     }
 
     fn open_browser(&self, url: &Url) -> Result<()> {
@@ -81,13 +81,19 @@ impl OutputHandler for ConsoleOutputHandler {
     }
 
     fn wait_for_input(&self, prompt: &str) -> Result<String> {
-        print!("{}", prompt);
+        print!("{prompt}");
         io::stdout().flush()?;
 
         let mut input = String::new();
         let _ = io::stdin().read_line(&mut input)?;
 
         Ok(input.trim().to_owned())
+    }
+}
+
+impl Default for CliAuthenticator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -123,7 +129,7 @@ impl ClientAuthenticator for CliAuthenticator {
         // 4. Return the tokens
 
         self.output
-            .display_message(&format!("Please authenticate at: {}", api_url));
+            .display_message(&format!("Please authenticate at: {api_url}"));
 
         // Simulate authentication process
         let access_token = self.output.wait_for_input("Enter access token: ")?;
@@ -176,9 +182,9 @@ impl ClientAuthenticator for CliAuthenticator {
         // Try to open the authentication URL in the browser
         if let Err(e) = self.output.open_browser(api_url) {
             self.output
-                .display_error(&format!("Failed to open browser: {}", e));
+                .display_error(&format!("Failed to open browser: {e}"));
             self.output
-                .display_message(&format!("Please manually visit: {}", api_url));
+                .display_message(&format!("Please manually visit: {api_url}"));
         }
 
         // Wait for user to complete authentication
@@ -210,6 +216,12 @@ impl ClientAuthenticator for CliAuthenticator {
 pub struct HeadlessAuthenticator {
     /// Pre-configured tokens
     tokens: Option<JwtToken>,
+}
+
+impl Default for HeadlessAuthenticator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HeadlessAuthenticator {

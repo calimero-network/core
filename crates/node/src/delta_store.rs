@@ -1298,7 +1298,7 @@ impl DeltaStore {
 
         // Combined stream: first (manual) entry + subsequent
         // value-buffered entries from the iterator.
-        let mut stream: Box<dyn Iterator<Item = Result<_>>> = match first_entry {
+        let stream: Box<dyn Iterator<Item = Result<_>>> = match first_entry {
             Some(entry) => Box::new(
                 std::iter::once(Ok(entry))
                     .chain(iter.entries().map(|(k, v)| -> Result<_> { Ok((k?, v?)) })),
@@ -1306,7 +1306,7 @@ impl DeltaStore {
             None => Box::new(iter.entries().map(|(k, v)| -> Result<_> { Ok((k?, v?)) })),
         };
 
-        while let Some(entry) = stream.next() {
+        for entry in stream {
             let (key, stored_delta) = entry?;
 
             // Sorted by context_id first — once the prefix changes we're
@@ -3093,7 +3093,7 @@ impl DeltaStore {
         cascaded_count: usize,
     ) {
         let hold_ms = hold.as_secs_f64() * 1000.0;
-        let hold_ms_s = format!("{:.2}", hold_ms);
+        let hold_ms_s = format!("{hold_ms:.2}");
         let plans = plans_count.unwrap_or(0);
         if hold.as_millis() >= 500 {
             warn!(

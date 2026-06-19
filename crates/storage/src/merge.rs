@@ -745,8 +745,7 @@ mod typed_dispatch_tests {
         );
         assert!(
             matches!(result, Err(MergeError::SerializationError(_))),
-            "expected SerializationError, got {:?}",
-            result
+            "expected SerializationError, got {result:?}"
         );
     }
 
@@ -770,8 +769,7 @@ mod typed_dispatch_tests {
         );
         assert!(
             matches!(result, Err(MergeError::SerializationError(_))),
-            "expected SerializationError, got {:?}",
-            result
+            "expected SerializationError, got {result:?}"
         );
     }
 

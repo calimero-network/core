@@ -230,10 +230,10 @@ where
     let merge_fn: MergeFn = |existing, incoming, _existing_ts, _incoming_ts| {
         // Deserialize both states
         let mut existing_state = borsh::from_slice::<T>(existing)
-            .map_err(|e| format!("Failed to deserialize existing state: {}", e))?;
+            .map_err(|e| format!("Failed to deserialize existing state: {e}"))?;
 
         let incoming_state = borsh::from_slice::<T>(incoming)
-            .map_err(|e| format!("Failed to deserialize incoming state: {}", e))?;
+            .map_err(|e| format!("Failed to deserialize incoming state: {e}"))?;
 
         // Merge using Mergeable trait
         // CRITICAL: Use merge mode to prevent timestamp generation during merge.
@@ -242,11 +242,11 @@ where
         crate::env::with_merge_mode(|| {
             existing_state
                 .merge(&incoming_state)
-                .map_err(|e| format!("Merge failed: {}", e))
+                .map_err(|e| format!("Merge failed: {e}"))
         })?;
 
         // Serialize result
-        borsh::to_vec(&existing_state).map_err(|e| format!("Serialization failed: {}", e).into())
+        borsh::to_vec(&existing_state).map_err(|e| format!("Serialization failed: {e}").into())
     };
 
     with_registry_mut(|registry| {
@@ -426,8 +426,7 @@ mod tests {
                 err,
                 crate::collections::crdt_meta::MergeError::NoMergeFunctionRegistered
             ),
-            "Expected NoMergeFunctionRegistered error, got: {:?}",
-            err
+            "Expected NoMergeFunctionRegistered error, got: {err:?}"
         );
     }
 
@@ -464,8 +463,7 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "Bootstrap (created == updated, no merger) must accept incoming, got: {:?}",
-            result
+            "Bootstrap (created == updated, no merger) must accept incoming, got: {result:?}"
         );
         assert_eq!(
             result.unwrap(),
@@ -497,8 +495,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "Post-bootstrap with no merger must error (I5), got Ok: {:?}",
-            result
+            "Post-bootstrap with no merger must error (I5), got Ok: {result:?}"
         );
         assert!(
             matches!(

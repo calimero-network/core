@@ -94,9 +94,8 @@ fn test_merge_via_registry() {
     // The merge should preserve all increments
     // We'll verify it's reasonable (between 2 and 6)
     assert!(
-        final_value >= 2 && final_value <= 6,
-        "Counter value should be between 2 and 6, got {}",
-        final_value
+        (2..=6).contains(&final_value),
+        "Counter value should be between 2 and 6, got {final_value}"
     );
 
     // Verify: Both metadata keys present
@@ -840,20 +839,18 @@ fn test_merge_vector_of_counters() {
 
     let counter0 = merged.metrics.get(0).unwrap().unwrap();
     let val0 = counter0.value().unwrap();
-    println!("Counter at index 0: got {}", val0);
+    println!("Counter at index 0: got {val0}");
     assert!(
         val0 >= 3, // At minimum should have one of the values
-        "Counter at index 0: expected at least 3, got {}",
-        val0
+        "Counter at index 0: expected at least 3, got {val0}"
     );
 
     let counter1 = merged.metrics.get(1).unwrap().unwrap();
     let val1 = counter1.value().unwrap();
-    println!("Counter at index 1: got {}", val1);
+    println!("Counter at index 1: got {val1}");
     assert!(
         val1 >= 1, // At minimum should have one of the values
-        "Counter at index 1: expected at least 1, got {}",
-        val1
+        "Counter at index 1: expected at least 1, got {val1}"
     );
 
     println!("✅ Vector of Counters merge test PASSED - element-wise sum works!");
@@ -1046,17 +1043,16 @@ fn test_merge_nested_document_with_rga() {
 
     // Edit counts should sum (Counter CRDT)
     let merged_count = merged_doc.edit_count.value().unwrap();
-    println!("Forward merge edit_count: {}", merged_count);
+    println!("Forward merge edit_count: {merged_count}");
     assert_eq!(merged_count, 3); // 1 + 2
 
     // Content should contain all characters from both RGAs
     // Note: Both RGAs inserted "Hello" separately (5+5) + " World" (6) = 16 total
     let len = merged_doc.content.len().unwrap();
-    println!("Forward merge content len: {}", len);
+    println!("Forward merge content len: {len}");
     assert_eq!(
         len, 16,
-        "Expected 16 chars (Hello + Hello +  World), got {}",
-        len
+        "Expected 16 chars (Hello + Hello +  World), got {len}"
     );
 
     // Metadata should be present
@@ -1083,8 +1079,8 @@ fn test_merge_nested_document_with_rga() {
     // CRITICAL: Both merge directions should produce identical state
     let reverse_count = reverse_doc.edit_count.value().unwrap();
     let reverse_len = reverse_doc.content.len().unwrap();
-    println!("Reverse merge edit_count: {}", reverse_count);
-    println!("Reverse merge content len: {}", reverse_len);
+    println!("Reverse merge edit_count: {reverse_count}");
+    println!("Reverse merge content len: {reverse_len}");
 
     assert_eq!(
         len, reverse_len,
@@ -1192,10 +1188,9 @@ fn test_merge_determinism_reproduces_e2e_issue() {
     for (i, result) in all_merge_results.iter().enumerate().skip(1) {
         assert_eq!(
             first_result, result,
-            "Merge attempt {} produced different bytes! This is the E2E root hash divergence bug.\n\
-             First: {:?}\n\
-             Attempt {}: {:?}",
-            i, first_result, i, result
+            "Merge attempt {i} produced different bytes! This is the E2E root hash divergence bug.\n\
+             First: {first_result:?}\n\
+             Attempt {i}: {result:?}"
         );
     }
 
@@ -1324,7 +1319,7 @@ fn test_counter_serialization_architecture() {
 
     // Get the entries directly
     let entries: Vec<_> = state.handler_counter.positive.entries().unwrap().collect();
-    println!("Counter entries in storage: {:?}", entries);
+    println!("Counter entries in storage: {entries:?}");
 
     // Serialize the state
     let bytes = borsh::to_vec(&*state).unwrap();
@@ -1332,7 +1327,7 @@ fn test_counter_serialization_architecture() {
     println!(
         "Serialized state: {} bytes, hash={}",
         bytes.len(),
-        hex::encode(&hash)
+        hex::encode(hash)
     );
 
     // === KEY OBSERVATION: What gets serialized? ===
@@ -1342,10 +1337,7 @@ fn test_counter_serialization_architecture() {
     println!("\n=== Serialization Analysis ===");
     println!("State serialized to {} bytes", bytes.len());
     println!("This is just the Collection IDs, NOT the actual counter entries!");
-    println!(
-        "The entries ({:?}) are stored separately in storage.",
-        entries
-    );
+    println!("The entries ({entries:?}) are stored separately in storage.");
 
     // === Verify: deserialize and check value ===
     println!("\n=== Deserialization Test ===");
@@ -1358,8 +1350,8 @@ fn test_counter_serialization_architecture() {
         .unwrap()
         .collect();
 
-    println!("Deserialized counter value: {}", deser_value);
-    println!("Deserialized counter entries: {:?}", deser_entries);
+    println!("Deserialized counter value: {deser_value}");
+    println!("Deserialized counter entries: {deser_entries:?}");
 
     // The value should be 1 because both share MainStorage
     assert_eq!(deser_value, 1, "Counter value should be 1");
@@ -1377,7 +1369,7 @@ fn test_counter_serialization_architecture() {
     println!("  2. The actual counter entries are NOT in the serialized data");
     println!("  3. When Counter::value() is called, it reads from local storage");
     println!("  4. Local storage doesn't have Node-1's entries -> value = 0");
-    println!("");
+    println!();
     println!("The fix: Delta must include Action::Add for counter entries,");
     println!("which gets applied BEFORE the root state merge.");
 
@@ -1453,7 +1445,7 @@ fn test_e2e_sync_flow_with_isolated_storage() {
         .unwrap()
         .map(|(full, _)| full)
         .unwrap_or([0; 32]);
-    println!("Node-1 root hash after save: {}", hex::encode(&node1_hash));
+    println!("Node-1 root hash after save: {}", hex::encode(node1_hash));
 
     // Capture the delta (actions generated during save)
     let delta = commit_causal_delta(&node1_hash).unwrap();
@@ -1478,7 +1470,7 @@ fn test_e2e_sync_flow_with_isolated_storage() {
         .unwrap_or([0; 32]);
     println!(
         "Node-2 root hash BEFORE sync (empty): {}",
-        hex::encode(&node2_hash_before)
+        hex::encode(node2_hash_before)
     );
 
     // Now apply the delta from Node-1
@@ -1493,10 +1485,10 @@ fn test_e2e_sync_flow_with_isolated_storage() {
                     println!("  Action {}: Update id={}, data_len={}", i, id, data.len());
                 }
                 Action::DeleteRef { id, .. } => {
-                    println!("  Action {}: DeleteRef id={}", i, id);
+                    println!("  Action {i}: DeleteRef id={id}");
                 }
                 Action::Compare { id } => {
-                    println!("  Action {}: Compare id={}", i, id);
+                    println!("  Action {i}: Compare id={id}");
                 }
             }
         }
@@ -1515,21 +1507,21 @@ fn test_e2e_sync_flow_with_isolated_storage() {
         .unwrap_or([0; 32]);
     println!(
         "Node-2 root hash AFTER sync: {}",
-        hex::encode(&node2_hash_after)
+        hex::encode(node2_hash_after)
     );
 
     // === PHASE 3: Compare hashes ===
     println!("\n=== PHASE 3: Compare root hashes ===");
-    println!("Node-1 hash: {}", hex::encode(&node1_hash));
-    println!("Node-2 hash: {}", hex::encode(&node2_hash_after));
+    println!("Node-1 hash: {}", hex::encode(node1_hash));
+    println!("Node-2 hash: {}", hex::encode(node2_hash_after));
 
     // Assertions - root hashes should match
     assert_eq!(
         node1_hash,
         node2_hash_after,
         "Root hashes should match after sync! \nNode-1: {}\nNode-2: {}",
-        hex::encode(&node1_hash),
-        hex::encode(&node2_hash_after)
+        hex::encode(node1_hash),
+        hex::encode(node2_hash_after)
     );
 
     println!("\n✅ E2E sync flow test PASSED - hashes converged!");
@@ -1604,11 +1596,11 @@ fn test_e2e_counter_sync_with_isolated_storage() {
                             println!("        - grandchild id: {}", gc.id());
                         }
                     }
-                    Err(e) => println!("      grandchildren error: {:?}", e),
+                    Err(e) => println!("      grandchildren error: {e:?}"),
                 }
             }
         }
-        Err(e) => println!("  ROOT_ID error: {:?}", e),
+        Err(e) => println!("  ROOT_ID error: {e:?}"),
     }
 
     // Print children BEFORE reassign
@@ -1664,8 +1656,8 @@ fn test_e2e_counter_sync_with_isolated_storage() {
         .unwrap()
         .unwrap_or(([0; 32], [0; 32]));
     println!("Node-1 root:");
-    println!("  own_hash:  {}", hex::encode(&node1_own));
-    println!("  full_hash: {}", hex::encode(&node1_full));
+    println!("  own_hash:  {}", hex::encode(node1_own));
+    println!("  full_hash: {}", hex::encode(node1_full));
 
     // Print children info
     let children1 = Index::<NodeStorage>::get_children_of(crate::address::Id::root()).unwrap();
@@ -1701,8 +1693,8 @@ fn test_e2e_counter_sync_with_isolated_storage() {
         .unwrap()
         .unwrap_or(([0; 32], [0; 32]));
     println!("Node-2 root:");
-    println!("  own_hash:  {}", hex::encode(&node2_own));
-    println!("  full_hash: {}", hex::encode(&node2_full));
+    println!("  own_hash:  {}", hex::encode(node2_own));
+    println!("  full_hash: {}", hex::encode(node2_full));
 
     // Print children info
     let children2 = Index::<NodeStorage>::get_children_of(crate::address::Id::root()).unwrap();
@@ -1726,8 +1718,8 @@ fn test_e2e_counter_sync_with_isolated_storage() {
         node1_init_hash,
         node2_init_hash,
         "Nodes should have identical state after init!\nNode-1: {}\nNode-2: {}",
-        hex::encode(&node1_init_hash),
-        hex::encode(&node2_init_hash)
+        hex::encode(node1_init_hash),
+        hex::encode(node2_init_hash)
     );
     println!("✓ Both nodes have identical state after init");
 
@@ -1742,7 +1734,7 @@ fn test_e2e_counter_sync_with_isolated_storage() {
         .expect("Should be able to fetch Counter from NodeStorage");
     node1_counter.increment().unwrap();
     let node1_value = node1_counter.value().unwrap();
-    println!("Node-1 counter value after increment: {}", node1_value);
+    println!("Node-1 counter value after increment: {node1_value}");
 
     // Get the serialized data of the incremented counter
     let counter_data = borsh::to_vec(&*node1_counter).unwrap();
@@ -1768,7 +1760,7 @@ fn test_e2e_counter_sync_with_isolated_storage() {
         .unwrap_or([0; 32]);
     println!(
         "Node-1 hash after increment: {}",
-        hex::encode(&node1_final_hash)
+        hex::encode(node1_final_hash)
     );
 
     // Capture delta BEFORE any commit_root() call
@@ -1811,19 +1803,19 @@ fn test_e2e_counter_sync_with_isolated_storage() {
         .unwrap()
         .map(|(full, _)| full)
         .unwrap_or([0; 32]);
-    println!("Node-2 hash after sync: {}", hex::encode(&node2_final_hash));
+    println!("Node-2 hash after sync: {}", hex::encode(node2_final_hash));
 
     // === PHASE 4: Verify convergence ===
     println!("\n=== PHASE 4: Verification ===");
-    println!("Node-1 final hash: {}", hex::encode(&node1_final_hash));
-    println!("Node-2 final hash: {}", hex::encode(&node2_final_hash));
+    println!("Node-1 final hash: {}", hex::encode(node1_final_hash));
+    println!("Node-2 final hash: {}", hex::encode(node2_final_hash));
 
     assert_eq!(
         node1_final_hash,
         node2_final_hash,
         "Root hashes should match after sync!\nNode-1: {}\nNode-2: {}",
-        hex::encode(&node1_final_hash),
-        hex::encode(&node2_final_hash)
+        hex::encode(node1_final_hash),
+        hex::encode(node2_final_hash)
     );
 
     println!("\n✅ Counter sync test PASSED!");
@@ -2182,7 +2174,7 @@ fn test_nested_counter_in_map_concurrent_increments_converge() {
             .get(&"k".to_string())
             .unwrap()
             .map(ValueRef::into_inner)
-            .unwrap_or_else(Counter::new);
+            .unwrap_or_default();
         ctr.increment().unwrap();
         doc.counters.insert("k".to_string(), ctr).unwrap();
         let data = borsh::to_vec(&*doc).unwrap();
@@ -2328,7 +2320,7 @@ fn test_nested_counter_first_touch_concurrent_converges() {
             .get(&"k".to_string())
             .unwrap()
             .map(ValueRef::into_inner)
-            .unwrap_or_else(Counter::new);
+            .unwrap_or_default();
         ctr.increment().unwrap();
         doc.counters.insert("k".to_string(), ctr).unwrap();
         let data = borsh::to_vec(&*doc).unwrap();
@@ -2469,7 +2461,7 @@ fn test_nested_counter_first_touch_via_entry_api_converges() {
                 .counters
                 .entry("k".to_string())
                 .unwrap()
-                .or_insert_with(Counter::new)
+                .or_default()
                 .unwrap();
             guard.increment().unwrap();
         }
@@ -2999,7 +2991,7 @@ fn test_nested_set_first_touch_concurrent_converges() {
             .get(&"k".to_string())
             .unwrap()
             .map(ValueRef::into_inner)
-            .unwrap_or_else(UnorderedSet::new);
+            .unwrap_or_default();
         let _ = set.insert(tag.to_string()).unwrap();
         doc.tags.insert("k".to_string(), set).unwrap();
         let data = borsh::to_vec(&*doc).unwrap();
@@ -3159,7 +3151,7 @@ fn test_nested_pncounter_single_writer_converges() {
         .get(&"bal".to_string())
         .unwrap()
         .map(ValueRef::into_inner)
-        .unwrap_or_else(Counter::<true>::new);
+        .unwrap_or_default();
     ctr.increment().unwrap();
     ctr.increment().unwrap();
     ctr.increment().unwrap();
@@ -3285,7 +3277,7 @@ fn test_nested_pncounter_concurrent_writers_converge() {
             .get(&"bal".to_string())
             .unwrap()
             .map(ValueRef::into_inner)
-            .unwrap_or_else(Counter::<true>::new);
+            .unwrap_or_default();
         ctr.increment().unwrap();
         ctr.increment().unwrap();
         ctr.decrement().unwrap();
@@ -3307,7 +3299,7 @@ fn test_nested_pncounter_concurrent_writers_converge() {
             .get(&"bal".to_string())
             .unwrap()
             .map(ValueRef::into_inner)
-            .unwrap_or_else(Counter::<true>::new);
+            .unwrap_or_default();
         ctr.increment().unwrap();
         doc.counters.insert("bal".to_string(), ctr).unwrap();
         let data = borsh::to_vec(&*doc).unwrap();

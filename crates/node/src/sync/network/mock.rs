@@ -267,8 +267,7 @@ impl MockSyncNetwork {
         }
         if open_stream_remaining > 0 {
             panic!(
-                "MockSyncNetwork: {} unconsumed `open_stream` responses queued",
-                open_stream_remaining
+                "MockSyncNetwork: {open_stream_remaining} unconsumed `open_stream` responses queued"
             );
         }
     }

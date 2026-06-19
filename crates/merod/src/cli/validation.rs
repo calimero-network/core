@@ -13,7 +13,6 @@ use calimero_server::config::AuthMode;
 use camino::Utf8Path;
 use eyre::{bail, Result as EyreResult, WrapErr};
 use multiaddr::{Multiaddr, Protocol};
-use tracing;
 
 /// Minimum sync timeout in milliseconds
 const MIN_SYNC_TIMEOUT_MS: u64 = 1000; // 1 second
@@ -131,8 +130,7 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
                     TransportProtocol::Udp => "UDP",
                 };
                 conflicts.push(format!(
-                    "Duplicate swarm address: {} {}:{}",
-                    proto_str, host, port
+                    "Duplicate swarm address: {proto_str} {host}:{port}"
                 ));
             } else {
                 used_ports.push((proto, host.clone(), port, PortOwner::Swarm));
@@ -151,16 +149,13 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
                 };
                 match owner {
                     PortOwner::Swarm => conflicts.push(format!(
-                        "Server {} port {} conflicts with swarm on {}",
-                        proto_str, port, host
+                        "Server {proto_str} port {port} conflicts with swarm on {host}"
                     )),
                     PortOwner::Server => conflicts.push(format!(
-                        "Duplicate server address: {} {}:{}",
-                        proto_str, host, port
+                        "Duplicate server address: {proto_str} {host}:{port}"
                     )),
                     PortOwner::EmbeddedAuth => conflicts.push(format!(
-                        "Server {} port {} conflicts with embedded auth on {}",
-                        proto_str, port, host
+                        "Server {proto_str} port {port} conflicts with embedded auth on {host}"
                     )),
                 }
             } else {
@@ -178,16 +173,13 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
         if let Some(owner) = check_conflict(&used_ports, &TransportProtocol::Tcp, &host, port) {
             match owner {
                 PortOwner::Swarm => conflicts.push(format!(
-                    "Embedded auth TCP port {} conflicts with swarm on {}",
-                    port, host
+                    "Embedded auth TCP port {port} conflicts with swarm on {host}"
                 )),
                 PortOwner::Server => conflicts.push(format!(
-                    "Embedded auth TCP port {} conflicts with server on {}",
-                    port, host
+                    "Embedded auth TCP port {port} conflicts with server on {host}"
                 )),
                 PortOwner::EmbeddedAuth => conflicts.push(format!(
-                    "Duplicate embedded auth address: TCP {}:{}",
-                    host, port
+                    "Duplicate embedded auth address: TCP {host}:{port}"
                 )),
             }
         } else {
@@ -201,7 +193,7 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
             "Port conflicts detected:\n{}",
             conflicts
                 .iter()
-                .map(|c| format!("  - {}", c))
+                .map(|c| format!("  - {c}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         );

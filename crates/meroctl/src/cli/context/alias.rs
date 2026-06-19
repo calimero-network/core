@@ -54,8 +54,7 @@ impl ContextAliasCommand {
                 let client = environment.client()?.clone();
                 if !context_exists(&client, &context_id).await? {
                     environment.output.write(&ErrorLine(&format!(
-                        "Context with ID '{}' does not exist",
-                        context_id
+                        "Context with ID '{context_id}' does not exist"
                     )));
                     return Ok(());
                 }
@@ -159,8 +158,7 @@ impl UseCommand {
 
             if !self.force {
                 environment.output.write(&ErrorLine(&format!(
-                    "Default alias already points to '{}'. Use --force to overwrite.",
-                    existing_context
+                    "Default alias already points to '{existing_context}'. Use --force to overwrite."
                 )));
                 return Ok(());
             }

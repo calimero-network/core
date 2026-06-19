@@ -24,7 +24,7 @@ impl Handler<StoreGroupMetaRequest> for ContextManager {
         // Only skip if BOTH metadata and admin member exist (full success previously).
         // If metadata exists but admin is missing, fall through to repair.
         if let Ok(Some(ref meta)) = existing_meta {
-            let admin_identity = meta.admin_identity.into();
+            let admin_identity = meta.admin_identity;
             // Direct-row check: this guard's intent is "did the previous
             // bootstrap finish writing the admin's direct membership row?"
             // The inheritance-aware `check_group_membership` walks the
@@ -52,7 +52,7 @@ impl Handler<StoreGroupMetaRequest> for ContextManager {
             },
         };
 
-        let admin_identity = meta.admin_identity.into();
+        let admin_identity = meta.admin_identity;
 
         // save_group_meta is idempotent — safe to call on retry
         if !matches!(
