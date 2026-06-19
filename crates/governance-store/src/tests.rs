@@ -6337,6 +6337,7 @@ mod tee_member_removed_event_tests {
     /// subgroup membership derives from namespace-level attestation
     /// policy, not the subgroup admin's choice.
     #[test]
+    #[serial_test::serial]
     fn member_removed_root_readonly_tee_cascades_into_restricted_subgroup() {
         use calimero_context_config::VisibilityMode;
 
@@ -6437,6 +6438,7 @@ mod tee_member_removed_event_tests {
     /// per-subgroup `MemberRemoved`/`TeeMemberRemoved` events stay gated to
     /// direct rows.
     #[test]
+    #[serial_test::serial]
     fn member_removed_root_readonly_tee_purges_inherited_open_subgroup_identity() {
         use calimero_context_config::VisibilityMode;
 
@@ -6537,6 +6539,7 @@ mod tee_member_removed_event_tests {
     /// PRESERVED — the #2256 Restricted-subgroup membership wall holds
     /// for non-TEE members.
     #[test]
+    #[serial_test::serial]
     fn member_removed_root_regular_member_does_not_cascade() {
         use calimero_context_config::VisibilityMode;
 
