@@ -153,7 +153,6 @@ async fn delete_context(
     Ok(())
 }
 
-#[expect(clippy::unwrap_in_result, reason = "pre-validated")]
 fn delete_context_scoped<K, const N: usize>(
     datastore: &mut Store,
     context_id: &ContextId,

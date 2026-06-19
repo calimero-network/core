@@ -346,6 +346,10 @@ fn app_version_changed_event(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args (runtime deps, context identity, crypto keys, module) on a split-brain-critical handler; no cohesive grouping"
+)]
 pub async fn update_application_id(
     datastore: calimero_store::Store,
     node_client: NodeClient,
@@ -526,6 +530,10 @@ fn verify_appkey_continuity(
 /// 3. Executes the migration function
 /// 4. Writes returned state bytes to root storage key
 /// 5. Updates context metadata and triggers sync
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args (runtime deps, context identity, crypto keys, module) on a split-brain-critical handler; no cohesive grouping"
+)]
 pub(crate) async fn update_application_with_migration(
     datastore: calimero_store::Store,
     node_client: NodeClient,
@@ -1242,10 +1250,15 @@ pub(crate) fn clear_migration_failed(datastore: &calimero_store::Store, context_
 ///
 /// These closures bridge the `calimero-storage` [`Key`]-based interface to the
 /// underlying `calimero-store` [`key::ContextState`]-based KV store.
+/// Reference-counted host storage callbacks (read / write / remove).
+pub(crate) type ReadFn = Rc<dyn Fn(&Key) -> Option<Vec<u8>>>;
+pub(crate) type WriteFn = Rc<dyn Fn(Key, &[u8]) -> bool>;
+pub(crate) type RemoveFn = Rc<dyn Fn(&Key) -> bool>;
+
 pub(crate) struct StorageCallbacks {
-    pub(crate) read: Rc<dyn Fn(&Key) -> Option<Vec<u8>>>,
-    pub(crate) write: Rc<dyn Fn(Key, &[u8]) -> bool>,
-    pub(crate) remove: Rc<dyn Fn(&Key) -> bool>,
+    pub(crate) read: ReadFn,
+    pub(crate) write: WriteFn,
+    pub(crate) remove: RemoveFn,
 }
 
 /// Create storage callback closures that route `calimero-storage` operations to the datastore.
@@ -1256,7 +1269,7 @@ pub(crate) fn create_storage_callbacks(
     datastore: &calimero_store::Store,
     context_id: ContextId,
 ) -> StorageCallbacks {
-    let read: Rc<dyn Fn(&Key) -> Option<Vec<u8>>> = {
+    let read: ReadFn = {
         let handle = datastore.handle();
         let ctx_id = context_id;
         Rc::new(move |key: &Key| {
@@ -1278,7 +1291,7 @@ pub(crate) fn create_storage_callbacks(
         })
     };
 
-    let write: Rc<dyn Fn(Key, &[u8]) -> bool> = {
+    let write: WriteFn = {
         let handle_cell: Rc<RefCell<_>> = Rc::new(RefCell::new(datastore.handle()));
         let ctx_id = context_id;
         Rc::new(move |key: Key, value: &[u8]| {
@@ -1293,7 +1306,7 @@ pub(crate) fn create_storage_callbacks(
         })
     };
 
-    let remove: Rc<dyn Fn(&Key) -> bool> = {
+    let remove: RemoveFn = {
         let handle_cell: Rc<RefCell<_>> = Rc::new(RefCell::new(datastore.handle()));
         let ctx_id = context_id;
         Rc::new(move |key: &Key| {

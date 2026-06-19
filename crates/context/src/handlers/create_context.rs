@@ -190,6 +190,10 @@ struct Prepared<'a> {
 }
 
 impl Prepared<'_> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "orthogonal args (runtime deps, context identity, crypto keys, module) on a split-brain-critical handler; no cohesive grouping"
+    )]
     fn new(
         node_client: &NodeClient,
         context_client: &ContextClient,
@@ -293,9 +297,10 @@ impl Prepared<'_> {
                 //         and the entry within the BTreeMap is constrained to
                 //         the lifetime of the BTreeMap before it is returned
                 let entry = unsafe {
-                    mem::transmute::<_, btree_map::VacantEntry<'static, ContextId, ContextMeta>>(
-                        entry,
-                    )
+                    mem::transmute::<
+                        btree_map::VacantEntry<'_, ContextId, ContextMeta>,
+                        btree_map::VacantEntry<'static, ContextId, ContextMeta>,
+                    >(entry)
                 };
 
                 context = Some(Some((entry, context_id, context_secret)));
@@ -330,6 +335,10 @@ impl Prepared<'_> {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args (runtime deps, context identity, crypto keys, module) on a split-brain-critical handler; no cohesive grouping"
+)]
 async fn create_context(
     datastore: Store,
     node_client: NodeClient,
