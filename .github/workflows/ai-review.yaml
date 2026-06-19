@@ -60,7 +60,7 @@ jobs:
       # prevent an upstream change from running with this repo's secrets.
       # Bump deliberately when adopting new reviewer features.
       - name: Install ai-code-reviewer
-        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@485b32abf334f1518dcadc9c3762ea98705e696c
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@841cacd80464ea2897426197eb1edb9dda94908d
 
       # Authenticate as the MeroReviewer App so review comments genuinely
       # come from meroreviewer[bot] (not whatever GH_PAT/GITHUB_TOKEN
