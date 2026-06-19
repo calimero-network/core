@@ -1026,36 +1026,65 @@ pub async fn handle_state_delta(
             );
         }
         DeltaAuthOutcome::Reject(reason) => {
-            // F4b inverse cross-check — validates the permissive direction the
-            // sole-authority flip will expose: would the projection AUTHORIZE a
+            // F4b-readiness cross-check — validates the permissive direction the
+            // SOLE-AUTHORITY flip will expose: would the projection AUTHORIZE a
             // write the live resolver rejected? (The forward direction — never
-            // denying where live authorizes — is already zero.) A hit is a real
-            // over-authorization and trips the hard divergence gate.
+            // denying where live authorizes — is already zero, which is what makes
+            // the landed F4a co-authorizer safe.)
             //
-            // Done as a refresh-free, concurrent RwLock READ: no DAG walk on this
-            // churn-heavy reject path (the cost that stalled scenarios), and the
-            // lock is NOT taken in an `if let` scrutinee that re-locks in its body
-            // (the self-deadlock). It only logs; we still act on live's reject. If
-            // the cited heads aren't folded, member_at_cut resolves to non-member,
-            // matching the reject — so it can't false-flag.
+            // This is INFORMATIONAL, under a distinct marker
+            // (`unified_projection_overauth`) that does NOT trip the hard cutover
+            // gate: F4a only ever ANDs with live (it can deny, never grant), so an
+            // over-authorization here cannot affect F4a — it is a prerequisite to
+            // F4b (sole authority), tracked separately. Known non-zero today: the
+            // inherited / materialized carve-outs in `member_at_cut` read CURRENT
+            // live state, not the at-cut view, so a membership the at-cut resolver
+            // revoked (e.g. remove-from-root revoking inherited subgroup
+            // membership) can still be granted here. F4b step 2 folds those
+            // carve-outs into the projection's at-cut state to close it.
+            //
+            // Refresh-free, concurrent RwLock READ: no DAG walk on this
+            // churn-heavy reject path, and the lock is NOT taken in an `if let`
+            // scrutinee that re-locks in its body (the self-deadlock). Logs only.
             if let Some(gp) = governance_position.as_ref() {
                 if let Ok(Some(group)) =
                     calimero_context::group_store::get_group_for_context(datastore, &context_id)
                 {
-                    let projected = node_state.read_scope_projections().member_at_cut(
-                        datastore,
-                        group,
-                        &author_id,
-                        &gp.governance_dag_heads,
-                    );
+                    let heads = &gp.governance_dag_heads;
+                    let projected = node_state
+                        .read_scope_projections()
+                        .member_at_cut(datastore, group, &author_id, heads);
                     if projected == Some(true) {
+                        // Diagnose WHICH path granted: op-fold (author_in_any /
+                        // decision_group_size > 0) vs a current-state carve-out
+                        // (group wholly unfolded → likely the inherited/materialized
+                        // carve-out reading live state the at-cut resolver revoked).
+                        let (
+                            backfilled,
+                            ns_resolved,
+                            log_len,
+                            heads_in_log,
+                            author_in_any,
+                            decision_group_in_view,
+                            decision_group_size,
+                        ) = node_state
+                            .read_scope_projections()
+                            .cut_diagnostics(datastore, group, &author_id, heads);
                         warn!(
-                            marker = "unified_projection_divergence",
+                            marker = "unified_projection_overauth",
                             plane = "membership-cut-reject",
                             group_id = ?group,
                             %author_id,
                             reason,
-                            "projection authorizes a write the live resolver rejected"
+                            ns_resolved,
+                            backfilled,
+                            log_len,
+                            heads_len = heads.len(),
+                            heads_in_log,
+                            author_in_any,
+                            decision_group_in_view,
+                            decision_group_size,
+                            "projection authorizes a write the live resolver rejected (F4b-readiness; not gated)"
                         );
                     }
                 }
