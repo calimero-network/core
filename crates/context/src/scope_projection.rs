@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    MembershipRepository, MetaRepository, NamespaceDagService, NamespaceOpLogService,
-    NamespaceRepository,
+    CapabilitiesRepository, MembershipRepository, MetaRepository, NamespaceDagService,
+    NamespaceOpLogService, NamespaceRepository,
 };
 use calimero_governance_types::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
@@ -210,6 +210,16 @@ pub fn op_from_namespace_op(
     parents: &[[u8; 32]],
 ) -> Op {
     let payload = match &signed.op {
+        // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF, not a
+        // direct membership: live's apply requires `check_path == Inherited` and
+        // writes NO persistent `GroupMember` row, re-deriving the membership from
+        // the anchor each time (so it is revoked when the parent membership is
+        // removed). Folding it as a direct `MemberAdded` would make it permanent
+        // and survive anchor removal — the over-grant in
+        // group-remove-from-root-revokes-inherited. Fold it as a `Noop` graph node;
+        // the inheritance walk in `AclView::is_member_at_cut` derives the actual
+        // membership from the (foldable) anchor membership + cap + visibility.
+        NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => OpPayload::Noop,
         NamespaceOp::Root(root) => {
             payload_from_root_op(root, signed.signer).unwrap_or(OpPayload::Noop)
         }
@@ -529,9 +539,17 @@ impl ScopeProjections {
             .ok()
             .flatten()
             .map(|meta| (root_group, meta.admin_identity));
+        // The namespace root's default member cap (CAN_JOIN_OPEN_SUBGROUPS is set
+        // here at creation as a store write, not an op) — base fallback for the
+        // inheritance walk's cap check. Immutable-base like the genesis admin.
+        let default_cap_base = CapabilitiesRepository::new(store)
+            .default_capabilities(&root_group)
+            .ok()
+            .flatten()
+            .unwrap_or(0);
         if view
             .as_ref()
-            .is_some_and(|v| v.is_member_at_cut(group, author, root))
+            .is_some_and(|v| v.is_member_at_cut(group, author, root, default_cap_base))
         {
             return Some(true);
         }
@@ -604,17 +622,23 @@ impl ScopeProjections {
             return None;
         }
 
-        // The genesis root admin is immutable base state (no op), correct at any
-        // cut — safe to consult even in the authoritative grant path.
+        // The genesis root admin + the root's default cap are immutable base state
+        // (no governance op carries them), correct at any cut — safe to consult in
+        // the authoritative grant path.
         let root_group = ContextGroupId::from(namespace_id);
         let root = MetaRepository::new(store)
             .load(&root_group)
             .ok()
             .flatten()
             .map(|meta| (root_group, meta.admin_identity));
+        let default_cap_base = CapabilitiesRepository::new(store)
+            .default_capabilities(&root_group)
+            .ok()
+            .flatten()
+            .unwrap_or(0);
         Some(
             self.acl_view_at(&scope, heads)
-                .is_some_and(|v| v.is_member_at_cut(group, author, root)),
+                .is_some_and(|v| v.is_member_at_cut(group, author, root, default_cap_base)),
         )
     }
 
@@ -750,8 +774,35 @@ mod tests {
         }
     }
 
+    /// An invitation-based `MemberJoined` for `group` with `Member` role — a
+    /// DIRECT membership op (folds as `MemberAdded`), unlike the open-subgroup
+    /// `MemberJoinedOpen` inheritance proof.
+    fn member_joined(group: ContextGroupId, member: PublicKey) -> RootOp {
+        RootOp::MemberJoined {
+            member,
+            signed_invitation: SignedGroupOpenInvitation {
+                invitation: GroupInvitationFromAdmin {
+                    inviter_identity: [0xA1; 32].into(),
+                    group_id: group,
+                    expiration_timestamp: 1_700_000_000,
+                    secret_salt: [0x33; 32],
+                    invited_role: 1, // Member
+                },
+                inviter_signature: "deadbeef".to_string(),
+                application_id: None,
+                app_key: None,
+            },
+        }
+    }
+
     #[test]
-    fn open_join_folds_into_the_group_under_the_namespace_scope() {
+    fn open_subgroup_join_folds_as_noop_not_direct_membership() {
+        // `MemberJoinedOpen` is an inheritance-join PROOF (no persistent direct
+        // row in live), so it folds as a `Noop` graph node — the inheritance walk
+        // derives the membership from the anchor, so it's revoked when the anchor
+        // is removed. (Folding it as a direct `MemberAdded` was the over-grant in
+        // group-remove-from-root-revokes-inherited.) The node still occupies its
+        // place in the DAG so the ancestry walk passes through it.
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let member = PublicKey::from([0x55; 32]);
@@ -769,26 +820,16 @@ mod tests {
             None,
             [0x99; 32],
             hlc(10),
-            &[],
+            &[[0x88; 32]],
         );
 
-        assert_eq!(
-            op.id, [0x99; 32],
-            "op id mirrors the source governance delta id (so the cut maps)"
-        );
-        assert_eq!(
-            op.scope,
-            ScopeId::from(ns),
-            "governance ops are keyed under the namespace scope"
-        );
-        assert_eq!(op.author, signer, "author is the op signer (deterministic)");
+        assert_eq!(op.id, [0x99; 32], "op still occupies its DAG node");
+        assert_eq!(op.scope, ScopeId::from(ns));
+        assert_eq!(op.parents, vec![[0x88; 32]], "with its real parents");
         assert_eq!(
             op.payload,
-            OpPayload::MemberAdded {
-                group: ContextGroupId::from(group),
-                member,
-                role: GroupMemberRole::Member,
-            }
+            OpPayload::Noop,
+            "open-subgroup inheritance join is a Noop, not a direct membership"
         );
     }
 
@@ -973,14 +1014,7 @@ mod tests {
         let ns_scope = ScopeId::from(ns);
 
         let join = op_from_namespace_op(
-            &signed_root(
-                ns,
-                signer,
-                RootOp::MemberJoinedOpen {
-                    member,
-                    group_id: group.to_bytes(),
-                },
-            ),
+            &signed_root(ns, signer, member_joined(group, member)),
             None,
             [0x99; 32],
             hlc(10),
@@ -1076,14 +1110,7 @@ mod tests {
 
         //   MemberJoinedOpen(group, member)  <--  AdminChanged(namespace)  [head]
         let join = op_from_namespace_op(
-            &signed_root(
-                ns,
-                signer,
-                RootOp::MemberJoinedOpen {
-                    member,
-                    group_id: group.to_bytes(),
-                },
-            ),
+            &signed_root(ns, signer, member_joined(group, member)),
             None,
             [0x99; 32],
             hlc(10),

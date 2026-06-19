@@ -151,6 +151,7 @@ impl AclView {
         group: ContextGroupId,
         author: &PublicKey,
         root: Option<(ContextGroupId, PublicKey)>,
+        default_cap_base: u32,
     ) -> bool {
         // Admin of `g` at the cut: a folded group admin (subgroup creator / an
         // `Admin`-role holder) OR the immutable namespace-root genesis admin.
@@ -159,7 +160,12 @@ impl AclView {
                 || root.is_some_and(|(root_g, root_admin)| g == root_g && *author == root_admin)
         };
 
-        // Direct member or admin of the target group.
+        // Direct member or admin of the target group. NOTE: an open-subgroup
+        // inheritance self-join (`MemberJoinedOpen`) is deliberately NOT folded as
+        // a direct membership (it carries no persistent direct row in the live
+        // model — its apply requires `check_path == Inherited` and creates no
+        // row); such membership is re-derived by the inheritance walk below, so it
+        // is correctly revoked when the anchor is removed.
         if is_admin(group)
             || self
                 .groups
@@ -173,6 +179,22 @@ impl AclView {
         // `check_path`. The first direct-membership ancestor decides via its
         // `CAN_JOIN_OPEN_SUBGROUPS` cap (recorded, not returned); an admin
         // ancestor reached over the open chain grants immediately.
+        //
+        // `effective_cap`: the projection folds explicit `DefaultCapabilitiesSet`
+        // / `MemberCapabilitySet` ops, but a group's CREATION default cap is a
+        // store write, not an op — so when nothing is folded for the anchor we
+        // fall back to `default_cap_base` (the materialized default, immutable
+        // base state, passed by the caller). This mirrors live's
+        // `member_capability` = override.or(default).
+        let effective_cap = |g: &ContextGroupId| -> u32 {
+            let folded = self.capability(g, author);
+            if folded != 0 {
+                folded
+            } else {
+                default_cap_base
+            }
+        };
+
         let mut anchor_is_member: Option<bool> = None;
         let mut current = group;
         for _ in 0..=MAX_NAMESPACE_DEPTH {
@@ -193,8 +215,7 @@ impl AclView {
                     .get(&parent)
                     .is_some_and(|m| m.contains_key(author))
             {
-                let caps = self.capability(&parent, author);
-                anchor_is_member = Some(caps & CAN_JOIN_OPEN_SUBGROUPS != 0);
+                anchor_is_member = Some(effective_cap(&parent) & CAN_JOIN_OPEN_SUBGROUPS != 0);
             }
             current = parent;
         }
@@ -414,22 +435,22 @@ mod tests {
 
         // Open child + parent member with CAN_JOIN_OPEN_SUBGROUPS → inherits.
         let v = inheritance_view(parent, child, member, CAN_JOIN_OPEN_SUBGROUPS, false, true);
-        assert!(v.is_member_at_cut(child, &member, None));
+        assert!(v.is_member_at_cut(child, &member, None, 0));
 
         // Open child but member lacks the cap → no inheritance.
         let v = inheritance_view(parent, child, member, 0, false, true);
-        assert!(!v.is_member_at_cut(child, &member, None));
+        assert!(!v.is_member_at_cut(child, &member, None, 0));
 
         // Restricted child → wall, no inheritance even with the cap.
         let v = inheritance_view(parent, child, member, CAN_JOIN_OPEN_SUBGROUPS, true, true);
-        assert!(!v.is_member_at_cut(child, &member, None));
+        assert!(!v.is_member_at_cut(child, &member, None, 0));
 
         // THE over-auth case: parent membership REVOKED at the cut (parent no
         // longer has the member) → not a member of the child either, even with
         // the cap still set. This is exactly what reading current live state got
         // wrong; the at-cut view has no parent membership, so inheritance fails.
         let v = inheritance_view(parent, child, member, CAN_JOIN_OPEN_SUBGROUPS, false, false);
-        assert!(!v.is_member_at_cut(child, &member, None));
+        assert!(!v.is_member_at_cut(child, &member, None, 0));
     }
 
     #[test]
@@ -442,7 +463,7 @@ mod tests {
         // needed, no direct parent membership row).
         let mut v = inheritance_view(parent, child, admin, 0, false, false);
         v.group_admin.insert(parent, admin);
-        assert!(v.is_member_at_cut(child, &admin, None));
+        assert!(v.is_member_at_cut(child, &admin, None, 0));
 
         // Namespace-root genesis admin (no op) supplied via `root`: an open child
         // directly under the root inherits for the root admin.
@@ -459,10 +480,10 @@ mod tests {
             subgroups,
             ..Default::default()
         };
-        assert!(v.is_member_at_cut(child, &admin, Some((root, admin))));
+        assert!(v.is_member_at_cut(child, &admin, Some((root, admin)), 0));
         // A non-admin without any membership does not inherit.
         let other = PublicKey::from([0x33; 32]);
-        assert!(!v.is_member_at_cut(child, &other, Some((root, admin))));
+        assert!(!v.is_member_at_cut(child, &other, Some((root, admin)), 0));
     }
 
     #[test]
