@@ -549,6 +549,62 @@ impl ScopeProjections {
         Some(false)
     }
 
+    /// Authoritative membership verdict for the **grant** direction (overriding
+    /// live's reject) — `Some(true)` ONLY when the projection can decide membership
+    /// from its own fold, deterministically:
+    ///   1. EVERY cited head is folded (complete cut ancestry), so the at-cut walk
+    ///      sees the whole picture — including any removal in the cut; and
+    ///   2. the at-cut walk ([`AclView::is_member_at_cut`]) confirms membership.
+    ///
+    /// Returns `None` when the cut isn't fully folded (the projection can't
+    /// authoritatively decide — defer to live's reject) and `Some(false)` when the
+    /// fold says not-a-member. Unlike [`member_at_cut`], it uses **neither** the
+    /// materialized `role_of` fallback **nor** the immutable-root carve-out as a
+    /// grant basis: the materialized fallback reads *current* live state, which
+    /// races a still-propagating cascade removal and caused a non-deterministic
+    /// over-grant in `group-remove-from-root-revokes-inherited`. The grant
+    /// direction must rest only on fully-folded, at-cut evidence so it can never
+    /// out-run live into authorizing a write live rejected.
+    ///
+    /// [`member_at_cut`]: Self::member_at_cut
+    #[must_use]
+    pub fn member_at_cut_authoritative(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        author: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let scope = ScopeId::from(namespace_id);
+
+        // Require the COMPLETE cited ancestry to be folded: every head must be in
+        // this scope's log. If any is missing, the at-cut walk would resolve over
+        // a truncated ancestry (possibly missing a removal) — not authoritative,
+        // so we abstain (`None`) and defer to live's reject rather than risk an
+        // over-grant.
+        let seen = self.seen.get(&scope)?;
+        if !heads.iter().all(|h| seen.contains(h)) {
+            return None;
+        }
+
+        // The genesis root admin is immutable base state (no op), correct at any
+        // cut — safe to consult even in the authoritative grant path.
+        let root_group = ContextGroupId::from(namespace_id);
+        let root = MetaRepository::new(store)
+            .load(&root_group)
+            .ok()
+            .flatten()
+            .map(|meta| (root_group, meta.admin_identity));
+        Some(
+            self.acl_view_at(&scope, heads)
+                .is_some_and(|v| v.is_member_at_cut(group, author, root)),
+        )
+    }
+
     /// Diagnostics for a divergence at `heads` — why does the projection NOT see
     /// `author` in `group`? Distinguishes the failure modes:
     /// - `namespace_log_len == 0` → the projection is empty for this namespace
