@@ -5487,6 +5487,7 @@ mod auto_follow_tests {
     /// actor-driven `join_context` call, which needs a full merod
     /// instance (covered by the deferred merobox e2e workflow).
     #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
     async fn end_to_end_event_fires_after_op_apply() {
         use calimero_primitives::application::ApplicationId;
         use calimero_primitives::blobs::BlobId;
@@ -5594,6 +5595,7 @@ mod auto_follow_tests {
     /// FUTURE `OpEvent::ContextRegistered` events — pre-existing
     /// contexts in the group at join-time would be missed.
     #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
     async fn member_added_emits_synthesized_auto_follow_set() {
         use crate::op_events::{self, OpEvent};
 
@@ -5772,6 +5774,7 @@ mod auto_follow_tests {
     /// `Barrier` comment in the body for why a fully deterministic RED would need
     /// a test-only sync hook in the apply hot path, which we deliberately omit.
     #[test]
+    #[serial_test::serial]
     fn member_added_event_fires_after_op_log_append() {
         use std::sync::{Arc, Barrier};
 
@@ -5888,6 +5891,7 @@ mod auto_follow_tests {
     /// #2770: re-applying an already-logged op must NOT re-fire its event.
     /// The queued events are dropped on the content-hash dedup early-return.
     #[test]
+    #[serial_test::serial]
     fn replayed_group_op_does_not_re_emit() {
         use crate::op_events::{self, OpEvent};
 
@@ -5965,6 +5969,7 @@ mod auto_follow_tests {
     /// NOTE: deterministic GREEN, best-effort RED — same characterization as
     /// `member_added_event_fires_after_op_log_append` (see its body comment).
     #[test]
+    #[serial_test::serial]
     fn subgroup_created_event_fires_after_namespace_op_persist() {
         use std::sync::{Arc, Barrier};
 
@@ -6226,6 +6231,7 @@ mod tee_member_removed_event_tests {
     /// must emit BOTH `MemberRemoved` and `TeeMemberRemoved` for the
     /// same `(group_id, member)`.
     #[test]
+    #[serial_test::serial]
     fn member_removed_op_emits_tee_event_for_readonly_tee_role() {
         let store = test_store();
         let gid = test_group_id();
@@ -6278,6 +6284,7 @@ mod tee_member_removed_event_tests {
     /// leave-namespace, leave-then-rejoin-via-inheritance}` that
     /// closing #2653 was about.
     #[test]
+    #[serial_test::serial]
     fn member_removed_op_does_not_emit_tee_event_for_regular_member() {
         let store = test_store();
         let gid = test_group_id();
@@ -6620,6 +6627,7 @@ mod tee_member_removed_event_tests {
     /// a `ReadOnlyTee` self-leave emits both events; an `Admin`/
     /// `Member` self-leave emits only `MemberRemoved`.
     #[test]
+    #[serial_test::serial]
     fn member_left_op_emits_tee_event_only_for_readonly_tee_role() {
         // Case 1: TEE self-leave fires both.
         {

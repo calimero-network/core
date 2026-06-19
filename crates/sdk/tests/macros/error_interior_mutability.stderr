@@ -1,0 +1,28 @@
+error: (calimero)> `RefCell` is not allowed in replicated state — interior-mutability and shared-ownership wrappers have no merge semantics and would silently diverge across replicas (and don't round-trip through borsh).
+
+       Store the plain value instead — wrap it in `LwwRegister<T>` for last-write-wins, or use an SDK CRDT collection. If you truly need this for node-local scratch, keep it out of `#[app::state]`.
+  --> tests/macros/error_interior_mutability.rs:10:11
+   |
+10 |     cell: RefCell<u64>,
+   |           ^^^^^^^
+
+error: (calimero)> `Rc` is not allowed in replicated state — interior-mutability and shared-ownership wrappers have no merge semantics and would silently diverge across replicas (and don't round-trip through borsh).
+
+       Store the plain value instead — wrap it in `LwwRegister<T>` for last-write-wins, or use an SDK CRDT collection. If you truly need this for node-local scratch, keep it out of `#[app::state]`.
+  --> tests/macros/error_interior_mutability.rs:11:13
+   |
+11 |     shared: Rc<u64>,
+   |             ^^
+
+error[E0277]: the trait bound `BadState: Identity` is not satisfied
+  --> tests/macros/error_interior_mutability.rs:17:22
+   |
+17 |     pub fn init() -> BadState {
+   |                      ^^^^^^^^ the trait `AppState` is not implemented for `BadState`
+   |
+   = note: required for `BadState` to implement `Identity`
+note: required by a bound in `calimero_sdk::state::AppStateInit::Return`
+  --> src/state.rs
+   |
+   |     type Return: Identity<Self>;
+   |                  ^^^^^^^^^^^^^^ required by this bound in `AppStateInit::Return`

@@ -68,6 +68,14 @@ pub trait CrdtMeta {
 }
 
 /// Marker trait for types that can be merged (all CRDTs)
+#[diagnostic::on_unimplemented(
+    message = "(calimero)> `{Self}` cannot be stored in replicated state — it is not a CRDT",
+    label = "this type has no merge semantics",
+    note = "every `#[app::state]` field and every collection value must be `Mergeable` so replicas converge.",
+    note = "fixes: wrap a plain value in `LwwRegister<{Self}>` (last-write-wins) or `Counter`; \
+            use `UnorderedMap`/`UnorderedSet`/`Vector` for collections; or `#[derive(Mergeable)]` \
+            on your own struct (every field must itself be `Mergeable`)."
+)]
 pub trait Mergeable {
     /// Merge with another instance of the same type
     ///

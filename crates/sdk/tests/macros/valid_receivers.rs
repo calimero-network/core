@@ -1,56 +1,37 @@
+//! Valid receiver shapes accepted by `#[app::logic]`.
+//!
+//! `#[app::state]` no longer permits a lifetime parameter, so the receiver
+//! forms that required a lifetime-parameterised `Self` (`self: &'a Self`, ...)
+//! are gone. What remains is the full set of reference receivers — by `Self`
+//! and by the concrete type name, with and without `mut` bindings and parens —
+//! which is what an app actually writes.
+
 use calimero_sdk::app;
 
-// State is now required to be borsh-(de)serializable (the macro injects the
-// derives), so a bare `&'a ()` field — which can't deserialize — is replaced
-// with `PhantomData<&'a ()>` to keep the lifetime around for the receiver tests
-// below without violating the borsh contract.
 #[app::state]
-struct MyType<'a>(::core::marker::PhantomData<&'a ()>);
+struct MyType;
 
 #[app::logic]
-impl<'a> MyType<'a> {
-    // #[app::destroy]
-    // pub fn method_00(self) {}
+impl MyType {
+    #[app::init]
+    pub fn init() -> MyType {
+        MyType
+    }
+
     pub fn method_01(&self) {}
     pub fn method_02(&mut self) {}
-    // #[app::destroy]
-    // pub fn method_03(self: Self) {}
-    // #[app::destroy]
-    // pub fn method_04(self: (Self)) {}
-    // #[app::destroy]
-    // pub fn method_05(mut self: Self) {}
-    // #[app::destroy]
-    // pub fn method_06(mut self: (Self)) {}
-    // #[app::destroy]
-    // pub fn method_07(self: &'a Self) {}
-    // #[app::destroy]
-    // pub fn method_08(self: &'a (Self)) {}
-    pub fn method_09(mut self: &'a Self) {}
-    pub fn method_10(mut self: &'a (Self)) {}
-    pub fn method_11(self: &'a mut Self) {}
-    pub fn method_12(self: &'a mut (Self)) {}
-    pub fn method_13(mut self: &'a mut Self) {}
-    pub fn method_14(mut self: &'a mut (Self)) {}
-    // #[app::destroy]
-    // pub fn method_15(self: MyType<'a>) {}
-    // #[app::destroy]
-    // pub fn method_16(self: (MyType<'a>)) {}
-    // #[app::destroy]
-    // pub fn method_17(mut self: MyType<'a>) {}
-    // #[app::destroy]
-    // pub fn method_18(mut self: (MyType<'a>)) {}
-    pub fn method_19(self: &'a MyType<'a>) {}
-    pub fn method_20(self: &'a (MyType<'a>)) {}
-    pub fn method_21(mut self: &'a MyType<'a>) {}
-    pub fn method_22(mut self: &'a (MyType<'a>)) {}
-    pub fn method_23(self: &'a mut MyType<'a>) {}
-    pub fn method_24(self: &'a mut (MyType<'a>)) {}
-    pub fn method_25(mut self: &'a mut MyType<'a>) {}
-    pub fn method_26(mut self: &'a mut (MyType<'a>)) {}
-    // pub fn method_27(self: OtherType) {}
-    // pub fn method_28(self: &'a OtherType) {}
+    pub fn method_09(self: &Self) {}
+    pub fn method_10(self: &(Self)) {}
+    pub fn method_11(self: &mut Self) {}
+    pub fn method_12(self: &mut (Self)) {}
+    pub fn method_13(mut self: &Self) {}
+    pub fn method_14(mut self: &mut Self) {}
+    pub fn method_19(self: &MyType) {}
+    pub fn method_20(self: &(MyType)) {}
+    pub fn method_23(self: &mut MyType) {}
+    pub fn method_24(self: &mut (MyType)) {}
+    pub fn method_25(mut self: &MyType) {}
+    pub fn method_26(mut self: &mut MyType) {}
 }
-
-struct OtherType;
 
 fn main() {}

@@ -99,6 +99,8 @@ pub use frozen_value::FrozenValue;
 ///
 /// [`get_mut`]: UnorderedMap::get_mut
 /// [`entry`]: UnorderedMap::entry
+#[must_use = "this is a read-only copy from storage; dropping it makes the `get` a no-op. \
+              To mutate and persist use `get_mut`/`entry().or_default()`; to keep a copy bind it"]
 pub struct ValueRef<V> {
     value: V,
 }

@@ -75,7 +75,24 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
         let errors = Errors::new(input.item);
 
         let (vis, ident, generics) = match input.item {
-            StructOrEnumItem::Struct(item) => (&item.vis, &item.ident, &item.generics),
+            StructOrEnumItem::Struct(item) => {
+                // A struct can't carry the `{ kind, data }` tagged-union shape an
+                // event serializes to. Reject it here with a clear SDK message,
+                // otherwise the `#[serde(content = "...")]` we generate below
+                // surfaces serde-derive's confusing "can only be used on enums".
+                //
+                // The early return is intentional: this is the first match arm,
+                // so `errors` is still empty here and nothing is dropped. The
+                // downstream checks (visibility, generics, reserved idents) all
+                // assume the event is an enum, so re-running them on a struct
+                // would only add noise. Converting the struct to an enum is the
+                // single required fix and re-surfaces any remaining diagnostics on
+                // the next compile.
+                return Err(errors.finish(SynError::new_spanned(
+                    &item.ident,
+                    ParseError::EventMustBeEnum,
+                )));
+            }
             StructOrEnumItem::Enum(item) => (&item.vis, &item.ident, &item.generics),
         };
 

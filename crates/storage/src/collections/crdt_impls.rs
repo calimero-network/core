@@ -62,6 +62,17 @@ use crate::store::StorageAdaptor;
 // Note: Vec is also not Mergeable for same reason
 // Use Vector<T> CRDT collection instead
 
+// `#[diagnostic::do_not_recommend]` is applied to EVERY `Mergeable` impl in the
+// crate (collections + guarded wrappers), not just these blanket ones. This
+// intentionally suppresses rustc's entire "the following other types implement
+// `Mergeable`: …" list when a user field isn't `Mergeable`: that list is noise
+// (an app author won't turn their type into an `UnorderedMap`), and the
+// authoritative guidance already lives in the trait's `on_unimplemented` note
+// ("wrap in `LwwRegister<T>` / use a CRDT collection / `#[derive(Mergeable)]`").
+// Bonus: it makes the `error_non_mergeable_field` golden drift-proof as new
+// `Mergeable` impls land. `do_not_recommend` only affects diagnostics, never
+// trait resolution.
+#[diagnostic::do_not_recommend]
 impl<T: Mergeable + Clone> Mergeable for Option<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         match (self.as_mut(), other) {
@@ -86,6 +97,7 @@ impl<T: Mergeable + Clone> Mergeable for Option<T> {
 // through (`Box` is in the lint's pass-through list) only for the trait bound
 // to fail later with an unhelpful diagnostic. Trivial delegation makes the
 // claim honest.
+#[diagnostic::do_not_recommend]
 impl<T: Mergeable> Mergeable for Box<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         (**self).merge(&**other)
@@ -111,6 +123,7 @@ impl<T: 'static> CrdtMeta for LwwRegister<T> {
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<T: Clone> Mergeable for LwwRegister<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Use existing merge implementation
@@ -151,6 +164,7 @@ impl<S: StorageAdaptor> CrdtMeta for Counter<true, S> {
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW_DECREMENT, S> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Merge positive counts (both G-Counter and PN-Counter)
@@ -212,6 +226,7 @@ impl CrdtMeta for ReplicatedGrowableArray {
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl Mergeable for ReplicatedGrowableArray {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // RGA is built on UnorderedMap which has element-level DAG synchronization.
@@ -260,6 +275,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<K, V, S> Mergeable for UnorderedMap<K, V, S>
 where
     K: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq + 'static,
@@ -324,6 +340,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<K, V, S> Mergeable for SortedMap<K, V, S>
 where
     K: borsh::BorshSerialize
@@ -379,6 +396,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for UnorderedSet<T, S>
 where
     T: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq + 'static,
@@ -440,6 +458,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for SortedSet<T, S>
 where
     T: borsh::BorshSerialize
@@ -482,6 +501,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for Vector<T, S>
 where
     T: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable + 'static,

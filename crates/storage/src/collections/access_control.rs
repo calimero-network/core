@@ -390,6 +390,7 @@ impl Data for AccessControl {
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl Mergeable for AccessControl {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.grants.merge(&other.grants)

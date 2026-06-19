@@ -1,9 +1,12 @@
-//! Tests for valid complex generic patterns in SDK macros
+//! Valid complex generic / lifetime patterns on `#[app::logic]` methods.
 //!
-//! This file tests that the SDK macros correctly handle various valid
-//! lifetime patterns and generic configurations.
+//! State takes no generics or lifetimes; every interesting parameter lives on
+//! the methods. Each state is a unit struct with an `#[app::init]` (both now
+//! mandatory). Multiple `#[app::state]` types share this file — fine on the
+//! host target, where the WASM entrypoint exports aren't generated.
 
 use calimero_sdk::app;
+use calimero_storage::collections::LwwRegister;
 
 // Test multiple lifetime parameters in methods
 #[app::state]
@@ -11,22 +14,27 @@ struct MultiLifetimeState;
 
 #[app::logic]
 impl MultiLifetimeState {
+    #[app::init]
+    pub fn init() -> MultiLifetimeState {
+        MultiLifetimeState
+    }
+
     pub fn dual_lifetime_refs<'a, 'b>(&self, first: &'a str, second: &'b str) -> &'a str {
         first
     }
 
-    pub fn triple_lifetime_refs<'a, 'b, 'c>(
-        &self,
-        a: &'a str,
-        b: &'b str,
-        c: &'c str,
-    ) -> &'a str {
+    pub fn triple_lifetime_refs<'a, 'b, 'c>(&self, a: &'a str, b: &'b str, c: &'c str) -> &'a str {
         a
     }
 
-    // Test lifetime elision still works
-    pub fn elided_lifetime(&self, data: &str) -> &str {
-        data
+    // Lifetime elision through the macro: with `&self` plus another reference
+    // parameter, the elided output lifetime binds to `&self` (the receiver wins),
+    // *not* to `_data` — so the body can't return `_data` and instead returns
+    // `""`, which is `'static` and satisfies any lifetime. This checks the macro
+    // accepts an elided-lifetime signature; borrowing a real field under the same
+    // `&self`-tied elision is covered by `LifetimeReturnState::borrow_data` below.
+    pub fn elided_lifetime(&self, _data: &str) -> &str {
+        ""
     }
 }
 
@@ -36,6 +44,11 @@ struct StaticLifetimeState;
 
 #[app::logic]
 impl StaticLifetimeState {
+    #[app::init]
+    pub fn init() -> StaticLifetimeState {
+        StaticLifetimeState
+    }
+
     pub fn static_ref(&self, data: &'static str) -> &'static str {
         data
     }
@@ -45,14 +58,23 @@ impl StaticLifetimeState {
     }
 }
 
-// Test lifetimes in return types
+// Test lifetimes in return types tied to the `&self` borrow. The `String` field
+// is wrapped in `LwwRegister` (the CRDT form); `LwwRegister<String>` derefs to
+// `String` to `str`, so the borrow accessors compile unchanged.
 #[app::state]
 struct LifetimeReturnState {
-    data: String,
+    data: LwwRegister<String>,
 }
 
 #[app::logic]
 impl LifetimeReturnState {
+    #[app::init]
+    pub fn init() -> LifetimeReturnState {
+        LifetimeReturnState {
+            data: LwwRegister::new(String::new()),
+        }
+    }
+
     pub fn borrow_data(&self) -> &str {
         &self.data
     }
@@ -68,6 +90,11 @@ struct SliceState;
 
 #[app::logic]
 impl SliceState {
+    #[app::init]
+    pub fn init() -> SliceState {
+        SliceState
+    }
+
     pub fn process_slice<'a>(&self, data: &'a [u8]) -> &'a [u8] {
         data
     }
@@ -77,12 +104,17 @@ impl SliceState {
     }
 }
 
-// Test where clause patterns (implicit through type bounds)
+// Test owned-value arguments and returns
 #[app::state]
 struct BoundedTypesState;
 
 #[app::logic]
 impl BoundedTypesState {
+    #[app::init]
+    pub fn init() -> BoundedTypesState {
+        BoundedTypesState
+    }
+
     pub fn process_string(&self, s: String) -> String {
         s
     }
@@ -92,12 +124,17 @@ impl BoundedTypesState {
     }
 }
 
-// Test Option and Result with lifetimes
+// Test Option with lifetimes
 #[app::state]
 struct OptionResultState;
 
 #[app::logic]
 impl OptionResultState {
+    #[app::init]
+    pub fn init() -> OptionResultState {
+        OptionResultState
+    }
+
     pub fn option_ref<'a>(&self, opt: Option<&'a str>) -> Option<&'a str> {
         opt
     }
@@ -113,6 +150,11 @@ struct NestedLifetimeState;
 
 #[app::logic]
 impl NestedLifetimeState {
+    #[app::init]
+    pub fn init() -> NestedLifetimeState {
+        NestedLifetimeState
+    }
+
     pub fn nested_ref<'a, 'b>(&self, outer: &'a Vec<&'b str>) -> usize
     where
         'b: 'a,

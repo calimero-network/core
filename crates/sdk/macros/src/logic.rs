@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse2, Error as SynError, GenericParam, ImplItem, ItemImpl, Path};
+use syn::{parse2, Attribute, Error as SynError, GenericParam, ImplItem, ItemImpl, Path};
 
 use crate::errors::{Errors, ParseError};
 use crate::logic::method::{LogicMethod, LogicMethodImplInput, PublicLogicMethod};
@@ -13,6 +13,16 @@ mod arg;
 mod method;
 mod ty;
 mod utils;
+
+/// Whether any attribute in the list is `#[app::init]`. Mirrors the per-method
+/// detection in `logic/method.rs`, but is applied at the impl level so the
+/// duplicate-init check doesn't depend on the method parsing successfully.
+fn has_init_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let segments = &attr.path().segments;
+        segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "init"
+    })
+}
 
 pub struct LogicImpl<'a> {
     #[expect(dead_code, reason = "This will be used in future")]
@@ -121,6 +131,33 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
                     Ok(LogicMethod::Private) => {}
                     Err(err) => errors.combine(&err),
                 }
+            }
+        }
+
+        // At most one `#[app::init]` per type — multiple initializers are
+        // ambiguous (which one constructs the state?). Count the attribute
+        // directly on the impl items, independent of per-method parsing: an
+        // initializer that fails its *own* validation (e.g. not named `init`) is
+        // excluded from `methods`, so a `methods`-based check would miss it.
+        // When there's more than one, flag *every* `#[app::init]` (not just the
+        // ones after the first) so the error never lands on an arbitrary "valid"
+        // initializer while the real offender — which may appear earlier in
+        // source order — goes unmarked. These accumulate with per-method errors.
+        let init_methods: Vec<_> = input
+            .item
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ImplItem::Fn(method) if has_init_attr(&method.attrs) => Some(method),
+                _ => None,
+            })
+            .collect();
+        if init_methods.len() > 1 {
+            for method in &init_methods {
+                errors.subsume(SynError::new_spanned(
+                    &method.sig.ident,
+                    ParseError::DuplicateInit,
+                ));
             }
         }
 
