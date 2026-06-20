@@ -759,6 +759,58 @@ fn enumerate_inherited_members_includes_open_subgroup_joiner() {
 }
 
 #[test]
+fn enumerate_inherited_members_preserves_read_only_tee_role() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // A `ReadOnlyTee` admitted at the namespace root (direct row there) and
+    // granted CAN_JOIN_OPEN_SUBGROUPS inherits into an Open subgroup with no
+    // direct row of its own. `enumerate_inherited` must surface it with its
+    // real anchor role (`ReadOnlyTee`), NOT collapse it to plain `Member` —
+    // the live-desktop bug where an inherited TEE node showed as `Member`.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x40; 32]);
+    let reports = ContextGroupId::from([0x41; 32]);
+    let tee = PublicKey::from([0x03; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+
+    // TEE node is a direct ReadOnlyTee member of the namespace root with the
+    // join cap, but has NO direct row in the Open subgroup.
+    MembershipRepository::new(&store)
+        .add_member(&namespace, &tee, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &namespace,
+            &tee,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+        )
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&reports, VisibilityMode::Open)
+        .unwrap();
+
+    // Precondition: the TEE node has no stored row in the Open subgroup.
+    let stored = MembershipRepository::new(&store)
+        .list(&reports, 0, usize::MAX)
+        .unwrap();
+    assert!(
+        stored.iter().all(|(pk, _)| *pk != tee),
+        "precondition: inherited TEE node has no stored GroupMember row"
+    );
+
+    let inherited = MembershipRepository::new(&store)
+        .enumerate_inherited(&reports)
+        .unwrap();
+    assert!(
+        inherited
+            .iter()
+            .any(|(pk, role)| *pk == tee && *role == GroupMemberRole::ReadOnlyTee),
+        "inherited ReadOnlyTee must keep the ReadOnlyTee role, not collapse to Member, got {inherited:?}"
+    );
+}
+
+#[test]
 fn enumerate_inherited_members_excludes_deny_listed_member() {
     // A member kicked from an Open subgroup via `MemberRemoved` /
     // `MemberLeft` is deny-listed on that subgroup. Because the kick
