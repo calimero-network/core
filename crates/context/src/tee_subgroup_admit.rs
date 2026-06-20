@@ -239,12 +239,21 @@ async fn handle_new_subgroup(
     // a row, so `is_open_chain_to_namespace` fails safe (treats a not-yet-written
     // subgroup as Restricted → we proceed) rather than wrongly skipping it.
 
+    info!(
+        subgroup = %hex::encode(child_group_id),
+        namespace = %hex::encode(namespace_id),
+        "tee-subgroup-admit: new-subgroup trigger received"
+    );
+
     // Only act for Restricted subgroups — Open subgroups are already readable
     // by a root-admitted TEE node (inherited membership + namespace key).
     match CapabilitiesRepository::new(store).is_open_chain_to_namespace(&child_gid, &namespace_gid)
     {
-        Ok(true) => return, // Open → skip
-        Ok(false) => {}     // Restricted → proceed
+        Ok(true) => {
+            info!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — Open subgroup (TEE reads via inheritance)");
+            return;
+        }
+        Ok(false) => {} // Restricted → proceed
         Err(e) => {
             error!(?e, "tee-subgroup-admit: open-chain check failed");
             return;
@@ -253,8 +262,11 @@ async fn handle_new_subgroup(
 
     // Only the key-holder (the creator) can deliver the per-subgroup key.
     match GroupKeyring::new(store, child_gid).load_current_key() {
-        Ok(Some(_)) => {}   // we hold the key → we can admit + deliver
-        Ok(None) => return, // not the key-holder → leave it to the creator / pull
+        Ok(Some(_)) => {} // we hold the key → we can admit + deliver
+        Ok(None) => {
+            info!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — not the subgroup key-holder (leave to creator / key pull)");
+            return;
+        }
         Err(e) => {
             error!(?e, "tee-subgroup-admit: load_current_key failed");
             return;
@@ -275,6 +287,7 @@ async fn handle_new_subgroup(
         .map(|(member, _)| member)
         .collect();
     if tee_members.is_empty() {
+        info!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — no root ReadOnlyTee members to admit");
         return; // nothing to admit — skip the op-log scan entirely
     }
 
@@ -290,8 +303,10 @@ async fn handle_new_subgroup(
     };
     for member in tee_members {
         let Some(record) = records.get(&member) else {
+            warn!(subgroup = %hex::encode(child_group_id), %member, "tee-subgroup-admit: skip member — no admission verdict in root op-log");
             continue; // no verdict to reuse (membership row without a join op)
         };
+        info!(subgroup = %hex::encode(child_group_id), %member, "tee-subgroup-admit: admitting root TEE into new Restricted subgroup");
         admit_member_into_subgroup(context_client, store, &child_gid, &member, record).await;
     }
 }
