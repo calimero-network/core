@@ -141,17 +141,34 @@ pub fn acl_view_at(
             // `ReadOnlyTee` stays `ReadOnlyTee` rather than being silently
             // upgraded to a writable `Member`. Without this the ACL fast-path
             // and the enumeration surface would disagree on the same identity.
-            // Fall back to `Member` only if the anchor row is unexpectedly
-            // absent.
-            super::core::MembershipPath::Inherited { anchor, via_admin } => {
-                let role = if via_admin {
-                    GroupMemberRole::Admin
-                } else {
-                    repo.role_of(&anchor, signer)?
-                        .unwrap_or(GroupMemberRole::Member)
-                };
-                Ok(MembershipStatus::Member(role))
-            }
+            super::core::MembershipPath::Inherited {
+                anchor: _,
+                via_admin: true,
+            } => Ok(MembershipStatus::Member(GroupMemberRole::Admin)),
+            // Non-admin inheritor: read the REAL role from the anchor row that
+            // `check_path` just confirmed exists. The two reads are not atomic,
+            // so a `None` here means the anchor row vanished between them
+            // (concurrent delete) or the store is inconsistent. This is an
+            // authorization boundary: fail **closed** to `NeverMember` —
+            // matching the `Direct` arm — rather than `unwrap_or(Member)`,
+            // which would silently upgrade a now-absent `ReadOnlyTee` to a
+            // writable `Member` (the exact mis-classification this PR fixes).
+            super::core::MembershipPath::Inherited {
+                anchor,
+                via_admin: false,
+            } => match repo.role_of(&anchor, signer)? {
+                Some(role) => Ok(MembershipStatus::Member(role)),
+                None => {
+                    tracing::warn!(
+                        ?group_id,
+                        ?signer,
+                        ?anchor,
+                        "acl_view_at: inherited anchor row missing after check_path returned \
+                         Inherited (store inconsistency); failing closed to NeverMember"
+                    );
+                    Ok(MembershipStatus::NeverMember)
+                }
+            },
             // `Direct` is unreachable on this branch by construction:
             // `check_path` returns `Direct` only when `has_direct_member` is
             // true, but we only fall through to here after
