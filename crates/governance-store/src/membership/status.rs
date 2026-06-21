@@ -154,15 +154,34 @@ pub fn acl_view_at(
             // upgraded to a writable `Member`. Without this the ACL fast-path
             // and the enumeration surface would disagree on the same identity.
             // Admin inheritance always resolves to `Admin` regardless of the
-            // anchor row, so `anchor` is intentionally ignored here (unlike the
-            // non-admin arm below, which reads its role from the anchor): an
-            // inherited admin may be the creator/owner via `meta.admin_identity`
-            // with no `GroupMember` row at all, so there is no anchor role to
-            // read — see `MembershipRepository::is_admin`.
+            // anchor row, so this arm does not read a role from `anchor` like
+            // the non-admin arm below: an inherited admin may be the
+            // creator/owner via `meta.admin_identity` with no `GroupMember` row
+            // at all, so there is no anchor role to read — see
+            // `MembershipRepository::is_admin`.
+            //
+            // The asymmetry (this arm ignores the anchor role, the next reads
+            // it) rests on a `check_path` invariant: `via_admin: true` is only
+            // ever set when `is_admin(&anchor, signer)` holds (core.rs). Pin
+            // that defensively so a future `check_path` change that sets
+            // `via_admin: true` *without* admin authority at the anchor — which
+            // would silently escalate a lower-role member to `Admin` — is caught
+            // immediately. `debug_assert!` is compiled out of release (the
+            // `is_admin` read is not even evaluated there), so this is a
+            // debug/test-only guard with zero production cost, mirroring the
+            // `Direct` arm's assert.
             super::core::MembershipPath::Inherited {
-                anchor: _,
+                anchor,
                 via_admin: true,
-            } => Ok(MembershipStatus::Member(GroupMemberRole::Admin)),
+            } => {
+                debug_assert!(
+                    repo.is_admin(&anchor, signer)?,
+                    "acl_view_at: check_path set via_admin=true but signer is not an admin at \
+                     the anchor (group_id={group_id:?}, signer={signer:?}, anchor={anchor:?}); \
+                     would silently escalate to Admin"
+                );
+                Ok(MembershipStatus::Member(GroupMemberRole::Admin))
+            }
             // Non-admin inheritor: read the REAL role from the anchor row that
             // `check_path` just confirmed exists. The two reads are not atomic,
             // so a `None` here means the anchor row vanished between them

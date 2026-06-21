@@ -1516,6 +1516,44 @@ fn acl_view_at_branch1_preserves_inherited_read_only_tee_role() {
 }
 
 #[test]
+fn acl_view_at_branch1_inherited_admin_resolves_to_admin() {
+    use calimero_context_config::VisibilityMode;
+
+    // An Admin at the namespace root who holds NO direct row in an Open
+    // subgroup inherits admin authority into it. `acl_view_at` must reach the
+    // `via_admin: true` Branch 1 arm and return `Member(Admin)` — and that
+    // arm's `debug_assert!(is_admin(&anchor, signer))` must hold (this test
+    // runs with debug assertions on, so a broken invariant would panic here).
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x70; 32]);
+    let reports = ContextGroupId::from([0x71; 32]);
+    let admin = PublicKey::from([0x05; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    MembershipRepository::new(&store)
+        .add_member(&namespace, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&reports, VisibilityMode::Open)
+        .unwrap();
+
+    // Not a direct member/admin of the subgroup — authority is inherited.
+    assert!(
+        MembershipRepository::new(&store)
+            .role_of(&reports, &admin)
+            .unwrap()
+            .is_none(),
+        "precondition: inherited admin has no direct row in the subgroup"
+    );
+
+    let status = acl_view_at(&store, reports, &admin, &[]).unwrap();
+    assert!(
+        matches!(status, MembershipStatus::Member(GroupMemberRole::Admin)),
+        "inherited admin must resolve to Admin on the ACL fast path, got {status:?}"
+    );
+}
+
+#[test]
 fn acl_view_at_branch2_unknown_when_heads_not_in_op_log() {
     let store = test_store();
     let gid = test_group_id();
