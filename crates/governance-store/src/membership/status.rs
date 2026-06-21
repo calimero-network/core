@@ -163,13 +163,20 @@ pub fn acl_view_at(
             //     a retriable `Unknown` would be wrong — it would buffer a
             //     non-member's delta. Callers treat `NeverMember` as final.
             //   * Row *replaced* (e.g. `ReadOnlyTee` promoted to `Admin`)
-            //     between the reads → we return the newer role. That is a
-            //     different-but-valid snapshot, not a privilege leak.
-            // Both windows are closed in practice by the single-writer
-            // governance apply (no writer interleaves a single `acl_view_at`
-            // call). If concurrent writers are ever introduced, fold path +
-            // role into one atomic read so `check_path` and the role lookup
-            // observe the same state.
+            //     between the reads → we return the *newer* role. The direction
+            //     is escalating, so this is a genuine TOCTOU escalation window
+            //     in the abstract, NOT a benign one — it is closed only by the
+            //     single-writer invariant below, not by anything in this arm.
+            // Both windows are gated by the store-wide single-writer governance
+            // apply: a node applies governance ops on one task, and
+            // `acl_view_at` runs to completion without an apply interleaving its
+            // reads, so `check_path` and `role_of` always observe the same
+            // committed state. This is the same non-atomic multi-read shape
+            // `check_path` itself already relies on (it issues several reads per
+            // walk), and this PR does not introduce the non-atomicity. The
+            // correct remedy if concurrent writers are ever introduced is to
+            // fold path + role into one atomic read; tracked as a follow-up
+            // rather than bundled into this targeted role-preservation fix.
             super::core::MembershipPath::Inherited {
                 anchor,
                 via_admin: false,
@@ -194,9 +201,23 @@ pub fn acl_view_at(
             // inconsistent (or a future refactor reordered the early returns).
             // This is an authorization boundary, so fail **closed**:
             // `NeverMember` denies rather than silently granting writable
-            // `Member` to an identity whose role we could not read. Log it so
-            // the invariant violation is observable instead of silent.
+            // `Member` to an identity whose role we could not read.
+            //
+            // The arm is unreachable in a consistent store, so it has no
+            // natural test. Pin the invariant two ways instead: a
+            // `debug_assert!` makes a violation a loud panic in debug/test
+            // builds (so a future refactor that, say, routes `role_of` and
+            // `check_path` at different keys is caught immediately), while
+            // release builds skip the assert and fall through to the
+            // fail-closed `NeverMember` + `warn!` so production stays safe and
+            // observable rather than crashing.
             super::core::MembershipPath::Direct => {
+                debug_assert!(
+                    false,
+                    "acl_view_at: check_path returned Direct after role_of returned None for \
+                     the same GroupMember row (group_id={group_id:?}, signer={signer:?}); \
+                     store/invariant inconsistency"
+                );
                 tracing::warn!(
                     ?group_id,
                     ?signer,
