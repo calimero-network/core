@@ -167,16 +167,20 @@ pub fn acl_view_at(
             //     is escalating, so this is a genuine TOCTOU escalation window
             //     in the abstract, NOT a benign one — it is closed only by the
             //     single-writer invariant below, not by anything in this arm.
-            // Both windows are gated by the store-wide single-writer governance
-            // apply: a node applies governance ops on one task, and
-            // `acl_view_at` runs to completion without an apply interleaving its
-            // reads, so `check_path` and `role_of` always observe the same
-            // committed state. This is the same non-atomic multi-read shape
-            // `check_path` itself already relies on (it issues several reads per
-            // walk), and this PR does not introduce the non-atomicity. The
-            // correct remedy if concurrent writers are ever introduced is to
-            // fold path + role into one atomic read; tracked as a follow-up
-            // rather than bundled into this targeted role-preservation fix.
+            // Both windows are gated by the single-writer-per-context invariant
+            // enforced by `ContextLock` in `calimero_context::ContextManager`
+            // (a per-`ContextId` `Arc<RwLock<ContextId>>`): every governance
+            // apply serializes on that context's *exclusive write* guard
+            // (`ContextLock::lock`), so an apply cannot run concurrently with
+            // the delta-verify path that calls `acl_view_at` — `check_path` and
+            // `role_of` therefore observe the same committed state. This is the
+            // same non-atomic multi-read shape `check_path` itself already
+            // relies on (it issues several reads per walk), and this PR does not
+            // introduce the non-atomicity. A future change that lets governance
+            // apply proceed under anything weaker than that exclusive guard
+            // reopens the window; the remedy is to fold path + role into one
+            // atomic read. Tracked as a follow-up rather than bundled into this
+            // targeted role-preservation fix.
             super::core::MembershipPath::Inherited {
                 anchor,
                 via_admin: false,
