@@ -153,6 +153,23 @@ pub fn acl_view_at(
             // matching the `Direct` arm — rather than `unwrap_or(Member)`,
             // which would silently upgrade a now-absent `ReadOnlyTee` to a
             // writable `Member` (the exact mis-classification this PR fixes).
+            //
+            // TOCTOU note (both directions are intentionally tolerated):
+            //   * Row *removed* between the reads → `None` → `NeverMember`.
+            //     This is authoritative, not a transient to retry: Branch 1
+            //     runs only when `heads == local_heads`, so the cut *is*
+            //     current local state, and an absent anchor row at that cut
+            //     means the identity genuinely is not a member there. Returning
+            //     a retriable `Unknown` would be wrong — it would buffer a
+            //     non-member's delta. Callers treat `NeverMember` as final.
+            //   * Row *replaced* (e.g. `ReadOnlyTee` promoted to `Admin`)
+            //     between the reads → we return the newer role. That is a
+            //     different-but-valid snapshot, not a privilege leak.
+            // Both windows are closed in practice by the single-writer
+            // governance apply (no writer interleaves a single `acl_view_at`
+            // call). If concurrent writers are ever introduced, fold path +
+            // role into one atomic read so `check_path` and the role lookup
+            // observe the same state.
             super::core::MembershipPath::Inherited {
                 anchor,
                 via_admin: false,
