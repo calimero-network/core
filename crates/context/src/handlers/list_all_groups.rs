@@ -1,7 +1,7 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{GroupSummary, ListAllGroupsRequest};
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{MembershipRepository, MetaRepository, MetadataRepository};
+use calimero_governance_store::{MetaRepository, MetadataRepository};
 
 use crate::ContextManager;
 use calimero_governance_store;
@@ -23,9 +23,22 @@ impl Handler<ListAllGroupsRequest> for ContextManager {
                 let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
                     continue;
                 };
-                if MembershipRepository::new(&self.datastore)
-                    .is_member(&group_id, &node_identity)?
-                {
+                // Skip (don't abort the whole listing) on a per-group membership
+                // error — mirrors the `node_namespace_identity` miss above. A
+                // transient store fault on one group must not discard every group
+                // already accumulated.
+                let is_member = match crate::scope_projection::ScopeProjections::member_now_checked(
+                    &self.datastore,
+                    &group_id,
+                    &node_identity,
+                ) {
+                    Ok(m) => m,
+                    Err(err) => {
+                        tracing::warn!(group_id = ?group_id, %err, "list_all_groups: membership check failed; skipping group");
+                        continue;
+                    }
+                };
+                if is_member {
                     let name = MetadataRepository::new(&self.datastore)
                         .group_metadata(&group_id)
                         .ok()

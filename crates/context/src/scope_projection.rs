@@ -424,6 +424,107 @@ impl ScopeProjections {
     /// normal partial frontier (collect what's present), not a `None`.
     ///
     /// [`apply_backfill`]: Self::apply_backfill
+    /// The owning namespace's CURRENT governance heads for `group` — the cut that
+    /// represents "now" for a current-state membership read (resolve the group to
+    /// its namespace, then read that DAG's head record). `None` if the group can't
+    /// be resolved or the head record is unreadable. Pair with
+    /// [`member_at_cut`](Self::member_at_cut) (via the node's refreshing wrapper) to
+    /// answer "is X a member right now" off the projection instead of the live
+    /// materialized rows.
+    #[must_use]
+    pub fn namespace_current_heads(store: &Store, group: ContextGroupId) -> Option<Vec<[u8; 32]>> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        NamespaceDagService::new(store, namespace_id)
+            .read_head_record()
+            .ok()
+            .map(|head| head.parent_hashes)
+    }
+
+    /// Current-state membership via a projection built FRESH from the store — for
+    /// the context-layer query handlers, which (unlike the node) hold no cached
+    /// `ScopeProjections`. Resolves the namespace, folds its governance DAG, and
+    /// reads `member_at_cut` at the current heads. `None` when the namespace/heads
+    /// can't be resolved or the cut isn't decidable.
+    ///
+    /// Per-query rebuild: acceptable for low-frequency read endpoints (a real
+    /// namespace's governance history is small); hot paths use the node's cached
+    /// projection via `projection_member_at_cut` instead.
+    #[must_use]
+    pub fn member_now_ephemeral(
+        store: &Store,
+        group: &ContextGroupId,
+        member: &PublicKey,
+    ) -> Option<bool> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(group)
+            .ok()?
+            .to_bytes();
+        let mut proj = Self::new();
+        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+            // Governance head unreadable (store fault). Don't silently read an empty
+            // projection — surface it and let the caller fall back to live.
+            tracing::warn!(
+                group_id = ?group,
+                "member_now_ephemeral: governance head unreadable; falling back to live"
+            );
+            return None;
+        };
+        proj.apply_backfill(namespace_id, ops);
+        // Read the cut heads AFTER folding so the cut never names ops the fold is
+        // missing: the fold covers the head observed by `collect_namespace_ops`, and
+        // these heads are read no earlier than that, so if a concurrent governance
+        // op advanced the head mid-rebuild, the new head's ancestry isn't fully
+        // folded and `member_at_cut`'s completeness guard returns `None` (defer to
+        // live) rather than deciding against a stale cut that predates a revocation.
+        let heads = NamespaceDagService::new(store, namespace_id)
+            .read_head_record()
+            .ok()?
+            .parent_hashes;
+        proj.member_at_cut(store, *group, member, &heads)
+    }
+
+    /// The membership verdict a query gate should ACT on: the projection's
+    /// current-state answer ([`member_now_ephemeral`](Self::member_now_ephemeral)),
+    /// falling back to live only when the projection can't decide (`None`). Logs
+    /// `unified_projection_divergence` (plane `membership-query`, caught by the e2e
+    /// gate) when the two definitely disagree — keeping live as the gated
+    /// cross-check until the resolver is deleted in F5.
+    pub fn member_now_checked(
+        store: &Store,
+        group: &ContextGroupId,
+        member: &PublicKey,
+    ) -> eyre::Result<bool> {
+        if let Some(p) = Self::member_now_ephemeral(store, group, member) {
+            // The projection decided. Cross-check live BEST-EFFORT — a transient
+            // live-read error must not deny a verdict the projection already formed;
+            // log the divergence only when live also produced an answer.
+            match MembershipRepository::new(store).is_member(group, member) {
+                Ok(live) if live != p => tracing::warn!(
+                    marker = "unified_projection_divergence",
+                    plane = "membership-query",
+                    group_id = ?group,
+                    ?member,
+                    projection = p,
+                    live,
+                    "query-gate: projection disagrees with live membership"
+                ),
+                Ok(_) => {}
+                Err(err) => tracing::warn!(
+                    group_id = ?group,
+                    %err,
+                    "query-gate: live cross-check failed; acting on projection verdict"
+                ),
+            }
+            return Ok(p);
+        }
+        // Projection couldn't decide (cold/partial fold or store fault) — live is
+        // authoritative here, so its error legitimately propagates.
+        MembershipRepository::new(store).is_member(group, member)
+    }
+
     #[must_use]
     pub fn collect_namespace_ops(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
         let dag = NamespaceDagService::new(store, namespace_id);

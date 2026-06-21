@@ -76,7 +76,7 @@
         <h4>Infrastructure</h4>
         <div class="seq-tab-row">
           <button class="tab" data-target="p-auth-flow">HTTP Auth</button>
-          <button class="tab" data-target="p-tee-invite">TEE Node Invite</button>
+          <button class="tab" data-target="p-tee-fleet-join">TEE Fleet Join</button>
         </div>
         <h4>Group Management</h4>
         <div class="seq-tab-row">
@@ -210,12 +210,12 @@
         </div>
       </div>
 
-      <!-- TEE Node Invite -->
-      <div class="panel" id="p-tee-invite">
+      <!-- TEE Fleet Join -->
+      <div class="panel" id="p-tee-fleet-join">
         <div class="card ga">
-          <p class="diagram-desc">Specialized (TEE/read-only) node invitation: discovery broadcast, attestation verification, invitation exchange, and join confirmation.</p>
-          <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-tee-invite')">&#9654; Replay</button></div>
-          <div class="diagram-container animating" id="d-tee-invite"></div>
+          <p class="diagram-desc">Current fleet-admission flow (supersedes the legacy specialized-node invite handshake). A TEE node broadcasts <span class="code">TeeAttestationAnnounce</span> on <span class="code">ns/&lt;hex&gt;</span> and re-announces for up to ~30s (<span class="code">MAX_ADMISSION_WAIT</span>). A verifier runs <span class="code">verify_attestation</span>, then namespace-scoped <span class="code">admit_tee_node</span> (policy check + quote-hash replay guard), publishes <span class="code">MemberJoinedViaTeeAttestation</span> (a <span class="code">ReadOnlyTee</span> row) and a <span class="code">RootOp::KeyDelivery</span>; the node applies the key and is admitted. On disable, a <span class="code">TeeMemberRemoved</span> op triggers <span class="code">self_purge</span> on the evicted node. See <a href="tee-fleet-ha.html">TEE Fleet HA</a>.</p>
+          <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-tee-fleet-join')">&#9654; Replay</button></div>
+          <div class="diagram-container animating" id="d-tee-fleet-join"></div>
         </div>
       </div>
 
@@ -321,7 +321,7 @@
               <line x1="300" y1="150" x2="500" y2="150" stroke="#10b981" stroke-width="1.5"/>
               <text x="400" y="143" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="8">create group metadata + encryption key</text>
               <line x1="300" y1="190" x2="700" y2="190" stroke="#8b5cf6" stroke-width="1.5"/>
-              <text x="500" y="183" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="8">subscribe namespace/&lt;hex&gt; topic</text>
+              <text x="500" y="183" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="8">subscribe ns/&lt;hex&gt; topic</text>
               <line x1="300" y1="230" x2="500" y2="230" stroke="#10b981" stroke-width="1.5"/>
               <text x="400" y="223" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="8">sign &amp; apply RootOp::GroupCreated</text>
               <line x1="300" y1="270" x2="700" y2="270" stroke="#8b5cf6" stroke-width="1.5"/>
@@ -827,24 +827,26 @@
         ]
       },
       {
-        id: 'd-tee-invite',
-        title: 'TEE Node Invite',
+        id: 'd-tee-fleet-join',
+        title: 'TEE Fleet Join',
         lanes: [
-          { label: 'Initiator', color: '#3b82f6' },
-          { label: 'Network',   color: '#8b5cf6' },
-          { label: 'TEE Node',  color: '#ec4899' }
+          { label: 'TEE Node', color: '#ec4899' },
+          { label: 'ns/<hex> gossip', color: '#8b5cf6' },
+          { label: 'Verifier', color: '#3b82f6' }
         ],
         steps: [
-          { from: 0, to: 1, label: 'SpecializedNodeDiscovery { nonce }' },
-          { from: 0, to: 0, label: 'store pending nonce' },
-          { from: 1, to: 2, label: 'discovery broadcast received' },
-          { from: 2, to: 2, label: 'generate attestation' },
-          { from: 2, to: 0, label: 'VerificationRequest { attestation }' },
-          { from: 0, to: 0, label: 'verify TEE attestation' },
-          { from: 0, to: 2, label: 'InvitationResponse { payload }', color: '#A5FF11' },
-          { from: 2, to: 2, label: 'join_context(invitation)' },
-          { from: 2, to: 1, label: 'JoinConfirmation { nonce }' },
-          { from: 1, to: 0, label: 'clear pending invite' }
+          { from: 0, to: 0, label: 'generate TDX attestation' },
+          { from: 0, to: 1, label: 'TeeAttestationAnnounce { quote_bytes, public_key, nonce, node_type }' },
+          { from: 0, to: 0, label: 're-announce up to ~30s (MAX_ADMISSION_WAIT)' },
+          { from: 1, to: 2, label: 'announce received' },
+          { from: 2, to: 2, label: 'verify_attestation' },
+          { from: 2, to: 2, label: 'admit_tee_node: policy check + quote-hash replay guard' },
+          { from: 2, to: 1, label: 'publish MemberJoinedViaTeeAttestation (ReadOnlyTee)', color: '#A5FF11' },
+          { from: 2, to: 1, label: 'publish RootOp::KeyDelivery (wrapped group key)', color: '#A5FF11' },
+          { from: 1, to: 0, label: 'apply MemberJoinedViaTeeAttestation + KeyDelivery' },
+          { from: 0, to: 0, label: 'admitted as ReadOnlyTee; group key held' },
+          { from: 2, to: 1, label: 'on disable: TeeMemberRemoved' },
+          { from: 1, to: 0, label: 'self_purge (drop key material + local rows)' }
         ]
       },
       {

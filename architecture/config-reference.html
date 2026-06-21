@@ -102,7 +102,7 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 <span class="ts">[datastore]</span>        <span class="tc"># RocksDB data path</span>
 <span class="ts">[blobstore]</span>        <span class="tc"># blob storage path</span>
 <span class="ts">[context]</span>          <span class="tc"># context client config</span>
-<span class="ts">[tee]</span>              <span class="tc"># optional TEE/KMS config</span>
+<span class="ts">[tee.kms.phala]</span>    <span class="tc"># optional TEE/KMS config (nested under [tee.kms])</span>
 <span class="ts">[specialized_node]</span> <span class="tc"># specialized node settings</span></div>
 </div>
 
@@ -460,28 +460,120 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 
 <!-- ── [tee] ── -->
 <details class="config-section">
-<summary><span class="code" style="color:var(--green)">[tee]</span> &mdash; TEE / KMS</summary>
+<summary><span class="code" style="color:var(--green)">[tee.kms.phala]</span> &mdash; TEE / KMS</summary>
 <div class="detail-body">
-<p style="margin-bottom:12px;">Optional Trusted Execution Environment and Key Management Service configuration. Only relevant for nodes running in secure enclaves.</p>
-<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/config.rs" target="_blank" rel="noopener">TeeConfig</a></div>
+<p style="margin-bottom:12px;">Optional Trusted Execution Environment and Key Management Service configuration. Only nodes with a <span class="code">[tee]</span> section perform the KMS key-fetch and attestation flow at startup; other nodes use libp2p as usual without KMS. The section is <em>nested</em>: <span class="code">[tee]</span> contains <span class="code">[tee.kms]</span>, which contains the provider block <span class="code">[tee.kms.phala]</span> (Phala Cloud KMS / mero-kms-phala is currently the only provider). There is <strong>no</strong> flat <span class="code">enabled</span> / <span class="code">kms_url</span> key &mdash; presence of the <span class="code">[tee]</span> block enables TEE mode, and the endpoint is <span class="code">tee.kms.phala.url</span>. See <a href="tee-mode.html">TEE Mode</a> for the full startup flow.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/config/src/lib.rs" target="_blank" rel="noopener">TeeConfig</a> / <span class="code">KmsConfig</span> / <span class="code">PhalaKmsConfig</span> (defined in <span class="code">crates/config/src/lib.rs</span>; consumed by <a href="https://github.com/calimero-network/core/blob/master/crates/merod/src/kms/mod.rs" target="_blank" rel="noopener">crates/merod/src/kms/mod.rs</a>)</div>
 
+<h3 style="margin-top:18px;">[tee.kms.phala]</h3>
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">url</div>
+  <div class="cf-type">Url</div>
+  <div class="cf-default">(required)</div>
+  <div class="cf-desc">URL of the mero-kms-phala service (the KMS endpoint). Required when the <span class="code">[tee]</span> block is present.</div>
+</div>
+
+<h3 style="margin-top:18px;">[tee.kms.phala.attestation]</h3>
+<p style="margin-bottom:12px;">KMS self-attestation verification policy (verified via <span class="code">POST /attest</span> before key requests).</p>
 <div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
 <div class="config-field">
   <div class="cf-key">enabled</div>
   <div class="cf-type">bool</div>
   <div class="cf-default">false</div>
-  <div class="cf-desc">Enable TEE attestation and sealed storage.</div>
+  <div class="cf-desc">Enable KMS attestation verification before requesting keys.</div>
 </div>
 <div class="config-field">
-  <div class="cf-key">kms_url</div>
+  <div class="cf-key">accept_mock</div>
+  <div class="cf-type">bool</div>
+  <div class="cf-default">false</div>
+  <div class="cf-desc">Accept mock attestation quotes. Development/testing only &mdash; bypasses real attestation guarantees. (Runtime also requires the <span class="code">MEROD_ALLOW_MOCK_KMS_ATTESTATION</span> env opt-in.)</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">allowed_tcb_statuses</div>
+  <div class="cf-type">Vec&lt;String&gt;</div>
+  <div class="cf-default">["UpToDate"]</div>
+  <div class="cf-desc">Allowed TCB statuses for KMS quote verification.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">allowed_mrtd</div>
+  <div class="cf-type">Vec&lt;String&gt;</div>
+  <div class="cf-default">[]</div>
+  <div class="cf-desc">Allowed KMS MRTD values (hex, with or without <span class="code">0x</span> prefix). Required when <span class="code">enabled=true</span> and <span class="code">accept_mock=false</span>.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">allowed_rtmr0</div>
+  <div class="cf-type">Vec&lt;String&gt;</div>
+  <div class="cf-default">[]</div>
+  <div class="cf-desc">Allowed KMS RTMR0 values (hex). Required when <span class="code">enabled=true</span> and <span class="code">accept_mock=false</span>.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">allowed_rtmr1</div>
+  <div class="cf-type">Vec&lt;String&gt;</div>
+  <div class="cf-default">[]</div>
+  <div class="cf-desc">Allowed KMS RTMR1 values (hex). Required when <span class="code">enabled=true</span> and <span class="code">accept_mock=false</span>.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">allowed_rtmr2</div>
+  <div class="cf-type">Vec&lt;String&gt;</div>
+  <div class="cf-default">[]</div>
+  <div class="cf-desc">Allowed KMS RTMR2 values (hex). Required when <span class="code">enabled=true</span> and <span class="code">accept_mock=false</span>.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">allowed_rtmr3</div>
+  <div class="cf-type">Vec&lt;String&gt;</div>
+  <div class="cf-default">[]</div>
+  <div class="cf-desc">Allowed KMS RTMR3 values (hex). Required when <span class="code">enabled=true</span> and <span class="code">accept_mock=false</span>.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">binding_b64</div>
   <div class="cf-type">Option&lt;String&gt;</div>
   <div class="cf-default">None</div>
-  <div class="cf-desc">URL of the Key Management Service for key provisioning.</div>
+  <div class="cf-desc">Optional base64-encoded 32-byte binding value for <span class="code">/attest</span>. If unset, merod uses the default domain-separator binding.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">policy_json_path</div>
+  <div class="cf-type">Option&lt;Utf8PathBuf&gt;</div>
+  <div class="cf-default">None</div>
+  <div class="cf-desc">Optional absolute path to an externally-generated attestation policy JSON (e.g. a signed mero-tee release policy). Must reside under <span class="code">/etc/calimero</span> or <span class="code">/run/calimero</span>. Its allowlists merge over the inline values above.</div>
 </div>
 
-<div class="toml-example"><span class="ts">[tee]</span>
-<span class="tk">enabled</span> = <span class="tv">false</span>
-<span class="tc"># kms_url = "https://kms.example.com"</span></div>
+<h3 style="margin-top:18px;">[tee.kms.phala.tls]</h3>
+<p style="margin-bottom:12px;">Optional TLS hardening for KMS transport. All paths must be absolute and point to existing PEM files; setting any TLS path requires <span class="code">tee.kms.phala.url</span> to use <span class="code">https://</span>.</p>
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">ca_cert_path</div>
+  <div class="cf-type">Option&lt;Utf8PathBuf&gt;</div>
+  <div class="cf-default">None</div>
+  <div class="cf-desc">PEM-encoded CA certificate path for private trust roots. Added to merod's trust store for KMS TLS.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">client_cert_path</div>
+  <div class="cf-type">Option&lt;Utf8PathBuf&gt;</div>
+  <div class="cf-default">None</div>
+  <div class="cf-desc">PEM-encoded client certificate path for mTLS. Must be set together with <span class="code">client_key_path</span>.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">client_key_path</div>
+  <div class="cf-type">Option&lt;Utf8PathBuf&gt;</div>
+  <div class="cf-default">None</div>
+  <div class="cf-desc">PEM-encoded client private key path for mTLS. Must be set together with <span class="code">client_cert_path</span>.</div>
+</div>
+
+<div class="toml-example"><span class="ts">[tee.kms.phala]</span>
+<span class="tk">url</span> = <span class="tv">"https://kms-host:8443/"</span>
+
+<span class="ts">[tee.kms.phala.attestation]</span>
+<span class="tk">enabled</span> = <span class="tv">true</span>
+<span class="tk">accept_mock</span> = <span class="tv">false</span>
+<span class="tk">allowed_tcb_statuses</span> = [<span class="tv">"UpToDate"</span>]
+<span class="tk">allowed_mrtd</span> = [<span class="tv">"&lt;trusted_kms_mrtd_hex&gt;"</span>]
+<span class="tk">allowed_rtmr0</span> = [<span class="tv">"…"</span>]  <span class="tc"># allowed_rtmr1..3 similarly in production</span>
+
+<span class="ts">[tee.kms.phala.tls]</span>
+<span class="tc"># ca_cert_path     = "/etc/calimero/kms-ca.pem"</span>
+<span class="tc"># client_cert_path = "/etc/calimero/kms-client.pem"</span>
+<span class="tc"># client_key_path  = "/etc/calimero/kms-client.key"</span></div>
 </div>
 </details>
 
@@ -490,7 +582,7 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 <summary><span class="code" style="color:var(--green)">[specialized_node]</span> &mdash; Specialized Node</summary>
 <div class="detail-body">
 <p style="margin-bottom:12px;">Settings for specialized node roles (e.g., TEE nodes that handle key shares).</p>
-<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/config.rs" target="_blank" rel="noopener">SpecializedNodeConfig</a></div>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/config/src/lib.rs" target="_blank" rel="noopener">SpecializedNodeConfig</a></div>
 
 <div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
 <div class="config-field">

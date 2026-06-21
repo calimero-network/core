@@ -242,6 +242,77 @@
 <h2>Group Governance Sync</h2>
 <p style="margin-bottom:18px;">Governance operations form a separate DAG and use dedicated sync mechanisms. Three complementary approaches ensure governance state converges across all group members.</p>
 
+<div class="cb" style="margin-bottom:18px; border-left:3px solid #f59e0b; padding-left:14px;">
+  <h4 style="color:#f59e0b; margin-bottom:8px;">Projection-Authoritative Membership on the Gossip Path</h4>
+  <p style="margin-bottom:10px;">When the live membership resolver rejects a delta (<span class="code">DeltaAuthOutcome::MembershipReject</span>), the node no longer drops it immediately. Instead it calls <span class="code">projection_member_at_cut_authoritative</span>, which first refreshes the projection fold via <span class="code">refresh_projection_for_cut</span> and then reads membership with the authoritative (complete-ancestry, no materialized-fallback) check. If the projection returns <span class="code">Some(true)</span> the delta falls through to the normal apply path; <span class="code">None</span> or <span class="code">Some(false)</span> still reject.</p>
+  <p style="margin-bottom:10px;">This makes the <strong>projection the final arbiter of membership</strong> on the primary gossip ingestion path — live's result is a cross-check, not the last word. A divergence-gate warning (<span class="code">unified_projection_divergence</span> / <span class="code">membership-cut-grant</span>) is emitted whenever the projection overrides a live reject, and <span class="code">observe_peer_identity</span> is called on the grant path so projection-only peers continue to feed sync peer selection.</p>
+  <p><strong>Scope:</strong> This override applies only to the primary gossip path (<span class="code">handle_state_delta</span>). Other <span class="code">MembershipReject</span> sites — sync delta-request and parent-fetch replay — intentionally remain live-only.</p>
+  <p style="margin-top:10px;"><strong>Visibility:</strong> <span class="code">projection_member_at_cut</span> is now <span class="code">pub(crate)</span> so the sync manager can call it directly, ensuring both the data-write path and the inbound-sync authorization path fold the projection through the same refreshing backfill logic.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Grant path: refresh fold then authoritative read</span><br>
+<span class="kw">pub fn</span> <span class="field">projection_member_at_cut_authoritative</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;ctx: &amp;<span class="ty">DeltaContext</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;cut: &amp;<span class="ty">Cut</span>,<br>
+) -&gt; <span class="ty">Option</span>&lt;bool&gt;<br><br>
+<span class="comment">// Shared fold refresh (no author_id, no return value)</span><br>
+<span class="kw">pub fn</span> <span class="field">refresh_projection_for_cut</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;ctx: &amp;<span class="ty">DeltaContext</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;cut: &amp;<span class="ty">Cut</span>,<br>
+)
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;">Both <span class="code">projection_member_at_cut</span> (deny arm) and <span class="code">projection_member_at_cut_authoritative</span> (grant arm) call <span class="code">refresh_projection_for_cut</span> so both arms see the same fold state.</p>
+</div>
+
+<div class="cb" style="margin-bottom:18px; border-left:3px solid #8b5cf6; padding-left:14px;">
+  <h4 style="color:#8b5cf6; margin-bottom:8px;">Projection-Authoritative Drain (<span class="code">drain_governance_pending</span>)</h4>
+  <p style="margin-bottom:10px;">State deltas that arrived before their governance ancestry was locally available are buffered and re-evaluated by <span class="code">drain_governance_pending</span> once new governance ops are applied. This drain now uses <span class="code">member_at_cut_authoritative</span> (projection) as its <strong>sole decision authority</strong>, replacing the previous <span class="code">acl_view_at</span> (live DAG walk) primary path.</p>
+  <p style="margin-bottom:10px;">The three projection outcomes map directly to the three drain outcomes:</p>
+  <ul style="margin:0 0 10px 18px; color:#c9c9d4; font-family:'DM Sans',sans-serif; font-size:14px; line-height:1.8;">
+    <li><span class="code">Some(true)</span> → <strong>re-apply</strong> — delta is re-submitted to the normal apply path.</li>
+    <li><span class="code">Some(false)</span> → <strong>drop</strong> — delta is discarded; the author is definitively not a member at that cut.</li>
+    <li><span class="code">None</span> → <strong>re-buffer</strong> — governance ancestry is still incomplete; the delta stays pending for the next drain cycle.</li>
+  </ul>
+  <p style="margin-bottom:10px;">Because the projection never returns an error, the previous <span class="code">Err</span> match arm that dropped a buffered delta and recorded a <span class="code">"lookup_error"</span> metric has been eliminated entirely.</p>
+  <h4 style="margin-top:14px; margin-bottom:8px;">Divergence Cross-check</h4>
+  <p style="margin-bottom:10px;">On decisive verdicts (<span class="code">Some(true)</span> or <span class="code">Some(false)</span>), <span class="code">acl_view_at</span> is still called as a secondary cross-check to detect disagreement between the projection and the live resolver. On disagreement a <span class="code">unified_projection_divergence</span> warning is emitted:</p>
+  <ul style="margin:0 0 10px 18px; color:#c9c9d4; font-family:'DM Sans',sans-serif; font-size:14px; line-height:1.8;">
+    <li><span class="code">Some(true)</span> + live returns <span class="code">Removed</span> or <span class="code">NeverMember</span> → <span class="code">plane = "membership-cut-grant"</span> (dangerous grant-plane divergence).</li>
+    <li><span class="code">Some(false)</span> + live returns <span class="code">Member</span> → <span class="code">plane = "membership-cut"</span> (deny-plane divergence).</li>
+  </ul>
+  <p style="margin-bottom:10px;"><span class="code">acl_view_at</span> is deliberately <strong>not</strong> called on <span class="code">None</span> to avoid false positives while ancestry is still being folded.</p>
+  <h4 style="margin-top:14px; margin-bottom:8px;">Metric Changes</h4>
+  <p style="margin-bottom:10px;">The <span class="code">governance_drain_outcome</span> metric label for drop events is now best-effort rather than authoritative. It is derived from the live resolver's secondary response: <span class="code">"removed"</span> if live says Removed, <span class="code">"never_member"</span> if live says NeverMember, and the new fallback <span class="code">"not_member"</span> if the live resolver disagrees or is inconclusive. The <span class="code">"lookup_error"</span> label is no longer emitted.</p>
+  <p style="margin-bottom:10px;">The debug log emitted when a delta is re-buffered no longer includes a <span class="code">needed_count</span> field, because the projection returns a boolean <span class="code">None</span> rather than a structured variant enumerating missing DAG heads.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Drain outcomes — now driven by projection</span><br>
+<span class="comment">// Some(true)  → re-apply</span><br>
+<span class="comment">// Some(false) → drop  (metric label: "removed" | "never_member" | "not_member")</span><br>
+<span class="comment">// None        → re-buffer (no needed_count in log)</span><br>
+<span class="kw">pub fn</span> <span class="field">member_at_cut_authoritative</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;ctx: &amp;<span class="ty">DeltaContext</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;cut: &amp;<span class="ty">Cut</span>,<br>
+) -&gt; <span class="ty">Option</span>&lt;bool&gt;
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> Monitor for <span class="code">unified_projection_divergence</span> warn logs on the drain path during the F5 migration window. Update any metric dashboards to handle the new <span class="code">"not_member"</span> label and the absence of <span class="code">"lookup_error"</span> on <span class="code">governance_drain_outcome</span>.</p>
+</div>
+
+<div class="cb" style="margin-bottom:18px; border-left:3px solid #06b6d4; padding-left:14px;">
+  <h4 style="color:#06b6d4; margin-bottom:8px;">Inbound-Sync Peer Authorization (<span class="code">peer_is_group_member</span>)</h4>
+  <p style="margin-bottom:10px;">A new private method <span class="code">SyncManager::peer_is_group_member</span> encapsulates membership authorization for inbound sync peers. It first checks <span class="code">MembershipRepository::is_member</span> (live resolver), then resolves the current governance heads via <span class="code">ScopeProjections::namespace_current_heads</span> and calls <span class="code">projection_member_at_cut</span> to obtain the projection's verdict. When the two disagree a <span class="code">unified_projection_divergence</span> warning is emitted with plane <span class="code">membership-sync</span>. The projection answer is used as the authoritative decision; if the projection returns <span class="code">None</span> (cold or partially folded governance), the method falls back to the live result so no peer is spuriously rejected while governance ancestry is still being caught up — the existing catch-up retry will re-resolve once governance advances.</p>
+  <p style="margin-bottom:10px;">Two call sites inside <span class="code">SyncManager</span> that previously called <span class="code">MembershipRepository::new(store).is_member(...)</span> directly — the materialization-wait verification and the inherited-member check in <span class="code">verify_inbound_member</span> — now call <span class="code">self.peer_is_group_member(...)</span>, so the projection-first logic with gated cross-check applies uniformly to all inbound peer authorization.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Authorizes an inbound sync peer: projection-first, live fallback</span><br>
+<span class="kw">async fn</span> <span class="field">peer_is_group_member</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;group_id: <span class="ty">GroupId</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;peer_id: <span class="ty">PeerId</span>,<br>
+) -&gt; <span class="ty">Result</span>&lt;bool&gt;<br><br>
+<span class="comment">// projection returns None → fall back to live; Some(x) → authoritative</span><br>
+<span class="comment">// divergence logged as unified_projection_divergence plane=membership-sync</span>
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> Monitor <span class="code">unified_projection_divergence</span> warn logs with <span class="code">plane = "membership-sync"</span> during governance catch-up windows. A <span class="code">None</span> projection result is not an error — it means governance ancestry is still being folded and the live result is used as a safe temporary answer.</p>
+</div>
+
 <div class="g2" style="margin-bottom:16px;">
   <div class="cb">
     <h4 style="color:#10b981;">Real-time Gossip</h4>

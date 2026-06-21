@@ -229,6 +229,17 @@
   </div>
 </div>
 
+<!-- ─── F ─── -->
+<div class="term-letter" data-letter="F">F</div>
+
+<div class="term-row" data-term="fleet node fleet-join">
+  <div class="term-name">Fleet node / fleet-join</div>
+  <div class="term-body">
+    A TEE replica node entitled to serve a namespace as a hardware-attested, read-only replica. It joins via the attestation announce flow — broadcasting a TeeAttestationAnnounce on the namespace topic, getting verified against the namespace TeeAdmissionPolicy, and being admitted as a ReadOnlyTee member via MemberJoinedViaTeeAttestation. Fleet-join is the end-to-end admission of such a node; eviction triggers a self-purge.
+    <div class="term-source"><a href="tee-fleet-ha.html">TEE Fleet HA</a></div>
+  </div>
+</div>
+
 <!-- ─── G ─── -->
 <div class="term-letter" data-letter="G">G</div>
 
@@ -317,7 +328,27 @@
 <div class="term-row" data-term="keydelivery">
   <div class="term-name">KeyDelivery</div>
   <div class="term-body">
-    A cleartext RootOp in the namespace governance DAG. Delivers an ECDH-wrapped group encryption key to a newly joined member. The sender wraps the key using <code>ECDH(sender_sk, joiner_pk)</code>; the joiner unwraps using <code>ECDH(joiner_sk, sender_pk)</code>.
+    A cleartext RootOp in the namespace governance DAG. Delivers an ECDH-wrapped group encryption key to a newly joined member. The sender wraps the key using <code>ECDH(sender_sk, joiner_pk)</code>; the joiner unwraps using <code>ECDH(joiner_sk, sender_pk)</code>. Delivers the per-group <strong>GroupKeyring</strong> key — not the node's KMS storage key (see the <strong>two key families</strong> entry).
+  </div>
+</div>
+
+<div class="term-row" data-term="groupkeyring group encryption keys">
+  <div class="term-name">GroupKeyring (group encryption keys)</div>
+  <div class="term-body">
+    The per-group symmetric encryption keys used to encrypt/decrypt a group's GroupOps and shared state. Each new member receives them via ECDH-wrapped KeyDelivery, they are rotated when a member is removed, and (as of #2776) they are deleted from a fleet node's disk on self-purge. Distinct from the node's KMS storage key (see the <strong>two key families</strong> entry).
+  </div>
+</div>
+
+<div class="term-row" data-term="two key families storage key group key kms key encryption keys">
+  <div class="term-name">two key families (storage key vs. group keys)</div>
+  <div class="term-body">
+    Calimero TEE deployments involve two unrelated key families that are commonly conflated:
+    <br><br>
+    <strong>(1) KMS storage / disk key</strong> — per-node, fetched from the <a href="tee-mode.html">KMS</a> only after the node's TEE measurement (MRTD) is verified. Encrypts the node's on-disk datastore. One per node; never delivered over governance.
+    <br><br>
+    <strong>(2) Per-group GroupKeyring encryption keys</strong> — per-group, ECDH-delivered to members via KeyDelivery, rotated on member removal, and (as of #2776) deleted on self-purge. Encrypt group operations and shared state. See <a href="tee-fleet-ha.html">TEE Fleet HA</a>.
+    <br><br>
+    Mnemonic: the KMS key protects <em>this node's disk</em>; the GroupKeyring keys protect <em>a group's shared data across all members</em>.
   </div>
 </div>
 
@@ -340,8 +371,8 @@
 <div class="term-row" data-term="groupmemberrole">
   <div class="term-name">GroupMemberRole</div>
   <div class="term-body">
-    Enum distinguishing Admin, Member, and ReadOnly members within a group.
-    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/key/group.rs" target="_blank" rel="noopener">crates/store/src/key/group.rs</a></div>
+    Enum distinguishing the four member roles within a group: Admin, Member, ReadOnly, and ReadOnlyTee. ReadOnly and ReadOnlyTee both bar state mutation, but ReadOnlyTee is reserved for hardware-attested fleet replica nodes (directly-rowed, never inherited).
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/primitives/src/context.rs" target="_blank" rel="noopener">crates/primitives/src/context.rs</a></div>
   </div>
 </div>
 
@@ -434,7 +465,7 @@
 <div class="term-row" data-term="kms">
   <div class="term-name">KMS</div>
   <div class="term-body">
-    Key Management Service. Releases encryption keys to TEE nodes via attestation. Supported: mero-kms-phala for Phala Cloud.
+    Key Management Service. Releases the per-node <strong>storage / disk key</strong> to a TEE node only after verifying its MRTD measurement (see <a href="tee-mode.html">TEE Mode</a>). This is distinct from per-group GroupKeyring encryption keys (see the <strong>two key families</strong> entry). Supported: mero-kms-phala for Phala Cloud.
   </div>
 </div>
 
@@ -477,6 +508,14 @@
   <div class="term-name">MemberCapabilities</div>
   <div class="term-body">
     Struct holding the five capability bit constants for group-level authorization.
+  </div>
+</div>
+
+<div class="term-row" data-term="memberjoinedviateeattestation">
+  <div class="term-name">MemberJoinedViaTeeAttestation</div>
+  <div class="term-body">
+    The governance operation a verifier publishes to admit a fleet node as a <strong>ReadOnlyTee</strong> member, after its TeeAttestationAnnounce has been validated against the namespace TeeAdmissionPolicy. It is the attestation-gated analogue of an ordinary member-add: it directly rows the node into the target namespace (never inherited) rather than delivering an invitation.
+    <div class="term-source"><a href="tee-fleet-ha.html">TEE Fleet HA</a></div>
   </div>
 </div>
 
@@ -627,13 +666,36 @@
   </div>
 </div>
 
+<div class="term-row" data-term="quote hash replay protection">
+  <div class="term-name">quote hash (replay protection)</div>
+  <div class="term-body">
+    A per-group dedup record of a TDX quote already used to admit a fleet node. The verifier keys on the quote's hash so the same quote cannot admit a node twice within the same group, even if re-broadcast. Combined with the per-quote nonce in <code>report_data</code>, it closes the replay window on the TeeAttestationAnnounce → MemberJoinedViaTeeAttestation path.
+    <div class="term-source"><a href="tee-fleet-ha.html">TEE Fleet HA</a></div>
+  </div>
+</div>
+
 <!-- ─── R ─── -->
 <div class="term-letter" data-letter="R">R</div>
 
 <div class="term-row" data-term="readonly">
   <div class="term-name">ReadOnly</div>
   <div class="term-body">
-    Group member role that allows joining contexts and reading state but prevents all state mutations. Enforced at both local and remote nodes.
+    Group member role that allows joining contexts and reading state but prevents all state mutations. Enforced at both local and remote nodes. A regular (non-attested) role; contrast with <strong>ReadOnlyTee</strong>, the hardware-attested fleet-node variant.
+  </div>
+</div>
+
+<div class="term-row" data-term="readonlytee">
+  <div class="term-name">ReadOnlyTee</div>
+  <div class="term-body">
+    Read-only TEE fleet-node role. Like ReadOnly it bars all state mutation, but it is <strong>directly-rowed and NEVER inherited</strong> through subgroups: a fleet replica is only ReadOnlyTee in the exact namespace it was admitted to. Admission is gated on hardware TDX attestation (see TeeAttestationAnnounce / MemberJoinedViaTeeAttestation), and on eviction the node hard-purges its local rows and keys (see self-purge). A variant of GroupMemberRole.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/primitives/src/context.rs" target="_blank" rel="noopener">crates/primitives/src/context.rs</a> &bull; <a href="tee-fleet-ha.html">TEE Fleet HA</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="report_data">
+  <div class="term-name">report_data</div>
+  <div class="term-body">
+    The 64-byte free-form field bound into a TDX quote at generation time. For a fleet node's attestation it is <code>nonce(32) || Sha256(pubkey)</code>: a fresh 32-byte nonce concatenated with the SHA-256 of the announcing node's public key. Binding the pubkey hash into the hardware-signed quote proves the quote belongs to that key; the nonce gives freshness for replay protection.
   </div>
 </div>
 
@@ -653,6 +715,14 @@
 
 <!-- ─── S ─── -->
 <div class="term-letter" data-letter="S">S</div>
+
+<div class="term-row" data-term="self-purge">
+  <div class="term-name">self-purge</div>
+  <div class="term-body">
+    The role-scoped local cleanup a fleet node runs on eviction from <strong>ReadOnlyTee</strong>. It hard-deletes the node's own local rows and keys for the namespace — its namespace signing-key material and, as of #2776, its per-group GroupKeyring encryption keys — so no residual state or decryption capability lingers on disk. Driven by a pending-self-purge marker plus a startup reconcile sweep, so an eviction missed while offline is still completed on the next boot. Failures and sweep outcomes are observable via the <code>self_purge_*</code> metrics.
+    <div class="term-source"><a href="membership-and-leave.html">Membership &amp; Leave</a> &bull; <a href="tee-fleet-ha.html">TEE Fleet HA</a></div>
+  </div>
+</div>
 
 <div class="term-row" data-term="sha-256">
   <div class="term-name">SHA-256</div>
@@ -735,6 +805,22 @@
   <div class="term-name">TEE</div>
   <div class="term-body">
     Trusted Execution Environment. Hardware-isolated runtime protecting code and data. merod supports TEE mode with KMS key fetch.
+  </div>
+</div>
+
+<div class="term-row" data-term="teeadmissionpolicy">
+  <div class="term-name">TeeAdmissionPolicy</div>
+  <div class="term-body">
+    The namespace-scoped measurement allowlist a fleet node's attestation is checked against. It pins the acceptable TDX measurements — <code>allowed_mrtd</code>, RTMR values, TCB-status bounds — plus an <code>accept_mock</code> escape hatch for non-TEE test runs. Resolved to the namespace root, so the whole namespace shares one policy. Admission of a TeeAttestationAnnounce succeeds only if the verified quote satisfies this policy.
+    <div class="term-source"><a href="tee-fleet-ha.html">TEE Fleet HA</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="teeattestationannounce">
+  <div class="term-name">TeeAttestationAnnounce</div>
+  <div class="term-body">
+    The broadcast a fleet node publishes on its namespace topic (<code>ns/&lt;hex&gt;</code>) to announce itself for admission. It carries a fresh TDX quote whose <code>report_data</code> is <code>nonce(32) || Sha256(pubkey)</code> — binding the node's public key into the hardware-signed quote and supplying a nonce for freshness. A verifier validates it against the TeeAdmissionPolicy and, on success, publishes MemberJoinedViaTeeAttestation to admit the node as ReadOnlyTee.
+    <div class="term-source"><a href="tee-fleet-ha.html">TEE Fleet HA</a></div>
   </div>
 </div>
 

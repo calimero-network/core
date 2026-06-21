@@ -253,6 +253,13 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         Some(true),
         "projection must agree the joiner is a member after the inherited join"
     );
+    // The GRANT resolver (sole-authority path) must also see the member: complete
+    // ancestry is folded, so it returns the at-cut verdict.
+    assert_eq!(
+        proj.member_at_cut_authoritative(&store, subgroup, &joiner, &[id2]),
+        Some(true),
+        "authoritative grant resolver agrees the joiner is a member after the join"
+    );
 
     // (3) admin removes the joiner from the NAMESPACE ROOT only (a GroupOp on the
     // root). Live: removes the root row; the subgroup has no direct row, so the
@@ -297,6 +304,13 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         Some(false),
         "projection must revoke the inherited subgroup access after root removal \
          (matching live) — granting here is the over-grant"
+    );
+    // The GRANT resolver MUST NOT grant where live rejects — this is the
+    // sole-authority safety property (it can never over-authorize).
+    assert_ne!(
+        proj.member_at_cut_authoritative(&store, subgroup, &joiner, &[id3]),
+        Some(true),
+        "authoritative grant resolver must NOT grant a write live rejected (over-grant)"
     );
 }
 
@@ -443,6 +457,12 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         proj.member_at_cut(&store, subgroup, &joiner, &[[0xB4; 32]]),
         Some(true),
         "projection must restore inherited access on rejoin (the under-grant guard)"
+    );
+    // The GRANT resolver also restores access on rejoin (complete ancestry folded).
+    assert_eq!(
+        proj.member_at_cut_authoritative(&store, subgroup, &joiner, &[[0xB4; 32]]),
+        Some(true),
+        "authoritative grant resolver restores inherited access on rejoin"
     );
 }
 

@@ -96,6 +96,18 @@ pub enum MembershipStatus {
 /// so a pre-removal write resolves to `Member` regardless of arrival order.
 /// `heads` MUST come from a signed delta envelope — the cut the author claimed
 /// at sign time — never the receiver's current local state.
+///
+/// **INVARIANT — no concurrent governance apply on this `group_id`'s context.**
+/// This function issues several non-atomic store reads (`check_path` then
+/// `role_of`, each itself multiple gets). It returns a coherent role snapshot
+/// only if no governance apply mutates the same rows *between* those reads. That
+/// holds today because both governance apply and the delta-verify path that
+/// calls this run under the per-context exclusive guard of `ContextLock`
+/// (`calimero_context::ContextManager`), so an apply never interleaves a single
+/// `acl_view_at` call. A future caller that invokes this *without* that
+/// serialization (e.g. a lock-free read-only audit path) reopens a TOCTOU
+/// window in which a concurrent role change could be observed torn across the
+/// two reads; such a caller must instead fold path + role into one atomic read.
 pub fn acl_view_at(
     store: &Store,
     group_id: ContextGroupId,
@@ -132,9 +144,128 @@ pub fn acl_view_at(
         }
         // Inherited (Open-subgroup parent-walk) membership — no direct
         // `GroupMember` row but reachable via `CAN_JOIN_OPEN_SUBGROUPS`.
-        return match MembershipRepository::new(store).check_path(&group_id, signer)? {
-            super::core::MembershipPath::Direct | super::core::MembershipPath::Inherited { .. } => {
-                Ok(MembershipStatus::Member(GroupMemberRole::Member))
+        let repo = MembershipRepository::new(store);
+        return match repo.check_path(&group_id, signer)? {
+            // Mirror `enumerate_inherited`: carry the inheritor's REAL role
+            // from the anchor (the ancestor where they hold the direct row)
+            // instead of flattening every inheritor to `Member`. An inherited
+            // admin (`via_admin`) resolves to `Admin`; an inherited
+            // `ReadOnlyTee` stays `ReadOnlyTee` rather than being silently
+            // upgraded to a writable `Member`. Without this the ACL fast-path
+            // and the enumeration surface would disagree on the same identity.
+            // Admin inheritance always resolves to `Admin` regardless of the
+            // anchor row, so this arm does not read a role from `anchor` like
+            // the non-admin arm below: an inherited admin may be the
+            // creator/owner via `meta.admin_identity` with no `GroupMember` row
+            // at all, so there is no anchor role to read — see
+            // `MembershipRepository::is_admin`.
+            //
+            // The asymmetry (this arm ignores the anchor role, the next reads
+            // it) rests on a `check_path` invariant: `via_admin: true` is only
+            // ever set when `is_admin(&anchor, signer)` holds (core.rs). Pin
+            // that defensively so a future `check_path` change that sets
+            // `via_admin: true` *without* admin authority at the anchor — which
+            // would silently escalate a lower-role member to `Admin` — is caught
+            // immediately. `debug_assert!` is compiled out of release (the
+            // `is_admin` read is not even evaluated there), so this is a
+            // debug/test-only guard with zero production cost, mirroring the
+            // `Direct` arm's assert.
+            super::core::MembershipPath::Inherited {
+                anchor,
+                via_admin: true,
+            } => {
+                debug_assert!(
+                    repo.is_admin(&anchor, signer)?,
+                    "acl_view_at: check_path set via_admin=true but signer is not an admin at \
+                     the anchor (group_id={group_id:?}, signer={signer:?}, anchor={anchor:?}); \
+                     would silently escalate to Admin"
+                );
+                Ok(MembershipStatus::Member(GroupMemberRole::Admin))
+            }
+            // Non-admin inheritor: read the REAL role from the anchor row that
+            // `check_path` just confirmed exists. The two reads are not atomic,
+            // so a `None` here means the anchor row vanished between them
+            // (concurrent delete) or the store is inconsistent. This is an
+            // authorization boundary: fail **closed** to `NeverMember` —
+            // matching the `Direct` arm — rather than `unwrap_or(Member)`,
+            // which would silently upgrade a now-absent `ReadOnlyTee` to a
+            // writable `Member` (the exact mis-classification this PR fixes).
+            //
+            // TOCTOU note (both directions are intentionally tolerated):
+            //   * Row *removed* between the reads → `None` → `NeverMember`.
+            //     This is authoritative, not a transient to retry: Branch 1
+            //     runs only when `heads == local_heads`, so the cut *is*
+            //     current local state, and an absent anchor row at that cut
+            //     means the identity genuinely is not a member there. Returning
+            //     a retriable `Unknown` would be wrong — it would buffer a
+            //     non-member's delta. Callers treat `NeverMember` as final.
+            //   * Row *replaced* (e.g. `ReadOnlyTee` promoted to `Admin`)
+            //     between the reads → we return the *newer* role. The direction
+            //     is escalating, so this is a genuine TOCTOU escalation window
+            //     in the abstract, NOT a benign one — it is closed only by the
+            //     single-writer invariant below, not by anything in this arm.
+            // Both windows are gated by the single-writer-per-context invariant
+            // enforced by `ContextLock` in `calimero_context::ContextManager`
+            // (a per-`ContextId` `Arc<RwLock<ContextId>>`): every governance
+            // apply serializes on that context's *exclusive write* guard
+            // (`ContextLock::lock`), so an apply cannot run concurrently with
+            // the delta-verify path that calls `acl_view_at` — `check_path` and
+            // `role_of` therefore observe the same committed state. This is the
+            // same non-atomic multi-read shape `check_path` itself already
+            // relies on (it issues several reads per walk), and this PR does not
+            // introduce the non-atomicity. A future change that lets governance
+            // apply proceed under anything weaker than that exclusive guard
+            // reopens the window; the remedy is to fold path + role into one
+            // atomic read. Tracked as a follow-up rather than bundled into this
+            // targeted role-preservation fix.
+            super::core::MembershipPath::Inherited {
+                anchor,
+                via_admin: false,
+            } => match repo.role_of(&anchor, signer)? {
+                Some(role) => Ok(MembershipStatus::Member(role)),
+                None => {
+                    tracing::warn!(
+                        ?group_id,
+                        ?signer,
+                        ?anchor,
+                        "acl_view_at: inherited anchor row missing after check_path returned \
+                         Inherited (store inconsistency); failing closed to NeverMember"
+                    );
+                    Ok(MembershipStatus::NeverMember)
+                }
+            },
+            // `Direct` is unreachable on this branch by construction:
+            // `check_path` returns `Direct` only when `has_direct_member` is
+            // true, but we only fall through to here after
+            // `role_of(group_id)` already returned `None` — and both read the
+            // exact same `GroupMember` row. Reaching it means the store is
+            // inconsistent (or a future refactor reordered the early returns).
+            // This is an authorization boundary, so fail **closed**:
+            // `NeverMember` denies rather than silently granting writable
+            // `Member` to an identity whose role we could not read.
+            //
+            // The arm is unreachable in a consistent store, so it has no
+            // natural test. Pin the invariant two ways instead: a
+            // `debug_assert!` makes a violation a loud panic in debug/test
+            // builds (so a future refactor that, say, routes `role_of` and
+            // `check_path` at different keys is caught immediately), while
+            // release builds skip the assert and fall through to the
+            // fail-closed `NeverMember` + `warn!` so production stays safe and
+            // observable rather than crashing.
+            super::core::MembershipPath::Direct => {
+                debug_assert!(
+                    false,
+                    "acl_view_at: check_path returned Direct after role_of returned None for \
+                     the same GroupMember row (group_id={group_id:?}, signer={signer:?}); \
+                     store/invariant inconsistency"
+                );
+                tracing::warn!(
+                    ?group_id,
+                    ?signer,
+                    "acl_view_at: check_path returned Direct after role_of returned None \
+                     (store inconsistency); failing closed to NeverMember"
+                );
+                Ok(MembershipStatus::NeverMember)
             }
             super::core::MembershipPath::None => Ok(MembershipStatus::NeverMember),
         };
