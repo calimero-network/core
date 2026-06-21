@@ -195,23 +195,15 @@ impl Did {
 #[non_exhaustive]
 pub struct RootKey {
     pub signing_key: String,
-    #[serde(rename = "wallet")]
-    pub wallet_type: WalletType,
     pub wallet_address: String,
     pub created_at: u64,
 }
 
 impl RootKey {
     #[must_use]
-    pub const fn new(
-        signing_key: String,
-        wallet_type: WalletType,
-        wallet_address: String,
-        created_at: u64,
-    ) -> Self {
+    pub const fn new(signing_key: String, wallet_address: String, created_at: u64) -> Self {
         Self {
             signing_key,
-            wallet_type,
             wallet_address,
             created_at,
         }
@@ -222,8 +214,6 @@ impl RootKey {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct ClientKey {
-    #[serde(rename = "wallet")]
-    pub wallet_type: WalletType,
     pub signing_key: String,
     pub created_at: u64,
     pub context_id: Option<ContextId>,
@@ -231,14 +221,8 @@ pub struct ClientKey {
 
 impl ClientKey {
     #[must_use]
-    pub const fn new(
-        wallet_type: WalletType,
-        signing_key: String,
-        created_at: u64,
-        context_id: Option<ContextId>,
-    ) -> Self {
+    pub const fn new(signing_key: String, created_at: u64, context_id: Option<ContextId>) -> Self {
         Self {
-            wallet_type,
             signing_key,
             created_at,
             context_id,
@@ -252,27 +236,6 @@ impl ClientKey {
 pub struct ContextUser {
     pub user_id: String,
     pub joined_at: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "UPPERCASE")]
-#[serde(tag = "type")]
-#[non_exhaustive]
-pub enum WalletType {
-    NEAR {
-        #[serde(rename = "networkId")]
-        network_id: NearNetworkId,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-#[non_exhaustive]
-pub enum NearNetworkId {
-    Mainnet,
-    Testnet,
-    #[serde(untagged)]
-    Custom(String),
 }
 
 #[cfg(test)]

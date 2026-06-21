@@ -605,14 +605,13 @@ pub async fn callback_handler(
         
         <div class="info">
             <strong>Note:</strong> This is a simplified authentication flow for meroctl CLI.
-            For production use, implement proper NEAR wallet authentication.
+            For production use, implement a proper authentication provider.
         </div>
         
         <form id="authForm">
             <div class="form-group">
                 <label for="authMethod">Authentication Method:</label>
                 <select id="authMethod" name="authMethod" required>
-                    <option value="near_wallet">NEAR Wallet</option>
                     <option value="user_password">Username/Password</option>
                 </select>
             </div>
