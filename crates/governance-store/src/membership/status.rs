@@ -96,6 +96,18 @@ pub enum MembershipStatus {
 /// so a pre-removal write resolves to `Member` regardless of arrival order.
 /// `heads` MUST come from a signed delta envelope — the cut the author claimed
 /// at sign time — never the receiver's current local state.
+///
+/// **INVARIANT — no concurrent governance apply on this `group_id`'s context.**
+/// This function issues several non-atomic store reads (`check_path` then
+/// `role_of`, each itself multiple gets). It returns a coherent role snapshot
+/// only if no governance apply mutates the same rows *between* those reads. That
+/// holds today because both governance apply and the delta-verify path that
+/// calls this run under the per-context exclusive guard of `ContextLock`
+/// (`calimero_context::ContextManager`), so an apply never interleaves a single
+/// `acl_view_at` call. A future caller that invokes this *without* that
+/// serialization (e.g. a lock-free read-only audit path) reopens a TOCTOU
+/// window in which a concurrent role change could be observed torn across the
+/// two reads; such a caller must instead fold path + role into one atomic read.
 pub fn acl_view_at(
     store: &Store,
     group_id: ContextGroupId,
@@ -141,6 +153,12 @@ pub fn acl_view_at(
             // `ReadOnlyTee` stays `ReadOnlyTee` rather than being silently
             // upgraded to a writable `Member`. Without this the ACL fast-path
             // and the enumeration surface would disagree on the same identity.
+            // Admin inheritance always resolves to `Admin` regardless of the
+            // anchor row, so `anchor` is intentionally ignored here (unlike the
+            // non-admin arm below, which reads its role from the anchor): an
+            // inherited admin may be the creator/owner via `meta.admin_identity`
+            // with no `GroupMember` row at all, so there is no anchor role to
+            // read — see `MembershipRepository::is_admin`.
             super::core::MembershipPath::Inherited {
                 anchor: _,
                 via_admin: true,
