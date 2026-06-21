@@ -798,6 +798,15 @@ fn enumerate_inherited_members_preserves_read_only_tee_role() {
         stored.iter().all(|(pk, _)| *pk != tee),
         "precondition: inherited TEE node has no stored GroupMember row"
     );
+    // Precondition: the inheritance path is actually active — without this the
+    // role-preservation assertion below would be vacuous if the TEE node were
+    // not considered a member of the Open subgroup at all.
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&reports, &tee)
+            .unwrap(),
+        "TEE node must be an inherited member of the Open subgroup"
+    );
 
     let inherited = MembershipRepository::new(&store)
         .enumerate_inherited(&reports)
@@ -1453,6 +1462,57 @@ fn acl_view_at_branch1_never_member_when_signer_absent() {
 
     let status = acl_view_at(&store, gid, &stranger, &[]).unwrap();
     assert!(matches!(status, MembershipStatus::NeverMember));
+}
+
+#[test]
+fn acl_view_at_branch1_preserves_inherited_read_only_tee_role() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // Branch 1 (heads match local state) must report an inherited member with
+    // its REAL anchor role, not a hard-coded `Member`. This is the ACL-plane
+    // analogue of `enumerate_inherited_members_preserves_read_only_tee_role`:
+    // a `ReadOnlyTee` inherited into an Open subgroup must NOT be authorized as
+    // a writable `Member` on the fast path.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x60; 32]);
+    let reports = ContextGroupId::from([0x61; 32]);
+    let tee = PublicKey::from([0x03; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+
+    MembershipRepository::new(&store)
+        .add_member(&namespace, &tee, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &namespace,
+            &tee,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+        )
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&reports, VisibilityMode::Open)
+        .unwrap();
+
+    // No direct row in the Open subgroup, but inherited from the root anchor.
+    assert!(
+        MembershipRepository::new(&store)
+            .role_of(&reports, &tee)
+            .unwrap()
+            .is_none(),
+        "precondition: inherited TEE node has no direct row in the subgroup"
+    );
+
+    // Empty heads == the freshly-nested subgroup's (empty) local namespace
+    // heads, so `acl_view_at` takes Branch 1.
+    let status = acl_view_at(&store, reports, &tee, &[]).unwrap();
+    assert!(
+        matches!(
+            status,
+            MembershipStatus::Member(GroupMemberRole::ReadOnlyTee)
+        ),
+        "inherited ReadOnlyTee must keep its role on the ACL fast path, got {status:?}"
+    );
 }
 
 #[test]

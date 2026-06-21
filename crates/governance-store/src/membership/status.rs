@@ -132,8 +132,31 @@ pub fn acl_view_at(
         }
         // Inherited (Open-subgroup parent-walk) membership — no direct
         // `GroupMember` row but reachable via `CAN_JOIN_OPEN_SUBGROUPS`.
-        return match MembershipRepository::new(store).check_path(&group_id, signer)? {
-            super::core::MembershipPath::Direct | super::core::MembershipPath::Inherited { .. } => {
+        let repo = MembershipRepository::new(store);
+        return match repo.check_path(&group_id, signer)? {
+            // Mirror `enumerate_inherited`: carry the inheritor's REAL role
+            // from the anchor (the ancestor where they hold the direct row)
+            // instead of flattening every inheritor to `Member`. An inherited
+            // admin (`via_admin`) resolves to `Admin`; an inherited
+            // `ReadOnlyTee` stays `ReadOnlyTee` rather than being silently
+            // upgraded to a writable `Member`. Without this the ACL fast-path
+            // and the enumeration surface would disagree on the same identity.
+            // Fall back to `Member` only if the anchor row is unexpectedly
+            // absent.
+            super::core::MembershipPath::Inherited { anchor, via_admin } => {
+                let role = if via_admin {
+                    GroupMemberRole::Admin
+                } else {
+                    repo.role_of(&anchor, signer)?
+                        .unwrap_or(GroupMemberRole::Member)
+                };
+                Ok(MembershipStatus::Member(role))
+            }
+            // `Direct` is effectively unreachable on this branch: we only fall
+            // through to it after `role_of(group_id)` already returned `None`
+            // (no direct row). Keep the conservative `Member` mapping for
+            // safety rather than relying on that invariant.
+            super::core::MembershipPath::Direct => {
                 Ok(MembershipStatus::Member(GroupMemberRole::Member))
             }
             super::core::MembershipPath::None => Ok(MembershipStatus::NeverMember),
