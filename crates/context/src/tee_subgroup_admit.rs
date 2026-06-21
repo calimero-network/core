@@ -239,7 +239,7 @@ async fn handle_new_subgroup(
     // a row, so `is_open_chain_to_namespace` fails safe (treats a not-yet-written
     // subgroup as Restricted → we proceed) rather than wrongly skipping it.
 
-    info!(
+    debug!(
         subgroup = %hex::encode(child_group_id),
         namespace = %hex::encode(namespace_id),
         "tee-subgroup-admit: new-subgroup trigger received"
@@ -250,7 +250,7 @@ async fn handle_new_subgroup(
     match CapabilitiesRepository::new(store).is_open_chain_to_namespace(&child_gid, &namespace_gid)
     {
         Ok(true) => {
-            info!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — Open subgroup (TEE reads via inheritance)");
+            debug!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — Open subgroup (TEE reads via inheritance)");
             return;
         }
         Ok(false) => {} // Restricted → proceed
@@ -264,7 +264,7 @@ async fn handle_new_subgroup(
     match GroupKeyring::new(store, child_gid).load_current_key() {
         Ok(Some(_)) => {} // we hold the key → we can admit + deliver
         Ok(None) => {
-            info!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — not the subgroup key-holder (leave to creator / key pull)");
+            debug!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — not the subgroup key-holder (leave to creator / key pull)");
             return;
         }
         Err(e) => {
@@ -287,7 +287,7 @@ async fn handle_new_subgroup(
         .map(|(member, _)| member)
         .collect();
     if tee_members.is_empty() {
-        info!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — no root ReadOnlyTee members to admit");
+        debug!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — no root ReadOnlyTee members to admit");
         return; // nothing to admit — skip the op-log scan entirely
     }
 
