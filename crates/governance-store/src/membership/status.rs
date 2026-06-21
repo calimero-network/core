@@ -152,12 +152,24 @@ pub fn acl_view_at(
                 };
                 Ok(MembershipStatus::Member(role))
             }
-            // `Direct` is effectively unreachable on this branch: we only fall
-            // through to it after `role_of(group_id)` already returned `None`
-            // (no direct row). Keep the conservative `Member` mapping for
-            // safety rather than relying on that invariant.
+            // `Direct` is unreachable on this branch by construction:
+            // `check_path` returns `Direct` only when `has_direct_member` is
+            // true, but we only fall through to here after
+            // `role_of(group_id)` already returned `None` — and both read the
+            // exact same `GroupMember` row. Reaching it means the store is
+            // inconsistent (or a future refactor reordered the early returns).
+            // This is an authorization boundary, so fail **closed**:
+            // `NeverMember` denies rather than silently granting writable
+            // `Member` to an identity whose role we could not read. Log it so
+            // the invariant violation is observable instead of silent.
             super::core::MembershipPath::Direct => {
-                Ok(MembershipStatus::Member(GroupMemberRole::Member))
+                tracing::warn!(
+                    ?group_id,
+                    ?signer,
+                    "acl_view_at: check_path returned Direct after role_of returned None \
+                     (store inconsistency); failing closed to NeverMember"
+                );
+                Ok(MembershipStatus::NeverMember)
             }
             super::core::MembershipPath::None => Ok(MembershipStatus::NeverMember),
         };
