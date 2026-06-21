@@ -162,6 +162,56 @@ if [ -f "$CONF_ABI" ]; then
     fi
 fi
 
+# Coverage gate. Per-app validation only sees the CRDT types some app happens to
+# emit; a tool regression on a type that NO app exercises would slip through. So
+# assert that every CrdtType the core schema declares is exercised by at least
+# one corpus ABI. The expected set is read from core's own wasm-abi.schema.json —
+# the same file the in-crate tests pin to the Rust enum, so this needs no second
+# hand-maintained list.
+#
+# KNOWN_UNEXERCISED: CRDT types no buildable core app emits today. They are a
+# documented gap (a tool regression on these is NOT caught here), not a silent
+# one — add an app that uses one and drop it from this list.
+cov_fail=0
+SCHEMA="crates/wasm-abi/wasm-abi.schema.json"
+KNOWN_UNEXERCISED="${ABI_KNOWN_UNEXERCISED-authored_map authored_vector}"
+shopt -s nullglob
+abi_files=("$OUT_DIR"/*.json)
+shopt -u nullglob
+if [ "${#abi_files[@]}" -gt 0 ] && [ -f "$SCHEMA" ]; then
+    echo "==> CRDT coverage gate (schema-declared types must be exercised)"
+    exp_f="$OUT_DIR/_expected"
+    cov_f="$OUT_DIR/_covered"
+    known_f="$OUT_DIR/_known"
+    jq -r '.definitions.CrdtType.enum[]' "$SCHEMA" | sort -u >"$exp_f"
+    jq -s -r '[.[] | .. | objects | .crdt_type? // empty] | unique[]' "${abi_files[@]}" | sort -u >"$cov_f"
+    printf '%s\n' $KNOWN_UNEXERCISED | sort -u >"$known_f"
+
+    # Declared but exercised by no app and not allow-listed.
+    missing="$(comm -23 "$exp_f" "$cov_f" | grep -vxF -f "$known_f" || true)"
+    # Emitted by an app but absent from the schema enum (drift the schema missed).
+    extra="$(comm -13 "$exp_f" "$cov_f" || true)"
+    # Allow-listed yet actually covered now — the list is stale.
+    stale="$(comm -12 "$known_f" "$cov_f" || true)"
+
+    echo "    exercised: $(tr '\n' ' ' <"$cov_f")"
+    if [ -n "$missing" ]; then
+        echo "    COVERAGE GAP — declared CrdtType(s) no corpus app exercises (and not allow-listed):"
+        echo "$missing" | sed 's/^/      - /'
+        cov_fail=1
+    fi
+    if [ -n "$extra" ]; then
+        echo "    DRIFT — corpus emitted CrdtType(s) the core schema does not declare:"
+        echo "$extra" | sed 's/^/      - /'
+        cov_fail=1
+    fi
+    if [ -n "$stale" ]; then
+        echo "    NOTE — allow-listed type(s) are now exercised; remove from KNOWN_UNEXERCISED:"
+        echo "$stale" | sed 's/^/      - /'
+    fi
+    [ "$cov_fail" -eq 0 ] && echo "    OK  (all non-allow-listed CrdtTypes exercised)"
+fi
+
 echo "==================================================================="
 echo "ABI contract: $pass accepted, $fail rejected, $skip skipped"
 if [ "$fail" -gt 0 ]; then
@@ -171,6 +221,12 @@ if [ "$fail" -gt 0 ]; then
     echo "  - this is unintended schema drift in core — fix it here, or"
     echo "  - it is an intended ABI change — land the matching update in"
     echo "    mero-devtools-js (schema + model) FIRST, then bump the pin."
+    exit 1
+fi
+if [ "$cov_fail" -ne 0 ]; then
+    echo "FAILED: CRDT coverage gate (see above)."
+    echo "  Add an app that exercises the missing type, or — if intentionally"
+    echo "  unexercised — add it to KNOWN_UNEXERCISED in this script with a reason."
     exit 1
 fi
 if [ "$pass" -eq 0 ]; then
