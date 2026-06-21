@@ -268,13 +268,20 @@ impl<'a> MembershipRepository<'a> {
                 if DenyListRepository::new(self.store).is_denied(group_id, &candidate)? {
                     continue;
                 }
-                if let MembershipPath::Inherited { via_admin, .. } =
+                if let MembershipPath::Inherited { anchor, via_admin } =
                     self.check_path(group_id, &candidate)?
                 {
+                    // For a non-admin inheritor, carry the member's REAL role
+                    // from the anchor (the ancestor where they hold the direct
+                    // row) instead of defaulting to `Member` — otherwise an
+                    // inherited `ReadOnlyTee` would be reported as a plain
+                    // `Member`. Fall back to `Member` only if the anchor row is
+                    // unexpectedly absent.
                     let role = if via_admin {
                         GroupMemberRole::Admin
                     } else {
-                        GroupMemberRole::Member
+                        self.role_of(&anchor, &candidate)?
+                            .unwrap_or(GroupMemberRole::Member)
                     };
                     result.push((candidate, role));
                 }
