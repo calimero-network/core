@@ -43,7 +43,9 @@ jobs:
       - name: Checkout core
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          # On pull_request, check out the PR head; on push, head.sha is empty so
+          # fall back to the pushed commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Checkout mero-devtools-js
         uses: actions/checkout@v4

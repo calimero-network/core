@@ -109,21 +109,46 @@ FAILED=()
 
 for pkg in $PKGS; do
     echo "==> [$pkg] build debug wasm (ABI custom section intact; no wasm-opt)"
-    # Capture the exact produced .wasm path from cargo's artifact messages rather
-    # than guessing the filename from the package name.
-    wasm="$(cargo build -p "$pkg" --target wasm32-unknown-unknown --message-format=json 2>/dev/null \
-        | jq -r 'select(.reason=="compiler-artifact") | .filenames[]?' \
+    # A compile failure must FAIL the contract, not be mistaken for "no ABI" and
+    # skipped — otherwise a broken app silently drops out of validation and the
+    # coverage gate while the job still passes. Capture cargo's JSON to a file and
+    # its stderr to a log; a non-zero exit is a hard error.
+    cargo_json="$OUT_DIR/$pkg.cargo.json"
+    build_log="$OUT_DIR/$pkg.build.log"
+    if ! cargo build -p "$pkg" --target wasm32-unknown-unknown \
+        --message-format=json >"$cargo_json" 2>"$build_log"; then
+        echo "    BUILD FAILED:"
+        sed 's/^/      /' "$build_log"
+        FAILED+=("$pkg(build)")
+        fail=$((fail + 1))
+        continue
+    fi
+    # Read the exact produced .wasm path from the artifact messages rather than
+    # guessing the filename from the package name.
+    wasm="$(jq -r 'select(.reason=="compiler-artifact") | .filenames[]?' "$cargo_json" \
         | grep '\.wasm$' | head -1 || true)"
     if [ -z "$wasm" ] || [ ! -f "$wasm" ]; then
-        echo "    no wasm artifact produced — skipping"
+        echo "    build OK but no wasm artifact (not a cdylib app?) — skipping"
         skip=$((skip + 1))
         continue
     fi
 
+    # Extraction: the extractor reads the calimero_abi_v1 section and, absent it,
+    # reports "No abi.json file found" — that (and only that) means the app emits
+    # no ABI and is a legitimate skip. Any other extractor error is a real fault
+    # (corrupt wasm, extractor bug) and must fail, not silently skip.
     abi="$OUT_DIR/$pkg.json"
-    if ! "$EXTRACTOR" extract "$wasm" -o "$abi" >/dev/null 2>&1; then
-        echo "    no calimero_abi_v1 section — app emits no ABI, skipping"
-        skip=$((skip + 1))
+    extract_log="$OUT_DIR/$pkg.extract.log"
+    if ! "$EXTRACTOR" extract "$wasm" -o "$abi" >"$extract_log" 2>&1; then
+        if grep -q "No abi.json file found" "$extract_log"; then
+            echo "    no calimero_abi_v1 section — app emits no ABI, skipping"
+            skip=$((skip + 1))
+            continue
+        fi
+        echo "    EXTRACTION FAILED:"
+        sed 's/^/      /' "$extract_log"
+        FAILED+=("$pkg(extract)")
+        fail=$((fail + 1))
         continue
     fi
 
