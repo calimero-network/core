@@ -84,6 +84,48 @@ pub async fn handler(
 
     let signer_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
 
+    let group_id_cgid = calimero_context_config::types::ContextGroupId::from(group_id);
+
+    // Mint the subgroup's signing key AND group key BEFORE applying the op.
+    //
+    // The apply path drains `OpEvent::SubgroupCreated` *after* it persists the
+    // root op (emit-after-persist, #2770). The `tee_subgroup_admit` subscriber
+    // reacts to that event by reading this subgroup's group key
+    // (`GroupKeyring::load_current_key`) to decide whether it is the key-holder
+    // that should admit the namespace's root TEE members. If the key were minted
+    // only after the apply returns (as it used to be), the subscriber would race
+    // ahead of the write, observe `None`, and wrongly skip — leaving the TEE out
+    // of every Restricted subgroup created via this REST path. Writing both keys
+    // first mirrors the actor handler (crates/context/src/handlers/create_group.rs)
+    // and makes the key visible the instant the event fires. It also means a
+    // failed publish no longer silently skips key creation.
+    if let Err(err) =
+        SigningKeysRepository::new(&state.store).store_key(&group_id_cgid, &signer_pk, &sk_bytes)
+    {
+        error!(
+            group_id=%hex::encode(group_id_cgid.to_bytes()),
+            ?err,
+            "Failed to store admin signing key before group create"
+        );
+        return parse_api_error(eyre::eyre!("failed to store subgroup signing key"))
+            .into_response();
+    }
+    {
+        let group_key: [u8; 32] = {
+            use rand::Rng;
+            rand::thread_rng().gen()
+        };
+        if let Err(err) = GroupKeyring::new(&state.store, group_id_cgid).store_key(&group_key) {
+            error!(
+                group_id=%hex::encode(group_id_cgid.to_bytes()),
+                ?err,
+                "Failed to generate subgroup group key before group create"
+            );
+            return parse_api_error(eyre::eyre!("failed to mint subgroup group key"))
+                .into_response();
+        }
+    }
+
     // Strict-tree refactor: GroupCreated atomically nests the new group under
     // the namespace root in one op. Previous two-op pattern (GroupCreated then
     // GroupNested) is collapsed — orphan state is no longer reachable. See
@@ -107,44 +149,7 @@ pub async fn handler(
     {
         Ok(report) => {
             report.observe("create_group_in_namespace", "GroupCreated");
-            let group_id = calimero_context_config::types::ContextGroupId::from(group_id);
-
-            // Store the creator's signing key for the new subgroup. Without
-            // this, any subsequent group-scoped op that needs to sign a
-            // local governance message (delete_context -> ContextDetached,
-            // add_group_members -> MemberAdded, etc.) fails with
-            // "signing key not found for requester in group '...'".
-            //
-            // The direct create_group handler already stores the signing
-            // key at crates/context/src/handlers/create_group.rs:85-94;
-            // this keeps subgroups created via create_group_in_namespace in
-            // sync with that invariant.
-            if let Err(err) =
-                SigningKeysRepository::new(&state.store).store_key(&group_id, &signer_pk, &sk_bytes)
-            {
-                warn!(
-                    group_id=%hex::encode(group_id.to_bytes()),
-                    ?err,
-                    "Group created but failed to store admin signing key"
-                );
-            }
-
-            // Generate a group key for the subgroup so that encrypted
-            // group-scoped governance ops (MemberAdded, ContextRegistered)
-            // can be published and later decrypted by members.
-            {
-                let group_key: [u8; 32] = {
-                    use rand::Rng;
-                    rand::thread_rng().gen()
-                };
-                if let Err(err) = GroupKeyring::new(&state.store, group_id).store_key(&group_key) {
-                    warn!(
-                        group_id=%hex::encode(group_id.to_bytes()),
-                        ?err,
-                        "Group created but failed to generate group key"
-                    );
-                }
-            }
+            let group_id = group_id_cgid;
 
             if let Some(name) = body.group_name.as_deref() {
                 // Seed the subgroup's initial metadata record stamped with the
