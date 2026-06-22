@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
-use calimero_storage::collections::{LwwRegister, SortedMap, UnorderedMap, Vector};
+use calimero_storage::collections::{
+    AuthoredMap, AuthoredVector, LwwRegister, SortedMap, UnorderedMap, Vector,
+};
 use thiserror::Error;
 
 // Test multi-file ABI generation
@@ -118,6 +120,11 @@ pub struct AbiState {
     // Key-ordered map — locks the `SortedMap` ABI collection marker.
     sorted_counters: SortedMap<String, LwwRegister<u32>>,
     users: Vector<LwwRegister<UserId32>>,
+    // Per-writer authored collections — lock the `AuthoredMap` and
+    // `AuthoredVector` ABI collection markers so every CRDT type the schema
+    // declares is exercised by at least one emitted ABI.
+    authored_counters: AuthoredMap<String, LwwRegister<u32>>,
+    authored_log: AuthoredVector<LwwRegister<UserId32>>,
 }
 
 // Implementation
@@ -130,6 +137,8 @@ impl AbiState {
             counters: UnorderedMap::new(),
             sorted_counters: SortedMap::new(),
             users: Vector::new(),
+            authored_counters: AuthoredMap::new(),
+            authored_log: AuthoredVector::new(),
         }
     }
 

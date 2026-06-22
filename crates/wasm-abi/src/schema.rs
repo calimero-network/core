@@ -928,4 +928,114 @@ mod tests {
         assert_eq!(embedded.state_version, Some(3));
         assert_eq!(embedded.migrations.len(), 1);
     }
+
+    // Schema/Rust enum completeness. The hand-maintained wasm-abi.schema.json
+    // must list exactly the variants of the Rust enums it mirrors. The
+    // `_*_is_exhaustive` matches have no wildcard arm, so adding a variant to
+    // MethodIntent or CrdtCollectionType fails to compile until it is added to
+    // the ALL_* table beside it — and, the developer is thereby reminded, to
+    // wasm-abi.schema.json. Tags are taken from serde (not a hand-copy), so the
+    // test validates against the real serialized form. This guards core's own
+    // schema only; keeping a downstream consumer (abi-codegen) in lockstep is a
+    // separate cross-repo check.
+
+    use std::collections::BTreeSet;
+
+    /// The on-the-wire tag serde emits for a unit enum variant. Both enums carry
+    /// `#[serde(rename_all = "snake_case")]`, so this is the canonical string.
+    fn serde_tag<T: serde::Serialize>(variant: &T) -> String {
+        serde_json::to_value(variant)
+            .expect("variant serializes")
+            .as_str()
+            .expect("unit variant serializes to a string")
+            .to_owned()
+    }
+
+    fn schema_enum(path: &[&str]) -> BTreeSet<String> {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../wasm-abi.schema.json")).unwrap();
+        let mut node = &schema;
+        for key in path {
+            node = node
+                .get(key)
+                .unwrap_or_else(|| panic!("schema path missing: {path:?}"));
+        }
+        node.as_array()
+            .unwrap_or_else(|| panic!("schema path is not an array: {path:?}"))
+            .iter()
+            .map(|v| v.as_str().expect("enum entry must be a string").to_owned())
+            .collect()
+    }
+
+    const ALL_INTENTS: &[MethodIntent] = &[
+        MethodIntent::ReadOnly,
+        MethodIntent::Mutating,
+        MethodIntent::Unspecified,
+    ];
+
+    const ALL_CRDT_TYPES: &[CrdtCollectionType] = &[
+        CrdtCollectionType::LwwRegister,
+        CrdtCollectionType::Counter,
+        CrdtCollectionType::Vector,
+        CrdtCollectionType::UnorderedMap,
+        CrdtCollectionType::SortedMap,
+        CrdtCollectionType::AuthoredMap,
+        CrdtCollectionType::UnorderedSet,
+        CrdtCollectionType::SortedSet,
+        CrdtCollectionType::ReplicatedGrowableArray,
+        CrdtCollectionType::AuthoredVector,
+        CrdtCollectionType::SharedStorage,
+    ];
+
+    // Compile tripwires: no wildcard, so a new variant fails to build until it is
+    // listed here — and in the ALL_* table above. Never called; exist only to
+    // fail compilation.
+    #[allow(dead_code)]
+    fn method_intent_is_exhaustive(intent: MethodIntent) {
+        match intent {
+            MethodIntent::ReadOnly | MethodIntent::Mutating | MethodIntent::Unspecified => {}
+        }
+    }
+    #[allow(dead_code)]
+    fn crdt_type_is_exhaustive(crdt: &CrdtCollectionType) {
+        use CrdtCollectionType::{
+            AuthoredMap, AuthoredVector, Counter, LwwRegister, ReplicatedGrowableArray,
+            SharedStorage, SortedMap, SortedSet, UnorderedMap, UnorderedSet, Vector,
+        };
+        match crdt {
+            LwwRegister
+            | Counter
+            | Vector
+            | UnorderedMap
+            | SortedMap
+            | AuthoredMap
+            | UnorderedSet
+            | SortedSet
+            | ReplicatedGrowableArray
+            | AuthoredVector
+            | SharedStorage => {}
+        }
+    }
+
+    #[test]
+    fn json_schema_intent_enum_matches_method_intent() {
+        let rust: BTreeSet<String> = ALL_INTENTS.iter().map(serde_tag).collect();
+        let schema = schema_enum(&["definitions", "Method", "properties", "intent", "enum"]);
+        assert_eq!(
+            rust, schema,
+            "Method.intent enum in wasm-abi.schema.json is out of sync with MethodIntent — \
+             update the JSON schema to match the Rust enum"
+        );
+    }
+
+    #[test]
+    fn json_schema_crdt_enum_matches_crdt_collection_type() {
+        let rust: BTreeSet<String> = ALL_CRDT_TYPES.iter().map(serde_tag).collect();
+        let schema = schema_enum(&["definitions", "CrdtType", "enum"]);
+        assert_eq!(
+            rust, schema,
+            "CrdtType enum in wasm-abi.schema.json is out of sync with CrdtCollectionType — \
+             update the JSON schema to match the Rust enum"
+        );
+    }
 }
