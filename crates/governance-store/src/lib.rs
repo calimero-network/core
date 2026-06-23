@@ -100,8 +100,9 @@ pub use self::namespace::NamespaceRepository;
 pub use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
     apply_received_group_key, apply_signed_namespace_op, build_group_key_delivery,
-    collect_skeleton_delta_ids_for_group, decrypt_group_op, namespace_groups_awaiting_key,
-    retry_encrypted_ops_for_group, sign_and_publish_namespace_op,
+    collect_skeleton_delta_ids_for_group, decrypt_group_op, known_namespace_identities,
+    namespace_groups_awaiting_key, namespace_groups_with_held_key_buffered_ops,
+    redrive_buffered_ops_for_group, retry_encrypted_ops_for_group, sign_and_publish_namespace_op,
     sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure,
     NamespaceDagService, NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord,
     NamespaceMembershipService, NamespaceOpLogService, NamespaceRetryService, ReparentOutcome,

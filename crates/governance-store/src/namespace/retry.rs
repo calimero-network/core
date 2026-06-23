@@ -68,6 +68,54 @@ impl<'a> NamespaceRetryService<'a> {
         Ok(awaiting.into_iter().collect())
     }
 
+    /// Distinct group ids that have at least one buffered encrypted op whose
+    /// `key_id` the local node CAN already resolve — the exact INVERSE of
+    /// [`groups_awaiting_key`](Self::groups_awaiting_key)'s filter.
+    ///
+    /// This is the #2848 Part C curative-sweep enumerator: a node stranded
+    /// before the live re-drive landed holds the key (the `KeyDelivery`
+    /// arrived after `GroupCreated` long applied) yet still has buffered ops
+    /// that were effect-skipped because no future trigger re-drives them.
+    /// This returns exactly those groups so the sweep can re-drive them.
+    ///
+    /// Resolution mirrors the apply path (subgroup keyring first for
+    /// `Restricted`, then the namespace keyring for `Open`), identical to
+    /// `groups_awaiting_key` — so a group whose key is genuinely held is
+    /// returned, and a group still awaiting its key is NOT. The held-key
+    /// filter is ALSO the deleted-group exit: a purged group has no key in
+    /// either keyring, so it never appears here (and re-driving it would be a
+    /// no-op regardless).
+    ///
+    /// Driving off buffered-and-decryptable ops means a group with nothing
+    /// pending is never returned, so the set is naturally self-limiting.
+    pub fn groups_with_held_key_buffered_ops(&self) -> EyreResult<Vec<[u8; 32]>> {
+        let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
+        let op_keys = op_log
+            .collect_buffered_group_op_keys()
+            .map_err(|e| eyre::eyre!("op_log.collect_buffered_group_op_keys: {e}"))?;
+        let ns_typed = ContextGroupId::from(self.namespace_id);
+
+        let mut held = std::collections::BTreeSet::new();
+        for (group_id, key_id) in op_keys {
+            let gid_typed = ContextGroupId::from(group_id);
+            // Same resolution order as `apply_signed_op`'s Group arm and
+            // `groups_awaiting_key`: subgroup keyring first (Restricted),
+            // then the namespace keyring (Open subgroups encrypt under it).
+            let resolvable = GroupKeyring::new(self.store, gid_typed)
+                .load_key_by_id(&key_id)
+                .map_err(|e| eyre::eyre!("load_key_by_id(group): {e}"))?
+                .is_some()
+                || GroupKeyring::new(self.store, ns_typed)
+                    .load_key_by_id(&key_id)
+                    .map_err(|e| eyre::eyre!("load_key_by_id(namespace): {e}"))?
+                    .is_some();
+            if resolvable {
+                held.insert(group_id);
+            }
+        }
+        Ok(held.into_iter().collect())
+    }
+
     pub fn collect_retry_candidates_for_group(
         &self,
         group_id: [u8; 32],

@@ -1164,6 +1164,78 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(retry_divergence)
     }
 
+    /// Curative re-drive variant that returns the count of ops it ACTUALLY
+    /// applied (#2848 Part C). The `Option<DivergenceReport>` returned by
+    /// [`retry_encrypted_ops_for_group`](Self::retry_encrypted_ops_for_group)
+    /// is not a usable progress signal — a re-driven `ContextRegistered`
+    /// applies yet reports `None` (divergence is surfaced only for
+    /// `MemberRemoved`/`MemberLeft`), and an already-applied op is
+    /// nonce-deduped to `Ok(None)` too. The startup sweep needs to know
+    /// whether a pass made progress; this counts it directly.
+    ///
+    /// "Applied" is detected by the nonce window: a candidate whose
+    /// (signer, nonce) was NOT in the window before the apply but IS after it
+    /// was genuinely applied this call; an op already in the window is an
+    /// idempotent nonce-skip and does not count. This avoids threading an
+    /// `applied` flag through the whole apply stack while still distinguishing
+    /// a real apply from a no-op replay.
+    fn redrive_encrypted_ops_for_group_counted(&self, group_id: [u8; 32]) -> EyreResult<usize> {
+        let gid_typed = ContextGroupId::from(group_id);
+        let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
+        let retry_candidates = retry_service
+            .collect_retry_candidates_for_group(group_id)
+            .map_err(|e| eyre::eyre!("collect_retry_candidates_for_group: {e}"))?;
+        if !retry_candidates.is_empty() {
+            record_namespace_retry_event("collected");
+        }
+
+        let mut applied = 0usize;
+        for candidate in &retry_candidates {
+            let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
+                continue;
+            };
+            let signer = &candidate.signed_op.signer;
+            let nonce = candidate.signed_op.nonce;
+            // Pre-apply nonce-window membership tells a real apply apart from an
+            // idempotent replay: `apply_group_op_inner` short-circuits an
+            // already-windowed nonce to `Ok(None)` WITHOUT mutating, and
+            // advances the window only on a genuine apply.
+            let was_present = load_nonce_window(self.store, &gid_typed, signer)
+                .map(|w| w.contains(nonce))
+                .unwrap_or(false);
+            match self.decrypt_and_apply_group_op(
+                &candidate.signed_op,
+                &gid_typed,
+                &candidate.group_key,
+                encrypted,
+            ) {
+                Ok(_divergence) => {
+                    record_namespace_retry_event("applied");
+                    let now_present = load_nonce_window(self.store, &gid_typed, signer)
+                        .map(|w| w.contains(nonce))
+                        .unwrap_or(false);
+                    if !was_present && now_present {
+                        applied += 1;
+                        tracing::info!(
+                            group_id = %hex::encode(group_id),
+                            "curative re-drive applied a stranded encrypted op (#2848)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    record_namespace_retry_event("failed");
+                    tracing::warn!(
+                        group_id = %hex::encode(group_id),
+                        error = %format!("{e:#}"),
+                        "curative re-drive: failed to apply a buffered encrypted op (#2848)"
+                    );
+                }
+            }
+        }
+
+        Ok(applied)
+    }
+
     /// Decrypt an encrypted group op and apply it via
     /// [`apply_group_op_inner`](Self::apply_group_op_inner).
     ///
@@ -1641,6 +1713,45 @@ pub fn namespace_groups_awaiting_key(
     namespace_id: [u8; 32],
 ) -> EyreResult<Vec<[u8; 32]>> {
     NamespaceRetryService::new(store, namespace_id).groups_awaiting_key()
+}
+
+/// Distinct group ids in `namespace_id` that have at least one buffered
+/// encrypted group op the local node CAN already decrypt — the inverse of
+/// [`namespace_groups_awaiting_key`]. This is the held-key, buffered-op set
+/// the #2848 Part C curative startup sweep re-drives: a node stranded before
+/// the live re-drive landed holds the key but has no future trigger.
+pub fn namespace_groups_with_held_key_buffered_ops(
+    store: &Store,
+    namespace_id: [u8; 32],
+) -> EyreResult<Vec<[u8; 32]>> {
+    NamespaceRetryService::new(store, namespace_id).groups_with_held_key_buffered_ops()
+}
+
+/// Enumerate every namespace this node holds an identity for — the node's
+/// full set of known namespaces. The #2848 Part C curative startup sweep
+/// iterates this to re-drive stranded buffered ops across all of them.
+pub fn known_namespace_identities(store: &Store) -> EyreResult<Vec<[u8; 32]>> {
+    Ok(NamespaceRepository::new(store)
+        .iter_identities()?
+        .into_iter()
+        .map(|gid| gid.to_bytes())
+        .collect())
+}
+
+/// Curative re-drive of a single group's buffered encrypted ops for the
+/// #2848 Part C startup sweep. Returns the count of ops it ACTUALLY applied
+/// this call (idempotent nonce-replays are not counted) — the sweep uses this
+/// as its monotone convergence signal. Emits the
+/// `namespace_retry_events{status="redriven"}` metric per invocation so the
+/// curative sweep is observable distinctly from the live (Part A) GroupCreated
+/// re-drive.
+pub fn redrive_buffered_ops_for_group(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: [u8; 32],
+) -> EyreResult<usize> {
+    record_namespace_retry_event("redriven");
+    NamespaceGovernance::new(store, namespace_id).redrive_encrypted_ops_for_group_counted(group_id)
 }
 
 pub async fn sign_apply_and_publish_namespace_op(

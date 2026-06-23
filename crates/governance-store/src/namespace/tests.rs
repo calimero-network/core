@@ -3942,3 +3942,226 @@ fn responder_refuses_delivery_to_non_member() {
         "responder must not wrap a key for a non-member"
     );
 }
+
+/// #2848 Part C — curative startup sweep, gov-store level.
+///
+/// Reconstructs the ALREADY-stranded state a node lands in when the live
+/// re-drive (Parts A/B) was never available: a buffered, effect-skipped
+/// `ContextRegistered` for a subgroup whose key is now HELD and whose meta is
+/// now PRESENT — but with NO pending trigger (no GroupCreated/KeyDelivery
+/// apply re-drove it). We construct this by buffering the op while key+meta are
+/// absent, then writing the key and meta DIRECTLY (bypassing the apply path, so
+/// the Part A GroupCreated re-drive never fires).
+///
+/// Asserts the enumerator
+/// ([`namespace_groups_with_held_key_buffered_ops`]) returns exactly the
+/// stranded subgroup, and that re-driving it
+/// ([`redrive_buffered_ops_for_group`]) applies the buffered op (the context
+/// becomes registered to the subgroup) and reports a non-`None` divergence.
+///
+/// Also asserts the two no-op shapes: a held-key group with nothing buffered,
+/// and a no-key (deleted/never-keyed) group, are NOT enumerated.
+#[test]
+fn curative_sweep_redrives_stranded_context() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::application::ApplicationId;
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    // ---- Namespace root + receiver identity --------------------------------
+    let ns_gid = ContextGroupId::from([0xD8u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    // This receiver node's namespace identity — makes the namespace a "known"
+    // one for `iter_identities`/`known_namespace_identities`.
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .unwrap();
+
+    // ---- The stranded subgroup: pick id + mint its key ---------------------
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let subgroup_key: [u8; 32] = {
+        use rand::RngCore;
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let key_id = GroupKeyring::key_id_for(&subgroup_key);
+    let context_id = ContextId::from([0xC8u8; 32]);
+
+    // ---- Step 1: buffer the encrypted ContextRegistered (effect-skipped) ---
+    // `state_hash == [0u8; 32]` skips the staleness check, so the re-drive
+    // applies cleanly once key+meta are present (the staleness path is already
+    // covered by the node-level R1 test).
+    let inner_op = GroupOp::ContextRegistered {
+        context_id,
+        application_id: ApplicationId::from([0xCCu8; 32]),
+        blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
+        source: "calimero://stub-app".to_owned(),
+        service_name: None,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).unwrap();
+    let ctx_registered_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: sub_gid.to_bytes(),
+            key_id,
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    apply_signed_namespace_op(&store, &ctx_registered_op)
+        .expect("apply buffered ContextRegistered (effect-skipped: no key, no meta)");
+
+    // Effect skipped: context not registered, no enumeration yet (no key held).
+    assert_eq!(
+        get_group_for_context(&store, &context_id).unwrap(),
+        None,
+        "buffered ContextRegistered must be effect-skipped before the key arrives"
+    );
+    assert!(
+        namespace_groups_with_held_key_buffered_ops(&store, namespace_id)
+            .unwrap()
+            .is_empty(),
+        "no group should be enumerated while the key is still absent (awaiting-key state)"
+    );
+
+    // ---- Step 2: make the node stranded WITHOUT a trigger ------------------
+    // Write the subgroup key and meta DIRECTLY. This skips the apply path, so
+    // the Part A GroupCreated re-drive never fires — exactly the pre-fix
+    // stranded residue: key held, meta present, op still buffered, no trigger.
+    let stored_key_id = GroupKeyring::new(&store, sub_gid)
+        .store_key(&subgroup_key)
+        .unwrap();
+    assert_eq!(
+        stored_key_id, key_id,
+        "stored key id must match the op's key_id"
+    );
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    // Nest the subgroup so it resolves under the namespace (for completeness).
+    nest_for_test(&store, &ns_gid, &sub_gid);
+
+    // ---- Enumerator: exactly the stranded subgroup is returned -------------
+    let enumerated = namespace_groups_with_held_key_buffered_ops(&store, namespace_id).unwrap();
+    assert_eq!(
+        enumerated,
+        vec![sub_gid.to_bytes()],
+        "the held-key subgroup with a buffered op must be enumerated for the curative sweep"
+    );
+    // The op is still buffered (not yet re-driven).
+    assert_eq!(
+        get_group_for_context(&store, &context_id).unwrap(),
+        None,
+        "the buffered op must still be stranded before the sweep re-drives it"
+    );
+
+    // ---- Re-drive: the buffered op applies ---------------------------------
+    let applied = redrive_buffered_ops_for_group(&store, namespace_id, sub_gid.to_bytes())
+        .expect("re-drive must not error");
+    assert_eq!(
+        applied, 1,
+        "re-driving the stranded subgroup must apply exactly the one buffered op"
+    );
+    assert_eq!(
+        get_group_for_context(&store, &context_id).unwrap(),
+        Some(sub_gid),
+        "#2848 Part C: the curative re-drive must register the previously-stranded context"
+    );
+
+    // ---- Idempotency: a second re-drive applies nothing new ----------------
+    // (The namespace op-log is append-only, so the group stays ENUMERATED, but
+    // a re-drive of an already-applied op is a nonce-deduped no-op — this is
+    // the sweep's convergence signal: applied-count drops to zero.)
+    let applied_again = redrive_buffered_ops_for_group(&store, namespace_id, sub_gid.to_bytes())
+        .expect("second re-drive must not error");
+    assert_eq!(
+        applied_again, 0,
+        "re-driving an already-applied group must apply nothing (idempotent no-op)"
+    );
+
+    // ---- No-op shape: a no-key (deleted/never-keyed) group -----------------
+    // Buffer an op for a DIFFERENT subgroup whose key we never store: it is
+    // awaiting-key, not held-key, so the curative enumerator must skip it (the
+    // held-key filter is also the deleted-group exit).
+    let nokey_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let nokey_key: [u8; 32] = {
+        use rand::RngCore;
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let nokey_inner = GroupOp::ContextRegistered {
+        context_id: ContextId::from([0xE9u8; 32]),
+        application_id: ApplicationId::from([0xCCu8; 32]),
+        blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
+        source: "calimero://stub-app".to_owned(),
+        service_name: None,
+    };
+    let nokey_encrypted = GroupKeyring::encrypt_op(&nokey_key, &nokey_inner).unwrap();
+    let nokey_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: nokey_gid.to_bytes(),
+            key_id: GroupKeyring::key_id_for(&nokey_key),
+            encrypted: nokey_encrypted,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    apply_signed_namespace_op(&store, &nokey_op).expect("buffer no-key op (effect-skipped)");
+
+    let enumerated_after =
+        namespace_groups_with_held_key_buffered_ops(&store, namespace_id).unwrap();
+    assert!(
+        !enumerated_after.contains(&nokey_gid.to_bytes()),
+        "a no-key (deleted/never-keyed) group must NOT be enumerated by the curative sweep"
+    );
+    // The already-drained held-key subgroup STAYS enumerated (the namespace
+    // op-log is append-only, so the logged op persists and the key is still
+    // held) — re-driving it is a cheap idempotent no-op (asserted above).
+    assert_eq!(
+        enumerated_after,
+        vec![sub_gid.to_bytes()],
+        "the held-key subgroup remains the only curative-set entry; the no-key group is excluded"
+    );
+
+    // Sanity: the no-key group IS in the awaiting-key set (the strict inverse).
+    // The held-key subgroup is NOT (its key is held).
+    let awaiting = namespace_groups_awaiting_key(&store, namespace_id).unwrap();
+    assert_eq!(
+        awaiting,
+        vec![nokey_gid.to_bytes()],
+        "the no-key group must be in the awaiting-key set (the inverse of the curative set)"
+    );
+
+    // ---- known_namespace_identities returns this namespace -----------------
+    assert_eq!(
+        known_namespace_identities(&store).unwrap(),
+        vec![namespace_id],
+        "the node's known-namespace enumeration must include the joined namespace"
+    );
+}
