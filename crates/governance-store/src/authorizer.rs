@@ -39,6 +39,13 @@ use calimero_primitives::identity::PublicKey;
 /// `async_trait` boxing and would not compose with the `&dyn` use in the apply
 /// path. If a future verdict ever needs async I/O, resolve it before the apply call
 /// and pass the result in, rather than making the trait async.
+///
+/// **Empty-cut contract:** every method MUST return `None` when `parents` is empty
+/// — an empty cut has no causal context to resolve against, so the gate defers to
+/// live rather than judging a genesis op against an empty/genesis view. Gates rely
+/// on this uniformly; an implementation that returns `Some` for empty `parents`
+/// would (e.g.) falsely reject a genesis op a live admin signed. The default
+/// `LiveFallbackAuthorizer` satisfies it trivially (always `None`).
 pub trait AtCutAuthorizer: Send + Sync {
     /// Is `signer` an admin of `group` at the cut named by `parents`?
     fn is_admin_at_cut(
