@@ -30,6 +30,21 @@ pub fn collect_migration_cohort(
     let mut groups = vec![*namespace_id];
     groups.extend(NamespaceRepository::new(store).collect_descendants(namespace_id)?);
 
+    // The cohort is the PROJECTION's effective-member union across the subtree —
+    // folded ONCE at a SINGLE cut — validated divergence-free across the e2e
+    // `membership-enum` plane. `None` (empty/unfed namespace or store fault) falls
+    // back to the live `list ∪ enumerate_inherited` union below; that live fallback
+    // retires in #29b.
+    if let Some(projected) =
+        crate::scope_projection::ScopeProjections::member_identities_subtree_ephemeral(
+            store,
+            namespace_id,
+            &groups,
+        )
+    {
+        return Ok(projected.into_iter().collect());
+    }
+
     let membership = MembershipRepository::new(store);
     // BTreeSet both dedups across the subtree (a member can appear directly in
     // one group and inherited in another) and yields a deterministic order.
@@ -42,33 +57,6 @@ pub fn collect_migration_cohort(
             let _ = cohort.insert(pk);
         }
     }
-
-    // SHADOW: union the projection's effective-member set across the same subtree
-    // — folding the namespace ONCE at a SINGLE cut (not per-group, which would
-    // re-fold and evaluate groups at different cuts under concurrent governance) —
-    // and compare to the live cohort. Logs `membership-enum` divergence; still
-    // returns the live cohort.
-    if let Some(projected) =
-        crate::scope_projection::ScopeProjections::member_identities_subtree_ephemeral(
-            store,
-            namespace_id,
-            &groups,
-        )
-    {
-        if projected != cohort {
-            let only_projection: Vec<_> = projected.difference(&cohort).collect();
-            let only_live: Vec<_> = cohort.difference(&projected).collect();
-            tracing::warn!(
-                marker = "unified_projection_divergence",
-                plane = "membership-enum",
-                namespace_id = ?namespace_id,
-                ?only_projection,
-                ?only_live,
-                "query-enum: projection migration cohort differs from live"
-            );
-        }
-    }
-
     Ok(cohort.into_iter().collect())
 }
 
