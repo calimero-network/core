@@ -397,6 +397,30 @@ The all-or-nothing fallback contract means callers never observe a silently trun
 either the projection supplies the complete set or the live store is used in its entirety.
 </p>
 
+<h3>At-cut effective role — <code>ScopeProjections::role_at_cut_for_group</code></h3>
+<p>
+<code>ScopeProjections::role_at_cut_for_group(member, group_id, cut)</code> resolves the effective
+<code>GroupMemberRole</code> of a member in a group at a specific governance cut. It gates on
+<code>cut_ancestry_complete</code> via <code>auth_cut_context</code> (returning <code>None</code>
+immediately when ancestry is incomplete) and then delegates to <code>member_path_at_cut</code> to
+handle three cases:
+</p>
+<ul>
+  <li><b>Direct membership</b> — returns the folded role from the projection (the same derivation
+  already validated by the <code>membership-role</code> divergence plane).</li>
+  <li><b><code>Inherited{via_admin:true}</code></b> — always resolves to <code>Admin</code>,
+  mirroring the live semantics for anchor-via-admin inheritance.</li>
+  <li><b><code>Inherited{via_admin:false}</code></b> — returns the member's stored role at the
+  anchor group. Returns <code>None</code> rather than guessing when the anchor row is missing,
+  preventing spurious divergence reports.</li>
+</ul>
+<p>
+The method returns <code>None</code> — signalling "projection has no opinion, defer to live store"
+— in four cases: ancestry is not yet fully folded, the member is absent from the group at the cut,
+the <code>auth_cut_context</code> call cannot resolve the namespace, and the anchor row is missing
+for an inherited-via-anchor path. Callers must not treat <code>None</code> as a role denial.
+</p>
+
 <h3>Shared-context identity resolution — <code>ScopeProjections::member_identities_in_view_with_ctx</code></h3>
 <p>
 <code>member_identities_in_view_with_ctx</code> accepts caller-supplied <code>root</code> and
@@ -1156,6 +1180,7 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td><code>ScopeProjections::namespace_current_heads</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>.</td></tr>
   <tr><td><code>ScopeProjections::member_now_ephemeral</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — builds a fresh projection per call: resolves the namespace, folds the DAG via <code>collect_namespace_ops</code>, reads heads after the fold, and returns <code>member_at_cut</code>. Returns <code>None</code> (never decides against the member) on unresolvable namespace, store fault, or incomplete fold.</td></tr>
   <tr><td><code>ScopeProjections::member_now_checked</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — unified membership gate for all four context-layer handlers. Calls <code>member_now_ephemeral</code> first; falls back to <code>MembershipRepository::is_member</code> when projection is undecidable; emits <code>tracing::warn</code> with <code>marker=unified_projection_divergence</code> / <code>plane=membership-query</code> on definite disagreement. Direct <code>MembershipRepository</code> imports removed from <code>get_cascade_status.rs</code>, <code>get_group_upgrade_status.rs</code>, <code>list_all_groups.rs</code>, and <code>list_group_contexts.rs</code>.</td></tr>
+  <tr><td><code>ScopeProjections::role_at_cut_for_group</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves the effective <code>GroupMemberRole</code> at a governance cut via <code>auth_cut_context</code> + <code>member_path_at_cut</code>. Handles direct, inherited-via-admin (<code>Admin</code>), and inherited-via-anchor (anchor role row) cases. Returns <code>None</code> on incomplete ancestry, absent member, unresolvable namespace, or missing anchor row. Prevents spurious <code>membership-role</code> divergence reports by abstaining rather than guessing on missing anchor rows.</td></tr>
   <tr><td><code>AtCutAuthorizer</code> trait + <code>LiveFallbackAuthorizer</code> + <code>EphemeralProjectionAuthorizer</code></td><td><b>Implemented</b></td><td><code>crates/context/src/governance_dag.rs</code> — <code>AtCutAuthorizer</code> declares four required methods: <code>is_admin_at_cut</code>, <code>is_admin_or_capability_at_cut</code>, <code>is_last_admin_at_cut</code>, and <code>membership_path_at_cut</code>. All must return <code>None</code> when <code>parents</code> is empty (trait-level empty-cut contract). <code>LiveFallbackAuthorizer</code> implements all four returning <code>None</code>. <code>EphemeralProjectionAuthorizer</code> holds a <code>Mutex&lt;Option&lt;(ContextGroupId, Arc&lt;FoldedProjection&gt;)&gt;&gt;</code> fold cache; the private <code>folded</code> helper reuses a cached fold for the same group or calls <code>ScopeProjections::ephemeral_projection</code> on a miss. All four at-cut methods delegate through <code>folded</code>; each opens with an empty-parents guard. <code>is_last_admin_at_cut</code> delegates to <code>ScopeProjections::is_last_admin_at_cut</code> (in <code>crates/context/src/scope_projections.rs</code>), which mirrors live last-admin logic at the parent cut. <code>membership_path_at_cut</code> delegates to <code>ScopeProjections::membership_path_at_cut</code>, which calls <code>member_path_at_cut</code> on the folded projection via <code>auth_cut_context</code> and maps the result to <code>AtCutMembershipPath</code>. The standalone <code>GroupGovernanceApplier::apply</code> is unchanged (live-only); see the <em>GroupGovernanceApplier</em> note in the at-cut accessors section above.</td></tr>
   <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
 </table>
