@@ -81,6 +81,14 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         signer: &PublicKey,
         parents: &[[u8; 32]],
     ) -> Option<bool> {
+        // No cut (empty `parents`) ⇒ no causal context to resolve against; defer to
+        // live rather than judge against an empty/genesis view (which could falsely
+        // reject a capability-holder whose grant isn't in the empty fold). Belt-and-
+        // braces: group ops carry their enclosing namespace op's parents, which are
+        // empty only for the namespace genesis itself.
+        if parents.is_empty() {
+            return None;
+        }
         // `None` here = the cited ancestry isn't fully folded; the gate defers to
         // live (quiet — a normal mid-backfill state, not an error).
         self.folded(group)?
@@ -95,6 +103,10 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         capability: u32,
         parents: &[[u8; 32]],
     ) -> Option<bool> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
         self.folded(group)?
             .0
             .is_admin_or_capability_at_cut(self.store, *group, signer, capability, parents)
