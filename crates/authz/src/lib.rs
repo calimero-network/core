@@ -222,6 +222,49 @@ impl AclView {
         anchor_is_member.unwrap_or(false)
     }
 
+    /// Is `author` authorized as an ADMIN of `group` at the cut — the apply-gate
+    /// admin authority. Mirrors live's `is_authorized_with_capability` admin path:
+    /// a direct group admin (subgroup creator / `Admin`-role holder), the
+    /// namespace ROOT admin (who administers every group — folded, so it tracks
+    /// `AdminChanged`, with the genesis `root` carve-out as the un-folded base), OR
+    /// an admin of an ANCESTOR reached over the open-subgroup chain (an admin of an
+    /// Open parent administers its children). Restricted edges stop the walk.
+    ///
+    /// Admin-only — unlike [`is_member_at_cut`](Self::is_member_at_cut), a plain
+    /// inherited MEMBER is not authorized. Capability holders are checked
+    /// separately by the caller.
+    #[must_use]
+    pub fn is_authorized_admin(
+        &self,
+        group: ContextGroupId,
+        author: &PublicKey,
+        root: Option<(ContextGroupId, PublicKey)>,
+    ) -> bool {
+        let is_admin = |g: ContextGroupId| -> bool {
+            self.is_group_admin(author, g)
+                || self.is_root_admin(author)
+                || root.is_some_and(|(root_g, root_admin)| g == root_g && *author == root_admin)
+        };
+        if is_admin(group) {
+            return true;
+        }
+        let mut current = group;
+        for _ in 0..=MAX_NAMESPACE_DEPTH {
+            let Some(edge) = self.subgroups.get(&ScopeId::from(current.to_bytes())) else {
+                return false;
+            };
+            if edge.restricted {
+                return false;
+            }
+            let parent = ContextGroupId::from(*edge.parent.as_bytes());
+            if is_admin(parent) {
+                return true;
+            }
+            current = parent;
+        }
+        false
+    }
+
     /// `member`'s effective capability bitmask in `group` at the cut: the
     /// explicit per-member override if present, else the group default, else
     /// `0`. Mirrors the live `member_capability` read used by inherited-
