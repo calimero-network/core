@@ -85,6 +85,22 @@ pub struct TeeConfig {
     pub kms: KmsConfig,
 }
 
+impl TeeConfig {
+    /// Whether this node is configured to enforce *real* KMS attestation.
+    ///
+    /// Returns true when a KMS provider has attestation verification enabled and
+    /// is not running in mock-accepting development mode. This is the predicate
+    /// used to refuse the dev-only `--mock-tee` flag: mock and real attestation
+    /// must be mutually exclusive on a single node.
+    #[must_use]
+    pub fn has_real_attestation(&self) -> bool {
+        self.kms
+            .phala
+            .as_ref()
+            .is_some_and(|phala| phala.attestation.enabled && !phala.attestation.accept_mock)
+    }
+}
+
 /// Configuration for the Key Management Service.
 ///
 /// Supports multiple KMS implementations. Currently only Phala is supported.

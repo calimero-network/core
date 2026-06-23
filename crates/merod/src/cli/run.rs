@@ -44,6 +44,23 @@ impl RunCommand {
             config.network.server.auth_mode = mode.into();
         }
 
+        // Mock TEE is dev/test only and must never coexist with real attestation.
+        if self.mock_tee {
+            if config
+                .tee
+                .as_ref()
+                .is_some_and(calimero_config::TeeConfig::has_real_attestation)
+            {
+                bail!(
+                    "--mock-tee refused: a real KMS/attestation is configured. \
+                     Mock TEE is dev/test only and cannot coexist with real attestation."
+                );
+            }
+            tracing::warn!(
+                "================ MOCK TEE ENABLED — INSECURE, DEV/TEST ONLY ================"
+            );
+        }
+
         // Resolve external attestation policy once at startup so downstream
         // validation + key fetch paths reuse the same effective configuration.
         if let Some(tee_config) = config.tee.as_mut() {
