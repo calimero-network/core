@@ -1315,15 +1315,21 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        // Group ops carried in namespace envelopes authorize at the SAME cut as the
-        // enclosing namespace op (F5 #28 stage 4): forward the seam's parent cut +
-        // authorizer so the group `PermissionChecker` gates shadow the projection.
+        // Group ops carried in namespace envelopes authorize at the cut of THEIR OWN
+        // enclosing namespace op (F5 #28 stage 4) — `signed_group_op.parent_op_hashes`
+        // is that op's parents (copied in `decrypt_and_apply_group_op`). Use it, NOT
+        // `self.parents`: `retry_encrypted_ops_for_group` re-applies buffered group
+        // candidates within ONE KeyDelivery apply, so `self.parents` would be the
+        // KeyDelivery cut for every replayed candidate — the projection-backed gates
+        // would then judge each at the wrong cut. The authorizer carries no per-op
+        // state (its fold is the whole namespace; the cut is applied at resolve
+        // time), so reusing `self.authorizer` with the candidate's parents is correct.
         let (handled, divergence, pending_events) = apply_group_op_mutations(
             self.store,
             group_id,
             signer,
             op,
-            self.parents,
+            &signed_group_op.parent_op_hashes,
             self.authorizer,
         )?;
         if !handled {

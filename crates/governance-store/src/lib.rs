@@ -1232,9 +1232,9 @@ fn apply_group_op_mutations(
     Vec<crate::op_events::OpEvent>,
 )> {
     // The op's causal cut + at-cut authorizer ride into the apply gates so the
-    // `PermissionChecker` admin/capability gates can SHADOW the projection against
-    // live (F5 #28 stage 4). The default authorizer (live-fallback) makes the shadow
-    // inert for callers without an apply-auth context.
+    // `PermissionChecker` admin/capability gates resolve against the projection at
+    // the op's cut, with live as the `None`-fallback (F5 #28 stage 4). The default
+    // (live-fallback) authorizer keeps callers without an apply-auth context on live.
     let mut ctx = ops::group::GroupApplyCtx::new_with_apply_auth(
         store, group_id, signer, parents, authorizer,
     );
@@ -1262,9 +1262,9 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
 }
 
 /// [`apply_local_signed_group_op`] with the at-cut apply-auth source attached: the
-/// `PermissionChecker` admin/capability gates SHADOW the projection against live at
-/// the op's own `parent_op_hashes` (F5 #28 stage 4, plane `group-auth`). The
-/// production apply path (the group DAG applier) injects a projection-backed
+/// `PermissionChecker` admin/capability gates resolve against the projection at the
+/// op's own `parent_op_hashes`, with live as the `None`-fallback (F5 #28 stage 4).
+/// The production apply path (the group DAG applier) injects a projection-backed
 /// authorizer; the plain `apply_local_signed_group_op` passes the inert live
 /// fallback so existing callers (tests, replay) are unchanged.
 pub fn apply_local_signed_group_op_at_cut(
