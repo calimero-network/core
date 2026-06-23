@@ -54,6 +54,39 @@
             },
             "crdt_type": "vector"
           }
+        },
+        {
+          "name": "authored_counters",
+          "type": {
+            "kind": "map",
+            "key": {
+              "kind": "string"
+            },
+            "value": {
+              "kind": "record",
+              "fields": [],
+              "crdt_type": "lww_register",
+              "inner_type": {
+                "kind": "u32"
+              }
+            },
+            "crdt_type": "authored_map"
+          }
+        },
+        {
+          "name": "authored_log",
+          "type": {
+            "kind": "list",
+            "items": {
+              "kind": "record",
+              "fields": [],
+              "crdt_type": "lww_register",
+              "inner_type": {
+                "$ref": "UserId32"
+              }
+            },
+            "crdt_type": "authored_vector"
+          }
         }
       ]
     },

@@ -104,9 +104,19 @@ impl NamespaceGovernanceApplier {
 #[async_trait::async_trait]
 impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
     async fn apply(&self, delta: &CausalDelta<SignedNamespaceOp>) -> Result<(), ApplyError> {
-        let outcome =
-            calimero_governance_store::apply_signed_namespace_op(&self.store, &delta.payload)
-                .map_err(|e| ApplyError::Application(e.to_string()))?;
+        // F5 #28 (stage 3b): authorize the apply gates against the PROJECTION at the
+        // op's causal cut. The ephemeral authorizer folds the namespace's persisted
+        // governance DAG and resolves admin authority as of `delta.parents`; on an
+        // incomplete fold it returns `None` and the gate falls back to the live
+        // resolver, so a cold/racing fold never wrongly rejects a valid op.
+        let authorizer = crate::apply_authorizer::EphemeralProjectionAuthorizer::new(&self.store);
+        let outcome = calimero_governance_store::apply_signed_namespace_op_at_cut(
+            &self.store,
+            &delta.payload,
+            &delta.parents,
+            &authorizer,
+        )
+        .map_err(|e| ApplyError::Application(e.to_string()))?;
         if let Some(report) = outcome.divergence {
             // Last-writer-wins on the outbox. The applier instance
             // is single-flight per actor message turn, so multiple

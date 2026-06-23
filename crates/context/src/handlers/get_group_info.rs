@@ -25,7 +25,21 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
             let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
                 bail!("node has no group identity configured");
             };
-            if !MembershipRepository::new(&self.datastore).is_member(&group_id, &node_identity)? {
+            // Fold the ephemeral projection ONCE: the gate and the enum shadow
+            // below both read from it (one RocksDB DAG walk, not two). `None`
+            // (store fault) falls back to live for the gate and skips the shadow.
+            let proj_ctx = crate::scope_projection::ScopeProjections::ephemeral_projection(
+                &self.datastore,
+                &group_id,
+            );
+            let is_member = match &proj_ctx {
+                Some((proj, _ns, heads)) => {
+                    proj.member_now_checked_with(&self.datastore, &group_id, &node_identity, heads)?
+                }
+                None => MembershipRepository::new(&self.datastore)
+                    .is_member(&group_id, &node_identity)?,
+            };
+            if !is_member {
                 bail!("node is not a member of group '{group_id:?}'");
             }
 
@@ -42,10 +56,27 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
             // chain walk bounded by `MAX_NAMESPACE_DEPTH`. This is minor
             // next to `compute_group_state_hash` below, which already
             // scans the full group state on every call.
-            let member_count = (MembershipRepository::new(&self.datastore).count(&group_id)?
-                + MembershipRepository::new(&self.datastore)
-                    .enumerate_inherited(&group_id)?
-                    .len()) as u64;
+            // Effective member count from the PROJECTION's effective-member set
+            // (direct ∪ inherited), validated divergence-free across the e2e
+            // `membership-enum` plane. `None` — an empty/unfed namespace, or a cited
+            // ancestry not fully folded (governance-backfill race) — falls back to
+            // the live `count + enumerate_inherited` union. The live fallback retires
+            // in #29b.
+            let member_count = proj_ctx
+                .as_ref()
+                .and_then(|(proj, ns, heads)| {
+                    proj.member_identities_with(&self.datastore, *ns, &group_id, heads)
+                })
+                .map(|ids| ids.len() as u64)
+                .map_or_else(
+                    || -> eyre::Result<u64> {
+                        let membership = MembershipRepository::new(&self.datastore);
+                        Ok((membership.count(&group_id)?
+                            + membership.enumerate_inherited(&group_id)?.len())
+                            as u64)
+                    },
+                    Ok,
+                )?;
 
             let context_count =
                 MetadataRepository::new(&self.datastore).count_contexts(&group_id)? as u64;
