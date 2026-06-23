@@ -1211,6 +1211,13 @@ impl ScopeProjections {
     /// admin (`group_admin` / namespace-root); but "another admin" counts only
     /// another `Admin`-role ROW (`groups[group]`) — the genesis admin alone does NOT
     /// satisfy it, matching live's row-based `has_another_admin`.
+    ///
+    /// Causal position: this reads the op's PARENT cut (admin set as of the op's own
+    /// ancestry) — the correct state for a pre-mutation invariant — whereas the live
+    /// pre-check reads the node's CURRENT materialized state. Under concurrency (the
+    /// node has applied admin-cardinality ops outside this op's ancestry) the two can
+    /// differ; that's the causal-honor property (the op is judged as authored), not a
+    /// discrepancy to reconcile. The DAG order resolves the convergent admin set.
     #[must_use]
     pub fn is_last_admin_at_cut(
         &self,
