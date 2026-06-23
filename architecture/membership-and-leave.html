@@ -1152,6 +1152,73 @@ This page documents shipped behavior. Each row points at the code that implement
 </ol>
 </div>
 
+<div class="card gd"><h2>EphemeralProjectionAuthorizer — empty-parents early return</h2>
+<p>
+Both <code>is_admin_at_cut</code> and <code>is_admin_or_capability_at_cut</code> on
+<code>EphemeralProjectionAuthorizer</code> now return <code>None</code> immediately when the
+supplied <code>parents</code> slice is empty, deferring unconditionally to the live fallback
+authorizer. Previously, an empty <code>parents</code> slice was passed through to the fold
+machinery, which evaluated the query against a genesis-state view. That view contains no granted
+roles or capabilities, so any capability holder whose grant was established after genesis would be
+falsely rejected by the projection even though the live store correctly recognises them.
+</p>
+
+<h3>When parents is empty</h3>
+<p>
+Two cases produce an empty <code>parents</code> slice at the authorizer call site:
+</p>
+<ul>
+  <li><strong>Genesis op.</strong> The very first op in a namespace's governance log has no
+  predecessor hashes. The causal cut is genuinely empty because no prior ops exist.</li>
+  <li><strong>PermissionChecker constructed without apply-auth context.</strong> Some code paths
+  build a <code>PermissionChecker</code> outside of a normal apply flow and pass an empty parents
+  field as a zero value. These callers have no meaningful causal position to resolve against.</li>
+</ul>
+<p>
+In both cases, judging against an empty fold is semantically wrong: the fold has not processed any
+<code>MemberAdded</code>, <code>MemberRoleSet</code>, or <code>DefaultCapabilitiesSet</code> ops,
+so the resulting <code>AclView</code> is empty. A query against it would return
+<code>Some(false)</code> for every capability check, silently blocking operations that the live
+store would correctly permit.
+</p>
+
+<h3>New behavior</h3>
+<ul>
+  <li>If <code>parents.is_empty()</code>, both methods return <code>None</code> immediately,
+  before touching the fold cache or calling <code>ScopeProjections::ephemeral_projection</code>.</li>
+  <li>The <code>None</code> return propagates to the caller as "projection is undecidable," which
+  causes the standard live-fallback path to take effect. No warning is emitted — empty parents is
+  a legitimate undecidable case, not a divergence.</li>
+  <li>When <code>parents</code> is non-empty, behavior is unchanged: the fold cache is consulted
+  (or populated on a miss) and the at-cut check proceeds normally.</li>
+</ul>
+
+<h3>Contract clarification</h3>
+<p>
+The <code>AtCutAuthorizer</code> contract already specifies that <code>None</code> means
+"undecidable — defer to the live gate." This change makes the empty-parents case an explicit
+instance of that contract rather than a silent fall-through to a semantically incorrect verdict.
+Callers must not treat <code>None</code> as a denial; the live authorizer is always consulted when
+the projection abstains.
+</p>
+<p>
+The <code>None</code>-on-incomplete-ancestry guard (from <code>cut_ancestry_complete</code>) is
+distinct and remains in place: it fires when <code>parents</code> is non-empty but the fold has
+not yet processed all ops reachable from those parents. The empty-parents guard fires earlier,
+before the fold is attempted at all.
+</p>
+
+<h3>Affected code</h3>
+<ul>
+  <li><code>crates/context/src/governance_dag.rs</code> —
+  <code>EphemeralProjectionAuthorizer::is_admin_at_cut</code> and
+  <code>EphemeralProjectionAuthorizer::is_admin_or_capability_at_cut</code>: both now open with
+  <code>if parents.is_empty() { return None; }</code> before the <code>folded(group_id)</code>
+  call.</li>
+  <li>No changes to <code>LiveFallbackAuthorizer</code>, <code>ScopeProjections</code>, or any
+  call sites — the early return is entirely internal to the two authorizer methods.</li>
+</ul>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
