@@ -26,16 +26,16 @@ impl GroupGovernanceApplier {
 #[async_trait::async_trait]
 impl DeltaApplier<SignedGroupOp> for GroupGovernanceApplier {
     async fn apply(&self, delta: &CausalDelta<SignedGroupOp>) -> Result<(), ApplyError> {
-        // F5 #28 stage 4: shadow the group apply-auth gates against the projection at
-        // the op's cut. Injecting the real ephemeral authorizer (not the inert live
-        // fallback) is what makes `group-auth` divergences surface.
-        let authorizer = crate::apply_authorizer::EphemeralProjectionAuthorizer::new(&self.store);
-        calimero_governance_store::apply_local_signed_group_op_at_cut(
-            &self.store,
-            &delta.payload,
-            &authorizer,
-        )
-        .map_err(|e| ApplyError::Application(e.to_string()))
+        // F5 #28 stage 4: the STANDALONE group-op DAG keeps the LIVE gates. A
+        // `SignedGroupOp`'s `parent_op_hashes` live in the per-group op log, NOT the
+        // namespace governance log the projection is keyed by — so handing them to
+        // `EphemeralProjectionAuthorizer` (a namespace-projection resolver) would have
+        // it treat group-DAG hashes as namespace delta ids, fail `cut_ancestry_complete`,
+        // and silently no-op to live anyway. The real `group-auth` shadow/flip runs on
+        // the namespace-ENVELOPE group-op path (`NamespaceGovernance` decrypt-and-apply),
+        // where the cut is the enclosing namespace op's parents (correct id-space).
+        calimero_governance_store::apply_local_signed_group_op(&self.store, &delta.payload)
+            .map_err(|e| ApplyError::Application(e.to_string()))
     }
 }
 
