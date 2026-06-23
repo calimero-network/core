@@ -82,7 +82,7 @@ impl<'a> NamespaceApplyCtx<'a> {
         let ns_gid = ContextGroupId::from(self.namespace_id);
         let authorized = match self
             .authorizer
-            .is_admin_at_cut(ns_gid, signer, self.parents)
+            .is_admin_at_cut(&ns_gid, signer, self.parents)
         {
             Some(verdict) => verdict,
             None => MembershipRepository::new(self.store).is_admin(&ns_gid, signer)?,

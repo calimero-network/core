@@ -31,11 +31,19 @@ use calimero_primitives::identity::PublicKey;
 /// fn apply`, whose future must be `Send` (it's spawned). A `&dyn AtCutAuthorizer`
 /// is only `Send` when the trait object is `Sync`, so the bound is required for the
 /// apply future — and the axum handlers that drive it — to stay `Send`.
+///
+/// Deliberately synchronous (object-safe): the gates call this through a
+/// `&dyn AtCutAuthorizer`, and the implementation resolves against an in-memory /
+/// store-backed projection fold, which is synchronous. Methods added later (the
+/// capability gate) must stay synchronous too — an `async` method would need
+/// `async_trait` boxing and would not compose with the `&dyn` use in the apply
+/// path. If a future verdict ever needs async I/O, resolve it before the apply call
+/// and pass the result in, rather than making the trait async.
 pub trait AtCutAuthorizer: Send + Sync {
     /// Is `signer` an admin of `group` at the cut named by `parents`?
     fn is_admin_at_cut(
         &self,
-        group: ContextGroupId,
+        group: &ContextGroupId,
         signer: &PublicKey,
         parents: &[[u8; 32]],
     ) -> Option<bool>;
@@ -56,7 +64,7 @@ pub struct LiveFallbackAuthorizer;
 impl AtCutAuthorizer for LiveFallbackAuthorizer {
     fn is_admin_at_cut(
         &self,
-        _group: ContextGroupId,
+        _group: &ContextGroupId,
         _signer: &PublicKey,
         _parents: &[[u8; 32]],
     ) -> Option<bool> {
