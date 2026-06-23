@@ -22,6 +22,11 @@ pub struct RunCommand {
     /// Override the authentication mode configured in config.toml
     #[arg(long, value_enum)]
     pub auth_mode: Option<AuthModeArg>,
+
+    /// DEV/TEST ONLY. Produce and accept MOCK TEE attestation quotes (no real TDX).
+    /// Insecure — never use in production. Refuses to start alongside a real KMS.
+    #[clap(long, env = "MEROD_MOCK_TEE", default_value_t = false)]
+    pub mock_tee: bool,
 }
 
 impl RunCommand {
@@ -169,6 +174,7 @@ impl RunCommand {
                 accept_mock_tee: network.specialized_node.accept_mock_tee,
             },
             vm_limits: config.runtime.vm_limits(),
+            mock_tee: self.mock_tee,
         })
         .await
     }
