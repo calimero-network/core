@@ -93,9 +93,7 @@ pub use self::local_state::{
     track_member_context_join,
 };
 pub use self::membership::MembershipRepository;
-pub use self::membership::{
-    acl_view_at, GroupMembershipView, MembershipPath, MembershipPolicy, MembershipStatus,
-};
+pub use self::membership::{GroupMembershipView, MembershipPath, MembershipPolicy};
 pub use self::meta::MetaRepository;
 
 pub use self::metadata::MetadataRepository;
