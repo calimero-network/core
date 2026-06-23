@@ -651,12 +651,27 @@ impl ScopeProjections {
                 calimero_authz::MemberPathAtCut::Inherited {
                     anchor,
                     via_admin: false,
-                } => view
-                    .groups
-                    .get(&anchor)
-                    .and_then(|m| m.get(&id))
-                    .cloned()
-                    .unwrap_or(GroupMemberRole::Member),
+                } => {
+                    // `member_path_at_cut` only emits this arm when the anchor row is
+                    // present (the walk sets it inside `groups[anchor].contains(id)`),
+                    // read from the SAME view, so the lookup can't miss. On the
+                    // authoritative path don't silently guess `Member` if it somehow
+                    // does — that's a fold inconsistency; bail to live like the
+                    // `None` arm, rather than misreport a role with no signal.
+                    let Some(role) = view.groups.get(&anchor).and_then(|m| m.get(&id)).cloned()
+                    else {
+                        tracing::warn!(
+                            marker = "unified_projection_divergence",
+                            plane = "membership-role",
+                            group_id = ?group,
+                            %id,
+                            ?anchor,
+                            "member_entries: inherited anchor row absent; deferring whole enumeration to live"
+                        );
+                        return None;
+                    };
+                    role
+                }
             };
             entries.push((id, role));
         }
