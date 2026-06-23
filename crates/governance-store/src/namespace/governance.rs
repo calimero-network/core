@@ -1584,6 +1584,21 @@ pub fn apply_received_group_key(
     )
 }
 
+/// Re-drive any buffered encrypted group ops for `group_id` that were
+/// effect-skipped because their dependencies (key or subgroup meta) were
+/// not yet present. See
+/// [`NamespaceGovernance::retry_encrypted_ops_for_group`]. Used by the
+/// context crate to recover ops stranded between `GroupCreated` and
+/// `KeyDelivery` (#2848). The #2848 Part C curative startup sweep is the
+/// in-tree caller and lands in a follow-up task.
+pub fn retry_encrypted_ops_for_group(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: [u8; 32],
+) -> EyreResult<Option<super::super::DivergenceReport>> {
+    NamespaceGovernance::new(store, namespace_id).retry_encrypted_ops_for_group(group_id)
+}
+
 /// Distinct group ids in `namespace_id` that have at least one buffered
 /// encrypted group op the local node cannot yet decrypt because it holds
 /// no key for that group (nor the namespace key, which `Open` subgroups

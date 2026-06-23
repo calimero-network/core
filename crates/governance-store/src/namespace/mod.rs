@@ -29,8 +29,9 @@ pub(crate) use self::governance::classify_report_readiness;
 pub use self::governance::{
     apply_received_group_key, apply_signed_namespace_op, build_group_key_delivery,
     collect_skeleton_delta_ids_for_group, decrypt_group_op, namespace_groups_awaiting_key,
-    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult,
-    KeyUnwrapFailure, NamespaceGovernance,
+    retry_encrypted_ops_for_group, sign_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, KeyUnwrapFailure,
+    NamespaceGovernance,
 };
 pub use self::membership::NamespaceMembershipService;
 pub use self::op_log::NamespaceOpLogService;
