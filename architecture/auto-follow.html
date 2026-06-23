@@ -385,6 +385,27 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   <li><b>Observability.</b> Every auto-join emits a structured <code>info!</code> log line
   with <code>group_id</code> and <code>context_id</code>. Failures emit <code>warn!</code> with
   the underlying error. No new metrics — the log stream is enough for postmortems.</li>
+  <li><b>Membership-path divergence plane.</b> The <code>member_joined_open::apply</code> gate
+  now emits a <code>tracing::warn!</code> with marker <code>unified_projection_divergence</code>
+  and <code>plane=membership-path</code> whenever the projection's at-cut membership path
+  disagrees with the live <code>check_path</code> result. Operators monitoring
+  <code>unified_projection_divergence</code> warnings should expect this new
+  <code>membership-path</code> variant. The gate's actual admission decision is unchanged —
+  it still acts on the live <code>check_path</code> result.</li>
+FIND>>>
+<<<REPLACE
+<h2>Operator Notes</h2>
+<ul>
+  <li><b>Observability.</b> Every auto-join emits a structured <code>info!</code> log line
+  with <code>group_id</code> and <code>context_id</code>. Failures emit <code>warn!</code> with
+  the underlying error. No new metrics — the log stream is enough for postmortems.</li>
+  <li><b>Membership-path divergence plane.</b> The <code>member_joined_open::apply</code> gate
+  now emits a <code>tracing::warn!</code> with marker <code>unified_projection_divergence</code>
+  and <code>plane=membership-path</code> whenever the projection's at-cut membership path
+  disagrees with the live <code>check_path</code> result. Operators monitoring
+  <code>unified_projection_divergence</code> warnings should expect this new
+  <code>membership-path</code> variant. The gate's actual admission decision is unchanged —
+  it still acts on the live <code>check_path</code> result.</li>
   <li><b>Authorization source.</b> <code>PermissionChecker::is_admin</code> and
   <code>is_authorized_with_capability</code> now use the projection-at-cut verdict as
   authoritative when available. Live store queries are a fallback only when the authorizer
@@ -402,9 +423,21 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   trailing byte (data corruption) surfaces as a deserialization error instead of being silently
   defaulted.</li>
   <li><b>Implementing <code>AtCutAuthorizer</code>.</b> Any custom implementation of
-  <code>AtCutAuthorizer</code> must now provide <code>is_admin_or_capability_at_cut</code>.
-  Returning <code>None</code> (as <code>LiveFallbackAuthorizer</code> does) is safe and causes
-  the gates to fall back to live store queries.</li>
+  <code>AtCutAuthorizer</code> must now provide <code>is_admin_or_capability_at_cut</code> and
+  the new <code>membership_path_at_cut</code> method. For both, returning <code>None</code> (as
+  <code>LiveFallbackAuthorizer</code> does) is safe and causes the gates to fall back to live
+  store queries. Note the distinction: <code>Option::None</code> means "defer to live", while
+  <code>Some(AtCutMembershipPath::None)</code> means "not a member at this cut" and is an
+  authoritative answer.</li>
+FIND>>>
+<<<REPLACE
+  <li><b>Implementing <code>AtCutAuthorizer</code>.</b> Any custom implementation of
+  <code>AtCutAuthorizer</code> must now provide <code>is_admin_or_capability_at_cut</code> and
+  the new <code>membership_path_at_cut</code> method. For both, returning <code>None</code> (as
+  <code>LiveFallbackAuthorizer</code> does) is safe and causes the gates to fall back to live
+  store queries. Note the distinction: <code>Option::None</code> means "defer to live", while
+  <code>Some(AtCutMembershipPath::None)</code> means "not a member at this cut" and is an
+  authoritative answer.</li>
 </ul>
 </div>
 
@@ -456,14 +489,35 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   <code>PermissionChecker</code>, activating the projection-at-cut last-admin gate for all
   group-op apply paths.</li>
   <li><code>crates/context/src/authorizer.rs</code> (or equivalent) — <code>AtCutAuthorizer</code>
-  trait gains the required <code>is_admin_or_capability_at_cut</code> method and the new
-  <code>is_last_admin_at_cut</code> method. Both methods must return <code>None</code> when
+  trait gains the required <code>is_admin_or_capability_at_cut</code> method, the
+  <code>is_last_admin_at_cut</code> method, and the new required
+  <code>membership_path_at_cut</code> method. All methods must return <code>None</code> when
   <code>parents</code> is empty (the empty-cut contract), so that genesis ops are never
   falsely rejected. <code>EphemeralProjectionAuthorizer</code> delegates
-  <code>is_last_admin_at_cut</code> to <code>ScopeProjections::is_last_admin_at_cut</code>,
-  guarding against empty parents. <code>LiveFallbackAuthorizer</code> implements both methods
-  as always-<code>None</code>, keeping all non-apply-auth constructions on the live-fallback
-  path.</li>
+  <code>is_last_admin_at_cut</code> to <code>ScopeProjections::is_last_admin_at_cut</code>
+  and implements <code>membership_path_at_cut</code> by delegating to
+  <code>ScopeProjections::membership_path_at_cut</code>, mapping the result to the new
+  <code>AtCutMembershipPath</code> enum (projecting away role/anchor detail). An empty
+  <code>parents</code> slice returns <code>None</code> (defer to live), consistent with the
+  existing <code>is_admin_at_cut</code> pattern. <code>LiveFallbackAuthorizer</code> implements
+  all three methods as always-<code>None</code>, keeping all non-apply-auth constructions on
+  the live-fallback path.</li>
+FIND>>>
+<<<REPLACE
+  <li><code>crates/context/src/authorizer.rs</code> (or equivalent) — <code>AtCutAuthorizer</code>
+  trait gains the required <code>is_admin_or_capability_at_cut</code> method, the
+  <code>is_last_admin_at_cut</code> method, and the new required
+  <code>membership_path_at_cut</code> method. All methods must return <code>None</code> when
+  <code>parents</code> is empty (the empty-cut contract), so that genesis ops are never
+  falsely rejected. <code>EphemeralProjectionAuthorizer</code> delegates
+  <code>is_last_admin_at_cut</code> to <code>ScopeProjections::is_last_admin_at_cut</code>
+  and implements <code>membership_path_at_cut</code> by delegating to
+  <code>ScopeProjections::membership_path_at_cut</code>, mapping the result to the new
+  <code>AtCutMembershipPath</code> enum (projecting away role/anchor detail). An empty
+  <code>parents</code> slice returns <code>None</code> (defer to live), consistent with the
+  existing <code>is_admin_at_cut</code> pattern. <code>LiveFallbackAuthorizer</code> implements
+  all three methods as always-<code>None</code>, keeping all non-apply-auth constructions on
+  the live-fallback path.</li>
 </ul>
 </div>
 
