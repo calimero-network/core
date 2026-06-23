@@ -47,10 +47,10 @@ pub(crate) struct GroupApplyCtx<'a> {
 
 impl<'a> GroupApplyCtx<'a> {
     /// Construct the per-apply context with the op's causal cut + at-cut authorizer,
-    /// so the `PermissionChecker` admin/capability gates SHADOW the projection
-    /// against live (F5 #28 stage 4, plane `group-auth`). Pass `&[]` +
-    /// `LIVE_FALLBACK_AUTHORIZER` for constructions without an apply-auth context
-    /// (the shadow is then inert).
+    /// so the `PermissionChecker` admin/capability gates resolve against the
+    /// projection at the cut, with live as the `None`-fallback (F5 #28 stage 4). Pass
+    /// `&[]` + `LIVE_FALLBACK_AUTHORIZER` for constructions without an apply-auth
+    /// context (they then use the live resolver).
     pub(crate) fn new_with_apply_auth(
         store: &'a Store,
         group_id: &'a ContextGroupId,

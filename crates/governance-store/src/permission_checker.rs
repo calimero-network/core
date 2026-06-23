@@ -17,13 +17,13 @@ use super::{CapabilitiesError, MembershipError};
 pub struct PermissionChecker<'a> {
     store: &'a Store,
     group_id: ContextGroupId,
-    /// The applied op's causal cut (parent op hashes), for the at-cut apply-auth
-    /// shadow (F5 #28 stage 4). Empty outside the group-op apply path.
+    /// The applied op's causal cut (parent op hashes), at which the apply-auth gates
+    /// resolve (F5 #28 stage 4). Empty outside the group-op apply path.
     parents: &'a [[u8; 32]],
     /// The at-cut apply-auth decision source (F5 #28 stage 4). The default
     /// [`LiveFallbackAuthorizer`](crate::authorizer::LiveFallbackAuthorizer) returns
-    /// `None`, so the shadow no-ops for non-apply constructions (handler pre-checks,
-    /// cascade pre-scans, tests).
+    /// `None`, so non-apply constructions (handler pre-checks, cascade pre-scans,
+    /// tests) keep using the live resolver.
     authorizer: &'a dyn AtCutAuthorizer,
 }
 
@@ -38,9 +38,9 @@ impl<'a> PermissionChecker<'a> {
     }
 
     /// Attach the op's causal cut + the at-cut apply-auth source for the group-op
-    /// apply path (F5 #28 stage 4). With it, the admin/capability gates SHADOW the
-    /// projection verdict against live (plane `group-auth`); without it (the
-    /// default) the shadow is inert.
+    /// apply path (F5 #28 stage 4). With it, the admin/capability gates decide from
+    /// the projection at the cut (live as `None`-fallback); without it (the default)
+    /// they use the live resolver.
     #[must_use]
     pub fn with_apply_auth(
         mut self,
@@ -53,6 +53,17 @@ impl<'a> PermissionChecker<'a> {
     }
 
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
+        // F5 #28 stage 4b: decide from the PROJECTION at the op's causal cut — admin
+        // authority as of the op's own parents (causal-honor), validated divergence-
+        // free on the `group-auth` plane (stage 4a). `None` (no apply-auth context —
+        // a local pre-check / cascade / test — OR an incomplete fold) falls back to
+        // the live resolver. The live fallback retires in #29b.
+        if let Some(verdict) =
+            self.authorizer
+                .is_admin_at_cut(&self.group_id, identity, self.parents)
+        {
+            return Ok(verdict);
+        }
         // Issue #2256: admin authority cascades into Open subgroups
         // from any ancestor where the signer is a direct admin.
         // Uses `is_inherited_admin` (a dedicated walk) rather than
@@ -62,36 +73,7 @@ impl<'a> PermissionChecker<'a> {
         // non-admin `Member` row — which would suppress inherited
         // admin authority for parent admins who happen to also be
         // explicit subgroup members.
-        let live =
-            MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, identity)?;
-        // SHADOW (F5 #28 stage 4): compare the projection's at-cut admin verdict to
-        // live and log a `group-auth` divergence; still ACT on live. Inert unless an
-        // apply-path authorizer is attached. The flip (act on projection) is stage 4b.
-        self.shadow_admin(identity, live);
-        Ok(live)
-    }
-
-    /// Emit a `group-auth` divergence if the at-cut projection admin verdict differs
-    /// from the live `live_verdict`. `None` from the authorizer (no apply-auth
-    /// context, or an incomplete fold) skips — there's nothing to compare.
-    fn shadow_admin(&self, identity: &PublicKey, live_verdict: bool) {
-        if let Some(projected) =
-            self.authorizer
-                .is_admin_at_cut(&self.group_id, identity, self.parents)
-        {
-            if projected != live_verdict {
-                tracing::warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "group-auth",
-                    gate = "admin",
-                    group_id = ?self.group_id,
-                    %identity,
-                    projected,
-                    live = live_verdict,
-                    "group apply-auth: projection admin verdict differs from live"
-                );
-            }
-        }
+        MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, identity)
     }
 
     pub fn require_admin(&self, identity: &PublicKey) -> EyreResult<()> {
@@ -242,6 +224,17 @@ impl<'a> PermissionChecker<'a> {
         identity: &PublicKey,
         capability_bit: u32,
     ) -> EyreResult<bool> {
+        // F5 #28 stage 4b: decide from the PROJECTION at the op's causal cut (the
+        // capability analogue of `is_admin`); `None` falls back to live. Validated on
+        // the `group-auth` plane in stage 4a.
+        if let Some(verdict) = self.authorizer.is_admin_or_capability_at_cut(
+            &self.group_id,
+            identity,
+            capability_bit,
+            self.parents,
+        ) {
+            return Ok(verdict);
+        }
         let direct = MembershipRepository::new(self.store).is_admin_or_has_capability(
             &self.group_id,
             identity,
@@ -255,33 +248,9 @@ impl<'a> PermissionChecker<'a> {
         // as any direct membership row exists in the target subgroup,
         // which would mask inherited admin authority for a parent
         // admin who is also an explicit non-admin subgroup member.
-        let live = direct
+        Ok(direct
             || MembershipRepository::new(self.store)
-                .is_inherited_admin(&self.group_id, identity)?;
-        // SHADOW (F5 #28 stage 4): compare the projection's at-cut admin-or-capability
-        // verdict to live (plane `group-auth`); still ACT on live. Inert without an
-        // apply-path authorizer. Flip is stage 4b.
-        if let Some(projected) = self.authorizer.is_admin_or_capability_at_cut(
-            &self.group_id,
-            identity,
-            capability_bit,
-            self.parents,
-        ) {
-            if projected != live {
-                tracing::warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "group-auth",
-                    gate = "capability",
-                    group_id = ?self.group_id,
-                    %identity,
-                    capability_bit,
-                    projected,
-                    live,
-                    "group apply-auth: projection capability verdict differs from live"
-                );
-            }
-        }
-        Ok(live)
+                .is_inherited_admin(&self.group_id, identity)?)
     }
 
     pub fn require_admin_to_add_admin(
