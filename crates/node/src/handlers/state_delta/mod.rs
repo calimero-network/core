@@ -799,7 +799,8 @@ fn refresh_projection_for_cut(
 /// (cited ancestry not yet folded) → `Incomplete`.
 ///
 /// `pub(crate)` so the sync-layer delta-auth sites (DAG-catchup, parent-pull) render
-/// the same verdict as the gossip path.
+/// the same verdict as the gossip path. This is the single refresh+read implementation;
+/// [`projection_member_at_cut`] is a thin membership-only projection of it.
 pub(crate) fn resolve_cut_membership(
     node_state: &crate::NodeState,
     datastore: &calimero_store::Store,
@@ -807,27 +808,49 @@ pub(crate) fn resolve_cut_membership(
     author_id: &calimero_primitives::identity::PublicKey,
     heads: &[[u8; 32]],
 ) -> verify::CutMembership {
-    // Refresh the fold ONCE (scoped write lock), then resolve membership AND role
-    // under a SINGLE read-lock acquisition. Both are at-cut reads keyed to `heads`,
-    // so they already resolve against the same cut; holding one guard additionally
-    // pins them to the same fold epoch, so a concurrent governance `apply_backfill`
-    // can't advance the projection between the membership verdict and the role read
-    // and yield a mismatched `Member(role)` pair.
+    // Refresh the fold (scoped write lock), then read membership AND role under a
+    // SINGLE read guard. The guard guarantees the two READS see one fold epoch, so a
+    // concurrent `apply_backfill` can't split the `Member(role)` pair across epochs.
+    // The refresh and the subsequent read are NOT one atomic critical section
+    // (std `RwLock` has no write→read downgrade, and holding the write lock across
+    // the reads would serialize this hot per-delta path against every other reader —
+    // the contention the `RwLock` exists to avoid). That gap is safe: both reads are
+    // at-cut reads keyed to `heads`, and a fold can only become MORE complete between
+    // the refresh and the read — for a fixed cut the at-cut answer is stable once the
+    // cited ancestry is folded, so seeing a more-advanced epoch never changes it.
     refresh_projection_for_cut(node_state, datastore, group, heads);
     let projections = node_state.read_scope_projections();
     match projections.member_at_cut(datastore, group, author_id, heads) {
-        Some(true) => verify::CutMembership::Member(
-            projections
+        Some(true) => {
+            // The role is an OBSERVATION hint only — it feeds `observe_peer_identity`
+            // (a routing hint, never authority) and is ignored by the apply gate,
+            // which authorizes on the membership verdict alone. ReadOnly writes are
+            // rejected by the separate upstream `is_read_only_for_context` gate, not
+            // this role. So a `None` role (member materialized but effective role not
+            // yet resolvable at the cut) defaulting to `Member` cannot over-authorize
+            // a write; it only records a less-precise hint. Log it so the condition is
+            // observable rather than silent.
+            let role = projections
                 .role_at_cut_for_group(datastore, group, author_id, heads)
-                .unwrap_or(calimero_primitives::context::GroupMemberRole::Member),
-        ),
+                .unwrap_or_else(|| {
+                    debug!(
+                        group_id = ?group,
+                        %author_id,
+                        "projection: member at cut but role unresolved; defaulting hint to Member"
+                    );
+                    calimero_primitives::context::GroupMemberRole::Member
+                });
+            verify::CutMembership::Member(role)
+        }
         Some(false) => verify::CutMembership::NotMember,
         None => verify::CutMembership::Incomplete,
     }
 }
 
 // `pub(crate)` so the sync manager's inbound-peer authorization reuses the exact
-// same refreshing deny-direction read the data-write path uses.
+// same refreshing deny-direction read the data-write path uses. Delegates to
+// [`resolve_cut_membership`] (the single refresh+read implementation) and discards
+// the role, so the two never drift.
 pub(crate) fn projection_member_at_cut(
     node_state: &crate::NodeState,
     datastore: &calimero_store::Store,
@@ -835,10 +858,11 @@ pub(crate) fn projection_member_at_cut(
     author_id: &calimero_primitives::identity::PublicKey,
     heads: &[[u8; 32]],
 ) -> Option<bool> {
-    refresh_projection_for_cut(node_state, datastore, group, heads);
-    node_state
-        .read_scope_projections()
-        .member_at_cut(datastore, group, author_id, heads)
+    match resolve_cut_membership(node_state, datastore, group, author_id, heads) {
+        verify::CutMembership::Member(_) => Some(true),
+        verify::CutMembership::NotMember => Some(false),
+        verify::CutMembership::Incomplete => None,
+    }
 }
 
 pub async fn handle_state_delta(
