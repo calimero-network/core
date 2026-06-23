@@ -185,7 +185,7 @@
     <div class="fr"><div class="fp">POST /namespaces/:id/join</div><div class="fd">Join a namespace via invitation</div></div>
     <div class="fr"><div class="fp">GET /namespaces/:id/identity</div><div class="fd">Get this node's namespace identity (public key)</div></div>
     <div class="fr"><div class="fp">GET /namespaces/:id/groups</div><div class="fd">List groups within this namespace</div></div>
-    <div class="fr"><div class="fp">POST /namespaces/:id/groups</div><div class="fd">Create a new group within this namespace</div></div>
+    <div class="fr"><div class="fp">POST /namespaces/:id/groups</div><div class="fd">Create a new group within this namespace — provisions subgroup signing key and group encryption key before applying the <span class="code">GroupCreated</span> op; key-provisioning failures now return a 500 error response rather than silently succeeding</div></div>
     <div class="fr"><div class="fp">GET /namespaces/for-application/:app_id</div><div class="fd">List namespaces for a specific application</div></div>
   </div>
 </details>
@@ -251,7 +251,7 @@
   </div>
   <div class="cb">
     <h4 style="color:#84cc16;">Embedded Mode <span class="tag tag-wasm">mero-auth</span></h4>
-    <p style="margin-top:8px;">Full in-process JWT issuing and verification via the <span class="code">mero-auth</span> crate. Mounts additional routes at <span class="code">/auth</span> for login flows (NEAR wallet, Ethereum wallet, challenge-nonce). Issues JWT tokens on successful authentication.</p>
+    <p style="margin-top:8px;">Full in-process JWT issuing and verification via the <span class="code">mero-auth</span> crate. Mounts additional routes at <span class="code">/auth</span> for login flows (challenge-nonce based). Issues JWT tokens on successful authentication.</p>
     <p style="margin-top:8px;">Protected routes are guarded by an <span class="code">AuthGuardLayer</span> (Tower middleware). Tokens can be passed via:</p>
     <ul style="margin-top:8px;">
       <li><span class="code">Authorization: Bearer &lt;token&gt;</span> header</li>
@@ -430,6 +430,20 @@ GET    /admin-api/peers
 <div>
 <h4>Proxy Auth</h4>
 <p>Run mero-auth as a separate service behind a reverse proxy (nginx/Traefik). The proxy validates tokens via <span class="code">/auth/validate</span> before forwarding to the node. Node remains auth-unaware.</p>
+</div>
+</div>
+</div>
+
+<div class="card gc" style="border-color:#f97316;">
+<h3>Subgroup Creation Behaviour (POST /namespaces/:id/groups)</h3>
+<p>As of the latest change, the <span class="code">create_group_in_namespace</span> handler follows a strict key-first ordering:</p>
+<ol style="margin-top:8px;line-height:1.8;">
+  <li>The subgroup signing key is written to <span class="code">SigningKeysRepository</span>.</li>
+  <li>The group encryption key is written to <span class="code">GroupKeyring</span>.</li>
+  <li>Only after both writes succeed is <span class="code">sign_apply_and_publish_namespace_op</span> called to apply the <span class="code">GroupCreated</span> op.</li>
+</ol>
+<p style="margin-top:10px;"><strong>Key-provisioning failures are now hard errors.</strong> If either key write fails, the request is aborted immediately and the caller receives a 500-style error response. Previously, failures were warn-logged and the request continued, leaving the group in an inconsistent state.</p>
+<p style="margin-top:10px;">Namespace root TEE members are now fully admitted into Restricted subgroups at creation time, because the signing key is available before the op is applied.</p>
 </div>
 </div>
 </div>
