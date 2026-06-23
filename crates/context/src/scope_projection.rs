@@ -1105,26 +1105,41 @@ impl ScopeProjections {
         group: &ContextGroupId,
         members: &[PublicKey],
         heads: &[[u8; 32]],
-    ) -> Vec<Option<GroupMemberRole>> {
+    ) -> std::collections::BTreeMap<PublicKey, GroupMemberRole> {
         // Fold the view ONCE for the whole batch — the shadow resolves a full
-        // member list, so a per-member fold would re-walk the DAG N times.
+        // member list, so a per-member fold would re-walk the DAG N times. Returns
+        // a map keyed by member (only those the projection assigns a role) so the
+        // caller looks up positionally-independently — no zip-length coupling.
         let Some((view, root, default_cap_base)) = self.auth_cut_context(store, *group, heads)
         else {
-            // Namespace unresolved / cited ancestry not fully folded: abstain for
-            // the whole batch (the shadow skips `None`, the flip falls back to live).
-            return vec![None; members.len()];
+            // Namespace unresolved / cited ancestry not fully folded: abstain
+            // entirely (the shadow finds no entry and skips; the flip falls back to
+            // live).
+            return std::collections::BTreeMap::new();
         };
+        // Materialized-fallback PARITY with the identity shadow
+        // (`member_identities_in_view`): when this group's direct membership isn't
+        // folded (no entry in `view.groups` — a Restricted subgroup arriving as
+        // materialized rows, or undecryptable member ops), the fold has NO opinion
+        // on its roles. Abstain wholesale rather than emit a walk-derived role that
+        // would spuriously differ from live's stored direct row.
+        if !view.groups.contains_key(group) {
+            return std::collections::BTreeMap::new();
+        }
         members
             .iter()
-            .map(|member| {
-                match view.member_path_at_cut(*group, member, root, default_cap_base) {
-                    calimero_authz::MemberPathAtCut::None => None,
-                    calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+            .filter_map(|member| {
+                let role = match view.member_path_at_cut(*group, member, root, default_cap_base) {
+                    // Not a member at the cut: omit. PRESENCE is the identity
+                    // shadow's job; this plane only validates roles for co-present
+                    // members.
+                    calimero_authz::MemberPathAtCut::None => return None,
+                    calimero_authz::MemberPathAtCut::Direct { role } => role,
                     // Reached over the open chain via an admin ancestor → `Admin`,
                     // matching live's `via_admin ? Admin : role_of(anchor)`.
                     calimero_authz::MemberPathAtCut::Inherited {
                         via_admin: true, ..
-                    } => Some(GroupMemberRole::Admin),
+                    } => GroupMemberRole::Admin,
                     // Non-admin inheritance: the member's role at the `anchor` it
                     // joined through. `member_path_at_cut` only emits this arm when
                     // the anchor row is present, so the `Member` fallback is a
@@ -1133,14 +1148,14 @@ impl ScopeProjections {
                     calimero_authz::MemberPathAtCut::Inherited {
                         anchor,
                         via_admin: false,
-                    } => Some(
-                        view.groups
-                            .get(&anchor)
-                            .and_then(|m| m.get(member))
-                            .cloned()
-                            .unwrap_or(GroupMemberRole::Member),
-                    ),
-                }
+                    } => view
+                        .groups
+                        .get(&anchor)
+                        .and_then(|m| m.get(member))
+                        .cloned()
+                        .unwrap_or(GroupMemberRole::Member),
+                };
+                Some((*member, role))
             })
             .collect()
     }
