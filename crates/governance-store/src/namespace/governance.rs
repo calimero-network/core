@@ -1229,17 +1229,28 @@ impl<'a> NamespaceGovernance<'a> {
         // divergence signal, not an apply gate. Anchor-sync reconcile is
         // the recovery path for genuinely diverged peers.
         if signed_group_op.state_hash != [0u8; 32] {
-            let current = MetaRepository::new(self.store).compute_state_hash(group_id)?;
-            if signed_group_op.state_hash != current {
-                tracing::warn!(
-                    group_id = %hex::encode(group_id.to_bytes()),
-                    expected = %hex::encode(signed_group_op.state_hash),
-                    actual = %hex::encode(current),
-                    nonce,
-                    signer = %signer,
-                    "namespace group op state_hash mismatch (signed against stale state; \
-                     applying anyway — see PR #2500 caveat)"
-                );
+            // Mirror the root-op bypass (apply_signed_op): if the subgroup
+            // meta row hasn't been written yet — e.g. an encrypted
+            // ContextRegistered buffered before its GroupCreated lands and now
+            // re-driven — there is no state to hash. `compute_state_hash`
+            // would raise GroupNotFoundForHash and strand the op forever
+            // (#2848). Treat absent meta as a bypass; authorization and
+            // signature verification remain in force, and GroupCreated's apply
+            // re-drives this op once the meta exists.
+            let repo = MetaRepository::new(self.store);
+            if repo.load(group_id)?.is_some() {
+                let current = repo.compute_state_hash(group_id)?;
+                if signed_group_op.state_hash != current {
+                    tracing::warn!(
+                        group_id = %hex::encode(group_id.to_bytes()),
+                        expected = %hex::encode(signed_group_op.state_hash),
+                        actual = %hex::encode(current),
+                        nonce,
+                        signer = %signer,
+                        "namespace group op state_hash mismatch (signed against stale state; \
+                         applying anyway — see PR #2500 caveat)"
+                    );
+                }
             }
         }
 
