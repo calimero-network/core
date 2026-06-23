@@ -616,11 +616,16 @@ impl ScopeProjections {
         group: &ContextGroupId,
         heads: &[[u8; 32]],
     ) -> Option<Vec<(PublicKey, GroupMemberRole)>> {
-        let ids = self.member_identities_with(store, namespace_id, group, heads)?;
+        // Fold the view ONCE: `auth_cut_context` gates `cut_ancestry_complete` and
+        // builds the `acl_view_at` + root + cap. Both the validated id set and the
+        // per-member role derive from THIS view — `member_identities_in_view` is the
+        // pre-folded variant, so the ancestry walk runs once per request, not twice
+        // (the gate `member_identities_with` would otherwise fold a second time).
         let (view, root, default_cap_base) = self.auth_cut_context(store, *group, heads)?;
         if !view.groups.contains_key(group) {
             return None;
         }
+        let ids = Self::member_identities_in_view(&view, store, namespace_id, group);
         let mut entries = Vec::with_capacity(ids.len());
         for id in ids {
             let role = match view.member_path_at_cut(*group, &id, root, default_cap_base) {
