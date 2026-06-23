@@ -245,6 +245,103 @@ broadcast), the next run of the handler walks the DAG and reconciles state.
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
+     6b. ROLE RESOLUTION — enumerate_inherited &amp; acl_view_at
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Role Resolution in Inherited Paths</h2>
+<p>
+Two functions in <code>MembershipRepository</code> determine what role an inherited member
+carries when they access a child group or context. Both were tightened as part of
+<strong>#2422</strong>.
+</p>
+
+<h3><code>enumerate_inherited</code></h3>
+<p>
+For each non-admin inherited candidate the function previously hard-coded
+<code>GroupMemberRole::Member</code>. It now calls <code>role_of(&amp;anchor, &amp;candidate)</code>
+to retrieve the candidate's <em>actual</em> role at the anchor group, falling back to
+<code>Member</code> only if the row is unexpectedly absent. Admin paths continue to resolve to
+<code>Admin</code> (unchanged). Callers therefore receive the real anchor role — for example
+<code>ReadOnlyTee</code> — rather than a uniform <code>Member</code>.
+</p>
+
+<h3><code>acl_view_at</code> — Branch 1 fast-path</h3>
+<p>
+Branch 1 fires when the DAG heads match local state and there is no <em>direct</em>
+<code>GroupMember</code> row for the signer. It previously returned
+<code>MembershipStatus::Member(GroupMemberRole::Member)</code> for every
+<code>Inherited</code> path variant. It now mirrors <code>enumerate_inherited</code>:
+</p>
+<ul>
+  <li>A <code>via_admin: true</code> path resolves to <code>Admin</code>.</li>
+  <li>A <code>via_admin: false</code> path calls <code>role_of(&amp;anchor, signer)</code> and
+  returns the real role (e.g. <code>ReadOnlyTee</code>).</li>
+</ul>
+
+<h3>Fail-closed behaviour</h3>
+<p>
+Two cases that were previously fail-open now fail closed to
+<code>MembershipStatus::NeverMember</code> with a <code>warn!</code> log so violations are
+observable:
+</p>
+<ul>
+  <li><b>Non-admin Inherited arm:</b> returns <code>NeverMember</code> when
+  <code>role_of</code> returns <code>None</code> (anchor row deleted between
+  <code>check_path</code> and <code>role_of</code> reads).</li>
+  <li><b>Direct arm</b> (unreachable by construction, reachable under store inconsistency):
+  returns <code>NeverMember</code> instead of <code>Member</code>.</li>
+</ul>
+<p>
+Callers must treat <code>NeverMember</code> as <strong>authoritative and final</strong>, not
+retriable, because Branch 1 runs only at a committed state cut.
+</p>
+
+<h3><code>debug_assert</code> pin invariants</h3>
+<ul>
+  <li>A <code>debug_assert!(false, ...)</code> is added to the <code>Direct</code> arm so that
+  any future refactor routing <code>role_of</code> and <code>check_path</code> at different keys
+  panics immediately in debug/test builds while release falls through to fail-closed
+  <code>NeverMember</code>.</li>
+  <li>A <code>debug_assert!(repo.is_admin(&amp;anchor, signer)?)</code> is added to the
+  <code>via_admin: true</code> arm to catch any future <code>check_path</code> change that sets
+  <code>via_admin</code> without genuine admin authority at the anchor.</li>
+</ul>
+
+<h3>INVARIANT &amp; TOCTOU semantics</h3>
+<p>
+<code>acl_view_at</code>'s non-atomic multi-read pattern (<code>check_path</code> then
+<code>role_of</code>) is coherent only under the per-context exclusive
+<code>ContextLock</code> guard from <code>calimero_context::ContextManager</code>. Two TOCTOU
+directions exist:
+</p>
+<ul>
+  <li><b>Row deleted between reads</b> → <code>NeverMember</code>; treated as authoritative
+  (conservative, correct).</li>
+  <li><b>Row replaced between reads</b> (role escalation window) → closed only by the
+  <code>ContextLock</code> guarantee.</li>
+</ul>
+<p>
+The admin arm is asymmetric: it reads no anchor role row (a creator/owner may have no member
+row), while the non-admin arm always reads the anchor role. Any future caller that invokes
+<code>acl_view_at</code> without an exclusive <code>ContextLock</code> must fold
+<code>check_path</code> and <code>role_of</code> into one atomic read to avoid TOCTOU.
+</p>
+
+<h3>New regression tests</h3>
+<ul>
+  <li><code>enumerate_inherited_members_preserves_read_only_tee_role</code> — verifies the
+  enumeration path returns <code>ReadOnlyTee</code> for an inherited member carrying that
+  role.</li>
+  <li><code>acl_view_at_branch1_preserves_inherited_read_only_tee_role</code> — verifies the
+  ACL fast-path returns <code>ReadOnlyTee</code> for an inherited <code>ReadOnlyTee</code>
+  member.</li>
+  <li><code>acl_view_at_branch1_inherited_admin_resolves_to_admin</code> — verifies the
+  ACL fast-path returns <code>Admin</code> for an inherited admin, and exercises the
+  <code>debug_assert</code> in the <code>via_admin</code> arm.</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
      7. OPERATOR NOTES
      ═══════════════════════════════════════════════════════════════════ -->
 <div class="card gb">

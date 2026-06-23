@@ -20,10 +20,10 @@ pub const EXAMPLES: &str = r"
   $ meroctl --node node1 context ls
 
   # Create a new context
-  $ meroctl --node node1 context create --protocol <protocol_id> --application-id <app_id>
+  $ meroctl --node node1 context create --application-id <app_id>
 
   # Create a new context in dev mode
-  $ meroctl --node node1 context create --protocol <protocol_id> --watch <path> 
+  $ meroctl --node node1 context create --watch <path>
 
   # Grant permission to manage applications
   $ meroctl --node node1 context identity grant bob ManageApplication --context <context_id> --as alice

@@ -1,0 +1,91 @@
+name: ABI Contract (abi-codegen)
+
+# Cross-repo ABI contract: every ABI core emits must be parseable by the
+# downstream @calimero-network/abi-codegen tool (mero-devtools-js). "Core breaks
+# first" — if a schema change here makes the tool unable to parse a current-core
+# ABI, this job fails at the source instead of the breakage shipping silently.
+#
+# This is the true integration half of the guard. The in-crate tests in
+# crates/wasm-abi only prove core's Rust enums match core's OWN bundled JSON
+# schema; they cannot see the tool. This job closes that gap.
+#
+# NOTE: until the matching mero-devtools-js change (schema + model sync) is
+# released on the pinned ref below, this job is expected to be RED — that is the
+# honest current state of the contract, not a flake.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    paths:
+      - "crates/wasm-abi/**"
+      - "apps/**"
+      - "tools/calimero-abi/**"
+      - "scripts/abi-contract-check.sh"
+      - "scripts/build-all-apps.sh"
+      - ".github/workflows/abi-contract.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  # Ref of mero-devtools-js to validate against. Bump to a release tag once the
+  # schema-sync change lands, so the contract is pinned to a published version.
+  DEVTOOLS_REF: main
+
+jobs:
+  abi-contract:
+    name: ABI Contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout core
+        uses: actions/checkout@v4
+        with:
+          # On pull_request, check out the PR head; on push, head.sha is empty so
+          # fall back to the pushed commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Checkout mero-devtools-js
+        uses: actions/checkout@v4
+        with:
+          repository: calimero-network/mero-devtools-js
+          ref: ${{ env.DEVTOOLS_REF }}
+          path: mero-devtools-js
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          shared-key: abi-contract
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: mero-devtools-js/pnpm-lock.yaml
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Build abi-codegen
+        working-directory: mero-devtools-js
+        run: |
+          pnpm install --filter '@calimero-network/abi-codegen...'
+          pnpm --filter '@calimero-network/abi-codegen' build
+
+      - name: Run ABI contract check
+        env:
+          DEVTOOLS_DIR: ${{ github.workspace }}/mero-devtools-js
+        run: |
+          chmod +x scripts/abi-contract-check.sh
+          ./scripts/abi-contract-check.sh

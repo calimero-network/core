@@ -30,6 +30,21 @@ pub fn collect_migration_cohort(
     let mut groups = vec![*namespace_id];
     groups.extend(NamespaceRepository::new(store).collect_descendants(namespace_id)?);
 
+    // The cohort is the PROJECTION's effective-member union across the subtree —
+    // folded ONCE at a SINGLE cut — validated divergence-free across the e2e
+    // `membership-enum` plane. `None` (empty/unfed namespace or store fault) falls
+    // back to the live `list ∪ enumerate_inherited` union below; that live fallback
+    // retires in #29b.
+    if let Some(projected) =
+        crate::scope_projection::ScopeProjections::member_identities_subtree_ephemeral(
+            store,
+            namespace_id,
+            &groups,
+        )
+    {
+        return Ok(projected.into_iter().collect());
+    }
+
     let membership = MembershipRepository::new(store);
     // BTreeSet both dedups across the subtree (a member can appear directly in
     // one group and inherited in another) and yields a deterministic order.
@@ -42,7 +57,6 @@ pub fn collect_migration_cohort(
             let _ = cohort.insert(pk);
         }
     }
-
     Ok(cohort.into_iter().collect())
 }
 
