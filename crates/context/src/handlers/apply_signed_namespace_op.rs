@@ -117,49 +117,6 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                                         &[shadow_op.id],
                                     )
                                 });
-
-                                // APPLY-AUTH shadow (F5 #28, log-only): the op just
-                                // APPLIED, so the LIVE resolver authorized its
-                                // signer. Would the projection authorize the signer
-                                // too — at the op's PARENT cut (state EXCLUDING this
-                                // op, the correct cut to authorize against)?
-                                // `Some(false)` = the projection would REJECT what
-                                // live accepted (under-auth — safe, but a real
-                                // divergence to investigate). `None` = the cited
-                                // ancestry isn't fully folded yet → can't decide,
-                                // skip. The reverse direction (projection accepts
-                                // what live rejected) is unobservable here: a
-                                // live-rejected op never reaches this apply/fold.
-                                if let Some((auth_group, req)) =
-                                    apply_auth_requirement(&signed_op, decrypted.as_ref())
-                                {
-                                    let verdict = match req {
-                                        ApplyAuthReq::Admin => projections.is_admin_at_cut(
-                                            &feed_store,
-                                            auth_group,
-                                            &signed_op.signer,
-                                            &delta_parents,
-                                        ),
-                                        ApplyAuthReq::AdminOrCap(bits) => projections
-                                            .is_admin_or_capability_at_cut(
-                                                &feed_store,
-                                                auth_group,
-                                                &signed_op.signer,
-                                                bits,
-                                                &delta_parents,
-                                            ),
-                                    };
-                                    if verdict == Some(false) {
-                                        tracing::warn!(
-                                            marker = "unified_projection_divergence",
-                                            plane = "governance-auth",
-                                            group_id = ?auth_group,
-                                            signer = %signed_op.signer,
-                                            "projection would reject a governance op the live resolver authorized"
-                                        );
-                                    }
-                                }
-
                                 (true, role)
                             }
                             Err(err) => {
@@ -194,6 +151,54 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                                         ?projected,
                                         ?live,
                                         "unified-op projection disagrees with live membership resolver"
+                                    );
+                                }
+                            }
+                        }
+
+                        // APPLY-AUTH shadow (F5 #28, log-only): the op just APPLIED,
+                        // so the LIVE resolver authorized its signer. Would the
+                        // projection authorize the signer too — at the op's PARENT
+                        // cut (state EXCLUDING this op, the correct cut to authorize
+                        // against)? `Some(false)` = the projection would REJECT what
+                        // live accepted (under-auth — safe, but a real divergence to
+                        // investigate); `None` = ancestry not fully folded → skip.
+                        // The reverse (projection accepts what live rejected) is
+                        // unobservable here — a live-rejected op never reaches this
+                        // fold. Resolved at the parent cut (independent of the
+                        // just-ingested op), so it runs OUTSIDE the write lock under
+                        // a brief read lock — no store I/O while the apply path's
+                        // ingest is blocked.
+                        if fed {
+                            if let Some((auth_group, req)) =
+                                apply_auth_requirement(&signed_op, decrypted.as_ref())
+                            {
+                                let verdict = match scope_projections.read() {
+                                    Ok(projections) => match req {
+                                        ApplyAuthReq::Admin => projections.is_admin_at_cut(
+                                            &feed_store,
+                                            auth_group,
+                                            &signed_op.signer,
+                                            &delta_parents,
+                                        ),
+                                        ApplyAuthReq::AdminOrCap(bits) => projections
+                                            .is_admin_or_capability_at_cut(
+                                                &feed_store,
+                                                auth_group,
+                                                &signed_op.signer,
+                                                bits,
+                                                &delta_parents,
+                                            ),
+                                    },
+                                    Err(_) => None,
+                                };
+                                if verdict == Some(false) {
+                                    tracing::warn!(
+                                        marker = "unified_projection_divergence",
+                                        plane = "governance-auth",
+                                        group_id = ?auth_group,
+                                        signer = %signed_op.signer,
+                                        "projection would reject a governance op the live resolver authorized"
                                     );
                                 }
                             }
@@ -288,12 +293,14 @@ fn apply_auth_requirement(
             match root {
                 RootOp::AdminChanged { .. }
                 | RootOp::PolicyUpdated { .. }
-                | RootOp::GroupDeleted { .. }
                 | RootOp::GroupReparented { .. } => Some((ns_root, ApplyAuthReq::Admin)),
                 RootOp::GroupCreated { parent_id, .. } => Some((
                     ContextGroupId::from(*parent_id),
                     ApplyAuthReq::AdminOrCap(Cap::CAN_CREATE_SUBGROUP),
                 )),
+                // GroupDeleted authorizes the subgroup OWNER or a
+                // `CAN_DELETE_SUBGROUP` holder at the root, NOT only the root
+                // admin — owner authority isn't in this admin/cap model, so skip.
                 _ => None,
             }
         }
@@ -308,8 +315,9 @@ fn apply_auth_requirement(
                 }
                 GroupOp::MemberRoleSet { .. }
                 | GroupOp::MemberCapabilitySet { .. }
-                | GroupOp::DefaultCapabilitiesSet { .. }
-                | GroupOp::TransferOwnership { .. } => Some((group, ApplyAuthReq::Admin)),
+                | GroupOp::DefaultCapabilitiesSet { .. } => Some((group, ApplyAuthReq::Admin)),
+                // TransferOwnership gates on the current OWNER identity
+                // (`meta.owner_identity`), not group admin — outside this model.
                 _ => None,
             }
         }

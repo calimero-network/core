@@ -50,6 +50,15 @@ use crate::governance_dag::signed_namespace_op_to_delta;
 /// governance history — comfortably over the in-memory prune threshold (8192).
 const MAX_BACKFILL_OPS: usize = 100_000;
 
+/// The resolved at-cut context for an apply-auth read: the folded `AclView`, the
+/// genesis root tuple `(root_group, genesis_admin)`, and the namespace default-cap
+/// base. Produced by `ScopeProjections::auth_cut_context`.
+type AuthCutContext = (
+    calimero_authz::AclView,
+    Option<(ContextGroupId, PublicKey)>,
+    u32,
+);
+
 /// Assemble an [`Op`] that **mirrors a source-DAG op**: its `id` and `parents`
 /// are the source delta's own id/parents, *not* a fresh [`Op::compute_id`]. This
 /// is deliberate — it makes the projection's op graph share an id space with the
@@ -1056,28 +1065,12 @@ impl ScopeProjections {
         author: &PublicKey,
         heads: &[[u8; 32]],
     ) -> Option<bool> {
-        let namespace_id = NamespaceRepository::new(store)
-            .resolve(&group)
-            .ok()?
-            .to_bytes();
-        let scope = ScopeId::from(namespace_id);
-        if !self.cut_ancestry_complete(&scope, heads) {
-            return None;
-        }
-        let root_group = ContextGroupId::from(namespace_id);
-        let root_admin = MetaRepository::new(store)
-            .load(&root_group)
-            .ok()
-            .flatten()
-            .map(|meta| meta.admin_identity);
-        Some(self.acl_view_at(&scope, heads).is_some_and(|v| {
-            v.is_group_admin(author, group)
-                || (group == root_group && root_admin.as_ref() == Some(author))
-        }))
+        let (view, root, _) = self.auth_cut_context(store, group, heads)?;
+        Some(view.is_authorized_admin(group, author, root))
     }
 
     /// Is `author` an admin of `group` OR a holder of any bit in `capability` at
-    /// the cut — the apply-auth analogue of live's `is_admin_or_has_capability`.
+    /// the cut — the apply-auth analogue of live's `is_authorized_with_capability`.
     /// Same authoritative `None`-on-incomplete-ancestry contract as
     /// [`is_admin_at_cut`](Self::is_admin_at_cut). The capability is the member's
     /// folded cap, falling back to the namespace default-cap base (a store-written
@@ -1091,6 +1084,30 @@ impl ScopeProjections {
         capability: u32,
         heads: &[[u8; 32]],
     ) -> Option<bool> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        if view.is_authorized_admin(group, author, root) {
+            return Some(true);
+        }
+        let folded = view.capability(&group, author);
+        let effective = if folded != 0 {
+            folded
+        } else {
+            default_cap_base
+        };
+        Some(effective & capability != 0)
+    }
+
+    /// Shared setup for the at-cut admin/capability reads: resolve the namespace,
+    /// gate on COMPLETE cited ancestry (so the verdict is authoritative — `None`
+    /// otherwise, defer to live), build the folded view + the genesis root tuple
+    /// (`AclView::is_authorized_admin` prefers the folded root admin, tracking
+    /// `AdminChanged`; this is the un-folded base) + the namespace default cap.
+    fn auth_cut_context(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<AuthCutContext> {
         let namespace_id = NamespaceRepository::new(store)
             .resolve(&group)
             .ok()?
@@ -1099,31 +1116,19 @@ impl ScopeProjections {
         if !self.cut_ancestry_complete(&scope, heads) {
             return None;
         }
+        let view = self.acl_view_at(&scope, heads)?;
         let root_group = ContextGroupId::from(namespace_id);
-        let root_admin = MetaRepository::new(store)
+        let root = MetaRepository::new(store)
             .load(&root_group)
             .ok()
             .flatten()
-            .map(|meta| meta.admin_identity);
+            .map(|meta| (root_group, meta.admin_identity));
         let default_cap_base = CapabilitiesRepository::new(store)
             .default_capabilities(&root_group)
             .ok()
             .flatten()
             .unwrap_or(0);
-        Some(self.acl_view_at(&scope, heads).is_some_and(|v| {
-            if v.is_group_admin(author, group)
-                || (group == root_group && root_admin.as_ref() == Some(author))
-            {
-                return true;
-            }
-            let folded = v.capability(&group, author);
-            let effective = if folded != 0 {
-                folded
-            } else {
-                default_cap_base
-            };
-            effective & capability != 0
-        }))
+        Some((view, root, default_cap_base))
     }
 
     /// Diagnostics for a divergence at `heads` — why does the projection NOT see
