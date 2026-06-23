@@ -1589,6 +1589,275 @@ async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
     );
 }
 
+/// ACCEPTANCE GATE for bug #2848 (mock-TEE harness Task 16 / R1).
+///
+/// Reproduces the "stranded buffered `ContextRegistered`" bug as a deterministic,
+/// in-process, store-only test. On a (re-)admitted member, a buffered encrypted
+/// `GroupOp::ContextRegistered` for a Restricted subgroup is stranded forever
+/// when its subgroup's `GroupCreated` applies AFTER the `KeyDelivery`:
+///
+/// 1. The encrypted `ContextRegistered` arrives without the subgroup key, so the
+///    `NamespaceOp::Group` arm in `apply_signed_op` cannot resolve a key and
+///    effect-SKIPS the op (`governance.rs:357`) — but still LOGS it to the
+///    namespace op-log (`governance.rs:428`). Drop path B.
+/// 2. `KeyDelivery` arrives → `apply_received_group_key` stores the key and calls
+///    `retry_encrypted_ops_for_group`, which re-feeds the buffered op through
+///    `decrypt_and_apply_group_op` → `apply_group_op_inner`.
+/// 3. That retry FAILS at the staleness check (`governance.rs:1231-1232`):
+///    `compute_state_hash(group_id)` raises `MetaError::GroupNotFoundForHash`
+///    (`meta.rs:90-93`) because the subgroup's `GroupMeta` row — written only by
+///    `GroupCreated` apply (`group_created.rs:98`) — is not present yet. The op
+///    stays stranded.
+/// 4. `KeyDelivery` is the ONLY retry trigger. Applying `GroupCreated` later does
+///    NOT re-drive the buffered op, so the context never registers and
+///    `OpEvent::ContextRegistered` is never emitted.
+///
+/// This test drives the bug-triggering ORDER (buffer → KeyDelivery → GroupCreated)
+/// and asserts the OUTCOME the fix will provide: after `GroupCreated` applies, the
+/// buffered op is re-driven, the context becomes registered, and
+/// `OpEvent::ContextRegistered` fires.
+///
+/// On CURRENT master this test FAILS at step (a)/(b) — the op stays stranded.
+/// That failing state IS the deliverable: it proves the harness reproduces the
+/// bug. The later #2848 fix turns it green.
+///
+/// Store-only (no actor): the bug lives entirely in the synchronous gov-store
+/// apply path, so this drives `apply_signed_namespace_op` directly. That keeps it
+/// fully deterministic — no actor mailbox, no spawned task, no timing — except for
+/// the bounded `op_events` drain at the end (a process-global broadcast channel).
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn restricted_ctx_redriven_after_group_created() {
+    use calimero_context::group_store::{
+        apply_signed_namespace_op, get_group_for_context, GroupKeyring, MembershipRepository,
+        MetaRepository, NamespaceRepository,
+    };
+    use calimero_context_client::local_governance::{
+        GroupOp, NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let mut rng = OsRng;
+
+    // ---- Namespace root provisioning (receiver side) -------------------------
+    // The namespace IS its root group. `ns_gid.to_bytes()` is the namespace id.
+    let ns_gid = ContextGroupId::from([0xD8u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    // `owner` is the namespace-root admin AND the holder/minter of the subgroup
+    // key. It signs the buffered `ContextRegistered`, the `KeyDelivery`, and the
+    // `GroupCreated` (all three require/derive root-admin authority).
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+
+    // `member` is THIS receiver node's namespace identity — the recipient the
+    // `KeyDelivery` envelope is wrapped for, and whose `identity_record`
+    // `apply_received_group_key` reads to unwrap it. Distinct from the owner.
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    assert_ne!(
+        member_pk, owner_pk,
+        "receiver identity must differ from the owner/admin"
+    );
+
+    // Seed the namespace root meta (admin = owner) so `GroupCreated`'s parent
+    // lookup (`MetaRepository::load(parent)`) succeeds and its authorization
+    // (`is_admin(ns, signer=owner)`) passes.
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta(owner_pk))
+        .expect("save namespace root meta");
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+        .expect("add owner as namespace-root admin");
+
+    // The receiver's namespace identity (member_sk). `apply_received_group_key`
+    // unwraps the `KeyDelivery` envelope with THIS key, so the envelope below
+    // must be wrapped for `member_pk`.
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .expect("store receiver namespace identity");
+
+    // ---- The Restricted subgroup (NOT yet created on the receiver) -----------
+    // We pick its id and mint its key OWNER-side. The receiver does NOT hold the
+    // key nor the subgroup meta yet — that is the whole point: the encrypted op
+    // arrives before either is locally present.
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let subgroup_key: [u8; 32] = {
+        use rand::RngCore;
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let key_id = GroupKeyring::key_id_for(&subgroup_key);
+
+    // The context the buffered op registers.
+    let context_id = calimero_primitives::context::ContextId::from([0xC8u8; 32]);
+
+    // A NON-ZERO state_hash on the buffered op is load-bearing: the receiver's
+    // staleness check only calls `compute_state_hash` (which raises
+    // `GroupNotFoundForHash` on a meta-absent subgroup) when
+    // `state_hash != [0u8; 32]`. In production the publisher (subgroup creator)
+    // DOES hold the subgroup meta and so signs a non-zero hash; this stand-in
+    // reproduces that exact condition. (Any non-zero value reaches the meta load
+    // before any hash comparison, so the precise bytes don't matter.)
+    let nonzero_state_hash = [0x11u8; 32];
+
+    // ---- Subscribe to op-events BEFORE driving anything ----------------------
+    // Process-global broadcast; `#[serial]` keeps cross-test events out, but we
+    // still filter strictly on (sub_gid, context_id) when draining at the end.
+    let mut events = calimero_governance_store::op_events::subscribe();
+
+    // ---- Step 1: buffer the encrypted ContextRegistered (effect-skipped) -----
+    let inner_op = GroupOp::ContextRegistered {
+        context_id,
+        application_id: calimero_primitives::application::ApplicationId::from([0xCCu8; 32]),
+        blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
+        source: "calimero://stub-app".to_owned(),
+        service_name: None,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
+
+    let ctx_registered_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        nonzero_state_hash,
+        1,
+        NamespaceOp::Group {
+            group_id: sub_gid.to_bytes(),
+            key_id,
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .expect("sign NamespaceOp::Group(ContextRegistered)");
+
+    apply_signed_namespace_op(&store, &ctx_registered_op)
+        .expect("apply buffered ContextRegistered (effect-skipped, logged)");
+
+    // The op is logged but its effect was skipped: no key locally, so the
+    // context is NOT registered and the subgroup meta does NOT exist.
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        None,
+        "buffered ContextRegistered must be effect-skipped before the key arrives \
+         (logged-but-not-applied — drop path B)"
+    );
+    assert!(
+        MetaRepository::new(&store)
+            .load(&sub_gid)
+            .expect("load subgroup meta")
+            .is_none(),
+        "subgroup meta must NOT exist yet (GroupCreated not applied)"
+    );
+
+    // ---- Step 2: KeyDelivery → retry fires, fails meta-absent (stranded) -----
+    // Wrap the subgroup key for the receiver's namespace identity (member_pk),
+    // exactly as `admit_tee_node` / `add_group_members` would.
+    let envelope = GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &subgroup_key)
+        .expect("wrap subgroup key for receiver");
+
+    let key_delivery_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Root(RootOp::KeyDelivery {
+            group_id: sub_gid.to_bytes(),
+            envelope,
+        }),
+    )
+    .expect("sign KeyDelivery");
+
+    apply_signed_namespace_op(&store, &key_delivery_op).expect("apply KeyDelivery");
+
+    // The key landed (so retry HAD a candidate and DID run)...
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_key_by_id(&key_id)
+            .expect("load key by id")
+            .is_some(),
+        "KeyDelivery must store the subgroup key (the retry trigger ran)"
+    );
+    // ...but the retry FAILED at the staleness check (subgroup meta absent →
+    // GroupNotFoundForHash), so the context is STILL not registered: stranded.
+    // (Watch the test log for "group not found for state hash computation" /
+    // "failed to retry encrypted op after KeyDelivery" — that proves the retry
+    // ran and bailed for the RIGHT reason.)
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        None,
+        "after KeyDelivery the retry must fail (subgroup meta absent) and leave \
+         the ContextRegistered stranded — this is the #2848 trap"
+    );
+
+    // ---- Step 3: GroupCreated for the subgroup applies LAST ------------------
+    // On master this does NOT re-drive the stranded op. The #2848 fix makes
+    // GroupCreated re-trigger the buffered-op retry.
+    let group_created_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        3,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: sub_gid.to_bytes(),
+            parent_id: namespace_id,
+        }),
+    )
+    .expect("sign GroupCreated");
+
+    apply_signed_namespace_op(&store, &group_created_op).expect("apply GroupCreated");
+
+    // Sanity: GroupCreated itself landed (subgroup meta now present).
+    assert!(
+        MetaRepository::new(&store)
+            .load(&sub_gid)
+            .expect("load subgroup meta")
+            .is_some(),
+        "GroupCreated must have written the subgroup meta row"
+    );
+
+    // ---- (a) the previously-buffered ContextRegistered is now applied --------
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        Some(sub_gid),
+        "#2848: after GroupCreated applies, the previously-stranded \
+         ContextRegistered must be re-driven and the context registered to the \
+         subgroup (FAILS on master — the op stays stranded)"
+    );
+
+    // ---- (b) OpEvent::ContextRegistered fired for this context --------------
+    // Bounded drain: by the time the apply returns, any synchronously-emitted
+    // event is already queued. Allow a short poll window for robustness against
+    // the broadcast channel's async delivery.
+    let mut saw_context_registered = false;
+    'drain: for _ in 0..40 {
+        loop {
+            match events.try_recv() {
+                Ok(calimero_governance_store::op_events::OpEvent::ContextRegistered {
+                    group_id,
+                    context_id: ev_ctx,
+                }) if group_id == sub_gid.to_bytes() && ev_ctx == context_id => {
+                    saw_context_registered = true;
+                    break 'drain;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(_) => break,
+            }
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        saw_context_registered,
+        "#2848: re-driving the buffered ContextRegistered must emit \
+         OpEvent::ContextRegistered for (subgroup, context) (FAILS on master — \
+         no re-drive, so the event never fires)"
+    );
+}
+
 /// Negative guard locking in the fix: a `TeeAttestationAnnounce` arriving on a
 /// legacy `group/<hex>` topic must NOT be routed into namespace admission. This
 /// is the precise shape of the #2096 bug — if the dispatcher ever resurrects
