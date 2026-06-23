@@ -60,11 +60,15 @@ pub(crate) fn apply(
         ));
     }
     // F5 #29b flip: decide the membership PATH from the projection at the op's causal
-    // cut (validated divergence-free on the `membership-path` plane), with live
-    // `check_path` as the `None`-fallback. The live read retires when `check_path` is
-    // deleted.
-    let live = MembershipRepository::new(store).check_path(&gid, &member)?;
-    match ctx.membership_path(&gid, &member, membership_path_kind(&live)) {
+    // cut (validated divergence-free on the `membership-path` plane). Live `check_path`
+    // is the `None`-fallback, computed LAZILY — only when the projection abstains — so
+    // a `check_path` store error can't abort an apply the projection would have
+    // decided. The live read retires when `check_path` is deleted.
+    let path = match ctx.projection_membership_path(&gid, &member) {
+        Some(projected) => projected,
+        None => membership_path_kind(&MembershipRepository::new(store).check_path(&gid, &member)?),
+    };
+    match path {
         AtCutMembershipPath::Inherited => Ok(()),
         AtCutMembershipPath::Direct => {
             // Direct members go through `MemberJoined` or `add_group_members`

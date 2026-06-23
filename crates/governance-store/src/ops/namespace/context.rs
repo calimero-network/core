@@ -96,20 +96,20 @@ impl<'a> NamespaceApplyCtx<'a> {
         Ok(())
     }
 
-    /// The at-cut membership PATH for `member` in `group`, for the `MemberJoinedOpen`
-    /// gate (F5 #29b flip): the projection's `membership_path_at_cut` at the op's
+    /// The PROJECTION's at-cut membership PATH for `member` in `group`, for the
+    /// `MemberJoinedOpen` gate (F5 #29b flip): `membership_path_at_cut` at the op's
     /// causal cut, validated divergence-free on the `membership-path` plane. `None`
-    /// (no apply-auth context — sign/test — or an incomplete fold) falls back to the
-    /// `live_path` the caller computed from `check_path`. The live fallback retires
-    /// once `check_path` is deleted.
-    pub(crate) fn membership_path(
+    /// (no apply-auth context — sign/test — or an incomplete fold) means the caller
+    /// must fall back to live `check_path`. Returning the `Option` (rather than taking
+    /// an eager `live_path`) lets the caller compute live LAZILY — only when the
+    /// projection abstains — so a `check_path` store error can't abort an apply the
+    /// projection would have decided.
+    pub(crate) fn projection_membership_path(
         &self,
         group: &ContextGroupId,
         member: &PublicKey,
-        live_path: crate::authorizer::AtCutMembershipPath,
-    ) -> crate::authorizer::AtCutMembershipPath {
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
         self.authorizer
             .membership_path_at_cut(group, member, self.parents)
-            .unwrap_or(live_path)
     }
 }
