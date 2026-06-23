@@ -29,18 +29,80 @@ pub(crate) enum DeltaAuthOutcome {
     /// avoid silent bypass on transient I/O or corruption). The projection does
     /// not override these.
     Reject(&'static str),
-    /// Live membership resolution says the author is NOT a member at the cut
-    /// (Removed / NeverMember). Carries the owning `group` so the **projection**
-    /// can render the authoritative membership verdict (the sole-authority
-    /// flip): the projection decides, and live's verdict here is the cross-check.
-    MembershipReject {
-        group: calimero_context_config::types::ContextGroupId,
-        reason: &'static str,
-    },
+    /// Membership resolution says the author is NOT a member at the cut. On the
+    /// gossip path this is the projection's definitive not-a-member verdict
+    /// (`member_at_cut == Some(false)`); on the live sync paths it is
+    /// `acl_view_at`'s Removed / NeverMember. Either way the delta is rejected.
+    MembershipReject { reason: &'static str },
     /// Local governance state is behind the cited cut. Buffer until catchup;
     /// `needed` lists every missing governance head so the receiver can
     /// request them all at once.
     Buffer { needed: Vec<[u8; 32]> },
+}
+
+/// The projection's membership verdict at a governance cut — the resolver result for
+/// [`authorize_delta_at_edge_projected`] (F5 #29b). Mirrors what the live
+/// `acl_view_at` produced, minus the Removed/NeverMember split (both are "not a
+/// member", which the gossip path treats identically) and minus the `needed` set
+/// (the projection reports incompleteness as a bool; `Buffer.needed` is best-effort).
+pub(crate) enum CutMembership {
+    /// Author is a member at the cut, with this effective role.
+    Member(calimero_primitives::context::GroupMemberRole),
+    /// Author is not a member at the cut (the projection's complete-fold verdict).
+    NotMember,
+    /// The cited ancestry isn't fully folded — buffer until governance catches up
+    /// (the projection's `None`; the old `Unknown`).
+    Incomplete,
+}
+
+/// [`authorize_delta_at_edge`] resolving membership via a caller-supplied projection
+/// `resolve` instead of the live `acl_view_at` (F5 #29b gossip flip). The structural
+/// checks (group derivation from the context, bypass / non-group rejects) are
+/// identical; only the membership verdict swaps to the projection at the op's
+/// governance cut. `resolve` wraps the node's maintained projection
+/// (`member_at_cut` + `role_at_cut_for_group`) — already validated divergence-free
+/// against live on the `membership-cut` / `membership-cut-grant` / `data-write-role`
+/// / `data-write-decision` planes. `Incomplete` maps to `Buffer` (exactly as live's
+/// `Unknown` did); `Buffer.needed` carries the cited heads (consumed only as a log
+/// count — the buffered delta re-resolves against the projection on drain).
+pub(crate) fn authorize_delta_at_edge_projected(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+    author: &calimero_primitives::identity::PublicKey,
+    governance_position: Option<&calimero_context_config::types::GovernanceParentEdge>,
+    resolve: impl FnOnce(calimero_context_config::types::ContextGroupId, &[[u8; 32]]) -> CutMembership,
+) -> DeltaAuthOutcome {
+    let owning = match calimero_context::group_store::get_group_for_context(store, context_id) {
+        Ok(owning) => owning,
+        Err(err) => {
+            tracing::warn!(
+                %context_id, %author, %err,
+                "authorize_delta_at_edge: get_group_for_context failed; rejecting to avoid silent bypass"
+            );
+            return DeltaAuthOutcome::Reject(
+                "get_group_for_context failed; rejecting to avoid silent bypass",
+            );
+        }
+    };
+
+    match (owning, governance_position) {
+        (None, None) => DeltaAuthOutcome::Ungated,
+        (Some(_), None) => DeltaAuthOutcome::Reject(
+            "group context but no governance edge (likely a bypass attempt)",
+        ),
+        (None, Some(_)) => {
+            DeltaAuthOutcome::Reject("governance edge present but context is not part of any group")
+        }
+        (Some(group), Some(pos)) => match resolve(group, &pos.governance_dag_heads) {
+            CutMembership::Member(role) => DeltaAuthOutcome::Authorized { group, role },
+            CutMembership::NotMember => DeltaAuthOutcome::MembershipReject {
+                reason: "author is not a member of the group at governance cut (projection)",
+            },
+            CutMembership::Incomplete => DeltaAuthOutcome::Buffer {
+                needed: pos.governance_dag_heads.clone(),
+            },
+        },
+    }
 }
 
 /// Authorize a state delta against its **governance parent edge** (core#2716
@@ -102,11 +164,9 @@ pub(crate) fn authorize_delta_at_edge(
             match acl_view_at(store, group, author, &pos.governance_dag_heads) {
                 Ok(MembershipStatus::Member(role)) => DeltaAuthOutcome::Authorized { group, role },
                 Ok(MembershipStatus::Removed { .. }) => DeltaAuthOutcome::MembershipReject {
-                    group,
                     reason: "author was removed from group at governance cut",
                 },
                 Ok(MembershipStatus::NeverMember) => DeltaAuthOutcome::MembershipReject {
-                    group,
                     reason: "author is not a member of the group at governance cut",
                 },
                 Ok(MembershipStatus::Unknown { needed }) => DeltaAuthOutcome::Buffer { needed },
