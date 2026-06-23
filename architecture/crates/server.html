@@ -251,7 +251,7 @@
   </div>
   <div class="cb">
     <h4 style="color:#84cc16;">Embedded Mode <span class="tag tag-wasm">mero-auth</span></h4>
-    <p style="margin-top:8px;">Full in-process JWT issuing and verification via the <span class="code">mero-auth</span> crate. Mounts additional routes at <span class="code">/auth</span> for login flows (NEAR wallet, Ethereum wallet, challenge-nonce). Issues JWT tokens on successful authentication.</p>
+    <p style="margin-top:8px;">Full in-process JWT issuing and verification via the <span class="code">mero-auth</span> crate. Mounts additional routes at <span class="code">/auth</span> for login flows (challenge-nonce based). Issues JWT tokens on successful authentication.</p>
     <p style="margin-top:8px;">Protected routes are guarded by an <span class="code">AuthGuardLayer</span> (Tower middleware). Tokens can be passed via:</p>
     <ul style="margin-top:8px;">
       <li><span class="code">Authorization: Bearer &lt;token&gt;</span> header</li>
