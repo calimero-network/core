@@ -561,20 +561,14 @@
 <pre class="code">policy.with_apply_auth(parents: &amp;[DeltaId], authorizer: &amp;dyn AtCutAuthorizer) → Self</pre>
 <p>When these fields are absent (the default), every shadow call is a no-op, preserving the behaviour of non-apply constructions.</p>
 
-<h3>Shadow Logging: <code>shadow_last_admin</code></h3>
-<p>The two last-admin enforcement methods on <code>MembershipPolicy</code> now call <code>shadow_last_admin</code> after computing the live blocking decision:</p>
+<h3>Last-Admin Enforcement: <code>would_orphan_admins</code></h3>
+<p>The two last-admin enforcement methods on <code>MembershipPolicy</code> now delegate to a shared <code>would_orphan_admins</code> helper that resolves the blocking decision from the <strong>projection at the op's parent cut</strong> via <code>AtCutAuthorizer::is_last_admin_at_cut</code>:</p>
 <ul>
   <li><code>ensure_not_last_admin_removal</code> — called when a <code>MemberRemoved</code> op targets an admin identity.</li>
   <li><code>ensure_not_last_admin_demotion</code> — called when a <code>MemberRoleSet</code> would drop the last admin to a non-admin role.</li>
 </ul>
-<p><code>shadow_last_admin</code> calls <code>authorizer.is_last_admin_at_cut(identity)</code> and compares the result to the live decision. When they disagree it emits a structured warning log entry:</p>
-<pre class="code">unified_projection_divergence {
-    plane = "last-admin",
-    gate  = "removal" | "demotion",
-    live  = true | false,
-    cut   = Some(true) | Some(false) | None,
-}</pre>
-<p><strong>The live decision remains authoritative.</strong> No enforcement change is introduced; the shadow is purely diagnostic, establishing a baseline before the gate can be migrated to projection-authoritative.</p>
+<p><code>would_orphan_admins</code> calls <code>authorizer.is_last_admin_at_cut(identity)</code> and uses that verdict directly. It only falls back to the live membership computation (<code>is_admin &amp;&amp; !has_another_admin</code>) when no apply-auth context is present (local pre-checks, cascades, tests) or when the projection fold is incomplete. This live fallback is a temporary measure and is noted as retiring in a follow-up.</p>
+<p>The <code>shadow_last_admin</code> helper, which previously compared the projection verdict against the live verdict and emitted <code>unified_projection_divergence</code> / <code>last-admin</code> plane warnings on mismatch, has been <strong>deleted</strong>. Its purpose was to validate parity before the enforcement flip; now that the projection is authoritative it is no longer needed.</p>
 
 <h3>Wiring through <code>GroupApplyCtx</code></h3>
 <p><code>GroupApplyCtx::new</code> now calls <code>.with_apply_auth(parents, authorizer)</code> on the <code>MembershipPolicy</code> it constructs, using the same <code>parents</code> and <code>authorizer</code> already threaded into <code>PermissionChecker</code>. The call site is unchanged for callers; the wiring is automatic. This means:</p>
@@ -587,7 +581,7 @@
 <p>The contract applies uniformly to all three trait methods. A genesis op has no parents (<code>parent_op_hashes = []</code>). Returning anything other than <code>None</code> in that case would mean the projection is evaluated against an empty fold, which is structurally unsound. The <code>EphemeralProjectionAuthorizer</code> guard and the <code>LiveFallbackAuthorizer</code> unconditional-<code>None</code> path both satisfy this contract. Future implementations must do the same.</p>
 
 <h3>Relationship to Existing At-Cut Pattern</h3>
-<p>This addition is intentionally symmetric with the existing <code>is_admin_at_cut</code> and <code>is_admin_or_capability_at_cut</code> gates on <code>PermissionChecker</code>. The shadow pattern mirrors the <code>shadow_admin</code> approach already in place for those gates, using the same <code>unified_projection_divergence</code> log key so that divergence monitoring covers all three planes uniformly. When the last-admin gate is eventually migrated to projection-authoritative, the change will be localized to <code>MembershipPolicy</code> — no trait changes are required.</p>
+<p>This addition is intentionally symmetric with the existing <code>is_admin_at_cut</code> and <code>is_admin_or_capability_at_cut</code> gates on <code>PermissionChecker</code>. The last-admin gate now follows the same projection-authoritative model as those gates: the projection result is used directly, and the live store is only consulted as a fallback when no apply-auth context is present or the fold is incomplete. The <code>shadow_last_admin</code> divergence-logging path has been removed now that the flip is complete. Future changes to last-admin enforcement are localized to <code>MembershipPolicy</code> and <code>would_orphan_admins</code> — no trait changes are required.</p>
 </div>
 </div>
 </div>
