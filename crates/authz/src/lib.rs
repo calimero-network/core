@@ -300,9 +300,14 @@ impl AclView {
         root: Option<(ContextGroupId, PublicKey)>,
         default_cap_base: u32,
     ) -> MemberPathAtCut {
+        // Narrow admin, IDENTICAL to `is_member_at_cut`'s: a folded group admin or
+        // the genesis root admin OF THIS GROUP ONLY. Deliberately NOT the global
+        // `is_root_admin` — the root admin is a member of a *subgroup* only over
+        // the open-subgroup chain (the walk below), never of a Restricted subgroup.
+        // Using the global predicate here would mark the root admin a direct member
+        // of every group, diverging from the membership set this path must mirror.
         let is_admin = |g: ContextGroupId| -> bool {
             self.is_group_admin(author, g)
-                || self.is_root_admin(author)
                 || root.is_some_and(|(root_g, root_admin)| g == root_g && *author == root_admin)
         };
         if let Some(role) = self.groups.get(&group).and_then(|m| m.get(author)) {

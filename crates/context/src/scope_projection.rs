@@ -1099,31 +1099,50 @@ impl ScopeProjections {
     /// fully folded (defer to live). The role-validation read ahead of flipping the
     /// role-bearing `list_group_members` onto the projection.
     #[must_use]
-    pub fn member_role_at_cut_with(
+    pub fn member_roles_for(
         &self,
         store: &Store,
         group: &ContextGroupId,
-        member: &PublicKey,
+        members: &[PublicKey],
         heads: &[[u8; 32]],
-    ) -> Option<GroupMemberRole> {
-        let (view, root, default_cap_base) = self.auth_cut_context(store, *group, heads)?;
-        match view.member_path_at_cut(*group, member, root, default_cap_base) {
-            calimero_authz::MemberPathAtCut::None => None,
-            calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
-            calimero_authz::MemberPathAtCut::Inherited {
-                via_admin: true, ..
-            } => Some(GroupMemberRole::Admin),
-            calimero_authz::MemberPathAtCut::Inherited {
-                anchor,
-                via_admin: false,
-            } => Some(
-                view.groups
-                    .get(&anchor)
-                    .and_then(|m| m.get(member))
-                    .cloned()
-                    .unwrap_or(GroupMemberRole::Member),
-            ),
-        }
+    ) -> Vec<Option<GroupMemberRole>> {
+        // Fold the view ONCE for the whole batch — the shadow resolves a full
+        // member list, so a per-member fold would re-walk the DAG N times.
+        let Some((view, root, default_cap_base)) = self.auth_cut_context(store, *group, heads)
+        else {
+            // Namespace unresolved / cited ancestry not fully folded: abstain for
+            // the whole batch (the shadow skips `None`, the flip falls back to live).
+            return vec![None; members.len()];
+        };
+        members
+            .iter()
+            .map(|member| {
+                match view.member_path_at_cut(*group, member, root, default_cap_base) {
+                    calimero_authz::MemberPathAtCut::None => None,
+                    calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+                    // Reached over the open chain via an admin ancestor → `Admin`,
+                    // matching live's `via_admin ? Admin : role_of(anchor)`.
+                    calimero_authz::MemberPathAtCut::Inherited {
+                        via_admin: true, ..
+                    } => Some(GroupMemberRole::Admin),
+                    // Non-admin inheritance: the member's role at the `anchor` it
+                    // joined through. `member_path_at_cut` only emits this arm when
+                    // the anchor row is present, so the `Member` fallback is a
+                    // defensive mirror of live's `role_of(anchor).unwrap_or(Member)`
+                    // and is unreachable by construction.
+                    calimero_authz::MemberPathAtCut::Inherited {
+                        anchor,
+                        via_admin: false,
+                    } => Some(
+                        view.groups
+                            .get(&anchor)
+                            .and_then(|m| m.get(member))
+                            .cloned()
+                            .unwrap_or(GroupMemberRole::Member),
+                    ),
+                }
+            })
+            .collect()
     }
 
     /// Shared setup for the at-cut admin/capability reads: resolve the namespace,

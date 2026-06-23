@@ -78,14 +78,15 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
 
                 // ROLE shadow (precursor to flipping `list_group_members` onto the
                 // projection, which — unlike the count/cohort consumers — returns
-                // ROLES the identity-set shadow doesn't validate). Per live member,
-                // compare its role to the projection's enumeration role at the
-                // current cut; `None` (not-yet-folded / projection abstains) skips.
-                for (member, live_role) in &members {
-                    if let Some(projected_role) =
-                        proj.member_role_at_cut_with(&self.datastore, &group_id, member, heads)
-                    {
-                        if projected_role != *live_role {
+                // ROLES the identity-set shadow doesn't validate). Resolve every
+                // live member's projected role in ONE fold, then compare; `None`
+                // (not-yet-folded / projection abstains) skips.
+                let member_ids: Vec<_> = members.iter().map(|(pk, _)| *pk).collect();
+                let projected_roles =
+                    proj.member_roles_for(&self.datastore, &group_id, &member_ids, heads);
+                for ((member, live_role), projected_role) in members.iter().zip(&projected_roles) {
+                    if let Some(projected_role) = projected_role {
+                        if projected_role != live_role {
                             tracing::warn!(
                                 marker = "unified_projection_divergence",
                                 plane = "membership-role",
