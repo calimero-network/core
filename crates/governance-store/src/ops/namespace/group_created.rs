@@ -4,7 +4,8 @@
 use super::context::NamespaceApplyCtx;
 use crate::op_events::OpEvent;
 use crate::{
-    ApplyError, GroupCreatedRejection, MembershipRepository, MetaRepository, NamespaceError,
+    ApplyError, CapabilitiesRepository, GroupCreatedRejection, MembershipRepository,
+    MetaRepository, NamespaceError,
 };
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -16,6 +17,7 @@ pub(crate) fn apply(
     op: &SignedNamespaceOp,
     group_id: [u8; 32],
     parent_id: [u8; 32],
+    restricted: bool,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
@@ -117,6 +119,25 @@ pub(crate) fn apply(
         handle.put(&GroupChildIndex::new(parent_id, group_id), &())?;
     }
     MembershipRepository::new(store).add_member(&gid, &op.signer, GroupMemberRole::Admin)?;
+
+    // Born-Open atomic create (#2771): write the subgroup's visibility key
+    // from `restricted` using the SAME mechanism `SubgroupVisibilitySet`
+    // apply uses (`CapabilitiesRepository::set_subgroup_visibility`). This
+    // write happens DURING apply, BEFORE `OpEvent::SubgroupCreated` is
+    // queued/drained (emit-after-persist, #2770) — so when
+    // `tee_subgroup_admit` reacts and walks `is_open_chain_to_namespace`,
+    // it reads the real visibility from the store. A born-Open subgroup is
+    // therefore already Open at admit time, so the TEE is skipped (it reads
+    // via inheritance) and no transient direct `ReadOnlyTee` row is left
+    // behind. `restricted: true` (the default) preserves legacy behavior,
+    // and the absent-key ⇒ Restricted default in `capabilities.rs` stays as
+    // a safety net for old state.
+    let visibility = if restricted {
+        calimero_context_config::VisibilityMode::Restricted
+    } else {
+        calimero_context_config::VisibilityMode::Open
+    };
+    CapabilitiesRepository::new(store).set_subgroup_visibility(&gid, visibility)?;
 
     ctx.queue_event(OpEvent::SubgroupCreated {
         namespace_id,

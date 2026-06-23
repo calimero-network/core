@@ -39,7 +39,8 @@ pub(crate) fn dispatch_root_op(
         RootOp::GroupCreated {
             group_id,
             parent_id,
-        } => group_created::apply(ctx, op, *group_id, *parent_id),
+            restricted,
+        } => group_created::apply(ctx, op, *group_id, *parent_id, *restricted),
         RootOp::GroupDeleted {
             root_group_id,
             cascade_group_ids,

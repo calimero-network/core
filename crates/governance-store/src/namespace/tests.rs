@@ -2174,6 +2174,7 @@ fn governance_group_reparented_via_signed_op() {
             NamespaceOp::Root(RootOp::GroupCreated {
                 group_id: *gid,
                 parent_id: *parent,
+                restricted: true,
             }),
         )
         .expect("sign create op");
@@ -2256,6 +2257,7 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: [0xC1; 32],
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign create op");
@@ -2319,6 +2321,7 @@ fn governance_rejects_non_admin_signer() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: [0xBB; 32],
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op");
@@ -2366,6 +2369,7 @@ fn governance_group_created_is_idempotent() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: new_group_id,
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op1");
@@ -2383,6 +2387,7 @@ fn governance_group_created_is_idempotent() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: new_group_id,
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op2");
@@ -2390,6 +2395,92 @@ fn governance_group_created_is_idempotent() {
     // Should not error — idempotent
     gov.apply_signed_op(&op2)
         .expect("duplicate GroupCreated should be idempotent");
+}
+
+/// #2771: `GroupCreated { restricted: false }` must write an Open visibility
+/// key at apply time (born-Open atomic create), and `restricted: true` must
+/// leave the subgroup Restricted. This is the store-level guard that the live
+/// op carries visibility and that `tee_subgroup_admit` (which reads this key
+/// via `is_open_chain_to_namespace`) will see Open immediately.
+#[test]
+fn governance_group_created_writes_birth_visibility() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+    use crate::CapabilitiesRepository;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xA1u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let open_group_id = [0xE0u8; 32];
+    let restricted_group_id = [0xE1u8; 32];
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let caps = CapabilitiesRepository::new(&store);
+
+    // Born-Open: restricted = false ⇒ visibility key written as Open.
+    let open_op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: open_group_id,
+            parent_id: ns_id,
+            restricted: false,
+        }),
+    )
+    .expect("sign born-open op");
+    gov.apply_signed_op(&open_op)
+        .expect("born-open GroupCreated should apply");
+    assert_eq!(
+        caps.subgroup_visibility(&ContextGroupId::from(open_group_id))
+            .expect("read open vis"),
+        VisibilityMode::Open,
+        "GroupCreated {{ restricted: false }} must write an Open visibility key"
+    );
+
+    // Born-Restricted: restricted = true ⇒ Restricted.
+    let restricted_op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: restricted_group_id,
+            parent_id: ns_id,
+            restricted: true,
+        }),
+    )
+    .expect("sign born-restricted op");
+    gov.apply_signed_op(&restricted_op)
+        .expect("born-restricted GroupCreated should apply");
+    assert_eq!(
+        caps.subgroup_visibility(&ContextGroupId::from(restricted_group_id))
+            .expect("read restricted vis"),
+        VisibilityMode::Restricted,
+        "GroupCreated {{ restricted: true }} must remain Restricted"
+    );
 }
 
 #[test]
@@ -2445,6 +2536,7 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: new_group_id,
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op");
@@ -2508,6 +2600,7 @@ fn execute_group_created_rejects_self_parent() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: ns_id,
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op");
@@ -2572,6 +2665,7 @@ fn execute_group_created_inherits_app_key_and_application_from_parent() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sub_id,
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op");
@@ -3047,6 +3141,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
             NamespaceOp::Root(RootOp::GroupCreated {
                 group_id,
                 parent_id,
+                restricted: true,
             }),
         )
         .unwrap()
@@ -3545,6 +3640,7 @@ fn group_created_with_no_key_skips_retry() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: new_group_id,
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .unwrap();

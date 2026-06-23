@@ -612,10 +612,10 @@ fn provision_tee_owner_with_sk(
 /// `OpEvent::SubgroupCreated` — the event the `tee_subgroup_admit` subscriber
 /// reacts to. We deliberately do NOT hand-roll the op or hand-insert the key.
 ///
-/// Subgroups have no explicit visibility field on `CreateGroupRequest`; subgroup
-/// visibility defaults to `Restricted` when unset (see
-/// `CapabilitiesRepository::subgroup_visibility`), so a freshly-created subgroup
-/// is Restricted, which is exactly what this path exercises.
+/// Passes `restricted: true` on `CreateGroupRequest` (born-Restricted, #2771);
+/// subgroup visibility also defaults to `Restricted` when the key is absent (see
+/// `CapabilitiesRepository::subgroup_visibility`), so this path exercises a
+/// Restricted subgroup.
 ///
 /// Returns the new subgroup's `ContextGroupId`.
 async fn create_restricted_subgroup(
@@ -662,6 +662,7 @@ async fn create_restricted_subgroup(
             upgrade_policy: UpgradePolicy::Automatic,
             name: Some("restricted-sub".to_owned()),
             parent_group_id: Some(*parent_ns),
+            restricted: true,
         })
         .await
         .expect("create_group");
@@ -706,6 +707,65 @@ async fn create_open_subgroup(
         .expect("set_subgroup_visibility(Open)");
 
     sub_gid
+}
+
+/// Create a **born-Open** subgroup nested under `parent_ns` in ONE op (#2771).
+///
+/// Unlike [`create_open_subgroup`] (which creates Restricted then flips via a
+/// separate `SubgroupVisibilitySet`), this goes through the real
+/// `ContextClient::create_group` path with `restricted: false`, so
+/// `RootOp::GroupCreated { restricted: false }` writes the Open visibility key
+/// DURING apply — before `OpEvent::SubgroupCreated` is drained. The subgroup is
+/// therefore already Open when `tee_subgroup_admit` reacts, so the subscriber
+/// skips it (the TEE reads via inheritance) and no transient direct
+/// `ReadOnlyTee` row is left behind. Mirrors [`create_restricted_subgroup`]'s
+/// `sample_meta`-derived application row.
+///
+/// Returns the new subgroup's `ContextGroupId`.
+async fn create_born_open_subgroup(
+    node: &TestNode,
+    parent_ns: &ContextGroupId,
+    rng: &mut OsRng,
+) -> ContextGroupId {
+    let app_id = ApplicationId::from([0xCCu8; 32]);
+    let app_meta = ApplicationMetaValue::new(
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0xDDu8; 32])),
+        0,
+        "test://app".into(),
+        Box::new([]),
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0xDDu8; 32])),
+        calimero_store::types::PackageInfo {
+            package: "test-package".into(),
+            version: "0.0.0".into(),
+            signer_id: "test-signer".into(),
+        },
+    );
+    node.store
+        .handle()
+        .put(
+            &calimero_store::key::ApplicationMeta::new(app_id),
+            &app_meta,
+        )
+        .expect("seed application meta");
+
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(rng).public_key());
+
+    let resp = node
+        .context_client
+        .create_group(CreateGroupRequest {
+            group_id: Some(sub_gid),
+            app_key: None,
+            application_id: app_id,
+            upgrade_policy: UpgradePolicy::Automatic,
+            name: Some("born-open-sub".to_owned()),
+            parent_group_id: Some(*parent_ns),
+            // Born-Open: visibility carried atomically on GroupCreated (#2771).
+            restricted: false,
+        })
+        .await
+        .expect("create_group(born-open)");
+
+    resp.group_id
 }
 
 /// Poll `cond` until it returns true or the deadline elapses. The admission
@@ -1489,6 +1549,180 @@ async fn restricted_subgroup_created_admits_existing_tee_member() {
     );
 }
 
+/// In-process guard for r2 (`tee-r2-open-no-direct-row`, #2771): with a TEE node
+/// admitted at the namespace ROOT and the `tee_subgroup_admit` subscriber
+/// RUNNING (not shut down), creating a **born-Open** subgroup in ONE op
+/// (`RootOp::GroupCreated { restricted: false }`) must NOT leave a transient
+/// direct `ReadOnlyTee` row in the subgroup — because the visibility key is
+/// written during apply, before `OpEvent::SubgroupCreated` is drained, so the
+/// subgroup is already Open when the subscriber reacts and
+/// `is_open_chain_to_namespace` returns true, making the subscriber skip it.
+///
+/// This is the exact inverse of `restricted_subgroup_created_admits_existing_tee_member`
+/// (which asserts the subscriber DOES admit into a Restricted subgroup). The old
+/// create-Restricted-then-flip-Open path admitted the TEE during the
+/// Restricted birth-window and left the row behind after the flip — the
+/// redundant row #2771 eliminates.
+///
+/// Assertions:
+///   (a) NO direct membership row for the TEE in the born-Open subgroup
+///       (`has_direct_member == false` / `role_of == None`), even though the
+///       subscriber was live the whole time, and
+///   (b) the TEE still REPLICATES the subgroup's context via inheritance: with
+///       this node's namespace identity pointed at the root-admitted TEE, the
+///       inheritance-aware auto-follow gate auto-joins the context registered in
+///       the born-Open subgroup (durable proof: `has_context`).
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x97u8; 32]);
+    // The owner provisions the namespace (admin, identity, TEE policy); the
+    // born-Open create goes through the namespace identity, not `owner_pk`.
+    let _owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // 1) Admit a TEE node at the namespace ROOT via the announce path. Keep the
+    //    TEE secret key: after the born-Open subgroup exists we re-point THIS
+    //    node's namespace identity to the TEE so the auto-follow joiner IS the
+    //    inherited-only TEE (no direct subgroup row), the inheritance path.
+    let tee_sk = PrivateKey::random(&mut rng);
+    let tee_pk = tee_sk.public_key();
+    let nonce = [0x7Fu8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+    assert!(
+        wait_until(
+            || calimero_context::group_store::MembershipRepository::new(&node.store)
+                .is_member(&ns_gid, &tee_pk)
+                .unwrap_or(false)
+        )
+        .await,
+        "TEE node must be admitted at the namespace root first"
+    );
+
+    // 2) Rebind the PROCESS-GLOBAL `tee_subgroup_admit` subscriber to THIS
+    //    node's store/client and KEEP IT RUNNING. Unlike the
+    //    Open-via-flip tests (which shut it down to dodge the
+    //    Restricted-birth-window race), the born-Open fix means the subscriber
+    //    can run freely: the subgroup is Open at `SubgroupCreated` time, so the
+    //    subscriber correctly skips it. Leaving it live is the whole point —
+    //    it's the guard that proves no transient row is written. (`shutdown` +
+    //    `spawn` because `spawn` alone is first-wins and won't rebind; `spawn`
+    //    subscribes synchronously before returning.)
+    calimero_context::tee_subgroup_admit::shutdown();
+    calimero_context::tee_subgroup_admit::spawn(node.store.clone(), node.context_client.clone());
+
+    // 3) Create a BORN-OPEN subgroup in ONE op (restricted: false). The
+    //    visibility key is written during apply, before SubgroupCreated drains.
+    let open_sub = create_born_open_subgroup(&node, &ns_gid, &mut rng).await;
+
+    // Sanity: the subgroup really is Open at the chain level (the property the
+    // subscriber checks).
+    assert!(
+        calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+            .is_open_chain_to_namespace(&open_sub, &ns_gid)
+            .expect("is_open_chain_to_namespace"),
+        "born-Open subgroup must form an Open chain to the namespace root \
+         immediately at create time"
+    );
+
+    // 4) (a) NO direct row for the TEE in the born-Open subgroup — assert it
+    //    HOLDS even after giving the live subscriber ample time to (wrongly)
+    //    write one. We poll for the *absence*: if a transient row were ever
+    //    written, this would observe it.
+    for _ in 0..20 {
+        assert!(
+            !calimero_context::group_store::MembershipRepository::new(&node.store)
+                .has_direct_member(&open_sub, &tee_pk)
+                .unwrap(),
+            "tee-r2: the TEE must have NO direct membership row in a born-Open \
+             subgroup — the subscriber must skip Open subgroups (TEE reads via \
+             inheritance)"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .role_of(&open_sub, &tee_pk)
+            .expect("role_of"),
+        None,
+        "tee-r2: role_of(born_open_sub, TEE) must be None (no direct row)"
+    );
+
+    // 5) (b) Inheritance-replication still works. Re-point THIS node's namespace
+    //    identity to the root-admitted TEE (inherited-only member of the
+    //    subgroup), bind the auto-follow handler, register a context in the
+    //    born-Open subgroup, and assert the TEE auto-joins it via inheritance.
+    calimero_context::group_store::NamespaceRepository::new(&node.store)
+        .store_identity(&ns_gid, &tee_pk, &tee_sk, &[0u8; 32])
+        .expect("re-point namespace identity to the TEE");
+
+    calimero_context::auto_follow::shutdown();
+    calimero_context::auto_follow::spawn(node.store.clone(), node.context_client.clone());
+
+    // Make the subgroup's application a `calimero://` STUB so `join_context`'s
+    // bootstrap is install-skipped and writes `ContextMeta` (the observable),
+    // exactly as `root_admitted_tee_auto_follows_open_subgroup_context` does.
+    let app_id = ApplicationId::from([0xCCu8; 32]);
+    let stub_blob =
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0u8; 32]));
+    let stub_meta = ApplicationMetaValue::new(
+        stub_blob,
+        0,
+        "calimero://stub-app".into(),
+        Box::new([]),
+        stub_blob,
+        calimero_store::types::PackageInfo {
+            package: "stub-package".into(),
+            version: "0.0.0".into(),
+            signer_id: "stub-signer".into(),
+        },
+    );
+    node.store
+        .handle()
+        .put(
+            &calimero_store::key::ApplicationMeta::new(app_id),
+            &stub_meta,
+        )
+        .expect("seed stub application meta");
+
+    let context_id = calimero_primitives::context::ContextId::from([0xC1u8; 32]);
+    calimero_context::group_store::register_context_in_group(&node.store, &open_sub, &context_id)
+        .expect("register context -> born-open subgroup");
+
+    let replicating = wait_until(|| {
+        calimero_governance_store::op_events::notify(
+            calimero_governance_store::op_events::OpEvent::ContextRegistered {
+                group_id: open_sub.to_bytes(),
+                context_id,
+            },
+        );
+        node.context_client
+            .has_context(&context_id)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        replicating,
+        "tee-r2: root-admitted TEE (inherited-only born-Open-subgroup member, no \
+         direct row) must still auto-follow (replicate) the subgroup's context via \
+         the inheritance-aware auto-follow gate"
+    );
+}
+
 /// End-to-end join-into-existing path (proposal.md §12d, Phase 1): a
 /// **Restricted** subgroup already exists on this node (it holds the subgroup
 /// key) when a TEE node is then admitted at the namespace root. An
@@ -1804,6 +2038,7 @@ async fn restricted_ctx_redriven_after_group_created() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sub_gid.to_bytes(),
             parent_id: namespace_id,
+            restricted: true,
         }),
     )
     .expect("sign GroupCreated");
@@ -2090,6 +2325,7 @@ async fn tee_matrix_restricted_late_join() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sub_gid.to_bytes(),
             parent_id: namespace_id,
+            restricted: true,
         }),
     )
     .expect("sign GroupCreated");

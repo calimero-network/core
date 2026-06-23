@@ -421,9 +421,18 @@ pub enum RootOp {
     /// `parent_id` MUST reference a group that exists in this namespace
     /// (the namespace root itself or a previously-created subgroup).
     /// There is no orphan-creation path: every group is born nested.
+    ///
+    /// `restricted` sets the subgroup's visibility atomically at birth
+    /// (#2771): `true` = Restricted (default, preserves legacy behavior),
+    /// `false` = born-Open. A born-Open subgroup is Open at
+    /// `SubgroupCreated`-event time, so `tee_subgroup_admit` skips it (TEE
+    /// reads via inheritance) — eliminating the redundant transient direct
+    /// `ReadOnlyTee` row that the old Restricted-then-flip path produced.
+    /// Visibility can still be changed later via `SubgroupVisibilitySet`.
     GroupCreated {
         group_id: [u8; 32],
         parent_id: [u8; 32],
+        restricted: bool,
     },
     /// Atomically move `child_group_id` from its current parent to
     /// `new_parent_id`. Both groups MUST exist in this namespace.
