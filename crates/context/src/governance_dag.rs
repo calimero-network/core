@@ -26,8 +26,16 @@ impl GroupGovernanceApplier {
 #[async_trait::async_trait]
 impl DeltaApplier<SignedGroupOp> for GroupGovernanceApplier {
     async fn apply(&self, delta: &CausalDelta<SignedGroupOp>) -> Result<(), ApplyError> {
-        calimero_governance_store::apply_local_signed_group_op(&self.store, &delta.payload)
-            .map_err(|e| ApplyError::Application(e.to_string()))
+        // F5 #28 stage 4: shadow the group apply-auth gates against the projection at
+        // the op's cut. Injecting the real ephemeral authorizer (not the inert live
+        // fallback) is what makes `group-auth` divergences surface.
+        let authorizer = crate::apply_authorizer::EphemeralProjectionAuthorizer::new(&self.store);
+        calimero_governance_store::apply_local_signed_group_op_at_cut(
+            &self.store,
+            &delta.payload,
+            &authorizer,
+        )
+        .map_err(|e| ApplyError::Application(e.to_string()))
     }
 }
 

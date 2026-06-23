@@ -1224,12 +1224,20 @@ fn apply_group_op_mutations(
     group_id: &ContextGroupId,
     signer: &PublicKey,
     op: &GroupOp,
+    parents: &[[u8; 32]],
+    authorizer: &dyn crate::authorizer::AtCutAuthorizer,
 ) -> EyreResult<(
     bool,
     Option<DivergenceReport>,
     Vec<crate::op_events::OpEvent>,
 )> {
-    let mut ctx = ops::group::GroupApplyCtx::new(store, group_id, signer);
+    // The op's causal cut + at-cut authorizer ride into the apply gates so the
+    // `PermissionChecker` admin/capability gates can SHADOW the projection against
+    // live (F5 #28 stage 4). The default authorizer (live-fallback) makes the shadow
+    // inert for callers without an apply-auth context.
+    let mut ctx = ops::group::GroupApplyCtx::new_with_apply_auth(
+        store, group_id, signer, parents, authorizer,
+    );
     let handled = ops::group::dispatch(&mut ctx, op)?;
     Ok((handled, ctx.divergence, ctx.pending_events))
 }
@@ -1250,6 +1258,20 @@ fn apply_group_op_mutations(
 /// authorization is checked against the *current* group state (not the parent
 /// state), and the `DagStore` performs topological ordering independently.
 pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreResult<()> {
+    apply_local_signed_group_op_at_cut(store, op, &crate::authorizer::LIVE_FALLBACK_AUTHORIZER)
+}
+
+/// [`apply_local_signed_group_op`] with the at-cut apply-auth source attached: the
+/// `PermissionChecker` admin/capability gates SHADOW the projection against live at
+/// the op's own `parent_op_hashes` (F5 #28 stage 4, plane `group-auth`). The
+/// production apply path (the group DAG applier) injects a projection-backed
+/// authorizer; the plain `apply_local_signed_group_op` passes the inert live
+/// fallback so existing callers (tests, replay) are unchanged.
+pub fn apply_local_signed_group_op_at_cut(
+    store: &Store,
+    op: &SignedGroupOp,
+    authorizer: &dyn crate::authorizer::AtCutAuthorizer,
+) -> EyreResult<()> {
     if op.parent_op_hashes.len() > MAX_PARENT_OP_HASHES {
         bail!(
             "too many parent_op_hashes ({}, max {})",
@@ -1292,8 +1314,14 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         return Ok(());
     }
 
-    let (handled, _divergence, pending_events) =
-        apply_group_op_mutations(store, &group_id, &op.signer, &op.op)?;
+    let (handled, _divergence, pending_events) = apply_group_op_mutations(
+        store,
+        &group_id,
+        &op.signer,
+        &op.op,
+        &op.parent_op_hashes,
+        authorizer,
+    )?;
     // The `_divergence` outcome is dropped on the local-apply path —
     // this entry point is used by callers (local replay, tests) that
     // are not the gossipsub-receive path. The reconcile-via-anchor

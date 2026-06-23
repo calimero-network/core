@@ -1,3 +1,4 @@
+use crate::authorizer::AtCutAuthorizer;
 use crate::MembershipRepository;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
@@ -16,11 +17,39 @@ use super::{CapabilitiesError, MembershipError};
 pub struct PermissionChecker<'a> {
     store: &'a Store,
     group_id: ContextGroupId,
+    /// The applied op's causal cut (parent op hashes), for the at-cut apply-auth
+    /// shadow (F5 #28 stage 4). Empty outside the group-op apply path.
+    parents: &'a [[u8; 32]],
+    /// The at-cut apply-auth decision source (F5 #28 stage 4). The default
+    /// [`LiveFallbackAuthorizer`](crate::authorizer::LiveFallbackAuthorizer) returns
+    /// `None`, so the shadow no-ops for non-apply constructions (handler pre-checks,
+    /// cascade pre-scans, tests).
+    authorizer: &'a dyn AtCutAuthorizer,
 }
 
 impl<'a> PermissionChecker<'a> {
     pub fn new(store: &'a Store, group_id: ContextGroupId) -> Self {
-        Self { store, group_id }
+        Self {
+            store,
+            group_id,
+            parents: &[],
+            authorizer: &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        }
+    }
+
+    /// Attach the op's causal cut + the at-cut apply-auth source for the group-op
+    /// apply path (F5 #28 stage 4). With it, the admin/capability gates SHADOW the
+    /// projection verdict against live (plane `group-auth`); without it (the
+    /// default) the shadow is inert.
+    #[must_use]
+    pub fn with_apply_auth(
+        mut self,
+        parents: &'a [[u8; 32]],
+        authorizer: &'a dyn AtCutAuthorizer,
+    ) -> Self {
+        self.parents = parents;
+        self.authorizer = authorizer;
+        self
     }
 
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
@@ -33,7 +62,36 @@ impl<'a> PermissionChecker<'a> {
         // non-admin `Member` row — which would suppress inherited
         // admin authority for parent admins who happen to also be
         // explicit subgroup members.
-        MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, identity)
+        let live =
+            MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, identity)?;
+        // SHADOW (F5 #28 stage 4): compare the projection's at-cut admin verdict to
+        // live and log a `group-auth` divergence; still ACT on live. Inert unless an
+        // apply-path authorizer is attached. The flip (act on projection) is stage 4b.
+        self.shadow_admin(identity, live);
+        Ok(live)
+    }
+
+    /// Emit a `group-auth` divergence if the at-cut projection admin verdict differs
+    /// from the live `live_verdict`. `None` from the authorizer (no apply-auth
+    /// context, or an incomplete fold) skips — there's nothing to compare.
+    fn shadow_admin(&self, identity: &PublicKey, live_verdict: bool) {
+        if let Some(projected) =
+            self.authorizer
+                .is_admin_at_cut(&self.group_id, identity, self.parents)
+        {
+            if projected != live_verdict {
+                tracing::warn!(
+                    marker = "unified_projection_divergence",
+                    plane = "group-auth",
+                    gate = "admin",
+                    group_id = ?self.group_id,
+                    %identity,
+                    projected,
+                    live = live_verdict,
+                    "group apply-auth: projection admin verdict differs from live"
+                );
+            }
+        }
     }
 
     pub fn require_admin(&self, identity: &PublicKey) -> EyreResult<()> {
@@ -184,13 +242,11 @@ impl<'a> PermissionChecker<'a> {
         identity: &PublicKey,
         capability_bit: u32,
     ) -> EyreResult<bool> {
-        if MembershipRepository::new(self.store).is_admin_or_has_capability(
+        let direct = MembershipRepository::new(self.store).is_admin_or_has_capability(
             &self.group_id,
             identity,
             capability_bit,
-        )? {
-            return Ok(true);
-        }
+        )?;
         // Only admin-inherited authority crosses the parent boundary;
         // non-admin caps must be explicit at the subgroup level.
         // Uses `is_inherited_admin` (a dedicated walk) rather than
@@ -199,7 +255,33 @@ impl<'a> PermissionChecker<'a> {
         // as any direct membership row exists in the target subgroup,
         // which would mask inherited admin authority for a parent
         // admin who is also an explicit non-admin subgroup member.
-        MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, identity)
+        let live = direct
+            || MembershipRepository::new(self.store)
+                .is_inherited_admin(&self.group_id, identity)?;
+        // SHADOW (F5 #28 stage 4): compare the projection's at-cut admin-or-capability
+        // verdict to live (plane `group-auth`); still ACT on live. Inert without an
+        // apply-path authorizer. Flip is stage 4b.
+        if let Some(projected) = self.authorizer.is_admin_or_capability_at_cut(
+            &self.group_id,
+            identity,
+            capability_bit,
+            self.parents,
+        ) {
+            if projected != live {
+                tracing::warn!(
+                    marker = "unified_projection_divergence",
+                    plane = "group-auth",
+                    gate = "capability",
+                    group_id = ?self.group_id,
+                    %identity,
+                    capability_bit,
+                    projected,
+                    live,
+                    "group apply-auth: projection capability verdict differs from live"
+                );
+            }
+        }
+        Ok(live)
     }
 
     pub fn require_admin_to_add_admin(

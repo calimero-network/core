@@ -59,4 +59,22 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         // live (quiet — a normal mid-backfill state, not an error).
         proj.is_admin_at_cut(self.store, *group, signer, parents)
     }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        group: &ContextGroupId,
+        signer: &PublicKey,
+        capability: u32,
+        parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        let Some((proj, _ns, _heads)) = ScopeProjections::ephemeral_projection(self.store, group)
+        else {
+            tracing::warn!(
+                group = ?group,
+                "apply-auth: ephemeral projection unavailable (store/DAG-head fault); gate defers to live"
+            );
+            return None;
+        };
+        proj.is_admin_or_capability_at_cut(self.store, *group, signer, capability, parents)
+    }
 }
