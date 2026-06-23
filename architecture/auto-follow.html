@@ -108,6 +108,19 @@ The handler subscribes to an in-process op-apply event channel (module
 op is itself a DAG op, so offline catch-up comes for free via DAG replay — no separate
 reconcile loop.
 </p>
+
+<h3>Authorizer-aware apply path</h3>
+<p>
+The new <code>apply_local_signed_group_op_at_cut</code> function accepts an
+<code>&amp;dyn AtCutAuthorizer</code> alongside the op and threads it through
+<code>apply_group_op_mutations</code> via <code>GroupApplyCtx::new_with_apply_auth</code> and
+<code>PermissionChecker::with_apply_auth</code>. Namespace envelopes forward the enclosing
+namespace op's causal cut and authorizer via
+<code>NamespaceGovernance::apply_group_op_inner</code>, so group ops carried in namespace
+envelopes shadow at the correct cut. The original <code>apply_local_signed_group_op</code> is
+now a shim that calls the new variant with the inert <code>LIVE_FALLBACK_AUTHORIZER</code>,
+keeping all existing callers (tests, replay) unchanged.
+</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
@@ -350,6 +363,13 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   <li><b>Observability.</b> Every auto-join emits a structured <code>info!</code> log line
   with <code>group_id</code> and <code>context_id</code>. Failures emit <code>warn!</code> with
   the underlying error. No new metrics — the log stream is enough for postmortems.</li>
+  <li><b>Projection parity monitoring.</b> <code>PermissionChecker::is_admin</code> and
+  <code>is_authorized_with_capability</code> now shadow the live verdict against
+  <code>AtCutAuthorizer::is_admin_or_capability_at_cut</code>. When the two disagree a
+  <code>warn!</code> line is emitted with <code>marker=unified_projection_divergence</code>,
+  <code>plane=group-auth</code>, and <code>gate=admin</code> or <code>gate=capability</code>.
+  Watch for these lines to verify projection parity before enabling stage 4b enforcement. Both
+  gates currently return the <em>live</em> verdict regardless of the shadow result.</li>
   <li><b>Shutdown.</b> Call <code>auto_follow::shutdown()</code> to abort the handler task and
   its refill loop. Subsequent <code>spawn</code> calls will start a fresh handler.</li>
   <li><b>Migration.</b> <code>GroupMemberValue</code> was extended with <code>auto_follow</code>
@@ -357,6 +377,10 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   transparently read with default flags, and transparently upgraded on the next write. A partial
   trailing byte (data corruption) surfaces as a deserialization error instead of being silently
   defaulted.</li>
+  <li><b>Implementing <code>AtCutAuthorizer</code>.</b> Any custom implementation of
+  <code>AtCutAuthorizer</code> must now provide <code>is_admin_or_capability_at_cut</code>.
+  Returning <code>None</code> (as <code>LiveFallbackAuthorizer</code> does) is safe and opts the
+  implementation out of shadow logging.</li>
 </ul>
 </div>
 
@@ -371,7 +395,10 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   <li><code>crates/context/src/auto_follow.rs</code> — handler task, rate limiter,
   <code>spawn</code>/<code>shutdown</code>.</li>
   <li><code>crates/context/src/group_store/mod.rs</code> — <code>apply_group_op_mutations</code>
-  handles <code>MemberSetAutoFollow</code>.</li>
+  (now accepts <code>parents</code> and <code>authorizer</code>) handles <code>MemberSetAutoFollow</code>;
+  <code>apply_local_signed_group_op_at_cut</code> is the new authorizer-aware public entry point;
+  <code>apply_local_signed_group_op</code> is now a shim forwarding to it with the inert
+  <code>LIVE_FALLBACK_AUTHORIZER</code>.</li>
   <li><code>crates/context/src/group_store/membership.rs</code> —
   <code>set_member_auto_follow</code> helper.</li>
   <li><code>crates/context/primitives/src/local_governance/mod.rs</code> — the
@@ -382,6 +409,13 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   op only; flags are set by the admitted node itself.</li>
   <li><code>crates/server/src/admin/handlers/tee/fleet_join.rs</code> — after admission, the
   member publishes <code>MemberSetAutoFollow</code> signed by self.</li>
+  <li><code>crates/context/src/group_store/permission.rs</code> (or equivalent) —
+  <code>PermissionChecker</code> gains <code>with_apply_auth</code>; <code>is_admin</code> and
+  <code>is_authorized_with_capability</code> now call the shadow/projection path and emit
+  <code>unified_projection_divergence</code> warnings when results differ.</li>
+  <li><code>crates/context/src/authorizer.rs</code> (or equivalent) — <code>AtCutAuthorizer</code>
+  trait gains the required <code>is_admin_or_capability_at_cut</code> method;
+  <code>LiveFallbackAuthorizer</code> and <code>EphemeralProjectionAuthorizer</code> implement it.</li>
 </ul>
 </div>
 
