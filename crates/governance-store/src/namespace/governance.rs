@@ -324,6 +324,37 @@ impl<'a> NamespaceGovernance<'a> {
                         // left untouched.
                         restore_member_context_identities(self.store, &group_id_typed, member)?;
                     }
+                    RootOp::GroupCreated { group_id, .. } => {
+                        // #2848: GroupCreated just wrote this subgroup's meta +
+                        // admin row (via `apply_root_op` above), so an
+                        // encrypted ContextRegistered that was buffered before
+                        // it landed — and previously bailed at the staleness
+                        // check because the meta did not exist — can now apply.
+                        // Re-drive, but only if we hold the subgroup key (cheap
+                        // gate; avoids the full op-log scan in the common
+                        // no-key case, and is the deleted-group exit since purge
+                        // clears keys). Best-effort: log, never propagate.
+                        let gid = ContextGroupId::from(*group_id);
+                        if GroupKeyring::new(self.store, gid)
+                            .load_current_key()
+                            .ok()
+                            .flatten()
+                            .is_some()
+                        {
+                            match self.retry_encrypted_ops_for_group(*group_id) {
+                                Ok(retry_divergence) => {
+                                    if retry_divergence.is_some() {
+                                        result.divergence = retry_divergence;
+                                    }
+                                }
+                                Err(e) => tracing::warn!(
+                                    ?e,
+                                    group_id = %hex::encode(group_id),
+                                    "retry after GroupCreated failed (#2848)"
+                                ),
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }

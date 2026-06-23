@@ -3280,6 +3280,118 @@ fn namespace_group_op_with_stale_state_hash_applies_with_warning() {
         .expect("stale state_hash must apply with a warning, not reject");
 }
 
+/// #2848 Part B: a group op carrying a *non-zero* `state_hash` whose target
+/// subgroup has no meta row yet (e.g. an encrypted ContextRegistered buffered
+/// before its GroupCreated lands and now re-driven) must BYPASS the staleness
+/// check rather than blow up on `GroupNotFoundForHash`. Before the fix
+/// `compute_state_hash` was called unconditionally and this returned `Err`,
+/// stranding the op forever.
+#[test]
+fn group_op_with_stale_hash_and_absent_meta_applies() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    use super::NamespaceGovernance;
+
+    let (store, signer_sk, namespace_id, group_gid, group_key, key_id) =
+        setup_state_hash_test_fixture();
+
+    // Drop the subgroup meta so it is absent on apply — but keep the group key
+    // so the op still decrypts and reaches the staleness check. A non-zero
+    // state_hash with absent meta is exactly the buffered-before-GroupCreated
+    // case.
+    MetaRepository::new(&store)
+        .delete(&group_gid)
+        .expect("delete subgroup meta");
+    assert!(
+        MetaRepository::new(&store)
+            .load(&group_gid)
+            .unwrap()
+            .is_none(),
+        "precondition: subgroup meta is absent"
+    );
+
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0x11u8; 32], // non-zero, would mismatch any recomputed hash
+        1,
+        NamespaceOp::Group {
+            group_id: group_gid.to_bytes(),
+            key_id,
+            encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+    gov.apply_signed_op(&op).expect(
+        "non-zero state_hash with absent subgroup meta must bypass the staleness check, \
+         not error on GroupNotFoundForHash (#2848 Part B)",
+    );
+}
+
+/// #2848 Part A gate: a `GroupCreated` for a subgroup whose key the local node
+/// does NOT hold must be a cheap no-op on the retry path — the key-presence
+/// gate short-circuits before the full op-log scan. There are no buffered ops
+/// to re-drive, so apply must succeed cleanly and surface no divergence.
+#[test]
+fn group_created_with_no_key_skips_retry() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xF0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    // Brand-new subgroup id: no GroupKeyring entry exists for it, so the
+    // key-presence gate in the GroupCreated arm must skip the retry entirely.
+    let new_group_id = [0xF1u8; 32];
+    let new_group_gid = ContextGroupId::from(new_group_id);
+    assert!(
+        GroupKeyring::new(&store, new_group_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "precondition: no key held for the new subgroup"
+    );
+
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: new_group_id,
+            parent_id: ns_id,
+        }),
+    )
+    .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let result = gov
+        .apply_signed_op(&op)
+        .expect("GroupCreated with no held key must apply cleanly (cheap no-op retry gate)");
+    assert!(
+        result.divergence.is_none(),
+        "no buffered ops to re-drive, so no divergence should surface"
+    );
+}
+
 #[test]
 fn namespace_root_op_with_current_state_hash_applies() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
