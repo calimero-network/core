@@ -807,10 +807,17 @@ pub(crate) fn resolve_cut_membership(
     author_id: &calimero_primitives::identity::PublicKey,
     heads: &[[u8; 32]],
 ) -> verify::CutMembership {
-    match projection_member_at_cut(node_state, datastore, group, author_id, heads) {
+    // Refresh the fold ONCE (scoped write lock), then resolve membership AND role
+    // under a SINGLE read-lock acquisition. Both are at-cut reads keyed to `heads`,
+    // so they already resolve against the same cut; holding one guard additionally
+    // pins them to the same fold epoch, so a concurrent governance `apply_backfill`
+    // can't advance the projection between the membership verdict and the role read
+    // and yield a mismatched `Member(role)` pair.
+    refresh_projection_for_cut(node_state, datastore, group, heads);
+    let projections = node_state.read_scope_projections();
+    match projections.member_at_cut(datastore, group, author_id, heads) {
         Some(true) => verify::CutMembership::Member(
-            node_state
-                .read_scope_projections()
+            projections
                 .role_at_cut_for_group(datastore, group, author_id, heads)
                 .unwrap_or(calimero_primitives::context::GroupMemberRole::Member),
         ),

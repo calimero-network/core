@@ -43,8 +43,10 @@ pub(crate) enum DeltaAuthOutcome {
 /// The projection's membership verdict at a governance cut — the resolver result for
 /// [`authorize_delta_at_edge_projected`] (F5 #29b). Mirrors what the live
 /// `acl_view_at` produced, minus the Removed/NeverMember split (both are "not a
-/// member", which the gossip path treats identically) and minus the `needed` set
-/// (the projection reports incompleteness as a bool; `Buffer.needed` is best-effort).
+/// member", which the gossip path treats identically) and minus any `needed` set:
+/// the projection reports incompleteness as the `Incomplete` variant alone, and
+/// `authorize_delta_at_edge_projected` populates `DeltaAuthOutcome::Buffer.needed`
+/// from the governance position's heads, not from this resolver.
 pub(crate) enum CutMembership {
     /// Author is a member at the cut, with this effective role.
     Member(calimero_primitives::context::GroupMemberRole),
