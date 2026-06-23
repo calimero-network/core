@@ -58,9 +58,10 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
             // scans the full group state on every call.
             // Effective member count from the PROJECTION's effective-member set
             // (direct ∪ inherited), validated divergence-free across the e2e
-            // `membership-enum` plane. `None` (empty/unfed namespace or store fault)
-            // falls back to the live `count + enumerate_inherited` union. The live
-            // fallback retires in #29b.
+            // `membership-enum` plane. `None` — an empty/unfed namespace, or a cited
+            // ancestry not fully folded (governance-backfill race) — falls back to
+            // the live `count + enumerate_inherited` union. The live fallback retires
+            // in #29b.
             let member_count = proj_ctx
                 .as_ref()
                 .and_then(|(proj, ns, heads)| {
