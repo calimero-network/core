@@ -435,10 +435,27 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   <code>is_authorized_with_capability</code> use the projection-at-cut verdict as the
   authoritative decision when <code>AtCutAuthorizer</code> returns <code>Some</code>, falling
   back to live store queries otherwise. The <code>shadow_admin</code> helper and
-  <code>unified_projection_divergence</code> logging have been removed.</li>
+  <code>unified_projection_divergence</code> logging have been removed. <code>MembershipPolicy</code>
+  now optionally carries the op's parent cut hashes and an <code>AtCutAuthorizer</code> reference,
+  set via the new <code>with_apply_auth</code> builder method.
+  <code>ensure_not_last_admin_removal</code> and <code>ensure_not_last_admin_demotion</code> both
+  compute the live blocking decision and call the new <code>shadow_last_admin</code> helper, which
+  queries the authorizer's at-cut verdict and logs a <code>unified_projection_divergence</code>
+  warning (<code>plane=last-admin</code>, <code>gate=removal|demotion</code>) when the two
+  disagree. The live decision remains authoritative; this is a shadow/observability change only,
+  not an enforcement change. <code>GroupApplyCtx::new</code> calls
+  <code>.with_apply_auth(parents, authorizer)</code> on the <code>MembershipPolicy</code> it
+  constructs, passing the same parents and authorizer already used by
+  <code>PermissionChecker</code>, activating the last-admin shadow for all group-op apply
+  paths.</li>
   <li><code>crates/context/src/authorizer.rs</code> (or equivalent) — <code>AtCutAuthorizer</code>
-  trait gains the required <code>is_admin_or_capability_at_cut</code> method;
-  <code>LiveFallbackAuthorizer</code> and <code>EphemeralProjectionAuthorizer</code> implement it.</li>
+  trait gains the required <code>is_admin_or_capability_at_cut</code> method and the new
+  <code>is_last_admin_at_cut</code> method. Both methods must return <code>None</code> when
+  <code>parents</code> is empty (the empty-cut contract), so that genesis ops are never
+  falsely rejected. <code>EphemeralProjectionAuthorizer</code> delegates
+  <code>is_last_admin_at_cut</code> to <code>ScopeProjections::is_last_admin_at_cut</code>,
+  guarding against empty parents. <code>LiveFallbackAuthorizer</code> implements both methods
+  as always-<code>None</code>, keeping the shadow inert for non-apply constructions.</li>
 </ul>
 </div>
 

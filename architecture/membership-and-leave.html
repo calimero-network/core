@@ -451,13 +451,13 @@ resolver and emitted a warning/error on divergence) has been removed from both f
 <code>None</code>→live fallback path is preserved unchanged.
 </p>
 
-<h3>At-cut admin &amp; capability accessors — <code>is_admin_at_cut</code>, <code>is_admin_or_capability_at_cut</code></h3>
+<h3>At-cut admin &amp; capability accessors — <code>is_admin_at_cut</code>, <code>is_admin_or_capability_at_cut</code>, <code>is_last_admin_at_cut</code></h3>
 <p>
-Three additional methods on <code>ScopeProjections</code> expose admin/capability checks against a
+Four additional methods on <code>ScopeProjections</code> expose admin/capability checks against a
 historic DAG cut, mirroring what the live authorization gate does at apply time:
 </p>
 <ul>
-  <li><b><code>auth_cut_context(group_id, cut)</code></b> — shared setup used by both public
+  <li><b><code>auth_cut_context(group_id, cut)</code></b> — shared setup used by the public
   accessors. Resolves the namespace for the supplied group, gates on
   <code>cut_ancestry_complete</code> (returns <code>None</code> immediately if the cited ancestry
   is not yet fully folded), builds the <code>AclView</code> folded to the cut, and returns the
@@ -470,35 +470,54 @@ historic DAG cut, mirroring what the live authorization gate does at apply time:
   <li><b><code>is_admin_or_capability_at_cut(signer, group_id, cut, cap_bits)</code></b> —
   admin OR capability-bit check, mirroring the live
   <code>is_authorized_with_capability</code>. Same <code>None</code> semantics as above. This
-  method is now a <b>required method on the <code>AtCutAuthorizer</code> trait</b> (previously
-  deferred); all implementors must provide it.</li>
+  method is a <b>required method on the <code>AtCutAuthorizer</code> trait</b>; all implementors
+  must provide it.</li>
+  <li><b><code>is_last_admin_at_cut(member, group_id, cut)</code></b> — answers, at the
+  op's <em>parent cut</em> (pre-mutation), whether removing or demoting the given member would
+  orphan the group's admin set. Mirrors live logic exactly: a member counts as admin if they
+  hold a direct <code>Admin</code>-role row or are the genesis admin; "another admin" requires a
+  distinct <code>Admin</code>-role row (the genesis admin alone does not satisfy it). Returns
+  <code>None</code> when ancestry is incomplete, deferring to the live last-admin guard.
+  <br><br>
+  <b>Causal-position semantics.</b> Because this method reads the DAG state the signer observed
+  at sign time (the parent cut), not the receiver's current local state, it can legitimately
+  disagree with a live query made after concurrent ops have advanced the DAG — this is the
+  causal-honor property and is expected behavior, not a divergence.
+  </li>
 </ul>
 <p>
-Both public accessors return <code>None</code> (not <code>Some(false)</code>) when cited ancestry
+All public accessors return <code>None</code> (not <code>Some(false)</code>) when cited ancestry
 is not fully folded, ensuring callers do not treat an incomplete fold as a denial verdict.
 </p>
 
 <h3>AtCutAuthorizer trait and implementations</h3>
 <p>
 The <code>AtCutAuthorizer</code> trait abstracts over how an at-cut admin/capability check is
-resolved. It now declares two required methods: <code>is_admin_at_cut</code> and
-<code>is_admin_or_capability_at_cut</code>. Both return <code>Option&lt;bool&gt;</code> with the
-same <code>None</code> = undecidable semantics.
+resolved. It declares three required methods: <code>is_admin_at_cut</code>,
+<code>is_admin_or_capability_at_cut</code>, and <code>is_last_admin_at_cut</code>. All return
+<code>Option&lt;bool&gt;</code> with the same <code>None</code> = undecidable semantics.
+</p>
+<p>
+<b>Empty-cut contract.</b> Every method on this trait <b>must</b> return <code>None</code> when
+the supplied <code>parents</code> slice is empty. Violating this contract would cause a
+genesis-state fold (no <code>MemberAdded</code> or role ops processed) to produce
+<code>Some(false)</code>, falsely rejecting genesis ops that the live store correctly permits.
 </p>
 <ul>
   <li><b><code>LiveFallbackAuthorizer</code></b> — the placeholder implementation used by the
-  current namespace-envelope applier stage. Returns <code>None</code> for both methods,
-  delegating all decisions to the live store. Implementing
-  <code>is_admin_or_capability_at_cut</code> here (returning <code>None</code>) satisfies the
-  now-required trait method.</li>
+  current namespace-envelope applier stage. Returns <code>None</code> for all three methods,
+  delegating all decisions to the live store.</li>
   <li><b><code>EphemeralProjectionAuthorizer</code></b> — the projection-backed implementation.
   Holds a <code>Mutex&lt;Option&lt;(ContextGroupId, Arc&lt;FoldedProjection&gt;)&gt;&gt;</code>
   cache. The private <code>folded(group_id)</code> method checks the cache first; on a cache
   miss it calls <code>ScopeProjections::ephemeral_projection</code> and stores the result. If the
   fold fails (store or DAG-head fault) it emits a <code>tracing::warn</code> and returns
-  <code>None</code>. Both <code>is_admin_at_cut</code> and
-  <code>is_admin_or_capability_at_cut</code> go through <code>folded</code>, so a single apply
-  call reuses the same folded DAG rather than re-folding per check.</li>
+  <code>None</code>. All three at-cut methods go through <code>folded</code>, so a single apply
+  call reuses the same folded DAG rather than re-folding per check.
+  <code>is_last_admin_at_cut</code> delegates to
+  <code>ScopeProjections::is_last_admin_at_cut</code> and guards against an empty
+  <code>parents</code> slice with an immediate <code>None</code> return, consistent with the
+  trait-level empty-cut contract.</li>
 </ul>
 
 <h3>GroupGovernanceApplier — live gates only, no authorizer injection</h3>
@@ -1123,7 +1142,7 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td><code>ScopeProjections::namespace_current_heads</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>.</td></tr>
   <tr><td><code>ScopeProjections::member_now_ephemeral</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — builds a fresh projection per call: resolves the namespace, folds the DAG via <code>collect_namespace_ops</code>, reads heads after the fold, and returns <code>member_at_cut</code>. Returns <code>None</code> (never decides against the member) on unresolvable namespace, store fault, or incomplete fold.</td></tr>
   <tr><td><code>ScopeProjections::member_now_checked</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — unified membership gate for all four context-layer handlers. Calls <code>member_now_ephemeral</code> first; falls back to <code>MembershipRepository::is_member</code> when projection is undecidable; emits <code>tracing::warn</code> with <code>marker=unified_projection_divergence</code> / <code>plane=membership-query</code> on definite disagreement. Direct <code>MembershipRepository</code> imports removed from <code>get_cascade_status.rs</code>, <code>get_group_upgrade_status.rs</code>, <code>list_all_groups.rs</code>, and <code>list_group_contexts.rs</code>.</td></tr>
-  <tr><td><code>AtCutAuthorizer</code> trait + <code>LiveFallbackAuthorizer</code> + <code>EphemeralProjectionAuthorizer</code></td><td><b>Implemented</b></td><td><code>crates/context/src/governance_dag.rs</code> — <code>AtCutAuthorizer</code> now declares <code>is_admin_or_capability_at_cut</code> as a required method. <code>LiveFallbackAuthorizer</code> implements it returning <code>None</code>. <code>EphemeralProjectionAuthorizer</code> holds a <code>Mutex&lt;Option&lt;(ContextGroupId, Arc&lt;FoldedProjection&gt;)&gt;&gt;</code> fold cache; the private <code>folded</code> helper reuses a cached fold for the same group or calls <code>ScopeProjections::ephemeral_projection</code> on a miss. Both <code>is_admin_at_cut</code> and <code>is_admin_or_capability_at_cut</code> delegate through <code>folded</code>. The standalone <code>GroupGovernanceApplier::apply</code> is unchanged (live-only); see the <em>GroupGovernanceApplier</em> note in the at-cut accessors section above.</td></tr>
+  <tr><td><code>AtCutAuthorizer</code> trait + <code>LiveFallbackAuthorizer</code> + <code>EphemeralProjectionAuthorizer</code></td><td><b>Implemented</b></td><td><code>crates/context/src/governance_dag.rs</code> — <code>AtCutAuthorizer</code> declares three required methods: <code>is_admin_at_cut</code>, <code>is_admin_or_capability_at_cut</code>, and <code>is_last_admin_at_cut</code>. All must return <code>None</code> when <code>parents</code> is empty (trait-level empty-cut contract). <code>LiveFallbackAuthorizer</code> implements all three returning <code>None</code>. <code>EphemeralProjectionAuthorizer</code> holds a <code>Mutex&lt;Option&lt;(ContextGroupId, Arc&lt;FoldedProjection&gt;)&gt;&gt;</code> fold cache; the private <code>folded</code> helper reuses a cached fold for the same group or calls <code>ScopeProjections::ephemeral_projection</code> on a miss. All three at-cut methods delegate through <code>folded</code>; each opens with an empty-parents guard. <code>is_last_admin_at_cut</code> delegates to <code>ScopeProjections::is_last_admin_at_cut</code> (in <code>crates/context/src/scope_projections.rs</code>), which mirrors live last-admin logic at the parent cut. The standalone <code>GroupGovernanceApplier::apply</code> is unchanged (live-only); see the <em>GroupGovernanceApplier</em> note in the at-cut accessors section above.</td></tr>
   <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
 </table>
 </div>
@@ -1215,8 +1234,10 @@ before the fold is attempted at all.
   <code>EphemeralProjectionAuthorizer::is_admin_or_capability_at_cut</code>: both now open with
   <code>if parents.is_empty() { return None; }</code> before the <code>folded(group_id)</code>
   call.</li>
-  <li>No changes to <code>LiveFallbackAuthorizer</code>, <code>ScopeProjections</code>, or any
-  call sites — the early return is entirely internal to the two authorizer methods.</li>
+  <li>No changes to <code>ScopeProjections</code> or any call sites — the early return is
+  entirely internal to the authorizer methods. <code>LiveFallbackAuthorizer</code> is unaffected
+  (it already returns <code>None</code> unconditionally for all methods, including the new
+  <code>is_last_admin_at_cut</code>).</li>
 </ul>
 </div>
 </div>
