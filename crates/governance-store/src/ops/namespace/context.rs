@@ -96,32 +96,20 @@ impl<'a> NamespaceApplyCtx<'a> {
         Ok(())
     }
 
-    /// SHADOW (F5 #29b): compare the projection's at-cut membership PATH for `member`
-    /// in `group` against the `live_path` the `MemberJoinedOpen` gate computed from
-    /// `check_path`, logging a `membership-path` divergence on a mismatch. Still acts
-    /// on live (the gate decides from `live_path`); the flip follows once validated.
-    /// `None` from the authorizer (no apply-auth context / incomplete fold) skips.
-    pub(crate) fn shadow_membership_path(
+    /// The PROJECTION's at-cut membership PATH for `member` in `group`, for the
+    /// `MemberJoinedOpen` gate (F5 #29b flip): `membership_path_at_cut` at the op's
+    /// causal cut, validated divergence-free on the `membership-path` plane. `None`
+    /// (no apply-auth context — sign/test — or an incomplete fold) means the caller
+    /// must fall back to live `check_path`. Returning the `Option` (rather than taking
+    /// an eager `live_path`) lets the caller compute live LAZILY — only when the
+    /// projection abstains — so a `check_path` store error can't abort an apply the
+    /// projection would have decided.
+    pub(crate) fn projection_membership_path(
         &self,
         group: &ContextGroupId,
         member: &PublicKey,
-        live_path: crate::authorizer::AtCutMembershipPath,
-    ) {
-        if let Some(projected) = self
-            .authorizer
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        self.authorizer
             .membership_path_at_cut(group, member, self.parents)
-        {
-            if projected != live_path {
-                tracing::warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "membership-path",
-                    group_id = ?group,
-                    %member,
-                    ?projected,
-                    ?live_path,
-                    "member-joined-open: projection membership path differs from live check_path"
-                );
-            }
-        }
     }
 }
