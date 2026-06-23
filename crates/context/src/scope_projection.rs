@@ -1372,6 +1372,46 @@ impl ScopeProjections {
             .cloned()
     }
 
+    /// The EFFECTIVE role of `member` in `group` at the cut, resolving the namespace
+    /// from `group` and gating on COMPLETE cited ancestry — the node-side accessor for
+    /// the data-write role (written through to peer-identity observation). Mirrors
+    /// live `acl_view_at`'s `Member(role)`, which is the *effective* role: a direct
+    /// member's folded role, `Admin` for an inherited-via-admin member, else the
+    /// member's role at the anchor it inherits from (the same derivation the
+    /// `membership-role` plane validated — NOT just `groups[group]`, which would miss
+    /// inherited/admin paths). `None` when the namespace is unresolved, the cut isn't
+    /// fully folded (defer to live), or `member` isn't a member at the cut.
+    #[must_use]
+    pub fn role_at_cut_for_group(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<GroupMemberRole> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        match view.member_path_at_cut(group, member, root, default_cap_base) {
+            calimero_authz::MemberPathAtCut::None => None,
+            calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+            calimero_authz::MemberPathAtCut::Inherited {
+                via_admin: true, ..
+            } => Some(GroupMemberRole::Admin),
+            // `member_path_at_cut` only emits this arm when the anchor row is present,
+            // so the lookup resolves; if it somehow doesn't, return `None` (defer to
+            // live / skip the shadow) rather than GUESS `Member` — guessing could emit
+            // a spurious `data-write-role` divergence. Matches `member_entries_with`,
+            // which bails rather than fabricating a role on the same inconsistency.
+            calimero_authz::MemberPathAtCut::Inherited {
+                anchor,
+                via_admin: false,
+            } => view
+                .groups
+                .get(&anchor)
+                .and_then(|m| m.get(member))
+                .cloned(),
+        }
+    }
+
     /// The role the projection records for `member` in `group` within `scope`,
     /// or `None` if absent (member not present, or the scope hasn't been fed).
     /// The `states` fast-path snapshot — order-converged but NOT causal for
