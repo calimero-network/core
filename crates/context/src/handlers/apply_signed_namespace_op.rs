@@ -155,6 +155,54 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                                 }
                             }
                         }
+
+                        // APPLY-AUTH shadow (F5 #28, log-only): the op just APPLIED,
+                        // so the LIVE resolver authorized its signer. Would the
+                        // projection authorize the signer too — at the op's PARENT
+                        // cut (state EXCLUDING this op, the correct cut to authorize
+                        // against)? `Some(false)` = the projection would REJECT what
+                        // live accepted (under-auth — safe, but a real divergence to
+                        // investigate); `None` = ancestry not fully folded → skip.
+                        // The reverse (projection accepts what live rejected) is
+                        // unobservable here — a live-rejected op never reaches this
+                        // fold. Resolved at the parent cut (independent of the
+                        // just-ingested op), so it runs OUTSIDE the write lock under
+                        // a brief read lock — no store I/O while the apply path's
+                        // ingest is blocked.
+                        if fed {
+                            if let Some((auth_group, req)) =
+                                apply_auth_requirement(&signed_op, decrypted.as_ref())
+                            {
+                                let verdict = match scope_projections.read() {
+                                    Ok(projections) => match req {
+                                        ApplyAuthReq::Admin => projections.is_admin_at_cut(
+                                            &feed_store,
+                                            auth_group,
+                                            &signed_op.signer,
+                                            &delta_parents,
+                                        ),
+                                        ApplyAuthReq::AdminOrCap(bits) => projections
+                                            .is_admin_or_capability_at_cut(
+                                                &feed_store,
+                                                auth_group,
+                                                &signed_op.signer,
+                                                bits,
+                                                &delta_parents,
+                                            ),
+                                    },
+                                    Err(_) => None,
+                                };
+                                if verdict == Some(false) {
+                                    tracing::warn!(
+                                        marker = "unified_projection_divergence",
+                                        plane = "governance-auth",
+                                        group_id = ?auth_group,
+                                        signer = %signed_op.signer,
+                                        "projection would reject a governance op the live resolver authorized"
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -209,5 +257,69 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
             }
             .into_actor(self),
         )
+    }
+}
+
+/// The SIGNER-authority an apply gate requires, for the apply-auth projection
+/// shadow (F5 #28). `Admin` = the live `require_admin`/`require_namespace_admin`
+/// gate; `AdminOrCap(bits)` = `is_authorized_with_capability` (admin OR the bit).
+enum ApplyAuthReq {
+    Admin,
+    AdminOrCap(u32),
+}
+
+/// Map a just-applied governance op to the (group, signer-authority) the live
+/// apply gate enforced — so the shadow can ask whether the projection agrees the
+/// SIGNER was authorized at the op's parent cut.
+///
+/// Returns `None` (shadow skips) for variants whose authority is NOT the signer's
+/// group-admin/capability: `MemberJoined` (an admin-signed invitation — authority
+/// is the inviter's signature, not the joiner-signer), `MemberJoinedOpen` (an
+/// inheritance proof on the joiner, not an admin gate), `MemberLeft` (self-
+/// authored), `KeyDelivery`/`Noop`/metadata/context-registration ops. These are
+/// covered by later, more specific shadows; the conservative subset here is the
+/// unambiguous admin/capability gates.
+fn apply_auth_requirement(
+    signed: &calimero_context_client::local_governance::SignedNamespaceOp,
+    decrypted: Option<&calimero_context_client::local_governance::GroupOp>,
+) -> Option<(calimero_context_config::types::ContextGroupId, ApplyAuthReq)> {
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::MemberCapabilities as Cap;
+
+    match &signed.op {
+        NamespaceOp::Root(root) => {
+            let ns_root = ContextGroupId::from(signed.namespace_id);
+            match root {
+                RootOp::AdminChanged { .. }
+                | RootOp::PolicyUpdated { .. }
+                | RootOp::GroupReparented { .. } => Some((ns_root, ApplyAuthReq::Admin)),
+                RootOp::GroupCreated { parent_id, .. } => Some((
+                    ContextGroupId::from(*parent_id),
+                    ApplyAuthReq::AdminOrCap(Cap::CAN_CREATE_SUBGROUP),
+                )),
+                // GroupDeleted authorizes the subgroup OWNER or a
+                // `CAN_DELETE_SUBGROUP` holder at the root, NOT only the root
+                // admin — owner authority isn't in this admin/cap model, so skip.
+                _ => None,
+            }
+        }
+        NamespaceOp::Group { group_id, .. } => {
+            let group = ContextGroupId::from(*group_id);
+            match decrypted? {
+                GroupOp::MemberAdded { .. } | GroupOp::MemberRemoved { .. } => {
+                    Some((group, ApplyAuthReq::AdminOrCap(Cap::MANAGE_MEMBERS)))
+                }
+                GroupOp::SubgroupVisibilitySet { .. } => {
+                    Some((group, ApplyAuthReq::AdminOrCap(Cap::CAN_MANAGE_VISIBILITY)))
+                }
+                GroupOp::MemberRoleSet { .. }
+                | GroupOp::MemberCapabilitySet { .. }
+                | GroupOp::DefaultCapabilitiesSet { .. } => Some((group, ApplyAuthReq::Admin)),
+                // TransferOwnership gates on the current OWNER identity
+                // (`meta.owner_identity`), not group admin — outside this model.
+                _ => None,
+            }
+        }
     }
 }

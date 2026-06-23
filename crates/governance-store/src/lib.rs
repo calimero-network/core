@@ -38,6 +38,7 @@ pub mod registration_notify;
 
 pub mod absorb;
 pub mod absorb_record;
+pub mod authorizer;
 mod capabilities;
 pub mod cascade;
 mod context_registration;
@@ -66,6 +67,7 @@ use self::local_state::{op_log_contains_content_hash, persist_group_governance_p
 
 pub use self::absorb::AbsorbRepository;
 pub use self::absorb_record::{AbsorbRecord, AbsorbedEntity, AbsorbedLeaf};
+pub use self::authorizer::{AtCutAuthorizer, LiveFallbackAuthorizer, LIVE_FALLBACK_AUTHORIZER};
 pub use self::capabilities::CapabilitiesRepository;
 
 pub use self::context_registration::ContextRegistrationService;
@@ -99,12 +101,13 @@ pub use self::metadata::MetadataRepository;
 pub use self::namespace::NamespaceRepository;
 pub use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
-    apply_received_group_key, apply_signed_namespace_op, build_group_key_delivery,
-    collect_skeleton_delta_ids_for_group, decrypt_group_op, namespace_groups_awaiting_key,
-    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult,
-    CascadePayload, KeyUnwrapFailure, NamespaceDagService, NamespaceGovernance, NamespaceHead,
-    NamespaceIdentityRecord, NamespaceMembershipService, NamespaceOpLogService,
-    NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
+    apply_received_group_key, apply_signed_namespace_op, apply_signed_namespace_op_at_cut,
+    build_group_key_delivery, collect_skeleton_delta_ids_for_group, decrypt_group_op,
+    namespace_groups_awaiting_key, sign_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure,
+    NamespaceDagService, NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord,
+    NamespaceMembershipService, NamespaceOpLogService, NamespaceRetryService, ReparentOutcome,
+    ResolvedNamespaceIdentity,
 };
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;

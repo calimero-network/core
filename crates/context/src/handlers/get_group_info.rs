@@ -56,28 +56,27 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
             // chain walk bounded by `MAX_NAMESPACE_DEPTH`. This is minor
             // next to `compute_group_state_hash` below, which already
             // scans the full group state on every call.
-            // Resolve the open-subgroup inherited members ONCE — reused for the
-            // count and (below) the shadow's live id set, instead of two parent
-            // walks.
-            let inherited =
-                MembershipRepository::new(&self.datastore).enumerate_inherited(&group_id)?;
-            let member_count = (MembershipRepository::new(&self.datastore).count(&group_id)?
-                + inherited.len()) as u64;
-
-            // SHADOW: compare the projection's effective-member SET against the live
-            // union (not just the count — equal counts with different members would
-            // otherwise slip through). Logs `membership-enum` divergence; still
-            // returns the live `member_count`. Reuses the single fold from the gate.
-            if let Some((proj, ns, heads)) = &proj_ctx {
-                let live_ids: std::collections::BTreeSet<_> =
-                    MembershipRepository::new(&self.datastore)
-                        .list(&group_id, 0, usize::MAX)?
-                        .into_iter()
-                        .map(|(pk, _)| pk)
-                        .chain(inherited.into_iter().map(|(pk, _)| pk))
-                        .collect();
-                proj.shadow_member_enum_with(&self.datastore, *ns, &group_id, heads, &live_ids);
-            }
+            // Effective member count from the PROJECTION's effective-member set
+            // (direct ∪ inherited), validated divergence-free across the e2e
+            // `membership-enum` plane. `None` — an empty/unfed namespace, or a cited
+            // ancestry not fully folded (governance-backfill race) — falls back to
+            // the live `count + enumerate_inherited` union. The live fallback retires
+            // in #29b.
+            let member_count = proj_ctx
+                .as_ref()
+                .and_then(|(proj, ns, heads)| {
+                    proj.member_identities_with(&self.datastore, *ns, &group_id, heads)
+                })
+                .map(|ids| ids.len() as u64)
+                .map_or_else(
+                    || -> eyre::Result<u64> {
+                        let membership = MembershipRepository::new(&self.datastore);
+                        Ok((membership.count(&group_id)?
+                            + membership.enumerate_inherited(&group_id)?.len())
+                            as u64)
+                    },
+                    Ok,
+                )?;
 
             let context_count =
                 MetadataRepository::new(&self.datastore).count_contexts(&group_id)? as u64;
