@@ -1036,6 +1036,29 @@ pub async fn handle_state_delta(
                     );
                     return Ok(());
                 }
+
+                // ROLE SHADOW (F5 #29b): `projection_member_at_cut` just refreshed the
+                // projection for this cut; read its at-cut ROLE and compare to live's
+                // `role` (which `verify.rs` derived from `acl_view_at` and which writes
+                // through to peer-identity observation below). Log-only — the verify.rs
+                // flip will SOURCE the role here, retiring `acl_view_at`. `None`
+                // (incomplete fold / no folded row) skips.
+                if let Some(projected_role) = node_state
+                    .read_scope_projections()
+                    .role_at_cut_for_group(datastore, group, &author_id, heads)
+                {
+                    if projected_role != role {
+                        warn!(
+                            marker = "unified_projection_divergence",
+                            plane = "data-write-role",
+                            group_id = ?group,
+                            %author_id,
+                            ?projected_role,
+                            live_role = ?role,
+                            "projection role differs from live role at the data-write cut"
+                        );
+                    }
+                }
             }
 
             // Both authorities concur (or the projection abstained). Record the

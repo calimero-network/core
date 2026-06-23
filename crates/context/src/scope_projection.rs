@@ -1372,6 +1372,30 @@ impl ScopeProjections {
             .cloned()
     }
 
+    /// [`role_at_cut`](Self::role_at_cut) resolving the namespace from `group` and
+    /// gating on COMPLETE cited ancestry — the node-side accessor for the data-write
+    /// role (the role written through to peer-identity observation). `None` when the
+    /// namespace is unresolved, the cut isn't fully folded (defer to live), or
+    /// `member` has no folded direct row at the cut.
+    #[must_use]
+    pub fn role_at_cut_for_group(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<GroupMemberRole> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let scope = ScopeId::from(namespace_id);
+        if !self.cut_ancestry_complete(&scope, heads) {
+            return None;
+        }
+        self.role_at_cut(&scope, &group, member, heads)
+    }
+
     /// The role the projection records for `member` in `group` within `scope`,
     /// or `None` if absent (member not present, or the scope hasn't been fed).
     /// The `states` fast-path snapshot — order-converged but NOT causal for
