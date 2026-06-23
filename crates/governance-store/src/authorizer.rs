@@ -26,7 +26,12 @@ use calimero_primitives::identity::PublicKey;
 /// Every method returns `Option<bool>`: `Some(verdict)` when the projection's
 /// cited ancestry is fully folded and the answer is authoritative, `None` when it
 /// isn't (the caller defers to the live resolver).
-pub trait AtCutAuthorizer {
+///
+/// `Send + Sync`: the apply path runs inside the namespace DAG applier's `async
+/// fn apply`, whose future must be `Send` (it's spawned). A `&dyn AtCutAuthorizer`
+/// is only `Send` when the trait object is `Sync`, so the bound is required for the
+/// apply future — and the axum handlers that drive it — to stay `Send`.
+pub trait AtCutAuthorizer: Send + Sync {
     /// Is `signer` an admin of `group` at the cut named by `parents`?
     fn is_admin_at_cut(
         &self,
