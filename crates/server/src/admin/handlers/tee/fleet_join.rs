@@ -134,24 +134,41 @@ pub async fn handler(
     // the common case for a NAT'd/relay owner whose mesh forms only
     // intermittently. The admission loop below therefore RE-announces every
     // poll cycle until admitted or the deadline, so a *later* mesh window still
-    // receives a fresh copy. If even this first publish errors at the transport
-    // level we bail (subscription with no announce is useless); a publish into
-    // an empty mesh is *not* an error and is expected to be retried below.
+    // receives a fresh copy.
+    //
+    // An empty mesh at t=0 is the EXPECTED cold-start outcome, not a failure:
+    // we subscribed to the namespace topic only moments ago, so no mesh peers
+    // have formed yet and `publish_on_namespace_now` surfaces
+    // `PublishError::NoPeersSubscribedToTopic`. Treating that first publish's
+    // empty-mesh error as fatal (the bug #2491 fixes) returned a spurious 500
+    // before the retry loop — whose whole purpose is to re-publish once the
+    // mesh forms — was ever reached. So classify it the same way the loop does:
+    // empty mesh is non-fatal, fall through into the retry loop below; any
+    // *other* publish error is a genuine transport failure and still bails
+    // (a subscription with no chance of an announce is useless).
     if let Err(err) = state
         .node_client
         .publish_on_namespace_now(group_id_bytes, payload.clone())
         .await
     {
-        warn!(error=?err, "Failed to broadcast, unsubscribing from namespace");
-        let _ = state
-            .node_client
-            .unsubscribe_namespace(group_id_bytes)
-            .await;
-        return ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "Failed to broadcast attestation".to_owned(),
+        if calimero_network_primitives::client::is_no_peers_subscribed_error(&err) {
+            info!(
+                group_id = %req.group_id,
+                "First announce hit an empty gossipsub mesh (no peers subscribed yet); \
+                 deferring to the re-announce loop, which republishes once the mesh forms"
+            );
+        } else {
+            warn!(error=?err, "Failed to broadcast, unsubscribing from namespace");
+            let _ = state
+                .node_client
+                .unsubscribe_namespace(group_id_bytes)
+                .await;
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to broadcast attestation".to_owned(),
+            }
+            .into_response();
         }
-        .into_response();
     }
 
     info!(
