@@ -584,8 +584,8 @@ impl ScopeProjections {
     }
 
     /// The full effective-member ENUMERATION with roles at the cut — the
-    /// projection's answer for `list_group_members`. Returns `(identity, role)` for
-    /// every effective member, with the identity SET IDENTICAL to
+    /// projection's answer for `list_group_members`. For a FOLDED group it returns
+    /// `(identity, role)` for every effective member, with the identity SET EQUAL to
     /// [`member_identities_with`](Self::member_identities_with) (validated
     /// divergence-free on the `membership-enum` plane) and each role resolved by the
     /// same `member_path_at_cut` the `membership-role` plane validated.
@@ -593,9 +593,15 @@ impl ScopeProjections {
     /// `None` (defer to live) when the cited ancestry isn't fully folded — enforced
     /// by `auth_cut_context`, which gates on `cut_ancestry_complete` and returns
     /// `None` on a partial fold — OR the target group's direct membership isn't
-    /// folded at all (the `!view.groups.contains_key` materialized-fallback case,
-    /// where the fold has no opinion and live's `list ∪ enumerate_inherited`, which
-    /// already carries roles, is authoritative).
+    /// folded at all (`!view.groups.contains_key`).
+    ///
+    /// NOTE on the unfolded-group case: unlike `member_identities_with`, which
+    /// INJECTS live `list ∪ enumerate_inherited` rows for an unfolded group (its
+    /// materialized fallback), this returns `None` there — so the identity-set
+    /// equality above holds for FOLDED groups only. The end result is the same: on
+    /// `None` the handler falls back to the live `list ∪ enumerate_inherited` union,
+    /// yielding those same rows (with roles). Deferring via `None` keeps the live
+    /// `list` read out of this projection method.
     ///
     /// PARTIAL FOLD: the materialized fallback is all-or-nothing — a group with even
     /// one folded direct member is treated as fully folded, so a materialized
@@ -661,9 +667,13 @@ impl ScopeProjections {
                     // `None` arm, rather than misreport a role with no signal.
                     let Some(role) = view.groups.get(&anchor).and_then(|m| m.get(&id)).cloned()
                     else {
+                        // A member in the validated identity set whose anchor row is
+                        // absent from the SAME view is a structural inconsistency in
+                        // the membership graph, not a role-only mismatch — so this is
+                        // an enum-plane divergence, matching the `None` arm above.
                         tracing::warn!(
                             marker = "unified_projection_divergence",
-                            plane = "membership-role",
+                            plane = "membership-enum",
                             group_id = ?group,
                             %id,
                             ?anchor,
