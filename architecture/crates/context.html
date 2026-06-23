@@ -272,6 +272,15 @@
      5. GROUPSTORE DEEP-DIVE
      ════════════════════════════════════════════════════════ -->
 <div class="card gb">
+<h2>Projection-Backed Member Count &amp; Migration Cohort</h2>
+<p style="margin-bottom:18px;">Two operations now derive their member sets from the governance projection fold rather than the live store, with a live fallback when the projection is unavailable.</p>
+
+<h3>GetGroupInfo — member_count</h3>
+<p style="margin-bottom:12px;"><span class="code">Handler&lt;GetGroupInfoRequest&gt;</span> computes <span class="code">member_count</span> as the length of the identity set returned by <span class="code">member_identities_with</span> on the already-built projection fold, instead of calling <span class="code">MembershipRepository::count</span> + <span class="code">MembershipRepository::enumerate_inherited</span> directly. The shadow divergence log that previously compared both paths is removed. If <span class="code">member_identities_with</span> returns <span class="code">None</span> (unfed namespace or incomplete ancestry fold), the handler falls back to the old live count + enumerate_inherited path.</p>
+
+<h3>collect_migration_cohort</h3>
+<p style="margin-bottom:12px;"><span class="code">collect_migration_cohort</span> calls <span class="code">member_identities_subtree_ephemeral</span> at the top and returns its result immediately on success, bypassing the live list ∪ <span class="code">enumerate_inherited</span> loop entirely. The previous shadow comparison block is removed. The live path is retained only as a fallback when the projection returns <span class="code">None</span>.</p>
+
 <h2>Governance Preflight &amp; Signing Key Resolution</h2>
 <p style="margin-bottom:18px;">Every governance mutation handler calls <span class="code">governance_preflight()</span> before signing and publishing. The common pattern is encapsulated in <span class="code">sign_and_publish_group_op()</span> which handles the boilerplate.</p>
 

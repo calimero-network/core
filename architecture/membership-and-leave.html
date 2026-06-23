@@ -269,6 +269,18 @@ record itself is unreadable. Callers <b>must</b> fall back to the live membershi
 (<code>check_group_membership_path</code>) in both cases rather than treating <code>None</code> as
 an empty cut — an empty cut would falsely deny all access.
 </p>
+<p>
+<b>Projection-derived member counts and migration cohorts.</b> <code>ScopeProjections::member_identities_with</code>
+extends this pattern to identity-set reads: given an already-built projection fold it calls
+<code>cut_ancestry_complete</code> on the fold before reading the ACL view, and returns
+<code>None</code> if the ancestry is only partially folded (a governance-backfill race). This
+<code>None</code> propagates to <code>get_group_info</code> (which falls back to
+<code>MembershipRepository::count</code> + <code>enumerate_inherited</code>) and to
+<code>collect_migration_cohort</code> (which falls back to the live list ∪ <code>enumerate_inherited</code>
+union). The private <code>ephemeral_view</code> helper has been removed; the subtree ephemeral path
+now calls <code>ephemeral_fold</code> directly and performs the <code>cut_ancestry_complete</code>
+check itself before reading the view.
+</p>
 
 <h3>Ephemeral per-query projection — <code>ScopeProjections::member_now_ephemeral</code></h3>
 <p>
