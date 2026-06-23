@@ -1171,6 +1171,173 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
 }
 
 #[test]
+fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
+    // Regression: a TEE replica that bootstraps the namespace ROOT via the
+    // `seed_bootstrap_admin_if_absent` (KeyDelivery-seed) path used to leave the
+    // root's `default_capabilities` UNSET. The subsequently-applied
+    // `MemberJoinedViaTeeAttestation` op snapshots the group's default caps at
+    // apply time, so the ReadOnlyTee row was written with `caps = 0` — and
+    // `check_path` of any Open child subgroup then resolves to `None`, so
+    // auto-follow never `join_context`s and the Open subgroup never replicates.
+    //
+    // The fix completes the seed by also seeding the root's default caps to
+    // include `CAN_JOIN_OPEN_SUBGROUPS` (mirroring the owner-side
+    // `store_group_meta` precedent). This test seeds the root via the bare seed,
+    // admits a ReadOnlyTee via the real op path, and asserts (a) the TEE's root
+    // row HAS `CAN_JOIN_OPEN_SUBGROUPS` and (b) `check_path(open_child, tee)`
+    // resolves to `Inherited`. It FAILS before the fix and PASSES after.
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    // The founder/verifier = the KeyDelivery signer the replica TOFU-trusts.
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    // The TEE node being admitted.
+    let tee_member = PublicKey::from([0xD7; 32]);
+    let quote_hash = [0xE7; 32];
+
+    let namespace_id = [0xB4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let open_child = ContextGroupId::from([0xB5u8; 32]);
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // ---- Bare bootstrap seed: this is the ONLY thing that establishes the root
+    // meta + founding admin on the replica (the real fleet-join KeyDelivery
+    // path). It must also leave the root's default caps set to include
+    // CAN_JOIN_OPEN_SUBGROUPS. ----
+    gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
+        .expect("bootstrap seed");
+
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&ns_gid)
+            .unwrap(),
+        Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+        "bootstrap seed must set the root's default caps so members admitted \
+         before the DefaultCapabilitiesSet gossip inherit CAN_JOIN_OPEN_SUBGROUPS"
+    );
+
+    // An Open child subgroup nested under the root.
+    nest_for_test(&store, &ns_gid, &open_child);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&open_child, VisibilityMode::Open)
+        .unwrap();
+
+    // The replica holds the group key (delivered via KeyDelivery) so it can
+    // decrypt the encrypted group ops below.
+    let group_key = [0x71u8; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    // ---- Op 1 (nonce 1): TeeAdmissionPolicySet, authored by the founder. ----
+    let policy_op = GroupKeyring::encrypt_op(
+        &group_key,
+        &GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m1".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned()],
+            accept_mock: true,
+        },
+    )
+    .unwrap();
+    let policy_ns_op = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: namespace_id,
+            key_id,
+            encrypted: policy_op,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    gov.apply_signed_op(&policy_ns_op)
+        .expect("replica must apply TeeAdmissionPolicySet");
+
+    // ---- Op 2 (nonce 2): MemberJoinedViaTeeAttestation — the row whose caps
+    // are snapshotted from the root's default caps at apply time. ----
+    let join_op = GroupKeyring::encrypt_op(
+        &group_key,
+        &GroupOp::MemberJoinedViaTeeAttestation {
+            member: tee_member,
+            quote_hash,
+            mrtd: "m1".to_owned(),
+            rtmr0: "r0".to_owned(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+        },
+    )
+    .unwrap();
+    let join_ns_op = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: namespace_id,
+            key_id,
+            encrypted: join_op,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    gov.apply_signed_op(&join_ns_op)
+        .expect("replica must apply MemberJoinedViaTeeAttestation");
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &tee_member)
+            .unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee),
+        "the TEE node must be recorded as a ReadOnlyTee member on the replica"
+    );
+
+    // (a) The TEE's ROOT row must carry CAN_JOIN_OPEN_SUBGROUPS — snapshotted
+    // from the seeded default caps at admission time.
+    let tee_root_caps = CapabilitiesRepository::new(&store)
+        .member_capability(&ns_gid, &tee_member)
+        .unwrap()
+        .unwrap_or(0);
+    assert_ne!(
+        tee_root_caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+        0,
+        "TEE root row must carry CAN_JOIN_OPEN_SUBGROUPS (got caps={tee_root_caps:#b})"
+    );
+
+    // (b) check_path of the Open child must resolve to Inherited via the root
+    // anchor — i.e. auto-follow would join_context and replicate the subgroup.
+    assert!(
+        matches!(
+            MembershipRepository::new(&store)
+                .check_path(&open_child, &tee_member)
+                .unwrap(),
+            crate::membership::MembershipPath::Inherited { .. }
+        ),
+        "Open child must resolve to Inherited for the TEE so its context replicates"
+    );
+}
+
+#[test]
 fn replica_op_log_dedup_survives_head_pruning() {
     use calimero_context_client::local_governance::{
         NamespaceOp, SignedGroupOp, SignedNamespaceOp, SIGNED_GROUP_OP_SCHEMA_VERSION,

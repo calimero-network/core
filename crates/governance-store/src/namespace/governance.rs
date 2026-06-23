@@ -1,11 +1,13 @@
 use crate::{
-    DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+    CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository,
+    NamespaceRepository,
 };
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, KeyEnvelope, NamespaceOp, RootOp,
     SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -922,14 +924,40 @@ impl<'a> NamespaceGovernance<'a> {
             )?;
         }
 
-        // Nothing to do (and nothing to log) if both halves were already
+        // Seed the root's default capabilities so members added before the
+        // separate `DefaultCapabilitiesSet` gossip arrives still inherit
+        // `CAN_JOIN_OPEN_SUBGROUPS`, the bit that gates inheritance into Open
+        // child subgroups. This mirrors the owner-side precedent in
+        // `context::handlers::store_group_meta` (which sets the same default
+        // when bootstrapping root meta from gossip).
+        //
+        // Without this, a TEE replica that bootstraps the namespace root via
+        // this seed path admits its own `MemberJoinedViaTeeAttestation` row
+        // with `caps = 0` (the row snapshots the group's default caps at apply
+        // time), so `check_path` of any Open subgroup returns `None`,
+        // auto-follow declines to `join_context`, and the Open subgroup's
+        // context never replicates on the replica.
+        //
+        // Gated on its own absence so re-running (and a steady-state re-entry)
+        // is idempotent and never clobbers an admin-authored override that the
+        // gossiped `DefaultCapabilitiesSet` may have since installed.
+        let default_caps_existed = CapabilitiesRepository::new(self.store)
+            .default_capabilities(&gid)?
+            .is_some();
+        if !default_caps_existed {
+            CapabilitiesRepository::new(self.store)
+                .set_default_capabilities(&gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)?;
+        }
+
+        // Nothing to do (and nothing to log) if all halves were already
         // present — the common steady-state re-entry.
-        if !meta_existed || !member_existed {
+        if !meta_existed || !member_existed || !default_caps_existed {
             tracing::info!(
                 namespace_id = %hex::encode(group_id),
                 %founder,
                 meta_seeded = !meta_existed,
                 member_seeded = !member_existed,
+                default_caps_seeded = !default_caps_existed,
                 "seeded/repaired founding namespace admin from KeyDelivery signer (TEE bootstrap)"
             );
         }
