@@ -512,7 +512,14 @@ impl ScopeProjections {
             .resolve(namespace_root)
             .ok()?
             .to_bytes();
-        let view = Self::ephemeral_view(store, namespace_id)?;
+        let (proj, heads) = Self::ephemeral_fold(store, namespace_id)?;
+        let scope = ScopeId::from(namespace_id);
+        // Defer to live on a partial fold (governance-backfill race) rather than
+        // returning an under-counted cohort — same guard as the membership gate.
+        if !proj.cut_ancestry_complete(&scope, &heads) {
+            return None;
+        }
+        let view = proj.acl_view_at(&scope, &heads)?;
         let mut out = std::collections::BTreeSet::new();
         for group in groups {
             out.extend(Self::member_identities_in_view(
@@ -544,6 +551,38 @@ impl ScopeProjections {
             .to_bytes();
         let (proj, heads) = Self::ephemeral_fold(store, namespace_id)?;
         Some((proj, namespace_id, heads))
+    }
+
+    /// The effective member-identity SET of `group` from an ALREADY-built
+    /// projection (the `_with` analogue of [`shadow_member_enum_with`], but
+    /// returning the set instead of comparing it). The authoritative read for the
+    /// identity-set enumeration consumers (member count, migration cohort) now that
+    /// the set is validated divergence-free across the e2e `membership-enum` plane.
+    /// `None` when the scope wasn't fed (an empty namespace) OR the cited ancestry
+    /// isn't fully folded (a governance-backfill race) — caller falls back to live,
+    /// exactly as the membership gate's `member_at_cut` defers on an incomplete cut.
+    /// Without this guard a partial fold would silently UNDER-count. (Identity-only;
+    /// the role-bearing `list_group_members` flip needs a role-enumeration variant +
+    /// its own validation.)
+    #[must_use]
+    pub fn member_identities_with(
+        &self,
+        store: &Store,
+        namespace_id: [u8; 32],
+        group: &ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<std::collections::BTreeSet<PublicKey>> {
+        let scope = ScopeId::from(namespace_id);
+        if !self.cut_ancestry_complete(&scope, heads) {
+            return None;
+        }
+        let view = self.acl_view_at(&scope, heads)?;
+        Some(Self::member_identities_in_view(
+            &view,
+            store,
+            namespace_id,
+            group,
+        ))
     }
 
     /// The shared fold primitive for both [`ephemeral_projection`](Self::ephemeral_projection)
@@ -614,15 +653,6 @@ impl ScopeProjections {
                 "query-enum: projection effective-member set differs from live"
             );
         }
-    }
-
-    /// Build a fresh ephemeral projection of `namespace_id`'s governance DAG and
-    /// return its at-cut [`AclView`] at the namespace's current heads. `None` (with
-    /// a warn) when the governance head is unreadable — a store fault that the
-    /// caller surfaces by falling back to live, never silently.
-    fn ephemeral_view(store: &Store, namespace_id: [u8; 32]) -> Option<calimero_authz::AclView> {
-        let (proj, heads) = Self::ephemeral_fold(store, namespace_id)?;
-        proj.acl_view_at(&ScopeId::from(namespace_id), &heads)
     }
 
     /// The effective member-identity set of `group` from an already-folded `view`
