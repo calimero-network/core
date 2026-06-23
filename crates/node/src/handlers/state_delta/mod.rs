@@ -1059,6 +1059,28 @@ pub async fn handle_state_delta(
                         );
                     }
                 }
+
+                // DECISION SHADOW (F5 #29b): once `verify.rs` drops `acl_view_at`, the
+                // data-write decision becomes the PURE projection verdict — the SAME
+                // conservative `member_at_cut` (`projected`) the co-authorizer already
+                // computed (NOT the strict `member_at_cut_authoritative`, which would
+                // reject a materialized member live + this gate authorize). Here
+                // `projected` is `Some(true)` (authorize, matches) or `None`: `None` means
+                // the cited ancestry isn't fully folded yet, so the pure path would BUFFER
+                // (hold until governance catches up) where the current path APPLIES.
+                // (`Some(false)` already returned above.) That `None`→buffer case is the
+                // one EXPECTED, safe behavioral difference — logged under a NON-gate marker
+                // because, unlike the membership planes, this plane is non-zero by design
+                // and must not fail the divergence gate.
+                if projected.is_none() {
+                    debug!(
+                        marker = "data_write_decision_shadow",
+                        plane = "data-write-decision",
+                        group_id = ?group,
+                        %author_id,
+                        "pure-projection verdict would buffer (incomplete fold) where the current path applies"
+                    );
+                }
             }
 
             // Both authorities concur (or the projection abstained). Record the
@@ -1105,16 +1127,16 @@ pub async fn handle_state_delta(
             // recoverable: the same delta re-arrives via gossip (this path) or via
             // hash-heartbeat-triggered snapshot sync, so a recovery-path drop cannot
             // cause permanent divergence. They migrate once this path is validated.
-            let granted = governance_position.as_ref().is_some_and(|gp| {
+            let authoritative = governance_position.as_ref().and_then(|gp| {
                 projection_member_at_cut_authoritative(
                     &node_state,
                     datastore,
                     group,
                     &author_id,
                     &gp.governance_dag_heads,
-                ) == Some(true)
+                )
             });
-            if granted {
+            if authoritative == Some(true) {
                 warn!(
                     marker = "unified_projection_divergence",
                     plane = "membership-cut-grant",
@@ -1130,6 +1152,23 @@ pub async fn handle_state_delta(
                 node_state.observe_peer_identity(source, author_id, None);
                 // Fall through to the apply path: the projection is authoritative.
             } else {
+                // DECISION SHADOW (F5 #29b): the pure-projection path would BUFFER (not
+                // reject) when `member_at_cut_authoritative` is `None` — the cited
+                // governance ancestry isn't fully folded yet. The current path REJECTS
+                // here (live rejected, projection couldn't grant). NON-gate marker (this
+                // plane is non-zero by design): the flip will buffer instead, holding the
+                // delta until governance catches up rather than dropping it. `Some(false)`
+                // (folded not-a-member) needs no log — both reject.
+                if authoritative.is_none() {
+                    debug!(
+                        marker = "data_write_decision_shadow",
+                        plane = "data-write-decision",
+                        group_id = ?group,
+                        %author_id,
+                        reason,
+                        "pure-projection verdict would buffer (incomplete fold) where the current path rejects"
+                    );
+                }
                 warn!(
                     %context_id,
                     %author_id,
