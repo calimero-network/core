@@ -81,9 +81,16 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
                 // ROLES the identity-set shadow doesn't validate). Resolve every
                 // live member's projected role in ONE fold, then compare; `None`
                 // (not-yet-folded / projection abstains) skips.
+                // `None` per entry = the projection does NOT see this member (not a
+                // member at the cut, OR the cut isn't fully folded). Either way the
+                // role shadow skips it: member PRESENCE is owned by the identity
+                // shadow above (`membership-enum`), so this plane only validates
+                // ROLES for members both sides agree exist — a missing member is
+                // already that plane's divergence, not a silent gap here.
                 let member_ids: Vec<_> = members.iter().map(|(pk, _)| *pk).collect();
                 let projected_roles =
                     proj.member_roles_for(&self.datastore, &group_id, &member_ids, heads);
+                debug_assert_eq!(members.len(), projected_roles.len());
                 for ((member, live_role), projected_role) in members.iter().zip(&projected_roles) {
                     if let Some(projected_role) = projected_role {
                         if projected_role != live_role {

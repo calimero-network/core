@@ -310,6 +310,11 @@ impl AclView {
             self.is_group_admin(author, g)
                 || root.is_some_and(|(root_g, root_admin)| g == root_g && *author == root_admin)
         };
+        // Direct row FIRST (the reverse of `is_member_at_cut`, which only needs a
+        // bool so its order is immaterial): when an identity is BOTH a stored
+        // member and the genesis admin, live's `list` returns the stored row's
+        // role, so the row is authoritative. The `is_admin` carve-out below only
+        // supplies a role (`Admin`) when there is NO row to read.
         if let Some(role) = self.groups.get(&group).and_then(|m| m.get(author)) {
             return MemberPathAtCut::Direct { role: role.clone() };
         }
