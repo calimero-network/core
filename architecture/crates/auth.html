@@ -22,7 +22,7 @@
 <div class="g4" style="margin-bottom:36px;">
   <div class="stat"><div class="v" style="color:#84cc16;">JWT</div><div class="l">token system</div></div>
   <div class="stat"><div class="v" style="color:#84cc16;">2</div><div class="l">auth modes</div></div>
-  <div class="stat"><div class="v" style="color:#84cc16;">N</div><div class="l">pluggable providers</div></div>
+  <div class="stat"><div class="v" style="color:#84cc16;">N−1</div><div class="l">pluggable providers</div></div>
   <div class="stat"><div class="v" style="color:#84cc16;">Ed25519</div><div class="l">key management</div></div>
 </div>
 
@@ -62,14 +62,11 @@
   <text x="480" y="185" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">AuthProviders</text>
   <text x="480" y="205" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">pluggable · route by auth_method</text>
 
-  <rect x="330" y="218" width="90" height="30" rx="6" fill="#3b82f610" stroke="#3b82f6" stroke-width="1"/>
-  <text x="375" y="237" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="9">NEAR</text>
+  <rect x="382" y="218" width="90" height="30" rx="6" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="427" y="237" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9">Ethereum</text>
 
-  <rect x="435" y="218" width="90" height="30" rx="6" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1"/>
-  <text x="480" y="237" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9">Ethereum</text>
-
-  <rect x="540" y="218" width="90" height="30" rx="6" fill="#06b6d410" stroke="#06b6d4" stroke-width="1"/>
-  <text x="585" y="237" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="9">Custom</text>
+  <rect x="488" y="218" width="90" height="30" rx="6" fill="#06b6d410" stroke="#06b6d4" stroke-width="1"/>
+  <text x="533" y="237" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="9">Custom</text>
 
   <!-- KeyManager -->
   <rect x="310" y="300" width="160" height="70" rx="10" fill="#0f0f16" stroke="#10b981" stroke-width="1.5"/>
@@ -161,6 +158,7 @@
 </div>
 
 <h3>Claims Schema</h3>
+<p style="margin-bottom:8px;"><strong>Breaking change:</strong> The <span class="code">wallet</span> field has been removed from <span class="code">RootKey</span> and <span class="code">ClientKey</span>. Existing stored or transmitted JSON containing a <span class="code">wallet</span> field will no longer deserialize into these structs. The <span class="code">WalletType</span> and <span class="code">NearNetworkId</span> enums, and the <span class="code">wallet_type</span> constructor parameter, are also deleted.</p>
 <div class="typedef" style="margin-bottom:16px;">
 <span class="kw">pub struct</span> <span class="ty">Claims</span> {<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sub</span>: String,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// key id (public key hash)</span><br>
@@ -192,7 +190,7 @@
     </div>
     <div class="step"><div class="n">2</div>
       <h4>Sign Challenge</h4>
-      <p>Client signs the challenge nonce with their wallet key (NEAR Ed25519, Ethereum secp256k1, etc.). The signature proves ownership of the corresponding public key without revealing the private key.</p>
+      <p>Client signs the challenge nonce with their wallet key (Ethereum secp256k1, or a custom provider key). The signature proves ownership of the corresponding public key without revealing the private key. Note: NEAR Ed25519 wallet signing is no longer supported as the NEAR Wallet provider has been removed.</p>
     </div>
     <div class="step"><div class="n">3</div>
       <h4>Submit Signed Challenge</h4>
@@ -212,6 +210,7 @@
 <div class="card gc">
 <h2>Auth Modes</h2>
 <p style="margin-bottom:18px;">Two operational modes that determine how authentication is enforced on incoming requests.</p>
+<div class="callout callout-warn" style="margin-bottom:18px;">The <strong>NEAR Wallet</strong> authentication provider (<code>NearWalletProvider</code>) has been removed. The <code>near-crypto</code>, <code>near-jsonrpc-client</code>, and <code>near-primitives</code> Cargo dependencies are no longer present. Existing integrations that relied on NEAR wallet-based login must migrate to a Custom provider.</div>
 
 <div class="g2">
   <div class="cb">
@@ -280,6 +279,7 @@ GET  /auth/validate           — Forward auth validation endpoint
 </div>
 
 <h3>Protected Endpoints</h3>
+<p style="margin-bottom:10px;"><strong>Note:</strong> The <span class="code">wallet</span> field has been removed from <span class="code">RootKey</span> and <span class="code">ClientKey</span> response objects. Clients that read or write the <span class="code">wallet</span> field will break and must be updated.</p>
 <div class="typedef">
 <span class="comment">— Root Key Management —</span>
 GET    /admin/keys                              — List root keys
@@ -334,7 +334,7 @@ type = "rocksdb"
 path = "/data/auth_db"
 
 [providers]
-near_wallet = true
+# near_wallet provider has been removed
 </div>
 </div>
 </details>
