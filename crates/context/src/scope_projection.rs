@@ -1091,6 +1091,75 @@ impl ScopeProjections {
         Some(effective & capability != 0)
     }
 
+    /// The projection's ENUMERATION role for `member` in `group` at the cut — the
+    /// role live's `list ∪ enumerate_inherited` assigns: a direct member's folded
+    /// role, `Admin` for an inherited-via-admin member, else the member's role at
+    /// the anchor it inherits from (mirrors live's `via_admin ? Admin :
+    /// role_of(anchor)`). `None` when not a member at the cut, or the ancestry isn't
+    /// fully folded (defer to live). The role-validation read ahead of flipping the
+    /// role-bearing `list_group_members` onto the projection.
+    #[must_use]
+    pub fn member_roles_for(
+        &self,
+        store: &Store,
+        group: &ContextGroupId,
+        members: &[PublicKey],
+        heads: &[[u8; 32]],
+    ) -> std::collections::BTreeMap<PublicKey, GroupMemberRole> {
+        // Fold the view ONCE for the whole batch — the shadow resolves a full
+        // member list, so a per-member fold would re-walk the DAG N times. Returns
+        // a map keyed by member (only those the projection assigns a role) so the
+        // caller looks up positionally-independently — no zip-length coupling.
+        let Some((view, root, default_cap_base)) = self.auth_cut_context(store, *group, heads)
+        else {
+            // Namespace unresolved / cited ancestry not fully folded: abstain
+            // entirely (the shadow finds no entry and skips; the flip falls back to
+            // live).
+            return std::collections::BTreeMap::new();
+        };
+        // Materialized-fallback PARITY with the identity shadow
+        // (`member_identities_in_view`): when this group's direct membership isn't
+        // folded (no entry in `view.groups` — a Restricted subgroup arriving as
+        // materialized rows, or undecryptable member ops), the fold has NO opinion
+        // on its roles. Abstain wholesale rather than emit a walk-derived role that
+        // would spuriously differ from live's stored direct row.
+        if !view.groups.contains_key(group) {
+            return std::collections::BTreeMap::new();
+        }
+        members
+            .iter()
+            .filter_map(|member| {
+                let role = match view.member_path_at_cut(*group, member, root, default_cap_base) {
+                    // Not a member at the cut: omit. PRESENCE is the identity
+                    // shadow's job; this plane only validates roles for co-present
+                    // members.
+                    calimero_authz::MemberPathAtCut::None => return None,
+                    calimero_authz::MemberPathAtCut::Direct { role } => role,
+                    // Reached over the open chain via an admin ancestor → `Admin`,
+                    // matching live's `via_admin ? Admin : role_of(anchor)`.
+                    calimero_authz::MemberPathAtCut::Inherited {
+                        via_admin: true, ..
+                    } => GroupMemberRole::Admin,
+                    // Non-admin inheritance: the member's role at the `anchor` it
+                    // joined through. `member_path_at_cut` only emits this arm when
+                    // the anchor row is present, so the `Member` fallback is a
+                    // defensive mirror of live's `role_of(anchor).unwrap_or(Member)`
+                    // and is unreachable by construction.
+                    calimero_authz::MemberPathAtCut::Inherited {
+                        anchor,
+                        via_admin: false,
+                    } => view
+                        .groups
+                        .get(&anchor)
+                        .and_then(|m| m.get(member))
+                        .cloned()
+                        .unwrap_or(GroupMemberRole::Member),
+                };
+                Some((*member, role))
+            })
+            .collect()
+    }
+
     /// Shared setup for the at-cut admin/capability reads: resolve the namespace,
     /// gate on COMPLETE cited ancestry (so the verdict is authoritative — `None`
     /// otherwise, defer to live), build the folded view + the genesis root tuple
