@@ -81,6 +81,31 @@ pub trait AtCutAuthorizer: Send + Sync {
         member: &PublicKey,
         parents: &[[u8; 32]],
     ) -> Option<bool>;
+
+    /// How `member` reaches membership of `group` at the cut — the at-cut analogue of
+    /// the live `check_path`. Backs `MemberJoinedOpen` apply (an open-subgroup
+    /// inheritance join is valid only from an `Inherited` path; a `Direct` member
+    /// should use `MemberJoined`, and `None` has no path to inherit through). `None`
+    /// (the `Option`, not [`AtCutMembershipPath::None`]) = defer to live.
+    fn membership_path_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &PublicKey,
+        parents: &[[u8; 32]],
+    ) -> Option<AtCutMembershipPath>;
+}
+
+/// How an identity reaches membership of a group at a cut — the at-cut analogue of
+/// the live `MembershipPath` (kind only; the role/anchor detail the projection's
+/// `member_path_at_cut` carries isn't needed by the `MemberJoinedOpen` gate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtCutMembershipPath {
+    /// Not a member of the group at the cut.
+    None,
+    /// A direct member (a stored membership row).
+    Direct,
+    /// Inherited over the open-subgroup chain.
+    Inherited,
 }
 
 /// The identity authorizer: always `None`, so every gate falls back to the live
@@ -116,6 +141,15 @@ impl AtCutAuthorizer for LiveFallbackAuthorizer {
         _member: &PublicKey,
         _parents: &[[u8; 32]],
     ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<AtCutMembershipPath> {
         None
     }
 }

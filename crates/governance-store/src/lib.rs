@@ -67,7 +67,9 @@ use self::local_state::{op_log_contains_content_hash, persist_group_governance_p
 
 pub use self::absorb::AbsorbRepository;
 pub use self::absorb_record::{AbsorbRecord, AbsorbedEntity, AbsorbedLeaf};
-pub use self::authorizer::{AtCutAuthorizer, LiveFallbackAuthorizer, LIVE_FALLBACK_AUTHORIZER};
+pub use self::authorizer::{
+    AtCutAuthorizer, AtCutMembershipPath, LiveFallbackAuthorizer, LIVE_FALLBACK_AUTHORIZER,
+};
 pub use self::capabilities::CapabilitiesRepository;
 
 pub use self::context_registration::ContextRegistrationService;

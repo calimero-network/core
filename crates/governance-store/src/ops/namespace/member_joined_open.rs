@@ -58,7 +58,11 @@ pub(crate) fn apply(
             }
         ));
     }
-    match MembershipRepository::new(store).check_path(&gid, &member)? {
+    let live = MembershipRepository::new(store).check_path(&gid, &member)?;
+    // SHADOW (F5 #29b): cross-check the projection's at-cut path against live
+    // `check_path` (plane `membership-path`); still act on live. Flip follows.
+    ctx.shadow_membership_path(&gid, &member, membership_path_kind(&live));
+    match live {
         MembershipPath::Inherited { .. } => Ok(()),
         MembershipPath::Direct => {
             // Direct members go through `MemberJoined` or `add_group_members`
@@ -75,5 +79,14 @@ pub(crate) fn apply(
                 }
             ));
         }
+    }
+}
+
+/// The live `MembershipPath` collapsed to the at-cut path KIND the shadow compares.
+fn membership_path_kind(path: &MembershipPath) -> crate::authorizer::AtCutMembershipPath {
+    match path {
+        MembershipPath::Inherited { .. } => crate::authorizer::AtCutMembershipPath::Inherited,
+        MembershipPath::Direct => crate::authorizer::AtCutMembershipPath::Direct,
+        MembershipPath::None => crate::authorizer::AtCutMembershipPath::None,
     }
 }
