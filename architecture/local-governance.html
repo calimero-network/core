@@ -531,6 +531,64 @@
 
 </div>
 
+<div class="card gc"><h2>Last-Admin At-Cut Gate: Trait, Shadow Logging &amp; Policy Wiring</h2>
+
+<h3>Overview</h3>
+<p><code>is_last_admin_at_cut</code> has been added to the <code>AtCutAuthorizer</code> trait, completing the set of at-cut gates used by permission-checking paths. <code>MembershipPolicy</code> now optionally carries the op's parent cut and an authorizer reference, activated via <code>with_apply_auth</code>. <code>GroupApplyCtx::new</code> wires both through automatically, so every group-op apply path participates in last-admin shadow logging.</p>
+
+<h3><code>AtCutAuthorizer</code> Trait</h3>
+<p>The trait now exposes three at-cut predicates:</p>
+<ul>
+  <li><code>is_admin_at_cut(&amp;self, identity) → Option&lt;bool&gt;</code></li>
+  <li><code>is_admin_or_capability_at_cut(&amp;self, identity, cap) → Option&lt;bool&gt;</code></li>
+  <li><code>is_last_admin_at_cut(&amp;self, identity) → Option&lt;bool&gt;</code> <strong>(new)</strong></li>
+</ul>
+<p>All three share the same <strong>empty-parents contract</strong>: every implementation <strong>must</strong> return <code>None</code> when the op's <code>parent_op_hashes</code> slice is empty. Violating this contract would cause genesis ops to be falsely rejected — the live-store fallback is always authoritative for the genesis case.</p>
+
+<h3>Implementation per Authorizer</h3>
+<ul>
+  <li><strong><code>EphemeralProjectionAuthorizer</code></strong> — delegates to <code>ScopeProjections::is_last_admin_at_cut</code>. Guards against empty parents before delegating; returns <code>None</code> if the projection fold is incomplete.</li>
+  <li><strong><code>LiveFallbackAuthorizer</code></strong> — implements the method as unconditional <code>None</code>. This keeps the shadow inert for any <code>MembershipPolicy</code> constructed outside an apply-auth context (e.g. read-only membership queries).</li>
+</ul>
+
+<h3><code>MembershipPolicy</code> Changes</h3>
+<p>Two new optional fields are added to <code>MembershipPolicy</code>:</p>
+<ul>
+  <li><code>apply_auth_parents: Option&lt;&amp;[DeltaId]&gt;</code> — the parent cut hashes of the op being applied.</li>
+  <li><code>apply_auth: Option&lt;&amp;dyn AtCutAuthorizer&gt;</code> — reference to the current authorizer.</li>
+</ul>
+<p>Set both together via the builder method:</p>
+<pre class="code">policy.with_apply_auth(parents: &amp;[DeltaId], authorizer: &amp;dyn AtCutAuthorizer) → Self</pre>
+<p>When these fields are absent (the default), every shadow call is a no-op, preserving the behaviour of non-apply constructions.</p>
+
+<h3>Shadow Logging: <code>shadow_last_admin</code></h3>
+<p>The two last-admin enforcement methods on <code>MembershipPolicy</code> now call <code>shadow_last_admin</code> after computing the live blocking decision:</p>
+<ul>
+  <li><code>ensure_not_last_admin_removal</code> — called when a <code>MemberRemoved</code> op targets an admin identity.</li>
+  <li><code>ensure_not_last_admin_demotion</code> — called when a <code>MemberRoleSet</code> would drop the last admin to a non-admin role.</li>
+</ul>
+<p><code>shadow_last_admin</code> calls <code>authorizer.is_last_admin_at_cut(identity)</code> and compares the result to the live decision. When they disagree it emits a structured warning log entry:</p>
+<pre class="code">unified_projection_divergence {
+    plane = "last-admin",
+    gate  = "removal" | "demotion",
+    live  = true | false,
+    cut   = Some(true) | Some(false) | None,
+}</pre>
+<p><strong>The live decision remains authoritative.</strong> No enforcement change is introduced; the shadow is purely diagnostic, establishing a baseline before the gate can be migrated to projection-authoritative.</p>
+
+<h3>Wiring through <code>GroupApplyCtx</code></h3>
+<p><code>GroupApplyCtx::new</code> now calls <code>.with_apply_auth(parents, authorizer)</code> on the <code>MembershipPolicy</code> it constructs, using the same <code>parents</code> and <code>authorizer</code> already threaded into <code>PermissionChecker</code>. The call site is unchanged for callers; the wiring is automatic. This means:</p>
+<ol>
+  <li>Every op applied via <code>apply_group_op_mutations</code> activates the last-admin shadow.</li>
+  <li>Ops replayed during <code>retry_encrypted_ops_for_group</code> each carry their own <code>parent_op_hashes</code>, so the shadow is evaluated at the correct individual causal cut — not at the enclosing <code>KeyDelivery</code> op's cut.</li>
+</ol>
+
+<h3>Empty-Parents Contract (Genesis Safety)</h3>
+<p>The contract applies uniformly to all three trait methods. A genesis op has no parents (<code>parent_op_hashes = []</code>). Returning anything other than <code>None</code> in that case would mean the projection is evaluated against an empty fold, which is structurally unsound. The <code>EphemeralProjectionAuthorizer</code> guard and the <code>LiveFallbackAuthorizer</code> unconditional-<code>None</code> path both satisfy this contract. Future implementations must do the same.</p>
+
+<h3>Relationship to Existing At-Cut Pattern</h3>
+<p>This addition is intentionally symmetric with the existing <code>is_admin_at_cut</code> and <code>is_admin_or_capability_at_cut</code> gates on <code>PermissionChecker</code>. The shadow pattern mirrors the <code>shadow_admin</code> approach already in place for those gates, using the same <code>unified_projection_divergence</code> log key so that divergence monitoring covers all three planes uniformly. When the last-admin gate is eventually migrated to projection-authoritative, the change will be localized to <code>MembershipPolicy</code> — no trait changes are required.</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
