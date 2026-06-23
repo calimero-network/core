@@ -531,17 +531,10 @@ impl ScopeProjections {
     /// for the membership-enumeration query endpoints. `None` when the
     /// namespace/heads/view can't be resolved.
     ///
-    /// One fold, then every candidate identity is filtered through the same at-cut
-    /// inheritance walk the boolean reads use, so the set is consistent with
-    /// [`member_now_ephemeral`](Self::member_now_ephemeral). The candidate universe
-    /// is every direct member of any group in the view plus the group/root admins —
-    /// a superset the walk narrows to `group`'s actual members.
-    ///
-    /// Mirrors live's enumeration DENY ASYMMETRY: a member who left/was-kicked from
-    /// an open subgroup but is still a namespace member stays `is_member`-true (an
-    /// `Inherited` path) yet is EXCLUDED from enumeration until they re-join. The
-    /// final filter drops such denied INHERITED candidates (direct members are never
-    /// deny-filtered), so the set matches live's `list ∪ enumerate_inherited`.
+    /// Folds once, then defers to [`member_identities_in_view`](Self::member_identities_in_view)
+    /// for the candidate filtering. For enumerating MULTIPLE groups of one namespace
+    /// (a migration cohort), prefer [`member_identities_subtree_ephemeral`](Self::member_identities_subtree_ephemeral),
+    /// which folds once and reads ONE cut for the whole subtree.
     #[must_use]
     pub fn member_identities_now_ephemeral(
         store: &Store,
@@ -551,8 +544,58 @@ impl ScopeProjections {
             .resolve(group)
             .ok()?
             .to_bytes();
+        let view = Self::ephemeral_view(store, namespace_id)?;
+        Some(Self::member_identities_in_view(
+            &view,
+            store,
+            namespace_id,
+            group,
+        ))
+    }
+
+    /// Union of [`member_identities_now_ephemeral`](Self::member_identities_now_ephemeral)
+    /// across `groups`, but folding the namespace projection ONCE and reading ONE
+    /// cut — so every group is evaluated at the SAME governance position. The
+    /// per-group ephemeral path would re-fold and re-read heads for each group,
+    /// which both multiplies the cost by the subtree size and (under concurrent
+    /// governance) evaluates groups at DIFFERENT cuts, producing a synthetic
+    /// cohort mismatch. `groups` must all resolve to `namespace_root`'s namespace.
+    #[must_use]
+    pub fn member_identities_subtree_ephemeral(
+        store: &Store,
+        namespace_root: &ContextGroupId,
+        groups: &[ContextGroupId],
+    ) -> Option<std::collections::BTreeSet<PublicKey>> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(namespace_root)
+            .ok()?
+            .to_bytes();
+        let view = Self::ephemeral_view(store, namespace_id)?;
+        let mut out = std::collections::BTreeSet::new();
+        for group in groups {
+            out.extend(Self::member_identities_in_view(
+                &view,
+                store,
+                namespace_id,
+                group,
+            ));
+        }
+        Some(out)
+    }
+
+    /// Build a fresh ephemeral projection of `namespace_id`'s governance DAG and
+    /// return its at-cut [`AclView`] at the namespace's current heads. `None` (with
+    /// a warn) when the governance head is unreadable — a store fault that the
+    /// caller surfaces by falling back to live, never silently.
+    fn ephemeral_view(store: &Store, namespace_id: [u8; 32]) -> Option<calimero_authz::AclView> {
         let mut proj = Self::new();
-        let ops = Self::collect_namespace_ops(store, namespace_id)?;
+        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+            tracing::warn!(
+                namespace = ?namespace_id,
+                "member enumeration: governance head unreadable; shadow falls back to live"
+            );
+            return None;
+        };
         proj.apply_backfill(namespace_id, ops);
         // Cut heads read AFTER the fold (same rationale as `member_now_ephemeral`):
         // the cut never names ops the fold is missing.
@@ -560,9 +603,34 @@ impl ScopeProjections {
             .read_head_record()
             .ok()?
             .parent_hashes;
-        let scope = ScopeId::from(namespace_id);
-        let view = proj.acl_view_at(&scope, &heads)?;
+        proj.acl_view_at(&ScopeId::from(namespace_id), &heads)
+    }
 
+    /// The effective member-identity set of `group` from an already-folded `view`
+    /// of its namespace. Candidate universe = every direct member of any group in
+    /// the view plus the group/root admins (a superset the walk narrows). Mirrors
+    /// three live behaviours:
+    /// * the at-cut inheritance walk (`is_member_at_cut`), so the set is consistent
+    ///   with the boolean reads;
+    /// * the enumeration DENY ASYMMETRY — `is_member`/`check_path` keeps a denied
+    ///   member (still an `Inherited` path) but `enumerate_inherited` EXCLUDES a
+    ///   denied INHERITED member (direct members are never deny-filtered);
+    /// * the namespace-leave CASCADE — a subgroup member must also be a namespace
+    ///   ROOT member (the single `MemberLeft` op the projection folds doesn't carry
+    ///   the local cascade that removes descendant rows).
+    ///
+    /// MATERIALIZED FALLBACK: for a group with NO direct member folded (a Restricted
+    /// subgroup whose membership reached this node as materialized `GroupMember`
+    /// rows, or whose member ops this node can't decrypt), the fold carries nothing
+    /// — add live's direct rows, exactly as `member_at_cut`'s `role_of` fallback
+    /// does, so the set isn't a spurious subset of live's `list`.
+    #[must_use]
+    pub fn member_identities_in_view(
+        view: &calimero_authz::AclView,
+        store: &Store,
+        namespace_id: [u8; 32],
+        group: &ContextGroupId,
+    ) -> std::collections::BTreeSet<PublicKey> {
         let root_group = ContextGroupId::from(namespace_id);
         let root = MetaRepository::new(store)
             .load(&root_group)
@@ -584,39 +652,36 @@ impl ScopeProjections {
         if let Some((_, admin)) = root {
             let _ = candidates.insert(admin);
         }
-        // Mirror live's enumeration deny ASYMMETRY: `is_member`/`check_path` keeps a
-        // denied member (a still-`Inherited` path), but `enumerate_inherited`
-        // EXCLUDES a denied INHERITED member — a node that left/was-kicked from an
-        // open subgroup yet remains a namespace member. Direct members are never
-        // deny-filtered (live's `list` doesn't consult the deny-list). The deny-list
-        // is independent persisted state (not the membership resolver F5 deletes),
-        // read here as a current-state base fact exactly like the root admin/caps.
+
         let deny = DenyListRepository::new(store);
-        Some(
-            candidates
-                .into_iter()
-                .filter(|c| view.is_member_at_cut(*group, c, root, default_cap_base))
-                .filter(|c| {
-                    // Every (sub)group member must also be a member of the owning
-                    // namespace ROOT. `leave_namespace` publishes ONE `MemberLeft` on
-                    // the root whose LOCAL apply cascade-removes the leaver's direct
-                    // rows across every descendant subgroup; the projection folds only
-                    // that single op's namespace-level removal, not the cascade, so a
-                    // stale direct subgroup row survives the fold. Requiring root
-                    // membership drops it (live has no subgroup member who isn't a
-                    // namespace member — a join always goes through the namespace).
-                    *group == root_group
-                        || view.is_member_at_cut(root_group, c, root, default_cap_base)
-                })
-                .filter(|c| {
-                    let is_direct = view
-                        .groups
-                        .get(group)
-                        .is_some_and(|members| members.contains_key(c));
-                    is_direct || !deny.is_denied(group, c).unwrap_or(false)
-                })
-                .collect(),
-        )
+        let mut result: std::collections::BTreeSet<PublicKey> = candidates
+            .into_iter()
+            .filter(|c| view.is_member_at_cut(*group, c, root, default_cap_base))
+            // Namespace-leave cascade: every (sub)group member must also be a
+            // namespace-ROOT member (live has no subgroup member who isn't one; the
+            // folded single `MemberLeft` doesn't carry the descendant-row cascade).
+            .filter(|c| {
+                *group == root_group
+                    || view.is_member_at_cut(root_group, c, root, default_cap_base)
+            })
+            // Deny asymmetry: drop a denied INHERITED member; never deny-filter a
+            // direct member (live's `list` doesn't consult the deny-list).
+            .filter(|c| {
+                let is_direct = view
+                    .groups
+                    .get(group)
+                    .is_some_and(|members| members.contains_key(c));
+                is_direct || !deny.is_denied(group, c).unwrap_or(false)
+            })
+            .collect();
+
+        // Materialized fallback for a wholly-unfolded group (mirrors `member_at_cut`).
+        if !view.groups.contains_key(group) {
+            if let Ok(rows) = MembershipRepository::new(store).list(group, 0, usize::MAX) {
+                result.extend(rows.into_iter().map(|(pk, _)| pk));
+            }
+        }
+        result
     }
 
     /// SHADOW cross-check for the membership-enumeration endpoints: compare the

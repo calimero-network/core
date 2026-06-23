@@ -51,25 +51,27 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                     .enumerate_inherited(&group_id)?
                     .len()) as u64;
 
-            // SHADOW: validate the projection's effective-member count against the
-            // live union (logs `membership-enum` divergence; still returns live).
-            if let Some(projected) =
-                crate::scope_projection::ScopeProjections::member_identities_now_ephemeral(
-                    &self.datastore,
-                    &group_id,
-                )
-            {
-                if projected.len() as u64 != member_count {
-                    tracing::warn!(
-                        marker = "unified_projection_divergence",
-                        plane = "membership-enum",
-                        group_id = ?group_id,
-                        projection_count = projected.len(),
-                        live_count = member_count,
-                        "query-enum: projection effective-member count differs from live"
-                    );
-                }
-            }
+            // SHADOW: compare the projection's effective-member SET against the live
+            // union (not just the count — equal counts with different members would
+            // otherwise slip through). Logs `membership-enum` divergence; still
+            // returns the live `member_count`.
+            let live_ids: std::collections::BTreeSet<_> =
+                MembershipRepository::new(&self.datastore)
+                    .list(&group_id, 0, usize::MAX)?
+                    .into_iter()
+                    .map(|(pk, _)| pk)
+                    .chain(
+                        MembershipRepository::new(&self.datastore)
+                            .enumerate_inherited(&group_id)?
+                            .into_iter()
+                            .map(|(pk, _)| pk),
+                    )
+                    .collect();
+            crate::scope_projection::ScopeProjections::shadow_check_member_enum(
+                &self.datastore,
+                &group_id,
+                &live_ids,
+            );
 
             let context_count =
                 MetadataRepository::new(&self.datastore).count_contexts(&group_id)? as u64;
