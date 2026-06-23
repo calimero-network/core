@@ -44,15 +44,4 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         let (proj, _ns, _heads) = ScopeProjections::ephemeral_projection(self.store, &group)?;
         proj.is_admin_at_cut(self.store, group, signer, parents)
     }
-
-    fn is_admin_or_capability_at_cut(
-        &self,
-        group: ContextGroupId,
-        signer: &PublicKey,
-        capability: u32,
-        parents: &[[u8; 32]],
-    ) -> Option<bool> {
-        let (proj, _ns, _heads) = ScopeProjections::ephemeral_projection(self.store, &group)?;
-        proj.is_admin_or_capability_at_cut(self.store, group, signer, capability, parents)
-    }
 }
