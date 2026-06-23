@@ -60,6 +60,20 @@ pub trait AtCutAuthorizer: Send + Sync {
         capability: u32,
         parents: &[[u8; 32]],
     ) -> Option<bool>;
+
+    /// Would removing/demoting `member` from `group` orphan its admins at the cut —
+    /// i.e. is `member` a `group` admin AND the only Admin-role member there? Backs
+    /// the circular last-admin invariants (`ensure_not_last_admin_removal` /
+    /// `_demotion`), which must read admin state at the op's PARENT cut (pre-
+    /// mutation), not the post-mutation live state. Mirrors live: `member` admin =
+    /// direct Admin role or the genesis admin; "another admin" = any other Admin-role
+    /// member ROW (the genesis admin alone doesn't count). `None` = defer to live.
+    fn is_last_admin_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &PublicKey,
+        parents: &[[u8; 32]],
+    ) -> Option<bool>;
 }
 
 /// The identity authorizer: always `None`, so every gate falls back to the live
@@ -84,6 +98,15 @@ impl AtCutAuthorizer for LiveFallbackAuthorizer {
         _group: &ContextGroupId,
         _signer: &PublicKey,
         _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
         _parents: &[[u8; 32]],
     ) -> Option<bool> {
         None
