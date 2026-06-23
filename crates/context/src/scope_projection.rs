@@ -1042,6 +1042,90 @@ impl ScopeProjections {
         )
     }
 
+    /// Is `author` an ADMIN of `group` at the cut named by `heads`, authoritatively
+    /// — `Some(true)`/`Some(false)` only when the COMPLETE cited ancestry is folded,
+    /// `None` otherwise (defer to live). The apply-auth analogue of
+    /// [`member_at_cut_authoritative`](Self::member_at_cut_authoritative): admin =
+    /// a folded group admin (subgroup creator / `Admin`-role holder, via
+    /// `is_group_admin`) OR the immutable genesis root admin for the root group.
+    #[must_use]
+    pub fn is_admin_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        author: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let scope = ScopeId::from(namespace_id);
+        if !self.cut_ancestry_complete(&scope, heads) {
+            return None;
+        }
+        let root_group = ContextGroupId::from(namespace_id);
+        let root_admin = MetaRepository::new(store)
+            .load(&root_group)
+            .ok()
+            .flatten()
+            .map(|meta| meta.admin_identity);
+        Some(self.acl_view_at(&scope, heads).is_some_and(|v| {
+            v.is_group_admin(author, group)
+                || (group == root_group && root_admin.as_ref() == Some(author))
+        }))
+    }
+
+    /// Is `author` an admin of `group` OR a holder of any bit in `capability` at
+    /// the cut — the apply-auth analogue of live's `is_admin_or_has_capability`.
+    /// Same authoritative `None`-on-incomplete-ancestry contract as
+    /// [`is_admin_at_cut`](Self::is_admin_at_cut). The capability is the member's
+    /// folded cap, falling back to the namespace default-cap base (a store-written
+    /// genesis fact, as in [`member_at_cut`](Self::member_at_cut)).
+    #[must_use]
+    pub fn is_admin_or_capability_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        author: &PublicKey,
+        capability: u32,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let scope = ScopeId::from(namespace_id);
+        if !self.cut_ancestry_complete(&scope, heads) {
+            return None;
+        }
+        let root_group = ContextGroupId::from(namespace_id);
+        let root_admin = MetaRepository::new(store)
+            .load(&root_group)
+            .ok()
+            .flatten()
+            .map(|meta| meta.admin_identity);
+        let default_cap_base = CapabilitiesRepository::new(store)
+            .default_capabilities(&root_group)
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        Some(self.acl_view_at(&scope, heads).is_some_and(|v| {
+            if v.is_group_admin(author, group)
+                || (group == root_group && root_admin.as_ref() == Some(author))
+            {
+                return true;
+            }
+            let folded = v.capability(&group, author);
+            let effective = if folded != 0 {
+                folded
+            } else {
+                default_cap_base
+            };
+            effective & capability != 0
+        }))
+    }
+
     /// Diagnostics for a divergence at `heads` — why does the projection NOT see
     /// `author` in `group`? Distinguishes the failure modes:
     /// - `namespace_log_len == 0` → the projection is empty for this namespace
