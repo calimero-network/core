@@ -8,8 +8,8 @@ use tracing::info;
 use crate::api::routes::create_router;
 use crate::auth::token::TokenManager;
 use crate::config::{
-    AuthConfig, ContentSecurityPolicyConfig, DevelopmentConfig, JwtConfig, NearWalletConfig,
-    SecurityConfig, SecurityHeadersConfig, StorageConfig, UserPasswordConfig,
+    AuthConfig, ContentSecurityPolicyConfig, DevelopmentConfig, JwtConfig, SecurityConfig,
+    SecurityHeadersConfig, StorageConfig, UserPasswordConfig,
 };
 use crate::providers;
 use crate::secrets::SecretManager;
@@ -137,7 +137,6 @@ pub fn default_config() -> AuthConfig {
             },
         },
         providers,
-        near: NearWalletConfig::default(),
         user_password: UserPasswordConfig::default(),
         development: DevelopmentConfig::default(),
     }

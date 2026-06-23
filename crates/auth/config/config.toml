@@ -46,14 +46,7 @@ style_src = ["'self'", "'unsafe-inline'"]
 
 # Authentication providers configuration
 [providers]
-near_wallet = true
 user_password = true
-
-# NEAR wallet configuration
-[near]
-network = "testnet"
-rpc_url = "https://rpc.testnet.near.org"
-wallet_url = "https://wallet.testnet.near.org" 
 
 # Username/password configuration
 [user_password]

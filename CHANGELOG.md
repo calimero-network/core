@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **NEAR wallet authentication removed** (BREAKING) — the `near_wallet` auth provider, `NearWalletConfig`, the `near-crypto`/`near-jsonrpc-client`/`near-primitives` dependencies, and the `NEAR_API_KEY` env var are gone. The `WalletType`/`NearNetworkId` types and the wallet add-public-key wire structs (`Payload`, `WalletMetadata`, `SignatureMetadataEnum`, `AddPublicKeyRequest`, …) are removed; `RootKey`/`ClientKey` no longer carry a `wallet` field. Principals whose only root key used NEAR wallet must re-register via another provider (e.g. user/password). NEAR remains supported only as an opaque context-config protocol label (untyped, node-ignored).
+
 ### Added
 
 - **`SortedMap<K, V>` collection** — a key-ordered map for range queries, prefix scans, and pagination ([#2559])

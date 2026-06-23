@@ -20,9 +20,6 @@ pub const MAX_PACKAGE_NAME_LENGTH: usize = 128;
 /// Maximum length for version strings
 pub const MAX_VERSION_LENGTH: usize = 64;
 
-/// Maximum length for nonce strings (hex-encoded, 32 bytes = 64 chars)
-pub const MAX_NONCE_LENGTH: usize = 64;
-
 /// Maximum length for hash strings (hex-encoded, 32 bytes = 64 chars)
 pub const MAX_HASH_LENGTH: usize = 64;
 

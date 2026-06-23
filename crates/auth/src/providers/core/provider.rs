@@ -37,7 +37,6 @@ pub trait AuthProvider: Send + Sync {
     /// This method determines what "configured" means for the providers API endpoint.
     /// Each provider can implement its own logic:
     /// - Username/password: configured = has users (always technically configured)
-    /// - NEAR wallet: configured = is_configured() && has users
     /// - Other providers: their own logic
     ///
     /// Default implementation returns `is_configured()` - providers should override

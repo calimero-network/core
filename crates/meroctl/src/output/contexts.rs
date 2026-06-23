@@ -89,17 +89,12 @@ impl Report for GetContextClientKeysResponse {
         } else {
             let mut table = Table::new();
             let _ = table.set_header(vec![
-                Cell::new("Wallet Type").fg(Color::Blue),
                 Cell::new("Signing Key").fg(Color::Blue),
                 Cell::new("Created At").fg(Color::Blue),
             ]);
 
             for key in &self.data.client_keys {
-                let _ = table.add_row(vec![
-                    format!("{:?}", key.wallet_type),
-                    key.signing_key.clone(),
-                    key.created_at.to_string(),
-                ]);
+                let _ = table.add_row(vec![key.signing_key.clone(), key.created_at.to_string()]);
             }
 
             println!("{table}");

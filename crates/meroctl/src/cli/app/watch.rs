@@ -291,7 +291,7 @@ fn handle_no_contexts_found(environment: &mut Environment, app_id: &ApplicationI
         "To use this watch command, first create contexts with this application:",
     ));
     environment.output.write(&InfoLine(&format!(
-        "  meroctl context create --application-id {app_id} --protocol <protocol_name>"
+        "  meroctl context create --application-id {app_id}"
     )));
     environment
         .output

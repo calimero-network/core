@@ -95,7 +95,7 @@ echo "  APP_ID_V1=$APP_ID_V1"
 
 echo ""
 echo "--- 1.2  Create context ---"
-OUT_CTX=$("$MEROCTL" --node "$NODE" context create --protocol near --application-id "$APP_ID_V1" | tee /dev/stderr)
+OUT_CTX=$("$MEROCTL" --node "$NODE" context create --application-id "$APP_ID_V1" | tee /dev/stderr)
 CONTEXT_ID=$(echo "$OUT_CTX" | parse_table_value "Context ID")
 MEMBER_PUBLIC_KEY=$(echo "$OUT_CTX" | parse_table_value "Member Public Key")
 [[ -z "$CONTEXT_ID" || -z "$MEMBER_PUBLIC_KEY" ]] && { echo "FAIL: parse context" >&2; exit 1; }
