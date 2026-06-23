@@ -153,28 +153,9 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
             );
         match proj {
             Some(true) => {
-                // Cross-check: a grant the live resolver DEFINITELY denies (Removed /
-                // NeverMember) is the dangerous divergence (grant plane). live's
-                // `Unknown` is "not caught up", not a denial — not a disagreement.
-                let live = acl_view_at(
-                    datastore,
-                    owning_group,
-                    &buffered.author_id,
-                    &pos.governance_dag_heads,
-                );
-                if matches!(
-                    live,
-                    Ok(MembershipStatus::Removed { .. }) | Ok(MembershipStatus::NeverMember)
-                ) {
-                    warn!(
-                        marker = "unified_projection_divergence",
-                        plane = "membership-cut-grant",
-                        %context_id,
-                        delta_id = ?buffered.id,
-                        author = %buffered.author_id,
-                        "governance-drain: projection applies a delta live would drop"
-                    );
-                }
+                // The projection is authoritative for the drain (validated
+                // divergence-free across the e2e `membership-cut-grant` plane); the
+                // re-apply decision is purely `member_at_cut_authoritative`.
                 debug!(
                     %context_id,
                     delta_id = ?buffered.id,
@@ -196,25 +177,16 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
                 }
             }
             Some(false) => {
-                // The projection denies on a COMPLETE fold; if live grants, that is a
-                // real deny-plane divergence. live also names the drop metric label
-                // (removed vs never-member); fall back to a generic label otherwise.
+                // The projection authoritatively denies on a COMPLETE fold (drop).
+                // live is still read SOLELY to name the drop metric label (removed
+                // vs never-member); this read retires in #29b when the label moves
+                // off live.
                 let live = acl_view_at(
                     datastore,
                     owning_group,
                     &buffered.author_id,
                     &pos.governance_dag_heads,
                 );
-                if matches!(live, Ok(MembershipStatus::Member(_))) {
-                    warn!(
-                        marker = "unified_projection_divergence",
-                        plane = "membership-cut",
-                        %context_id,
-                        delta_id = ?buffered.id,
-                        author = %buffered.author_id,
-                        "governance-drain: projection drops a delta live would apply"
-                    );
-                }
                 let label = match &live {
                     Ok(MembershipStatus::Removed { .. }) => "removed",
                     Ok(MembershipStatus::NeverMember) => "never_member",

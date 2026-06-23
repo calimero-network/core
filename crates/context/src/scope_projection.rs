@@ -486,30 +486,12 @@ impl ScopeProjections {
         member: &PublicKey,
     ) -> eyre::Result<bool> {
         if let Some(p) = Self::member_now_ephemeral(store, group, member) {
-            // The projection decided. Cross-check live BEST-EFFORT — a transient
-            // live-read error must not deny a verdict the projection already formed;
-            // log the divergence only when live also produced an answer.
-            match MembershipRepository::new(store).is_member(group, member) {
-                Ok(live) if live != p => tracing::warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "membership-query",
-                    group_id = ?group,
-                    ?member,
-                    projection = p,
-                    live,
-                    "query-gate: projection disagrees with live membership"
-                ),
-                Ok(_) => {}
-                Err(err) => tracing::warn!(
-                    group_id = ?group,
-                    %err,
-                    "query-gate: live cross-check failed; acting on projection verdict"
-                ),
-            }
+            // The projection is authoritative for the query gate (validated
+            // divergence-free across the e2e `membership-query` plane); act on it.
             return Ok(p);
         }
-        // Projection couldn't decide (cold/partial fold or store fault) — live is
-        // authoritative here, so its error legitimately propagates.
+        // Projection couldn't decide (cold/partial fold or store fault) — fall back
+        // to live, whose error legitimately propagates. (Live retires in #29b.)
         MembershipRepository::new(store).is_member(group, member)
     }
 
@@ -589,8 +571,7 @@ impl ScopeProjections {
 
     /// The gate verdict over an ALREADY-built ephemeral projection — same contract
     /// as [`member_now_checked`](Self::member_now_checked) (act on the projection,
-    /// best-effort live cross-check + `membership-query` marker, live on `None`),
-    /// but reusing a shared fold.
+    /// live on `None`), but reusing a shared fold.
     pub fn member_now_checked_with(
         &self,
         store: &Store,
@@ -599,23 +580,6 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> eyre::Result<bool> {
         if let Some(p) = self.member_at_cut(store, *group, member, heads) {
-            match MembershipRepository::new(store).is_member(group, member) {
-                Ok(live) if live != p => tracing::warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "membership-query",
-                    group_id = ?group,
-                    ?member,
-                    projection = p,
-                    live,
-                    "query-gate: projection disagrees with live membership"
-                ),
-                Ok(_) => {}
-                Err(err) => tracing::warn!(
-                    group_id = ?group,
-                    %err,
-                    "query-gate: live cross-check failed; acting on projection verdict"
-                ),
-            }
             return Ok(p);
         }
         MembershipRepository::new(store).is_member(group, member)

@@ -2944,20 +2944,9 @@ impl SyncManager {
             their_identity,
             &heads,
         );
-        if let Some(p) = projected {
-            if p != live {
-                warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "membership-sync",
-                    group_id = ?group_id,
-                    ?their_identity,
-                    projection = p,
-                    live,
-                    "inbound-sync auth: projection disagrees with live membership"
-                );
-            }
-        }
-        // Act on the projection; `None` (can't decide) falls back to live.
+        // The projection is authoritative for inbound-sync auth (validated
+        // divergence-free across the e2e `membership-sync` plane); `None` (can't
+        // decide) falls back to live. (The live read retires in #29b.)
         Ok(projected.unwrap_or(live))
     }
 
