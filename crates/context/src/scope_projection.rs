@@ -590,11 +590,12 @@ impl ScopeProjections {
     /// divergence-free on the `membership-enum` plane) and each role resolved by the
     /// same `member_path_at_cut` the `membership-role` plane validated.
     ///
-    /// `None` (defer to live) when the cited ancestry isn't fully folded OR the
-    /// target group's direct membership isn't folded at all — the
-    /// `!view.groups.contains_key` materialized-fallback case, where the fold has no
-    /// opinion and live's `list ∪ enumerate_inherited` (which already carries roles)
-    /// is authoritative.
+    /// `None` (defer to live) when the cited ancestry isn't fully folded — enforced
+    /// by `auth_cut_context`, which gates on `cut_ancestry_complete` and returns
+    /// `None` on a partial fold — OR the target group's direct membership isn't
+    /// folded at all (the `!view.groups.contains_key` materialized-fallback case,
+    /// where the fold has no opinion and live's `list ∪ enumerate_inherited`, which
+    /// already carries roles, is authoritative).
     ///
     /// PARTIAL FOLD: the materialized fallback is all-or-nothing — a group with even
     /// one folded direct member is treated as fully folded, so a materialized

@@ -53,11 +53,14 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
             //
             // From the PROJECTION's effective-member enumeration with roles
             // (`member_entries_with`): the identity set validated divergence-free on
-            // the `membership-enum` plane, the roles on `membership-role`. `None` —
-            // an empty/unfed namespace, a cited ancestry not fully folded, or a
-            // target group whose direct membership isn't folded (materialized
-            // fallback) — falls back to the live `list ∪ enumerate_inherited` union,
-            // which already carries roles. The live fallback retires in #29b.
+            // the `membership-enum` plane, the roles on `membership-role`. `None`
+            // falls back to the live `list ∪ enumerate_inherited` union, which already
+            // carries roles. The `None` reasons are an empty/unfed namespace, a cited
+            // ancestry not fully folded, a target group whose direct membership isn't
+            // folded (materialized fallback) — all expected steady-state deferrals —
+            // and a fold inconsistency, the one abnormal case, already logged with a
+            // `unified_projection_divergence` warn inside `member_entries_with`. The
+            // live fallback retires in #29b.
             //
             // Pagination must span the union, so the full set is collected here and
             // sliced after the merge rather than pushed down into the store query.
@@ -67,7 +70,7 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
             // The inherited set is disjoint from the stored rows by construction
             // (`enumerate_inherited` excludes direct members of `group_id`), so no
             // dedup is needed.
-            let members = proj_ctx
+            let mut members = proj_ctx
                 .as_ref()
                 .and_then(|(proj, ns, heads)| {
                     proj.member_entries_with(&self.datastore, *ns, &group_id, heads)
@@ -81,6 +84,14 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
                     },
                     Ok,
                 )?;
+            // Sort by identity for a STABLE, path-independent pagination order: the
+            // projection path yields `PublicKey`-sorted ids (a `BTreeSet`) while the
+            // live fallback yields store order, so without this a request served by
+            // the projection and a later page served by the live fallback (e.g. mid-
+            // backfill) could skip or repeat members across pages. Sorting both paths
+            // the same way makes `skip(offset).take(limit)` consistent regardless of
+            // which produced the set.
+            members.sort_by_key(|(identity, _)| *identity);
 
             let entries = members
                 .into_iter()
