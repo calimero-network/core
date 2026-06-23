@@ -104,9 +104,17 @@ impl NamespaceGovernanceApplier {
 #[async_trait::async_trait]
 impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
     async fn apply(&self, delta: &CausalDelta<SignedNamespaceOp>) -> Result<(), ApplyError> {
-        let outcome =
-            calimero_governance_store::apply_signed_namespace_op(&self.store, &delta.payload)
-                .map_err(|e| ApplyError::Application(e.to_string()))?;
+        // F5 #28: thread the op's causal cut + the at-cut apply-auth source into the
+        // governance-store apply gates. `LIVE_FALLBACK_AUTHORIZER` always returns
+        // `None`, so the gates keep using the live resolver — this commit only opens
+        // the seam; a projection-backed authorizer replaces it in the flip stage.
+        let outcome = calimero_governance_store::apply_signed_namespace_op_at_cut(
+            &self.store,
+            &delta.payload,
+            &delta.parents,
+            &calimero_governance_store::LIVE_FALLBACK_AUTHORIZER,
+        )
+        .map_err(|e| ApplyError::Application(e.to_string()))?;
         if let Some(report) = outcome.divergence {
             // Last-writer-wins on the outbox. The applier instance
             // is single-flight per actor message turn, so multiple
