@@ -222,6 +222,7 @@
     <div class="fr"><div class="fp">SetMemberAlias</div><div class="fd">Set human-readable alias for a member</div></div>
     <div class="fr"><div class="fp">DeleteGroup</div><div class="fd">Delete group and cascade to all owned contexts</div></div>
     <div class="fr"><div class="fp">DetachContextFromGroup</div><div class="fd">Unbind a context from its group</div></div>
+    <div class="fr"><div class="fp">ListGroupMembers</div><div class="fd">Enumerate effective group members. Reads from <span class="code">ScopeProjections::member_entries_with</span> when a folded projection context is available; falls back to the live <span class="code">MembershipRepository::list ∪ enumerate_inherited</span> union when the projection returns <span class="code">None</span>. Both paths are sorted by <span class="code">PublicKey</span> before <span class="code">skip(offset).take(limit)</span> to guarantee stable, path-independent pagination order across a mid-backfill transition.</div></div>
   </div>
 </div>
 
@@ -272,6 +273,15 @@
      5. GROUPSTORE DEEP-DIVE
      ════════════════════════════════════════════════════════ -->
 <div class="card gb">
+<h2>Projection-Backed Member Count &amp; Migration Cohort</h2>
+<p style="margin-bottom:18px;">Two operations now derive their member sets from the governance projection fold rather than the live store, with a live fallback when the projection is unavailable.</p>
+
+<h3>GetGroupInfo — member_count</h3>
+<p style="margin-bottom:12px;"><span class="code">Handler&lt;GetGroupInfoRequest&gt;</span> computes <span class="code">member_count</span> as the length of the identity set returned by <span class="code">member_identities_with</span> on the already-built projection fold, instead of calling <span class="code">MembershipRepository::count</span> + <span class="code">MembershipRepository::enumerate_inherited</span> directly. The shadow divergence log that previously compared both paths is removed. If <span class="code">member_identities_with</span> returns <span class="code">None</span> (unfed namespace or incomplete ancestry fold), the handler falls back to the old live count + enumerate_inherited path.</p>
+
+<h3>collect_migration_cohort</h3>
+<p style="margin-bottom:12px;"><span class="code">collect_migration_cohort</span> calls <span class="code">member_identities_subtree_ephemeral</span> at the top and returns its result immediately on success, bypassing the live list ∪ <span class="code">enumerate_inherited</span> loop entirely. The previous shadow comparison block is removed. The live path is retained only as a fallback when the projection returns <span class="code">None</span>.</p>
+
 <h2>Governance Preflight &amp; Signing Key Resolution</h2>
 <p style="margin-bottom:18px;">Every governance mutation handler calls <span class="code">governance_preflight()</span> before signing and publishing. The common pattern is encapsulated in <span class="code">sign_and_publish_group_op()</span> which handles the boilerplate.</p>
 
@@ -472,6 +482,13 @@ get_group_signing_key(store, &amp;current, public_key) <span class="comment">// 
      7. DEPENDENCIES
      ════════════════════════════════════════════════════════ -->
 <div class="card ga">
+<h2>Operator Notes</h2>
+<p style="margin-bottom:14px;">Two log signals are emitted by the <code>list_group_members</code> projection shadow and are relevant for monitoring:</p>
+<ul style="margin-left:1.4em;margin-bottom:14px;line-height:1.8;">
+  <li><strong><code>unified_projection_divergence / plane=membership-role</code></strong> — a live member's role differs from the projected role. These are pre-flip validation failures: once the divergence rate reaches zero, the handler can be flipped to authoritative projection. Persistent warnings indicate a bug in role derivation or ACL fold logic.</li>
+  <li>When <span class="code">member_roles_for</span> abstains (group unfolded or absent from <code>view.groups</code>) the role shadow is skipped entirely for that group, consistent with the identity shadow's materialized-fallback parity behavior.</li>
+</ul>
+
 <h2>Dependencies</h2>
 <p style="margin-bottom:18px;">How the three context crates relate to other Calimero crates. Arrows show compile-time dependencies.</p>
 

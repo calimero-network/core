@@ -269,6 +269,18 @@ record itself is unreadable. Callers <b>must</b> fall back to the live membershi
 (<code>check_group_membership_path</code>) in both cases rather than treating <code>None</code> as
 an empty cut — an empty cut would falsely deny all access.
 </p>
+<p>
+<b>Projection-derived member counts and migration cohorts.</b> <code>ScopeProjections::member_identities_with</code>
+extends this pattern to identity-set reads: given an already-built projection fold it calls
+<code>cut_ancestry_complete</code> on the fold before reading the ACL view, and returns
+<code>None</code> if the ancestry is only partially folded (a governance-backfill race). This
+<code>None</code> propagates to <code>get_group_info</code> (which falls back to
+<code>MembershipRepository::count</code> + <code>enumerate_inherited</code>) and to
+<code>collect_migration_cohort</code> (which falls back to the live list ∪ <code>enumerate_inherited</code>
+union). The private <code>ephemeral_view</code> helper has been removed; the subtree ephemeral path
+now calls <code>ephemeral_fold</code> directly and performs the <code>cut_ancestry_complete</code>
+check itself before reading the view.
+</p>
 
 <h3>Ephemeral per-query projection — <code>ScopeProjections::member_now_ephemeral</code></h3>
 <p>
@@ -327,6 +339,116 @@ the per-group loop would propagate and abort the entire response. Now the loop c
 silently omitting groups whose membership cannot be determined. This matches the existing skip
 behavior for a missing node identity and avoids a single inaccessible group blocking the whole
 listing.
+</p>
+
+<h3>Batch role resolution — <code>ScopeProjections::member_roles_for</code></h3>
+<p>
+Where <code>namespace_current_heads</code> answers "is this member present?",
+<code>member_roles_for</code> answers "what role does the projection assign to each of these
+members?". It folds the ACL view exactly once for the supplied batch and returns a
+<code>BTreeMap&lt;PublicKey, GroupMemberRole&gt;</code>:
+</p>
+<ul>
+  <li><b>Direct members</b> keep their folded role from the projection.</li>
+  <li><b><code>Inherited{via_admin:true}</code></b> → <code>Admin</code>.</li>
+  <li><b><code>Inherited{via_admin:false}</code></b> → the member's stored role at the anchor
+  group (mirroring live's <code>list ∪ enumerate_inherited</code> semantics).</li>
+  <li><b>Abstain (empty map)</b> when the ancestry is not fully folded, or when the group has no
+  entry in <code>view.groups</code> (materialized-fallback parity — Restricted subgroup or
+  undecryptable member ops). An empty return means "projection has no opinion"; callers must not
+  treat it as "all roles are wrong".</li>
+</ul>
+<p>
+<code>list_group_members</code> calls <code>member_roles_for</code> once for all live members
+after the existing identity-set shadow. Each live member's role is compared to its projected
+role; mismatches are emitted as <code>unified_projection_divergence</code> log events with
+<code>plane=membership-role</code>. Members absent from the returned map (projection abstains)
+are skipped — presence divergence is already owned by the identity shadow. The handler still
+returns the live list unchanged.
+</p>
+<p>
+<b>Operator note.</b> <code>membership-role</code> divergence warnings in logs indicate a
+pre-flip validation failure. They will block the eventual flip of <code>list_group_members</code>
+from the live store to the projection as the authoritative source.
+</p>
+
+<h3>Full effective-member enumeration — <code>ScopeProjections::member_entries_with</code></h3>
+<p>
+<code>member_entries_with</code> returns a <code>Vec&lt;(PublicKey, GroupMemberRole)&gt;</code> for
+every effective member of a group at the current cut, derived entirely from the already-folded
+<code>auth_cut_context</code> view. It reuses <code>member_identities_in_view_with_ctx</code> for
+the identity set and resolves each member's role via <code>member_path_at_cut</code>.
+</p>
+<p>
+The method returns <code>None</code> (signalling: defer to the live store) in three cases:
+</p>
+<ul>
+  <li>The cited ancestry is not yet fully folded — a partial fold could produce an incomplete member
+  list, so the caller falls back rather than silently truncating.</li>
+  <li>The target group has no folded direct-membership entry in the view — the projection does not
+  cover this group yet.</li>
+  <li>A validated identity resolves to <code>MemberPathAtCut::None</code> or has a missing inherited
+  anchor row — this indicates a fold inconsistency. The method logs a
+  <code>unified_projection_divergence</code> warning and abandons the <em>entire</em> enumeration
+  rather than returning a partial list.</li>
+</ul>
+<p>
+The all-or-nothing fallback contract means callers never observe a silently truncated member list:
+either the projection supplies the complete set or the live store is used in its entirety.
+</p>
+
+<h3>Shared-context identity resolution — <code>ScopeProjections::member_identities_in_view_with_ctx</code></h3>
+<p>
+<code>member_identities_in_view_with_ctx</code> accepts caller-supplied <code>root</code> and
+<code>default_cap_base</code> instead of re-reading <code>MetaRepository</code> /
+<code>CapabilitiesRepository</code> internally. <code>member_identities_in_view</code> delegates to
+it unchanged (existing callers are unaffected). <code>member_entries_with</code> passes the values
+it already obtained from <code>auth_cut_context</code>, ensuring the candidate-identity filter and
+the per-member role resolution use a single consistent store snapshot with no window for a concurrent
+governance write to make them disagree. Prefer <code>member_identities_in_view_with_ctx</code> over
+<code>member_identities_in_view</code> whenever the caller already holds the root and capability
+values — it avoids a redundant store read and eliminates the TOCTOU window.
+</p>
+
+<h3>Projection-first <code>list_group_members</code> with stable pagination</h3>
+<p>
+The <code>list_group_members</code> handler now reads from the projection authoritatively when a
+folded <code>proj_ctx</code> is available. It falls back to the live
+<code>MembershipRepository::list ∪ enumerate_inherited</code> union only when
+<code>member_entries_with</code> returns <code>None</code>. Previously the handler always read from
+the live store and compared the projection in shadow mode; the shadow scaffolding methods
+<code>shadow_member_enum_with</code> and <code>member_roles_for</code> have been deleted as they had
+no remaining callers.
+</p>
+<p>
+Both the projection path and the live-store fallback path now apply a
+<code>members.sort_by_key(|(identity, _)| *identity)</code> sort by <code>PublicKey</code>
+<em>before</em> the <code>skip(offset).take(limit)</code> slice. The projection returns a
+<code>BTreeSet</code>-ordered (PublicKey-sorted) result while the live store returns
+insertion/store order; without the explicit sort, a mid-backfill request served by the projection
+followed by a next-page request served by the live store could skip or repeat members. The sort
+makes pagination order stable and path-independent across a mid-backfill transition.
+</p>
+
+<h3>member_now_checked / member_now_checked_with</h3>
+<p>
+<code>ScopeProjections::member_now_checked</code> and its shared-fold variant
+<code>member_now_checked_with</code> are the two query-gate helpers that call
+<code>namespace_current_heads</code> and then delegate to <code>AclView::is_member_at_cut</code>.
+Their behavior follows a strict two-branch contract:
+</p>
+<ul>
+  <li><b>Projection returns <code>Some</code></b> — the result is acted on directly. There is no
+  secondary <code>MembershipRepository::is_member</code> live read and no
+  <code>unified_projection_divergence</code> cross-check. The projection verdict is authoritative
+  when it is available.</li>
+  <li><b>Projection returns <code>None</code></b> (unresolvable group or unreadable head) — fall
+  back to the live membership store (<code>check_group_membership_path</code>) as before.</li>
+</ul>
+<p>
+The earlier best-effort live cross-check (which compared the projection verdict against the live
+resolver and emitted a warning/error on divergence) has been removed from both functions. The
+<code>None</code>→live fallback path is preserved unchanged.
 </p>
 
 <h3>Where this can break</h3>
