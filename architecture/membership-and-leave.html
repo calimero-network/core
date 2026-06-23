@@ -372,6 +372,64 @@ pre-flip validation failure. They will block the eventual flip of <code>list_gro
 from the live store to the projection as the authoritative source.
 </p>
 
+<h3>Full effective-member enumeration — <code>ScopeProjections::member_entries_with</code></h3>
+<p>
+<code>member_entries_with</code> returns a <code>Vec&lt;(PublicKey, GroupMemberRole)&gt;</code> for
+every effective member of a group at the current cut, derived entirely from the already-folded
+<code>auth_cut_context</code> view. It reuses <code>member_identities_in_view_with_ctx</code> for
+the identity set and resolves each member's role via <code>member_path_at_cut</code>.
+</p>
+<p>
+The method returns <code>None</code> (signalling: defer to the live store) in three cases:
+</p>
+<ul>
+  <li>The cited ancestry is not yet fully folded — a partial fold could produce an incomplete member
+  list, so the caller falls back rather than silently truncating.</li>
+  <li>The target group has no folded direct-membership entry in the view — the projection does not
+  cover this group yet.</li>
+  <li>A validated identity resolves to <code>MemberPathAtCut::None</code> or has a missing inherited
+  anchor row — this indicates a fold inconsistency. The method logs a
+  <code>unified_projection_divergence</code> warning and abandons the <em>entire</em> enumeration
+  rather than returning a partial list.</li>
+</ul>
+<p>
+The all-or-nothing fallback contract means callers never observe a silently truncated member list:
+either the projection supplies the complete set or the live store is used in its entirety.
+</p>
+
+<h3>Shared-context identity resolution — <code>ScopeProjections::member_identities_in_view_with_ctx</code></h3>
+<p>
+<code>member_identities_in_view_with_ctx</code> accepts caller-supplied <code>root</code> and
+<code>default_cap_base</code> instead of re-reading <code>MetaRepository</code> /
+<code>CapabilitiesRepository</code> internally. <code>member_identities_in_view</code> delegates to
+it unchanged (existing callers are unaffected). <code>member_entries_with</code> passes the values
+it already obtained from <code>auth_cut_context</code>, ensuring the candidate-identity filter and
+the per-member role resolution use a single consistent store snapshot with no window for a concurrent
+governance write to make them disagree. Prefer <code>member_identities_in_view_with_ctx</code> over
+<code>member_identities_in_view</code> whenever the caller already holds the root and capability
+values — it avoids a redundant store read and eliminates the TOCTOU window.
+</p>
+
+<h3>Projection-first <code>list_group_members</code> with stable pagination</h3>
+<p>
+The <code>list_group_members</code> handler now reads from the projection authoritatively when a
+folded <code>proj_ctx</code> is available. It falls back to the live
+<code>MembershipRepository::list ∪ enumerate_inherited</code> union only when
+<code>member_entries_with</code> returns <code>None</code>. Previously the handler always read from
+the live store and compared the projection in shadow mode; the shadow scaffolding methods
+<code>shadow_member_enum_with</code> and <code>member_roles_for</code> have been deleted as they had
+no remaining callers.
+</p>
+<p>
+Both the projection path and the live-store fallback path now apply a
+<code>members.sort_by_key(|(identity, _)| *identity)</code> sort by <code>PublicKey</code>
+<em>before</em> the <code>skip(offset).take(limit)</code> slice. The projection returns a
+<code>BTreeSet</code>-ordered (PublicKey-sorted) result while the live store returns
+insertion/store order; without the explicit sort, a mid-backfill request served by the projection
+followed by a next-page request served by the live store could skip or repeat members. The sort
+makes pagination order stable and path-independent across a mid-backfill transition.
+</p>
+
 <h3>Where this can break</h3>
 <p>
 Two classes of change would silently re-introduce the divergence described above:

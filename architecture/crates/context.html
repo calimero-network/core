@@ -222,6 +222,7 @@
     <div class="fr"><div class="fp">SetMemberAlias</div><div class="fd">Set human-readable alias for a member</div></div>
     <div class="fr"><div class="fp">DeleteGroup</div><div class="fd">Delete group and cascade to all owned contexts</div></div>
     <div class="fr"><div class="fp">DetachContextFromGroup</div><div class="fd">Unbind a context from its group</div></div>
+    <div class="fr"><div class="fp">ListGroupMembers</div><div class="fd">Enumerate effective group members. Reads from <span class="code">ScopeProjections::member_entries_with</span> when a folded projection context is available; falls back to the live <span class="code">MembershipRepository::list ∪ enumerate_inherited</span> union when the projection returns <span class="code">None</span>. Both paths are sorted by <span class="code">PublicKey</span> before <span class="code">skip(offset).take(limit)</span> to guarantee stable, path-independent pagination order across a mid-backfill transition.</div></div>
   </div>
 </div>
 
