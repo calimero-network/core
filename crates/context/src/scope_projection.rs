@@ -1091,6 +1091,41 @@ impl ScopeProjections {
         Some(effective & capability != 0)
     }
 
+    /// The projection's ENUMERATION role for `member` in `group` at the cut — the
+    /// role live's `list ∪ enumerate_inherited` assigns: a direct member's folded
+    /// role, `Admin` for an inherited-via-admin member, else the member's role at
+    /// the anchor it inherits from (mirrors live's `via_admin ? Admin :
+    /// role_of(anchor)`). `None` when not a member at the cut, or the ancestry isn't
+    /// fully folded (defer to live). The role-validation read ahead of flipping the
+    /// role-bearing `list_group_members` onto the projection.
+    #[must_use]
+    pub fn member_role_at_cut_with(
+        &self,
+        store: &Store,
+        group: &ContextGroupId,
+        member: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<GroupMemberRole> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, *group, heads)?;
+        match view.member_path_at_cut(*group, member, root, default_cap_base) {
+            calimero_authz::MemberPathAtCut::None => None,
+            calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+            calimero_authz::MemberPathAtCut::Inherited {
+                via_admin: true, ..
+            } => Some(GroupMemberRole::Admin),
+            calimero_authz::MemberPathAtCut::Inherited {
+                anchor,
+                via_admin: false,
+            } => Some(
+                view.groups
+                    .get(&anchor)
+                    .and_then(|m| m.get(member))
+                    .cloned()
+                    .unwrap_or(GroupMemberRole::Member),
+            ),
+        }
+    }
+
     /// Shared setup for the at-cut admin/capability reads: resolve the namespace,
     /// gate on COMPLETE cited ancestry (so the verdict is authoritative — `None`
     /// otherwise, defer to live), build the folded view + the genesis root tuple

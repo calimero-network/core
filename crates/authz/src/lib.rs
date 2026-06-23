@@ -31,6 +31,25 @@ const CAN_JOIN_OPEN_SUBGROUPS: u32 = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS
 /// `MAX_NAMESPACE_DEPTH`).
 const MAX_NAMESPACE_DEPTH: usize = 16;
 
+/// How `author` reaches membership of a group at a cut — the at-cut analogue of
+/// the live `MembershipPath`. Carries enough to derive the enumeration ROLE
+/// (mirrors live's `list ∪ enumerate_inherited`): a direct member keeps its
+/// folded role; an inherited member is `Admin` when reached via an admin, else
+/// its role at the `anchor` it inherits from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MemberPathAtCut {
+    /// Not a member of the group at this cut.
+    None,
+    /// A direct member, with its folded role.
+    Direct { role: GroupMemberRole },
+    /// Inherited over the open-subgroup chain from `anchor`; `via_admin` when the
+    /// path was through an admin ancestor (role resolves to `Admin`).
+    Inherited {
+        anchor: ContextGroupId,
+        via_admin: bool,
+    },
+}
+
 /// Why an op was refused. One rejection type for every plane — the caller
 /// doesn't have to know which plane said no.
 #[derive(Clone, Debug, PartialEq, Eq, ThisError)]
@@ -263,6 +282,79 @@ impl AclView {
             current = parent;
         }
         false
+    }
+
+    /// `author`'s membership PATH to `group` at the cut — the at-cut analogue of
+    /// live `check_path`, returning the role-bearing [`MemberPathAtCut`] for the
+    /// enumeration consumers. Mirrors the `is_member_at_cut` walk: direct row first
+    /// (with its folded role), then an admin of the group with no row (genesis root
+    /// admin), then up the open chain — an admin ancestor yields
+    /// `Inherited{via_admin:true}`, the first direct-member ancestor yields
+    /// `Inherited{via_admin:false}` iff it holds `CAN_JOIN_OPEN_SUBGROUPS` (else the
+    /// recorded decision is `None`, but the walk continues for an admin higher up).
+    #[must_use]
+    pub fn member_path_at_cut(
+        &self,
+        group: ContextGroupId,
+        author: &PublicKey,
+        root: Option<(ContextGroupId, PublicKey)>,
+        default_cap_base: u32,
+    ) -> MemberPathAtCut {
+        let is_admin = |g: ContextGroupId| -> bool {
+            self.is_group_admin(author, g)
+                || self.is_root_admin(author)
+                || root.is_some_and(|(root_g, root_admin)| g == root_g && *author == root_admin)
+        };
+        if let Some(role) = self.groups.get(&group).and_then(|m| m.get(author)) {
+            return MemberPathAtCut::Direct { role: role.clone() };
+        }
+        if is_admin(group) {
+            return MemberPathAtCut::Direct {
+                role: GroupMemberRole::Admin,
+            };
+        }
+        let effective_cap = |g: &ContextGroupId| -> u32 {
+            let folded = self.capability(g, author);
+            if folded != 0 {
+                folded
+            } else {
+                default_cap_base
+            }
+        };
+        let mut anchor_decision: Option<MemberPathAtCut> = None;
+        let mut current = group;
+        for _ in 0..=MAX_NAMESPACE_DEPTH {
+            let Some(edge) = self.subgroups.get(&ScopeId::from(current.to_bytes())) else {
+                return anchor_decision.unwrap_or(MemberPathAtCut::None);
+            };
+            if edge.restricted {
+                return anchor_decision.unwrap_or(MemberPathAtCut::None);
+            }
+            let parent = ContextGroupId::from(*edge.parent.as_bytes());
+            if is_admin(parent) {
+                return MemberPathAtCut::Inherited {
+                    anchor: parent,
+                    via_admin: true,
+                };
+            }
+            if anchor_decision.is_none()
+                && self
+                    .groups
+                    .get(&parent)
+                    .is_some_and(|m| m.contains_key(author))
+            {
+                anchor_decision = Some(if effective_cap(&parent) & CAN_JOIN_OPEN_SUBGROUPS != 0 {
+                    MemberPathAtCut::Inherited {
+                        anchor: parent,
+                        via_admin: false,
+                    }
+                } else {
+                    MemberPathAtCut::None
+                });
+            }
+            current = parent;
+        }
+        anchor_decision.unwrap_or(MemberPathAtCut::None)
     }
 
     /// `member`'s effective capability bitmask in `group` at the cut: the
