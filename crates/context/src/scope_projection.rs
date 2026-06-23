@@ -1172,6 +1172,21 @@ impl ScopeProjections {
         Some(view.is_authorized_admin(group, author, root))
     }
 
+    /// How `member` reaches membership of `group` at the cut — the at-cut analogue of
+    /// live's `check_path`, for the `MemberJoinedOpen` gate. `None` on incomplete
+    /// ancestry (defer to live); otherwise the `member_path_at_cut` walk's verdict.
+    #[must_use]
+    pub fn membership_path_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<calimero_authz::MemberPathAtCut> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        Some(view.member_path_at_cut(group, member, root, default_cap_base))
+    }
+
     /// Is `author` an admin of `group` OR a holder of any bit in `capability` at
     /// the cut — the apply-auth analogue of live's `is_authorized_with_capability`.
     /// Same authoritative `None`-on-incomplete-ancestry contract as

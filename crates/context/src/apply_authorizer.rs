@@ -17,7 +17,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::AtCutAuthorizer;
+use calimero_governance_store::{AtCutAuthorizer, AtCutMembershipPath};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 
@@ -125,5 +125,27 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         self.folded(group)?
             .0
             .is_last_admin_at_cut(self.store, *group, member, parents)
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &PublicKey,
+        parents: &[[u8; 32]],
+    ) -> Option<AtCutMembershipPath> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        let path = self
+            .folded(group)?
+            .0
+            .membership_path_at_cut(self.store, *group, member, parents)?;
+        // Project the role/anchor detail away to the kind the gate needs.
+        Some(match path {
+            calimero_authz::MemberPathAtCut::None => AtCutMembershipPath::None,
+            calimero_authz::MemberPathAtCut::Direct { .. } => AtCutMembershipPath::Direct,
+            calimero_authz::MemberPathAtCut::Inherited { .. } => AtCutMembershipPath::Inherited,
+        })
     }
 }
