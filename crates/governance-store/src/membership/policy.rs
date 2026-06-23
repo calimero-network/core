@@ -57,37 +57,24 @@ impl<'a> MembershipPolicy<'a> {
         self
     }
 
-    /// SHADOW (F5 #28 stage 4c): compare the projection's at-cut last-admin verdict
-    /// (would removing/demoting `member` orphan the group's admins, as of the op's
-    /// PARENT cut?) against the live `live_blocks` decision, logging a `last-admin`
-    /// divergence on a mismatch. `None` (no apply-auth context, or an incomplete
-    /// fold) skips. Live stays authoritative; the flip is a follow-up.
-    fn shadow_last_admin(&self, member: &PublicKey, gate: &'static str, live_blocks: bool) {
-        if let Some(projected) =
+    /// Would removing/demoting `member` orphan `group`'s admins? Resolved at the op's
+    /// PARENT cut from the projection (F5 #28 stage 4c-flip) — `is_last_admin_at_cut`
+    /// reads the pre-mutation admin set as of the op's own parents (the correct cut
+    /// for a check the op is about to invalidate). `None` — no apply-auth context (a
+    /// local pre-check / cascade / test) OR an incomplete fold — falls back to the
+    /// live `is_admin && !has_another_admin`. The live fallback retires in #29b.
+    fn would_orphan_admins(&self, member: &PublicKey) -> EyreResult<bool> {
+        if let Some(blocks) =
             self.authorizer
                 .is_last_admin_at_cut(&self.group_id, member, self.parents)
         {
-            if projected != live_blocks {
-                tracing::warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "last-admin",
-                    gate,
-                    group_id = ?self.group_id,
-                    %member,
-                    projected,
-                    live = live_blocks,
-                    "last-admin invariant: projection PARENT-cut verdict differs from live"
-                );
-            }
+            return Ok(blocks);
         }
+        Ok(self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?)
     }
 
     pub fn ensure_not_last_admin_removal(&self, member: &PublicKey) -> EyreResult<()> {
-        // `live_blocks` iff `member` is an admin AND no other admin remains.
-        let live_blocks =
-            self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?;
-        self.shadow_last_admin(member, "removal", live_blocks);
-        if live_blocks {
+        if self.would_orphan_admins(member)? {
             bail!(MembershipError::LastAdmin);
         }
         Ok(())
@@ -101,10 +88,7 @@ impl<'a> MembershipPolicy<'a> {
         if *new_role == GroupMemberRole::Admin {
             return Ok(());
         }
-        let live_blocks =
-            self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?;
-        self.shadow_last_admin(member, "demotion", live_blocks);
-        if live_blocks {
+        if self.would_orphan_admins(member)? {
             bail!(MembershipError::LastAdminDemotion);
         }
         Ok(())
