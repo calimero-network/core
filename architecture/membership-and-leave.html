@@ -469,11 +469,48 @@ historic DAG cut, mirroring what the live authorization gate does at apply time:
   equivalent to unauthorized.</li>
   <li><b><code>is_admin_or_capability_at_cut(signer, group_id, cut, cap_bits)</code></b> —
   admin OR capability-bit check, mirroring the live
-  <code>is_authorized_with_capability</code>. Same <code>None</code> semantics as above.</li>
+  <code>is_authorized_with_capability</code>. Same <code>None</code> semantics as above. This
+  method is now a <b>required method on the <code>AtCutAuthorizer</code> trait</b> (previously
+  deferred); all implementors must provide it.</li>
 </ul>
 <p>
 Both public accessors return <code>None</code> (not <code>Some(false)</code>) when cited ancestry
 is not fully folded, ensuring callers do not treat an incomplete fold as a denial verdict.
+</p>
+
+<h3>AtCutAuthorizer trait and implementations</h3>
+<p>
+The <code>AtCutAuthorizer</code> trait abstracts over how an at-cut admin/capability check is
+resolved. It now declares two required methods: <code>is_admin_at_cut</code> and
+<code>is_admin_or_capability_at_cut</code>. Both return <code>Option&lt;bool&gt;</code> with the
+same <code>None</code> = undecidable semantics.
+</p>
+<ul>
+  <li><b><code>LiveFallbackAuthorizer</code></b> — the placeholder implementation used by the
+  current namespace-envelope applier stage. Returns <code>None</code> for both methods,
+  delegating all decisions to the live store. Implementing
+  <code>is_admin_or_capability_at_cut</code> here (returning <code>None</code>) satisfies the
+  now-required trait method.</li>
+  <li><b><code>EphemeralProjectionAuthorizer</code></b> — the projection-backed implementation.
+  Holds a <code>Mutex&lt;Option&lt;(ContextGroupId, Arc&lt;FoldedProjection&gt;)&gt;&gt;</code>
+  cache. The private <code>folded(group_id)</code> method checks the cache first; on a cache
+  miss it calls <code>ScopeProjections::ephemeral_projection</code> and stores the result. If the
+  fold fails (store or DAG-head fault) it emits a <code>tracing::warn</code> and returns
+  <code>None</code>. Both <code>is_admin_at_cut</code> and
+  <code>is_admin_or_capability_at_cut</code> go through <code>folded</code>, so a single apply
+  call reuses the same folded DAG rather than re-folding per check.</li>
+</ul>
+
+<h3>GroupGovernanceApplier — live gates only, no authorizer injection</h3>
+<p>
+The standalone <code>GroupGovernanceApplier::apply</code> continues to call
+<code>apply_local_signed_group_op</code> (live-fallback) and does <b>not</b> accept an injected
+<code>AtCutAuthorizer</code>. A code comment documents why: a <code>SignedGroupOp</code>'s
+<code>parent_op_hashes</code> belong to the per-group op log, not the namespace governance log
+that <code>EphemeralProjectionAuthorizer</code> is keyed by. Passing those hashes to the
+projection authorizer would resolve against the wrong id-space and silently no-op, producing a
+false "undecidable" verdict on every group op. The real group-auth projection shadow therefore
+fires only on the namespace-envelope group-op path, not through the standalone applier.
 </p>
 
 <h3>Shadow authorization check in <code>apply_signed_namespace_op</code></h3>
@@ -1086,6 +1123,7 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td><code>ScopeProjections::namespace_current_heads</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>.</td></tr>
   <tr><td><code>ScopeProjections::member_now_ephemeral</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — builds a fresh projection per call: resolves the namespace, folds the DAG via <code>collect_namespace_ops</code>, reads heads after the fold, and returns <code>member_at_cut</code>. Returns <code>None</code> (never decides against the member) on unresolvable namespace, store fault, or incomplete fold.</td></tr>
   <tr><td><code>ScopeProjections::member_now_checked</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — unified membership gate for all four context-layer handlers. Calls <code>member_now_ephemeral</code> first; falls back to <code>MembershipRepository::is_member</code> when projection is undecidable; emits <code>tracing::warn</code> with <code>marker=unified_projection_divergence</code> / <code>plane=membership-query</code> on definite disagreement. Direct <code>MembershipRepository</code> imports removed from <code>get_cascade_status.rs</code>, <code>get_group_upgrade_status.rs</code>, <code>list_all_groups.rs</code>, and <code>list_group_contexts.rs</code>.</td></tr>
+  <tr><td><code>AtCutAuthorizer</code> trait + <code>LiveFallbackAuthorizer</code> + <code>EphemeralProjectionAuthorizer</code></td><td><b>Implemented</b></td><td><code>crates/context/src/governance_dag.rs</code> — <code>AtCutAuthorizer</code> now declares <code>is_admin_or_capability_at_cut</code> as a required method. <code>LiveFallbackAuthorizer</code> implements it returning <code>None</code>. <code>EphemeralProjectionAuthorizer</code> holds a <code>Mutex&lt;Option&lt;(ContextGroupId, Arc&lt;FoldedProjection&gt;)&gt;&gt;</code> fold cache; the private <code>folded</code> helper reuses a cached fold for the same group or calls <code>ScopeProjections::ephemeral_projection</code> on a miss. Both <code>is_admin_at_cut</code> and <code>is_admin_or_capability_at_cut</code> delegate through <code>folded</code>. The standalone <code>GroupGovernanceApplier::apply</code> is unchanged (live-only); see the <em>GroupGovernanceApplier</em> note in the at-cut accessors section above.</td></tr>
   <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
 </table>
 </div>
