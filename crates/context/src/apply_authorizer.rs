@@ -20,13 +20,15 @@ use calimero_store::Store;
 use crate::scope_projection::ScopeProjections;
 
 /// An [`AtCutAuthorizer`] that resolves each gate against a freshly folded
-/// ephemeral projection of the op's namespace, at the op's causal cut.
-pub struct EphemeralProjectionAuthorizer<'a> {
+/// ephemeral projection of the op's namespace, at the op's causal cut. Constructed
+/// at the namespace DAG applier (the one call site); `pub(crate)` because it's an
+/// implementation detail, not API other crates should depend on.
+pub(crate) struct EphemeralProjectionAuthorizer<'a> {
     store: &'a Store,
 }
 
 impl<'a> EphemeralProjectionAuthorizer<'a> {
-    pub fn new(store: &'a Store) -> Self {
+    pub(crate) fn new(store: &'a Store) -> Self {
         Self { store }
     }
 }
@@ -38,10 +40,23 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         signer: &PublicKey,
         parents: &[[u8; 32]],
     ) -> Option<bool> {
-        // Fold the namespace's persisted governance DAG once, then resolve the
-        // admin verdict AT the op's parent cut. `None` (store fault, or the cited
-        // ancestry not fully folded) makes the gate defer to the live resolver.
-        let (proj, _ns, _heads) = ScopeProjections::ephemeral_projection(self.store, group)?;
+        // Fold the namespace's persisted governance DAG, then resolve the admin
+        // verdict AT the op's parent cut.
+        let Some((proj, _ns, _heads)) = ScopeProjections::ephemeral_projection(self.store, group)
+        else {
+            // The fold itself could not be built — a store/DAG-head fault, NOT the
+            // expected "ancestry not yet folded" case (that surfaces as `None` from
+            // `is_admin_at_cut` below and is a quiet, frequent backfill state). Defer
+            // to live as the `None` contract requires, but WARN: a transient storage
+            // fault shouldn't silently downgrade the apply-auth source unobserved.
+            tracing::warn!(
+                group = ?group,
+                "apply-auth: ephemeral projection unavailable (store/DAG-head fault); gate defers to live"
+            );
+            return None;
+        };
+        // `None` here = the cited ancestry isn't fully folded; the gate defers to
+        // live (quiet — a normal mid-backfill state, not an error).
         proj.is_admin_at_cut(self.store, *group, signer, parents)
     }
 }
