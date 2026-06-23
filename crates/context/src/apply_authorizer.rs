@@ -34,14 +34,14 @@ impl<'a> EphemeralProjectionAuthorizer<'a> {
 impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
     fn is_admin_at_cut(
         &self,
-        group: ContextGroupId,
+        group: &ContextGroupId,
         signer: &PublicKey,
         parents: &[[u8; 32]],
     ) -> Option<bool> {
         // Fold the namespace's persisted governance DAG once, then resolve the
         // admin verdict AT the op's parent cut. `None` (store fault, or the cited
         // ancestry not fully folded) makes the gate defer to the live resolver.
-        let (proj, _ns, _heads) = ScopeProjections::ephemeral_projection(self.store, &group)?;
-        proj.is_admin_at_cut(self.store, group, signer, parents)
+        let (proj, _ns, _heads) = ScopeProjections::ephemeral_projection(self.store, group)?;
+        proj.is_admin_at_cut(self.store, *group, signer, parents)
     }
 }
