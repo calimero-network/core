@@ -632,7 +632,17 @@ impl ScopeProjections {
         if !view.groups.contains_key(group) {
             return None;
         }
-        let ids = Self::member_identities_in_view(&view, store, namespace_id, group);
+        // Reuse the SAME `root`/`default_cap_base` for the candidate filter that the
+        // role walk below uses, so they can't disagree across two store reads (and
+        // `Meta`/`Capabilities` are read once per request, not twice).
+        let ids = Self::member_identities_in_view_with_ctx(
+            &view,
+            store,
+            namespace_id,
+            group,
+            root,
+            default_cap_base,
+        );
         let mut entries = Vec::with_capacity(ids.len());
         for id in ids {
             let role = match view.member_path_at_cut(*group, &id, root, default_cap_base) {
@@ -765,6 +775,32 @@ impl ScopeProjections {
             .ok()
             .flatten()
             .unwrap_or(0);
+        Self::member_identities_in_view_with_ctx(
+            view,
+            store,
+            namespace_id,
+            group,
+            root,
+            default_cap_base,
+        )
+    }
+
+    /// [`member_identities_in_view`](Self::member_identities_in_view) with the
+    /// genesis `root` tuple + `default_cap_base` supplied by the caller instead of
+    /// re-read here. `member_entries_with` passes the SAME values its role walk
+    /// (`member_path_at_cut`) uses, so the candidate filter and the role resolution
+    /// can't disagree on the admin/cap base across two store reads, and the
+    /// `MetaRepository`/`CapabilitiesRepository` reads happen once per request.
+    #[must_use]
+    pub fn member_identities_in_view_with_ctx(
+        view: &calimero_authz::AclView,
+        store: &Store,
+        namespace_id: [u8; 32],
+        group: &ContextGroupId,
+        root: Option<(ContextGroupId, PublicKey)>,
+        default_cap_base: u32,
+    ) -> std::collections::BTreeSet<PublicKey> {
+        let root_group = ContextGroupId::from(namespace_id);
 
         // Candidate universe — provably COMPLETE w.r.t. `is_member_at_cut`, which
         // accepts an identity only as: a direct member of `group` or an ancestor
