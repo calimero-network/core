@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ABI Conformance — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>ABI Conformance</span></div>
+
+<h1>ABI <em>Conformance</em></h1>
+<p class="page-subtitle">AuthoredMap, AuthoredVector, and the full CRDT collection coverage gate</p>
+
+<div class="card ga">
+<h2>What changed</h2>
+<p>The <code>AbiState</code> struct inside the <strong>abi_conformance</strong> app gained two new fields:</p>
+<ul>
+<li><code>authored_counters: AuthoredMap&lt;String, LwwRegister&lt;u32&gt;&gt;</code></li>
+<li><code>authored_log: AuthoredVector&lt;LwwRegister&lt;UserId32&gt;&gt;</code></li>
+</ul>
+<p>The golden file <code>abi.expected.json</code> was updated to include the corresponding ABI entries for both fields. With this change the conformance app now emits <strong>all 11</strong> <code>CrdtCollectionType</code> variants, closing the last gap in the cross-repo coverage gate.</p>
+</div>
+
+<div class="card gb">
+<h2>Why these two types were missing</h2>
+<p>The cross-repo coverage gate requires every schema-declared <code>CrdtType</code> to be exercised by at least one corpus ABI. Before this change, <code>authored_map</code> and <code>authored_vector</code> were never emitted by any conformance corpus, so they had to be listed in an explicit <em>allowlist exemption</em> inside the gate script.</p>
+<ul>
+<li><strong>Allowlist exemptions are fragile</strong> — a new variant added to the schema would silently pass the gate unless the exemption list was manually updated.</li>
+<li><strong>Coverage should be structural</strong> — the conformance app is the designated place to lock every marker; the exemption mechanism should remain empty in steady state.</li>
+<li>Adding the two fields removes both exemptions and makes the gate self-maintaining: any future <code>CrdtCollectionType</code> that lacks a matching conformance field will now <em>fail</em> the gate rather than slip through silently.</li>
+</ul>
+</div>
+
+<div class="card gc">
+<h2>The full set of 11 CrdtCollectionType variants</h2>
+<p>After this change the conformance app covers every declared variant. The table below lists them all for reference:</p>
+<ol>
+<li><code>lww_register</code></li>
+<li><code>counter</code></li>
+<li><code>set</code></li>
+<li><code>map</code></li>
+<li><code>vector</code></li>
+<li><code>priority_queue</code></li>
+<li><code>queue</code></li>
+<li><code>text</code></li>
+<li><code>graph</code></li>
+<li><code>authored_map</code> — <em>newly covered</em></li>
+<li><code>authored_vector</code> — <em>newly covered</em></li>
+</ol>
+</div>
+
+<div class="card gd">
+<h2>AbiState struct — before and after</h2>
+<h3>Before</h3>
+<pre class="code">#[app::state]
+pub struct AbiState {
+    // … existing fields covering variants 1–9 …
+}</pre>
+<h3>After</h3>
+<pre class="code">#[app::state]
+pub struct AbiState {
+    // … existing fields covering variants 1–9 …
+
+    /// Covers CrdtCollectionType::authored_map
+    authored_counters: AuthoredMap&lt;String, LwwRegister&lt;u32&gt;&gt;,
+
+    /// Covers CrdtCollectionType::authored_vector
+    authored_log: AuthoredVector&lt;LwwRegister&lt;UserId32&gt;&gt;,
+}</pre>
+<p>Both fields follow the same nesting pattern already used by <code>map</code> and <code>vector</code>: an outer collection type wrapping an inner <code>LwwRegister</code> value.</p>
+</div>
+
+<div class="card ga">
+<h2>Golden file update — abi.expected.json</h2>
+<p>The expected ABI snapshot must be regenerated whenever <code>AbiState</code> changes. Two new entries are appended to the <code>fields</code> array:</p>
+<pre class="code">// authored_counters entry
+{
+  "name": "authored_counters",
+  "type": {
+    "collection": "authored_map",
+    "key": { "primitive": "string" },
+    "value": {
+      "collection": "lww_register",
+      "inner": { "primitive": "u32" }
+    }
+  }
+},
+
+// authored_log entry
+{
+  "name": "authored_log",
+  "type": {
+    "collection": "authored_vector",
+    "inner": {
+      "collection": "lww_register",
+      "inner": { "primitive": "user_id32" }
+    }
+  }
+}</pre>
+<p>Run <code>cargo test -p abi_conformance -- --nocapture</code> to regenerate the snapshot and confirm it matches the golden file.</p>
+</div>
+
+<div class="card gb">
+<h2>How the coverage gate works</h2>
+<p>The gate is a CI step that compares the set of <code>CrdtCollectionType</code> variants declared in the schema crate against the set of variants actually emitted by every ABI file in the corpus directory.</p>
+<ul>
+<li><strong>Schema source</strong> — the <code>CrdtCollectionType</code> enum in <code>crates/primitives/src/crdt.rs</code> (or equivalent).</li>
+<li><strong>Corpus</strong> — every <code>abi.json</code> and <code>abi.expected.json</code> file discovered under <code>apps/</code>.</li>
+<li><strong>Pass condition</strong> — the union of all collection markers found in the corpus equals the full variant set; the allowlist of exemptions must be empty.</li>
+<li><strong>Fail condition</strong> — any variant present in the schema but absent from every corpus ABI causes the gate to fail with a diff listing the missing markers.</li>
+</ul>
+</div>
+
+<div class="card gc">
+<h2>AuthoredMap and AuthoredVector semantics</h2>
+<h3>AuthoredMap</h3>
+<p>An <code>AuthoredMap&lt;K, V&gt;</code> is a key-value collection where every entry carries the <code>UserId</code> of the peer that last wrote it. Conflict resolution is author-aware: writes from the designated author of a key take precedence over writes from other peers, falling back to LWW semantics when authorship is equal.</p>
+<h3>AuthoredVector</h3>
+<p>An <code>AuthoredVector&lt;V&gt;</code> is an append-only sequence where each element is stamped with the inserting peer's identity. Order is deterministic across replicas: elements are sorted first by logical timestamp, then by author id to break ties.</p>
+<p>Both types are <em>generic</em> over their value type, which may itself be a CRDT (as in the conformance app where the value is <code>LwwRegister&lt;_&gt;</code>), enabling arbitrarily nested CRDT compositions.</p>
+</div>
+
+<div class="card gd">
+<h2>Adding a new CrdtCollectionType in the future</h2>
+<p>The conformance app is now the <strong>canonical</strong> place to lock every CRDT collection marker. The required steps when introducing a new variant are:</p>
+<ol>
+<li>Add the variant to the <code>CrdtCollectionType</code> enum in the schema crate.</li>
+<li>Implement the corresponding collection type in the CRDT runtime crate.</li>
+<li>Add a field of that type to <code>AbiState</code> in <code>apps/abi_conformance/src/lib.rs</code>.</li>
+<li>Regenerate <code>abi.expected.json</code> by running the conformance snapshot test.</li>
+<li>Verify the coverage gate passes with an empty allowlist — <strong>do not add an exemption</strong>.</li>
+</ol>
+<p><strong>Never</strong> add a new variant to the schema without a matching conformance field. A CI failure from the gate is the intended signal that step 3 was skipped.</p>
+</div>
+
+<div class="card ga">
+<h2>File locations</h2>
+<ul>
+<li><code>apps/abi_conformance/src/lib.rs</code> — <code>AbiState</code> struct definition; add new fields here.</li>
+<li><code>apps/abi_conformance/abi.expected.json</code> — golden ABI snapshot; regenerate after struct changes.</li>
+<li><code>crates/primitives/src/crdt.rs</code> — authoritative <code>CrdtCollectionType</code> enum.</li>
+<li><code>scripts/check_crdt_coverage.sh</code> (or equivalent CI step) — the coverage gate; allowlist must stay empty.</li>
+</ul>
+</div>
+
+<div class="card gb">
+<h2>Relationship to other conformance corpus entries</h2>
+<p>The conformance app is intentionally <em>not</em> a realistic application. Its sole purpose is to ensure every ABI-visible type appears at least once in a well-formed, compilable Rust struct so that:</p>
+<ul>
+<li>The ABI serializer is exercised for every variant on every CI run.</li>
+<li>The golden snapshot acts as a regression test for ABI format changes.</li>
+<li>Cross-language SDK generators can use the corpus as a test fixture without needing a real application.</li>
+</ul>
+<p>Other apps in the repository are free to use only the CRDT types they actually need; they are <em>not</em> required to cover the full variant set.</p>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

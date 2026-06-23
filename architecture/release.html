@@ -66,6 +66,31 @@
 <p>Release notes are driven by <span class="code">CHANGELOG.md</span> at the repository root. It follows the <a href="https://keepachangelog.com/" target="_blank" rel="noopener">Keep a Changelog</a> format and should be updated in the same PR that bumps the workspace version.</p>
 </div>
 
+<div class="card gb"><h2>ABI contract check workflow</h2>
+<p>A dedicated workflow at <code>.github/workflows/abi-contract.yml</code> automates cross-repo ABI compatibility checks in CI.</p>
+
+<h3>Triggers</h3>
+<ul>
+<li>Push to <code>master</code>.</li>
+<li>Pull requests that touch ABI-related paths (path filters defined in the workflow).</li>
+</ul>
+
+<h3>What the job does</h3>
+<ol>
+<li>Checks out the core repo. The checkout <code>ref</code> falls back from <code>pull_request.head.sha</code> to <code>github.sha</code> so both PR and push events resolve correctly.</li>
+<li>Checks out <code>mero-devtools-js</code> at the ref controlled by the <code>DEVTOOLS_REF</code> variable (defaults to <code>main</code>).</li>
+<li>Builds <code>abi-codegen</code>.</li>
+<li>Runs the contract check script against the checked-out devtools.</li>
+</ol>
+
+<h3>Status and pinning</h3>
+<p>The job is <strong>non-required</strong> and is expected to show red until the matching schema-sync lands in <code>mero-devtools-js</code>. Once the downstream schema update is merged, bump <code>DEVTOOLS_REF</code> from <code>main</code> to a release tag to pin enforcement and prevent future regressions from an uncontrolled <code>main</code> tip.</p>
+<pre class="code"># Example: pin to a specific devtools release
+DEVTOOLS_REF: v1.4.0</pre>
+
+<h3>Purpose</h3>
+<p>Without this workflow, ABI regressions were only discovered after <code>mero-devtools-js</code> vendored new generated types. The check now runs on every relevant PR so breakage is caught before merging rather than after the downstream tool picks up the change.</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
