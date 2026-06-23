@@ -24,7 +24,22 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
             let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
                 bail!("node has no group identity configured");
             };
-            if !MembershipRepository::new(&self.datastore).is_member(&group_id, &node_identity)? {
+            // Fold the ephemeral projection ONCE for this request: the membership
+            // gate below and the effective-member enumeration further down both read
+            // from it (one RocksDB DAG walk, not two). `None` (store fault) falls
+            // back to live for both.
+            let proj_ctx = crate::scope_projection::ScopeProjections::ephemeral_projection(
+                &self.datastore,
+                &group_id,
+            );
+            let is_member = match &proj_ctx {
+                Some((proj, _ns, heads)) => {
+                    proj.member_now_checked_with(&self.datastore, &group_id, &node_identity, heads)?
+                }
+                None => MembershipRepository::new(&self.datastore)
+                    .is_member(&group_id, &node_identity)?,
+            };
+            if !is_member {
                 bail!("node is not a member of group '{group_id:?}'");
             }
 
@@ -36,22 +51,47 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
             // the union they would never surface here even though
             // `check_group_membership` reports them as members (#2371).
             //
-            // Pagination must span the union, so the full sets are
-            // collected here and sliced after the merge rather than
-            // pushed down into the store query. Known cost: a paginated
-            // call is O(total effective members) in store reads, not
-            // O(offset+limit). This is acceptable here — group
-            // membership is governance-scale (a permission hierarchy),
-            // not an unbounded user list — and the inherited set cannot
-            // be store-paginated at all since it is computed, not
-            // stored. The inherited set is disjoint from the stored
-            // rows by construction (`enumerate_inherited_members`
-            // excludes direct members of `group_id`), so no dedup is
-            // needed.
-            let mut members =
-                MembershipRepository::new(&self.datastore).list(&group_id, 0, usize::MAX)?;
-            members
-                .extend(MembershipRepository::new(&self.datastore).enumerate_inherited(&group_id)?);
+            // From the PROJECTION's effective-member enumeration with roles
+            // (`member_entries_with`): the identity set validated divergence-free on
+            // the `membership-enum` plane, the roles on `membership-role`. `None`
+            // falls back to the live `list ∪ enumerate_inherited` union, which already
+            // carries roles. The `None` reasons are an empty/unfed namespace, a cited
+            // ancestry not fully folded, a target group whose direct membership isn't
+            // folded (materialized fallback) — all expected steady-state deferrals —
+            // and a fold inconsistency, the one abnormal case, already logged with a
+            // `unified_projection_divergence` warn inside `member_entries_with`. The
+            // live fallback retires in #29b.
+            //
+            // Pagination must span the union, so the full set is collected here and
+            // sliced after the merge rather than pushed down into the store query.
+            // Known cost: a paginated call is O(total effective members), not
+            // O(offset+limit). This is acceptable — group membership is
+            // governance-scale (a permission hierarchy), not an unbounded user list.
+            // The inherited set is disjoint from the stored rows by construction
+            // (`enumerate_inherited` excludes direct members of `group_id`), so no
+            // dedup is needed.
+            let mut members = proj_ctx
+                .as_ref()
+                .and_then(|(proj, ns, heads)| {
+                    proj.member_entries_with(&self.datastore, *ns, &group_id, heads)
+                })
+                .map_or_else(
+                    || -> eyre::Result<Vec<_>> {
+                        let membership = MembershipRepository::new(&self.datastore);
+                        let mut live = membership.list(&group_id, 0, usize::MAX)?;
+                        live.extend(membership.enumerate_inherited(&group_id)?);
+                        Ok(live)
+                    },
+                    Ok,
+                )?;
+            // Sort by identity for a STABLE, path-independent pagination order: the
+            // projection path yields `PublicKey`-sorted ids (a `BTreeSet`) while the
+            // live fallback yields store order, so without this a request served by
+            // the projection and a later page served by the live fallback (e.g. mid-
+            // backfill) could skip or repeat members across pages. Sorting both paths
+            // the same way makes `skip(offset).take(limit)` consistent regardless of
+            // which produced the set.
+            members.sort_by_key(|(identity, _)| *identity);
 
             let entries = members
                 .into_iter()

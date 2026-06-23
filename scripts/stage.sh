@@ -23,24 +23,12 @@ ${merod} --node n2 init --server-port 2551 --swarm-port 2451 --force
 
 TFREQ=6000
 TINTVL=5000
-TSIGNER="self"
-TCONTRACT="dev-20250723152516-51710367534578"
-TRPC="http://127.0.0.1:57154/"
-TACCOUNT="node1.test.near"
-TPUBKEY="ed25519:Gxa24TGbJu4mqdhW3GbvLXmf4bSEyxVicrtpChDWbgga"
-TSECKEY="ed25519:3JtQnV5Tm5GM35t24mytoqR4UbLEAa6km4tiPXd6ubXebCrviQ7usSWJNKFYNyFkmtf6D2qZfN9ZUw8C2mibXw1C"
 
 for n in n1 n2; do
   ${merod} --node $n config \
     sync.frequency_ms=${TFREQ} \
     sync.interval_ms=${TINTVL} \
-    bootstrap.nodes='[]' \
-    context.config.near.signer=\"${TSIGNER}\" \
-    context.config.near.contract_id=\"${TCONTRACT}\" \
-    context.config.signer.self.near.testnet.rpc_url=\"${TRPC}\" \
-    context.config.signer.self.near.testnet.account_id=\"${TACCOUNT}\" \
-    context.config.signer.self.near.testnet.public_key=\"${TPUBKEY}\" \
-    context.config.signer.self.near.testnet.secret_key=\"${TSECKEY}\"
+    bootstrap.nodes='[]'
 done
 
 PID1= PID2=
@@ -94,7 +82,7 @@ app_id=`${meroctl} --node n1 --output-format json app install --path ../../apps/
 
 ${meroctl} --node n2 app install --path ../../apps/kv-store/res/kv_store.wasm
 
-create_response=`${meroctl} --node n1 --output-format json context create --application-id $app_id --protocol near --name default --as default | jq -s first`
+create_response=`${meroctl} --node n1 --output-format json context create --application-id $app_id --name default --as default | jq -s first`
 
 echo "Create response: $create_response"
 

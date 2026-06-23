@@ -55,7 +55,6 @@ pub const EXAMPLES: &str = concat!(
 #[command(after_help = concatcp!(
     "Environment variables:\n",
     "  CALIMERO_HOME    Directory for config and data\n\n",
-    "  NEAR_API_KEY     NEAR API key for blockchain operations\n\n",
     "Examples:",
     EXAMPLES
 ))]

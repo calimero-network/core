@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    CapabilitiesRepository, MembershipRepository, MetaRepository, NamespaceDagService,
-    NamespaceOpLogService, NamespaceRepository,
+    CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
+    NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
 };
 use calimero_governance_types::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
@@ -49,6 +49,15 @@ use crate::governance_dag::signed_namespace_op_to_delta;
 /// warning rather than OOM-ing the node. Set well above any real namespace's
 /// governance history — comfortably over the in-memory prune threshold (8192).
 const MAX_BACKFILL_OPS: usize = 100_000;
+
+/// The resolved at-cut context for an apply-auth read: the folded `AclView`, the
+/// genesis root tuple `(root_group, genesis_admin)`, and the namespace default-cap
+/// base. Produced by `ScopeProjections::auth_cut_context`.
+type AuthCutContext = (
+    calimero_authz::AclView,
+    Option<(ContextGroupId, PublicKey)>,
+    u32,
+);
 
 /// Assemble an [`Op`] that **mirrors a source-DAG op**: its `id` and `parents`
 /// are the source delta's own id/parents, *not* a fresh [`Op::compute_id`]. This
@@ -403,27 +412,6 @@ impl ScopeProjections {
         cut_incomplete.then_some(namespace_id)
     }
 
-    /// Walk a namespace's **persisted** governance DAG from its heads and return
-    /// the [`Op`]s to ingest — the backfill's expensive half, deliberately an
-    /// associated fn taking no `&self` so it can run **outside** the projection
-    /// lock (the apply path shares that lock; holding it across a RocksDB DAG
-    /// walk would stall the actor's ingest). Pair with [`apply_backfill`].
-    ///
-    /// Replays the authoritative persisted op-log rather than persisting a
-    /// parallel copy (which could diverge), re-deriving each op's delta
-    /// coordinates (`signed_namespace_op_to_delta`) so the ingested ops carry the
-    /// same ids/parents as the live feed (see [`op_from_namespace_op`]). EVERY
-    /// op becomes a node (membership ops with their payload, the rest as `Noop`)
-    /// so the ancestry stays unbroken; encrypted `NamespaceOp::Group` ops are
-    /// decrypted best-effort (this node holds the key for groups it belongs to),
-    /// folding membership when decryptable and a `Noop` node otherwise.
-    ///
-    /// `None` when the governance head itself is unreadable — the signal to leave
-    /// the namespace un-backfilled so a transient store fault retries on the next
-    /// call rather than permanently marking it done. A missing *parent* op is a
-    /// normal partial frontier (collect what's present), not a `None`.
-    ///
-    /// [`apply_backfill`]: Self::apply_backfill
     /// The owning namespace's CURRENT governance heads for `group` — the cut that
     /// represents "now" for a current-state membership read (resolve the group to
     /// its namespace, then read that DAG's head record). `None` if the group can't
@@ -498,33 +486,410 @@ impl ScopeProjections {
         member: &PublicKey,
     ) -> eyre::Result<bool> {
         if let Some(p) = Self::member_now_ephemeral(store, group, member) {
-            // The projection decided. Cross-check live BEST-EFFORT — a transient
-            // live-read error must not deny a verdict the projection already formed;
-            // log the divergence only when live also produced an answer.
-            match MembershipRepository::new(store).is_member(group, member) {
-                Ok(live) if live != p => tracing::warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "membership-query",
-                    group_id = ?group,
-                    ?member,
-                    projection = p,
-                    live,
-                    "query-gate: projection disagrees with live membership"
-                ),
-                Ok(_) => {}
-                Err(err) => tracing::warn!(
-                    group_id = ?group,
-                    %err,
-                    "query-gate: live cross-check failed; acting on projection verdict"
-                ),
-            }
+            // The projection is authoritative for the query gate (validated
+            // divergence-free across the e2e `membership-query` plane); act on it.
             return Ok(p);
         }
-        // Projection couldn't decide (cold/partial fold or store fault) — live is
-        // authoritative here, so its error legitimately propagates.
+        // Projection couldn't decide (cold/partial fold or store fault) — fall back
+        // to live, whose error legitimately propagates. (Live retires in #29b.)
         MembershipRepository::new(store).is_member(group, member)
     }
 
+    /// The effective member-identity union across `groups`, folding the namespace
+    /// projection ONCE and reading ONE cut — so every group is evaluated at the
+    /// SAME governance position. A per-group rebuild would re-fold and re-read heads
+    /// for each group,
+    /// which both multiplies the cost by the subtree size and (under concurrent
+    /// governance) evaluates groups at DIFFERENT cuts, producing a synthetic
+    /// cohort mismatch. `groups` must all resolve to `namespace_root`'s namespace.
+    #[must_use]
+    pub fn member_identities_subtree_ephemeral(
+        store: &Store,
+        namespace_root: &ContextGroupId,
+        groups: &[ContextGroupId],
+    ) -> Option<std::collections::BTreeSet<PublicKey>> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(namespace_root)
+            .ok()?
+            .to_bytes();
+        let (proj, heads) = Self::ephemeral_fold(store, namespace_id)?;
+        let scope = ScopeId::from(namespace_id);
+        // Defer to live on a partial fold (governance-backfill race) rather than
+        // returning an under-counted cohort — same guard as the membership gate.
+        if !proj.cut_ancestry_complete(&scope, &heads) {
+            return None;
+        }
+        let view = proj.acl_view_at(&scope, &heads)?;
+        let mut out = std::collections::BTreeSet::new();
+        for group in groups {
+            out.extend(Self::member_identities_in_view(
+                &view,
+                store,
+                namespace_id,
+                group,
+            ));
+        }
+        Some(out)
+    }
+
+    /// Build the shared ephemeral projection for `group`'s namespace ONCE — the
+    /// expensive part (`collect_namespace_ops` RocksDB DAG walk + fold) plus the
+    /// current heads. A handler that needs BOTH the membership gate and the
+    /// effective-member enumeration folds once via this and reuses the result for
+    /// [`member_now_checked_with`](Self::member_now_checked_with) and
+    /// [`member_entries_with`](Self::member_entries_with), instead of two
+    /// independent folds. `None` (with a warn) on a store fault — the caller falls
+    /// back to live.
+    #[must_use]
+    pub fn ephemeral_projection(
+        store: &Store,
+        group: &ContextGroupId,
+    ) -> Option<(Self, [u8; 32], Vec<[u8; 32]>)> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(group)
+            .ok()?
+            .to_bytes();
+        let (proj, heads) = Self::ephemeral_fold(store, namespace_id)?;
+        Some((proj, namespace_id, heads))
+    }
+
+    /// The effective member-identity SET of `group` from an ALREADY-built
+    /// projection. The authoritative read for the identity-set enumeration consumers
+    /// (member count, migration cohort) now that the set is validated divergence-free
+    /// across the e2e `membership-enum` plane; the role-bearing `list_group_members`
+    /// consumer uses [`member_entries_with`](Self::member_entries_with), which builds
+    /// on this same set. `None` when the scope wasn't fed (an empty namespace) OR the
+    /// cited ancestry isn't fully folded (a governance-backfill race) — caller falls
+    /// back to live, exactly as the membership gate's `member_at_cut` defers on an
+    /// incomplete cut. Without this guard a partial fold would silently UNDER-count.
+    #[must_use]
+    pub fn member_identities_with(
+        &self,
+        store: &Store,
+        namespace_id: [u8; 32],
+        group: &ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<std::collections::BTreeSet<PublicKey>> {
+        let scope = ScopeId::from(namespace_id);
+        if !self.cut_ancestry_complete(&scope, heads) {
+            return None;
+        }
+        let view = self.acl_view_at(&scope, heads)?;
+        Some(Self::member_identities_in_view(
+            &view,
+            store,
+            namespace_id,
+            group,
+        ))
+    }
+
+    /// The full effective-member ENUMERATION with roles at the cut — the
+    /// projection's answer for `list_group_members`. For a FOLDED group it returns
+    /// `(identity, role)` for every effective member, with the identity SET EQUAL to
+    /// [`member_identities_with`](Self::member_identities_with) (validated
+    /// divergence-free on the `membership-enum` plane) and each role resolved by the
+    /// same `member_path_at_cut` the `membership-role` plane validated.
+    ///
+    /// `None` (defer to live) when the cited ancestry isn't fully folded — enforced
+    /// by `auth_cut_context`, which gates on `cut_ancestry_complete` and returns
+    /// `None` on a partial fold — OR the target group's direct membership isn't
+    /// folded at all (`!view.groups.contains_key`).
+    ///
+    /// NOTE on the unfolded-group case: unlike `member_identities_with`, which
+    /// INJECTS live `list ∪ enumerate_inherited` rows for an unfolded group (its
+    /// materialized fallback), this returns `None` there — so the identity-set
+    /// equality above holds for FOLDED groups only. The end result is the same: on
+    /// `None` the handler falls back to the live `list ∪ enumerate_inherited` union,
+    /// yielding those same rows (with roles). Deferring via `None` keeps the live
+    /// `list` read out of this projection method.
+    ///
+    /// PARTIAL FOLD: the materialized fallback is all-or-nothing — a group with even
+    /// one folded direct member is treated as fully folded, so a materialized
+    /// `GroupMember` row that never entered the fold would be missing. This is a
+    /// property of the shared `member_identities_in_view` candidate universe (the
+    /// merged count/cohort consumers share it), not new here. It is bounded by sync
+    /// delivering a group's membership atomically — fully folded or fully
+    /// materialized, not partial — which is why the e2e `membership-enum` plane held
+    /// 0 divergences; the durable close is folding-completeness in P6 (#17).
+    ///
+    /// If an id from the validated set resolves to `MemberPathAtCut::None` (a fold
+    /// inconsistency — the membership walk and the candidate filter disagreeing), the
+    /// whole enumeration abandons the projection and defers to live rather than
+    /// returning a silently truncated list.
+    pub fn member_entries_with(
+        &self,
+        store: &Store,
+        namespace_id: [u8; 32],
+        group: &ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<Vec<(PublicKey, GroupMemberRole)>> {
+        // Fold the view ONCE: `auth_cut_context` gates `cut_ancestry_complete` and
+        // builds the `acl_view_at` + root + cap. Both the validated id set and the
+        // per-member role derive from THIS view — `member_identities_in_view` is the
+        // pre-folded variant, so the ancestry walk runs once per request, not twice
+        // (the gate `member_identities_with` would otherwise fold a second time).
+        let (view, root, default_cap_base) = self.auth_cut_context(store, *group, heads)?;
+        if !view.groups.contains_key(group) {
+            return None;
+        }
+        // Reuse the SAME `root`/`default_cap_base` for the candidate filter that the
+        // role walk below uses, so they can't disagree across two store reads (and
+        // `Meta`/`Capabilities` are read once per request, not twice).
+        let ids = Self::member_identities_in_view_with_ctx(
+            &view,
+            store,
+            namespace_id,
+            group,
+            root,
+            default_cap_base,
+        );
+        let mut entries = Vec::with_capacity(ids.len());
+        for id in ids {
+            let role = match view.member_path_at_cut(*group, &id, root, default_cap_base) {
+                calimero_authz::MemberPathAtCut::None => {
+                    // The validated id set placed `id` in `group`, but the role walk
+                    // rejects it — the candidate filter and `member_path_at_cut`
+                    // disagreeing. Never silently drop the member (a truncated list
+                    // has no signal); abandon the projection enumeration and let the
+                    // caller fall back to live's complete union.
+                    tracing::warn!(
+                        marker = "unified_projection_divergence",
+                        plane = "membership-enum",
+                        group_id = ?group,
+                        %id,
+                        "member_entries: validated-set id has no at-cut path; deferring whole enumeration to live"
+                    );
+                    return None;
+                }
+                calimero_authz::MemberPathAtCut::Direct { role } => role,
+                calimero_authz::MemberPathAtCut::Inherited {
+                    via_admin: true, ..
+                } => GroupMemberRole::Admin,
+                calimero_authz::MemberPathAtCut::Inherited {
+                    anchor,
+                    via_admin: false,
+                } => {
+                    // `member_path_at_cut` only emits this arm when the anchor row is
+                    // present (the walk sets it inside `groups[anchor].contains(id)`),
+                    // read from the SAME view, so the lookup can't miss. On the
+                    // authoritative path don't silently guess `Member` if it somehow
+                    // does — that's a fold inconsistency; bail to live like the
+                    // `None` arm, rather than misreport a role with no signal.
+                    let Some(role) = view.groups.get(&anchor).and_then(|m| m.get(&id)).cloned()
+                    else {
+                        // A member in the validated identity set whose anchor row is
+                        // absent from the SAME view is a structural inconsistency in
+                        // the membership graph, not a role-only mismatch — so this is
+                        // an enum-plane divergence, matching the `None` arm above.
+                        tracing::warn!(
+                            marker = "unified_projection_divergence",
+                            plane = "membership-enum",
+                            group_id = ?group,
+                            %id,
+                            ?anchor,
+                            "member_entries: inherited anchor row absent; deferring whole enumeration to live"
+                        );
+                        return None;
+                    };
+                    role
+                }
+            };
+            entries.push((id, role));
+        }
+        Some(entries)
+    }
+
+    /// The shared fold primitive for both [`ephemeral_projection`](Self::ephemeral_projection)
+    /// and [`ephemeral_view`](Self::ephemeral_view): collect `namespace_id`'s
+    /// persisted governance DAG into a fresh projection and read its current heads
+    /// (AFTER the fold — see `member_now_ephemeral`). `None` (with a warn) on a
+    /// store fault so the caller falls back to live rather than reading an empty
+    /// projection.
+    fn ephemeral_fold(store: &Store, namespace_id: [u8; 32]) -> Option<(Self, Vec<[u8; 32]>)> {
+        let mut proj = Self::new();
+        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+            tracing::warn!(
+                namespace = ?namespace_id,
+                "ephemeral_fold: governance head unreadable; caller falls back to live"
+            );
+            return None;
+        };
+        proj.apply_backfill(namespace_id, ops);
+        let heads = NamespaceDagService::new(store, namespace_id)
+            .read_head_record()
+            .ok()?
+            .parent_hashes;
+        Some((proj, heads))
+    }
+
+    /// The gate verdict over an ALREADY-built ephemeral projection — same contract
+    /// as [`member_now_checked`](Self::member_now_checked) (act on the projection,
+    /// live on `None`), but reusing a shared fold.
+    pub fn member_now_checked_with(
+        &self,
+        store: &Store,
+        group: &ContextGroupId,
+        member: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> eyre::Result<bool> {
+        if let Some(p) = self.member_at_cut(store, *group, member, heads) {
+            return Ok(p);
+        }
+        MembershipRepository::new(store).is_member(group, member)
+    }
+
+    /// The effective member-identity set of `group` from an already-folded `view`
+    /// of its namespace. Candidate universe = every direct member of any group in
+    /// the view plus the group/root admins (a superset the walk narrows). Mirrors
+    /// three live behaviours:
+    /// * the at-cut inheritance walk (`is_member_at_cut`), so the set is consistent
+    ///   with the boolean reads;
+    /// * the enumeration DENY ASYMMETRY — `is_member`/`check_path` keeps a denied
+    ///   member (still an `Inherited` path) but `enumerate_inherited` EXCLUDES a
+    ///   denied INHERITED member (direct members are never deny-filtered);
+    /// * the namespace-leave CASCADE — a subgroup member must also be a namespace
+    ///   ROOT member (the single `MemberLeft` op the projection folds doesn't carry
+    ///   the local cascade that removes descendant rows).
+    ///
+    /// MATERIALIZED FALLBACK: for a group with NO direct member folded (a Restricted
+    /// subgroup whose membership reached this node as materialized `GroupMember`
+    /// rows, or whose member ops this node can't decrypt), the fold carries nothing
+    /// — defer to live's full `list ∪ enumerate_inherited` for that group, so the
+    /// set is neither a spurious subset (missing materialized direct rows) nor an
+    /// under-count (missing inherited members the unfolded structure can't derive).
+    #[must_use]
+    pub fn member_identities_in_view(
+        view: &calimero_authz::AclView,
+        store: &Store,
+        namespace_id: [u8; 32],
+        group: &ContextGroupId,
+    ) -> std::collections::BTreeSet<PublicKey> {
+        let root_group = ContextGroupId::from(namespace_id);
+        let root = MetaRepository::new(store)
+            .load(&root_group)
+            .ok()
+            .flatten()
+            .map(|meta| (root_group, meta.admin_identity));
+        let default_cap_base = CapabilitiesRepository::new(store)
+            .default_capabilities(&root_group)
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        Self::member_identities_in_view_with_ctx(
+            view,
+            store,
+            namespace_id,
+            group,
+            root,
+            default_cap_base,
+        )
+    }
+
+    /// [`member_identities_in_view`](Self::member_identities_in_view) with the
+    /// genesis `root` tuple + `default_cap_base` supplied by the caller instead of
+    /// re-read here. `member_entries_with` passes the SAME values its role walk
+    /// (`member_path_at_cut`) uses, so the candidate filter and the role resolution
+    /// can't disagree on the admin/cap base across two store reads, and the
+    /// `MetaRepository`/`CapabilitiesRepository` reads happen once per request.
+    #[must_use]
+    pub fn member_identities_in_view_with_ctx(
+        view: &calimero_authz::AclView,
+        store: &Store,
+        namespace_id: [u8; 32],
+        group: &ContextGroupId,
+        root: Option<(ContextGroupId, PublicKey)>,
+        default_cap_base: u32,
+    ) -> std::collections::BTreeSet<PublicKey> {
+        let root_group = ContextGroupId::from(namespace_id);
+
+        // Candidate universe — provably COMPLETE w.r.t. `is_member_at_cut`, which
+        // accepts an identity only as: a direct member of `group` or an ancestor
+        // (every group's direct members are in `view.groups.values()`), a folded
+        // group/subgroup admin of `group` or an ancestor (all in
+        // `view.group_admin.values()` — one genesis admin per group, plus Admin-role
+        // holders already counted as direct members), or the genesis root admin
+        // (`root`). So no accepted identity lies outside this set.
+        let mut candidates: std::collections::BTreeSet<PublicKey> =
+            std::collections::BTreeSet::new();
+        for members in view.groups.values() {
+            candidates.extend(members.keys().copied());
+        }
+        candidates.extend(view.group_admin.values().copied());
+        if let Some((_, admin)) = root {
+            let _ = candidates.insert(admin);
+        }
+
+        let deny = DenyListRepository::new(store);
+        let mut result: std::collections::BTreeSet<PublicKey> = candidates
+            .into_iter()
+            .filter(|c| view.is_member_at_cut(*group, c, root, default_cap_base))
+            // Namespace-leave cascade: every (sub)group member must also be a
+            // namespace-ROOT member (live has no subgroup member who isn't one; the
+            // folded single `MemberLeft` doesn't carry the descendant-row cascade).
+            // For `group == root_group` this filter is a no-op on purpose — the
+            // FIRST filter above (`is_member_at_cut(*group, …)` with `*group ==
+            // root_group`) already decides root membership directly, and the root's
+            // `MemberLeft` IS folded, so there's no un-cascaded stale row to drop.
+            .filter(|c| {
+                *group == root_group
+                    || view.is_member_at_cut(root_group, c, root, default_cap_base)
+            })
+            // Deny asymmetry: drop a denied INHERITED member; never deny-filter a
+            // direct member (live's `list` doesn't consult the deny-list).
+            .filter(|c| {
+                let is_direct = view
+                    .groups
+                    .get(group)
+                    .is_some_and(|members| members.contains_key(c));
+                is_direct || !deny.is_denied(group, c).unwrap_or(false)
+            })
+            .collect();
+
+        // Materialized fallback for a wholly-unfolded group (no direct member folded
+        // — a Restricted subgroup whose membership reached this node as materialized
+        // rows, or whose member ops it can't decrypt). The fold has NO opinion for
+        // such a group, so defer entirely to live's `list ∪ enumerate_inherited`
+        // rather than the (empty/partial) folded candidate set. These live rows are
+        // already cascade- and removal-consistent; re-filtering them through this
+        // node's INCOMPLETE fold (the reason we're falling back) would wrongly drop
+        // valid members, so they bypass the fold-based filters above by design.
+        if !view.groups.contains_key(group) {
+            let live = MembershipRepository::new(store);
+            // Defer fully to live for an unfolded group: add BOTH its materialized
+            // direct rows (`list`) AND its inherited members (`enumerate_inherited`).
+            // The fold has no opinion here, so anything less would under-include the
+            // inherited side the unfolded structure can't derive.
+            if let Ok(rows) = live.list(group, 0, usize::MAX) {
+                result.extend(rows.into_iter().map(|(pk, _)| pk));
+            }
+            if let Ok(inherited) = live.enumerate_inherited(group) {
+                result.extend(inherited.into_iter().map(|(pk, _)| pk));
+            }
+        }
+        result
+    }
+
+    /// Walk a namespace's **persisted** governance DAG from its heads and return
+    /// the [`Op`]s to ingest — the backfill's expensive half, deliberately an
+    /// associated fn taking no `&self` so it can run **outside** the projection
+    /// lock (the apply path shares that lock; holding it across a RocksDB DAG
+    /// walk would stall the actor's ingest). Pair with [`apply_backfill`].
+    ///
+    /// Replays the authoritative persisted op-log rather than persisting a
+    /// parallel copy (which could diverge), re-deriving each op's delta
+    /// coordinates (`signed_namespace_op_to_delta`) so the ingested ops carry the
+    /// same ids/parents as the live feed (see [`op_from_namespace_op`]). EVERY
+    /// op becomes a node (membership ops with their payload, the rest as `Noop`)
+    /// so the ancestry stays unbroken; encrypted `NamespaceOp::Group` ops are
+    /// decrypted best-effort (this node holds the key for groups it belongs to),
+    /// folding membership when decryptable and a `Noop` node otherwise.
+    ///
+    /// `None` when the governance head itself is unreadable — the signal to leave
+    /// the namespace un-backfilled so a transient store fault retries on the next
+    /// call rather than permanently marking it done. A missing *parent* op is a
+    /// normal partial frontier (collect what's present), not a `None`.
+    ///
+    /// [`apply_backfill`]: Self::apply_backfill
     #[must_use]
     pub fn collect_namespace_ops(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
         let dag = NamespaceDagService::new(store, namespace_id);
@@ -787,6 +1152,86 @@ impl ScopeProjections {
             self.acl_view_at(&scope, heads)
                 .is_some_and(|v| v.is_member_at_cut(group, author, root, default_cap_base)),
         )
+    }
+
+    /// Is `author` an ADMIN of `group` at the cut named by `heads`, authoritatively
+    /// — `Some(true)`/`Some(false)` only when the COMPLETE cited ancestry is folded,
+    /// `None` otherwise (defer to live). The apply-auth analogue of
+    /// [`member_at_cut_authoritative`](Self::member_at_cut_authoritative): admin =
+    /// a folded group admin (subgroup creator / `Admin`-role holder, via
+    /// `is_group_admin`) OR the immutable genesis root admin for the root group.
+    #[must_use]
+    pub fn is_admin_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        author: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let (view, root, _) = self.auth_cut_context(store, group, heads)?;
+        Some(view.is_authorized_admin(group, author, root))
+    }
+
+    /// Is `author` an admin of `group` OR a holder of any bit in `capability` at
+    /// the cut — the apply-auth analogue of live's `is_authorized_with_capability`.
+    /// Same authoritative `None`-on-incomplete-ancestry contract as
+    /// [`is_admin_at_cut`](Self::is_admin_at_cut). The capability is the member's
+    /// folded cap, falling back to the namespace default-cap base (a store-written
+    /// genesis fact, as in [`member_at_cut`](Self::member_at_cut)).
+    #[must_use]
+    pub fn is_admin_or_capability_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        author: &PublicKey,
+        capability: u32,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        if view.is_authorized_admin(group, author, root) {
+            return Some(true);
+        }
+        let folded = view.capability(&group, author);
+        let effective = if folded != 0 {
+            folded
+        } else {
+            default_cap_base
+        };
+        Some(effective & capability != 0)
+    }
+
+    /// Shared setup for the at-cut admin/capability reads: resolve the namespace,
+    /// gate on COMPLETE cited ancestry (so the verdict is authoritative — `None`
+    /// otherwise, defer to live), build the folded view + the genesis root tuple
+    /// (`AclView::is_authorized_admin` prefers the folded root admin, tracking
+    /// `AdminChanged`; this is the un-folded base) + the namespace default cap.
+    fn auth_cut_context(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<AuthCutContext> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let scope = ScopeId::from(namespace_id);
+        if !self.cut_ancestry_complete(&scope, heads) {
+            return None;
+        }
+        let view = self.acl_view_at(&scope, heads)?;
+        let root_group = ContextGroupId::from(namespace_id);
+        let root = MetaRepository::new(store)
+            .load(&root_group)
+            .ok()
+            .flatten()
+            .map(|meta| (root_group, meta.admin_identity));
+        let default_cap_base = CapabilitiesRepository::new(store)
+            .default_capabilities(&root_group)
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        Some((view, root, default_cap_base))
     }
 
     /// Diagnostics for a divergence at `heads` — why does the projection NOT see

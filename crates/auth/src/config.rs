@@ -29,10 +29,6 @@ pub struct AuthConfig {
     #[serde(default)]
     pub providers: HashMap<String, bool>,
 
-    /// NEAR wallet configuration
-    #[serde(default)]
-    pub near: NearWalletConfig,
-
     /// Username/password configuration
     #[serde(default)]
     pub user_password: UserPasswordConfig,
@@ -83,33 +79,6 @@ pub enum StorageConfig {
     /// In-memory storage (for development and testing)
     #[serde(rename = "memory")]
     Memory,
-}
-
-/// NEAR wallet configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NearWalletConfig {
-    /// Network
-    pub network: String,
-
-    /// RPC URL for NEAR network
-    pub rpc_url: String,
-
-    /// Wallet URL
-    pub wallet_url: String,
-
-    /// Helper URL (optional)
-    pub helper_url: Option<String>,
-}
-
-impl Default for NearWalletConfig {
-    fn default() -> Self {
-        Self {
-            network: "testnet".to_string(),
-            rpc_url: "https://rpc.testnet.near.org".to_string(),
-            wallet_url: "https://wallet.testnet.near.org".to_string(),
-            helper_url: None,
-        }
-    }
 }
 
 /// Username/password configuration
