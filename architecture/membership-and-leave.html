@@ -259,6 +259,64 @@ record itself is unreadable. Callers <b>must</b> fall back to the live membershi
 an empty cut — an empty cut would falsely deny all access.
 </p>
 
+<h3>Full effective-member enumeration — <code>ScopeProjections::member_entries_with</code></h3>
+<p>
+<code>member_entries_with</code> returns a <code>Vec&lt;(PublicKey, GroupMemberRole)&gt;</code> for
+every effective member of a group at the current cut, derived entirely from the already-folded
+<code>auth_cut_context</code> view. It reuses <code>member_identities_in_view_with_ctx</code> for
+the identity set and resolves each member's role via <code>member_path_at_cut</code>.
+</p>
+<p>
+The method returns <code>None</code> (signalling: defer to the live store) in three cases:
+</p>
+<ul>
+  <li>The cited ancestry is not yet fully folded — a partial fold could produce an incomplete member
+  list, so the caller falls back rather than silently truncating.</li>
+  <li>The target group has no folded direct-membership entry in the view — the projection does not
+  cover this group yet.</li>
+  <li>A validated identity resolves to <code>MemberPathAtCut::None</code> or has a missing inherited
+  anchor row — this indicates a fold inconsistency. The method logs a
+  <code>unified_projection_divergence</code> warning and abandons the <em>entire</em> enumeration
+  rather than returning a partial list.</li>
+</ul>
+<p>
+The all-or-nothing fallback contract means callers never observe a silently truncated member list:
+either the projection supplies the complete set or the live store is used in its entirety.
+</p>
+
+<h3>Shared-context identity resolution — <code>ScopeProjections::member_identities_in_view_with_ctx</code></h3>
+<p>
+<code>member_identities_in_view_with_ctx</code> accepts caller-supplied <code>root</code> and
+<code>default_cap_base</code> instead of re-reading <code>MetaRepository</code> /
+<code>CapabilitiesRepository</code> internally. <code>member_identities_in_view</code> delegates to
+it unchanged (existing callers are unaffected). <code>member_entries_with</code> passes the values
+it already obtained from <code>auth_cut_context</code>, ensuring the candidate-identity filter and
+the per-member role resolution use a single consistent store snapshot with no window for a concurrent
+governance write to make them disagree. Prefer <code>member_identities_in_view_with_ctx</code> over
+<code>member_identities_in_view</code> whenever the caller already holds the root and capability
+values — it avoids a redundant store read and eliminates the TOCTOU window.
+</p>
+
+<h3>Projection-first <code>list_group_members</code> with stable pagination</h3>
+<p>
+The <code>list_group_members</code> handler now reads from the projection authoritatively when a
+folded <code>proj_ctx</code> is available. It falls back to the live
+<code>MembershipRepository::list ∪ enumerate_inherited</code> union only when
+<code>member_entries_with</code> returns <code>None</code>. Previously the handler always read from
+the live store and compared the projection in shadow mode; the shadow scaffolding methods
+<code>shadow_member_enum_with</code> and <code>member_roles_for</code> have been deleted as they had
+no remaining callers.
+</p>
+<p>
+Both the projection path and the live-store fallback path now apply a
+<code>members.sort_by_key(|(identity, _)| *identity)</code> sort by <code>PublicKey</code>
+<em>before</em> the <code>skip(offset).take(limit)</code> slice. The projection returns a
+<code>BTreeSet</code>-ordered (PublicKey-sorted) result while the live store returns
+insertion/store order; without the explicit sort, a mid-backfill request served by the projection
+followed by a next-page request served by the live store could skip or repeat members. The sort
+makes pagination order stable and path-independent across a mid-backfill transition.
+</p>
+
 <h3>Where this can break</h3>
 <p>
 Two classes of change would silently re-introduce the divergence described above:
@@ -826,7 +884,7 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td><code>leave_namespace</code></td><td><b>Implemented</b></td><td>Same <code>member_left.rs</code> apply detects the no-parent case and cascades through descendant groups where the leaver has direct rows; multi-scope owner + last-admin checked upfront. <em>No per-scope key rotation</em>.</td></tr>
   <tr><td>Key rotation on <code>MemberRemoved</code></td><td><b>Implemented</b></td><td><code>crates/governance-store/src/group_governance_publisher.rs</code> (<code>sign_apply_and_publish_inner</code>) + <code>GroupKeyring</code> in <code>group_keys.rs</code> — fresh key wrapped for remaining members, excluding the removed one.</td></tr>
   <tr><td>Role-scoped TEE self-purge</td><td><b>Implemented</b> (ADR 0002; #2680/#2724/#2725)</td><td><code>crates/context/src/self_purge.rs</code> listener + cascade + marker-gated <code>reconcile_sweep</code>; <code>delete_group_local_rows</code> in <code>governance-store/src/local_state.rs</code> deletes signing keys (and, as of #2776, <code>GroupKeyring</code> encryption keys); <code>OpEvent::TeeMemberRemoved</code> emitted from <code>member_removed.rs</code> / <code>member_left.rs</code>.</td></tr>
-  <tr><td><code>ScopeProjections::namespace_current_heads</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>.</td></tr>
+  <tr><td><code>ScopeProjections::namespace_current_heads</code> / <code>member_entries_with</code> / <code>member_identities_in_view_with_ctx</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — <code>namespace_current_heads</code> resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>. <code>member_entries_with</code> returns a <code>Vec&lt;(PublicKey, GroupMemberRole)&gt;</code> for every effective member of a group at the current cut, derived entirely from the already-folded <code>auth_cut_context</code> view; returns <code>None</code> (defer to live) when the cited ancestry is not fully folded, the target group has no folded direct-membership entry in the view, or a validated identity resolves to <code>MemberPathAtCut::None</code> or has a missing inherited anchor row (logs <code>unified_projection_divergence</code> and abandons the whole enumeration rather than silently truncating). <code>member_identities_in_view_with_ctx</code> accepts caller-supplied <code>root</code> and <code>default_cap_base</code> instead of re-reading <code>MetaRepository</code>/<code>CapabilitiesRepository</code>; <code>member_identities_in_view</code> delegates to it. <code>list_group_members</code> now reads from the projection authoritatively (falling back to the live <code>MembershipRepository::list ∪ enumerate_inherited</code> union only when <code>member_entries_with</code> returns <code>None</code>); both paths are sorted by <code>PublicKey</code> before <code>skip(offset).take(limit)</code> for stable, path-independent pagination. Dead shadow scaffolding <code>shadow_member_enum_with</code> and <code>member_roles_for</code> are removed.</td></tr>
   <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
 </table>
 </div>
