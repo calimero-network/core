@@ -594,9 +594,21 @@ impl ScopeProjections {
     /// target group's direct membership isn't folded at all — the
     /// `!view.groups.contains_key` materialized-fallback case, where the fold has no
     /// opinion and live's `list ∪ enumerate_inherited` (which already carries roles)
-    /// is authoritative. For a FOLDED group the validated id set is pure projection,
-    /// so every id resolves to a non-`None` path (the `continue` is unreachable,
-    /// kept defensive).
+    /// is authoritative.
+    ///
+    /// PARTIAL FOLD: the materialized fallback is all-or-nothing — a group with even
+    /// one folded direct member is treated as fully folded, so a materialized
+    /// `GroupMember` row that never entered the fold would be missing. This is a
+    /// property of the shared `member_identities_in_view` candidate universe (the
+    /// merged count/cohort consumers share it), not new here. It is bounded by sync
+    /// delivering a group's membership atomically — fully folded or fully
+    /// materialized, not partial — which is why the e2e `membership-enum` plane held
+    /// 0 divergences; the durable close is folding-completeness in P6 (#17).
+    ///
+    /// If an id from the validated set resolves to `MemberPathAtCut::None` (a fold
+    /// inconsistency — the membership walk and the candidate filter disagreeing), the
+    /// whole enumeration abandons the projection and defers to live rather than
+    /// returning a silently truncated list.
     pub fn member_entries_with(
         &self,
         store: &Store,
@@ -609,28 +621,40 @@ impl ScopeProjections {
         if !view.groups.contains_key(group) {
             return None;
         }
-        let entries = ids
-            .into_iter()
-            .filter_map(|id| {
-                let role = match view.member_path_at_cut(*group, &id, root, default_cap_base) {
-                    calimero_authz::MemberPathAtCut::None => return None,
-                    calimero_authz::MemberPathAtCut::Direct { role } => role,
-                    calimero_authz::MemberPathAtCut::Inherited {
-                        via_admin: true, ..
-                    } => GroupMemberRole::Admin,
-                    calimero_authz::MemberPathAtCut::Inherited {
-                        anchor,
-                        via_admin: false,
-                    } => view
-                        .groups
-                        .get(&anchor)
-                        .and_then(|m| m.get(&id))
-                        .cloned()
-                        .unwrap_or(GroupMemberRole::Member),
-                };
-                Some((id, role))
-            })
-            .collect();
+        let mut entries = Vec::with_capacity(ids.len());
+        for id in ids {
+            let role = match view.member_path_at_cut(*group, &id, root, default_cap_base) {
+                calimero_authz::MemberPathAtCut::None => {
+                    // The validated id set placed `id` in `group`, but the role walk
+                    // rejects it — the candidate filter and `member_path_at_cut`
+                    // disagreeing. Never silently drop the member (a truncated list
+                    // has no signal); abandon the projection enumeration and let the
+                    // caller fall back to live's complete union.
+                    tracing::warn!(
+                        marker = "unified_projection_divergence",
+                        plane = "membership-enum",
+                        group_id = ?group,
+                        %id,
+                        "member_entries: validated-set id has no at-cut path; deferring whole enumeration to live"
+                    );
+                    return None;
+                }
+                calimero_authz::MemberPathAtCut::Direct { role } => role,
+                calimero_authz::MemberPathAtCut::Inherited {
+                    via_admin: true, ..
+                } => GroupMemberRole::Admin,
+                calimero_authz::MemberPathAtCut::Inherited {
+                    anchor,
+                    via_admin: false,
+                } => view
+                    .groups
+                    .get(&anchor)
+                    .and_then(|m| m.get(&id))
+                    .cloned()
+                    .unwrap_or(GroupMemberRole::Member),
+            };
+            entries.push((id, role));
+        }
         Some(entries)
     }
 

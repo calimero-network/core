@@ -74,15 +74,9 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
                 })
                 .map_or_else(
                     || -> eyre::Result<Vec<_>> {
-                        let mut live = MembershipRepository::new(&self.datastore).list(
-                            &group_id,
-                            0,
-                            usize::MAX,
-                        )?;
-                        live.extend(
-                            MembershipRepository::new(&self.datastore)
-                                .enumerate_inherited(&group_id)?,
-                        );
+                        let membership = MembershipRepository::new(&self.datastore);
+                        let mut live = membership.list(&group_id, 0, usize::MAX)?;
+                        live.extend(membership.enumerate_inherited(&group_id)?);
                         Ok(live)
                     },
                     Ok,
