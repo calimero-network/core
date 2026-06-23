@@ -56,10 +56,13 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
             // chain walk bounded by `MAX_NAMESPACE_DEPTH`. This is minor
             // next to `compute_group_state_hash` below, which already
             // scans the full group state on every call.
+            // Resolve the open-subgroup inherited members ONCE — reused for the
+            // count and (below) the shadow's live id set, instead of two parent
+            // walks.
+            let inherited =
+                MembershipRepository::new(&self.datastore).enumerate_inherited(&group_id)?;
             let member_count = (MembershipRepository::new(&self.datastore).count(&group_id)?
-                + MembershipRepository::new(&self.datastore)
-                    .enumerate_inherited(&group_id)?
-                    .len()) as u64;
+                + inherited.len()) as u64;
 
             // SHADOW: compare the projection's effective-member SET against the live
             // union (not just the count — equal counts with different members would
@@ -71,12 +74,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                         .list(&group_id, 0, usize::MAX)?
                         .into_iter()
                         .map(|(pk, _)| pk)
-                        .chain(
-                            MembershipRepository::new(&self.datastore)
-                                .enumerate_inherited(&group_id)?
-                                .into_iter()
-                                .map(|(pk, _)| pk),
-                        )
+                        .chain(inherited.into_iter().map(|(pk, _)| pk))
                         .collect();
                 proj.shadow_member_enum_with(&self.datastore, *ns, &group_id, heads, &live_ids);
             }

@@ -525,38 +525,10 @@ impl ScopeProjections {
         MembershipRepository::new(store).is_member(group, member)
     }
 
-    /// The set of identities the projection considers EFFECTIVE members of `group`
-    /// right now — direct plus inherited (open-subgroup parent walk) — built from a
-    /// fresh ephemeral projection. The mirror of live's `list ∪ enumerate_inherited`
-    /// for the membership-enumeration query endpoints. `None` when the
-    /// namespace/heads/view can't be resolved.
-    ///
-    /// Folds once, then defers to [`member_identities_in_view`](Self::member_identities_in_view)
-    /// for the candidate filtering. For enumerating MULTIPLE groups of one namespace
-    /// (a migration cohort), prefer [`member_identities_subtree_ephemeral`](Self::member_identities_subtree_ephemeral),
-    /// which folds once and reads ONE cut for the whole subtree.
-    #[must_use]
-    pub fn member_identities_now_ephemeral(
-        store: &Store,
-        group: &ContextGroupId,
-    ) -> Option<std::collections::BTreeSet<PublicKey>> {
-        let namespace_id = NamespaceRepository::new(store)
-            .resolve(group)
-            .ok()?
-            .to_bytes();
-        let view = Self::ephemeral_view(store, namespace_id)?;
-        Some(Self::member_identities_in_view(
-            &view,
-            store,
-            namespace_id,
-            group,
-        ))
-    }
-
-    /// Union of [`member_identities_now_ephemeral`](Self::member_identities_now_ephemeral)
-    /// across `groups`, but folding the namespace projection ONCE and reading ONE
-    /// cut — so every group is evaluated at the SAME governance position. The
-    /// per-group ephemeral path would re-fold and re-read heads for each group,
+    /// The effective member-identity union across `groups`, folding the namespace
+    /// projection ONCE and reading ONE cut — so every group is evaluated at the
+    /// SAME governance position. A per-group rebuild would re-fold and re-read heads
+    /// for each group,
     /// which both multiplies the cost by the subtree size and (under concurrent
     /// governance) evaluates groups at DIFFERENT cuts, producing a synthetic
     /// cohort mismatch. `groups` must all resolve to `namespace_root`'s namespace.
@@ -757,6 +729,10 @@ impl ScopeProjections {
             // Namespace-leave cascade: every (sub)group member must also be a
             // namespace-ROOT member (live has no subgroup member who isn't one; the
             // folded single `MemberLeft` doesn't carry the descendant-row cascade).
+            // For `group == root_group` this filter is a no-op on purpose — the
+            // FIRST filter above (`is_member_at_cut(*group, …)` with `*group ==
+            // root_group`) already decides root membership directly, and the root's
+            // `MemberLeft` IS folded, so there's no un-cascaded stale row to drop.
             .filter(|c| {
                 *group == root_group
                     || view.is_member_at_cut(root_group, c, root, default_cap_base)
@@ -773,43 +749,20 @@ impl ScopeProjections {
             .collect();
 
         // Materialized fallback for a wholly-unfolded group (mirrors `member_at_cut`).
+        // These rows are live's CURRENT direct members (`list`), which the live apply
+        // path already keeps cascade- and removal-consistent (a namespace leave
+        // removed them here, a deny doesn't touch `list`). So they deliberately
+        // bypass the fold-based cascade/deny filters above — re-filtering them
+        // through this node's INCOMPLETE fold (the reason we're falling back) would
+        // wrongly drop valid members. The set still matches live's `list` for the
+        // direct members; the inherited side is covered by the walk above when the
+        // subgroup edge is folded.
         if !view.groups.contains_key(group) {
             if let Ok(rows) = MembershipRepository::new(store).list(group, 0, usize::MAX) {
                 result.extend(rows.into_iter().map(|(pk, _)| pk));
             }
         }
         result
-    }
-
-    /// SHADOW cross-check for the membership-enumeration endpoints: compare the
-    /// projection's effective member-identity set against the `live_identities` the
-    /// caller already built, logging the hard-gated `unified_projection_divergence`
-    /// (plane `membership-enum`) on any set difference. Read-only — the caller still
-    /// returns the live list; this validates equivalence (now including the deny
-    /// asymmetry) ahead of the F5 flip to acting on the projection set.
-    pub fn shadow_check_member_enum(
-        store: &Store,
-        group: &ContextGroupId,
-        live_identities: &std::collections::BTreeSet<PublicKey>,
-    ) {
-        let Some(projected) = Self::member_identities_now_ephemeral(store, group) else {
-            return;
-        };
-        if &projected != live_identities {
-            let only_projection: Vec<_> = projected.difference(live_identities).collect();
-            let only_live: Vec<_> = live_identities.difference(&projected).collect();
-            // Hard-gated: the projection enumeration now mirrors live's deny
-            // asymmetry, so any residual set difference is a real divergence the
-            // cutover gate must catch (same marker the boolean gates use).
-            tracing::warn!(
-                marker = "unified_projection_divergence",
-                plane = "membership-enum",
-                group_id = ?group,
-                ?only_projection,
-                ?only_live,
-                "query-enum: projection effective-member set differs from live"
-            );
-        }
     }
 
     #[must_use]
