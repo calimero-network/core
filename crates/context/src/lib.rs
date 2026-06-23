@@ -28,6 +28,7 @@ use tokio::sync::{Mutex, RwLock};
 use calimero_governance_store::metrics::Metrics;
 
 pub mod activation;
+pub(crate) mod apply_authorizer;
 pub mod auto_follow;
 mod cache;
 pub mod config;
