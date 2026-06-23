@@ -138,6 +138,15 @@
   <div class="cb"><h4 style="color:var(--cyan);">ReadOnly</h4><p>Observer. Can join contexts and read state, but state mutations are rejected by the platform. Enforced at both the local node (execute handler discards changes) and remote nodes (state deltas from ReadOnly authors are rejected on ingestion).</p></div>
 </div>
 
+<h3>At-Cut Membership Path (<span class="code">MemberPathAtCut</span>)</h3>
+<p><span class="code">MemberPathAtCut</span> is the at-cut analogue of the live <span class="code">MembershipPath</span> enum, used for deriving a member's enumeration role at a given governance snapshot. It has three variants:</p>
+<div class="g3">
+  <div class="cb"><h4 style="color:var(--text-dim);">None</h4><p>Identity is not a member at the cut — neither directly nor via the open-subgroup inheritance chain.</p></div>
+  <div class="cb"><h4 style="color:var(--green);">Direct <span style="font-weight:400;font-size:.85em;">{ role }</span></h4><p>Identity holds a direct stored membership row. Carries the folded role. The direct row is checked <strong>before</strong> the admin carve-out, so an identity that is both a stored member and the genesis admin gets the stored row's role (matching live <span class="code">list</span> behaviour).</p></div>
+  <div class="cb"><h4 style="color:var(--cyan);">Inherited <span style="font-weight:400;font-size:.85em;">{ anchor, via_admin }</span></h4><p>Identity is present via the open-subgroup chain. Carries the anchor group (deepest ancestor with a direct row) and whether that ancestor granted admin authority. Sufficient information to derive the enumeration role without a second lookup.</p></div>
+</div>
+<p style="margin-top:12px;"><span class="code">AclView::member_path_at_cut</span> walks the same parent chain as <span class="code">is_member_at_cut</span> but returns a <span class="code">MemberPathAtCut</span> instead of a bool. The admin predicate used is narrowed to <em>group admin OR genesis root admin of this group only</em> — the global <span class="code">is_root_admin</span> predicate is intentionally excluded so that root admins are not silently granted access to <strong>Restricted</strong> subgroups.</p>
+
 <h3>Subgroups</h3>
 <p>Groups can form a tree hierarchy. A child group links to a parent via <span class="code">GroupParentRef</span>. Membership and admin authority inherit downward:</p>
 <div class="g2">
@@ -485,7 +494,7 @@
 <h2>Key File Map</h2>
 
 <h3>Core Governance</h3>
-<div class="fr"><div class="fp">context/primitives/src/local_governance/mod.rs</div><div class="fd">Wire types: <span class="code">SignedGroupOp</span>, <span class="code">GroupOp</span>, <span class="code">SignableGroupOp</span>, <span class="code">SignedNamespaceOp</span>, <span class="code">NamespaceOp</span> (RootOp/GroupOp). Ed25519 signing/verification, content hashing, schema v3.</div></div>
+<div class="fr"><div class="fp">context/primitives/src/local_governance/mod.rs</div><div class="fd">Wire types: <span class="code">SignedGroupOp</span>, <span class="code">GroupOp</span>, <span class="code">SignableGroupOp</span>, <span class="code">SignedNamespaceOp</span>, <span class="code">NamespaceOp</span> (RootOp/GroupOp). Ed25519 signing/verification, content hashing, schema v3. Also defines <span class="code">MemberPathAtCut</span> — the at-cut analogue of live <span class="code">MembershipPath</span> — and <span class="code">AclView::member_path_at_cut</span> which returns it.</div></div>
 <div class="fr"><div class="fp">context/src/governance_dag.rs</div><div class="fd"><span class="code">GroupGovernanceApplier</span> and <span class="code">NamespaceGovernanceApplier</span> bridge <span class="code">calimero_dag</span>: converts ops to <span class="code">CausalDelta</span>, delegates apply to group_store.</div></div>
 <div class="fr"><div class="fp">context/src/group_store/mod.rs</div><div class="fd">Authoritative persistence (refactored into modules). <span class="code">apply_local_signed_group_op</span> handles all GroupOp variants, manages op log, DAG heads, nonces, cascades.</div></div>
 <div class="fr"><div class="fp">context/src/group_store/namespace.rs</div><div class="fd">Namespace identity resolution: <span class="code">resolve_namespace()</span>, <span class="code">get_or_create_namespace_identity_bundle()</span>, parent chain walking.</div></div>
