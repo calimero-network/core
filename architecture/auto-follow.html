@@ -385,13 +385,17 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   <li><b>Observability.</b> Every auto-join emits a structured <code>info!</code> log line
   with <code>group_id</code> and <code>context_id</code>. Failures emit <code>warn!</code> with
   the underlying error. No new metrics — the log stream is enough for postmortems.</li>
-  <li><b>Membership-path divergence plane.</b> The <code>member_joined_open::apply</code> gate
-  now emits a <code>tracing::warn!</code> with marker <code>unified_projection_divergence</code>
-  and <code>plane=membership-path</code> whenever the projection's at-cut membership path
-  disagrees with the live <code>check_path</code> result. Operators monitoring
-  <code>unified_projection_divergence</code> warnings should expect this new
-  <code>membership-path</code> variant. The gate's actual admission decision is unchanged —
-  it still acts on the live <code>check_path</code> result.</li>
+  <li><b>Membership-path authorization.</b> The <code>member_joined_open::apply</code> gate
+  now evaluates membership-path authorization against the causal-cut projection state via
+  <code>NamespaceApplyCtx::projection_membership_path</code>, which returns
+  <code>Option&lt;AtCutMembershipPath&gt;</code>. The live <code>check_path</code> call is a
+  fallback used only when the projection returns <code>None</code> (no apply-auth context,
+  incomplete fold, or default live-only authorizer). The former
+  <code>shadow_membership_path</code> helper — which accepted an eagerly-computed live path,
+  compared it against the projection, and emitted <code>unified_projection_divergence</code> /
+  <code>plane=membership-path</code> warnings on divergence — has been removed along with all
+  associated shadow-logging. Operators who were monitoring those warnings should note they will
+  no longer appear.</li>
 FIND>>>
 <<<REPLACE
 <h2>Operator Notes</h2>
