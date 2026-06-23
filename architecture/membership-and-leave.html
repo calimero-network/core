@@ -236,6 +236,17 @@ only the prefix that was already final when the delta was signed; anything causa
 the signed cut (including a later <code>MemberRemoved</code> for this signer) is invisible to
 the walk and cannot retroactively invalidate the delta.
 </p>
+<p>
+The namespace-level applier (<code>NamespaceGovernanceApplier</code> in
+<code>crates/context/src/governance_dag.rs</code>) threads this cut into the apply path directly:
+<code>DeltaApplier&lt;SignedNamespaceOp&gt;::apply</code> calls
+<code>apply_signed_namespace_op_at_cut(&amp;delta.parents, &amp;LIVE_FALLBACK_AUTHORIZER)</code>
+rather than the cut-free <code>apply_signed_namespace_op</code>. Passing <code>delta.parents</code>
+as the causal cut ensures membership is evaluated at the position the author signed against.
+<code>LIVE_FALLBACK_AUTHORIZER</code> is a placeholder authorizer that delegates to the live store;
+it is intended to be replaced by a projection-backed authorizer in a future stage (stage&nbsp;3b),
+at which point no call-site changes will be needed.
+</p>
 
 <h3>Resolving the current governance cut — <code>ScopeProjections::namespace_current_heads</code></h3>
 <p>
