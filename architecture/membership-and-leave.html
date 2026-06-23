@@ -259,6 +259,70 @@ record itself is unreadable. Callers <b>must</b> fall back to the live membershi
 an empty cut — an empty cut would falsely deny all access.
 </p>
 
+<h3>At-cut admin &amp; capability accessors — <code>is_admin_at_cut</code>, <code>is_admin_or_capability_at_cut</code></h3>
+<p>
+Three additional methods on <code>ScopeProjections</code> expose admin/capability checks against a
+historic DAG cut, mirroring what the live authorization gate does at apply time:
+</p>
+<ul>
+  <li><b><code>auth_cut_context(group_id, cut)</code></b> — shared setup used by both public
+  accessors. Resolves the namespace for the supplied group, gates on
+  <code>cut_ancestry_complete</code> (returns <code>None</code> immediately if the cited ancestry
+  is not yet fully folded), builds the <code>AclView</code> folded to the cut, and returns the
+  genesis root tuple plus default-capability base.</li>
+  <li><b><code>is_admin_at_cut(signer, group_id, cut)</code></b> — returns
+  <code>Some(true)</code> if the signer holds an admin role at the cut,
+  <code>Some(false)</code> if they do not, and <code>None</code> when ancestry is incomplete.
+  Callers <b>must</b> defer to the live gate on <code>None</code> — incomplete ancestry is not
+  equivalent to unauthorized.</li>
+  <li><b><code>is_admin_or_capability_at_cut(signer, group_id, cut, cap_bits)</code></b> —
+  admin OR capability-bit check, mirroring the live
+  <code>is_authorized_with_capability</code>. Same <code>None</code> semantics as above.</li>
+</ul>
+<p>
+Both public accessors return <code>None</code> (not <code>Some(false)</code>) when cited ancestry
+is not fully folded, ensuring callers do not treat an incomplete fold as a denial verdict.
+</p>
+
+<h3>Shadow authorization check in <code>apply_signed_namespace_op</code></h3>
+<p>
+After a governance op is successfully applied by the live gate, the handler runs a non-blocking
+<b>shadow authorization check</b> for observability. The check is implemented in two parts:
+</p>
+<ul>
+  <li><b><code>apply_auth_requirement(op)</code></b> maps the just-applied
+  <code>SignedNamespaceOp</code> to an <code>(ContextGroupId, ApplyAuthReq)</code> pair.
+  <code>ApplyAuthReq</code> is either <code>Admin</code> or
+  <code>AdminOrCap(bits)</code>. The mapping covers:
+    <ul>
+      <li>Root-level <code>AdminChanged</code>, <code>PolicyUpdated</code>,
+      <code>GroupReparented</code> → <code>Admin</code></li>
+      <li><code>GroupCreated</code> → <code>AdminOrCap(CAN_CREATE_SUBGROUP)</code></li>
+      <li>Group-level <code>MemberAdded</code> / <code>MemberRemoved</code> →
+      <code>AdminOrCap(MANAGE_MEMBERS)</code></li>
+      <li><code>SubgroupVisibilitySet</code> →
+      <code>AdminOrCap(CAN_MANAGE_VISIBILITY)</code></li>
+      <li><code>MemberRoleSet</code>, <code>MemberCapabilitySet</code>,
+      <code>DefaultCapabilitiesSet</code> → <code>Admin</code></li>
+    </ul>
+    Explicitly <em>excluded</em> from the mapping (returning <code>None</code>):
+    <code>MemberJoined</code> (inviter authority), <code>MemberJoinedOpen</code> (inheritance
+    proof), <code>MemberLeft</code> (self-authored), <code>GroupDeleted</code> and
+    <code>TransferOwnership</code> (owner-gated), and other metadata/context-registration ops.
+  </li>
+  <li>The handler then calls the corresponding at-cut accessor against the op's
+  <code>delta_parents</code> cut (the DAG state the signer observed, not the post-apply cut).
+  If the projection returns <code>Some(false)</code> — it would have rejected what the live
+  gate accepted — a <code>warn!</code> is emitted with
+  <code>marker=unified_projection_divergence</code> and <code>plane=governance-auth</code>.
+  <code>None</code> (ancestry incomplete) is silently skipped. The check runs outside the
+  projection write lock under a brief read lock.</li>
+</ul>
+<p>
+<b>Live authorization gates are entirely unchanged.</b> The shadow check is log-only and has no
+effect on whether an op is accepted or rejected.
+</p>
+
 <h3>Where this can break</h3>
 <p>
 Two classes of change would silently re-introduce the divergence described above:
@@ -827,6 +891,8 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td>Key rotation on <code>MemberRemoved</code></td><td><b>Implemented</b></td><td><code>crates/governance-store/src/group_governance_publisher.rs</code> (<code>sign_apply_and_publish_inner</code>) + <code>GroupKeyring</code> in <code>group_keys.rs</code> — fresh key wrapped for remaining members, excluding the removed one.</td></tr>
   <tr><td>Role-scoped TEE self-purge</td><td><b>Implemented</b> (ADR 0002; #2680/#2724/#2725)</td><td><code>crates/context/src/self_purge.rs</code> listener + cascade + marker-gated <code>reconcile_sweep</code>; <code>delete_group_local_rows</code> in <code>governance-store/src/local_state.rs</code> deletes signing keys (and, as of #2776, <code>GroupKeyring</code> encryption keys); <code>OpEvent::TeeMemberRemoved</code> emitted from <code>member_removed.rs</code> / <code>member_left.rs</code>.</td></tr>
   <tr><td><code>ScopeProjections::namespace_current_heads</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>.</td></tr>
+  <tr><td><code>ScopeProjections::is_admin_at_cut</code>, <code>is_admin_or_capability_at_cut</code>, <code>auth_cut_context</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — at-cut admin and capability accessors. Return <code>None</code> when cited ancestry is not fully folded (<code>cut_ancestry_complete</code> gate); callers must defer to live on <code>None</code>, not treat it as a denial.</td></tr>
+  <tr><td>Shadow auth check — <code>apply_auth_requirement</code> + <code>Handler&lt;ApplySignedNamespaceOpRequest&gt;</code></td><td><b>Implemented</b></td><td><code>crates/context/src/handlers/apply_signed_namespace_op.rs</code> — after successful live apply, maps the op to <code>ApplyAuthReq</code> via <code>apply_auth_requirement</code>, calls the at-cut accessor against <code>delta_parents</code>, and emits <code>warn!(marker=unified_projection_divergence, plane=governance-auth)</code> on <code>Some(false)</code>. <code>None</code> (incomplete ancestry) is silently skipped. Live gates are unchanged.</td></tr>
   <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
 </table>
 </div>
