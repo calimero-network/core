@@ -117,9 +117,31 @@ The new <code>apply_local_signed_group_op_at_cut</code> function accepts an
 <code>PermissionChecker::with_apply_auth</code>. Namespace envelopes forward the enclosing
 namespace op's causal cut and authorizer via
 <code>NamespaceGovernance::apply_group_op_inner</code>, so group ops carried in namespace
-envelopes shadow at the correct cut. The original <code>apply_local_signed_group_op</code> is
+envelopes are authorized at the correct cut. The original <code>apply_local_signed_group_op</code> is
 now a shim that calls the new variant with the inert <code>LIVE_FALLBACK_AUTHORIZER</code>,
 keeping all existing callers (tests, replay) unchanged.
+</p>
+<p>
+<code>PermissionChecker::is_admin</code> and <code>is_authorized_with_capability</code> now
+query the projection at the op's causal cut first via <code>is_admin_at_cut</code> /
+<code>is_admin_or_capability_at_cut</code>. When the authorizer returns
+<code>Some(verdict)</code>, that verdict is used directly and the live
+<code>MembershipRepository</code> is not consulted. The live store is queried only when the
+authorizer returns <code>None</code> (no apply-auth context, empty parents, or an incomplete
+fold). The former <code>shadow_admin</code> helper — which compared the projection verdict to
+the live verdict and emitted <code>unified_projection_divergence</code> warnings on mismatch —
+has been deleted along with the associated shadow block in
+<code>is_authorized_with_capability</code>.
+</p>
+<p>
+In <code>apply_group_op_mutations</code> (called from
+<code>NamespaceGovernance::apply_group_op_inner</code>), the <code>parents</code> argument now
+uses <code>signed_group_op.parent_op_hashes</code> instead of <code>self.parents</code>. On
+the normal apply path the two are equal, but during
+<code>retry_encrypted_ops_for_group</code> multiple buffered group candidates are re-applied
+within a single <code>KeyDelivery</code> apply; using <code>self.parents</code> would judge
+every replayed candidate at the <code>KeyDelivery</code>'s cut rather than each candidate's
+own cut.
 </p>
 </div>
 
@@ -363,13 +385,12 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   <li><b>Observability.</b> Every auto-join emits a structured <code>info!</code> log line
   with <code>group_id</code> and <code>context_id</code>. Failures emit <code>warn!</code> with
   the underlying error. No new metrics — the log stream is enough for postmortems.</li>
-  <li><b>Projection parity monitoring.</b> <code>PermissionChecker::is_admin</code> and
-  <code>is_authorized_with_capability</code> now shadow the live verdict against
-  <code>AtCutAuthorizer::is_admin_or_capability_at_cut</code>. When the two disagree a
-  <code>warn!</code> line is emitted with <code>marker=unified_projection_divergence</code>,
-  <code>plane=group-auth</code>, and <code>gate=admin</code> or <code>gate=capability</code>.
-  Watch for these lines to verify projection parity before enabling stage 4b enforcement. Both
-  gates currently return the <em>live</em> verdict regardless of the shadow result.</li>
+  <li><b>Authorization source.</b> <code>PermissionChecker::is_admin</code> and
+  <code>is_authorized_with_capability</code> now use the projection-at-cut verdict as
+  authoritative when available. The previous shadow-logging approach
+  (<code>unified_projection_divergence</code> warnings) has been removed; the projection result
+  is the decision, not a comparison. Live store queries are a fallback only when the authorizer
+  returns <code>None</code>.</li>
   <li><b>Shutdown.</b> Call <code>auto_follow::shutdown()</code> to abort the handler task and
   its refill loop. Subsequent <code>spawn</code> calls will start a fresh handler.</li>
   <li><b>Migration.</b> <code>GroupMemberValue</code> was extended with <code>auto_follow</code>
@@ -379,8 +400,8 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   defaulted.</li>
   <li><b>Implementing <code>AtCutAuthorizer</code>.</b> Any custom implementation of
   <code>AtCutAuthorizer</code> must now provide <code>is_admin_or_capability_at_cut</code>.
-  Returning <code>None</code> (as <code>LiveFallbackAuthorizer</code> does) is safe and opts the
-  implementation out of shadow logging.</li>
+  Returning <code>None</code> (as <code>LiveFallbackAuthorizer</code> does) is safe and causes
+  the gates to fall back to live store queries.</li>
 </ul>
 </div>
 
@@ -411,8 +432,10 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   member publishes <code>MemberSetAutoFollow</code> signed by self.</li>
   <li><code>crates/context/src/group_store/permission.rs</code> (or equivalent) —
   <code>PermissionChecker</code> gains <code>with_apply_auth</code>; <code>is_admin</code> and
-  <code>is_authorized_with_capability</code> now call the shadow/projection path and emit
-  <code>unified_projection_divergence</code> warnings when results differ.</li>
+  <code>is_authorized_with_capability</code> use the projection-at-cut verdict as the
+  authoritative decision when <code>AtCutAuthorizer</code> returns <code>Some</code>, falling
+  back to live store queries otherwise. The <code>shadow_admin</code> helper and
+  <code>unified_projection_divergence</code> logging have been removed.</li>
   <li><code>crates/context/src/authorizer.rs</code> (or equivalent) — <code>AtCutAuthorizer</code>
   trait gains the required <code>is_admin_or_capability_at_cut</code> method;
   <code>LiveFallbackAuthorizer</code> and <code>EphemeralProjectionAuthorizer</code> implement it.</li>
