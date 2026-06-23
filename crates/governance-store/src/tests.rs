@@ -5130,8 +5130,15 @@ fn apply_group_op_mutations_surfaces_divergence_on_hash_mismatch() {
         expected_context_state_hashes: Vec::new(),
     };
 
-    let (handled, divergence, _pending_events) =
-        apply_group_op_mutations(&store, &gid, &admin, &op).unwrap();
+    let (handled, divergence, _pending_events) = apply_group_op_mutations(
+        &store,
+        &gid,
+        &admin,
+        &op,
+        &[],
+        &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+    )
+    .unwrap();
     assert!(handled, "MemberRemoved should be handled");
     let report = divergence.expect("hash mismatch must produce a DivergenceReport");
     assert!(
@@ -5178,8 +5185,15 @@ fn apply_group_op_mutations_no_divergence_on_matching_hash() {
         expected_context_state_hashes: Vec::new(),
     };
 
-    let (handled, divergence, _pending_events) =
-        apply_group_op_mutations(&store, &gid, &admin, &op).unwrap();
+    let (handled, divergence, _pending_events) = apply_group_op_mutations(
+        &store,
+        &gid,
+        &admin,
+        &op,
+        &[],
+        &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+    )
+    .unwrap();
     assert!(handled);
     assert!(
         divergence.is_none(),

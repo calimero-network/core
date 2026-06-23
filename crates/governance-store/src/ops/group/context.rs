@@ -46,16 +46,24 @@ pub(crate) struct GroupApplyCtx<'a> {
 }
 
 impl<'a> GroupApplyCtx<'a> {
-    pub(crate) fn new(
+    /// Construct the per-apply context with the op's causal cut + at-cut authorizer,
+    /// so the `PermissionChecker` admin/capability gates SHADOW the projection
+    /// against live (F5 #28 stage 4, plane `group-auth`). Pass `&[]` +
+    /// `LIVE_FALLBACK_AUTHORIZER` for constructions without an apply-auth context
+    /// (the shadow is then inert).
+    pub(crate) fn new_with_apply_auth(
         store: &'a Store,
         group_id: &'a ContextGroupId,
         signer: &'a PublicKey,
+        parents: &'a [[u8; 32]],
+        authorizer: &'a dyn crate::authorizer::AtCutAuthorizer,
     ) -> Self {
         Self {
             store,
             group_id,
             signer,
-            permissions: PermissionChecker::new(store, *group_id),
+            permissions: PermissionChecker::new(store, *group_id)
+                .with_apply_auth(parents, authorizer),
             membership_policy: MembershipPolicy::new(store, *group_id),
             settings: GroupSettingsService::new(store, *group_id),
             context_registration: ContextRegistrationService::new(store, *group_id),

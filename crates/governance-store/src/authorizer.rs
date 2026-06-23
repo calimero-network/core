@@ -48,10 +48,18 @@ pub trait AtCutAuthorizer: Send + Sync {
         parents: &[[u8; 32]],
     ) -> Option<bool>;
 
-    // The capability gate (`is_admin_or_capability_at_cut`) lands with its caller
-    // in the next stage (the `PermissionChecker` capability-check flip), per the
-    // no-premature-API convention — it isn't added here because no gate in this
-    // stage calls it.
+    /// Is `signer` an admin of `group`, OR a holder of any bit in `capability`, at
+    /// the cut named by `parents`? The capability analogue of
+    /// [`is_admin_at_cut`](Self::is_admin_at_cut), backing the `PermissionChecker`
+    /// capability gates. `None` = the projection has no authoritative verdict at
+    /// this cut (defer to live).
+    fn is_admin_or_capability_at_cut(
+        &self,
+        group: &ContextGroupId,
+        signer: &PublicKey,
+        capability: u32,
+        parents: &[[u8; 32]],
+    ) -> Option<bool>;
 }
 
 /// The identity authorizer: always `None`, so every gate falls back to the live
@@ -66,6 +74,16 @@ impl AtCutAuthorizer for LiveFallbackAuthorizer {
         &self,
         _group: &ContextGroupId,
         _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
         _parents: &[[u8; 32]],
     ) -> Option<bool> {
         None

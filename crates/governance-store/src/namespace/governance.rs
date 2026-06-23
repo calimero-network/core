@@ -1315,8 +1315,17 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        let (handled, divergence, pending_events) =
-            apply_group_op_mutations(self.store, group_id, signer, op)?;
+        // Group ops carried in namespace envelopes authorize at the SAME cut as the
+        // enclosing namespace op (F5 #28 stage 4): forward the seam's parent cut +
+        // authorizer so the group `PermissionChecker` gates shadow the projection.
+        let (handled, divergence, pending_events) = apply_group_op_mutations(
+            self.store,
+            group_id,
+            signer,
+            op,
+            self.parents,
+            self.authorizer,
+        )?;
         if !handled {
             tracing::debug!(
                 ?op,
