@@ -583,6 +583,103 @@ impl ScopeProjections {
         Some(out)
     }
 
+    /// Build the shared ephemeral projection for `group`'s namespace ONCE — the
+    /// expensive part (`collect_namespace_ops` RocksDB DAG walk + fold) plus the
+    /// current heads. A handler that needs BOTH the membership gate and the enum
+    /// shadow folds once via this and reuses the result for
+    /// [`member_now_checked_with`](Self::member_now_checked_with) and
+    /// [`shadow_member_enum_with`](Self::shadow_member_enum_with), instead of two
+    /// independent folds. `None` (with a warn) on a store fault — the caller falls
+    /// back to live.
+    #[must_use]
+    pub fn ephemeral_projection(
+        store: &Store,
+        group: &ContextGroupId,
+    ) -> Option<(Self, [u8; 32], Vec<[u8; 32]>)> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(group)
+            .ok()?
+            .to_bytes();
+        let mut proj = Self::new();
+        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+            tracing::warn!(
+                namespace = ?namespace_id,
+                "ephemeral_projection: governance head unreadable; caller falls back to live"
+            );
+            return None;
+        };
+        proj.apply_backfill(namespace_id, ops);
+        // Heads read AFTER the fold (see `member_now_ephemeral`).
+        let heads = NamespaceDagService::new(store, namespace_id)
+            .read_head_record()
+            .ok()?
+            .parent_hashes;
+        Some((proj, namespace_id, heads))
+    }
+
+    /// The gate verdict over an ALREADY-built ephemeral projection — same contract
+    /// as [`member_now_checked`](Self::member_now_checked) (act on the projection,
+    /// best-effort live cross-check + `membership-query` marker, live on `None`),
+    /// but reusing a shared fold.
+    pub fn member_now_checked_with(
+        &self,
+        store: &Store,
+        group: &ContextGroupId,
+        member: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> eyre::Result<bool> {
+        if let Some(p) = self.member_at_cut(store, *group, member, heads) {
+            match MembershipRepository::new(store).is_member(group, member) {
+                Ok(live) if live != p => tracing::warn!(
+                    marker = "unified_projection_divergence",
+                    plane = "membership-query",
+                    group_id = ?group,
+                    ?member,
+                    projection = p,
+                    live,
+                    "query-gate: projection disagrees with live membership"
+                ),
+                Ok(_) => {}
+                Err(err) => tracing::warn!(
+                    group_id = ?group,
+                    %err,
+                    "query-gate: live cross-check failed; acting on projection verdict"
+                ),
+            }
+            return Ok(p);
+        }
+        MembershipRepository::new(store).is_member(group, member)
+    }
+
+    /// The enum shadow over an ALREADY-built ephemeral projection — same contract
+    /// as [`shadow_check_member_enum`](Self::shadow_check_member_enum) but reusing a
+    /// shared fold.
+    pub fn shadow_member_enum_with(
+        &self,
+        store: &Store,
+        namespace_id: [u8; 32],
+        group: &ContextGroupId,
+        heads: &[[u8; 32]],
+        live_identities: &std::collections::BTreeSet<PublicKey>,
+    ) {
+        let Some(view) = self.acl_view_at(&ScopeId::from(namespace_id), heads) else {
+            return;
+        };
+        let projected = Self::member_identities_in_view(&view, store, namespace_id, group);
+        if &projected != live_identities {
+            let only_projection: Vec<_> = projected.difference(live_identities).collect();
+            let only_live: Vec<_> = live_identities.difference(&projected).collect();
+            tracing::warn!(
+                marker = "unified_projection_divergence",
+                plane = "membership-enum",
+                group_id = ?group,
+                ?only_projection,
+                ?only_live,
+                "query-enum: projection effective-member set differs from live"
+            );
+        }
+    }
+
     /// Build a fresh ephemeral projection of `namespace_id`'s governance DAG and
     /// return its at-cut [`AclView`] at the namespace's current heads. `None` (with
     /// a warn) when the governance head is unreadable — a store fault that the

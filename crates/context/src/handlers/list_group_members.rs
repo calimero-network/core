@@ -24,11 +24,22 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
             let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
                 bail!("node has no group identity configured");
             };
-            if !crate::scope_projection::ScopeProjections::member_now_checked(
+            // Fold the ephemeral projection ONCE for this request: the gate below
+            // and the enum shadow further down both read from it (one RocksDB DAG
+            // walk, not two). `None` (store fault) falls back to live for the gate
+            // and skips the shadow.
+            let proj_ctx = crate::scope_projection::ScopeProjections::ephemeral_projection(
                 &self.datastore,
                 &group_id,
-                &node_identity,
-            )? {
+            );
+            let is_member = match &proj_ctx {
+                Some((proj, _ns, heads)) => {
+                    proj.member_now_checked_with(&self.datastore, &group_id, &node_identity, heads)?
+                }
+                None => MembershipRepository::new(&self.datastore)
+                    .is_member(&group_id, &node_identity)?,
+            };
+            if !is_member {
                 bail!("node is not a member of group '{group_id:?}'");
             }
 
@@ -59,13 +70,12 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
 
             // SHADOW: validate the projection's effective-member set against this
             // live union (logs `membership-enum` divergence; still returns live).
-            let live_ids: std::collections::BTreeSet<_> =
-                members.iter().map(|(pk, _)| *pk).collect();
-            crate::scope_projection::ScopeProjections::shadow_check_member_enum(
-                &self.datastore,
-                &group_id,
-                &live_ids,
-            );
+            // Reuses the single fold built above for the gate.
+            if let Some((proj, ns, heads)) = &proj_ctx {
+                let live_ids: std::collections::BTreeSet<_> =
+                    members.iter().map(|(pk, _)| *pk).collect();
+                proj.shadow_member_enum_with(&self.datastore, *ns, &group_id, heads, &live_ids);
+            }
 
             let entries = members
                 .into_iter()
