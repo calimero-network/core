@@ -39,6 +39,13 @@ use calimero_primitives::identity::PublicKey;
 /// `async_trait` boxing and would not compose with the `&dyn` use in the apply
 /// path. If a future verdict ever needs async I/O, resolve it before the apply call
 /// and pass the result in, rather than making the trait async.
+///
+/// **Empty-cut contract:** every method MUST return `None` when `parents` is empty
+/// — an empty cut has no causal context to resolve against, so the gate defers to
+/// live rather than judging a genesis op against an empty/genesis view. Gates rely
+/// on this uniformly; an implementation that returns `Some` for empty `parents`
+/// would (e.g.) falsely reject a genesis op a live admin signed. The default
+/// `LiveFallbackAuthorizer` satisfies it trivially (always `None`).
 pub trait AtCutAuthorizer: Send + Sync {
     /// Is `signer` an admin of `group` at the cut named by `parents`?
     fn is_admin_at_cut(
@@ -58,6 +65,20 @@ pub trait AtCutAuthorizer: Send + Sync {
         group: &ContextGroupId,
         signer: &PublicKey,
         capability: u32,
+        parents: &[[u8; 32]],
+    ) -> Option<bool>;
+
+    /// Would removing/demoting `member` from `group` orphan its admins at the cut —
+    /// i.e. is `member` a `group` admin AND the only Admin-role member there? Backs
+    /// the circular last-admin invariants (`ensure_not_last_admin_removal` /
+    /// `_demotion`), which must read admin state at the op's PARENT cut (pre-
+    /// mutation), not the post-mutation live state. Mirrors live: `member` admin =
+    /// direct Admin role or the genesis admin; "another admin" = any other Admin-role
+    /// member ROW (the genesis admin alone doesn't count). `None` = defer to live.
+    fn is_last_admin_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &PublicKey,
         parents: &[[u8; 32]],
     ) -> Option<bool>;
 }
@@ -84,6 +105,15 @@ impl AtCutAuthorizer for LiveFallbackAuthorizer {
         _group: &ContextGroupId,
         _signer: &PublicKey,
         _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
         _parents: &[[u8; 32]],
     ) -> Option<bool> {
         None

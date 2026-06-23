@@ -22,6 +22,13 @@ pub struct MembershipPolicy<'a> {
     store: &'a Store,
     group_id: ContextGroupId,
     membership: GroupMembershipView<'a>,
+    /// The applied op's causal cut (parent op hashes), at which the last-admin
+    /// invariants resolve (F5 #28 stage 4c). Empty outside the group-op apply path.
+    parents: &'a [[u8; 32]],
+    /// The at-cut apply-auth decision source (F5 #28 stage 4c). The default
+    /// [`LiveFallbackAuthorizer`](crate::authorizer::LiveFallbackAuthorizer) returns
+    /// `None`, so the last-admin shadow is inert for non-apply constructions.
+    authorizer: &'a dyn crate::authorizer::AtCutAuthorizer,
 }
 
 impl<'a> MembershipPolicy<'a> {
@@ -31,17 +38,59 @@ impl<'a> MembershipPolicy<'a> {
             store,
             group_id,
             membership,
+            parents: &[],
+            authorizer: &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        }
+    }
+
+    /// Attach the op's causal cut + the at-cut authorizer so the last-admin
+    /// invariants SHADOW the projection's PARENT-cut verdict against live (F5 #28
+    /// stage 4c, plane `last-admin`). Without it (the default) the shadow is inert.
+    #[must_use]
+    pub fn with_apply_auth(
+        mut self,
+        parents: &'a [[u8; 32]],
+        authorizer: &'a dyn crate::authorizer::AtCutAuthorizer,
+    ) -> Self {
+        self.parents = parents;
+        self.authorizer = authorizer;
+        self
+    }
+
+    /// SHADOW (F5 #28 stage 4c): compare the projection's at-cut last-admin verdict
+    /// (would removing/demoting `member` orphan the group's admins, as of the op's
+    /// PARENT cut?) against the live `live_blocks` decision, logging a `last-admin`
+    /// divergence on a mismatch. `None` (no apply-auth context, or an incomplete
+    /// fold) skips. Live stays authoritative; the flip is a follow-up.
+    fn shadow_last_admin(&self, member: &PublicKey, gate: &'static str, live_blocks: bool) {
+        if let Some(projected) =
+            self.authorizer
+                .is_last_admin_at_cut(&self.group_id, member, self.parents)
+        {
+            if projected != live_blocks {
+                tracing::warn!(
+                    marker = "unified_projection_divergence",
+                    plane = "last-admin",
+                    gate,
+                    group_id = ?self.group_id,
+                    %member,
+                    projected,
+                    live = live_blocks,
+                    "last-admin invariant: projection PARENT-cut verdict differs from live"
+                );
+            }
         }
     }
 
     pub fn ensure_not_last_admin_removal(&self, member: &PublicKey) -> EyreResult<()> {
-        if !self.membership.is_admin(member)? {
-            return Ok(());
+        // `live_blocks` iff `member` is an admin AND no other admin remains.
+        let live_blocks =
+            self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?;
+        self.shadow_last_admin(member, "removal", live_blocks);
+        if live_blocks {
+            bail!(MembershipError::LastAdmin);
         }
-        if self.membership.has_another_admin(member)? {
-            return Ok(());
-        }
-        bail!(MembershipError::LastAdmin);
+        Ok(())
     }
 
     pub fn ensure_not_last_admin_demotion(
@@ -52,13 +101,13 @@ impl<'a> MembershipPolicy<'a> {
         if *new_role == GroupMemberRole::Admin {
             return Ok(());
         }
-        if !self.membership.is_admin(member)? {
-            return Ok(());
+        let live_blocks =
+            self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?;
+        self.shadow_last_admin(member, "demotion", live_blocks);
+        if live_blocks {
+            bail!(MembershipError::LastAdminDemotion);
         }
-        if self.membership.has_another_admin(member)? {
-            return Ok(());
-        }
-        bail!(MembershipError::LastAdminDemotion);
+        Ok(())
     }
 
     pub fn require_tee_attestation_verifier_membership(

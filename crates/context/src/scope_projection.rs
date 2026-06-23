@@ -1200,6 +1200,53 @@ impl ScopeProjections {
         Some(effective & capability != 0)
     }
 
+    /// Would removing/demoting `member` orphan `group`'s admins at the cut — is
+    /// `member` an admin of `group` AND the only Admin-role member there? Backs the
+    /// circular last-admin invariants, resolved at the op's PARENT cut. Same
+    /// authoritative `None`-on-incomplete-ancestry contract as the other at-cut
+    /// reads.
+    ///
+    /// Mirrors live exactly (`GroupMembershipView::is_admin` + `has_another_admin`):
+    /// `member` counts as an admin via a direct `Admin`-role row OR the genesis group
+    /// admin (`group_admin` / namespace-root); but "another admin" counts only
+    /// another `Admin`-role ROW (`groups[group]`) — the genesis admin alone does NOT
+    /// satisfy it, matching live's row-based `has_another_admin`.
+    ///
+    /// Causal position: this reads the op's PARENT cut (admin set as of the op's own
+    /// ancestry) — the correct state for a pre-mutation invariant — whereas the live
+    /// pre-check reads the node's CURRENT materialized state. Under concurrency (the
+    /// node has applied admin-cardinality ops outside this op's ancestry) the two can
+    /// differ; that's the causal-honor property (the op is judged as authored), not a
+    /// discrepancy to reconcile. The DAG order resolves the convergent admin set.
+    #[must_use]
+    pub fn is_last_admin_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let (view, root, _) = self.auth_cut_context(store, group, heads)?;
+        let rows = view.groups.get(&group);
+        // `member` is an admin: a direct `Admin` row, or the genesis admin (the
+        // folded subgroup creator, or the namespace-root genesis admin).
+        let member_is_admin = rows
+            .and_then(|m| m.get(member))
+            .is_some_and(|r| *r == GroupMemberRole::Admin)
+            || view.group_admin.get(&group) == Some(member)
+            || root.is_some_and(|(root_g, root_admin)| root_g == group && root_admin == *member);
+        if !member_is_admin {
+            return Some(false);
+        }
+        // Another admin exists only via a distinct `Admin`-role ROW — matching live's
+        // `has_another_admin`, which scans stored rows and ignores the genesis admin.
+        let has_other = rows.is_some_and(|m| {
+            m.iter()
+                .any(|(k, r)| *r == GroupMemberRole::Admin && k != member)
+        });
+        Some(!has_other)
+    }
+
     /// Shared setup for the at-cut admin/capability reads: resolve the namespace,
     /// gate on COMPLETE cited ancestry (so the verdict is authoritative — `None`
     /// otherwise, defer to live), build the folded view + the genesis root tuple

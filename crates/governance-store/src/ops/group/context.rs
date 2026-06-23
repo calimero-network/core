@@ -64,7 +64,8 @@ impl<'a> GroupApplyCtx<'a> {
             signer,
             permissions: PermissionChecker::new(store, *group_id)
                 .with_apply_auth(parents, authorizer),
-            membership_policy: MembershipPolicy::new(store, *group_id),
+            membership_policy: MembershipPolicy::new(store, *group_id)
+                .with_apply_auth(parents, authorizer),
             settings: GroupSettingsService::new(store, *group_id),
             context_registration: ContextRegistrationService::new(store, *group_id),
             divergence: None,
