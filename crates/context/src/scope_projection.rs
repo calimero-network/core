@@ -1372,11 +1372,15 @@ impl ScopeProjections {
             .cloned()
     }
 
-    /// [`role_at_cut`](Self::role_at_cut) resolving the namespace from `group` and
-    /// gating on COMPLETE cited ancestry — the node-side accessor for the data-write
-    /// role (the role written through to peer-identity observation). `None` when the
-    /// namespace is unresolved, the cut isn't fully folded (defer to live), or
-    /// `member` has no folded direct row at the cut.
+    /// The EFFECTIVE role of `member` in `group` at the cut, resolving the namespace
+    /// from `group` and gating on COMPLETE cited ancestry — the node-side accessor for
+    /// the data-write role (written through to peer-identity observation). Mirrors
+    /// live `acl_view_at`'s `Member(role)`, which is the *effective* role: a direct
+    /// member's folded role, `Admin` for an inherited-via-admin member, else the
+    /// member's role at the anchor it inherits from (the same derivation the
+    /// `membership-role` plane validated — NOT just `groups[group]`, which would miss
+    /// inherited/admin paths). `None` when the namespace is unresolved, the cut isn't
+    /// fully folded (defer to live), or `member` isn't a member at the cut.
     #[must_use]
     pub fn role_at_cut_for_group(
         &self,
@@ -1385,15 +1389,24 @@ impl ScopeProjections {
         member: &PublicKey,
         heads: &[[u8; 32]],
     ) -> Option<GroupMemberRole> {
-        let namespace_id = NamespaceRepository::new(store)
-            .resolve(&group)
-            .ok()?
-            .to_bytes();
-        let scope = ScopeId::from(namespace_id);
-        if !self.cut_ancestry_complete(&scope, heads) {
-            return None;
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        match view.member_path_at_cut(group, member, root, default_cap_base) {
+            calimero_authz::MemberPathAtCut::None => None,
+            calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+            calimero_authz::MemberPathAtCut::Inherited {
+                via_admin: true, ..
+            } => Some(GroupMemberRole::Admin),
+            calimero_authz::MemberPathAtCut::Inherited {
+                anchor,
+                via_admin: false,
+            } => Some(
+                view.groups
+                    .get(&anchor)
+                    .and_then(|m| m.get(member))
+                    .cloned()
+                    .unwrap_or(GroupMemberRole::Member),
+            ),
         }
-        self.role_at_cut(&scope, &group, member, heads)
     }
 
     /// The role the projection records for `member` in `group` within `scope`,
