@@ -341,6 +341,37 @@ behavior for a missing node identity and avoids a single inaccessible group bloc
 listing.
 </p>
 
+<h3>Batch role resolution — <code>ScopeProjections::member_roles_for</code></h3>
+<p>
+Where <code>namespace_current_heads</code> answers "is this member present?",
+<code>member_roles_for</code> answers "what role does the projection assign to each of these
+members?". It folds the ACL view exactly once for the supplied batch and returns a
+<code>BTreeMap&lt;PublicKey, GroupMemberRole&gt;</code>:
+</p>
+<ul>
+  <li><b>Direct members</b> keep their folded role from the projection.</li>
+  <li><b><code>Inherited{via_admin:true}</code></b> → <code>Admin</code>.</li>
+  <li><b><code>Inherited{via_admin:false}</code></b> → the member's stored role at the anchor
+  group (mirroring live's <code>list ∪ enumerate_inherited</code> semantics).</li>
+  <li><b>Abstain (empty map)</b> when the ancestry is not fully folded, or when the group has no
+  entry in <code>view.groups</code> (materialized-fallback parity — Restricted subgroup or
+  undecryptable member ops). An empty return means "projection has no opinion"; callers must not
+  treat it as "all roles are wrong".</li>
+</ul>
+<p>
+<code>list_group_members</code> calls <code>member_roles_for</code> once for all live members
+after the existing identity-set shadow. Each live member's role is compared to its projected
+role; mismatches are emitted as <code>unified_projection_divergence</code> log events with
+<code>plane=membership-role</code>. Members absent from the returned map (projection abstains)
+are skipped — presence divergence is already owned by the identity shadow. The handler still
+returns the live list unchanged.
+</p>
+<p>
+<b>Operator note.</b> <code>membership-role</code> divergence warnings in logs indicate a
+pre-flip validation failure. They will block the eventual flip of <code>list_group_members</code>
+from the live store to the projection as the authoritative source.
+</p>
+
 <h3>Where this can break</h3>
 <p>
 Two classes of change would silently re-introduce the divergence described above:

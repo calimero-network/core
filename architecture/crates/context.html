@@ -481,6 +481,13 @@ get_group_signing_key(store, &amp;current, public_key) <span class="comment">// 
      7. DEPENDENCIES
      ════════════════════════════════════════════════════════ -->
 <div class="card ga">
+<h2>Operator Notes</h2>
+<p style="margin-bottom:14px;">Two log signals are emitted by the <code>list_group_members</code> projection shadow and are relevant for monitoring:</p>
+<ul style="margin-left:1.4em;margin-bottom:14px;line-height:1.8;">
+  <li><strong><code>unified_projection_divergence / plane=membership-role</code></strong> — a live member's role differs from the projected role. These are pre-flip validation failures: once the divergence rate reaches zero, the handler can be flipped to authoritative projection. Persistent warnings indicate a bug in role derivation or ACL fold logic.</li>
+  <li>When <span class="code">member_roles_for</span> abstains (group unfolded or absent from <code>view.groups</code>) the role shadow is skipped entirely for that group, consistent with the identity shadow's materialized-fallback parity behavior.</li>
+</ul>
+
 <h2>Dependencies</h2>
 <p style="margin-bottom:18px;">How the three context crates relate to other Calimero crates. Arrows show compile-time dependencies.</p>
 
