@@ -546,6 +546,31 @@ impl ScopeProjections {
         Some((proj, namespace_id, heads))
     }
 
+    /// The effective member-identity SET of `group` from an ALREADY-built
+    /// projection (the `_with` analogue of [`shadow_member_enum_with`], but
+    /// returning the set instead of comparing it). The authoritative read for the
+    /// identity-set enumeration consumers (member count, migration cohort) now that
+    /// the set is validated divergence-free across the e2e `membership-enum` plane.
+    /// `None` when the scope wasn't fed (an empty namespace) — caller falls back to
+    /// live. (Identity-only; the role-bearing `list_group_members` flip needs a
+    /// role-enumeration variant + its own validation.)
+    #[must_use]
+    pub fn member_identities_with(
+        &self,
+        store: &Store,
+        namespace_id: [u8; 32],
+        group: &ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<std::collections::BTreeSet<PublicKey>> {
+        let view = self.acl_view_at(&ScopeId::from(namespace_id), heads)?;
+        Some(Self::member_identities_in_view(
+            &view,
+            store,
+            namespace_id,
+            group,
+        ))
+    }
+
     /// The shared fold primitive for both [`ephemeral_projection`](Self::ephemeral_projection)
     /// and [`ephemeral_view`](Self::ephemeral_view): collect `namespace_id`'s
     /// persisted governance DAG into a fresh projection and read its current heads
