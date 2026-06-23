@@ -236,6 +236,17 @@ only the prefix that was already final when the delta was signed; anything causa
 the signed cut (including a later <code>MemberRemoved</code> for this signer) is invisible to
 the walk and cannot retroactively invalidate the delta.
 </p>
+<p>
+The namespace-level applier (<code>NamespaceGovernanceApplier</code> in
+<code>crates/context/src/governance_dag.rs</code>) threads this cut into the apply path directly:
+<code>DeltaApplier&lt;SignedNamespaceOp&gt;::apply</code> calls
+<code>apply_signed_namespace_op_at_cut(&amp;delta.parents, &amp;LIVE_FALLBACK_AUTHORIZER)</code>
+rather than the cut-free <code>apply_signed_namespace_op</code>. Passing <code>delta.parents</code>
+as the causal cut ensures membership is evaluated at the position the author signed against.
+<code>LIVE_FALLBACK_AUTHORIZER</code> is a placeholder authorizer that delegates to the live store;
+it is intended to be replaced by a projection-backed authorizer in a future stage (stage&nbsp;3b),
+at which point no call-site changes will be needed.
+</p>
 
 <h3>Resolving the current governance cut — <code>ScopeProjections::namespace_current_heads</code></h3>
 <p>
@@ -257,6 +268,77 @@ be resolved to a namespace (e.g. the group does not exist in the local store) or
 record itself is unreadable. Callers <b>must</b> fall back to the live membership store
 (<code>check_group_membership_path</code>) in both cases rather than treating <code>None</code> as
 an empty cut — an empty cut would falsely deny all access.
+</p>
+<p>
+<b>Projection-derived member counts and migration cohorts.</b> <code>ScopeProjections::member_identities_with</code>
+extends this pattern to identity-set reads: given an already-built projection fold it calls
+<code>cut_ancestry_complete</code> on the fold before reading the ACL view, and returns
+<code>None</code> if the ancestry is only partially folded (a governance-backfill race). This
+<code>None</code> propagates to <code>get_group_info</code> (which falls back to
+<code>MembershipRepository::count</code> + <code>enumerate_inherited</code>) and to
+<code>collect_migration_cohort</code> (which falls back to the live list ∪ <code>enumerate_inherited</code>
+union). The private <code>ephemeral_view</code> helper has been removed; the subtree ephemeral path
+now calls <code>ephemeral_fold</code> directly and performs the <code>cut_ancestry_complete</code>
+check itself before reading the view.
+</p>
+
+<h3>Ephemeral per-query projection — <code>ScopeProjections::member_now_ephemeral</code></h3>
+<p>
+Context-layer handlers that do not hold a cached <code>ScopeProjections</code> instance use
+<code>ScopeProjections::member_now_ephemeral</code> to obtain a one-shot membership verdict from
+the governance DAG without requiring a pre-built projection. On each call it:
+</p>
+<ol>
+  <li>Resolves the supplied group to its owning namespace.</li>
+  <li>Folds the full governance DAG for that namespace via <code>collect_namespace_ops</code>.</li>
+  <li>Reads the DAG heads <em>after</em> the fold (not before), so a concurrent governance-op
+  advance cannot leave the cut naming ops the fold hasn't processed.</li>
+  <li>Calls <code>member_at_cut</code> at those heads and returns the boolean verdict.</li>
+</ol>
+<p>
+<b><code>None</code> return cases.</b> The method returns <code>None</code> — never deciding
+against the member — when: (a) the namespace is unresolvable, (b)
+<code>collect_namespace_ops</code> reports a store fault (surfaced with a <code>tracing::warn</code>),
+or (c) the cut-completeness guard determines the recorded heads don't cover the full fold. Callers
+<b>must</b> treat <code>None</code> as undecidable and fall back to the live store rather than
+denying access.
+</p>
+
+<h3>Unified membership gate — <code>ScopeProjections::member_now_checked</code></h3>
+<p>
+<code>ScopeProjections::member_now_checked</code> is the single decision point used by all
+context-layer membership gates (<code>get_cascade_status</code>,
+<code>get_group_upgrade_status</code>, <code>list_group_contexts</code>,
+<code>list_all_groups</code>). Its semantics:
+</p>
+<ul>
+  <li><b>Projection wins when decidable.</b> It calls <code>member_now_ephemeral</code> first. When
+  the projection returns a verdict it acts on that verdict, then cross-checks
+  <code>MembershipRepository::is_member</code> best-effort. A transient live error does not
+  override a projection verdict.</li>
+  <li><b>Live wins when projection is undecidable.</b> When <code>member_now_ephemeral</code>
+  returns <code>None</code>, <code>member_now_checked</code> falls back to
+  <code>MembershipRepository::is_member</code> as authoritative and propagates any live error
+  normally.</li>
+  <li><b>Divergence telemetry.</b> When the projection and live store both return definite but
+  conflicting answers, <code>member_now_checked</code> emits a
+  <code>tracing::warn</code> with <code>marker=unified_projection_divergence</code> and
+  <code>plane=membership-query</code>. The projection verdict is still used as the final answer.</li>
+</ul>
+<p>
+Direct use of <code>MembershipRepository</code> in
+<code>get_cascade_status.rs</code>, <code>get_group_upgrade_status.rs</code>,
+<code>list_all_groups.rs</code>, and <code>list_group_contexts.rs</code> is eliminated; those
+handlers now call <code>member_now_checked</code> exclusively and no longer import
+<code>MembershipRepository</code>.
+</p>
+<p>
+<b>Behavior change in <code>list_all_groups</code>.</b> Previously, a membership-check error in
+the per-group loop would propagate and abort the entire response. Now the loop catches errors from
+<code>member_now_checked</code> with a <code>tracing::warn</code> and continues to the next group,
+silently omitting groups whose membership cannot be determined. This matches the existing skip
+behavior for a missing node identity and avoids a single inaccessible group blocking the whole
+listing.
 </p>
 
 <h3>Batch role resolution — <code>ScopeProjections::member_roles_for</code></h3>
@@ -858,7 +940,8 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td>Key rotation on <code>MemberRemoved</code></td><td><b>Implemented</b></td><td><code>crates/governance-store/src/group_governance_publisher.rs</code> (<code>sign_apply_and_publish_inner</code>) + <code>GroupKeyring</code> in <code>group_keys.rs</code> — fresh key wrapped for remaining members, excluding the removed one.</td></tr>
   <tr><td>Role-scoped TEE self-purge</td><td><b>Implemented</b> (ADR 0002; #2680/#2724/#2725)</td><td><code>crates/context/src/self_purge.rs</code> listener + cascade + marker-gated <code>reconcile_sweep</code>; <code>delete_group_local_rows</code> in <code>governance-store/src/local_state.rs</code> deletes signing keys (and, as of #2776, <code>GroupKeyring</code> encryption keys); <code>OpEvent::TeeMemberRemoved</code> emitted from <code>member_removed.rs</code> / <code>member_left.rs</code>.</td></tr>
   <tr><td><code>ScopeProjections::namespace_current_heads</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>.</td></tr>
-  <tr><td><code>ScopeProjections::member_roles_for</code></td><td><b>Implemented</b> (log-only shadow)</td><td><code>crates/context/src/scope_projections.rs</code> — folds the ACL view once for a supplied batch of members and returns a <code>BTreeMap&lt;PublicKey, GroupMemberRole&gt;</code> containing only members the projection assigns a role. Direct members keep their folded role; <code>Inherited{via_admin:true}</code> → <code>Admin</code>; <code>Inherited{via_admin:false}</code> → the member's stored role at the anchor (mirroring live's <code>list ∪ enumerate_inherited</code>). Returns an empty map (abstains) when the ancestry is not fully folded or the group has no entry in <code>view.groups</code> (materialized-fallback parity — Restricted subgroup or undecryptable member ops). Called from <code>list_group_members</code> after the existing identity-set shadow: roles for all live members are resolved in one fold, then each live member's role is compared to the projected role; mismatches are logged as <code>unified_projection_divergence</code> with <code>plane=membership-role</code>. Members absent from the returned map (projection abstains) are skipped — presence is already owned by the identity shadow. The handler still returns the live list unchanged. <code>membership-role</code> divergence warnings indicate a pre-flip validation failure that will block the eventual <code>list_group_members</code> projection flip.</td></tr>
+  <tr><td><code>ScopeProjections::member_now_ephemeral</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — builds a fresh projection per call: resolves the namespace, folds the DAG via <code>collect_namespace_ops</code>, reads heads after the fold, and returns <code>member_at_cut</code>. Returns <code>None</code> (never decides against the member) on unresolvable namespace, store fault, or incomplete fold.</td></tr>
+  <tr><td><code>ScopeProjections::member_now_checked</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — unified membership gate for all four context-layer handlers. Calls <code>member_now_ephemeral</code> first; falls back to <code>MembershipRepository::is_member</code> when projection is undecidable; emits <code>tracing::warn</code> with <code>marker=unified_projection_divergence</code> / <code>plane=membership-query</code> on definite disagreement. Direct <code>MembershipRepository</code> imports removed from <code>get_cascade_status.rs</code>, <code>get_group_upgrade_status.rs</code>, <code>list_all_groups.rs</code>, and <code>list_group_contexts.rs</code>.</td></tr>
   <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
 </table>
 </div>
