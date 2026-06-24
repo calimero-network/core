@@ -385,30 +385,27 @@ impl ScopeProjections {
         Ok(proj.scope_root_for(scope, [0u8; 32]))
     }
 
-    /// The governance ops to fold for `namespace_id` (cutover C2.2b read-flip): the
-    /// unified **op-store** is the projection's authoritative backing now, so prefer
-    /// [`load_scope_ops`](crate::unified_op_store::load_scope_ops). Falls back to the
-    /// governance-DAG walk ([`collect_namespace_ops`](Self::collect_namespace_ops))
-    /// ONLY when the op-store has no rows for this scope (a cold namespace not yet
-    /// dual-written) or can't be read — a transitional safety net that retires with
-    /// `collect_namespace_ops` at C5. Under the flag-day redeploy every op flows
-    /// through the apply path from genesis, so the op-store is complete and the
-    /// fallback is never the steady-state path.
+    /// The governance ops to fold for `namespace_id`.
+    ///
+    /// The C2.2b read-flip (make the unified op-store the projection's authoritative
+    /// backing via [`load_scope_ops`](crate::unified_op_store::load_scope_ops)) is
+    /// DEFERRED: flipping the read onto the op-store broke convergence in the
+    /// maintainer's e2e — group-3node / scaffolding-e2e / shared-storage rotation all
+    /// timed out on the joiner's post-write sync — even though the F4 projection-vs-live
+    /// gate stayed clean (the maintained projection still agreed with the live decision)
+    /// AND the op-store-vs-DAG shadow root matched. That a matched-root op-store source
+    /// still breaks sync is the bug to find before flipping (suspect: a cold/at-cut fold
+    /// over the whole-scope `load_scope_ops` set differs from the narrower
+    /// `collect_namespace_ops` set in a way `scope_root` alone doesn't surface).
+    ///
+    /// Until the flip's e2e comes back clean this stays on the governance DAG, the
+    /// proven-correct source. The op-store keeps being dual-written and the pure-vs-pure
+    /// [`shadow_compare_op_store`](Self::shadow_compare_op_store) keeps measuring its
+    /// completeness on every backfill, so the flip can be re-attempted once that signal
+    /// is provably clean across all e2e suites.
     #[must_use]
     pub fn ops_for_namespace(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
-        let scope = ScopeId::from(namespace_id);
-        match crate::unified_op_store::load_scope_ops(store, &scope) {
-            Ok(ops) if !ops.is_empty() => Some(ops),
-            Ok(_) => Self::collect_namespace_ops(store, namespace_id),
-            Err(err) => {
-                tracing::warn!(
-                    %err,
-                    namespace = ?namespace_id,
-                    "op-store load failed; falling back to the governance-DAG fold"
-                );
-                Self::collect_namespace_ops(store, namespace_id)
-            }
-        }
+        Self::collect_namespace_ops(store, namespace_id)
     }
 
     /// The governance-plane `scope_root` reconstructed purely from the **governance
