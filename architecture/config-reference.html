@@ -84,6 +84,7 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
   <span class="cf">--mdns</span>            <span class="cv">true</span>                 <span class="cc"># enable mDNS discovery</span>
   <span class="cf">--protocol</span>       <span class="cv">/calimero/devnet/global</span>  <span class="cc"># rendezvous namespace</span>
   <span class="cf">--boot-nodes</span>      <span class="cv">[]</span>                   <span class="cc"># bootstrap multiaddrs</span>
+  <span class="cf">--mock-tee</span>        <span class="cv">false</span>                <span class="cc"># enable mock TEE/attestation (dev/test only — refused when real KMS attestation is configured)</span>
 </div>
 </div>
 
@@ -465,6 +466,9 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 <p style="margin-bottom:12px;">Optional Trusted Execution Environment and Key Management Service configuration. Only nodes with a <span class="code">[tee]</span> section perform the KMS key-fetch and attestation flow at startup; other nodes use libp2p as usual without KMS. The section is <em>nested</em>: <span class="code">[tee]</span> contains <span class="code">[tee.kms]</span>, which contains the provider block <span class="code">[tee.kms.phala]</span> (Phala Cloud KMS / mero-kms-phala is currently the only provider). There is <strong>no</strong> flat <span class="code">enabled</span> / <span class="code">kms_url</span> key &mdash; presence of the <span class="code">[tee]</span> block enables TEE mode, and the endpoint is <span class="code">tee.kms.phala.url</span>. See <a href="tee-mode.html">TEE Mode</a> for the full startup flow.</p>
 <div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/config/src/lib.rs" target="_blank" rel="noopener">TeeConfig</a> / <span class="code">KmsConfig</span> / <span class="code">PhalaKmsConfig</span> (defined in <span class="code">crates/config/src/lib.rs</span>; consumed by <a href="https://github.com/calimero-network/core/blob/master/crates/merod/src/kms/mod.rs" target="_blank" rel="noopener">crates/merod/src/kms/mod.rs</a>)</div>
 
+<h3 style="margin-top:18px;">merod run --mock-tee</h3>
+<p style="margin-bottom:12px;"><strong>Dev/test only.</strong> Pass <span class="code">--mock-tee</span> (or set <span class="code">MEROD_MOCK_TEE=1</span>) to <span class="code">merod run</span> to make the fleet-join and attest handlers produce and accept mock attestation quotes without real TDX hardware. merod will <strong>refuse to start</strong> (<span class="code">bail!</span>) if the node's <span class="code">[tee.kms.phala.attestation]</span> has real attestation configured (<span class="code">TeeConfig::has_real_attestation</span> returns <span class="code">true</span>). A loud warning is emitted on startup whenever <span class="code">--mock-tee</span> is active; an additional warning fires if a Phala KMS provider is configured but real attestation is disabled (likely misconfiguration). The flag is threaded through <span class="code">NodeConfig::mock_tee</span> → <span class="code">AdminState::mock_tee</span> at runtime and is <strong>never persisted</strong> to <span class="code">config.toml</span>. <strong>Never use in production.</strong></p>
+
 <h3 style="margin-top:18px;">[tee.kms.phala]</h3>
 <div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
 <div class="config-field">
@@ -487,7 +491,7 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
   <div class="cf-key">accept_mock</div>
   <div class="cf-type">bool</div>
   <div class="cf-default">false</div>
-  <div class="cf-desc">Accept mock attestation quotes. Development/testing only &mdash; bypasses real attestation guarantees. (Runtime also requires the <span class="code">MEROD_ALLOW_MOCK_KMS_ATTESTATION</span> env opt-in.)</div>
+  <div class="cf-desc">Accept mock attestation quotes. Development/testing only &mdash; bypasses real attestation guarantees. When <span class="code">accept_mock = false</span> (or <span class="code">enabled = true</span> with real measurement values), <span class="code">TeeConfig::has_real_attestation</span> returns <span class="code">true</span> and <span class="code">merod run --mock-tee</span> will be refused at startup.</div>
 </div>
 <div class="config-field">
   <div class="cf-key">allowed_tcb_statuses</div>
