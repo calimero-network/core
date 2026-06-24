@@ -143,6 +143,38 @@ impl<'a> GroupKeyring<'a> {
             .map(StoredGroupKey::into_tuple))
     }
 
+    /// Cheap existence check: does this group's keyring hold **any**
+    /// [`GroupKeyEntry`] at all (current or rotated-out)?
+    ///
+    /// Unlike [`load_current_key_record`](Self::load_current_key_record), which
+    /// scans every key for this group to pick the newest by `created_at`, this
+    /// stops at the first matching key — it mirrors that method's
+    /// prefix-ordering assumption (all of this group's keys are contiguous after
+    /// the seek) but returns `true` on the first hit and never reads a value.
+    ///
+    /// Used to gate the `GroupCreated` re-drive (#2848): a retry resolves each
+    /// buffered op by its `key_id` via [`load_key_by_id`](Self::load_key_by_id),
+    /// so the correct gate is "the keyring is non-empty" (if the matching key is
+    /// held, the keyring is necessarily non-empty), **not** "the *current* key
+    /// is held" — after a rotation a node may hold only the OLD key that a
+    /// buffered op was encrypted under, which `load_current_key` would miss.
+    pub fn holds_any_key(&self) -> EyreResult<bool> {
+        let gid = self.group_id.to_bytes();
+        let handle = self.store.handle();
+        let mut iter = handle.iter::<GroupKeyEntry>()?;
+        let start = GroupKeyEntry::new(gid, [0u8; 32]);
+        if let Some(key) = iter.seek(start).transpose() {
+            let key = key?;
+            // `GroupKeyEntry` keys are ordered `(prefix, group_id, key_id)`, so
+            // the first key at/after the seek that still belongs to this group
+            // means the keyring is non-empty.
+            if key.group_id() == gid {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn encrypt_op(group_key: &[u8; 32], op: &GroupOp) -> EyreResult<EncryptedGroupOp> {
         use calimero_crypto::SharedKey;
 
@@ -308,5 +340,42 @@ mod delete_tests {
 
         // Idempotent: deleting again is a no-op.
         ring.delete_all_for_group().unwrap();
+    }
+
+    #[test]
+    fn holds_any_key_detects_presence_emptiness_and_old_rotated_key() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0x42u8; 32]);
+        let ring = GroupKeyring::new(&store, gid);
+
+        // Empty keyring.
+        assert!(!ring.holds_any_key().unwrap());
+        assert!(ring.load_current_key().unwrap().is_none());
+
+        // Store an OLD key, then a NEW key (later `created_at`). After a
+        // rotation a node may hold both; `load_current_key` resolves to the
+        // newest, but `holds_any_key` only cares that the ring is non-empty —
+        // which is exactly the property the GroupCreated re-drive gate (W3/S1)
+        // needs, since the retry resolves a buffered op by its `key_id`
+        // (possibly the OLD key) and not by "is current".
+        let old_id = ring.store_key(&[0x01u8; 32]).unwrap();
+        let _new_id = ring.store_key(&[0x02u8; 32]).unwrap();
+        assert!(ring.holds_any_key().unwrap());
+        assert!(
+            ring.load_key_by_id(&old_id).unwrap().is_some(),
+            "old rotated-out key is still resolvable by its key_id"
+        );
+
+        // Scoping: another group's key must not make this ring report present.
+        let empty_gid = ContextGroupId::from([0x77u8; 32]);
+        let empty_ring = GroupKeyring::new(&store, empty_gid);
+        assert!(
+            !empty_ring.holds_any_key().unwrap(),
+            "holds_any_key must be scoped to its own group_id"
+        );
+
+        // After clearing, the ring is empty again.
+        ring.delete_all_for_group().unwrap();
+        assert!(!ring.holds_any_key().unwrap());
     }
 }

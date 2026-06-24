@@ -213,13 +213,15 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
         RootOp::GroupCreated {
             group_id,
             parent_id,
+            restricted,
         } => Some(OpPayload::SubgroupCreated {
             child: ScopeId::from(*group_id),
             parent: ScopeId::from(*parent_id),
-            // A new subgroup's visibility is Restricted by default (absent
-            // visibility key resolves to Restricted live); a later
-            // `SubgroupVisibilitySet` opens it.
-            restricted: true,
+            // Visibility is now carried atomically on the live op (#2771):
+            // `restricted: true` = Restricted (default), `false` = born-Open.
+            // This aligns the projection-plane `SubgroupCreated.restricted`
+            // with the live op instead of hardcoding Restricted.
+            restricted: *restricted,
             admin: signer,
         }),
         RootOp::GroupReparented {
@@ -597,6 +599,7 @@ mod tests {
                 &RootOp::GroupCreated {
                     group_id: gid,
                     parent_id: parent,
+                    restricted: true,
                 },
                 PublicKey::from([1u8; 32])
             ),

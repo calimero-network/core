@@ -1,11 +1,13 @@
 use crate::{
-    DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+    CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository,
+    NamespaceRepository,
 };
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, KeyEnvelope, NamespaceOp, RootOp,
     SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -350,6 +352,73 @@ impl<'a> NamespaceGovernance<'a> {
                         // an existing row from a prior `join_context` is
                         // left untouched.
                         restore_member_context_identities(self.store, &group_id_typed, member)?;
+                    }
+                    RootOp::GroupCreated { group_id, .. } => {
+                        // #2848: GroupCreated just wrote this subgroup's meta +
+                        // admin row (via `apply_root_op` above), so an
+                        // encrypted ContextRegistered that was buffered before
+                        // it landed — and previously bailed at the staleness
+                        // check because the meta did not exist — can now apply.
+                        // Re-drive, but only when the node plausibly holds a key
+                        // that could decrypt this group's buffered ops. This is
+                        // a CHEAP keyring presence check — a single
+                        // first-key-exists lookup per keyring
+                        // (`holds_any_key`) — NOT an op-log scan: gating with a
+                        // full op-log scan would defeat the gate's purpose,
+                        // since the retry it guards
+                        // (`collect_retry_candidates_for_group`) already does a
+                        // full scan, so a scanning gate saves nothing on the
+                        // GroupCreated hot path. The check mirrors the
+                        // dual-keyring resolution the apply/retry path uses
+                        // (#2256): the subgroup's own keyring (Restricted) OR
+                        // the namespace keyring (Open subgroups encrypt under
+                        // it). Gating on the subgroup keyring alone was wrong —
+                        // a node holding only the namespace key still has
+                        // decryptable Open buffered ops and must be re-driven.
+                        //
+                        // W3/S1 fix: gate on whether the keyring holds ANY key,
+                        // not just the *current* one. The retry resolves each
+                        // buffered op by its `key_id` (`load_key_by_id`), so
+                        // after a key ROTATION a node may hold only the OLD key
+                        // that a buffered op was encrypted under while
+                        // `load_current_key` returns the newer key (or, if the
+                        // node never received the new delivery, the old key IS
+                        // still the entry but distinct from the op's key_id).
+                        // The old current-key gate produced a false-negative in
+                        // exactly that case — the op was decryptable yet the
+                        // re-drive was skipped. "Holds any key" has no such
+                        // false-negative (if the matching key_id is held, the
+                        // keyring is non-empty); the residual false-positive
+                        // (non-empty keyring without the specific key_id) just
+                        // costs one bounded, self-gating retry scan that finds
+                        // no candidates — harmless. When neither keyring holds
+                        // any key (the common case and the deleted-group exit
+                        // since purge clears keys) the retry is skipped without
+                        // touching the op-log. Best-effort: log, never
+                        // propagate.
+                        let gid = *group_id;
+                        let gid_typed = ContextGroupId::from(gid);
+                        let ns_typed = ContextGroupId::from(self.namespace_id);
+                        let holds_key = GroupKeyring::new(self.store, gid_typed)
+                            .holds_any_key()
+                            .unwrap_or(false)
+                            || GroupKeyring::new(self.store, ns_typed)
+                                .holds_any_key()
+                                .unwrap_or(false);
+                        if holds_key {
+                            match self.retry_encrypted_ops_for_group(*group_id) {
+                                Ok(retry_divergence) => {
+                                    if retry_divergence.is_some() {
+                                        result.divergence = retry_divergence;
+                                    }
+                                }
+                                Err(e) => tracing::warn!(
+                                    ?e,
+                                    group_id = %hex::encode(group_id),
+                                    "retry after GroupCreated failed (#2848)"
+                                ),
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -918,14 +987,40 @@ impl<'a> NamespaceGovernance<'a> {
             )?;
         }
 
-        // Nothing to do (and nothing to log) if both halves were already
+        // Seed the root's default capabilities so members added before the
+        // separate `DefaultCapabilitiesSet` gossip arrives still inherit
+        // `CAN_JOIN_OPEN_SUBGROUPS`, the bit that gates inheritance into Open
+        // child subgroups. This mirrors the owner-side precedent in
+        // `context::handlers::store_group_meta` (which sets the same default
+        // when bootstrapping root meta from gossip).
+        //
+        // Without this, a TEE replica that bootstraps the namespace root via
+        // this seed path admits its own `MemberJoinedViaTeeAttestation` row
+        // with `caps = 0` (the row snapshots the group's default caps at apply
+        // time), so `check_path` of any Open subgroup returns `None`,
+        // auto-follow declines to `join_context`, and the Open subgroup's
+        // context never replicates on the replica.
+        //
+        // Gated on its own absence so re-running (and a steady-state re-entry)
+        // is idempotent and never clobbers an admin-authored override that the
+        // gossiped `DefaultCapabilitiesSet` may have since installed.
+        let default_caps_existed = CapabilitiesRepository::new(self.store)
+            .default_capabilities(&gid)?
+            .is_some();
+        if !default_caps_existed {
+            CapabilitiesRepository::new(self.store)
+                .set_default_capabilities(&gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)?;
+        }
+
+        // Nothing to do (and nothing to log) if all halves were already
         // present — the common steady-state re-entry.
-        if !meta_existed || !member_existed {
+        if !meta_existed || !member_existed || !default_caps_existed {
             tracing::info!(
                 namespace_id = %hex::encode(group_id),
                 %founder,
                 meta_seeded = !meta_existed,
                 member_seeded = !member_existed,
+                default_caps_seeded = !default_caps_existed,
                 "seeded/repaired founding namespace admin from KeyDelivery signer (TEE bootstrap)"
             );
         }
@@ -1160,6 +1255,105 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(retry_divergence)
     }
 
+    /// Curative re-drive variant that returns the count of ops it ACTUALLY
+    /// applied (#2848 Part C). The `Option<DivergenceReport>` returned by
+    /// [`retry_encrypted_ops_for_group`](Self::retry_encrypted_ops_for_group)
+    /// is not a usable progress signal — a re-driven `ContextRegistered`
+    /// applies yet reports `None` (divergence is surfaced only for
+    /// `MemberRemoved`/`MemberLeft`), and an already-applied op is
+    /// nonce-deduped to `Ok(None)` too. The startup sweep needs to know
+    /// whether a pass made progress; this counts it directly.
+    ///
+    /// "Applied" is detected by the nonce window: a candidate whose
+    /// (signer, nonce) was NOT in the window before the apply but IS after it
+    /// was genuinely applied this call; an op already in the window is an
+    /// idempotent nonce-skip and does not count. This avoids threading an
+    /// `applied` flag through the whole apply stack while still distinguishing
+    /// a real apply from a no-op replay.
+    ///
+    /// TOCTOU caveat (accepted, bounded, benign): the pre/post nonce-window
+    /// read is not atomic with the apply, so a concurrent gossip apply of the
+    /// same op can make us miscount. The inflating race is a concurrent apply
+    /// landing BEFORE our apply: we pre-read `was_present == false`, the gossip
+    /// path then windows the nonce, and our `decrypt_and_apply` short-circuits
+    /// to `Ok(None)` WITHOUT writing — yet the post-read sees `now_present ==
+    /// true`, so `!was_present && now_present` holds and we count a false
+    /// "applied" for an op we did not actually apply. (This does NOT produce a
+    /// spurious `nonce_skip`: that branch is taken only when the post-read is
+    /// still `false`, which a concurrent apply cannot cause.) The only
+    /// consequence is the convergence count being over-counted, which at worst
+    /// triggers one extra sweep pass; that is bounded by `MAX_PASSES`. The
+    /// count is a best-effort convergence SIGNAL, not a correctness gate — no
+    /// state can diverge from a miscount. The proper long-term fix is to have
+    /// `decrypt_and_apply_group_op` return an explicit `Applied | Skipped |
+    /// Failed` outcome instead of inferring it from the window; that refactor
+    /// is deliberately deferred.
+    fn redrive_encrypted_ops_for_group_counted(&self, group_id: [u8; 32]) -> EyreResult<usize> {
+        let gid_typed = ContextGroupId::from(group_id);
+        let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
+        let retry_candidates = retry_service
+            .collect_retry_candidates_for_group(group_id)
+            .map_err(|e| eyre::eyre!("collect_retry_candidates_for_group: {e}"))?;
+        if !retry_candidates.is_empty() {
+            record_namespace_retry_event("collected");
+        }
+
+        let mut applied = 0usize;
+        for candidate in &retry_candidates {
+            let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
+                continue;
+            };
+            let signer = &candidate.signed_op.signer;
+            let nonce = candidate.signed_op.nonce;
+            // Pre-apply nonce-window membership tells a real apply apart from an
+            // idempotent replay: `apply_group_op_inner` short-circuits an
+            // already-windowed nonce to `Ok(None)` WITHOUT mutating, and
+            // advances the window only on a genuine apply.
+            let was_present = load_nonce_window(self.store, &gid_typed, signer)
+                .map(|w| w.contains(nonce))
+                .unwrap_or(false);
+            match self.decrypt_and_apply_group_op(
+                &candidate.signed_op,
+                &gid_typed,
+                &candidate.group_key,
+                encrypted,
+            ) {
+                Ok(_divergence) => {
+                    let now_present = load_nonce_window(self.store, &gid_typed, signer)
+                        .map(|w| w.contains(nonce))
+                        .unwrap_or(false);
+                    if !was_present && now_present {
+                        // Genuine apply: the (signer, nonce) was not in the
+                        // window before and is now. Only this path counts and
+                        // only this path increments the "applied" metric — a
+                        // nonce-deduped replay short-circuits to `Ok(None)`
+                        // WITHOUT writing, so counting it as "applied" would
+                        // inflate the metric (review fix B).
+                        record_namespace_retry_event("applied");
+                        applied += 1;
+                        tracing::info!(
+                            group_id = %hex::encode(group_id),
+                            "curative re-drive applied a stranded encrypted op (#2848)"
+                        );
+                    } else {
+                        // Idempotent nonce-deduped replay: nothing was written.
+                        record_namespace_retry_event("nonce_skip");
+                    }
+                }
+                Err(e) => {
+                    record_namespace_retry_event("failed");
+                    tracing::warn!(
+                        group_id = %hex::encode(group_id),
+                        error = %format!("{e:#}"),
+                        "curative re-drive: failed to apply a buffered encrypted op (#2848)"
+                    );
+                }
+            }
+        }
+
+        Ok(applied)
+    }
+
     /// Decrypt an encrypted group op and apply it via
     /// [`apply_group_op_inner`](Self::apply_group_op_inner).
     ///
@@ -1256,17 +1450,28 @@ impl<'a> NamespaceGovernance<'a> {
         // divergence signal, not an apply gate. Anchor-sync reconcile is
         // the recovery path for genuinely diverged peers.
         if signed_group_op.state_hash != [0u8; 32] {
-            let current = MetaRepository::new(self.store).compute_state_hash(group_id)?;
-            if signed_group_op.state_hash != current {
-                tracing::warn!(
-                    group_id = %hex::encode(group_id.to_bytes()),
-                    expected = %hex::encode(signed_group_op.state_hash),
-                    actual = %hex::encode(current),
-                    nonce,
-                    signer = %signer,
-                    "namespace group op state_hash mismatch (signed against stale state; \
-                     applying anyway — see PR #2500 caveat)"
-                );
+            // Mirror the root-op bypass (apply_signed_op): if the subgroup
+            // meta row hasn't been written yet — e.g. an encrypted
+            // ContextRegistered buffered before its GroupCreated lands and now
+            // re-driven — there is no state to hash. `compute_state_hash`
+            // would raise GroupNotFoundForHash and strand the op forever
+            // (#2848). Treat absent meta as a bypass; authorization and
+            // signature verification remain in force, and GroupCreated's apply
+            // re-drives this op once the meta exists.
+            let repo = MetaRepository::new(self.store);
+            if repo.load(group_id)?.is_some() {
+                let current = repo.compute_state_hash(group_id)?;
+                if signed_group_op.state_hash != current {
+                    tracing::warn!(
+                        group_id = %hex::encode(group_id.to_bytes()),
+                        expected = %hex::encode(signed_group_op.state_hash),
+                        actual = %hex::encode(current),
+                        nonce,
+                        signer = %signer,
+                        "namespace group op state_hash mismatch (signed against stale state; \
+                         applying anyway — see PR #2500 caveat)"
+                    );
+                }
             }
         }
 
@@ -1640,6 +1845,21 @@ pub fn apply_received_group_key(
     )
 }
 
+/// Re-drive any buffered encrypted group ops for `group_id` that were
+/// effect-skipped because their dependencies (key or subgroup meta) were
+/// not yet present. See
+/// [`NamespaceGovernance::retry_encrypted_ops_for_group`]. Used by the
+/// context crate to recover ops stranded between `GroupCreated` and
+/// `KeyDelivery` (#2848). The #2848 Part C curative startup sweep is the
+/// in-tree caller and lands in a follow-up task.
+pub fn retry_encrypted_ops_for_group(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: [u8; 32],
+) -> EyreResult<Option<super::super::DivergenceReport>> {
+    NamespaceGovernance::new(store, namespace_id).retry_encrypted_ops_for_group(group_id)
+}
+
 /// Distinct group ids in `namespace_id` that have at least one buffered
 /// encrypted group op the local node cannot yet decrypt because it holds
 /// no key for that group (nor the namespace key, which `Open` subgroups
@@ -1651,6 +1871,49 @@ pub fn namespace_groups_awaiting_key(
     namespace_id: [u8; 32],
 ) -> EyreResult<Vec<[u8; 32]>> {
     NamespaceRetryService::new(store, namespace_id).groups_awaiting_key()
+}
+
+/// Distinct group ids in `namespace_id` that have at least one buffered
+/// encrypted group op the local node CAN already decrypt — the inverse of
+/// [`namespace_groups_awaiting_key`]. This is the held-key, buffered-op set
+/// the #2848 Part C curative startup sweep re-drives: a node stranded before
+/// the live re-drive landed holds the key but has no future trigger.
+pub fn namespace_groups_with_held_key_buffered_ops(
+    store: &Store,
+    namespace_id: [u8; 32],
+) -> EyreResult<Vec<[u8; 32]>> {
+    NamespaceRetryService::new(store, namespace_id).groups_with_held_key_buffered_ops()
+}
+
+/// Enumerate every namespace this node holds an identity for — the node's
+/// full set of known namespaces. The #2848 Part C curative startup sweep
+/// iterates this to re-drive stranded buffered ops across all of them.
+pub fn known_namespace_identities(store: &Store) -> EyreResult<Vec<[u8; 32]>> {
+    Ok(NamespaceRepository::new(store)
+        .iter_identities()?
+        .into_iter()
+        .map(|gid| gid.to_bytes())
+        .collect())
+}
+
+/// Curative re-drive of a single group's buffered encrypted ops for the
+/// #2848 Part C startup sweep. Returns the count of ops it ACTUALLY applied
+/// this call (idempotent nonce-replays are not counted) — the sweep uses this
+/// as its monotone convergence signal.
+///
+/// Metric emission is delegated to the inner
+/// `redrive_encrypted_ops_for_group_counted`, which records
+/// `namespace_retry_events{status="applied"}` only on genuine applies and
+/// `status="nonce_skip"` on dedup. We intentionally do NOT emit a per-call
+/// `status="redriven"` counter here: that inflated the metric on every sweep
+/// pass over an already-drained group, so the count reflected invocations
+/// rather than ops actually recovered.
+pub fn redrive_buffered_ops_for_group(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: [u8; 32],
+) -> EyreResult<usize> {
+    NamespaceGovernance::new(store, namespace_id).redrive_encrypted_ops_for_group_counted(group_id)
 }
 
 pub async fn sign_apply_and_publish_namespace_op(

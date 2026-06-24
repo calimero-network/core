@@ -1171,6 +1171,173 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
 }
 
 #[test]
+fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
+    // Regression: a TEE replica that bootstraps the namespace ROOT via the
+    // `seed_bootstrap_admin_if_absent` (KeyDelivery-seed) path used to leave the
+    // root's `default_capabilities` UNSET. The subsequently-applied
+    // `MemberJoinedViaTeeAttestation` op snapshots the group's default caps at
+    // apply time, so the ReadOnlyTee row was written with `caps = 0` — and
+    // `check_path` of any Open child subgroup then resolves to `None`, so
+    // auto-follow never `join_context`s and the Open subgroup never replicates.
+    //
+    // The fix completes the seed by also seeding the root's default caps to
+    // include `CAN_JOIN_OPEN_SUBGROUPS` (mirroring the owner-side
+    // `store_group_meta` precedent). This test seeds the root via the bare seed,
+    // admits a ReadOnlyTee via the real op path, and asserts (a) the TEE's root
+    // row HAS `CAN_JOIN_OPEN_SUBGROUPS` and (b) `check_path(open_child, tee)`
+    // resolves to `Inherited`. It FAILS before the fix and PASSES after.
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    // The founder/verifier = the KeyDelivery signer the replica TOFU-trusts.
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    // The TEE node being admitted.
+    let tee_member = PublicKey::from([0xD7; 32]);
+    let quote_hash = [0xE7; 32];
+
+    let namespace_id = [0xB4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let open_child = ContextGroupId::from([0xB5u8; 32]);
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // ---- Bare bootstrap seed: this is the ONLY thing that establishes the root
+    // meta + founding admin on the replica (the real fleet-join KeyDelivery
+    // path). It must also leave the root's default caps set to include
+    // CAN_JOIN_OPEN_SUBGROUPS. ----
+    gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
+        .expect("bootstrap seed");
+
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&ns_gid)
+            .unwrap(),
+        Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+        "bootstrap seed must set the root's default caps so members admitted \
+         before the DefaultCapabilitiesSet gossip inherit CAN_JOIN_OPEN_SUBGROUPS"
+    );
+
+    // An Open child subgroup nested under the root.
+    nest_for_test(&store, &ns_gid, &open_child);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&open_child, VisibilityMode::Open)
+        .unwrap();
+
+    // The replica holds the group key (delivered via KeyDelivery) so it can
+    // decrypt the encrypted group ops below.
+    let group_key = [0x71u8; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    // ---- Op 1 (nonce 1): TeeAdmissionPolicySet, authored by the founder. ----
+    let policy_op = GroupKeyring::encrypt_op(
+        &group_key,
+        &GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m1".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned()],
+            accept_mock: true,
+        },
+    )
+    .unwrap();
+    let policy_ns_op = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: namespace_id,
+            key_id,
+            encrypted: policy_op,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    gov.apply_signed_op(&policy_ns_op)
+        .expect("replica must apply TeeAdmissionPolicySet");
+
+    // ---- Op 2 (nonce 2): MemberJoinedViaTeeAttestation — the row whose caps
+    // are snapshotted from the root's default caps at apply time. ----
+    let join_op = GroupKeyring::encrypt_op(
+        &group_key,
+        &GroupOp::MemberJoinedViaTeeAttestation {
+            member: tee_member,
+            quote_hash,
+            mrtd: "m1".to_owned(),
+            rtmr0: "r0".to_owned(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+        },
+    )
+    .unwrap();
+    let join_ns_op = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: namespace_id,
+            key_id,
+            encrypted: join_op,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    gov.apply_signed_op(&join_ns_op)
+        .expect("replica must apply MemberJoinedViaTeeAttestation");
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &tee_member)
+            .unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee),
+        "the TEE node must be recorded as a ReadOnlyTee member on the replica"
+    );
+
+    // (a) The TEE's ROOT row must carry CAN_JOIN_OPEN_SUBGROUPS — snapshotted
+    // from the seeded default caps at admission time.
+    let tee_root_caps = CapabilitiesRepository::new(&store)
+        .member_capability(&ns_gid, &tee_member)
+        .unwrap()
+        .unwrap_or(0);
+    assert_ne!(
+        tee_root_caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+        0,
+        "TEE root row must carry CAN_JOIN_OPEN_SUBGROUPS (got caps={tee_root_caps:#b})"
+    );
+
+    // (b) check_path of the Open child must resolve to Inherited via the root
+    // anchor — i.e. auto-follow would join_context and replicate the subgroup.
+    assert!(
+        matches!(
+            MembershipRepository::new(&store)
+                .check_path(&open_child, &tee_member)
+                .unwrap(),
+            crate::membership::MembershipPath::Inherited { .. }
+        ),
+        "Open child must resolve to Inherited for the TEE so its context replicates"
+    );
+}
+
+#[test]
 fn replica_op_log_dedup_survives_head_pruning() {
     use calimero_context_client::local_governance::{
         NamespaceOp, SignedGroupOp, SignedNamespaceOp, SIGNED_GROUP_OP_SCHEMA_VERSION,
@@ -2007,6 +2174,7 @@ fn governance_group_reparented_via_signed_op() {
             NamespaceOp::Root(RootOp::GroupCreated {
                 group_id: *gid,
                 parent_id: *parent,
+                restricted: true,
             }),
         )
         .expect("sign create op");
@@ -2089,6 +2257,7 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: [0xC1; 32],
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign create op");
@@ -2152,6 +2321,7 @@ fn governance_rejects_non_admin_signer() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: [0xBB; 32],
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op");
@@ -2199,6 +2369,7 @@ fn governance_group_created_is_idempotent() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: new_group_id,
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op1");
@@ -2216,6 +2387,7 @@ fn governance_group_created_is_idempotent() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: new_group_id,
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op2");
@@ -2223,6 +2395,192 @@ fn governance_group_created_is_idempotent() {
     // Should not error — idempotent
     gov.apply_signed_op(&op2)
         .expect("duplicate GroupCreated should be idempotent");
+}
+
+/// #2771: `GroupCreated { restricted: false }` must write an Open visibility
+/// key at apply time (born-Open atomic create), and `restricted: true` must
+/// leave the subgroup Restricted. This is the store-level guard that the live
+/// op carries visibility and that `tee_subgroup_admit` (which reads this key
+/// via `is_open_chain_to_namespace`) will see Open immediately.
+#[test]
+fn governance_group_created_writes_birth_visibility() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+    use crate::CapabilitiesRepository;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xA1u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let open_group_id = [0xE0u8; 32];
+    let restricted_group_id = [0xE1u8; 32];
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let caps = CapabilitiesRepository::new(&store);
+
+    // Born-Open: restricted = false ⇒ visibility key written as Open.
+    let open_op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: open_group_id,
+            parent_id: ns_id,
+            restricted: false,
+        }),
+    )
+    .expect("sign born-open op");
+    gov.apply_signed_op(&open_op)
+        .expect("born-open GroupCreated should apply");
+    assert_eq!(
+        caps.subgroup_visibility(&ContextGroupId::from(open_group_id))
+            .expect("read open vis"),
+        VisibilityMode::Open,
+        "GroupCreated {{ restricted: false }} must write an Open visibility key"
+    );
+
+    // Born-Restricted: restricted = true ⇒ Restricted.
+    let restricted_op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: restricted_group_id,
+            parent_id: ns_id,
+            restricted: true,
+        }),
+    )
+    .expect("sign born-restricted op");
+    gov.apply_signed_op(&restricted_op)
+        .expect("born-restricted GroupCreated should apply");
+    assert_eq!(
+        caps.subgroup_visibility(&ContextGroupId::from(restricted_group_id))
+            .expect("read restricted vis"),
+        VisibilityMode::Restricted,
+        "GroupCreated {{ restricted: true }} must remain Restricted"
+    );
+}
+
+/// Regression for a Cursor finding on PR #2855: birth visibility is an
+/// INITIAL condition, not idempotent state. A duplicate `GroupCreated`
+/// (replay — different nonce, same `group_id`) must NOT re-assert the birth
+/// visibility, or it would clobber a `SubgroupVisibilitySet` flip applied in
+/// the meantime. Create born-Open, flip to Restricted (the same store
+/// mutation `SubgroupVisibilitySet` apply performs), then replay the SAME
+/// `GroupCreated` op and assert the flip survives.
+#[test]
+fn governance_group_created_replay_does_not_reset_visibility() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+    use crate::CapabilitiesRepository;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xB2u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let group_id = [0xE2u8; 32];
+    let gid = ContextGroupId::from(group_id);
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let caps = CapabilitiesRepository::new(&store);
+
+    // 1. Create the subgroup born-Open.
+    let create_op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id,
+            parent_id: ns_id,
+            restricted: false,
+        }),
+    )
+    .expect("sign create op");
+    gov.apply_signed_op(&create_op)
+        .expect("born-open GroupCreated should apply");
+    assert_eq!(
+        caps.subgroup_visibility(&gid)
+            .expect("read vis after create"),
+        VisibilityMode::Open,
+        "precondition: subgroup is born Open"
+    );
+
+    // 2. Flip it Restricted — the same store mutation `SubgroupVisibilitySet`
+    //    apply performs (see ops/group/subgroup_visibility_set.rs).
+    caps.set_subgroup_visibility(&gid, VisibilityMode::Restricted)
+        .expect("flip to Restricted");
+    assert_eq!(
+        caps.subgroup_visibility(&gid).expect("read vis after flip"),
+        VisibilityMode::Restricted,
+        "precondition: flip applied"
+    );
+
+    // 3. Replay the SAME GroupCreated op (different nonce, same group_id).
+    let replay_op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id,
+            parent_id: ns_id,
+            restricted: false,
+        }),
+    )
+    .expect("sign replay op");
+    gov.apply_signed_op(&replay_op)
+        .expect("GroupCreated replay should be idempotent");
+
+    // 4. The flip must survive — the replay must NOT reset visibility to Open.
+    assert_eq!(
+        caps.subgroup_visibility(&gid)
+            .expect("read vis after replay"),
+        VisibilityMode::Restricted,
+        "GroupCreated replay must not clobber a later SubgroupVisibilitySet flip"
+    );
 }
 
 #[test]
@@ -2278,6 +2636,7 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: new_group_id,
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op");
@@ -2341,6 +2700,7 @@ fn execute_group_created_rejects_self_parent() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: ns_id,
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op");
@@ -2405,6 +2765,7 @@ fn execute_group_created_inherits_app_key_and_application_from_parent() {
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sub_id,
             parent_id: ns_id,
+            restricted: true,
         }),
     )
     .expect("sign op");
@@ -2880,6 +3241,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
             NamespaceOp::Root(RootOp::GroupCreated {
                 group_id,
                 parent_id,
+                restricted: true,
             }),
         )
         .unwrap()
@@ -3278,6 +3640,119 @@ fn namespace_group_op_with_stale_state_hash_applies_with_warning() {
     let gov = NamespaceGovernance::new(&store, namespace_id);
     gov.apply_signed_op(&op)
         .expect("stale state_hash must apply with a warning, not reject");
+}
+
+/// #2848 Part B: a group op carrying a *non-zero* `state_hash` whose target
+/// subgroup has no meta row yet (e.g. an encrypted ContextRegistered buffered
+/// before its GroupCreated lands and now re-driven) must BYPASS the staleness
+/// check rather than blow up on `GroupNotFoundForHash`. Before the fix
+/// `compute_state_hash` was called unconditionally and this returned `Err`,
+/// stranding the op forever.
+#[test]
+fn group_op_with_stale_hash_and_absent_meta_applies() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    use super::NamespaceGovernance;
+
+    let (store, signer_sk, namespace_id, group_gid, group_key, key_id) =
+        setup_state_hash_test_fixture();
+
+    // Drop the subgroup meta so it is absent on apply — but keep the group key
+    // so the op still decrypts and reaches the staleness check. A non-zero
+    // state_hash with absent meta is exactly the buffered-before-GroupCreated
+    // case.
+    MetaRepository::new(&store)
+        .delete(&group_gid)
+        .expect("delete subgroup meta");
+    assert!(
+        MetaRepository::new(&store)
+            .load(&group_gid)
+            .unwrap()
+            .is_none(),
+        "precondition: subgroup meta is absent"
+    );
+
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0x11u8; 32], // non-zero, would mismatch any recomputed hash
+        1,
+        NamespaceOp::Group {
+            group_id: group_gid.to_bytes(),
+            key_id,
+            encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+    gov.apply_signed_op(&op).expect(
+        "non-zero state_hash with absent subgroup meta must bypass the staleness check, \
+         not error on GroupNotFoundForHash (#2848 Part B)",
+    );
+}
+
+/// #2848 Part A gate: a `GroupCreated` for a subgroup whose key the local node
+/// does NOT hold must be a cheap no-op on the retry path — the key-presence
+/// gate short-circuits before the full op-log scan. There are no buffered ops
+/// to re-drive, so apply must succeed cleanly and surface no divergence.
+#[test]
+fn group_created_with_no_key_skips_retry() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xF0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    // Brand-new subgroup id: no GroupKeyring entry exists for it, so the
+    // key-presence gate in the GroupCreated arm must skip the retry entirely.
+    let new_group_id = [0xF1u8; 32];
+    let new_group_gid = ContextGroupId::from(new_group_id);
+    assert!(
+        GroupKeyring::new(&store, new_group_gid)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "precondition: no key held for the new subgroup"
+    );
+
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: new_group_id,
+            parent_id: ns_id,
+            restricted: true,
+        }),
+    )
+    .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let result = gov
+        .apply_signed_op(&op)
+        .expect("GroupCreated with no held key must apply cleanly (cheap no-op retry gate)");
+    assert!(
+        result.divergence.is_none(),
+        "no buffered ops to re-drive, so no divergence should surface"
+    );
 }
 
 #[test]
@@ -3828,5 +4303,228 @@ fn responder_refuses_delivery_to_non_member() {
     assert!(
         envelope_bytes.is_empty(),
         "responder must not wrap a key for a non-member"
+    );
+}
+
+/// #2848 Part C — curative startup sweep, gov-store level.
+///
+/// Reconstructs the ALREADY-stranded state a node lands in when the live
+/// re-drive (Parts A/B) was never available: a buffered, effect-skipped
+/// `ContextRegistered` for a subgroup whose key is now HELD and whose meta is
+/// now PRESENT — but with NO pending trigger (no GroupCreated/KeyDelivery
+/// apply re-drove it). We construct this by buffering the op while key+meta are
+/// absent, then writing the key and meta DIRECTLY (bypassing the apply path, so
+/// the Part A GroupCreated re-drive never fires).
+///
+/// Asserts the enumerator
+/// ([`namespace_groups_with_held_key_buffered_ops`]) returns exactly the
+/// stranded subgroup, and that re-driving it
+/// ([`redrive_buffered_ops_for_group`]) applies the buffered op (the context
+/// becomes registered to the subgroup) and reports a non-`None` divergence.
+///
+/// Also asserts the two no-op shapes: a held-key group with nothing buffered,
+/// and a no-key (deleted/never-keyed) group, are NOT enumerated.
+#[test]
+fn curative_sweep_redrives_stranded_context() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::application::ApplicationId;
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    // ---- Namespace root + receiver identity --------------------------------
+    let ns_gid = ContextGroupId::from([0xD8u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    // This receiver node's namespace identity — makes the namespace a "known"
+    // one for `iter_identities`/`known_namespace_identities`.
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .unwrap();
+
+    // ---- The stranded subgroup: pick id + mint its key ---------------------
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let subgroup_key: [u8; 32] = {
+        use rand::RngCore;
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let key_id = GroupKeyring::key_id_for(&subgroup_key);
+    let context_id = ContextId::from([0xC8u8; 32]);
+
+    // ---- Step 1: buffer the encrypted ContextRegistered (effect-skipped) ---
+    // `state_hash == [0u8; 32]` skips the staleness check, so the re-drive
+    // applies cleanly once key+meta are present (the staleness path is already
+    // covered by the node-level R1 test).
+    let inner_op = GroupOp::ContextRegistered {
+        context_id,
+        application_id: ApplicationId::from([0xCCu8; 32]),
+        blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
+        source: "calimero://stub-app".to_owned(),
+        service_name: None,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).unwrap();
+    let ctx_registered_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: sub_gid.to_bytes(),
+            key_id,
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    apply_signed_namespace_op(&store, &ctx_registered_op)
+        .expect("apply buffered ContextRegistered (effect-skipped: no key, no meta)");
+
+    // Effect skipped: context not registered, no enumeration yet (no key held).
+    assert_eq!(
+        get_group_for_context(&store, &context_id).unwrap(),
+        None,
+        "buffered ContextRegistered must be effect-skipped before the key arrives"
+    );
+    assert!(
+        namespace_groups_with_held_key_buffered_ops(&store, namespace_id)
+            .unwrap()
+            .is_empty(),
+        "no group should be enumerated while the key is still absent (awaiting-key state)"
+    );
+
+    // ---- Step 2: make the node stranded WITHOUT a trigger ------------------
+    // Write the subgroup key and meta DIRECTLY. This skips the apply path, so
+    // the Part A GroupCreated re-drive never fires — exactly the pre-fix
+    // stranded residue: key held, meta present, op still buffered, no trigger.
+    let stored_key_id = GroupKeyring::new(&store, sub_gid)
+        .store_key(&subgroup_key)
+        .unwrap();
+    assert_eq!(
+        stored_key_id, key_id,
+        "stored key id must match the op's key_id"
+    );
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    // Nest the subgroup so it resolves under the namespace (for completeness).
+    nest_for_test(&store, &ns_gid, &sub_gid);
+
+    // ---- Enumerator: exactly the stranded subgroup is returned -------------
+    let enumerated = namespace_groups_with_held_key_buffered_ops(&store, namespace_id).unwrap();
+    assert_eq!(
+        enumerated,
+        vec![sub_gid.to_bytes()],
+        "the held-key subgroup with a buffered op must be enumerated for the curative sweep"
+    );
+    // The op is still buffered (not yet re-driven).
+    assert_eq!(
+        get_group_for_context(&store, &context_id).unwrap(),
+        None,
+        "the buffered op must still be stranded before the sweep re-drives it"
+    );
+
+    // ---- Re-drive: the buffered op applies ---------------------------------
+    let applied = redrive_buffered_ops_for_group(&store, namespace_id, sub_gid.to_bytes())
+        .expect("re-drive must not error");
+    assert_eq!(
+        applied, 1,
+        "re-driving the stranded subgroup must apply exactly the one buffered op"
+    );
+    assert_eq!(
+        get_group_for_context(&store, &context_id).unwrap(),
+        Some(sub_gid),
+        "#2848 Part C: the curative re-drive must register the previously-stranded context"
+    );
+
+    // ---- Idempotency: a second re-drive applies nothing new ----------------
+    // (The namespace op-log is append-only, so the group stays ENUMERATED, but
+    // a re-drive of an already-applied op is a nonce-deduped no-op — this is
+    // the sweep's convergence signal: applied-count drops to zero.)
+    let applied_again = redrive_buffered_ops_for_group(&store, namespace_id, sub_gid.to_bytes())
+        .expect("second re-drive must not error");
+    assert_eq!(
+        applied_again, 0,
+        "re-driving an already-applied group must apply nothing (idempotent no-op)"
+    );
+
+    // ---- No-op shape: a no-key (deleted/never-keyed) group -----------------
+    // Buffer an op for a DIFFERENT subgroup whose key we never store: it is
+    // awaiting-key, not held-key, so the curative enumerator must skip it (the
+    // held-key filter is also the deleted-group exit).
+    let nokey_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let nokey_key: [u8; 32] = {
+        use rand::RngCore;
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let nokey_inner = GroupOp::ContextRegistered {
+        context_id: ContextId::from([0xE9u8; 32]),
+        application_id: ApplicationId::from([0xCCu8; 32]),
+        blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
+        source: "calimero://stub-app".to_owned(),
+        service_name: None,
+    };
+    let nokey_encrypted = GroupKeyring::encrypt_op(&nokey_key, &nokey_inner).unwrap();
+    let nokey_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: nokey_gid.to_bytes(),
+            key_id: GroupKeyring::key_id_for(&nokey_key),
+            encrypted: nokey_encrypted,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    apply_signed_namespace_op(&store, &nokey_op).expect("buffer no-key op (effect-skipped)");
+
+    let enumerated_after =
+        namespace_groups_with_held_key_buffered_ops(&store, namespace_id).unwrap();
+    assert!(
+        !enumerated_after.contains(&nokey_gid.to_bytes()),
+        "a no-key (deleted/never-keyed) group must NOT be enumerated by the curative sweep"
+    );
+    // The already-drained held-key subgroup STAYS enumerated (the namespace
+    // op-log is append-only, so the logged op persists and the key is still
+    // held) — re-driving it is a cheap idempotent no-op (asserted above).
+    assert_eq!(
+        enumerated_after,
+        vec![sub_gid.to_bytes()],
+        "the held-key subgroup remains the only curative-set entry; the no-key group is excluded"
+    );
+
+    // Sanity: the no-key group IS in the awaiting-key set (the strict inverse).
+    // The held-key subgroup is NOT (its key is held).
+    let awaiting = namespace_groups_awaiting_key(&store, namespace_id).unwrap();
+    assert_eq!(
+        awaiting,
+        vec![nokey_gid.to_bytes()],
+        "the no-key group must be in the awaiting-key set (the inverse of the curative set)"
+    );
+
+    // ---- known_namespace_identities returns this namespace -----------------
+    assert_eq!(
+        known_namespace_identities(&store).unwrap(),
+        vec![namespace_id],
+        "the node's known-namespace enumeration must include the joined namespace"
     );
 }

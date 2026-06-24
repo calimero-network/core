@@ -9,7 +9,9 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_server_primitives::admin::FleetJoinRequest;
-use calimero_tee_attestation::{build_report_data, generate_attestation};
+use calimero_tee_attestation::{
+    build_report_data, generate_attestation, generate_mock_attestation,
+};
 use reqwest::StatusCode;
 use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
@@ -68,28 +70,36 @@ pub async fn handler(
     let nonce: [u8; 32] = rand::random();
     let report_data = build_report_data(&nonce, Some(&pk_hash));
 
-    let attestation = match generate_attestation(report_data) {
-        Ok(result) => {
-            if result.is_mock {
-                error!("Mock attestation generated -- fleet-join requires real TDX hardware");
+    // Under --mock-tee, deliberately produce a mock quote (any OS, no TDX
+    // hardware) and accept it below. The real path is unchanged: it generates a
+    // hardware attestation and still rejects any mock result.
+    let attestation = if state.mock_tee {
+        generate_mock_attestation(report_data)
+    } else {
+        match generate_attestation(report_data) {
+            Ok(result) => result,
+            Err(err) => {
+                error!(error=?err, "Failed to generate TDX attestation");
                 return ApiError {
-                    status_code: StatusCode::NOT_IMPLEMENTED,
-                    message: "TDX attestation required -- mock not accepted for fleet join"
-                        .to_owned(),
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: "Failed to generate attestation".to_owned(),
                 }
                 .into_response();
             }
-            result
-        }
-        Err(err) => {
-            error!(error=?err, "Failed to generate TDX attestation");
-            return ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to generate attestation".to_owned(),
-            }
-            .into_response();
         }
     };
+
+    // Reject mock attestations only when NOT in mock-tee mode. In mock-tee mode
+    // the mock quote above is produced on purpose and accepted by the verifier's
+    // namespace policy.
+    if attestation.is_mock && !state.mock_tee {
+        error!("Mock attestation generated -- fleet-join requires real TDX hardware");
+        return ApiError {
+            status_code: StatusCode::NOT_IMPLEMENTED,
+            message: "TDX attestation required -- mock not accepted for fleet join".to_owned(),
+        }
+        .into_response();
+    }
 
     let broadcast = BroadcastMessage::TeeAttestationAnnounce {
         quote_bytes: attestation.quote_bytes,
@@ -124,24 +134,41 @@ pub async fn handler(
     // the common case for a NAT'd/relay owner whose mesh forms only
     // intermittently. The admission loop below therefore RE-announces every
     // poll cycle until admitted or the deadline, so a *later* mesh window still
-    // receives a fresh copy. If even this first publish errors at the transport
-    // level we bail (subscription with no announce is useless); a publish into
-    // an empty mesh is *not* an error and is expected to be retried below.
+    // receives a fresh copy.
+    //
+    // An empty mesh at t=0 is the EXPECTED cold-start outcome, not a failure:
+    // we subscribed to the namespace topic only moments ago, so no mesh peers
+    // have formed yet and `publish_on_namespace_now` surfaces
+    // `PublishError::NoPeersSubscribedToTopic`. Treating that first publish's
+    // empty-mesh error as fatal (the bug #2491 fixes) returned a spurious 500
+    // before the retry loop — whose whole purpose is to re-publish once the
+    // mesh forms — was ever reached. So classify it the same way the loop does:
+    // empty mesh is non-fatal, fall through into the retry loop below; any
+    // *other* publish error is a genuine transport failure and still bails
+    // (a subscription with no chance of an announce is useless).
     if let Err(err) = state
         .node_client
         .publish_on_namespace_now(group_id_bytes, payload.clone())
         .await
     {
-        warn!(error=?err, "Failed to broadcast, unsubscribing from namespace");
-        let _ = state
-            .node_client
-            .unsubscribe_namespace(group_id_bytes)
-            .await;
-        return ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "Failed to broadcast attestation".to_owned(),
+        if calimero_network_primitives::client::is_no_peers_subscribed_error(&err) {
+            info!(
+                group_id = %req.group_id,
+                "First announce hit an empty gossipsub mesh (no peers subscribed yet); \
+                 deferring to the re-announce loop, which republishes once the mesh forms"
+            );
+        } else {
+            warn!(error=?err, "Failed to broadcast, unsubscribing from namespace");
+            let _ = state
+                .node_client
+                .unsubscribe_namespace(group_id_bytes)
+                .await;
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to broadcast attestation".to_owned(),
+            }
+            .into_response();
         }
-        .into_response();
     }
 
     info!(

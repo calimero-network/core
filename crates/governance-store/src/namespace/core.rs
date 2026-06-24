@@ -6,7 +6,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     GroupChildIndex, GroupParentRef, NamespaceIdentity, NamespaceIdentityValue,
-    GROUP_CHILD_INDEX_PREFIX,
+    GROUP_CHILD_INDEX_PREFIX, NAMESPACE_IDENTITY_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -521,6 +521,31 @@ impl<'a> NamespaceRepository<'a> {
             },
         )?;
         Ok(())
+    }
+
+    /// Enumerate every namespace this node holds an identity for.
+    ///
+    /// A `NamespaceIdentity` row is written exactly once per namespace the
+    /// node has joined (`store_identity`), so this is the node's full set of
+    /// known namespaces. Range-scans the shared `Group` column by the
+    /// `NAMESPACE_IDENTITY_PREFIX` byte — the same seek-and-walk convention
+    /// `collect_keys_with_prefix` uses everywhere else in this crate, which
+    /// terminates at the first key whose leading byte differs (the next key
+    /// type in the shared column), not on corruption.
+    ///
+    /// Used by the #2848 Part C curative startup sweep to drive a buffered-op
+    /// re-drive across every namespace the node already participates in.
+    pub fn iter_identities(&self) -> EyreResult<Vec<ContextGroupId>> {
+        let keys = collect_keys_with_prefix(
+            self.store,
+            NamespaceIdentity::new([0u8; 32]),
+            NAMESPACE_IDENTITY_PREFIX,
+            |_k| true,
+        )?;
+        Ok(keys
+            .into_iter()
+            .map(|k| ContextGroupId::from(k.namespace_id()))
+            .collect())
     }
 
     /// Resolve the namespace for a group and return this node's identity.

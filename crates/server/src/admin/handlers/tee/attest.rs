@@ -3,7 +3,9 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_server_primitives::admin::{TeeAttestRequest, TeeAttestResponse};
-use calimero_tee_attestation::{build_report_data, generate_attestation, AttestationError};
+use calimero_tee_attestation::{
+    build_report_data, generate_attestation, generate_mock_attestation, AttestationError,
+};
 use reqwest::StatusCode;
 use tracing::{error, info};
 
@@ -76,42 +78,50 @@ pub async fn handler(
     // 3. Build report_data using the tee-attestation crate
     let report_data = build_report_data(&nonce_array, app_hash.as_ref());
 
-    // 4. Generate attestation using the tee-attestation crate
-    match generate_attestation(report_data) {
-        Ok(result) => {
-            // Reject mock attestations - they indicate unsupported platform
-            if result.is_mock {
-                error!("Mock attestation generated - platform does not support TDX");
-                return ApiError {
-                    status_code: StatusCode::NOT_IMPLEMENTED,
-                    message:
+    // 4. Generate attestation using the tee-attestation crate.
+    //
+    // Under --mock-tee, deliberately produce a mock quote (any OS, no TDX
+    // hardware) and accept it below. The real path is unchanged: it generates a
+    // hardware attestation and still rejects any mock result.
+    let result = if state.mock_tee {
+        generate_mock_attestation(report_data)
+    } else {
+        match generate_attestation(report_data) {
+            Ok(result) => result,
+            Err(err) => {
+                let (status_code, message) = match &err {
+                    AttestationError::NotSupported => (
+                        StatusCode::NOT_IMPLEMENTED,
                         "TDX attestation generation is only supported on Linux with TDX hardware"
                             .to_owned(),
+                    ),
+                    _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+                };
+                error!(error=%err, "Failed to generate attestation");
+                return ApiError {
+                    status_code,
+                    message,
                 }
                 .into_response();
             }
+        }
+    };
 
-            info!("TEE attestation generated successfully");
-            ApiResponse {
-                payload: TeeAttestResponse::new(result.quote_b64, result.quote),
-            }
-            .into_response()
+    // Reject mock attestations only when NOT in mock-tee mode - they otherwise
+    // indicate an unsupported platform.
+    if result.is_mock && !state.mock_tee {
+        error!("Mock attestation generated - platform does not support TDX");
+        return ApiError {
+            status_code: StatusCode::NOT_IMPLEMENTED,
+            message: "TDX attestation generation is only supported on Linux with TDX hardware"
+                .to_owned(),
         }
-        Err(err) => {
-            let (status_code, message) = match &err {
-                AttestationError::NotSupported => (
-                    StatusCode::NOT_IMPLEMENTED,
-                    "TDX attestation generation is only supported on Linux with TDX hardware"
-                        .to_owned(),
-                ),
-                _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-            };
-            error!(error=%err, "Failed to generate attestation");
-            ApiError {
-                status_code,
-                message,
-            }
-            .into_response()
-        }
+        .into_response();
     }
+
+    info!("TEE attestation generated successfully");
+    ApiResponse {
+        payload: TeeAttestResponse::new(result.quote_b64, result.quote),
+    }
+    .into_response()
 }

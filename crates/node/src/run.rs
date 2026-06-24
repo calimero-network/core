@@ -71,6 +71,11 @@ pub struct NodeConfig {
     /// Resolved per-execution VM resource limits from the `[runtime.limits]`
     /// config section (unset fields fall back to `VMLimits::default`).
     pub vm_limits: calimero_runtime::logic::VMLimits,
+    /// DEV/TEST ONLY. When true, the TEE admin handlers produce and accept mock
+    /// attestation quotes instead of requiring real TDX hardware. Insecure —
+    /// never enable in production. Sourced from `merod run --mock-tee`
+    /// (`MEROD_MOCK_TEE`) and threaded onto the server's `AdminState`.
+    pub mock_tee: bool,
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
@@ -413,6 +418,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
         datastore.clone(),
         registry,
+        config.mock_tee,
     );
 
     // Start garbage collection actor

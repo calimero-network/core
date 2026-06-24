@@ -107,6 +107,22 @@ impl<'a> CapabilitiesRepository<'a> {
         })
     }
 
+    /// Whether an explicit subgroup-visibility key exists in the store for
+    /// `group_id`. Distinct from [`Self::subgroup_visibility`], which collapses
+    /// an absent key to [`VisibilityMode::Restricted`] and so cannot tell
+    /// "never written" apart from "explicitly Restricted".
+    ///
+    /// Used by `GroupCreated` apply to gate the birth-visibility write to the
+    /// genuine first create: the key is absent on the originator's first apply
+    /// (the `create_group` handler pre-populates meta but NOT visibility) and
+    /// present on any replay — so birth visibility is written once and never
+    /// re-asserted over a later `SubgroupVisibilitySet` flip.
+    pub fn has_subgroup_visibility(&self, group_id: &ContextGroupId) -> EyreResult<bool> {
+        let handle = self.store.handle();
+        let key = GroupSubgroupVis::new(group_id.to_bytes());
+        Ok(handle.get(&key)?.is_some())
+    }
+
     pub fn set_subgroup_visibility(
         &self,
         group_id: &ContextGroupId,

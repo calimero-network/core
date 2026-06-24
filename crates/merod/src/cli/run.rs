@@ -22,6 +22,11 @@ pub struct RunCommand {
     /// Override the authentication mode configured in config.toml
     #[arg(long, value_enum)]
     pub auth_mode: Option<AuthModeArg>,
+
+    /// DEV/TEST ONLY. Produce and accept MOCK TEE attestation quotes (no real TDX).
+    /// Insecure — never use in production. Refuses to start alongside a real KMS.
+    #[clap(long, env = "MEROD_MOCK_TEE", default_value_t = false)]
+    pub mock_tee: bool,
 }
 
 impl RunCommand {
@@ -37,6 +42,55 @@ impl RunCommand {
         // Apply CLI auth_mode override before validation
         if let Some(mode) = self.auth_mode {
             config.network.server.auth_mode = mode.into();
+        }
+
+        // Mock TEE is dev/test only and must never coexist with real attestation.
+        //
+        // Guard contract (deny-list, not allow-list — intentional): `--mock-tee`
+        // is refused ONLY when a real KMS attestation is configured
+        // (`TeeConfig::has_real_attestation`). A node with no TEE config at all,
+        // or a TEE block that carries no KMS provider, is not a production
+        // attestation config — so mock is allowed there, gated by the loud
+        // startup warning below. Do not flip this to an allow-list; this is the
+        // agreed dev-only flag behavior.
+        //
+        // FIXME: `has_real_attestation` only covers the Phala KMS provider. If a
+        // second KMS provider is ever added, extend that predicate (see its doc
+        // in `calimero_config::TeeConfig`) so this guard keeps refusing `--mock-tee`
+        // on real-attestation nodes.
+        if self.mock_tee {
+            if config
+                .tee
+                .as_ref()
+                .is_some_and(calimero_config::TeeConfig::has_real_attestation)
+            {
+                bail!(
+                    "--mock-tee refused: a real KMS/attestation is configured. \
+                     Mock TEE is dev/test only and cannot coexist with real attestation."
+                );
+            }
+            tracing::warn!(
+                "================ MOCK TEE ENABLED — INSECURE, DEV/TEST ONLY ================"
+            );
+            // W4: the deny-list above only refuses when `has_real_attestation()`
+            // is true (Phala KMS with `attestation.enabled && !accept_mock`). A
+            // node that has a Phala KMS provider configured but with
+            // `enabled == false` (or `accept_mock == true`) passes the guard
+            // silently — yet pairing a configured KMS provider with mock TEE is
+            // almost certainly a misconfiguration (e.g. attestation was meant to
+            // be on, or a prod config got `--mock-tee` by accident). Do NOT
+            // refuse — that would break legitimate dev flows — but warn loudly.
+            if config
+                .tee
+                .as_ref()
+                .is_some_and(|tee| tee.kms.phala.is_some())
+            {
+                tracing::warn!(
+                    "--mock-tee is active while a Phala KMS provider is configured \
+                     (tee.kms.phala). Mock TEE bypasses real attestation; if this node \
+                     is meant to use the configured KMS, this is likely a misconfiguration."
+                );
+            }
         }
 
         // Resolve external attestation policy once at startup so downstream
@@ -169,6 +223,7 @@ impl RunCommand {
                 accept_mock_tee: network.specialized_node.accept_mock_tee,
             },
             vm_limits: config.runtime.vm_limits(),
+            mock_tee: self.mock_tee,
         })
         .await
     }
