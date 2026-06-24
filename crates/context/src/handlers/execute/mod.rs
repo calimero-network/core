@@ -983,6 +983,21 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     "scope-projections lock poisoned; skipping ACL shadow feed"
                                 ),
                             }
+
+                            // C2.1b dual-write: persist each rotation op to the
+                            // durable unified op-store, keyed by its scope.
+                            // Observe-only — nothing reads it yet. Independent of
+                            // the projection lock above and never fails execution.
+                            for op in &ops {
+                                if let Err(err) =
+                                    crate::unified_op_store::persist_op(&xcall_datastore, op)
+                                {
+                                    tracing::warn!(
+                                        %err,
+                                        "unified op-store: failed to persist rotation op (dual-write)"
+                                    );
+                                }
+                            }
                         }
                     }
 
