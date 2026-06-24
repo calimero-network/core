@@ -480,6 +480,30 @@ jobs:
           fi
           echo "no unified_projection_divergence markers — projection agrees with the live decision"
 
+      - name: Report unified op-store completeness (C3 Stage 0, observe-only)
+        if: always()
+        run: |
+          # The C3 completeness gate logs `op_store_incomplete` whenever the unified
+          # op-store is missing a governance op the gov-DAG has — i.e. some apply path
+          # isn't dual-writing the op-store. This turns "incomplete op-store" from a
+          # mystery 60s sync timeout (how the read-flip failed three times) into a
+          # cheap, specific signal naming the missing op count per namespace.
+          #
+          # OBSERVE-ONLY for now: the op-store is KNOWN incomplete until C3 closes the
+          # structural write gaps (local-authoring A4/A5/B1, genesis G1/G2). This step
+          # reports the markers so each stage can watch the count fall to zero; it does
+          # NOT fail the job. It becomes a HARD gate at C3 Stage 4, when the read flips
+          # onto the op-store and zero markers is the precondition.
+          if grep -rl "op_store_incomplete" docker-logs/ 2>/dev/null | grep -q .; then
+              count=$(grep -rho "op_store_incomplete" docker-logs/ | wc -l | tr -d ' ')
+              echo "::notice::op-store incomplete in ${{ matrix.workflow }} — $count marker(s) (expected during C3; observe-only)"
+              echo "sample (missing_count per namespace):"
+              grep -rho 'op_store_incomplete[^}]*missing_count=[0-9]*' docker-logs/ | sed -E 's/.*(missing_count=[0-9]*).*/\1/' | sort | uniq -c | head
+              grep -rn "op_store_incomplete" docker-logs/ | head -10
+          else
+              echo "no op_store_incomplete markers — op-store mirrors the gov-DAG for every exercised namespace"
+          fi
+
       - name: List docker-logs/ before upload (debug)
         if: always()
         run: ls -la docker-logs/ 2>&1 || echo "docker-logs/ missing"
