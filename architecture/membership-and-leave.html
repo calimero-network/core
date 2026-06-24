@@ -1718,9 +1718,25 @@ The call is:
   namespace cannot cause an unbounded fold at authoring time.</li>
 </ul>
 
+<h3>Unified authoring wrapper — <code>sign_apply_and_publish_group_op</code></h3>
+<p>
+Rather than calling <code>persist_namespace_head_ops</code> individually in each handler,
+all group-op authoring is routed through a single crate-internal async wrapper:
+<code>crate::sign_apply_and_publish_group_op</code>. It calls
+<code>calimero_governance_store::sign_apply_and_publish</code> and, on success, resolves the
+namespace from the group ID via <code>NamespaceRepository::resolve</code> and calls
+<code>ScopeProjections::persist_namespace_head_ops</code>. A namespace-resolve failure logs a
+<code>tracing::warn</code> identifying the group ID but does not fail the authoring operation.
+</p>
+<p>
+<strong>Callers must not call <code>calimero_governance_store::sign_apply_and_publish</code>
+directly for group ops.</strong> Using the wrapper ensures the op-store is always updated at the
+single chokepoint and that namespace-resolve failures are observable via tracing warnings.
+</p>
+
 <h3>Wired call sites</h3>
 <p>
-The method is called after the governance op is successfully reported or applied, never before.
+The method is called after the governance op is successfully published or applied, never before.
 A failure at the authoring step is not affected:
 </p>
 <ul>
@@ -1733,7 +1749,23 @@ A failure at the authoring step is not affected:
   errored.</li>
   <li><strong><code>join_subgroup_inheritance</code></strong> — called after
   <code>MemberJoinedOpen</code> is published, following the same skip-on-error pattern.</li>
+  <li><strong>All other group-op handlers</strong> — <code>add_group_members</code>,
+  <code>admit_tee_node</code>, <code>create_context</code> (two call sites),
+  <code>delete_context</code>, <code>detach_context_from_group</code>, <code>leave_group</code>,
+  <code>leave_namespace</code>, <code>set_member_auto_follow</code>,
+  <code>set_member_capabilities</code>, <code>set_subgroup_visibility</code>,
+  <code>set_tee_admission_policy</code>, <code>update_member_role</code>, <code>upgrade_group</code>
+  (four call sites), <code>dispatch_cascade</code>, and the generic governance handler in
+  <code>lib.rs</code> all call <code>crate::sign_apply_and_publish_group_op</code> instead of the
+  underlying store function.</li>
 </ul>
+<p>
+<strong>Exception — <code>remove_group_members</code>.</strong> The key-rotation removal path uses
+<code>sign_apply_and_publish_removal</code> (not the standard publish function) and cannot use the
+wrapper. After each removal it inlines the same namespace-resolve +
+<code>persist_namespace_head_ops</code> logic directly. A namespace-resolve failure logs a
+<code>tracing::warn</code> identifying the group ID.
+</p>
 
 <h3>Regression test</h3>
 <p>
