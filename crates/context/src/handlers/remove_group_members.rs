@@ -70,6 +70,27 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                     )
                     .await?;
                     report.observe("remove_group_members", "MemberRemoved");
+                    // C3 Stage 3: mirror the locally-authored MemberRemoved into the
+                    // op-store, like the other group-op authoring sites. The
+                    // `persist_namespace_head_ops` walk persists the WHOLE namespace
+                    // fold, so the MemberRemoved op (which carries its key-rotation
+                    // bundle inline — not as separate ops) is captured regardless of
+                    // head position.
+                    match calimero_governance_store::NamespaceRepository::new(&datastore)
+                        .resolve(&group_id)
+                    {
+                        Ok(namespace_id) => {
+                            crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
+                                &datastore,
+                                namespace_id.to_bytes(),
+                            );
+                        }
+                        Err(err) => tracing::warn!(
+                            %err,
+                            ?group_id,
+                            "C3: could not resolve namespace to mirror MemberRemoved into the op-store"
+                        ),
+                    }
                 }
                 info!(
                     ?group_id,

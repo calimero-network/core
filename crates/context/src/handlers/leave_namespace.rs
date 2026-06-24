@@ -120,7 +120,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                 // performs the multi-scope owner / last-admin checks +
                 // cascade across descendants. If any check fails, the error
                 // surfaces here as the user-facing failure.
-                let report = calimero_governance_store::sign_apply_and_publish(
+                let report = crate::sign_apply_and_publish_group_op(
                     &datastore,
                     &node_client,
                     &ack_router,

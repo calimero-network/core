@@ -211,7 +211,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         // short-circuit on its applied marker, so the new
                         // bytecode would never activate.
                         for rung in &rungs {
-                            let report = calimero_governance_store::sign_apply_and_publish(
+                            let report = crate::sign_apply_and_publish_group_op(
                                 &datastore,
                                 &node_client,
                                 &ack_router_for_lazy,
@@ -224,7 +224,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             )
                             .await?;
                             report.observe("upgrade_group", "TargetApplicationSet");
-                            let report = calimero_governance_store::sign_apply_and_publish(
+                            let report = crate::sign_apply_and_publish_group_op(
                                 &datastore,
                                 &node_client,
                                 &ack_router_for_lazy,
@@ -379,7 +379,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     .as_ref()
                     .ok_or_else(|| eyre::eyre!("target application not found"))?;
                 let app_key = *app_meta.bytecode.blob_id().as_ref();
-                let report = calimero_governance_store::sign_apply_and_publish(
+                let report = crate::sign_apply_and_publish_group_op(
                     &datastore_for_canary,
                     &node_client,
                     &ack_router_for_canary,
@@ -395,7 +395,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 // Unconditional — see the LazyOnAccess site: clearing a stale
                 // method on code-only upgrades keeps the same-id lazy trigger
                 // out of the migration arm.
-                let report = calimero_governance_store::sign_apply_and_publish(
+                let report = crate::sign_apply_and_publish_group_op(
                     &datastore_for_canary,
                     &node_client,
                     &ack_router_for_canary,
@@ -1614,7 +1614,7 @@ fn dispatch_cascade(
 
         let sk = PrivateKey::from(effective_signing_key);
 
-        let report = calimero_governance_store::sign_apply_and_publish(
+        let report = crate::sign_apply_and_publish_group_op(
             &datastore_for_publish,
             &node_client_for_publish,
             &ack_router_for_publish,
