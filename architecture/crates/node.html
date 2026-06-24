@@ -146,7 +146,14 @@
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">gc_interval_secs</span>: Option&lt;u64&gt;,<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">mode</span>: <span class="ty">NodeMode</span>,<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">specialized_node</span>: <span class="ty">SpecializedNodeConfig</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">mock_tee</span>: bool,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// dev/test only — refused if TeeConfig::has_real_attestation</span><br>
 }
+</div>
+
+<div class="admonition" style="margin-top:16px;border-left:3px solid #f59e0b;padding:10px 14px;background:#f59e0b08;border-radius:0 6px 6px 0;">
+  <strong style="color:#f59e0b;">⚠ --mock-tee (dev/test only)</strong>
+  <p style="margin:6px 0 0;">The <span class="code">--mock-tee</span> flag (or <span class="code">MEROD_MOCK_TEE</span> env var) on <span class="code">merod run</span> makes fleet-join and attest handlers produce and accept mock TDX attestation quotes instead of requiring real hardware. When active, a loud <span class="code">tracing::warn</span> is emitted at startup; a second warn fires if a Phala KMS provider is configured but real attestation is disabled (likely misconfiguration). The flag is <strong>refused</strong> (<span class="code">bail!</span>) when <span class="code">TeeConfig::has_real_attestation()</span> returns <code>true</code> — i.e. when real KMS attestation is configured. <span class="code">NodeConfig::mock_tee</span> threads the value into <span class="code">AdminState</span> (via <span class="code">AdminState::new</span>); it is <strong>never</strong> persisted to the config file. <strong>Must not be used in production.</strong></p>
+</div>
 </div>
 </div>
 
@@ -528,7 +535,7 @@
 <div class="fr"><div class="fp" style="color:#f59e0b;">calimero-primitives</div><div class="fd">Core types: ContextId, BlobId, PublicKey, events</div></div>
 <div class="fr"><div class="fp" style="color:#f59e0b;">calimero-crypto</div><div class="fd">SharedKey for encrypted sync handshakes</div></div>
 <div class="fr"><div class="fp" style="color:#f59e0b;">calimero-dag</div><div class="fd">DAG operations used by sync protocols</div></div>
-<div class="fr"><div class="fp" style="color:#ec4899;">calimero-tee-attestation</div><div class="fd">TEE attestation verification for specialized node invites</div></div>
+<div class="fr"><div class="fp" style="color:#ec4899;">calimero-tee-attestation</div><div class="fd">TEE attestation verification for specialized node invites; <span class="code">TeeConfig::has_real_attestation()</span> is the predicate used to deny <span class="code">--mock-tee</span> when real KMS attestation is configured</div></div>
 <div class="fr"><div class="fp" style="color:#6b6b80;">calimero-utils-actix</div><div class="fd">LazyRecipient, ActorExt, Actix utilities</div></div>
 
 <h3 style="margin-top:24px;">Depended on by</h3>

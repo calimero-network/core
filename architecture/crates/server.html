@@ -185,7 +185,7 @@
     <div class="fr"><div class="fp">POST /namespaces/:id/join</div><div class="fd">Join a namespace via invitation</div></div>
     <div class="fr"><div class="fp">GET /namespaces/:id/identity</div><div class="fd">Get this node's namespace identity (public key)</div></div>
     <div class="fr"><div class="fp">GET /namespaces/:id/groups</div><div class="fd">List groups within this namespace</div></div>
-    <div class="fr"><div class="fp">POST /namespaces/:id/groups</div><div class="fd">Create a new group within this namespace — provisions subgroup signing key and group encryption key before applying the <span class="code">GroupCreated</span> op; key-provisioning failures now return a 500 error response rather than silently succeeding</div></div>
+    <div class="fr"><div class="fp">POST /namespaces/:id/groups</div><div class="fd">Create a new group within this namespace — provisions subgroup signing key and group encryption key before applying the <span class="code">GroupCreated</span> op; key-provisioning failures now return a 500 error response rather than silently succeeding. Accepts an optional <span class="code">visibility</span> field (<span class="code">"open"</span> or <span class="code">"restricted"</span>, default <span class="code">"restricted"</span>) to set the group's visibility at creation time.</div></div>
     <div class="fr"><div class="fp">GET /namespaces/for-application/:app_id</div><div class="fd">List namespaces for a specific application</div></div>
   </div>
 </details>
@@ -230,8 +230,8 @@
     <div class="fr"><div class="fp">GET /certificate</div><div class="fd">Get the node's TLS certificate info</div></div>
     <div class="fr"><div class="fp">GET /peers</div><div class="fd">List connected peers with connection info</div></div>
     <div class="fr"><div class="fp">GET /tee/info</div><div class="fd">TEE enclave information (if running in TEE)</div></div>
-    <div class="fr"><div class="fp">POST /tee/attest</div><div class="fd">Request a TEE attestation</div></div>
-    <div class="fr"><div class="fp">POST /tee/verify</div><div class="fd">Verify a TEE attestation from another node</div></div>
+    <div class="fr"><div class="fp">POST /tee/attest</div><div class="fd">Request a TEE attestation (returns mock quote when <span class="code">--mock-tee</span> is active)</div></div>
+    <div class="fr"><div class="fp">POST /tee/verify</div><div class="fd">Verify a TEE attestation from another node (accepts mock quotes when <span class="code">--mock-tee</span> is active)</div></div>
   </div>
 </details>
 </div>
@@ -444,6 +444,34 @@ GET    /admin-api/peers
 </ol>
 <p style="margin-top:10px;"><strong>Key-provisioning failures are now hard errors.</strong> If either key write fails, the request is aborted immediately and the caller receives a 500-style error response. Previously, failures were warn-logged and the request continued, leaving the group in an inconsistent state.</p>
 <p style="margin-top:10px;">Namespace root TEE members are now fully admitted into Restricted subgroups at creation time, because the signing key is available before the op is applied.</p>
+<p style="margin-top:10px;"><strong>Visibility field:</strong> The request body (<span class="code">CreateGroupInNamespaceBody</span>) accepts an optional <span class="code">visibility</span> string. <span class="code">"open"</span> sets <span class="code">restricted = false</span> on the <span class="code">GroupCreated</span> op; <span class="code">"restricted"</span> (or absent/unrecognized) sets <span class="code">restricted = true</span>. This allows callers to create born-Open subgroups in a single REST call without a follow-up update.</p>
+</div>
+
+<div class="card gd" style="border-color:#f59e0b;">
+<h3>Fleet-Join Cold-Start: NoPeersSubscribedToTopic is Non-Fatal</h3>
+<p>When a node joins a fleet namespace and no peers are yet subscribed to the gossipsub topic (empty mesh at cold start), <span class="code">publish_on_namespace_now</span> returns a <span class="code">NoPeersSubscribedToTopic</span> error. This is now treated as a non-fatal expected condition:</p>
+<ul style="margin-top:8px;line-height:1.8;">
+  <li>An <span class="code">info</span>-level log is emitted instead of an error.</li>
+  <li>The handler falls through to the re-announce polling loop, which retries until peers are available.</li>
+  <li>The caller does <strong>not</strong> receive an HTTP 500, and the node does <strong>not</strong> unsubscribe from the topic.</li>
+  <li>All other publish errors remain fatal and continue to abort the request.</li>
+</ul>
+<p style="margin-top:10px;">This is the normal outcome on the very first fleet-join when the gossipsub mesh has not yet formed. The re-announce loop handles propagation once peers connect.</p>
+</div>
+
+<div class="card" style="border-color:#8b5cf6;margin-top:18px;">
+<h3>--mock-tee Flag (Dev/Test Only)</h3>
+<p><span class="code">merod run</span> gains a <span class="code">--mock-tee</span> flag (also configurable via the <span class="code">MEROD_MOCK_TEE</span> environment variable). When active:</p>
+<ul style="margin-top:8px;line-height:1.8;">
+  <li>The fleet-join and attest handlers produce and accept <strong>mock attestation quotes</strong> instead of requiring real TDX hardware.</li>
+  <li>A loud <span class="code">tracing::warn</span> is emitted on startup to signal that mock TEE mode is active.</li>
+  <li>An additional <span class="code">warn</span> fires if a Phala KMS provider is configured alongside mock TEE (likely misconfiguration — real attestation is disabled).</li>
+  <li>The flag is threaded through <span class="code">NodeConfig → AdminState</span> as <span class="code">AdminState::mock_tee</span>; it is <strong>never persisted</strong> to the on-disk config.</li>
+</ul>
+<div class="cb" style="margin-top:12px;border-color:#ef4444;">
+  <h4 style="color:#ef4444;">⚠ Security Warning</h4>
+  <p style="margin-top:6px;"><span class="code">--mock-tee</span> is intended for development and testing only. It is <strong>refused at startup</strong> (<span class="code">bail!</span>) if the node's <span class="code">TeeConfig</span> has real attestation configured (<span class="code">TeeConfig::has_real_attestation</span> returns <span class="code">true</span>). It must <strong>never</strong> be used in production environments.</p>
+</div>
 </div>
 </div>
 </div>

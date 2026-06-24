@@ -72,14 +72,16 @@
 
 <h3 style="color:#10b981;">calimero-context</h3>
 <div class="fr"><div class="fp">lib.rs</div><div class="fd"><span class="code">ContextManager</span> actor &mdash; startup, fields, Actix lifecycle, namespace DAG management</div></div>
-<div class="fr"><div class="fp">lifecycle.rs</div><div class="fd">Startup recovery: <span class="code">recover_in_progress_upgrades()</span>, <span class="code">start_namespace_heartbeat()</span> (30s periodic)</div></div>
+<div class="fr"><div class="fp">lifecycle.rs</div><div class="fd">Startup recovery: <span class="code">recover_in_progress_upgrades()</span>, <span class="code">start_namespace_heartbeat()</span> (30s periodic). <span class="code">ContextManager::started</span> calls <span class="code">auto_follow::spawn</span> <em>before</em> <span class="code">self_purge::spawn</span> — this ordering is load-bearing: it ensures the auto-follow broadcast receiver exists before the curative startup sweep can emit <span class="code">OpEvent::ContextRegistered</span> events, preventing those events from being silently dropped.</div></div>
 <div class="fr"><div class="fp">metrics.rs</div><div class="fd">Prometheus metrics: execution count/duration, namespace retry/decode events, membership policy rejections</div></div>
 <div class="fr"><div class="fp">group_store/mod.rs</div><div class="fd">Authoritative persistence layer (refactored into modules) &mdash; <span class="code">apply_local_signed_group_op</span></div></div>
 <div class="fr"><div class="fp">group_store/namespace.rs</div><div class="fd">Namespace identity resolution: <span class="code">resolve_namespace()</span>, <span class="code">get_or_create_namespace_identity_bundle()</span></div></div>
 <div class="fr"><div class="fp">group_store/namespace_governance.rs</div><div class="fd">Namespace governance DAG application, key unwrapping, skeleton storage</div></div>
+<div class="fr"><div class="fp">self_purge.rs</div><div class="fd">Startup curative sweep: <span class="code">redrive_stranded_ops_sweep</span> runs once after subscribing to <span class="code">op_events</span> and before the event loop. Iterates every namespace the node has an identity for, finds groups with buffered ops whose key is already held (inverse of <span class="code">groups_awaiting_key</span>), and re-drives each via <span class="code">redrive_encrypted_ops_for_group_counted</span>. Loops until a full pass applies nothing new (cross-signer convergence), bounded by <span class="code">MAX_PASSES=64</span>, with pass-narrowing so only groups that made progress are revisited. Errors are logged and swallowed; the sweep never blocks startup.</div></div>
+<div class="fr"><div class="fp">auto_follow.rs</div><div class="fd"><span class="code">auto_follow::spawn</span> now subscribes to <span class="code">op_events</span> synchronously on the caller thread before spawning the async task, passing the receiver into <span class="code">run()</span>. Must be spawned before <span class="code">self_purge::spawn</span> (see lifecycle.rs).</div></div>
 <div class="fr"><div class="fp">group_store/namespace_membership.rs</div><div class="fd">Namespace membership tracking and policy enforcement</div></div>
 <div class="fr"><div class="fp">group_store/membership.rs</div><div class="fd">Group membership management with parent chain walking (max depth 16)</div></div>
-<div class="fr"><div class="fp">group_store/group_keys.rs</div><div class="fd">Group encryption key management: generate, store, wrap/unwrap via ECDH</div></div>
+<div class="fr"><div class="fp">group_store/group_keys.rs</div><div class="fd">Group encryption key management: generate, store, wrap/unwrap via ECDH. <span class="code">CapabilitiesRepository::set_subgroup_visibility</span> is called during <span class="code">group_created::apply</span> to write the subgroup's visibility key atomically on first apply (gated on <span class="code">has_subgroup_visibility</span> absence, so it never clobbers later <span class="code">SubgroupVisibilitySet</span> flips).</div></div>
 <div class="fr"><div class="fp">group_store/capabilities.rs</div><div class="fd">Per-member capability bitmask management</div></div>
 <div class="fr"><div class="fp">group_store/context_tree.rs</div><div class="fd">Context-group binding: register, detach, list contexts per group</div></div>
 <div class="fr"><div class="fp">group_store/tests.rs</div><div class="fd">Comprehensive group store tests including namespace identity, governance, key delivery</div></div>
@@ -109,7 +111,7 @@
 <div class="fr"><div class="fp">client/sync.rs</div><div class="fd">Sync-related client helpers (group delta request/response coordination)</div></div>
 <div class="fr"><div class="fp">client/context_api.rs</div><div class="fd">Context-level API methods (create, join, delete, execute, config queries)</div></div>
 <div class="fr"><div class="fp">client/crypto.rs</div><div class="fd">Cryptographic helpers (signing, key derivation, namespace identity)</div></div>
-<div class="fr"><div class="fp">local_governance/mod.rs</div><div class="fd">Wire types: <span class="code">SignedGroupOp</span>, <span class="code">GroupOp</span>, <span class="code">SignedNamespaceOp</span>, <span class="code">NamespaceOp</span> &mdash; Ed25519, borsh, schema v3</div></div>
+<div class="fr"><div class="fp">local_governance/mod.rs</div><div class="fd">Wire types: <span class="code">SignedGroupOp</span>, <span class="code">GroupOp</span>, <span class="code">SignedNamespaceOp</span>, <span class="code">NamespaceOp</span> &mdash; Ed25519, borsh, schema v3. <strong>⚠ WIRE BREAK:</strong> <span class="code">RootOp::GroupCreated</span> gains a boolean <span class="code">restricted</span> field; nodes must reset. <span class="code">restricted: true</span> is the default and preserves legacy behavior. The op-adapter projection reads <span class="code">restricted</span> from the live op instead of hardcoding <span class="code">true</span>. A born-Open subgroup (<span class="code">restricted: false</span>) is already Open when <span class="code">tee_subgroup_admit</span> reacts, so no transient direct <span class="code">ReadOnlyTee</span> row is written. <span class="code">CreateGroupRequest</span> gains a <span class="code">restricted</span> field (default <span class="code">true</span>); the REST endpoint accepts an optional <span class="code">visibility</span> field (<code>"open"</code>|<code>"restricted"</code>, default <code>"restricted"</code>).</div></div>
 <div class="fr"><div class="fp">local_governance/tests.rs</div><div class="fd">Unit tests for governance wire types and signing</div></div>
 <div class="fr"><div class="fp">group.rs</div><div class="fd">Actix messages &mdash; group-level and namespace-level message types for actor communication</div></div>
 <div class="fr"><div class="fp">messages.rs</div><div class="fd"><span class="code">ContextMessage</span> enum &mdash; top-level message envelope with 30+ variants (including namespace ops)</div></div>
@@ -146,6 +148,14 @@
     <div class="step"><div class="n">1</div>
       <h4>recover_in_progress_upgrades</h4>
       <p>Resume any application upgrades that were interrupted by a previous shutdown.</p>
+    </div>
+    <div class="step"><div class="n" style="background:#f97316;">!</div>
+      <h4>auto_follow::spawn (before self_purge)</h4>
+      <p>Subscribes to <span class="code">op_events</span> on the caller thread and spawns the auto-follow task. <strong>Must run before <span class="code">self_purge::spawn</span></strong> so the receiver is live before the curative sweep emits <span class="code">OpEvent::ContextRegistered</span>.</p>
+    </div>
+    <div class="step"><div class="n">!</div>
+      <h4>redrive_stranded_ops_sweep (self_purge)</h4>
+      <p>One-shot curative sweep: for every namespace the node has an identity for, finds groups with buffered ops whose key is already held and re-drives them via <span class="code">redrive_encrypted_ops_for_group_counted</span>. Loops up to <span class="code">MAX_PASSES=64</span> until nothing new is applied.</p>
     </div>
     <div class="step"><div class="n">2</div>
       <h4>reload_group_dags</h4>
@@ -495,6 +505,14 @@ get_group_signing_key(store, &amp;current, public_key) <span class="comment">// 
      ════════════════════════════════════════════════════════ -->
 <div class="card ga">
 <h2>Operator Notes</h2>
+
+<h3>Startup curative sweep</h3>
+<p style="margin-bottom:12px;">On startup the node automatically re-drives any buffered encrypted ops that are already decryptable but were never applied due to a missing <span class="code">GroupCreated</span> event (e.g., arrived out of order before the key was held). The sweep runs inside <span class="code">self_purge::run</span>, iterating all known namespace identities (<span class="code">NamespaceRepository::iter_identities</span>) and finding groups with buffered ops whose key is already held via <span class="code">NamespaceRetryService::groups_with_held_key_buffered_ops</span>. It is bounded to <span class="code">MAX_PASSES=64</span> and never blocks startup on error.</p>
+<p style="margin-bottom:12px;"><strong>Spawn ordering:</strong> <span class="code">auto_follow::spawn</span> is called before <span class="code">self_purge::spawn</span> in <span class="code">ContextManager::started</span>. This is load-bearing — if reversed, <span class="code">OpEvent::ContextRegistered</span> events emitted by the sweep may be dropped by the broadcast channel before the auto-follow receiver exists.</p>
+
+<h3>RootOp::GroupCreated wire change</h3>
+<p style="margin-bottom:12px;"><strong>⚠ WIRE BREAK:</strong> <span class="code">RootOp::GroupCreated</span> now carries a boolean <span class="code">restricted</span> field. Existing nodes must reset their op logs. <span class="code">restricted: true</span> is the default and preserves all legacy behavior. A group created with <span class="code">restricted: false</span> is "born-Open": <span class="code">group_created::apply</span> writes the subgroup's visibility key via <span class="code">CapabilitiesRepository::set_subgroup_visibility</span> during apply (before <span class="code">OpEvent::SubgroupCreated</span> is queued, and only on first apply), so <span class="code">tee_subgroup_admit</span> sees the group as already Open and skips writing a transient direct <span class="code">ReadOnlyTee</span> row.</p>
+
 <p style="margin-bottom:14px;">Two log signals are emitted by the <code>list_group_members</code> projection shadow and are relevant for monitoring:</p>
 <ul style="margin-left:1.4em;margin-bottom:14px;line-height:1.8;">
   <li><strong><code>unified_projection_divergence / plane=membership-role</code></strong> — a live member's role differs from the projected role. These are pre-flip validation failures: once the divergence rate reaches zero, the handler can be flipped to authoritative projection. Persistent warnings indicate a bug in role derivation or ACL fold logic.</li>

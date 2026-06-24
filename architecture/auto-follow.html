@@ -470,6 +470,134 @@ FIND>>>
 </ul>
 </div>
 
+<div class="card gd"><h2>Re-drive Buffered Ops on GroupCreated &amp; Born-Open Subgroups <em>(#2848 / #2771)</em></h2>
+
+<p>
+This section documents four related changes that close a permanent-stall window where buffered
+encrypted ops for a subgroup could never be applied, and extends <code>RootOp::GroupCreated</code>
+to carry subgroup visibility at creation time.
+</p>
+
+<h3>The Stall Window (Motivation)</h3>
+<p>
+The only previous trigger for retrying buffered encrypted ops was <code>KeyDelivery</code>. If
+<code>KeyDelivery</code> arrived <em>before</em> <code>GroupCreated</code>, the retry failed
+immediately because the subgroup's <code>GroupMeta</code> row did not yet exist, and no
+subsequent trigger ever re-fired. The buffered ops remained stranded indefinitely. This affected
+re-admitted members and any topology where DAG op ordering placed <code>GroupCreated</code> after
+the key delivery.
+</p>
+
+<h3>Part A — Re-drive on GroupCreated Apply</h3>
+<p>
+After <code>RootOp::GroupCreated</code> is applied, the governance layer now checks whether the
+node holds any key for the new subgroup (or the namespace key, for Open subgroups). If a key is
+held, it immediately calls the buffered-op retry path for that group — the same path that
+<code>KeyDelivery</code> triggers. This closes the stall window regardless of which op arrives
+first.
+</p>
+<p>
+The retry is triggered on both apply entry points:
+</p>
+<ul>
+  <li><code>apply_local_signed_group_op_at_cut</code> — local group-op path.</li>
+  <li><code>NamespaceGovernance::apply_group_op_inner</code> — namespace envelope path.</li>
+</ul>
+
+<h3>Part B — Bypass <code>state_hash</code> Staleness Check When Subgroup Meta Is Absent</h3>
+<p>
+Both apply paths now skip the <code>state_hash</code> staleness check entirely when the
+subgroup's <code>GroupMeta</code> row does not yet exist, rather than calling
+<code>compute_state_hash</code> and failing with <code>GroupNotFoundForHash</code>. This mirrors
+the existing zero-hash fast-path and makes the meta-absent case consistent with it:
+</p>
+<pre class="code">// Before: compute_state_hash → GroupNotFoundForHash
+// After:
+if meta_absent || state_hash == ZERO_HASH {
+    // skip staleness check
+}</pre>
+
+<h3>Part C — Curative Startup Sweep</h3>
+<p>
+A one-shot <code>redrive_stranded_ops_sweep</code> runs at node startup (inside
+<code>self_purge::run</code>, after subscribing to <code>op_events</code> and before the event
+loop). It:
+</p>
+<ol>
+  <li>Iterates every namespace the node holds an identity for.</li>
+  <li>Finds groups with buffered ops whose key is already held (the inverse of
+  <code>groups_awaiting_key</code>).</li>
+  <li>Re-drives each one via <code>redrive_encrypted_ops_for_group_counted</code>.</li>
+  <li>Loops until a full pass applies nothing new (cross-signer convergence), bounded by
+  <code>MAX_PASSES = 64</code>, with pass-narrowing so only groups that made progress in the
+  previous pass are revisited.</li>
+</ol>
+<p>
+Errors are logged and swallowed; the sweep never blocks startup. Nodes that were stranded before
+this release will self-heal on the next restart without operator intervention.
+</p>
+
+<h3>TEE-Replica Bootstrap — Seed Root Default Capabilities</h3>
+<p>
+<code>seed_bootstrap_admin_if_absent</code> (the <code>KeyDelivery</code>-seed path used by TEE
+replicas) now also seeds the namespace root's default capabilities to
+<code>CAN_JOIN_OPEN_SUBGROUPS</code> when that capability key is absent. The seed is gated on
+absence so it is idempotent and never clobbers a later admin-authored
+<code>DefaultCapabilitiesSet</code> op. Without this, a TEE replica could hold the group key
+but still be unable to join Open subgroups because the capability row was never written.
+</p>
+<p>
+<strong>Pre-existing stranded replicas</strong> need either a restart (triggering the startup
+sweep in Part C) or a gossiped <code>DefaultCapabilitiesSet</code> op from an admin to acquire
+the capability row.
+</p>
+
+<h3>Born-Open Atomic Subgroup Create (<code>RootOp::GroupCreated</code> wire change)</h3>
+<p>
+<code>RootOp::GroupCreated</code> gains a boolean <code>restricted</code> field
+(<strong>Borsh wire break — nodes must reset</strong>). The apply handler writes the subgroup's
+visibility key via <code>CapabilitiesRepository::set_subgroup_visibility</code> during apply,
+before <code>OpEvent::SubgroupCreated</code> is queued, and only on first apply (gated on
+<code>has_subgroup_visibility</code> absence to avoid clobbering a later
+<code>SubgroupVisibilitySet</code> flip):
+</p>
+<ul>
+  <li><code>restricted: false</code> — subgroup is born Open; <code>tee_subgroup_admit</code>
+  skips it and no transient direct <code>ReadOnlyTee</code> row is written.</li>
+  <li><code>restricted: true</code> — legacy behavior; subgroup is born Restricted. This is
+  the default and preserves wire compatibility for any tooling that constructs the op directly.</li>
+</ul>
+<p>
+The op-adapter projection now reads <code>restricted</code> from the live op instead of
+hardcoding <code>true</code>.
+</p>
+<p>
+API surface changes:
+</p>
+<ul>
+  <li><code>CreateGroupRequest</code> gains a <code>restricted</code> field (default
+  <code>true</code>).</li>
+  <li>The <code>create-group-in-namespace</code> REST endpoint accepts an optional
+  <code>visibility</code> field (<code>"open"</code> or <code>"restricted"</code>, default
+  <code>"restricted"</code>).</li>
+</ul>
+
+<h3>Operator Checklist</h3>
+<ul>
+  <li><strong>Wire break.</strong> The <code>RootOp::GroupCreated</code> Borsh shape has
+  changed. All nodes in a namespace must reset before the new binary is deployed; mixed-version
+  clusters will fail to deserialize the op.</li>
+  <li><strong>Stranded replicas.</strong> TEE replicas admitted before this release may lack the
+  root default-capability row. A restart or a gossiped <code>DefaultCapabilitiesSet</code> from
+  an admin is required for those nodes to join Open subgroups.</li>
+  <li><strong>Startup sweep.</strong> The sweep is logged at <code>info!</code> level per group
+  re-driven and at <code>warn!</code> on error. A clean node with no buffered ops completes the
+  sweep in a single pass with no log output beyond the start/end lines.</li>
+  <li><strong>Born-Open subgroups.</strong> Creating a subgroup with
+  <code>visibility: "open"</code> is now atomic — no separate <code>SubgroupVisibilitySet</code>
+  op is needed. Any tooling that issued a two-step create+flip can be simplified.</li>
+</ul>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
