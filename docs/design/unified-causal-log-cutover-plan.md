@@ -188,6 +188,100 @@ path (local ops) and the wire decode path (remote ops).
 concurrent writes) converges; partial-replication isolation holds (a non-member
 never receives a scope's ops).
 
+### C2 decomposition (sub-slices, each its own PR)
+
+C2 is the largest, highest-risk slice — it rewrites the core apply path
+(`delta_store.rs` ~3k lines, the two governance `DagStore`s, the rotation log),
+and the three planes have genuinely different apply/persist semantics (data →
+WASM `__calimero_sync_next` + Merkle; governance → `apply_signed_*` + op-log
+columns + events + `DivergenceReport`; rotation → hashed anchor child). So it
+lands as a sequence, **dual-writing** the unified op-log alongside the legacy
+stores until the read path flips, so any slice can be reverted without data loss.
+
+What already exists and is reused (not rebuilt): the `Op` envelope
+(`crates/op`), the `op-adapter` encoders (`payload_from_{action,group_op,root_op}`,
+`set_writers_payload`), and `op_from_namespace_op` / `op_from_rotation_entry`
+(`scope_projection.rs`) — every governance/rotation apply already *constructs* an
+`Op` and feeds the projection. C2 makes that op-stream the **store**, not just a
+projection feed.
+
+Per-scope model (per §9.4/§9.5 of the decisions): ops are tagged by `ScopeId`
+(data = context scope, governance = namespace scope, rotation = object scope);
+each scope folds the ancestry of an op's own parents (causal-honor). Cross-scope
+causality (a data op citing a governance cut) stays the existing
+`governance_position` edge, not a merged parent chain. "One `DagStore<Op>` per
+context" = one store holding that context's scope-tagged ops, partitioned by
+scope for projection.
+
+**⚠️ C2 design fork (resolve before C2.0) — what does an `Op` carry at rest?**
+The scaffold's `OpPayload` is the **projected / decoded** form (`Put`,
+`MemberAdded`, `SetWriters`, … with `Noop` for out-of-model ops). That is
+*lossy*: it's enough to fold into `ScopeState`, but it cannot drive the legacy
+governance-store writes that stay authoritative until C5 (membership-repository
+mutations, op-log nonce windows, emitted events, `DivergenceReport`s), and a
+`Noop` carries nothing to replay. Two ways forward:
+  - **Fork A (raw-at-rest, the §9.6 end-state, recommended).** `Op.payload`
+    carries the **original op** (the data `Vec<Action>` / the `SignedGroupOp` /
+    `SignedNamespaceOp` ciphertext / the rotation entry). `op-adapter` flips from
+    an *encoder* to the **fold-time decoder** (raw → projected effect for
+    `ScopeState`); the legacy-store write replays the same raw payload. Matches
+    §9.6 ("`Op.payload` is ciphertext at rest"). Requires reworking the scaffold's
+    `OpPayload` from decoded→raw and re-pointing the projection fold to decode —
+    but it is the form C5 keeps.
+  - **Fork B (dual-representation shim).** Store the raw legacy payloads tagged by
+    plane; derive the projected `Op` for the fold on the side. Less rework now,
+    but it's a transitional representation C5 has to unwind — net more churn.
+**✅ DECIDED 2026-06-24: Fork A** (raw-at-rest). The `OpPayload` raw rework is the
+literal first C2 step (**C2.-1**), so C2.0's `UnifiedApplier` is built against the
+at-rest form C5 keeps.
+
+**C2.-1 shape (raw-at-rest).** `Op.payload` carries the **original op bytes**
+(borsh of `Vec<Action>` for data; the `SignedNamespaceOp` — which wraps group ops
+— for governance; the `RotationLogEntry`/`SetWriters` action for rotation),
+ciphertext where the legacy op is encrypted (§9.6). The decode then happens **at
+fold time, after decrypt**: `ScopeState::apply` calls the `op-adapter` decoders
+(`payload_from_action` / `payload_from_group_op` / `payload_from_root_op` /
+`set_writers_payload`) to derive the projected effect it folds — instead of
+matching a pre-decoded `OpPayload`. Decoded cleartext is therefore **never stored
+at rest** (a privacy requirement, §9.5), only materialized transiently during the
+fold. Crate-dependency consequence: `crates/projection`'s fold gains a decode step
+— either it takes a decoder closure/trait injected by the caller (keeps
+`crates/projection` free of the legacy op types) or depends on `op-adapter`; pick
+the seam that keeps the convergence/isolation property harness intact. Validate
+the whole rework against the **existing fold-equivalence suite** (it already
+asserts the projection resolves the same ACL/membership as the legacy resolvers),
+which must stay green across the representation change. Because this touches the
+now-production-critical F5 projection fold, land it additively: introduce the raw
+form + decode-at-fold behind the same `ScopeState::apply` signature, prove
+equivalence, then drop the decoded `OpPayload` variants.
+
+- **C2.0 — `UnifiedApplier` + `DagStore<Op>` foundation (additive, NOT wired).**
+  Build `UnifiedApplier: DeltaApplier<Op>` that routes an `Op` by payload to the
+  existing per-plane apply (`Put`/`Delete` → storage `Interface::apply`;
+  membership/admin/subgroup/capability → `ScopeState::apply` + the legacy
+  governance-store write; `SetWriters` → `ScopeState::apply` + the legacy rotation
+  write), plus a `DagStore<Op>` (the generic dag crate at `T = Op`). Prove it in a
+  **property test**: replay a mixed op-log (data + governance + rotation) and
+  assert it converges to the same `ScopeState` + storage Merkle as the legacy
+  path. No production path changes — the P5-style scaffold for C2.
+- **C2.1 — dual-write the unified op-log (shadow).** On every local write
+  (data execute, governance apply, rotation append) ALSO persist the constructed
+  `Op` to the unified keyspace (`Column::Delta` as `Op` rows, `[ContextId ‖ OpId]`)
+  + a unified-heads cursor, **without reading it**. Validates construction +
+  persistence + heads against the legacy store, divergence-logged.
+- **C2.2 — flip the DATA plane read/apply onto the unified store.** The simplest
+  plane (Put/Delete → storage). Receive path builds `DagStore<Op>` + applies via
+  `UnifiedApplier`; legacy data `DagStore<Vec<Action>>` retired for receive.
+  e2e-gated.
+- **C2.3 — flip the GOVERNANCE planes** (group + namespace) onto the unified store.
+- **C2.4 — flip the ROTATION plane** onto the unified store.
+- **C2.5 — unify `dag_heads` + stop writing the legacy columns.** One heads
+  cursor for the unified DAG; the old governance-op / rotation keyspaces are no
+  longer written or read (inert until C5 deletes the columns + code).
+
+Each behavioral slice (C2.2–C2.5) carries the full-lifecycle convergence e2e gate
+above; C2.0/C2.1 are additive (unit/property + dual-write divergence log).
+
 ## C3 — projection-authoritative reads
 
 **Goal.** Reads that today hit the three stores (writer resolution, membership
