@@ -792,13 +792,14 @@ fn refresh_projection_for_cut(
                 .write_scope_projections()
                 .apply_backfill(namespace_id, ops);
 
-            // Inverted cross-check (observe-only): the op-store-backed projection must
-            // still match the governance-DAG fold (authoritative until C5). A mismatch
-            // logs `unified_op_store_divergence` — the op-store drifted. Controlled
+            // Cross-check (observe-only): two INDEPENDENT pure reconstructions — the
+            // op-store replay vs the governance-DAG fold — must match. A mismatch
+            // logs `unified_op_store_divergence` (the op-store drifted from the
+            // authoritative-until-C5 governance DAG). Comparing pure reconstructions
+            // (not the maintained projection, which also holds live-ingested ops)
+            // catches an op-store gap even when a live apply masked it. Controlled
             // frequency (only on an actual backfill); never affects the apply.
-            node_state
-                .read_scope_projections()
-                .shadow_compare_op_store(datastore, namespace_id);
+            ScopeProjections::shadow_compare_op_store(datastore, namespace_id);
         }
     }
 }

@@ -435,28 +435,56 @@ impl ScopeProjections {
         proj.scope_root_for(&scope, [0u8; 32])
     }
 
-    /// C2.2b cross-check (observe-only): now that the maintained projection is fed
-    /// from the unified op-store, validate it against the governance DAG — the
-    /// INVERSE of the C2.2 shadow. Compare THIS projection's governance `scope_root`
-    /// for `namespace_id` to the governance-DAG reconstruction, logging
-    /// `unified_op_store_divergence` on a mismatch (the op-store drifted from the
-    /// authoritative-until-C5 governance DAG). Skips silently when this projection
-    /// hasn't folded the scope or the DAG reconstruction is empty/unreadable.
-    pub fn shadow_compare_op_store(&self, store: &Store, namespace_id: [u8; 32]) {
+    /// C2.2b cross-check (observe-only): validate the dual-write op-store against
+    /// the governance DAG (authoritative until C5) by comparing two INDEPENDENT
+    /// reconstructions — a pure op-store replay
+    /// ([`scope_root_from_op_store`](Self::scope_root_from_op_store)) vs a pure
+    /// governance-DAG fold
+    /// ([`scope_root_from_governance_dag`](Self::scope_root_from_governance_dag)).
+    ///
+    /// Comparing the PURE op-store replay (not the maintained projection, which also
+    /// holds live `ingest_op`-fed ops) is load-bearing: if `persist_op` failed for an
+    /// op but the live apply still ingested it, the maintained projection would hold
+    /// the op while the op-store doesn't — and a maintained-vs-DAG compare would
+    /// match and miss the gap. The pure replay surfaces it.
+    ///
+    /// Logs `unified_op_store_divergence` on a root mismatch, and
+    /// `unified_op_store_shadow_skipped` when exactly one source is empty (a
+    /// suspicious asymmetry, e.g. a lost DAG head while the op-store has rows).
+    pub fn shadow_compare_op_store(store: &Store, namespace_id: [u8; 32]) {
         let scope = ScopeId::from(namespace_id);
-        let Some(op_store_root) = self.scope_root_for(&scope, [0u8; 32]) else {
-            return;
+        let op_store_root = match Self::scope_root_from_op_store(store, &scope) {
+            Ok(root) => root,
+            Err(err) => {
+                tracing::debug!(
+                    %err,
+                    namespace = ?namespace_id,
+                    "op-store cross-check: op-store load failed; skipping"
+                );
+                return;
+            }
         };
-        if let Some(dag_root) = Self::scope_root_from_governance_dag(store, namespace_id) {
-            if dag_root != op_store_root {
+        let dag_root = Self::scope_root_from_governance_dag(store, namespace_id);
+        match (op_store_root, dag_root) {
+            (Some(op_store_root), Some(dag_root)) if op_store_root != dag_root => {
                 tracing::warn!(
                     marker = "unified_op_store_divergence",
                     namespace = ?namespace_id,
                     op_store_root = %hex::encode(&op_store_root[..8]),
                     dag_root = %hex::encode(&dag_root[..8]),
-                    "op-store-backed projection diverges from the governance-DAG fold"
+                    "op-store replay diverges from the governance-DAG fold"
                 );
             }
+            (Some(_), None) | (None, Some(_)) => {
+                tracing::warn!(
+                    marker = "unified_op_store_shadow_skipped",
+                    namespace = ?namespace_id,
+                    op_store_has = op_store_root.is_some(),
+                    dag_has = dag_root.is_some(),
+                    "op-store cross-check: one source has ops and the other is empty — can't compare"
+                );
+            }
+            _ => {}
         }
     }
 
