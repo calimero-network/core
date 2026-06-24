@@ -67,7 +67,7 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let report = calimero_governance_store::sign_apply_and_publish(
+                let report = crate::sign_apply_and_publish_group_op(
                     &datastore,
                     &node_client,
                     &ack_router,

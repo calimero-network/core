@@ -70,6 +70,18 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                     )
                     .await?;
                     report.observe("remove_group_members", "MemberRemoved");
+                    // C3 Stage 3: mirror the locally-authored MemberRemoved (the
+                    // key-rotation removal path) into the op-store, like the other
+                    // group-op authoring sites.
+                    if let Ok(namespace_id) =
+                        calimero_governance_store::NamespaceRepository::new(&datastore)
+                            .resolve(&group_id)
+                    {
+                        crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
+                            &datastore,
+                            namespace_id.to_bytes(),
+                        );
+                    }
                 }
                 info!(
                     ?group_id,

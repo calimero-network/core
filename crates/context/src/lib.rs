@@ -730,7 +730,7 @@ impl ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let _report = calimero_governance_store::sign_apply_and_publish(
+                let _report = crate::sign_apply_and_publish_group_op(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -745,6 +745,47 @@ impl ContextManager {
             .into_actor(self),
         )
     }
+}
+
+/// Author a group governance op (the B1 local-authoring path) and mirror it into
+/// the unified op-store — C3 Stage 3.
+///
+/// `calimero_governance_store::sign_apply_and_publish` applies the op to the local
+/// group plane and publishes the encrypted `NamespaceOp::Group` to the namespace
+/// gov-DAG (`publish_post_gate` → `store_operation`), but never writes the op-store:
+/// the dual-write only fires on the receive handler, so the AUTHOR's own op-store
+/// was missing every group op it authored. That's the structural gap behind the
+/// read-flip's "governance cut not locally known" timeouts.
+///
+/// After publishing, the encrypted op is the namespace gov-DAG head and the author
+/// holds the group key, so `persist_namespace_head_ops` decrypts it and lands the
+/// real decoded op. Best-effort: a resolve/persist failure never fails authoring.
+pub(crate) async fn sign_apply_and_publish_group_op(
+    store: &calimero_store::Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
+    group_id: &calimero_context_config::types::ContextGroupId,
+    signer_sk: &calimero_primitives::identity::PrivateKey,
+    op: calimero_context_client::local_governance::GroupOp,
+) -> eyre::Result<Option<calimero_governance_store::governance_broadcast::DeliveryReport>> {
+    let report = calimero_governance_store::sign_apply_and_publish(
+        store,
+        node_client,
+        ack_router,
+        group_id,
+        signer_sk,
+        op,
+    )
+    .await?;
+    if let Ok(namespace_id) =
+        calimero_governance_store::NamespaceRepository::new(store).resolve(group_id)
+    {
+        crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
+            store,
+            namespace_id.to_bytes(),
+        );
+    }
+    Ok(report)
 }
 
 impl ContextManager {
