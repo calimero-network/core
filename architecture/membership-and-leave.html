@@ -229,12 +229,26 @@ of when the receiver learns about the removal.
 <h3>How it's implemented</h3>
 <p>
 Every state delta carries a <code>governance_position</code> field that names the governance-DAG
-heads the author observed at sign time. On receive, the apply path calls
-<code>membership_status_at(signer, delta.governance_position)</code> — which walks the
-<em>ancestry</em> of the signed heads and replays the membership state machine. The walk visits
+heads the author observed at sign time. On receive, the apply path evaluates membership at the
+signed heads via the unified projection — which resolves the ancestry of those heads and derives
+the membership state from the folded projection. The resolution visits
 only the prefix that was already final when the delta was signed; anything causally <em>after</em>
 the signed cut (including a later <code>MemberRemoved</code> for this signer) is invisible to
-the walk and cannot retroactively invalidate the delta.
+the resolution and cannot retroactively invalidate the delta.
+</p>
+<p>
+The namespace-level applier (<code>NamespaceGovernanceApplier</code> in
+<code>crates/context/src/governance_dag.rs</code>) threads this cut into the apply path directly:
+<code>DeltaApplier&lt;SignedNamespaceOp&gt;::apply</code> calls
+<code>apply_signed_namespace_op_at_cut(&amp;delta.parents, &amp;LIVE_FALLBACK_AUTHORIZER)</code>
+rather than the cut-free <code>apply_signed_namespace_op</code>. Passing <code>delta.parents</code>
+as the causal cut ensures membership is evaluated at the position the author signed against.
+<code>LIVE_FALLBACK_AUTHORIZER</code> is a placeholder authorizer that delegates to the live store;
+membership authorization for all other paths is now handled entirely by the unified projection
+(<code>EphemeralProjectionAuthorizer</code> / <code>ScopeProjections</code>) — the
+<code>acl_view_at</code>, <code>MembershipStatus</code>, <code>prefix_walk_membership</code>,
+<code>MembershipTransition</code>, <code>heads_equal</code>, and <code>MAX_PREFIX_WALK_NODES</code>
+helpers that previously backed the live DAG-walk resolver have been deleted.
 </p>
 
 <h3>Resolving the current governance cut — <code>ScopeProjections::namespace_current_heads</code></h3>
@@ -258,23 +272,364 @@ record itself is unreadable. Callers <b>must</b> fall back to the live membershi
 (<code>check_group_membership_path</code>) in both cases rather than treating <code>None</code> as
 an empty cut — an empty cut would falsely deny all access.
 </p>
+<p>
+<b>Projection-derived member counts and migration cohorts.</b> <code>ScopeProjections::member_identities_with</code>
+extends this pattern to identity-set reads: given an already-built projection fold it calls
+<code>cut_ancestry_complete</code> on the fold before reading the ACL view, and returns
+<code>None</code> if the ancestry is only partially folded (a governance-backfill race). This
+<code>None</code> propagates to <code>get_group_info</code> (which falls back to
+<code>MembershipRepository::count</code> + <code>enumerate_inherited</code>) and to
+<code>collect_migration_cohort</code> (which falls back to the live list ∪ <code>enumerate_inherited</code>
+union). The private <code>ephemeral_view</code> helper has been removed; the subtree ephemeral path
+now calls <code>ephemeral_fold</code> directly and performs the <code>cut_ancestry_complete</code>
+check itself before reading the view.
+</p>
+
+<h3>Ephemeral per-query projection — <code>ScopeProjections::member_now_ephemeral</code></h3>
+<p>
+Context-layer handlers that do not hold a cached <code>ScopeProjections</code> instance use
+<code>ScopeProjections::member_now_ephemeral</code> to obtain a one-shot membership verdict from
+the governance DAG without requiring a pre-built projection. On each call it:
+</p>
+<ol>
+  <li>Resolves the supplied group to its owning namespace.</li>
+  <li>Folds the full governance DAG for that namespace via <code>collect_namespace_ops</code>.</li>
+  <li>Reads the DAG heads <em>after</em> the fold (not before), so a concurrent governance-op
+  advance cannot leave the cut naming ops the fold hasn't processed.</li>
+  <li>Calls <code>member_at_cut</code> at those heads and returns the boolean verdict.</li>
+</ol>
+<p>
+<b><code>None</code> return cases.</b> The method returns <code>None</code> — never deciding
+against the member — when: (a) the namespace is unresolvable, (b)
+<code>collect_namespace_ops</code> reports a store fault (surfaced with a <code>tracing::warn</code>),
+or (c) the cut-completeness guard determines the recorded heads don't cover the full fold. Callers
+<b>must</b> treat <code>None</code> as undecidable and fall back to the live store rather than
+denying access.
+</p>
+
+<h3>Unified membership gate — <code>ScopeProjections::member_now_checked</code></h3>
+<p>
+<code>ScopeProjections::member_now_checked</code> is the single decision point used by all
+context-layer membership gates (<code>get_cascade_status</code>,
+<code>get_group_upgrade_status</code>, <code>list_group_contexts</code>,
+<code>list_all_groups</code>). Its semantics:
+</p>
+<ul>
+  <li><b>Projection wins when decidable.</b> It calls <code>member_now_ephemeral</code> first. When
+  the projection returns a verdict it acts on that verdict, then cross-checks
+  <code>MembershipRepository::is_member</code> best-effort. A transient live error does not
+  override a projection verdict.</li>
+  <li><b>Live wins when projection is undecidable.</b> When <code>member_now_ephemeral</code>
+  returns <code>None</code>, <code>member_now_checked</code> falls back to
+  <code>MembershipRepository::is_member</code> as authoritative and propagates any live error
+  normally.</li>
+  <li><b>Divergence telemetry.</b> When the projection and live store both return definite but
+  conflicting answers, <code>member_now_checked</code> emits a
+  <code>tracing::warn</code> with <code>marker=unified_projection_divergence</code> and
+  <code>plane=membership-query</code>. The projection verdict is still used as the final answer.</li>
+</ul>
+<p>
+Direct use of <code>MembershipRepository</code> in
+<code>get_cascade_status.rs</code>, <code>get_group_upgrade_status.rs</code>,
+<code>list_all_groups.rs</code>, and <code>list_group_contexts.rs</code> is eliminated; those
+handlers now call <code>member_now_checked</code> exclusively and no longer import
+<code>MembershipRepository</code>.
+</p>
+<p>
+<b>Behavior change in <code>list_all_groups</code>.</b> Previously, a membership-check error in
+the per-group loop would propagate and abort the entire response. Now the loop catches errors from
+<code>member_now_checked</code> with a <code>tracing::warn</code> and continues to the next group,
+silently omitting groups whose membership cannot be determined. This matches the existing skip
+behavior for a missing node identity and avoids a single inaccessible group blocking the whole
+listing.
+</p>
+
+<h3>Batch role resolution — <code>ScopeProjections::member_roles_for</code></h3>
+<p>
+Where <code>namespace_current_heads</code> answers "is this member present?",
+<code>member_roles_for</code> answers "what role does the projection assign to each of these
+members?". It folds the ACL view exactly once for the supplied batch and returns a
+<code>BTreeMap&lt;PublicKey, GroupMemberRole&gt;</code>:
+</p>
+<ul>
+  <li><b>Direct members</b> keep their folded role from the projection.</li>
+  <li><b><code>Inherited{via_admin:true}</code></b> → <code>Admin</code>.</li>
+  <li><b><code>Inherited{via_admin:false}</code></b> → the member's stored role at the anchor
+  group (mirroring live's <code>list ∪ enumerate_inherited</code> semantics).</li>
+  <li><b>Abstain (empty map)</b> when the ancestry is not fully folded, or when the group has no
+  entry in <code>view.groups</code> (materialized-fallback parity — Restricted subgroup or
+  undecryptable member ops). An empty return means "projection has no opinion"; callers must not
+  treat it as "all roles are wrong".</li>
+</ul>
+<p>
+<code>list_group_members</code> calls <code>member_roles_for</code> once for all live members
+after the existing identity-set shadow. Each live member's role is compared to its projected
+role; mismatches are emitted as <code>unified_projection_divergence</code> log events with
+<code>plane=membership-role</code>. Members absent from the returned map (projection abstains)
+are skipped — presence divergence is already owned by the identity shadow. The handler still
+returns the live list unchanged.
+</p>
+<p>
+<b>Operator note.</b> <code>membership-role</code> divergence warnings in logs indicate a
+pre-flip validation failure. They will block the eventual flip of <code>list_group_members</code>
+from the live store to the projection as the authoritative source. Note that
+<code>acl_view_at</code> and <code>MembershipStatus</code> (the former live DAG-walk resolver
+types) are no longer available; divergence detection now operates entirely through
+<code>ScopeProjections</code> projection methods.
+</p>
+
+<h3>Full effective-member enumeration — <code>ScopeProjections::member_entries_with</code></h3>
+<p>
+<code>member_entries_with</code> returns a <code>Vec&lt;(PublicKey, GroupMemberRole)&gt;</code> for
+every effective member of a group at the current cut, derived entirely from the already-folded
+<code>auth_cut_context</code> view. It reuses <code>member_identities_in_view_with_ctx</code> for
+the identity set and resolves each member's role via <code>member_path_at_cut</code>.
+</p>
+<p>
+The method returns <code>None</code> (signalling: defer to the live store) in three cases:
+</p>
+<ul>
+  <li>The cited ancestry is not yet fully folded — a partial fold could produce an incomplete member
+  list, so the caller falls back rather than silently truncating.</li>
+  <li>The target group has no folded direct-membership entry in the view — the projection does not
+  cover this group yet.</li>
+  <li>A validated identity resolves to <code>MemberPathAtCut::None</code> or has a missing inherited
+  anchor row — this indicates a fold inconsistency. The method logs a
+  <code>unified_projection_divergence</code> warning and abandons the <em>entire</em> enumeration
+  rather than returning a partial list.</li>
+</ul>
+<p>
+The all-or-nothing fallback contract means callers never observe a silently truncated member list:
+either the projection supplies the complete set or the live store is used in its entirety.
+</p>
+
+<h3>At-cut effective role — <code>ScopeProjections::role_at_cut_for_group</code></h3>
+<p>
+<code>ScopeProjections::role_at_cut_for_group(member, group_id, cut)</code> resolves the effective
+<code>GroupMemberRole</code> of a member in a group at a specific governance cut. It gates on
+<code>cut_ancestry_complete</code> via <code>auth_cut_context</code> (returning <code>None</code>
+immediately when ancestry is incomplete) and then delegates to <code>member_path_at_cut</code> to
+handle three cases:
+</p>
+<ul>
+  <li><b>Direct membership</b> — returns the folded role from the projection (the same derivation
+  already validated by the <code>membership-role</code> divergence plane).</li>
+  <li><b><code>Inherited{via_admin:true}</code></b> — always resolves to <code>Admin</code>,
+  mirroring the live semantics for anchor-via-admin inheritance.</li>
+  <li><b><code>Inherited{via_admin:false}</code></b> — returns the member's stored role at the
+  anchor group. Returns <code>None</code> rather than guessing when the anchor row is missing,
+  preventing spurious divergence reports.</li>
+</ul>
+<p>
+The method returns <code>None</code> — signalling "projection has no opinion, defer to live store"
+— in four cases: ancestry is not yet fully folded, the member is absent from the group at the cut,
+the <code>auth_cut_context</code> call cannot resolve the namespace, and the anchor row is missing
+for an inherited-via-anchor path. Callers must not treat <code>None</code> as a role denial.
+</p>
+
+<h3>Shared-context identity resolution — <code>ScopeProjections::member_identities_in_view_with_ctx</code></h3>
+<p>
+<code>member_identities_in_view_with_ctx</code> accepts caller-supplied <code>root</code> and
+<code>default_cap_base</code> instead of re-reading <code>MetaRepository</code> /
+<code>CapabilitiesRepository</code> internally. <code>member_identities_in_view</code> delegates to
+it unchanged (existing callers are unaffected). <code>member_entries_with</code> passes the values
+it already obtained from <code>auth_cut_context</code>, ensuring the candidate-identity filter and
+the per-member role resolution use a single consistent store snapshot with no window for a concurrent
+governance write to make them disagree. Prefer <code>member_identities_in_view_with_ctx</code> over
+<code>member_identities_in_view</code> whenever the caller already holds the root and capability
+values — it avoids a redundant store read and eliminates the TOCTOU window.
+</p>
+
+<h3>Projection-first <code>list_group_members</code> with stable pagination</h3>
+<p>
+The <code>list_group_members</code> handler now reads from the projection authoritatively when a
+folded <code>proj_ctx</code> is available. It falls back to the live
+<code>MembershipRepository::list ∪ enumerate_inherited</code> union only when
+<code>member_entries_with</code> returns <code>None</code>. Previously the handler always read from
+the live store and compared the projection in shadow mode; the shadow scaffolding methods
+<code>shadow_member_enum_with</code> and <code>member_roles_for</code> have been deleted as they had
+no remaining callers.
+</p>
+<p>
+Both the projection path and the live-store fallback path now apply a
+<code>members.sort_by_key(|(identity, _)| *identity)</code> sort by <code>PublicKey</code>
+<em>before</em> the <code>skip(offset).take(limit)</code> slice. The projection returns a
+<code>BTreeSet</code>-ordered (PublicKey-sorted) result while the live store returns
+insertion/store order; without the explicit sort, a mid-backfill request served by the projection
+followed by a next-page request served by the live store could skip or repeat members. The sort
+makes pagination order stable and path-independent across a mid-backfill transition.
+</p>
+
+<h3>member_now_checked / member_now_checked_with</h3>
+<p>
+<code>ScopeProjections::member_now_checked</code> and its shared-fold variant
+<code>member_now_checked_with</code> are the two query-gate helpers that call
+<code>namespace_current_heads</code> and then delegate to <code>AclView::is_member_at_cut</code>.
+Their behavior follows a strict two-branch contract:
+</p>
+<ul>
+  <li><b>Projection returns <code>Some</code></b> — the result is acted on directly. There is no
+  secondary <code>MembershipRepository::is_member</code> live read and no
+  <code>unified_projection_divergence</code> cross-check. The projection verdict is authoritative
+  when it is available.</li>
+  <li><b>Projection returns <code>None</code></b> (unresolvable group or unreadable head) — fall
+  back to the live membership store (<code>check_group_membership_path</code>) as before.</li>
+</ul>
+<p>
+The earlier best-effort live cross-check (which compared the projection verdict against the live
+resolver and emitted a warning/error on divergence) has been removed from both functions. The
+<code>None</code>→live fallback path is preserved unchanged.
+</p>
+
+<h3>At-cut admin &amp; capability accessors — <code>is_admin_at_cut</code>, <code>is_admin_or_capability_at_cut</code>, <code>is_last_admin_at_cut</code></h3>
+<p>
+Five additional methods on <code>ScopeProjections</code> expose admin/capability checks against a
+historic DAG cut, mirroring what the live authorization gate does at apply time:
+</p>
+<ul>
+  <li><b><code>auth_cut_context(group_id, cut)</code></b> — shared setup used by the public
+  accessors. Resolves the namespace for the supplied group, gates on
+  <code>cut_ancestry_complete</code> (returns <code>None</code> immediately if the cited ancestry
+  is not yet fully folded), builds the <code>AclView</code> folded to the cut, and returns the
+  genesis root tuple plus default-capability base.</li>
+  <li><b><code>is_admin_at_cut(signer, group_id, cut)</code></b> — returns
+  <code>Some(true)</code> if the signer holds an admin role at the cut,
+  <code>Some(false)</code> if they do not, and <code>None</code> when ancestry is incomplete.
+  Callers <b>must</b> defer to the live gate on <code>None</code> — incomplete ancestry is not
+  equivalent to unauthorized.</li>
+  <li><b><code>is_admin_or_capability_at_cut(signer, group_id, cut, cap_bits)</code></b> —
+  admin OR capability-bit check, mirroring the live
+  <code>is_authorized_with_capability</code>. Same <code>None</code> semantics as above. This
+  method is a <b>required method on the <code>AtCutAuthorizer</code> trait</b>; all implementors
+  must provide it.</li>
+  <li><b><code>is_last_admin_at_cut(member, group_id, cut)</code></b> — answers, at the
+  op's <em>parent cut</em> (pre-mutation), whether removing or demoting the given member would
+  orphan the group's admin set. Mirrors live logic exactly: a member counts as admin if they
+  hold a direct <code>Admin</code>-role row or are the genesis admin; "another admin" requires a
+  distinct <code>Admin</code>-role row (the genesis admin alone does not satisfy it). Returns
+  <code>None</code> when ancestry is incomplete, deferring to the live last-admin guard.
+  <br><br>
+  <b>Causal-position semantics.</b> Because this method reads the DAG state the signer observed
+  at sign time (the parent cut), not the receiver's current local state, it can legitimately
+  disagree with a live query made after concurrent ops have advanced the DAG — this is the
+  causal-honor property and is expected behavior, not a divergence.
+  </li>
+  <li><b><code>membership_path_at_cut(member, group_id, cut)</code></b> — returns
+  <code>Some(AtCutMembershipPath)</code> indicating whether the member has a direct row, an
+  inherited path, or no membership at the cut, and <code>None</code> when ancestry is incomplete.
+  Delegates to <code>ScopeProjections::membership_path_at_cut</code>, which calls
+  <code>member_path_at_cut</code> on the folded projection via <code>auth_cut_context</code> and
+  maps the result (projecting away the role/anchor detail). Callers <b>must</b> defer to the live
+  gate on <code>None</code>.</li>
+</ul>
+<p>
+All public accessors return <code>None</code> (not <code>Some(false)</code>) when cited ancestry
+is not fully folded, ensuring callers do not treat an incomplete fold as a denial verdict.
+</p>
+
+<h3>AtCutAuthorizer trait and implementations</h3>
+<p>
+The <code>AtCutAuthorizer</code> trait abstracts over how an at-cut admin/capability check is
+resolved. It declares four required methods: <code>is_admin_at_cut</code>,
+<code>is_admin_or_capability_at_cut</code>, <code>is_last_admin_at_cut</code>, and
+<code>membership_path_at_cut</code>. All return <code>Option&lt;…&gt;</code> with the same
+<code>None</code> = undecidable semantics.
+</p>
+<p>
+<b>Empty-cut contract.</b> Every method on this trait <b>must</b> return <code>None</code> when
+the supplied <code>parents</code> slice is empty. Violating this contract would cause a
+genesis-state fold (no <code>MemberAdded</code> or role ops processed) to produce
+<code>Some(false)</code>, falsely rejecting genesis ops that the live store correctly permits.
+</p>
+<ul>
+  <li><b><code>LiveFallbackAuthorizer</code></b> — the placeholder implementation used by the
+  current namespace-envelope applier stage. Returns <code>None</code> for all four methods,
+  delegating all decisions to the live store.</li>
+  <li><b><code>EphemeralProjectionAuthorizer</code></b> — the projection-backed implementation.
+  Holds a <code>Mutex&lt;Option&lt;(ContextGroupId, Arc&lt;FoldedProjection&gt;)&gt;&gt;</code>
+  cache. The private <code>folded(group_id)</code> method checks the cache first; on a cache
+  miss it calls <code>ScopeProjections::ephemeral_projection</code> and stores the result. If the
+  fold fails (store or DAG-head fault) it emits a <code>tracing::warn</code> and returns
+  <code>None</code>. All four at-cut methods go through <code>folded</code>, so a single apply
+  call reuses the same folded DAG rather than re-folding per check.
+  <code>is_last_admin_at_cut</code> delegates to
+  <code>ScopeProjections::is_last_admin_at_cut</code> and guards against an empty
+  <code>parents</code> slice with an immediate <code>None</code> return, consistent with the
+  trait-level empty-cut contract.
+  <code>membership_path_at_cut</code> delegates to
+  <code>ScopeProjections::membership_path_at_cut</code>, which calls the projection's
+  <code>member_path_at_cut</code> walk via <code>auth_cut_context</code> and maps the result to
+  <code>AtCutMembershipPath</code> (projecting away the role/anchor detail). An empty
+  <code>parents</code> slice returns <code>None</code> immediately, consistent with the
+  empty-cut contract.</li>
+</ul>
+
+<h3>GroupGovernanceApplier — live gates only, no authorizer injection</h3>
+<p>
+The standalone <code>GroupGovernanceApplier::apply</code> continues to call
+<code>apply_local_signed_group_op</code> (live-fallback) and does <b>not</b> accept an injected
+<code>AtCutAuthorizer</code>. A code comment documents why: a <code>SignedGroupOp</code>'s
+<code>parent_op_hashes</code> belong to the per-group op log, not the namespace governance log
+that <code>EphemeralProjectionAuthorizer</code> is keyed by. Passing those hashes to the
+projection authorizer would resolve against the wrong id-space and silently no-op, producing a
+false "undecidable" verdict on every group op. The real group-auth projection shadow therefore
+fires only on the namespace-envelope group-op path, not through the standalone applier.
+</p>
+
+<h3>Shadow authorization check in <code>apply_signed_namespace_op</code></h3>
+<p>
+After a governance op is successfully applied by the live gate, the handler runs a non-blocking
+<b>shadow authorization check</b> for observability. The check is implemented in two parts:
+</p>
+<ul>
+  <li><b><code>apply_auth_requirement(op)</code></b> maps the just-applied
+  <code>SignedNamespaceOp</code> to an <code>(ContextGroupId, ApplyAuthReq)</code> pair.
+  <code>ApplyAuthReq</code> is either <code>Admin</code> or
+  <code>AdminOrCap(bits)</code>. The mapping covers:
+    <ul>
+      <li>Root-level <code>AdminChanged</code>, <code>PolicyUpdated</code>,
+      <code>GroupReparented</code> → <code>Admin</code></li>
+      <li><code>GroupCreated</code> → <code>AdminOrCap(CAN_CREATE_SUBGROUP)</code></li>
+      <li>Group-level <code>MemberAdded</code> / <code>MemberRemoved</code> →
+      <code>AdminOrCap(MANAGE_MEMBERS)</code></li>
+      <li><code>SubgroupVisibilitySet</code> →
+      <code>AdminOrCap(CAN_MANAGE_VISIBILITY)</code></li>
+      <li><code>MemberRoleSet</code>, <code>MemberCapabilitySet</code>,
+      <code>DefaultCapabilitiesSet</code> → <code>Admin</code></li>
+    </ul>
+    Explicitly <em>excluded</em> from the mapping (returning <code>None</code>):
+    <code>MemberJoined</code> (inviter authority), <code>MemberJoinedOpen</code> (inheritance
+    proof), <code>MemberLeft</code> (self-authored), <code>GroupDeleted</code> and
+    <code>TransferOwnership</code> (owner-gated), and other metadata/context-registration ops.
+  </li>
+  <li>The handler then calls the corresponding at-cut accessor against the op's
+  <code>delta_parents</code> cut (the DAG state the signer observed, not the post-apply cut).
+  If the projection returns <code>Some(false)</code> — it would have rejected what the live
+  gate accepted — a <code>warn!</code> is emitted with
+  <code>marker=unified_projection_divergence</code> and <code>plane=governance-auth</code>.
+  <code>None</code> (ancestry incomplete) is silently skipped. The check runs outside the
+  projection write lock under a brief read lock.</li>
+</ul>
+<p>
+<b>Live authorization gates are entirely unchanged.</b> The shadow check is log-only and has no
+effect on whether an op is accepted or rejected.
+</p>
 
 <h3>Where this can break</h3>
 <p>
 Two classes of change would silently re-introduce the divergence described above:
 </p>
 <ul>
-  <li><b>Calling the check with the wrong position.</b> Any caller of
-  <code>membership_status_at</code> that passes the receiver's current state (or any
-  post-cut heuristic) instead of the signed delta position breaks forward-only. The three
-  production call sites — gossip-receive, governance-pending drain, and snapshot-sync replay
-  — each carry inline comments naming this contract; reviewers should flag any new caller
-  that doesn't pass <code>delta.governance_position</code> verbatim.</li>
-  <li><b>Changing the prefix walk to visit descendants.</b> A "performance optimization" that
-  has the BFS catch up to local heads after visiting the signed heads would observe ops the
-  signer hadn't signed against, including later <code>MemberRemoved</code> ops. The forward-only
-  contract is documented on the public <code>membership_status_at</code> function; the
-  internal BFS in <code>prefix_walk_membership</code> implements it, and the
+  <li><b>Calling the projection with the wrong position.</b> Any caller of the at-cut membership
+  resolver that passes the receiver's current state (or any post-cut heuristic) instead of the
+  signed delta position breaks forward-only. The three production call sites — gossip-receive,
+  governance-pending drain, and snapshot-sync replay — each carry inline comments naming this
+  contract; reviewers should flag any new caller that doesn't pass
+  <code>delta.governance_position</code> verbatim.</li>
+  <li><b>Expanding the cut resolution to visit descendants.</b> A "performance optimization" that
+  advances the resolved cut beyond the signed heads would observe ops the signer hadn't signed
+  against, including later <code>MemberRemoved</code> ops. The forward-only contract is
+  documented on the public projection at-cut methods; the
   <code>prefix_walk_forward_only_*</code> regression tests pin the boundary.</li>
 </ul>
 
@@ -826,7 +1181,12 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td><code>leave_namespace</code></td><td><b>Implemented</b></td><td>Same <code>member_left.rs</code> apply detects the no-parent case and cascades through descendant groups where the leaver has direct rows; multi-scope owner + last-admin checked upfront. <em>No per-scope key rotation</em>.</td></tr>
   <tr><td>Key rotation on <code>MemberRemoved</code></td><td><b>Implemented</b></td><td><code>crates/governance-store/src/group_governance_publisher.rs</code> (<code>sign_apply_and_publish_inner</code>) + <code>GroupKeyring</code> in <code>group_keys.rs</code> — fresh key wrapped for remaining members, excluding the removed one.</td></tr>
   <tr><td>Role-scoped TEE self-purge</td><td><b>Implemented</b> (ADR 0002; #2680/#2724/#2725)</td><td><code>crates/context/src/self_purge.rs</code> listener + cascade + marker-gated <code>reconcile_sweep</code>; <code>delete_group_local_rows</code> in <code>governance-store/src/local_state.rs</code> deletes signing keys (and, as of #2776, <code>GroupKeyring</code> encryption keys); <code>OpEvent::TeeMemberRemoved</code> emitted from <code>member_removed.rs</code> / <code>member_left.rs</code>.</td></tr>
+  <tr><td>TEE subgroup admission diagnostics (<code>handle_new_subgroup</code>)</td><td><b>Implemented</b></td><td><code>crates/context/src/tee_subgroup_admit.rs</code> — <code>handle_new_subgroup</code> now emits <code>debug!</code> on entry (subgroup + namespace IDs) and at each early-return path (Open subgroup skip, non-key-holder skip, no-root-TEE-members skip); <code>warn!</code> when a TEE member has no admission verdict in the root op-log; <code>info!</code> just before admitting a TEE member into a Restricted subgroup. Set <code>RUST_LOG=calimero_context=debug</code> (or <code>debug</code> on the <code>context</code> crate) to surface per-subgroup TEE admission decisions in logs.</td></tr>
   <tr><td><code>ScopeProjections::namespace_current_heads</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>.</td></tr>
+  <tr><td><code>ScopeProjections::member_now_ephemeral</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — builds a fresh projection per call: resolves the namespace, folds the DAG via <code>collect_namespace_ops</code>, reads heads after the fold, and returns <code>member_at_cut</code>. Returns <code>None</code> (never decides against the member) on unresolvable namespace, store fault, or incomplete fold.</td></tr>
+  <tr><td><code>ScopeProjections::member_now_checked</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — unified membership gate for all four context-layer handlers. Calls <code>member_now_ephemeral</code> first; falls back to <code>MembershipRepository::is_member</code> when projection is undecidable; emits <code>tracing::warn</code> with <code>marker=unified_projection_divergence</code> / <code>plane=membership-query</code> on definite disagreement. Direct <code>MembershipRepository</code> imports removed from <code>get_cascade_status.rs</code>, <code>get_group_upgrade_status.rs</code>, <code>list_all_groups.rs</code>, and <code>list_group_contexts.rs</code>.</td></tr>
+  <tr><td><code>ScopeProjections::role_at_cut_for_group</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves the effective <code>GroupMemberRole</code> at a governance cut via <code>auth_cut_context</code> + <code>member_path_at_cut</code>. Handles direct, inherited-via-admin (<code>Admin</code>), and inherited-via-anchor (anchor role row) cases. Returns <code>None</code> on incomplete ancestry, absent member, unresolvable namespace, or missing anchor row. Prevents spurious <code>membership-role</code> divergence reports by abstaining rather than guessing on missing anchor rows.</td></tr>
+  <tr><td><code>AtCutAuthorizer</code> trait + <code>LiveFallbackAuthorizer</code> + <code>EphemeralProjectionAuthorizer</code></td><td><b>Implemented</b></td><td><code>crates/context/src/governance_dag.rs</code> — <code>AtCutAuthorizer</code> declares four required methods: <code>is_admin_at_cut</code>, <code>is_admin_or_capability_at_cut</code>, <code>is_last_admin_at_cut</code>, and <code>membership_path_at_cut</code>. All must return <code>None</code> when <code>parents</code> is empty (trait-level empty-cut contract). <code>LiveFallbackAuthorizer</code> implements all four returning <code>None</code>. <code>EphemeralProjectionAuthorizer</code> holds a <code>Mutex&lt;Option&lt;(ContextGroupId, Arc&lt;FoldedProjection&gt;)&gt;&gt;</code> fold cache; the private <code>folded</code> helper reuses a cached fold for the same group or calls <code>ScopeProjections::ephemeral_projection</code> on a miss. All four at-cut methods delegate through <code>folded</code>; each opens with an empty-parents guard. <code>is_last_admin_at_cut</code> delegates to <code>ScopeProjections::is_last_admin_at_cut</code> (in <code>crates/context/src/scope_projections.rs</code>), which mirrors live last-admin logic at the parent cut. <code>membership_path_at_cut</code> delegates to <code>ScopeProjections::membership_path_at_cut</code>, which calls <code>member_path_at_cut</code> on the folded projection via <code>auth_cut_context</code> and maps the result to <code>AtCutMembershipPath</code>. The standalone <code>GroupGovernanceApplier::apply</code> is unchanged (live-only); see the <em>GroupGovernanceApplier</em> note in the at-cut accessors section above.</td></tr>
   <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
 </table>
 </div>
@@ -855,6 +1215,75 @@ This page documents shipped behavior. Each row points at the code that implement
 </ol>
 </div>
 
+<div class="card gd"><h2>EphemeralProjectionAuthorizer — empty-parents early return</h2>
+<p>
+Both <code>is_admin_at_cut</code> and <code>is_admin_or_capability_at_cut</code> on
+<code>EphemeralProjectionAuthorizer</code> now return <code>None</code> immediately when the
+supplied <code>parents</code> slice is empty, deferring unconditionally to the live fallback
+authorizer. Previously, an empty <code>parents</code> slice was passed through to the fold
+machinery, which evaluated the query against a genesis-state view. That view contains no granted
+roles or capabilities, so any capability holder whose grant was established after genesis would be
+falsely rejected by the projection even though the live store correctly recognises them.
+</p>
+
+<h3>When parents is empty</h3>
+<p>
+Two cases produce an empty <code>parents</code> slice at the authorizer call site:
+</p>
+<ul>
+  <li><strong>Genesis op.</strong> The very first op in a namespace's governance log has no
+  predecessor hashes. The causal cut is genuinely empty because no prior ops exist.</li>
+  <li><strong>PermissionChecker constructed without apply-auth context.</strong> Some code paths
+  build a <code>PermissionChecker</code> outside of a normal apply flow and pass an empty parents
+  field as a zero value. These callers have no meaningful causal position to resolve against.</li>
+</ul>
+<p>
+In both cases, judging against an empty fold is semantically wrong: the fold has not processed any
+<code>MemberAdded</code>, <code>MemberRoleSet</code>, or <code>DefaultCapabilitiesSet</code> ops,
+so the resulting <code>AclView</code> is empty. A query against it would return
+<code>Some(false)</code> for every capability check, silently blocking operations that the live
+store would correctly permit.
+</p>
+
+<h3>New behavior</h3>
+<ul>
+  <li>If <code>parents.is_empty()</code>, both methods return <code>None</code> immediately,
+  before touching the fold cache or calling <code>ScopeProjections::ephemeral_projection</code>.</li>
+  <li>The <code>None</code> return propagates to the caller as "projection is undecidable," which
+  causes the standard live-fallback path to take effect. No warning is emitted — empty parents is
+  a legitimate undecidable case, not a divergence.</li>
+  <li>When <code>parents</code> is non-empty, behavior is unchanged: the fold cache is consulted
+  (or populated on a miss) and the at-cut check proceeds normally.</li>
+</ul>
+
+<h3>Contract clarification</h3>
+<p>
+The <code>AtCutAuthorizer</code> contract already specifies that <code>None</code> means
+"undecidable — defer to the live gate." This change makes the empty-parents case an explicit
+instance of that contract rather than a silent fall-through to a semantically incorrect verdict.
+Callers must not treat <code>None</code> as a denial; the live authorizer is always consulted when
+the projection abstains.
+</p>
+<p>
+The <code>None</code>-on-incomplete-ancestry guard (from <code>cut_ancestry_complete</code>) is
+distinct and remains in place: it fires when <code>parents</code> is non-empty but the fold has
+not yet processed all ops reachable from those parents. The empty-parents guard fires earlier,
+before the fold is attempted at all.
+</p>
+
+<h3>Affected code</h3>
+<ul>
+  <li><code>crates/context/src/governance_dag.rs</code> —
+  <code>EphemeralProjectionAuthorizer::is_admin_at_cut</code> and
+  <code>EphemeralProjectionAuthorizer::is_admin_or_capability_at_cut</code>: both now open with
+  <code>if parents.is_empty() { return None; }</code> before the <code>folded(group_id)</code>
+  call.</li>
+  <li>No changes to <code>ScopeProjections</code> or any call sites — the early return is
+  entirely internal to the authorizer methods. <code>LiveFallbackAuthorizer</code> is unaffected
+  (it already returns <code>None</code> unconditionally for all methods, including the new
+  <code>is_last_admin_at_cut</code>).</li>
+</ul>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>

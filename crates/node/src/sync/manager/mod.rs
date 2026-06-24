@@ -2098,7 +2098,7 @@ impl SyncManager {
 
                             // Group/membership authorization — including the
                             // group-id anti-bypass the old `GroupIdCheck`
-                            // performed — is done by `authorize_delta_at_edge`
+                            // performed — is done by `authorize_delta_at_edge_projected`
                             // below (after the ReadOnly gate), deriving the
                             // group from the context in lockstep with the
                             // gossip path.
@@ -2125,13 +2125,25 @@ impl SyncManager {
 
                             {
                                 use crate::handlers::state_delta::{
-                                    authorize_delta_at_edge, DeltaAuthOutcome,
+                                    authorize_delta_at_edge_projected, resolve_cut_membership,
+                                    DeltaAuthOutcome,
                                 };
-                                match authorize_delta_at_edge(
+                                // Resolve membership at the cited cut FROM THE
+                                // PROJECTION (F5 #29b), parity with the gossip path.
+                                match authorize_delta_at_edge_projected(
                                     &datastore_for_heads,
                                     &context_id,
                                     &author,
                                     pos.as_ref(),
+                                    |group, heads| {
+                                        resolve_cut_membership(
+                                            &self.node_state,
+                                            &datastore_for_heads,
+                                            group,
+                                            &author,
+                                            heads,
+                                        )
+                                    },
                                 ) {
                                     DeltaAuthOutcome::Authorized { .. }
                                     | DeltaAuthOutcome::Ungated => {
@@ -2944,20 +2956,9 @@ impl SyncManager {
             their_identity,
             &heads,
         );
-        if let Some(p) = projected {
-            if p != live {
-                warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "membership-sync",
-                    group_id = ?group_id,
-                    ?their_identity,
-                    projection = p,
-                    live,
-                    "inbound-sync auth: projection disagrees with live membership"
-                );
-            }
-        }
-        // Act on the projection; `None` (can't decide) falls back to live.
+        // The projection is authoritative for inbound-sync auth (validated
+        // divergence-free across the e2e `membership-sync` plane); `None` (can't
+        // decide) falls back to live. (The live read retires in #29b.)
         Ok(projected.unwrap_or(live))
     }
 

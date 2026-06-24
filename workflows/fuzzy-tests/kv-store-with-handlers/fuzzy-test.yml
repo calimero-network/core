@@ -22,12 +22,11 @@ steps:
     outputs:
       handlers_app_id: applicationId
 
-  - name: Create Mesh for Handlers App with NEAR Protocol
+  - name: Create Mesh for Handlers App
     type: create_mesh
     context_node: fuzzy-handlers-node-1
     application_id: "{{handlers_app_id}}"
     path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
-    protocol: near
     nodes:
       - fuzzy-handlers-node-2
       - fuzzy-handlers-node-3

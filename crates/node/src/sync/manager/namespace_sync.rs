@@ -225,9 +225,9 @@ impl SyncManager {
     /// The gossip apply path (`network_event/namespace.rs`) already drains the
     /// governance-pending buffer when a namespace op applies, but the
     /// **sync/backfill** apply paths here did not — a parity gap. A late
-    /// joiner's first post-join state delta is buffered as
-    /// `MembershipStatus::Unknown` until the local node learns the joiner's
-    /// membership op; when that op arrives via sync (beacon-triggered
+    /// joiner's first post-join state delta is buffered as an incomplete-cut
+    /// (the projection can't yet resolve membership) until the local node
+    /// learns the joiner's membership op; when that op arrives via sync (beacon-triggered
     /// governance sync or catch-up backfill) rather than gossip, nothing
     /// re-evaluated the buffer, so the delta sat there forever and the two
     /// nodes' context root hashes never reconverged.

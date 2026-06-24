@@ -6,7 +6,6 @@
 //! invoked by the apply path, the sync manager, and namespace network-event
 //! handlers once governance state advances or on startup.
 
-use calimero_context::group_store::{acl_view_at, MembershipStatus};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use eyre::Result;
@@ -135,13 +134,8 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
         //   None        → cut ancestry not fully folded yet  → re-buffer (governance
         //                 not caught up — exactly the old `Unknown` case)
         //
-        // `acl_view_at` is retained only as the divergence cross-check feeding the
-        // hard gate, and is consulted ONLY on a decisive projection verdict — never
-        // on `None`. `None` means "cut ancestry not folded yet" (re-buffer): a
-        // deferral, not a disagreement, so comparing it against live would both
-        // waste a DAG walk and risk a false-positive divergence (e.g. live already
-        // sees `Member` while the projection simply hasn't caught up). The live
-        // resolver is deleted in F5 once every consumer is validated divergence-free.
+        // F5 #29b: the drain is fully projection-sourced now — the last live
+        // `acl_view_at` read (which only named the drop metric label) is gone.
         let proj = input
             .node_state
             .read_scope_projections()
@@ -153,28 +147,9 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
             );
         match proj {
             Some(true) => {
-                // Cross-check: a grant the live resolver DEFINITELY denies (Removed /
-                // NeverMember) is the dangerous divergence (grant plane). live's
-                // `Unknown` is "not caught up", not a denial — not a disagreement.
-                let live = acl_view_at(
-                    datastore,
-                    owning_group,
-                    &buffered.author_id,
-                    &pos.governance_dag_heads,
-                );
-                if matches!(
-                    live,
-                    Ok(MembershipStatus::Removed { .. }) | Ok(MembershipStatus::NeverMember)
-                ) {
-                    warn!(
-                        marker = "unified_projection_divergence",
-                        plane = "membership-cut-grant",
-                        %context_id,
-                        delta_id = ?buffered.id,
-                        author = %buffered.author_id,
-                        "governance-drain: projection applies a delta live would drop"
-                    );
-                }
+                // The projection is authoritative for the drain (validated
+                // divergence-free across the e2e `membership-cut-grant` plane); the
+                // re-apply decision is purely `member_at_cut_authoritative`.
                 debug!(
                     %context_id,
                     delta_id = ?buffered.id,
@@ -196,39 +171,22 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
                 }
             }
             Some(false) => {
-                // The projection denies on a COMPLETE fold; if live grants, that is a
-                // real deny-plane divergence. live also names the drop metric label
-                // (removed vs never-member); fall back to a generic label otherwise.
-                let live = acl_view_at(
-                    datastore,
-                    owning_group,
-                    &buffered.author_id,
-                    &pos.governance_dag_heads,
-                );
-                if matches!(live, Ok(MembershipStatus::Member(_))) {
-                    warn!(
-                        marker = "unified_projection_divergence",
-                        plane = "membership-cut",
-                        %context_id,
-                        delta_id = ?buffered.id,
-                        author = %buffered.author_id,
-                        "governance-drain: projection drops a delta live would apply"
-                    );
-                }
-                let label = match &live {
-                    Ok(MembershipStatus::Removed { .. }) => "removed",
-                    Ok(MembershipStatus::NeverMember) => "never_member",
-                    _ => "not_member",
-                };
+                // The projection authoritatively denies on a COMPLETE fold (drop).
+                // F5 #29b: the live `acl_view_at` read that distinguished the drop
+                // metric label (removed vs never-member) is retired here. The
+                // projection's `Some(false)` means "not a member at the signed cut" —
+                // the drop signal — and the historical reason was observability-only;
+                // the projection's fold doesn't expose last-known-role cheaply, so the
+                // breakdown collapses to a single `not_member` drop label.
                 warn!(
                     %context_id,
                     delta_id = ?buffered.id,
                     author = %buffered.author_id,
-                    outcome = label,
+                    outcome = "not_member",
                     "governance-pending drain: projection says author is not a member at the \
                      signed cut; dropping"
                 );
-                crate::node_metrics::record_governance_drain_outcome(label);
+                crate::node_metrics::record_governance_drain_outcome("not_member");
             }
             None => {
                 let mut buffered = buffered;

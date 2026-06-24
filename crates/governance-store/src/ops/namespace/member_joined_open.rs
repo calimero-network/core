@@ -13,6 +13,7 @@
 //! direct pull-based key-delivery path, not from this op.
 
 use super::context::NamespaceApplyCtx;
+use crate::authorizer::AtCutMembershipPath;
 use crate::{
     ApplyError, MemberJoinedOpenRejection, MembershipPath, MembershipRepository,
     NamespaceRepository,
@@ -58,16 +59,25 @@ pub(crate) fn apply(
             }
         ));
     }
-    match MembershipRepository::new(store).check_path(&gid, &member)? {
-        MembershipPath::Inherited { .. } => Ok(()),
-        MembershipPath::Direct => {
+    // F5 #29b flip: decide the membership PATH from the projection at the op's causal
+    // cut (validated divergence-free on the `membership-path` plane). Live `check_path`
+    // is the `None`-fallback, computed LAZILY — only when the projection abstains — so
+    // a `check_path` store error can't abort an apply the projection would have
+    // decided. The live read retires when `check_path` is deleted.
+    let path = match ctx.projection_membership_path(&gid, &member) {
+        Some(projected) => projected,
+        None => membership_path_kind(&MembershipRepository::new(store).check_path(&gid, &member)?),
+    };
+    match path {
+        AtCutMembershipPath::Inherited => Ok(()),
+        AtCutMembershipPath::Direct => {
             // Direct members go through `MemberJoined` or `add_group_members`
             // — they shouldn't be using this op.
             eyre::bail!(ApplyError::MemberJoinedOpenRejected(
                 MemberJoinedOpenRejection::AlreadyDirectMember(format!("{member}"))
             ));
         }
-        MembershipPath::None => {
+        AtCutMembershipPath::None => {
             eyre::bail!(ApplyError::MemberJoinedOpenRejected(
                 MemberJoinedOpenRejection::NoMembershipPath {
                     member: format!("{member}"),
@@ -75,5 +85,14 @@ pub(crate) fn apply(
                 }
             ));
         }
+    }
+}
+
+/// The live `MembershipPath` collapsed to the at-cut path KIND (the `None`-fallback).
+fn membership_path_kind(path: &MembershipPath) -> AtCutMembershipPath {
+    match path {
+        MembershipPath::Inherited { .. } => AtCutMembershipPath::Inherited,
+        MembershipPath::Direct => AtCutMembershipPath::Direct,
+        MembershipPath::None => AtCutMembershipPath::None,
     }
 }

@@ -10,7 +10,6 @@ Core library crates for Calimero infrastructure. Each crate is conceptually sepa
 | --------- | -------------- | --------------------- | ---------------- |
 | `merod`   | `merod`        | `merod/src/main.rs`   | Node daemon      |
 | `meroctl` | `meroctl`      | `meroctl/src/main.rs` | CLI tool         |
-| `relayer` | `mero-relayer` | `relayer/src/main.rs` | Blockchain relay |
 | `auth`    | `mero-auth`    | `auth/src/main.rs`    | Auth service     |
 
 ### Core Library Crates

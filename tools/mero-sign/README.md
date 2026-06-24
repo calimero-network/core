@@ -101,9 +101,9 @@ $: meroctl --node node1 app install \
 > │ Successfully installed application '8CtFJJ8GohJLhatFZwfHN8ccyWuUcCTHnDHeZiA2xqHn' │
 > ╰───────────────────────────────────────────────────────────────────────────────────╯
 # Create context
-$: meroctl --node node1 context create --application-id <app_id> --protocol <protocol>
+$: meroctl --node node1 context create --application-id <app_id>
 
-$: meroctl --node node1 context create --application-id 8CtFJJ8GohJLhatFZwfHN8ccyWuUcCTHnDHeZiA2xqHn --protocol near
+$: meroctl --node node1 context create --application-id 8CtFJJ8GohJLhatFZwfHN8ccyWuUcCTHnDHeZiA2xqHn
 > +------------------------------+
 > | Context Created              |
 > +==============================+

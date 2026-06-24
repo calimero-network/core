@@ -1,3 +1,4 @@
+use crate::authorizer::AtCutAuthorizer;
 use crate::MembershipRepository;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
@@ -16,14 +17,53 @@ use super::{CapabilitiesError, MembershipError};
 pub struct PermissionChecker<'a> {
     store: &'a Store,
     group_id: ContextGroupId,
+    /// The applied op's causal cut (parent op hashes), at which the apply-auth gates
+    /// resolve (F5 #28 stage 4). Empty outside the group-op apply path.
+    parents: &'a [[u8; 32]],
+    /// The at-cut apply-auth decision source (F5 #28 stage 4). The default
+    /// [`LiveFallbackAuthorizer`](crate::authorizer::LiveFallbackAuthorizer) returns
+    /// `None`, so non-apply constructions (handler pre-checks, cascade pre-scans,
+    /// tests) keep using the live resolver.
+    authorizer: &'a dyn AtCutAuthorizer,
 }
 
 impl<'a> PermissionChecker<'a> {
     pub fn new(store: &'a Store, group_id: ContextGroupId) -> Self {
-        Self { store, group_id }
+        Self {
+            store,
+            group_id,
+            parents: &[],
+            authorizer: &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        }
+    }
+
+    /// Attach the op's causal cut + the at-cut apply-auth source for the group-op
+    /// apply path (F5 #28 stage 4). With it, the admin/capability gates decide from
+    /// the projection at the cut (live as `None`-fallback); without it (the default)
+    /// they use the live resolver.
+    #[must_use]
+    pub fn with_apply_auth(
+        mut self,
+        parents: &'a [[u8; 32]],
+        authorizer: &'a dyn AtCutAuthorizer,
+    ) -> Self {
+        self.parents = parents;
+        self.authorizer = authorizer;
+        self
     }
 
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
+        // F5 #28 stage 4b: decide from the PROJECTION at the op's causal cut — admin
+        // authority as of the op's own parents (causal-honor), validated divergence-
+        // free on the `group-auth` plane (stage 4a). `None` (no apply-auth context —
+        // a local pre-check / cascade / test — OR an incomplete fold) falls back to
+        // the live resolver. The live fallback retires in #29b.
+        if let Some(verdict) =
+            self.authorizer
+                .is_admin_at_cut(&self.group_id, identity, self.parents)
+        {
+            return Ok(verdict);
+        }
         // Issue #2256: admin authority cascades into Open subgroups
         // from any ancestor where the signer is a direct admin.
         // Uses `is_inherited_admin` (a dedicated walk) rather than
@@ -184,13 +224,22 @@ impl<'a> PermissionChecker<'a> {
         identity: &PublicKey,
         capability_bit: u32,
     ) -> EyreResult<bool> {
-        if MembershipRepository::new(self.store).is_admin_or_has_capability(
+        // F5 #28 stage 4b: decide from the PROJECTION at the op's causal cut (the
+        // capability analogue of `is_admin`); `None` falls back to live. Validated on
+        // the `group-auth` plane in stage 4a.
+        if let Some(verdict) = self.authorizer.is_admin_or_capability_at_cut(
             &self.group_id,
             identity,
             capability_bit,
-        )? {
-            return Ok(true);
+            self.parents,
+        ) {
+            return Ok(verdict);
         }
+        let direct = MembershipRepository::new(self.store).is_admin_or_has_capability(
+            &self.group_id,
+            identity,
+            capability_bit,
+        )?;
         // Only admin-inherited authority crosses the parent boundary;
         // non-admin caps must be explicit at the subgroup level.
         // Uses `is_inherited_admin` (a dedicated walk) rather than
@@ -199,7 +248,9 @@ impl<'a> PermissionChecker<'a> {
         // as any direct membership row exists in the target subgroup,
         // which would mask inherited admin authority for a parent
         // admin who is also an explicit non-admin subgroup member.
-        MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, identity)
+        Ok(direct
+            || MembershipRepository::new(self.store)
+                .is_inherited_admin(&self.group_id, identity)?)
     }
 
     pub fn require_admin_to_add_admin(

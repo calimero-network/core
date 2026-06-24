@@ -5,11 +5,10 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey, WalletType};
+use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use url::Url;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -673,104 +672,6 @@ impl GetPeersCountResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct AddPublicKeyRequest {
-    pub wallet_signature: WalletSignature,
-    pub payload: Payload,
-    pub wallet_metadata: WalletMetadata,
-    pub context_id: Option<ContextId>,
-}
-
-impl AddPublicKeyRequest {
-    #[must_use]
-    pub const fn new(
-        wallet_signature: WalletSignature,
-        payload: Payload,
-        wallet_metadata: WalletMetadata,
-        context_id: Option<ContextId>,
-    ) -> Self {
-        Self {
-            wallet_signature,
-            payload,
-            wallet_metadata,
-            context_id,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct Payload {
-    pub message: SignatureMessage,
-    pub metadata: SignatureMetadataEnum,
-}
-
-impl Payload {
-    #[must_use]
-    pub const fn new(message: SignatureMessage, metadata: SignatureMetadataEnum) -> Self {
-        Self { message, metadata }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct SignatureMessage {
-    pub context_id: Option<ContextId>,
-    pub nonce: String,
-    pub timestamp: i64,
-    pub node_signature: String,
-    pub message: String,
-    pub public_key: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct WalletMetadata {
-    #[serde(rename = "wallet")]
-    pub wallet_type: WalletType,
-    pub verifying_key: String,
-    pub wallet_address: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", content = "data")]
-#[non_exhaustive]
-pub enum SignatureMetadataEnum {
-    NEAR(NearSignatureMessageMetadata),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct NearSignatureMessageMetadata {
-    pub recipient: String,
-    pub callback_url: String,
-    pub nonce: String,
-}
-
-// Intermediate structs for initial parsing
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct IntermediateAddPublicKeyRequest {
-    pub wallet_signature: WalletSignature,
-    pub payload: IntermediatePayload,
-    pub wallet_metadata: WalletMetadata, // Reuse WalletMetadata as it fits the intermediate step
-    pub context_id: Option<ContextId>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-#[non_exhaustive]
-pub enum WalletSignature {
-    String(String),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
 pub struct JwtTokenRequest {
     pub context_id: ContextId,
     pub executor_public_key: String,
@@ -791,14 +692,6 @@ impl JwtTokenRequest {
 #[non_exhaustive]
 pub struct JwtRefreshRequest {
     pub refresh_token: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct IntermediatePayload {
-    pub message: SignatureMessage, // Reuse SignatureMessage as it fits the intermediate step
-    pub metadata: Value,           // Raw JSON value for the metadata
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1421,8 +1314,8 @@ use crate::validation::{
         validate_bytes_size, validate_hex_string, validate_optional_hex_string,
         validate_optional_string_length, validate_string_length, validate_url,
     },
-    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_NONCE_LENGTH,
-    MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VERSION_LENGTH,
+    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_PACKAGE_NAME_LENGTH,
+    MAX_PATH_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VERSION_LENGTH,
 };
 
 impl Validate for InstallApplicationRequest {
@@ -1566,23 +1459,6 @@ impl Validate for TeeVerifyQuoteRequest {
             &self.expected_application_hash,
             "expected_application_hash",
             32,
-        ) {
-            errors.push(e);
-        }
-
-        errors
-    }
-}
-
-impl Validate for AddPublicKeyRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        // Validate nonce in SignatureMessage
-        if let Some(e) = validate_string_length(
-            &self.payload.message.nonce,
-            "payload.message.nonce",
-            MAX_NONCE_LENGTH,
         ) {
             errors.push(e);
         }

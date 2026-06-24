@@ -1,0 +1,159 @@
+//! At-cut apply authorization seam (F5 #28).
+//!
+//! The apply-time governance gates (e.g. [`NamespaceApplyCtx::require_namespace_admin`])
+//! historically read the LIVE membership resolver, which has no causal context —
+//! they decide against the receiver's current state, not the op's own parents. F5
+//! moves that decision onto the unified projection, resolved at the op's causal
+//! cut. But the projection lives in `crates/context`, which DEPENDS on this crate,
+//! so this crate cannot reach it directly.
+//!
+//! [`AtCutAuthorizer`] inverts that dependency: this crate defines the trait the
+//! apply gates call; `crates/context` implements it backed by the projection and
+//! injects it at the apply call site. The gate stays here; only the decision
+//! source is abstracted. `None` from any method means "the projection has no
+//! authoritative verdict at this cut" (an incomplete fold) — the gate falls back
+//! to the live resolver, exactly as the read-side consumers do.
+//!
+//! [`NamespaceApplyCtx::require_namespace_admin`]: crate::ops::namespace::NamespaceApplyCtx
+
+use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::identity::PublicKey;
+
+/// The apply-gate decision source, resolved at an op's causal cut (its parent op
+/// hashes). Implemented in `crates/context` over the unified projection; this
+/// crate calls it from the apply gates without depending on the projection.
+///
+/// Every method returns `Option<bool>`: `Some(verdict)` when the projection's
+/// cited ancestry is fully folded and the answer is authoritative, `None` when it
+/// isn't (the caller defers to the live resolver).
+///
+/// `Send + Sync`: the apply path runs inside the namespace DAG applier's `async
+/// fn apply`, whose future must be `Send` (it's spawned). A `&dyn AtCutAuthorizer`
+/// is only `Send` when the trait object is `Sync`, so the bound is required for the
+/// apply future — and the axum handlers that drive it — to stay `Send`.
+///
+/// Deliberately synchronous (object-safe): the gates call this through a
+/// `&dyn AtCutAuthorizer`, and the implementation resolves against an in-memory /
+/// store-backed projection fold, which is synchronous. Methods added later (the
+/// capability gate) must stay synchronous too — an `async` method would need
+/// `async_trait` boxing and would not compose with the `&dyn` use in the apply
+/// path. If a future verdict ever needs async I/O, resolve it before the apply call
+/// and pass the result in, rather than making the trait async.
+///
+/// **Empty-cut contract:** every method MUST return `None` when `parents` is empty
+/// — an empty cut has no causal context to resolve against, so the gate defers to
+/// live rather than judging a genesis op against an empty/genesis view. Gates rely
+/// on this uniformly; an implementation that returns `Some` for empty `parents`
+/// would (e.g.) falsely reject a genesis op a live admin signed. The default
+/// `LiveFallbackAuthorizer` satisfies it trivially (always `None`).
+pub trait AtCutAuthorizer: Send + Sync {
+    /// Is `signer` an admin of `group` at the cut named by `parents`?
+    fn is_admin_at_cut(
+        &self,
+        group: &ContextGroupId,
+        signer: &PublicKey,
+        parents: &[[u8; 32]],
+    ) -> Option<bool>;
+
+    /// Is `signer` an admin of `group`, OR a holder of any bit in `capability`, at
+    /// the cut named by `parents`? The capability analogue of
+    /// [`is_admin_at_cut`](Self::is_admin_at_cut), backing the `PermissionChecker`
+    /// capability gates. `None` = the projection has no authoritative verdict at
+    /// this cut (defer to live).
+    fn is_admin_or_capability_at_cut(
+        &self,
+        group: &ContextGroupId,
+        signer: &PublicKey,
+        capability: u32,
+        parents: &[[u8; 32]],
+    ) -> Option<bool>;
+
+    /// Would removing/demoting `member` from `group` orphan its admins at the cut —
+    /// i.e. is `member` a `group` admin AND the only Admin-role member there? Backs
+    /// the circular last-admin invariants (`ensure_not_last_admin_removal` /
+    /// `_demotion`), which must read admin state at the op's PARENT cut (pre-
+    /// mutation), not the post-mutation live state. Mirrors live: `member` admin =
+    /// direct Admin role or the genesis admin; "another admin" = any other Admin-role
+    /// member ROW (the genesis admin alone doesn't count). `None` = defer to live.
+    fn is_last_admin_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &PublicKey,
+        parents: &[[u8; 32]],
+    ) -> Option<bool>;
+
+    /// How `member` reaches membership of `group` at the cut — the at-cut analogue of
+    /// the live `check_path`. Backs `MemberJoinedOpen` apply (an open-subgroup
+    /// inheritance join is valid only from an `Inherited` path; a `Direct` member
+    /// should use `MemberJoined`, and `None` has no path to inherit through). `None`
+    /// (the `Option`, not [`AtCutMembershipPath::None`]) = defer to live.
+    fn membership_path_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &PublicKey,
+        parents: &[[u8; 32]],
+    ) -> Option<AtCutMembershipPath>;
+}
+
+/// How an identity reaches membership of a group at a cut — the at-cut analogue of
+/// the live `MembershipPath` (kind only; the role/anchor detail the projection's
+/// `member_path_at_cut` carries isn't needed by the `MemberJoinedOpen` gate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtCutMembershipPath {
+    /// Not a member of the group at the cut.
+    None,
+    /// A direct member (a stored membership row).
+    Direct,
+    /// Inherited over the open-subgroup chain.
+    Inherited,
+}
+
+/// The identity authorizer: always `None`, so every gate falls back to the live
+/// resolver. The default for [`NamespaceGovernance`](crate::NamespaceGovernance)
+/// constructions that don't carry an apply-auth context (tests, the sign path,
+/// read-only facades) and the behavior-preserving injection while the projection-
+/// backed implementation is wired up but not yet authoritative.
+pub struct LiveFallbackAuthorizer;
+
+impl AtCutAuthorizer for LiveFallbackAuthorizer {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<AtCutMembershipPath> {
+        None
+    }
+}
+
+/// A shared `'static` [`LiveFallbackAuthorizer`] so a default `&dyn AtCutAuthorizer`
+/// needs no allocation or caller-held value.
+pub static LIVE_FALLBACK_AUTHORIZER: LiveFallbackAuthorizer = LiveFallbackAuthorizer;

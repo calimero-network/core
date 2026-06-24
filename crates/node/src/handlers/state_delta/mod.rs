@@ -41,7 +41,7 @@ use events::{
 // `choose_owned_identity` is also reached by the sibling `buffering` module via
 // `super::` (re-exported through this import).
 use store_setup::{choose_owned_identity, init_delta_store, DeltaStoreSetup};
-pub(crate) use verify::{authorize_delta_at_edge, DeltaAuthOutcome};
+pub(crate) use verify::{authorize_delta_at_edge_projected, DeltaAuthOutcome};
 
 pub(crate) struct StateDeltaMessage {
     pub(crate) source: PeerId,
@@ -564,6 +564,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 our_identity,
                 delta_store_ref.clone(),
                 datastore_for_fetch,
+                &node_state,
             )
             .await
             {
@@ -790,8 +791,66 @@ fn refresh_projection_for_cut(
     }
 }
 
+/// Resolve the projection's at-cut membership verdict for `author` in `group` at the
+/// cited governance `heads`, in the shape [`authorize_delta_at_edge_projected`]
+/// consumes. Shared by the gossip, parent-fetch, and snapshot-replay paths so all
+/// three render the identical verdict from the maintained projection: `Some(true)`
+/// → `Member` with the effective at-cut role, `Some(false)` → `NotMember`, `None`
+/// (cited ancestry not yet folded) → `Incomplete`.
+///
+/// `pub(crate)` so the sync-layer delta-auth sites (DAG-catchup, parent-pull) render
+/// the same verdict as the gossip path. This is the single refresh+read implementation;
+/// [`projection_member_at_cut`] is a thin membership-only projection of it.
+pub(crate) fn resolve_cut_membership(
+    node_state: &crate::NodeState,
+    datastore: &calimero_store::Store,
+    group: calimero_context_config::types::ContextGroupId,
+    author_id: &calimero_primitives::identity::PublicKey,
+    heads: &[[u8; 32]],
+) -> verify::CutMembership {
+    // Refresh the fold (scoped write lock), then read membership AND role under a
+    // SINGLE read guard. The guard guarantees the two READS see one fold epoch, so a
+    // concurrent `apply_backfill` can't split the `Member(role)` pair across epochs.
+    // The refresh and the subsequent read are NOT one atomic critical section
+    // (std `RwLock` has no write→read downgrade, and holding the write lock across
+    // the reads would serialize this hot per-delta path against every other reader —
+    // the contention the `RwLock` exists to avoid). That gap is safe: both reads are
+    // at-cut reads keyed to `heads`, and a fold can only become MORE complete between
+    // the refresh and the read — for a fixed cut the at-cut answer is stable once the
+    // cited ancestry is folded, so seeing a more-advanced epoch never changes it.
+    refresh_projection_for_cut(node_state, datastore, group, heads);
+    let projections = node_state.read_scope_projections();
+    match projections.member_at_cut(datastore, group, author_id, heads) {
+        Some(true) => {
+            // The role is an OBSERVATION hint only — it feeds `observe_peer_identity`
+            // (a routing hint, never authority) and is ignored by the apply gate,
+            // which authorizes on the membership verdict alone. ReadOnly writes are
+            // rejected by the separate upstream `is_read_only_for_context` gate, not
+            // this role. So a `None` role (member materialized but effective role not
+            // yet resolvable at the cut) defaulting to `Member` cannot over-authorize
+            // a write; it only records a less-precise hint. Log it so the condition is
+            // observable rather than silent.
+            let role = projections
+                .role_at_cut_for_group(datastore, group, author_id, heads)
+                .unwrap_or_else(|| {
+                    debug!(
+                        group_id = ?group,
+                        %author_id,
+                        "projection: member at cut but role unresolved; defaulting hint to Member"
+                    );
+                    calimero_primitives::context::GroupMemberRole::Member
+                });
+            verify::CutMembership::Member(role)
+        }
+        Some(false) => verify::CutMembership::NotMember,
+        None => verify::CutMembership::Incomplete,
+    }
+}
+
 // `pub(crate)` so the sync manager's inbound-peer authorization reuses the exact
-// same refreshing deny-direction read the data-write path uses.
+// same refreshing deny-direction read the data-write path uses. Delegates to
+// [`resolve_cut_membership`] (the single refresh+read implementation) and discards
+// the role, so the two never drift.
 pub(crate) fn projection_member_at_cut(
     node_state: &crate::NodeState,
     datastore: &calimero_store::Store,
@@ -799,29 +858,11 @@ pub(crate) fn projection_member_at_cut(
     author_id: &calimero_primitives::identity::PublicKey,
     heads: &[[u8; 32]],
 ) -> Option<bool> {
-    refresh_projection_for_cut(node_state, datastore, group, heads);
-    node_state
-        .read_scope_projections()
-        .member_at_cut(datastore, group, author_id, heads)
-}
-
-/// The authoritative (grant-direction) read, refreshed first so a cold or stale
-/// projection isn't a spurious `None`/`Some(false)`. Shares
-/// [`refresh_projection_for_cut`] with the deny-direction
-/// [`projection_member_at_cut`] so both arms decide against an equally up-to-date
-/// fold; `None` (cut still not fully folded after refresh) and `Some(false)`
-/// remain safe — they fall through to live's reject and can never over-grant.
-fn projection_member_at_cut_authoritative(
-    node_state: &crate::NodeState,
-    datastore: &calimero_store::Store,
-    group: calimero_context_config::types::ContextGroupId,
-    author_id: &calimero_primitives::identity::PublicKey,
-    heads: &[[u8; 32]],
-) -> Option<bool> {
-    refresh_projection_for_cut(node_state, datastore, group, heads);
-    node_state
-        .read_scope_projections()
-        .member_at_cut_authoritative(datastore, group, author_id, heads)
+    match resolve_cut_membership(node_state, datastore, group, author_id, heads) {
+        verify::CutMembership::Member(_) => Some(true),
+        verify::CutMembership::NotMember => Some(false),
+        verify::CutMembership::Incomplete => None,
+    }
 }
 
 pub async fn handle_state_delta(
@@ -952,27 +993,37 @@ pub async fn handle_state_delta(
 
     // Apply-time cross-DAG membership check (core#2716 P4). Authorize the
     // delta against the GOVERNANCE PARENT EDGE it carries — the governance
-    // heads the author signed under — resolving membership at that cut via
-    // `acl_view_at`. The group is derived from the CONTEXT's owning group,
+    // heads the author signed under — resolving membership at that cut from the
+    // unified projection. The group is derived from the CONTEXT's owning group,
     // never the signer-supplied `governance_position.group_id`, so a signer
     // cannot cite a different group it belongs to elsewhere to authorize a
     // write here. Reject ineligible ops; buffer when governance state hasn't
     // caught up; otherwise fall through to the existing apply path.
     //
-    // Forward-only is load-bearing: `acl_view_at` observes only the ancestry
+    // Forward-only is load-bearing: the projection observes only the ancestry
     // of the cited heads, so a pre-removal write resolves to `Authorized` on a
     // receiver that has already applied the later removal — peers observing
     // ops in different orders still converge.
     //
     // INVARIANT: `ContextManager` serializes governance ops, so no concurrent
     // group reassignment can interleave between the group lookup inside
-    // `authorize_delta_at_edge` and its membership walk.
+    // `authorize_delta_at_edge_projected` and its membership walk.
     let datastore = node_clients.context.datastore();
-    let delta_auth = authorize_delta_at_edge(
+    // F5 #29b: resolve membership from the PROJECTION at the op's governance cut (no
+    // live `acl_view_at`). The maintained projection is the sole authority here —
+    // validated divergence-free against live across the `membership-cut` /
+    // `membership-cut-grant` / `data-write-role` / `data-write-decision` planes.
+    // `member_at_cut` is the conservative verdict (`Some(true)` member incl.
+    // materialized, `Some(false)` not-a-member, `None` cited ancestry not folded →
+    // buffer); the role is the effective at-cut role written through to peer-identity
+    // observation. Every delta-auth path (gossip, parent-fetch, snapshot-replay,
+    // DAG-catchup) now shares this projection verdict via `resolve_cut_membership`.
+    let delta_auth = authorize_delta_at_edge_projected(
         datastore,
         &context_id,
         &author_id,
         governance_position.as_ref(),
+        |group, heads| resolve_cut_membership(&node_state, datastore, group, &author_id, heads),
     );
 
     match delta_auth {
@@ -985,64 +1036,15 @@ pub async fn handle_state_delta(
                 %author_id,
                 role = ?role,
                 group_id = ?group,
-                "cross-DAG check: author authorized at governance cut"
+                "cross-DAG check: author authorized at governance cut (projection)"
             );
 
-            // CO-AUTHORIZER (F4a, the safe direction): live resolved
-            // `Authorized`; the projection must concur. If it does NOT see the
-            // author as a member at the cut, we DENY (return). This only ever ADDS
-            // rejections to live's authorize (a strict AND) — it can never
-            // over-authorize, the safe half of the flip. The GRANT half is
-            // deferred (see the `MembershipReject` arm).
-            //
-            // Uses the REFRESHING read (incl. the conservative materialized
-            // fallback) so a cold projection isn't a false-deny of a real member.
-            // A wrong denial trips the hard divergence marker → fails an e2e
-            // scenario AND the gate on this do-not-merge branch. `None` (projection
-            // can't form an answer) defers to live.
-            if let Some(gp) = governance_position.as_ref() {
-                let heads = &gp.governance_dag_heads;
-                let projected =
-                    projection_member_at_cut(&node_state, datastore, group, &author_id, heads);
-                if projected == Some(false) {
-                    // Diagnostics distinguish the failure mode: empty projection
-                    // (log_len 0) vs cut heads absent from the log (heads_in_log
-                    // 0) vs ops present but author not folded into any group.
-                    let (
-                        backfilled,
-                        ns_resolved,
-                        log_len,
-                        heads_in_log,
-                        author_in_any,
-                        decision_group_in_view,
-                        decision_group_size,
-                    ) = node_state
-                        .read_scope_projections()
-                        .cut_diagnostics(datastore, group, &author_id, heads);
-                    warn!(
-                        marker = "unified_projection_divergence",
-                        plane = "membership-cut",
-                        group_id = ?group,
-                        %author_id,
-                        ns_resolved,
-                        backfilled,
-                        log_len,
-                        heads_len = heads.len(),
-                        heads_in_log,
-                        author_in_any,
-                        decision_group_in_view,
-                        decision_group_size,
-                        "projection denied a write the live resolver authorized — rejecting (cutover gate)"
-                    );
-                    return Ok(());
-                }
-            }
-
-            // Both authorities concur (or the projection abstained). Record the
-            // (peer, identity) pair now that the signature verified AND the author
-            // is an authorized member at the named cut. Consumed by
-            // anchor-preferred sync peer selection; the group + role at the cut
-            // also write through to the durable `peer_identity_cache`.
+            // The projection resolved `Member(role)` at the cut (the resolver above is
+            // the sole authority on the gossip path now — no live cross-check). Record
+            // the (peer, identity) pair now that the signature verified AND the author
+            // is an authorized member at the named cut. Consumed by anchor-preferred
+            // sync peer selection; the group + role at the cut also write through to
+            // the durable `peer_identity_cache`.
             node_state.observe_peer_identity(
                 source,
                 author_id,
@@ -1052,70 +1054,22 @@ pub async fn handle_state_delta(
                 }),
             );
         }
-        DeltaAuthOutcome::MembershipReject { group, reason } => {
-            // SOLE AUTHORITY (grant direction): the projection is the authoritative
-            // membership decider; live's membership-reject here is the cross-check.
-            // If the projection AUTHORITATIVELY sees the author as a member at the
-            // cut, AUTHORIZE (fall through to apply), overriding live's reject.
-            //
-            // "Authoritatively" = `member_at_cut_authoritative`: grants ONLY when
-            // the COMPLETE cited ancestry is folded AND the at-cut inheritance walk
-            // confirms membership — never via the materialized fallback. With the
-            // open-subgroup inheritance fold now faithful (MemberJoinedOpen is a
-            // Noop derived by the walk), this matches live in both directions —
-            // cross-validated deterministically in
-            // calimero-context tests/projection_membership_equivalence.rs. `None`
-            // (cut not fully folded) and `Some(false)` fall through to the reject.
-            //
-            // Refreshes the projection first (shared with the deny arm) so a cold
-            // or stale fold doesn't spuriously abstain and drop a legitimate
-            // inherited-join write the gossip path would accept. `None`/`Some(false)`
-            // after refresh stay safe — they reject, never over-grant.
-            //
-            // A grant that disagrees with live trips the hard divergence gate
-            // (membership-cut-grant), so a wrong grant fails an e2e scenario AND the
-            // gate.
-            //
-            // SCOPE: the flip lands on the primary gossip path here first. The other
-            // `MembershipReject` sites (sync delta-request, parent-fetch replay) stay
-            // live-only for now and remain conservative — they DROP, which is
-            // recoverable: the same delta re-arrives via gossip (this path) or via
-            // hash-heartbeat-triggered snapshot sync, so a recovery-path drop cannot
-            // cause permanent divergence. They migrate once this path is validated.
-            let granted = governance_position.as_ref().is_some_and(|gp| {
-                projection_member_at_cut_authoritative(
-                    &node_state,
-                    datastore,
-                    group,
-                    &author_id,
-                    &gp.governance_dag_heads,
-                ) == Some(true)
-            });
-            if granted {
-                warn!(
-                    marker = "unified_projection_divergence",
-                    plane = "membership-cut-grant",
-                    group_id = ?group,
-                    %author_id,
-                    reason,
-                    "projection authorizes a write the live resolver rejected — proceeding (sole authority)"
-                );
-                // Record the (peer, identity) pair like the Authorized arm — a peer
-                // authorized solely by the projection must still feed anchor-preferred
-                // sync peer selection. The authoritative read returns no role, so
-                // observe without a membership annotation.
-                node_state.observe_peer_identity(source, author_id, None);
-                // Fall through to the apply path: the projection is authoritative.
-            } else {
-                warn!(
-                    %context_id,
-                    %author_id,
-                    delta_id = ?delta_id,
-                    reason,
-                    "cross-DAG check: rejecting state delta (projection concurs)"
-                );
-                return Ok(());
-            }
+        DeltaAuthOutcome::MembershipReject { reason } => {
+            // SOLE AUTHORITY: the projection is the only membership decider on the
+            // gossip path now. Reaching here means the resolver returned `NotMember`
+            // (`member_at_cut == Some(false)` — the cited ancestry is fully folded and
+            // the author is not a member at the cut). A member known only via the
+            // materialized fallback would have resolved `Member`, and an
+            // incompletely-folded cut would have resolved `Incomplete` → `Buffer`; so
+            // this is a definitive not-a-member verdict. Reject.
+            warn!(
+                %context_id,
+                %author_id,
+                delta_id = ?delta_id,
+                reason,
+                "cross-DAG check: rejecting state delta (not a member at the governance cut)"
+            );
+            return Ok(());
         }
         DeltaAuthOutcome::Reject(reason) => {
             // Structural / error reject (bypass attempt, edge on a non-group
@@ -1219,6 +1173,10 @@ async fn request_missing_deltas(
     our_identity: PublicKey,
     delta_store: DeltaStore,
     datastore: calimero_store::Store,
+    // The maintained projection, for at-cut membership authorization of fetched
+    // deltas (F5 #29b). Borrowed for the duration of the fetch; the caller awaits
+    // inline so the borrow outlives every projection read.
+    node_state: &crate::NodeState,
 ) -> Result<Vec<([u8; 32], Vec<u8>)>> {
     use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
@@ -1418,7 +1376,7 @@ async fn request_missing_deltas(
 
                     // Group/membership authorization — including the group-id
                     // anti-bypass that the old `GroupIdCheck` performed — is
-                    // done by `authorize_delta_at_edge` below (after the
+                    // done by `authorize_delta_at_edge_projected` below (after the
                     // ReadOnly gate), deriving the group from the context.
 
                     // ReadOnly check — parity with the gossip apply
@@ -1445,13 +1403,25 @@ async fn request_missing_deltas(
                     // Cross-DAG authorization against the governance parent
                     // edge: derives the group from the context (folding in the
                     // old group-id anti-bypass) and resolves membership at the
-                    // cited cut. Reject deltas whose author was removed / never
-                    // a member; skip when the cut isn't locally known.
-                    match authorize_delta_at_edge(
+                    // cited cut FROM THE PROJECTION (F5 #29b), parity with the
+                    // gossip path. Reject deltas whose author is not a member at
+                    // the cut; skip (Buffer) when the cited ancestry isn't folded
+                    // yet — the same delta re-arrives via gossip once governance
+                    // catches up, so a skip here can't cause permanent divergence.
+                    match authorize_delta_at_edge_projected(
                         &datastore,
                         &context_id,
                         &response_author,
                         governance_position.as_ref(),
+                        |group, heads| {
+                            resolve_cut_membership(
+                                node_state,
+                                &datastore,
+                                group,
+                                &response_author,
+                                heads,
+                            )
+                        },
                     ) {
                         DeltaAuthOutcome::Authorized { .. } | DeltaAuthOutcome::Ungated => {}
                         DeltaAuthOutcome::Reject(reason)
@@ -1784,21 +1754,23 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // this, every delta arriving inside the sync window bypasses cross-DAG
     // authorization.
     //
-    // Authorize against the governance parent edge — same
-    // `authorize_delta_at_edge` path as `handle_state_delta`, but the
-    // `Buffer` outcome is interpreted as a DROP here: after snapshot sync the
-    // receiver is at-or-ahead of any legitimate authoring cut, so persistent
-    // Unknown means the edge cites heads we provably do not have, and
-    // re-buffering would be a permanent leak.
+    // Authorize against the governance parent edge from the PROJECTION (F5 #29b),
+    // parity with the gossip path, but the `Buffer` outcome is interpreted as a
+    // DROP here: after snapshot sync the receiver is at-or-ahead of any legitimate
+    // authoring cut, so a persistently-unfolded cut means the edge cites heads we
+    // provably do not have, and re-buffering would be a permanent leak.
     //
     // INVARIANT: `ContextManager` serializes governance ops, so no concurrent
     // group reassignment can interleave between the group lookup and the walk.
     let datastore = context_client.datastore();
-    match authorize_delta_at_edge(
+    match authorize_delta_at_edge_projected(
         datastore,
         &context_id,
         &buffered.author_id,
         buffered.governance_position.as_ref(),
+        |group, heads| {
+            resolve_cut_membership(&node_state, datastore, group, &buffered.author_id, heads)
+        },
     ) {
         DeltaAuthOutcome::Ungated => {}
         DeltaAuthOutcome::Authorized { group, role } => {

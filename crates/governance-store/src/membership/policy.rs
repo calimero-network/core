@@ -22,6 +22,13 @@ pub struct MembershipPolicy<'a> {
     store: &'a Store,
     group_id: ContextGroupId,
     membership: GroupMembershipView<'a>,
+    /// The applied op's causal cut (parent op hashes), at which the last-admin
+    /// invariants resolve (F5 #28 stage 4c). Empty outside the group-op apply path.
+    parents: &'a [[u8; 32]],
+    /// The at-cut apply-auth decision source (F5 #28 stage 4c). The default
+    /// [`LiveFallbackAuthorizer`](crate::authorizer::LiveFallbackAuthorizer) returns
+    /// `None`, so the last-admin shadow is inert for non-apply constructions.
+    authorizer: &'a dyn crate::authorizer::AtCutAuthorizer,
 }
 
 impl<'a> MembershipPolicy<'a> {
@@ -31,17 +38,46 @@ impl<'a> MembershipPolicy<'a> {
             store,
             group_id,
             membership,
+            parents: &[],
+            authorizer: &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
         }
     }
 
+    /// Attach the op's causal cut + the at-cut authorizer so the last-admin
+    /// invariants SHADOW the projection's PARENT-cut verdict against live (F5 #28
+    /// stage 4c, plane `last-admin`). Without it (the default) the shadow is inert.
+    #[must_use]
+    pub fn with_apply_auth(
+        mut self,
+        parents: &'a [[u8; 32]],
+        authorizer: &'a dyn crate::authorizer::AtCutAuthorizer,
+    ) -> Self {
+        self.parents = parents;
+        self.authorizer = authorizer;
+        self
+    }
+
+    /// Would removing/demoting `member` orphan `group`'s admins? Resolved at the op's
+    /// PARENT cut from the projection (F5 #28 stage 4c-flip) — `is_last_admin_at_cut`
+    /// reads the pre-mutation admin set as of the op's own parents (the correct cut
+    /// for a check the op is about to invalidate). `None` — no apply-auth context (a
+    /// local pre-check / cascade / test) OR an incomplete fold — falls back to the
+    /// live `is_admin && !has_another_admin`. The live fallback retires in #29b.
+    fn would_orphan_admins(&self, member: &PublicKey) -> EyreResult<bool> {
+        if let Some(blocks) =
+            self.authorizer
+                .is_last_admin_at_cut(&self.group_id, member, self.parents)
+        {
+            return Ok(blocks);
+        }
+        Ok(self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?)
+    }
+
     pub fn ensure_not_last_admin_removal(&self, member: &PublicKey) -> EyreResult<()> {
-        if !self.membership.is_admin(member)? {
-            return Ok(());
+        if self.would_orphan_admins(member)? {
+            bail!(MembershipError::LastAdmin);
         }
-        if self.membership.has_another_admin(member)? {
-            return Ok(());
-        }
-        bail!(MembershipError::LastAdmin);
+        Ok(())
     }
 
     pub fn ensure_not_last_admin_demotion(
@@ -52,13 +88,10 @@ impl<'a> MembershipPolicy<'a> {
         if *new_role == GroupMemberRole::Admin {
             return Ok(());
         }
-        if !self.membership.is_admin(member)? {
-            return Ok(());
+        if self.would_orphan_admins(member)? {
+            bail!(MembershipError::LastAdminDemotion);
         }
-        if self.membership.has_another_admin(member)? {
-            return Ok(());
-        }
-        bail!(MembershipError::LastAdminDemotion);
+        Ok(())
     }
 
     pub fn require_tee_attestation_verifier_membership(

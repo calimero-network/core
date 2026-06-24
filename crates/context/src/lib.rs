@@ -28,6 +28,7 @@ use tokio::sync::{Mutex, RwLock};
 use calimero_governance_store::metrics::Metrics;
 
 pub mod activation;
+pub(crate) mod apply_authorizer;
 pub mod auto_follow;
 mod cache;
 pub mod config;
@@ -54,7 +55,6 @@ pub(crate) use cache::{BoundedCache, Evictable};
 // new crate and not re-exported.
 pub mod group_store {
     pub use calimero_governance_store::{
-        acl_view_at,
         apply_local_signed_group_op,
         apply_received_group_key,
         apply_signed_namespace_op,
@@ -96,7 +96,6 @@ pub mod group_store {
         MembershipError,
         MembershipPath,
         MembershipRepository,
-        MembershipStatus,
         MetaError,
         MetaRepository,
         MetadataRepository,

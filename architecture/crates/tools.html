@@ -524,6 +524,7 @@ merod --home /data --node mynode init \
 <div class="card gb">
 <h3>TEE Mode</h3>
 <p>When <span class="code">[tee]</span> configuration is present, merod fetches a storage encryption key from a KMS at startup using TDX attestation. See <a href="../tee-mode.html">TEE Mode</a> for full details.</p>
+<p style="margin-top:10px;"><strong>Note:</strong> The <span class="code">NEAR_API_KEY</span> environment variable is no longer referenced by merod and should be removed from any runbooks or environment configurations.</p>
 </div>
 
 <h2 id="meroctl">meroctl</h2>
@@ -538,7 +539,7 @@ merod --home /data --node mynode init \
 </div>
 <div class="cb">
 <h4>context</h4>
-<p><span class="code">create</span>, <span class="code">list</span>, <span class="code">update</span>, <span class="code">delete</span> — context lifecycle. Join contexts via <span class="code">group join-context</span>.</p>
+<p><span class="code">create</span>, <span class="code">list</span>, <span class="code">update</span>, <span class="code">delete</span> — context lifecycle. Join contexts via <span class="code">group join-context</span>. The <span class="code">create</span> command no longer accepts a <span class="code">--protocol</span> flag.</p>
 </div>
 <div class="cb">
 <h4>group</h4>
@@ -569,7 +570,7 @@ merod --home /data --node mynode init \
 <span class="comment"># Install an application bundle</span>
 meroctl --node mynode app install --path app.mpk
 
-<span class="comment"># Create a context</span>
+<span class="comment"># Create a context (--protocol flag has been removed)</span>
 meroctl --node mynode context create --application-id APP_ID
 
 <span class="comment"># Call a method</span>
@@ -577,6 +578,7 @@ meroctl --node mynode call set_item \
   --context CTX_ID --as MEMBER_KEY \
   --args '{"key": "hello", "value": "world"}'
 </div>
+<p style="margin-top:12px;font-size:0.9em;color:#6b6b80;">The <span class="code">context client-keys</span> output table contains <strong>Signing Key</strong> and <strong>Created At</strong> columns only — the Wallet Type column has been removed.</p>
 </div>
 
 </div>

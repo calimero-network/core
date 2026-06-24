@@ -26,6 +26,14 @@ impl GroupGovernanceApplier {
 #[async_trait::async_trait]
 impl DeltaApplier<SignedGroupOp> for GroupGovernanceApplier {
     async fn apply(&self, delta: &CausalDelta<SignedGroupOp>) -> Result<(), ApplyError> {
+        // F5 #28 stage 4: the STANDALONE group-op DAG keeps the LIVE gates. A
+        // `SignedGroupOp`'s `parent_op_hashes` live in the per-group op log, NOT the
+        // namespace governance log the projection is keyed by — so handing them to
+        // `EphemeralProjectionAuthorizer` (a namespace-projection resolver) would have
+        // it treat group-DAG hashes as namespace delta ids, fail `cut_ancestry_complete`,
+        // and silently no-op to live anyway. The real `group-auth` shadow/flip runs on
+        // the namespace-ENVELOPE group-op path (`NamespaceGovernance` decrypt-and-apply),
+        // where the cut is the enclosing namespace op's parents (correct id-space).
         calimero_governance_store::apply_local_signed_group_op(&self.store, &delta.payload)
             .map_err(|e| ApplyError::Application(e.to_string()))
     }
@@ -104,9 +112,19 @@ impl NamespaceGovernanceApplier {
 #[async_trait::async_trait]
 impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
     async fn apply(&self, delta: &CausalDelta<SignedNamespaceOp>) -> Result<(), ApplyError> {
-        let outcome =
-            calimero_governance_store::apply_signed_namespace_op(&self.store, &delta.payload)
-                .map_err(|e| ApplyError::Application(e.to_string()))?;
+        // F5 #28 (stage 3b): authorize the apply gates against the PROJECTION at the
+        // op's causal cut. The ephemeral authorizer folds the namespace's persisted
+        // governance DAG and resolves admin authority as of `delta.parents`; on an
+        // incomplete fold it returns `None` and the gate falls back to the live
+        // resolver, so a cold/racing fold never wrongly rejects a valid op.
+        let authorizer = crate::apply_authorizer::EphemeralProjectionAuthorizer::new(&self.store);
+        let outcome = calimero_governance_store::apply_signed_namespace_op_at_cut(
+            &self.store,
+            &delta.payload,
+            &delta.parents,
+            &authorizer,
+        )
+        .map_err(|e| ApplyError::Application(e.to_string()))?;
         if let Some(report) = outcome.divergence {
             // Last-writer-wins on the outbox. The applier instance
             // is single-flight per actor message turn, so multiple

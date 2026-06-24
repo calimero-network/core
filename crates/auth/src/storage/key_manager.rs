@@ -459,7 +459,7 @@ mod tests {
         // Test root key operations
         let root_key = Key::new_root_key_with_permissions(
             "test_pub_key".to_string(),
-            "near".to_string(),
+            "user_password".to_string(),
             vec!["admin".to_string(), "test_permission".to_string()],
             None, // No node_id for test
         );
@@ -471,7 +471,7 @@ mod tests {
         let retrieved = retrieved.unwrap();
         assert!(retrieved.is_root_key());
         assert_eq!(retrieved.get_public_key(), Some("test_pub_key"));
-        assert_eq!(retrieved.get_auth_method(), Some("near"));
+        assert_eq!(retrieved.get_auth_method(), Some("user_password"));
 
         // Test find by public key
         let found = key_manager

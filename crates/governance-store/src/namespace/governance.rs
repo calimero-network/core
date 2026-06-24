@@ -82,6 +82,16 @@ pub(crate) fn classify_report_readiness(
 pub struct NamespaceGovernance<'a> {
     store: &'a Store,
     namespace_id: [u8; 32],
+    /// The op's causal cut (its parent op hashes), threaded to the apply gates so
+    /// they can authorize against the projection AS OF the op's parents. Empty for
+    /// constructions outside the live apply path (sign/read/tests), which keep the
+    /// live resolver via the default authorizer below.
+    parents: &'a [[u8; 32]],
+    /// The at-cut apply-auth decision source (F5 #28). Defaults to
+    /// [`LiveFallbackAuthorizer`] (always `None` → live), overridden on the live
+    /// apply path by [`with_apply_auth`](Self::with_apply_auth) with a projection-
+    /// backed authorizer.
+    authorizer: &'a dyn crate::authorizer::AtCutAuthorizer,
 }
 
 impl<'a> NamespaceGovernance<'a> {
@@ -89,7 +99,24 @@ impl<'a> NamespaceGovernance<'a> {
         Self {
             store,
             namespace_id,
+            parents: &[],
+            authorizer: &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
         }
+    }
+
+    /// Attach the op's causal cut + the at-cut apply-auth source for the live apply
+    /// path (F5 #28). Without this the gates use the live resolver (the default
+    /// authorizer returns `None`); with it they consult the projection at `parents`
+    /// and fall back to live only when the cited ancestry isn't fully folded.
+    #[must_use]
+    pub fn with_apply_auth(
+        mut self,
+        parents: &'a [[u8; 32]],
+        authorizer: &'a dyn crate::authorizer::AtCutAuthorizer,
+    ) -> Self {
+        self.parents = parents;
+        self.authorizer = authorizer;
+        self
     }
 
     /// Returns current DAG head as parent hashes + next nonce.
@@ -1430,8 +1457,23 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        let (handled, divergence, pending_events) =
-            apply_group_op_mutations(self.store, group_id, signer, op)?;
+        // Group ops carried in namespace envelopes authorize at the cut of THEIR OWN
+        // enclosing namespace op (F5 #28 stage 4) — `signed_group_op.parent_op_hashes`
+        // is that op's parents (copied in `decrypt_and_apply_group_op`). Use it, NOT
+        // `self.parents`: `retry_encrypted_ops_for_group` re-applies buffered group
+        // candidates within ONE KeyDelivery apply, so `self.parents` would be the
+        // KeyDelivery cut for every replayed candidate — the projection-backed gates
+        // would then judge each at the wrong cut. The authorizer carries no per-op
+        // state (its fold is the whole namespace; the cut is applied at resolve
+        // time), so reusing `self.authorizer` with the candidate's parents is correct.
+        let (handled, divergence, pending_events) = apply_group_op_mutations(
+            self.store,
+            group_id,
+            signer,
+            op,
+            &signed_group_op.parent_op_hashes,
+            self.authorizer,
+        )?;
         if !handled {
             tracing::debug!(
                 ?op,
@@ -1618,9 +1660,15 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        // Per-variant logic lives in `ops/namespace/<variant>.rs` (#2481).
-        let mut ctx =
-            super::super::ops::namespace::NamespaceApplyCtx::new(self.store, self.namespace_id);
+        // Per-variant logic lives in `ops/namespace/<variant>.rs` (#2481). The
+        // op's causal cut + the at-cut authorizer ride along so the gates can
+        // authorize against the projection at the op's parents (F5 #28).
+        let mut ctx = super::super::ops::namespace::NamespaceApplyCtx::new(
+            self.store,
+            self.namespace_id,
+            self.parents,
+            self.authorizer,
+        );
         super::super::ops::namespace::dispatch_root_op(&mut ctx, op, root)?;
         Ok(ctx.take_events())
     }
@@ -1650,11 +1698,30 @@ fn root_op_commits_to_namespace_state(op: &RootOp) -> bool {
     )
 }
 
+/// Apply a signed namespace op with the LIVE apply-auth gates (no causal cut).
+/// The backward-compatible entry for call sites without an at-cut authorizer
+/// (tests, internal facades); the production apply path uses
+/// [`apply_signed_namespace_op_at_cut`].
 pub fn apply_signed_namespace_op(
     store: &Store,
     op: &SignedNamespaceOp,
 ) -> EyreResult<ApplyNamespaceOpResult> {
-    NamespaceGovernance::new(store, op.namespace_id).apply_signed_op(op)
+    apply_signed_namespace_op_at_cut(store, op, &[], &crate::authorizer::LIVE_FALLBACK_AUTHORIZER)
+}
+
+/// Apply a signed namespace op, authorizing the apply gates against `authorizer`
+/// at the op's causal cut `parents` (F5 #28). The gate consults the projection-
+/// backed authorizer first and falls back to the live resolver on `None` (an
+/// incomplete fold). This is the production apply path.
+pub fn apply_signed_namespace_op_at_cut(
+    store: &Store,
+    op: &SignedNamespaceOp,
+    parents: &[[u8; 32]],
+    authorizer: &dyn crate::authorizer::AtCutAuthorizer,
+) -> EyreResult<ApplyNamespaceOpResult> {
+    NamespaceGovernance::new(store, op.namespace_id)
+        .with_apply_auth(parents, authorizer)
+        .apply_signed_op(op)
 }
 
 /// Decrypt the cleartext [`GroupOp`] carried by a `NamespaceOp::Group` envelope

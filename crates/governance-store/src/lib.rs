@@ -38,6 +38,7 @@ pub mod registration_notify;
 
 pub mod absorb;
 pub mod absorb_record;
+pub mod authorizer;
 mod capabilities;
 pub mod cascade;
 mod context_registration;
@@ -66,6 +67,9 @@ use self::local_state::{op_log_contains_content_hash, persist_group_governance_p
 
 pub use self::absorb::AbsorbRepository;
 pub use self::absorb_record::{AbsorbRecord, AbsorbedEntity, AbsorbedLeaf};
+pub use self::authorizer::{
+    AtCutAuthorizer, AtCutMembershipPath, LiveFallbackAuthorizer, LIVE_FALLBACK_AUTHORIZER,
+};
 pub use self::capabilities::CapabilitiesRepository;
 
 pub use self::context_registration::ContextRegistrationService;
@@ -89,9 +93,7 @@ pub use self::local_state::{
     track_member_context_join,
 };
 pub use self::membership::MembershipRepository;
-pub use self::membership::{
-    acl_view_at, GroupMembershipView, MembershipPath, MembershipPolicy, MembershipStatus,
-};
+pub use self::membership::{GroupMembershipView, MembershipPath, MembershipPolicy};
 pub use self::meta::MetaRepository;
 
 pub use self::metadata::MetadataRepository;
@@ -99,10 +101,11 @@ pub use self::metadata::MetadataRepository;
 pub use self::namespace::NamespaceRepository;
 pub use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
-    apply_received_group_key, apply_signed_namespace_op, build_group_key_delivery,
-    collect_skeleton_delta_ids_for_group, decrypt_group_op, known_namespace_identities,
-    namespace_groups_awaiting_key, namespace_groups_with_held_key_buffered_ops,
-    redrive_buffered_ops_for_group, retry_encrypted_ops_for_group, sign_and_publish_namespace_op,
+    apply_received_group_key, apply_signed_namespace_op, apply_signed_namespace_op_at_cut,
+    build_group_key_delivery, collect_skeleton_delta_ids_for_group, decrypt_group_op,
+    known_namespace_identities, namespace_groups_awaiting_key,
+    namespace_groups_with_held_key_buffered_ops, redrive_buffered_ops_for_group,
+    retry_encrypted_ops_for_group, sign_and_publish_namespace_op,
     sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure,
     NamespaceDagService, NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord,
     NamespaceMembershipService, NamespaceOpLogService, NamespaceRetryService, ReparentOutcome,
@@ -1223,12 +1226,20 @@ fn apply_group_op_mutations(
     group_id: &ContextGroupId,
     signer: &PublicKey,
     op: &GroupOp,
+    parents: &[[u8; 32]],
+    authorizer: &dyn crate::authorizer::AtCutAuthorizer,
 ) -> EyreResult<(
     bool,
     Option<DivergenceReport>,
     Vec<crate::op_events::OpEvent>,
 )> {
-    let mut ctx = ops::group::GroupApplyCtx::new(store, group_id, signer);
+    // The op's causal cut + at-cut authorizer ride into the apply gates so the
+    // `PermissionChecker` admin/capability gates resolve against the projection at
+    // the op's cut, with live as the `None`-fallback (F5 #28 stage 4). The default
+    // (live-fallback) authorizer keeps callers without an apply-auth context on live.
+    let mut ctx = ops::group::GroupApplyCtx::new_with_apply_auth(
+        store, group_id, signer, parents, authorizer,
+    );
     let handled = ops::group::dispatch(&mut ctx, op)?;
     Ok((handled, ctx.divergence, ctx.pending_events))
 }
@@ -1249,6 +1260,20 @@ fn apply_group_op_mutations(
 /// authorization is checked against the *current* group state (not the parent
 /// state), and the `DagStore` performs topological ordering independently.
 pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreResult<()> {
+    apply_local_signed_group_op_at_cut(store, op, &crate::authorizer::LIVE_FALLBACK_AUTHORIZER)
+}
+
+/// [`apply_local_signed_group_op`] with the at-cut apply-auth source attached: the
+/// `PermissionChecker` admin/capability gates resolve against the projection at the
+/// op's own `parent_op_hashes`, with live as the `None`-fallback (F5 #28 stage 4).
+/// The production apply path (the group DAG applier) injects a projection-backed
+/// authorizer; the plain `apply_local_signed_group_op` passes the inert live
+/// fallback so existing callers (tests, replay) are unchanged.
+pub fn apply_local_signed_group_op_at_cut(
+    store: &Store,
+    op: &SignedGroupOp,
+    authorizer: &dyn crate::authorizer::AtCutAuthorizer,
+) -> EyreResult<()> {
     if op.parent_op_hashes.len() > MAX_PARENT_OP_HASHES {
         bail!(
             "too many parent_op_hashes ({}, max {})",
@@ -1300,8 +1325,14 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         return Ok(());
     }
 
-    let (handled, _divergence, pending_events) =
-        apply_group_op_mutations(store, &group_id, &op.signer, &op.op)?;
+    let (handled, _divergence, pending_events) = apply_group_op_mutations(
+        store,
+        &group_id,
+        &op.signer,
+        &op.op,
+        &op.parent_op_hashes,
+        authorizer,
+    )?;
     // The `_divergence` outcome is dropped on the local-apply path —
     // this entry point is used by callers (local replay, tests) that
     // are not the gossipsub-receive path. The reconcile-via-anchor
