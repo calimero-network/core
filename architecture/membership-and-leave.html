@@ -229,12 +229,12 @@ of when the receiver learns about the removal.
 <h3>How it's implemented</h3>
 <p>
 Every state delta carries a <code>governance_position</code> field that names the governance-DAG
-heads the author observed at sign time. On receive, the apply path calls
-<code>membership_status_at(signer, delta.governance_position)</code> — which walks the
-<em>ancestry</em> of the signed heads and replays the membership state machine. The walk visits
+heads the author observed at sign time. On receive, the apply path evaluates membership at the
+signed heads via the unified projection — which resolves the ancestry of those heads and derives
+the membership state from the folded projection. The resolution visits
 only the prefix that was already final when the delta was signed; anything causally <em>after</em>
 the signed cut (including a later <code>MemberRemoved</code> for this signer) is invisible to
-the walk and cannot retroactively invalidate the delta.
+the resolution and cannot retroactively invalidate the delta.
 </p>
 <p>
 The namespace-level applier (<code>NamespaceGovernanceApplier</code> in
@@ -244,8 +244,11 @@ The namespace-level applier (<code>NamespaceGovernanceApplier</code> in
 rather than the cut-free <code>apply_signed_namespace_op</code>. Passing <code>delta.parents</code>
 as the causal cut ensures membership is evaluated at the position the author signed against.
 <code>LIVE_FALLBACK_AUTHORIZER</code> is a placeholder authorizer that delegates to the live store;
-it is intended to be replaced by a projection-backed authorizer in a future stage (stage&nbsp;3b),
-at which point no call-site changes will be needed.
+membership authorization for all other paths is now handled entirely by the unified projection
+(<code>EphemeralProjectionAuthorizer</code> / <code>ScopeProjections</code>) — the
+<code>acl_view_at</code>, <code>MembershipStatus</code>, <code>prefix_walk_membership</code>,
+<code>MembershipTransition</code>, <code>heads_equal</code>, and <code>MAX_PREFIX_WALK_NODES</code>
+helpers that previously backed the live DAG-walk resolver have been deleted.
 </p>
 
 <h3>Resolving the current governance cut — <code>ScopeProjections::namespace_current_heads</code></h3>
@@ -369,7 +372,10 @@ returns the live list unchanged.
 <p>
 <b>Operator note.</b> <code>membership-role</code> divergence warnings in logs indicate a
 pre-flip validation failure. They will block the eventual flip of <code>list_group_members</code>
-from the live store to the projection as the authoritative source.
+from the live store to the projection as the authoritative source. Note that
+<code>acl_view_at</code> and <code>MembershipStatus</code> (the former live DAG-walk resolver
+types) are no longer available; divergence detection now operates entirely through
+<code>ScopeProjections</code> projection methods.
 </p>
 
 <h3>Full effective-member enumeration — <code>ScopeProjections::member_entries_with</code></h3>
@@ -614,17 +620,16 @@ effect on whether an op is accepted or rejected.
 Two classes of change would silently re-introduce the divergence described above:
 </p>
 <ul>
-  <li><b>Calling the check with the wrong position.</b> Any caller of
-  <code>membership_status_at</code> that passes the receiver's current state (or any
-  post-cut heuristic) instead of the signed delta position breaks forward-only. The three
-  production call sites — gossip-receive, governance-pending drain, and snapshot-sync replay
-  — each carry inline comments naming this contract; reviewers should flag any new caller
-  that doesn't pass <code>delta.governance_position</code> verbatim.</li>
-  <li><b>Changing the prefix walk to visit descendants.</b> A "performance optimization" that
-  has the BFS catch up to local heads after visiting the signed heads would observe ops the
-  signer hadn't signed against, including later <code>MemberRemoved</code> ops. The forward-only
-  contract is documented on the public <code>membership_status_at</code> function; the
-  internal BFS in <code>prefix_walk_membership</code> implements it, and the
+  <li><b>Calling the projection with the wrong position.</b> Any caller of the at-cut membership
+  resolver that passes the receiver's current state (or any post-cut heuristic) instead of the
+  signed delta position breaks forward-only. The three production call sites — gossip-receive,
+  governance-pending drain, and snapshot-sync replay — each carry inline comments naming this
+  contract; reviewers should flag any new caller that doesn't pass
+  <code>delta.governance_position</code> verbatim.</li>
+  <li><b>Expanding the cut resolution to visit descendants.</b> A "performance optimization" that
+  advances the resolved cut beyond the signed heads would observe ops the signer hadn't signed
+  against, including later <code>MemberRemoved</code> ops. The forward-only contract is
+  documented on the public projection at-cut methods; the
   <code>prefix_walk_forward_only_*</code> regression tests pin the boundary.</li>
 </ul>
 
