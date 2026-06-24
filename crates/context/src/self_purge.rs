@@ -64,6 +64,7 @@
 //! evicted TEE node held locally — including the now-useless old key
 //! material the rotation already orphaned.
 
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 use calimero_context_config::types::ContextGroupId;
@@ -506,6 +507,24 @@ async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
 /// so enumeration shrinking is NOT the termination signal — the applied-count
 /// is. Re-driving an already-drained group is a cheap idempotent no-op.
 ///
+/// # Pass narrowing (W5)
+///
+/// The first pass enumerates every namespace and every held-key group with
+/// buffered ops. Re-enumerating that full set on EVERY subsequent pass is
+/// wasteful: the append-only op-log keeps returning groups that already
+/// drained, so a naive loop is O(namespaces × groups × ops) × MAX_PASSES even
+/// when only one group ever unblocks another. Instead, each pass records the
+/// `(namespace, group)` pairs that applied ≥1 op, and the NEXT pass visits
+/// only those. This is sound because the cross-signer dependency that needs
+/// extra passes is WITHIN a single group: the nonce window is tracked
+/// per-`(group, signer)`, so applying an op advances only that group's window
+/// and can only unblock a later op IN THE SAME GROUP. A group that applied
+/// nothing this pass therefore cannot become applicable next pass purely
+/// because some OTHER group drained, so dropping it is safe. The convergence
+/// condition is unchanged (an empty progressed set marks the fixpoint), so
+/// termination and the `MAX_PASSES` cap are preserved; we only shrink the work
+/// each pass scans.
+///
 /// # Best-effort
 ///
 /// Structurally SEPARATE from the purge reconcile (it does NOT touch the
@@ -532,68 +551,87 @@ fn redrive_stranded_ops_sweep(store: &Store) {
     let scanned_namespaces = namespaces.len();
     let mut total_redriven = 0usize;
 
-    // Convergence loop: re-run the whole sweep until a pass applies nothing
-    // new. Each pass drains the buffered set, so this is monotone and bounded.
+    // Convergence loop: re-run the sweep until a pass applies nothing new. Each
+    // pass drains the buffered set, so this is monotone and bounded.
+    //
+    // Pass narrowing (W5): the first pass enumerates the full held-key set from
+    // the store; every later pass visits ONLY the `(namespace, group)` pairs
+    // that progressed in the previous pass (a group that applied nothing cannot
+    // newly unblock a cross-signer dependency, so revisiting it is pure waste).
     let mut pass = 0usize;
+    // `None` => first pass, enumerate everything from the store. `Some(set)` =>
+    // visit only these pairs (those that progressed last pass).
+    let mut work: Option<HashSet<([u8; 32], [u8; 32])>> = None;
     loop {
         pass += 1;
-        let mut made_progress = false;
+        // Pairs that applied ≥1 op this pass; becomes next pass's work set.
+        let mut progressed: HashSet<([u8; 32], [u8; 32])> = HashSet::new();
 
-        for ns_id in &namespaces {
+        // Materialize this pass's (namespace, group) work list.
+        let pass_pairs: Vec<([u8; 32], [u8; 32])> = match &work {
+            Some(narrowed) => narrowed.iter().copied().collect(),
+            None => {
+                let mut pairs = Vec::new();
+                for ns_id in &namespaces {
+                    match calimero_governance_store::namespace_groups_with_held_key_buffered_ops(
+                        store, *ns_id,
+                    ) {
+                        Ok(groups) => {
+                            for group_id in groups {
+                                pairs.push((*ns_id, group_id));
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                namespace = %hex::encode(ns_id),
+                                error = ?e,
+                                "curative re-drive sweep (#2848): failed to enumerate held-key \
+                                 groups with buffered ops — skipping this namespace for this pass"
+                            );
+                        }
+                    }
+                }
+                pairs
+            }
+        };
+
+        for (ns_id, group_id) in pass_pairs {
             let ns_hex = hex::encode(ns_id);
-
-            let groups =
-                match calimero_governance_store::namespace_groups_with_held_key_buffered_ops(
-                    store, *ns_id,
-                ) {
-                    Ok(g) => g,
-                    Err(e) => {
-                        warn!(
-                            namespace = %ns_hex,
-                            error = ?e,
-                            "curative re-drive sweep (#2848): failed to enumerate held-key \
-                             groups with buffered ops — skipping this namespace for this pass"
-                        );
-                        continue;
-                    }
-                };
-
-            for group_id in groups {
-                let group_hex = hex::encode(group_id);
-                match calimero_governance_store::redrive_buffered_ops_for_group(
-                    store, *ns_id, group_id,
-                ) {
-                    Ok(0) => {
-                        // Nothing applied this pass for this group (already
-                        // drained, or its remaining ops still await a
-                        // cross-signer dependency a later pass may unblock).
-                    }
-                    Ok(applied) => {
-                        made_progress = true;
-                        total_redriven += applied;
-                        debug!(
-                            namespace = %ns_hex,
-                            group_id = %group_hex,
-                            applied,
-                            "curative re-drive sweep (#2848): re-drove stranded buffered ops"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            namespace = %ns_hex,
-                            group_id = %group_hex,
-                            error = ?e,
-                            "curative re-drive sweep (#2848): re-drive failed for one group \
-                             — continuing (best-effort; next restart retries)"
-                        );
-                    }
+            let group_hex = hex::encode(group_id);
+            match calimero_governance_store::redrive_buffered_ops_for_group(store, ns_id, group_id)
+            {
+                Ok(0) => {
+                    // Nothing applied this pass for this group (already
+                    // drained, or its remaining ops still await a
+                    // cross-signer dependency a later pass may unblock).
+                }
+                Ok(applied) => {
+                    let _ = progressed.insert((ns_id, group_id));
+                    total_redriven += applied;
+                    debug!(
+                        namespace = %ns_hex,
+                        group_id = %group_hex,
+                        applied,
+                        "curative re-drive sweep (#2848): re-drove stranded buffered ops"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        namespace = %ns_hex,
+                        group_id = %group_hex,
+                        error = ?e,
+                        "curative re-drive sweep (#2848): re-drive failed for one group \
+                         — continuing (best-effort; next restart retries)"
+                    );
                 }
             }
         }
 
-        if !made_progress {
+        if progressed.is_empty() {
             break;
         }
+        // Narrow the next pass to only the groups that just progressed.
+        work = Some(progressed);
         if pass >= MAX_PASSES {
             warn!(
                 scanned_namespaces,
