@@ -1,0 +1,109 @@
+name: SDK E2E (paired)
+
+# Live behavioural gate ("core breaks first"). Builds merod from this PR, boots a
+# single node with embedded auth, then runs the mero-js e2e suite against it. A
+# renamed/removed param makes the SDK send the old shape → the node 4xx → red here,
+# on the core dev's PR. The SDK ref is paired: declare `sdk-ref: <branch>` in the
+# PR body (or push a same-named branch on mero-js) so a breaking change and its SDK
+# fix go green together; otherwise it runs against mero-js master.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "crates/server/**"
+      - "crates/auth/**"
+      - "crates/primitives/**"
+      - "crates/merod/**"
+      - ".github/workflows/sdk-e2e.yml"
+      - "scripts/resolve-paired-ref.sh"
+  push:
+    branches:
+      - master
+
+env:
+  CARGO_TERM_COLOR: always
+  SERVER_PORT: "2428"
+
+jobs:
+  sdk-e2e:
+    name: SDK E2E (paired)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout core (PR head)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build merod
+        run: cargo build -p merod --bin merod
+
+      - name: Resolve mero-js ref (paired)
+        id: sdkref
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          chmod +x scripts/resolve-paired-ref.sh
+          REF="$(scripts/resolve-paired-ref.sh master)"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "Testing against mero-js@$REF"
+
+      - name: Checkout mero-js (paired ref)
+        uses: actions/checkout@v4
+        with:
+          repository: calimero-network/mero-js
+          ref: ${{ steps.sdkref.outputs.ref }}
+          path: _mero-js
+
+      - name: Setup Node + pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install -g pnpm
+
+      - name: Boot merod (embedded auth, single node)
+        run: |
+          BIN="$PWD/target/debug/merod"
+          "$BIN" --node ci-node init --server-port "$SERVER_PORT" --swarm-port 2528 --auth-mode embedded
+          "$BIN" --node ci-node run &
+          echo "MEROD_PID=$!" >> "$GITHUB_ENV"
+          # Wait for the admin API to answer.
+          for i in $(seq 1 60); do
+            if curl -fsS "http://localhost:$SERVER_PORT/admin-api/health" >/dev/null 2>&1; then
+              echo "merod healthy"; break
+            fi
+            sleep 2
+            if [ "$i" = "60" ]; then echo "merod did not become healthy"; exit 1; fi
+          done
+
+      - name: Run mero-js e2e against booted node
+        working-directory: _mero-js
+        env:
+          NODE_BASE_URL: "http://localhost:2428"
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test:e2e
+
+      - name: Stop merod
+        if: always()
+        run: kill "${MEROD_PID:-0}" 2>/dev/null || true
