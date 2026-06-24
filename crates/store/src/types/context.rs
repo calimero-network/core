@@ -255,6 +255,34 @@ impl PredefinedEntry for key::ContextDagDelta {
     type DataType<'a> = ContextDagDelta;
 }
 
+/// Raw-bytes value for a unified causal-log op row (cutover C2): the
+/// borsh-serialized `calimero_op::Op`. Kept opaque (`Identity` codec) because
+/// `calimero_store` cannot depend on `calimero_op` (the dependency points the
+/// other way) — the `calimero-context` layer borsh-codes the `Op` and stores the
+/// bytes here, the same shape as [`ContextState`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct ScopeUnifiedOp<'a> {
+    pub value: Slice<'a>,
+}
+
+impl PredefinedEntry for key::ScopeUnifiedOp {
+    type Codec = Identity;
+    type DataType<'a> = ScopeUnifiedOp<'a>;
+}
+
+impl<'a> From<Slice<'a>> for ScopeUnifiedOp<'a> {
+    fn from(value: Slice<'a>) -> Self {
+        Self { value }
+    }
+}
+
+impl AsRef<[u8]> for ScopeUnifiedOp<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.value.as_ref()
+    }
+}
+
 #[cfg(test)]
 mod context_authored_remaining_tests {
     use borsh::BorshDeserialize;

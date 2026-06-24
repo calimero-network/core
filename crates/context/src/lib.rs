@@ -42,6 +42,7 @@ pub mod scope_projection;
 pub mod self_purge;
 pub mod tee_subgroup_admit;
 pub mod unified_applier;
+pub mod unified_op_store;
 
 pub(crate) use cache::{BoundedCache, Evictable};
 
