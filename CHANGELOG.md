@@ -293,7 +293,7 @@ Integrations:
 
 <!-- versions -->
 
-[unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.6...HEAD
+[unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.7...HEAD
 [0.11.0-rc.7]: https://github.com/calimero-network/core/compare/0.11.0-rc.6...0.11.0-rc.7
 [0.11.0-rc.6]: https://github.com/calimero-network/core/compare/0.11.0-rc.5...0.11.0-rc.6
 [0.11.0-rc.5]: https://github.com/calimero-network/core/compare/0.11.0-rc.4...0.11.0-rc.5
