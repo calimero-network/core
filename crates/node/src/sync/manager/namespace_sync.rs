@@ -1408,6 +1408,19 @@ impl SyncManager {
                             self.reconcile_after_divergence(report).await;
                         }
                         self.drain_governance_pending_after_sync().await;
+
+                        // The arrived key may have made governance ops that were
+                        // applied (and frozen as `Noop` in the unified op-store)
+                        // before the key landed now decode to their real payload.
+                        // Refresh the op-store from the governance DAG with the key
+                        // present so its reconstruction matches the projection — the
+                        // C2.2c fix for the read-flip's late-decrypted-membership gap.
+                        let store = self.context_client.datastore_handle().into_inner();
+                        calimero_context::scope_projection::ScopeProjections::repersist_namespace_ops(
+                            &store,
+                            namespace_id,
+                        );
+                        drop(store);
                     }
                     Err(err) => {
                         warn!(
