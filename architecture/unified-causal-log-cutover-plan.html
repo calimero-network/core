@@ -172,6 +172,26 @@ unified_causal_log_shadow = true   # default; set false to disable C0 shadow</pr
 </ul>
 </div>
 
+<div class="card ga">
+<h2>C1 incremental landing plan — C1a and C1b</h2>
+<p>C1 is split into two slices to reduce the blast radius of the live-log cutover and to defer subsystems that carry their own staleness semantics.</p>
+<h3>C1a (current PR)</h3>
+<p>C1a lands the <strong>HashComparison end-of-session verdict</strong>: the unified causal log is promoted to the live path for the <code>HashComparison</code> comparison site, which produces a verdict at the end of each session. This is the lowest-risk cutover point because session boundaries are already natural quiesce points with no in-flight reads.</p>
+<ul>
+<li>The C0 canary gate (three consecutive passing runs, as described above) is the merge gate for C1a. C1a <strong>must not land</strong> until that gate clears.</li>
+<li>The <code>unified_causal_log_shadow</code> feature flag is removed in C1a; the shadow path is promoted to live.</li>
+<li>All other comparison sites remain on the legacy log after C1a lands.</li>
+</ul>
+<h3>C1b (follow-up, deferred)</h3>
+<p>C1b will update the remaining comparison sites that were intentionally left on the legacy log in C1a:</p>
+<ul>
+<li><strong>LevelWise advisory handshake-root verdict</strong> — deferred because LevelWise verdicts are advisory and carry their own staleness semantics that need a separate design pass.</li>
+<li><strong>Snapshot boundary verdict</strong> — deferred because snapshot ingestion has independent staleness windows; cutting over too early could silently accept a snapshot built against a stale causal root.</li>
+<li><strong>Protocol selector converged-decision</strong> — deferred because the protocol selector aggregates verdicts from multiple sites; it should only be updated after all upstream sites are on the unified log.</li>
+</ul>
+<p>C1b also introduces the reversed-shadow arrangement: the legacy log becomes the shadow checked against the now-live unified log. The existing <code>scope_root_shadow_divergence</code> marker infrastructure will be evaluated for polarity changes as part of the C1b design doc.</p>
+</div>
+
 <div class="card gd">
 <h2>Open questions for C1 planning</h2>
 <p>The following questions are deliberately left open until the C0 canary gate passes. They should be resolved as part of writing the C1 design doc section:</p>
@@ -180,6 +200,7 @@ unified_causal_log_shadow = true   # default; set false to disable C0 shadow</pr
 <li><strong>Legacy log retention</strong> — how long must the legacy log be retained after C1 for rollback purposes, and what is the storage cost on large scopes?</li>
 <li><strong>C1 shadow direction</strong> — during C1 the roles reverse: the unified log becomes live and the legacy log becomes the shadow. Does the existing divergence marker infrastructure need changes to support this reversed polarity?</li>
 <li><strong>Governance event backfill</strong> — nodes that were offline during C0 will have gaps in their shadow log. Does C1 require a backfill protocol, or is a fresh shadow-log start at C1 cutover acceptable?</li>
+<li><strong>C1b comparison-site ordering</strong> — among the LevelWise advisory verdict, snapshot boundary verdict, and protocol selector converged-decision deferred from C1a, what is the safest sequencing and are any of them independent enough to land in parallel?</li>
 </ul>
 <p>None of these questions need to be answered before C0 is declared complete. They are recorded here so they are not forgotten when C1 planning begins.</p>
 </div>
