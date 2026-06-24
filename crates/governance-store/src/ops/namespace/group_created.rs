@@ -132,12 +132,30 @@ pub(crate) fn apply(
     // behind. `restricted: true` (the default) preserves legacy behavior,
     // and the absent-key ⇒ Restricted default in `capabilities.rs` stays as
     // a safety net for old state.
-    let visibility = if restricted {
-        calimero_context_config::VisibilityMode::Restricted
-    } else {
-        calimero_context_config::VisibilityMode::Open
-    };
-    CapabilitiesRepository::new(store).set_subgroup_visibility(&gid, visibility)?;
+    //
+    // ONLY write birth visibility on the genuine FIRST create. Birth
+    // visibility is an initial condition, not idempotent state: a duplicate
+    // `GroupCreated` (different nonce, same `group_id`) is a replay, and a
+    // later `SubgroupVisibilitySet` may have flipped the group's visibility
+    // in the meantime — re-asserting the birth value on replay would silently
+    // clobber that flip.
+    //
+    // The gate is the ABSENCE of an explicit visibility key, NOT `!meta_existed`:
+    // the originator's `create_group` handler pre-populates `GroupMeta` before
+    // publishing this op (so `meta_existed` is true on the originator's own
+    // first apply) but does NOT write the visibility key — that key is born
+    // here. So `!has_subgroup_visibility` is true exactly on the first apply
+    // (originator and remote alike) and false on every replay. This mirrors
+    // the idempotent-seed discipline used for the meta write above.
+    let caps = CapabilitiesRepository::new(store);
+    if !caps.has_subgroup_visibility(&gid)? {
+        let visibility = if restricted {
+            calimero_context_config::VisibilityMode::Restricted
+        } else {
+            calimero_context_config::VisibilityMode::Open
+        };
+        caps.set_subgroup_visibility(&gid, visibility)?;
+    }
 
     ctx.queue_event(OpEvent::SubgroupCreated {
         namespace_id,

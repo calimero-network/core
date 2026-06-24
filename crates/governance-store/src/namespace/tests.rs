@@ -2483,6 +2483,106 @@ fn governance_group_created_writes_birth_visibility() {
     );
 }
 
+/// Regression for a Cursor finding on PR #2855: birth visibility is an
+/// INITIAL condition, not idempotent state. A duplicate `GroupCreated`
+/// (replay — different nonce, same `group_id`) must NOT re-assert the birth
+/// visibility, or it would clobber a `SubgroupVisibilitySet` flip applied in
+/// the meantime. Create born-Open, flip to Restricted (the same store
+/// mutation `SubgroupVisibilitySet` apply performs), then replay the SAME
+/// `GroupCreated` op and assert the flip survives.
+#[test]
+fn governance_group_created_replay_does_not_reset_visibility() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+    use crate::CapabilitiesRepository;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xB2u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let group_id = [0xE2u8; 32];
+    let gid = ContextGroupId::from(group_id);
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let caps = CapabilitiesRepository::new(&store);
+
+    // 1. Create the subgroup born-Open.
+    let create_op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id,
+            parent_id: ns_id,
+            restricted: false,
+        }),
+    )
+    .expect("sign create op");
+    gov.apply_signed_op(&create_op)
+        .expect("born-open GroupCreated should apply");
+    assert_eq!(
+        caps.subgroup_visibility(&gid)
+            .expect("read vis after create"),
+        VisibilityMode::Open,
+        "precondition: subgroup is born Open"
+    );
+
+    // 2. Flip it Restricted — the same store mutation `SubgroupVisibilitySet`
+    //    apply performs (see ops/group/subgroup_visibility_set.rs).
+    caps.set_subgroup_visibility(&gid, VisibilityMode::Restricted)
+        .expect("flip to Restricted");
+    assert_eq!(
+        caps.subgroup_visibility(&gid).expect("read vis after flip"),
+        VisibilityMode::Restricted,
+        "precondition: flip applied"
+    );
+
+    // 3. Replay the SAME GroupCreated op (different nonce, same group_id).
+    let replay_op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id,
+            parent_id: ns_id,
+            restricted: false,
+        }),
+    )
+    .expect("sign replay op");
+    gov.apply_signed_op(&replay_op)
+        .expect("GroupCreated replay should be idempotent");
+
+    // 4. The flip must survive — the replay must NOT reset visibility to Open.
+    assert_eq!(
+        caps.subgroup_visibility(&gid)
+            .expect("read vis after replay"),
+        VisibilityMode::Restricted,
+        "GroupCreated replay must not clobber a later SubgroupVisibilitySet flip"
+    );
+}
+
 #[test]
 fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     // Regression test for Cursor Bugbot finding on PR #2200:

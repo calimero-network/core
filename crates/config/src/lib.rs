@@ -92,6 +92,10 @@ impl TeeConfig {
     /// is not running in mock-accepting development mode. This is the predicate
     /// used to refuse the dev-only `--mock-tee` flag: mock and real attestation
     /// must be mutually exclusive on a single node.
+    ///
+    /// Returns `false` when no KMS provider is configured (e.g. `kms.phala`
+    /// absent), which permits `--mock-tee`. If a second KMS provider is added,
+    /// extend this predicate to cover it.
     #[must_use]
     pub fn has_real_attestation(&self) -> bool {
         self.kms

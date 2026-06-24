@@ -45,6 +45,14 @@ impl RunCommand {
         }
 
         // Mock TEE is dev/test only and must never coexist with real attestation.
+        //
+        // Guard contract (deny-list, not allow-list — intentional): `--mock-tee`
+        // is refused ONLY when a real KMS attestation is configured
+        // (`TeeConfig::has_real_attestation`). A node with no TEE config at all,
+        // or a TEE block that carries no KMS provider, is not a production
+        // attestation config — so mock is allowed there, gated by the loud
+        // startup warning below. Do not flip this to an allow-list; this is the
+        // agreed dev-only flag behavior.
         if self.mock_tee {
             if config
                 .tee

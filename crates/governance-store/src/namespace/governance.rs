@@ -1244,6 +1244,19 @@ impl<'a> NamespaceGovernance<'a> {
     /// idempotent nonce-skip and does not count. This avoids threading an
     /// `applied` flag through the whole apply stack while still distinguishing
     /// a real apply from a no-op replay.
+    ///
+    /// TOCTOU caveat (accepted, bounded, benign): the pre/post nonce-window
+    /// read is not atomic with the apply, so a concurrent gossip apply of the
+    /// same op between the pre-read and our apply can make us miscount — the
+    /// nonce flips present "underneath" us and we record a `nonce_skip`
+    /// instead of `applied` (or vice versa). The only consequence is the
+    /// convergence count being off, which at worst triggers one extra sweep
+    /// pass; that is bounded by `MAX_PASSES`. The count is a best-effort
+    /// convergence SIGNAL, not a correctness gate — no state can diverge from
+    /// a miscount. The proper long-term fix is to have
+    /// `decrypt_and_apply_group_op` return an explicit `Applied | Skipped |
+    /// Failed` outcome instead of inferring it from the window; that refactor
+    /// is deliberately deferred.
     fn redrive_encrypted_ops_for_group_counted(&self, group_id: [u8; 32]) -> EyreResult<usize> {
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
@@ -1855,16 +1868,20 @@ pub fn known_namespace_identities(store: &Store) -> EyreResult<Vec<[u8; 32]>> {
 /// Curative re-drive of a single group's buffered encrypted ops for the
 /// #2848 Part C startup sweep. Returns the count of ops it ACTUALLY applied
 /// this call (idempotent nonce-replays are not counted) — the sweep uses this
-/// as its monotone convergence signal. Emits the
-/// `namespace_retry_events{status="redriven"}` metric per invocation so the
-/// curative sweep is observable distinctly from the live (Part A) GroupCreated
-/// re-drive.
+/// as its monotone convergence signal.
+///
+/// Metric emission is delegated to the inner
+/// `redrive_encrypted_ops_for_group_counted`, which records
+/// `namespace_retry_events{status="applied"}` only on genuine applies and
+/// `status="nonce_skip"` on dedup. We intentionally do NOT emit a per-call
+/// `status="redriven"` counter here: that inflated the metric on every sweep
+/// pass over an already-drained group, so the count reflected invocations
+/// rather than ops actually recovered.
 pub fn redrive_buffered_ops_for_group(
     store: &Store,
     namespace_id: [u8; 32],
     group_id: [u8; 32],
 ) -> EyreResult<usize> {
-    record_namespace_retry_event("redriven");
     NamespaceGovernance::new(store, namespace_id).redrive_encrypted_ops_for_group_counted(group_id)
 }
 
