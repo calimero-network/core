@@ -783,18 +783,19 @@ fn refresh_projection_for_cut(
         .read_scope_projections()
         .namespace_to_refresh(datastore, group, heads);
     if let Some(namespace_id) = needs_backfill {
-        if let Some(ops) = ScopeProjections::collect_namespace_ops(datastore, namespace_id) {
+        // C2.2b read-flip: the unified op-store is the projection's authoritative
+        // backing now (`ops_for_namespace` loads it, falling back to the governance
+        // DAG only for a cold scope). The projection is the sole auth decider, so this
+        // is gated on C2.2's shadow proving the op-store complete in e2e.
+        if let Some(ops) = ScopeProjections::ops_for_namespace(datastore, namespace_id) {
             node_state
                 .write_scope_projections()
                 .apply_backfill(namespace_id, ops);
 
-            // C2.2 read shadow (observe-only): the unified op-store must reconstruct
-            // the same governance scope this backfill just folded from the
-            // governance DAG. A mismatch means the dual-write op-store is missing ops
-            // the governance DAG has — the gap C2.2b's read-flip can't tolerate (the
-            // projection is the sole auth decider). Runs only on an actual backfill
-            // (controlled frequency); the compare logs `unified_op_store_divergence`
-            // and never affects the apply.
+            // Inverted cross-check (observe-only): the op-store-backed projection must
+            // still match the governance-DAG fold (authoritative until C5). A mismatch
+            // logs `unified_op_store_divergence` — the op-store drifted. Controlled
+            // frequency (only on an actual backfill); never affects the apply.
             node_state
                 .read_scope_projections()
                 .shadow_compare_op_store(datastore, namespace_id);

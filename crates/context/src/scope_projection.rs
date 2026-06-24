@@ -385,35 +385,73 @@ impl ScopeProjections {
         Ok(proj.scope_root_for(scope, [0u8; 32]))
     }
 
-    /// C2.2 read shadow (observe-only): compare THIS maintained projection's
-    /// governance `scope_root` for `namespace_id` against the same scope
-    /// reconstructed purely from the unified op-store, logging
-    /// `unified_op_store_divergence` on a mismatch. It's how we verify the
-    /// dual-write op-store is COMPLETE (missing no ops the governance DAG has)
-    /// before the op-store becomes the projection's authoritative source (C2.2b).
-    /// Skips silently when this projection hasn't folded the scope, the op-store is
-    /// empty for it, or the store can't be read — none of those are divergences.
+    /// The governance ops to fold for `namespace_id` (cutover C2.2b read-flip): the
+    /// unified **op-store** is the projection's authoritative backing now, so prefer
+    /// [`load_scope_ops`](crate::unified_op_store::load_scope_ops). Falls back to the
+    /// governance-DAG walk ([`collect_namespace_ops`](Self::collect_namespace_ops))
+    /// ONLY when the op-store has no rows for this scope (a cold namespace not yet
+    /// dual-written) or can't be read — a transitional safety net that retires with
+    /// `collect_namespace_ops` at C5. Under the flag-day redeploy every op flows
+    /// through the apply path from genesis, so the op-store is complete and the
+    /// fallback is never the steady-state path.
+    #[must_use]
+    pub fn ops_for_namespace(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
+        let scope = ScopeId::from(namespace_id);
+        match crate::unified_op_store::load_scope_ops(store, &scope) {
+            Ok(ops) if !ops.is_empty() => Some(ops),
+            Ok(_) => Self::collect_namespace_ops(store, namespace_id),
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    namespace = ?namespace_id,
+                    "op-store load failed; falling back to the governance-DAG fold"
+                );
+                Self::collect_namespace_ops(store, namespace_id)
+            }
+        }
+    }
+
+    /// The governance-plane `scope_root` reconstructed purely from the **governance
+    /// DAG** for `namespace_id` (the pre-C2 source) — the C2.2b cross-check's view,
+    /// the inverse of [`scope_root_from_op_store`](Self::scope_root_from_op_store).
+    /// `None` when the DAG head is unreadable or the scope is empty.
+    #[must_use]
+    pub fn scope_root_from_governance_dag(
+        store: &Store,
+        namespace_id: [u8; 32],
+    ) -> Option<[u8; 32]> {
+        let ops = Self::collect_namespace_ops(store, namespace_id)?;
+        if ops.is_empty() {
+            return None;
+        }
+        let scope = ScopeId::from(namespace_id);
+        let mut proj = Self::new();
+        proj.apply_backfill(namespace_id, ops);
+        proj.scope_root_for(&scope, [0u8; 32])
+    }
+
+    /// C2.2b cross-check (observe-only): now that the maintained projection is fed
+    /// from the unified op-store, validate it against the governance DAG — the
+    /// INVERSE of the C2.2 shadow. Compare THIS projection's governance `scope_root`
+    /// for `namespace_id` to the governance-DAG reconstruction, logging
+    /// `unified_op_store_divergence` on a mismatch (the op-store drifted from the
+    /// authoritative-until-C5 governance DAG). Skips silently when this projection
+    /// hasn't folded the scope or the DAG reconstruction is empty/unreadable.
     pub fn shadow_compare_op_store(&self, store: &Store, namespace_id: [u8; 32]) {
         let scope = ScopeId::from(namespace_id);
-        let Some(dag_root) = self.scope_root_for(&scope, [0u8; 32]) else {
+        let Some(op_store_root) = self.scope_root_for(&scope, [0u8; 32]) else {
             return;
         };
-        match Self::scope_root_from_op_store(store, &scope) {
-            Ok(Some(store_root)) if store_root != dag_root => {
+        if let Some(dag_root) = Self::scope_root_from_governance_dag(store, namespace_id) {
+            if dag_root != op_store_root {
                 tracing::warn!(
                     marker = "unified_op_store_divergence",
                     namespace = ?namespace_id,
+                    op_store_root = %hex::encode(&op_store_root[..8]),
                     dag_root = %hex::encode(&dag_root[..8]),
-                    store_root = %hex::encode(&store_root[..8]),
-                    "op-store replay diverges from the governance-DAG fold (dual-write incomplete?)"
+                    "op-store-backed projection diverges from the governance-DAG fold"
                 );
             }
-            Ok(_) => {}
-            Err(err) => tracing::debug!(
-                %err,
-                namespace = ?namespace_id,
-                "op-store read shadow: op-store load failed; skipping compare"
-            ),
         }
     }
 
@@ -477,7 +515,7 @@ impl ScopeProjections {
         if self.backfilled.contains(&namespace_id) {
             return;
         }
-        if let Some(ops) = Self::collect_namespace_ops(store, namespace_id) {
+        if let Some(ops) = Self::ops_for_namespace(store, namespace_id) {
             self.apply_backfill(namespace_id, ops);
         }
         // A `None` (governance head unreadable) leaves the namespace UN-backfilled
@@ -569,7 +607,7 @@ impl ScopeProjections {
             .ok()?
             .to_bytes();
         let mut proj = Self::new();
-        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+        let Some(ops) = Self::ops_for_namespace(store, namespace_id) else {
             // Governance head unreadable (store fault). Don't silently read an empty
             // projection — surface it and let the caller fall back to live.
             tracing::warn!(
@@ -825,7 +863,7 @@ impl ScopeProjections {
     /// projection.
     fn ephemeral_fold(store: &Store, namespace_id: [u8; 32]) -> Option<(Self, Vec<[u8; 32]>)> {
         let mut proj = Self::new();
-        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+        let Some(ops) = Self::ops_for_namespace(store, namespace_id) else {
             tracing::warn!(
                 namespace = ?namespace_id,
                 "ephemeral_fold: governance head unreadable; caller falls back to live"
