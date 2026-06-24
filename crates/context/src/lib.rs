@@ -777,13 +777,21 @@ pub(crate) async fn sign_apply_and_publish_group_op(
         op,
     )
     .await?;
-    if let Ok(namespace_id) =
-        calimero_governance_store::NamespaceRepository::new(store).resolve(group_id)
-    {
-        crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
-            store,
-            namespace_id.to_bytes(),
-        );
+    match calimero_governance_store::NamespaceRepository::new(store).resolve(group_id) {
+        Ok(namespace_id) => {
+            crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
+                store,
+                namespace_id.to_bytes(),
+            );
+        }
+        // This is the single chokepoint for all group-op authoring, so a systematic
+        // resolve failure would leave the op-store incomplete for every authored op
+        // with no signal otherwise — warn so the divergence is observable.
+        Err(err) => tracing::warn!(
+            %err,
+            ?group_id,
+            "C3: could not resolve namespace to mirror the authored group op into the op-store"
+        ),
     }
     Ok(report)
 }
