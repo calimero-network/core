@@ -290,6 +290,7 @@
   <p style="margin-bottom:10px;"><span class="code">ScopeProjections::ops_for_namespace</span> is the new stable indirection point for loading ops at every projection-rebuild site. It currently delegates directly to <span class="code">collect_namespace_ops</span> (the governance-DAG walk) — it does <strong>not</strong> yet read from the unified op-store (<span class="code">load_scope_ops</span>). The C2.2b flip to the op-store is explicitly deferred until late-decrypted membership is fixed.</p>
   <p style="margin-bottom:10px;"><strong>Root cause for the deferral:</strong> an encrypted <span class="code">MemberAdded</span> op can be applied to the governance DAG before its group key arrives. The apply-time dual-write freezes it as <span class="code">Noop</span> in the op-store, while <span class="code">collect_namespace_ops</span> re-decrypts at read time once the key lands. Using the op-store as the projection source would therefore silently drop members and break joiner sync.</p>
   <p style="margin-bottom:10px;">All three internal projection-rebuild call sites in <code>scope_projection.rs</code> — <span class="code">backfill_namespace</span>, <span class="code">member_now_ephemeral</span>/<span class="code">ephemeral_fold</span>, and the <span class="code">scope_root</span> reconstruction — and the call site in <span class="code">refresh_projection_for_cut</span> in the node crate now call <span class="code">ops_for_namespace</span> instead of <span class="code">collect_namespace_ops</span> directly. <span class="code">collect_namespace_ops</span> remains as the implementation that <span class="code">ops_for_namespace</span> currently delegates to.</p>
+  <p style="margin-bottom:10px;">Inside <span class="code">refresh_projection_for_cut</span>, after <span class="code">ops_for_namespace</span> returns the governance-DAG fold, <span class="code">ScopeProjections::check_op_store_completeness</span> is called with those ops before <span class="code">apply_backfill</span>. This adds one op-store read on cold/refresh cuts (warm cuts skip via <span class="code">namespace_to_refresh</span> returning <span class="code">None</span>). The result is <strong>ignored by the caller</strong>; the gate is purely diagnostic and never affects whether or how the backfill is applied. The projection still folds via <span class="code">collect_namespace_ops</span>.</p>
   <div class="typedef" style="margin-top:12px;">
 <span class="comment">// Stable indirection layer — all projection-rebuild sites call this</span><br>
 <span class="comment">// Currently delegates to collect_namespace_ops (governance-DAG walk)</span><br>
@@ -298,6 +299,13 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
 &nbsp;&nbsp;&nbsp;&nbsp;namespace: &amp;<span class="ty">Namespace</span>,<br>
 ) -&gt; <span class="ty">Result</span>&lt;Vec&lt;Op&gt;&gt;<br><br>
+<span class="comment">// Observe-only completeness gate — called in refresh_projection_for_cut</span><br>
+<span class="comment">// after ops_for_namespace, before apply_backfill. One op-store read on</span><br>
+<span class="comment">// cold/refresh cuts; skipped on warm cuts. Result is always ignored.</span><br>
+<span class="kw">pub(crate) fn</span> <span class="field">check_op_store_completeness</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;ops: &amp;[Op],<br>
+) -&gt; <span class="ty">Result</span>&lt;()&gt;<br><br>
 <span class="comment">// Implementation (unchanged); called only via ops_for_namespace</span><br>
 <span class="kw">fn</span> <span class="field">collect_namespace_ops</span>(<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
@@ -307,7 +315,7 @@
 <span class="comment">// shadow_compare_op_store  — cross-check was unreliable (see above)</span><br>
 <span class="comment">// scope_root_from_governance_dag — companion to shadow_compare_op_store</span>
   </div>
-  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> No <span class="code">shadow_compare_op_store</span> log output is emitted from the backfill path. Any monitoring rules that relied on post-backfill op-store comparison metrics from this path may be retired. The <span class="code">ops_for_namespace</span> indirection is the future flip point; watch for a follow-up change that routes it to <span class="code">load_scope_ops</span> once late-decrypted membership handling is resolved.</p>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> No <span class="code">shadow_compare_op_store</span> log output is emitted from the backfill path. Any monitoring rules that relied on post-backfill op-store comparison metrics from this path may be retired. The <span class="code">ops_for_namespace</span> indirection is the future flip point; watch for a follow-up change that routes it to <span class="code">load_scope_ops</span> once late-decrypted membership handling is resolved. <span class="code">check_op_store_completeness</span> is diagnostic only — its result is discarded and it does not block or alter the backfill.</p>
 </div>
 
 <div class="cb" style="margin-bottom:18px; border-left:3px solid #06b6d4; padding-left:14px;">
