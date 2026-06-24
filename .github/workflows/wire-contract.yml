@@ -1,0 +1,53 @@
+name: Wire Contract
+
+# Fast, Docker-free canary: the committed wire fixtures must round-trip through
+# their Rust DTOs. A field rename/removal/retype in an HTTP request/response DTO
+# reddens here, with a diff — the first signal that the hand-mirrored SDK types
+# need a matching update. Regenerate after an intended change with
+# `UPDATE_FIXTURES=1 cargo test -p calimero-server-primitives --test wire_fixtures`.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "crates/server/primitives/**"
+      - "crates/primitives/**"
+      - ".github/workflows/wire-contract.yml"
+  push:
+    branches:
+      - master
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  wire-contract:
+    name: Wire Contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Wire-contract fixtures
+        run: cargo test -p calimero-server-primitives --test wire_fixtures
