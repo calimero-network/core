@@ -212,14 +212,16 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
 
     assert_eq!(
         ScopeProjections::check_op_store_completeness(&store, ns_bytes, &dag_ops),
-        vec![op3.id],
+        Some(vec![op3.id]),
         "the gate must flag exactly the op missing from the op-store"
     );
 
-    // Once the gap is closed, the gate is clean.
+    // Once the gap is closed, the gate is verified-clean (Some(empty)) — distinct from
+    // None (couldn't-check).
     persist_op(&store, &op3).unwrap();
-    assert!(
-        ScopeProjections::check_op_store_completeness(&store, ns_bytes, &dag_ops).is_empty(),
-        "a complete op-store yields no missing ops"
+    assert_eq!(
+        ScopeProjections::check_op_store_completeness(&store, ns_bytes, &dag_ops),
+        Some(Vec::new()),
+        "a complete op-store yields a verified-empty missing list"
     );
 }

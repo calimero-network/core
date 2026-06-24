@@ -500,17 +500,16 @@ jobs:
               echo "sample (missing_count per namespace):"
               # Match `missing_count=N` anywhere on an op_store_incomplete line — robust
               # to field ordering. Tolerates the line not carrying the field at all.
-              grep -rho 'op_store_incomplete.*' docker-logs/ | grep -oE 'missing_count=[0-9]+' | sort | uniq -c | head
+              grep -rho 'op_store_incomplete.*' docker-logs/ | grep -oE 'missing_count=[0-9]+' | sort | uniq -c | head -10
               grep -rn "op_store_incomplete" docker-logs/ | head -10
-          else
-              echo "no op_store_incomplete markers — op-store mirrors the gov-DAG for every exercised namespace"
-          fi
-          # A load fault makes completeness UNVERIFIED (distinct from clean) — surface
-          # it so a store error can't read as a passing gate.
-          if grep -rl "op_store_gate_unavailable" docker-logs/ 2>/dev/null | grep -q .; then
+          elif grep -rl "op_store_gate_unavailable" docker-logs/ 2>/dev/null | grep -q .; then
+              # No gap markers, but the gate couldn't load the op-store somewhere — do
+              # NOT claim a clean mirror, that would be a false "verified" line.
               gc=$(grep -rho "op_store_gate_unavailable" docker-logs/ | wc -l | tr -d ' ')
-              echo "::notice::op-store completeness UNVERIFIED in ${{ matrix.workflow }} — $gc gate-load failure(s)"
+              echo "::notice::op-store completeness UNVERIFIED in ${{ matrix.workflow }} — no gaps seen but $gc gate-load failure(s); mirror NOT confirmed"
               grep -rn "op_store_gate_unavailable" docker-logs/ | head -5
+          else
+              echo "no op_store_incomplete or op_store_gate_unavailable markers — op-store mirrors the gov-DAG for every exercised namespace"
           fi
 
       - name: List docker-logs/ before upload (debug)
