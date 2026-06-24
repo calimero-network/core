@@ -286,31 +286,6 @@ fn membership_policy_rules_report_rejection_reasons() {
 }
 
 #[test]
-fn membership_view_reports_admin_and_member_counts() {
-    let store = test_store();
-    let gid = test_group_id();
-    let admin1 = PublicKey::from([0xD1; 32]);
-    let admin2 = PublicKey::from([0xD2; 32]);
-    let member = PublicKey::from([0xD3; 32]);
-
-    MembershipRepository::new(&store)
-        .add_member(&gid, &admin1, GroupMemberRole::Admin)
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&gid, &admin2, GroupMemberRole::Admin)
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&gid, &member, GroupMemberRole::Member)
-        .unwrap();
-
-    let view = GroupMembershipView::new(&store, gid);
-    assert!(view.is_admin(&admin1).unwrap());
-    assert!(!view.is_admin(&member).unwrap());
-    assert_eq!(view.admin_count().unwrap(), 2);
-    assert_eq!(view.member_count().unwrap(), 3);
-}
-
-#[test]
 fn count_members_and_admins() {
     let store = test_store();
     let gid = test_group_id();
