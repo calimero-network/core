@@ -723,19 +723,24 @@ async fn run_initiator_impl<T: SyncTransport>(
     // rotation propagates via the ordinary governance sync tick, and the next HC
     // session re-reads an agreeing `scope_root` once it lands. Distinct marker so a
     // governance-plane divergence is legible apart from a data-plane one.
-    if !stats.root_hash_verified
-        && local_root_hash == peer_current_root
-        && matches!((local_scope_root, peer_scope_root), (Some(l), Some(p)) if l != p)
-    {
-        warn!(
-            marker = "scope_root_governance_divergence",
-            %context_id,
-            entity_root = %hex::encode(&local_root_hash[..8]),
-            local_scope_root = %hex::encode(&local_scope_root.unwrap_or_default()[..8]),
-            peer_scope_root = %hex::encode(&peer_scope_root.unwrap_or_default()[..8]),
-            "entity roots agree but scope_root differs — ACL/membership divergence; \
-             awaiting governance sync to propagate the rotation"
-        );
+    // Destructure both scope_roots up front (vs `matches!` + `unwrap_or_default`):
+    // this case is meaningful only when BOTH sides resolved one, and binding them
+    // avoids a dead default branch and any reliance on `[u8; 32]` being `Copy`.
+    if let (Some(local_scope_root), Some(peer_scope_root)) = (local_scope_root, peer_scope_root) {
+        if !stats.root_hash_verified
+            && local_root_hash == peer_current_root
+            && local_scope_root != peer_scope_root
+        {
+            warn!(
+                marker = "scope_root_governance_divergence",
+                %context_id,
+                entity_root = %hex::encode(&local_root_hash[..8]),
+                local_scope_root = %hex::encode(&local_scope_root[..8]),
+                peer_scope_root = %hex::encode(&peer_scope_root[..8]),
+                "entity roots agree but scope_root differs — ACL/membership divergence; \
+                 awaiting governance sync to propagate the rotation"
+            );
+        }
     }
 
     // core#2716: re-anchor the context's persisted `root_hash` to the
