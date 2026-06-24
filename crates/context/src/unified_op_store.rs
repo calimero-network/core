@@ -199,6 +199,19 @@ mod tests {
             .expect("load other")
             .is_empty());
 
+        // The C2.2 read-shadow's reconstruction (`scope_root_from_op_store`) matches
+        // the in-memory fold, and is `None` for a scope with no persisted ops.
+        assert_eq!(
+            ScopeProjections::scope_root_from_op_store(&store, &scope).expect("ok"),
+            Some(want),
+            "op-store reconstruction must match the in-memory fold"
+        );
+        assert_eq!(
+            ScopeProjections::scope_root_from_op_store(&store, &other).expect("ok"),
+            None,
+            "an empty scope reconstructs to None"
+        );
+
         // Reload + replay through the DAG (which re-establishes causal order).
         let loaded = load_scope_ops(&store, &scope).expect("load");
         assert_eq!(loaded.len(), ops.len(), "every persisted op reloaded");

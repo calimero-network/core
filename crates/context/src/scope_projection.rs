@@ -362,6 +362,61 @@ impl ScopeProjections {
             .map(|state| state.scope_root_with_entities(entities_root))
     }
 
+    /// The governance-plane `scope_root` reconstructed PURELY from the unified
+    /// op-store for `scope` — load every persisted op for the scope and fold it,
+    /// then read `scope_root_for` with a fixed (zero) `entities_root` so the result
+    /// reflects only the membership / admin / ACL planes the op-store backs.
+    ///
+    /// The C2.2 read-shadow's view: compared against the governance-DAG fold, a
+    /// mismatch means the dual-write op-store is missing ops the governance DAG has.
+    /// `Ok(None)` when the scope has no persisted ops; `Err` on a store fault.
+    pub fn scope_root_from_op_store(
+        store: &Store,
+        scope: &ScopeId,
+    ) -> eyre::Result<Option<[u8; 32]>> {
+        let ops = crate::unified_op_store::load_scope_ops(store, scope)?;
+        if ops.is_empty() {
+            return Ok(None);
+        }
+        let mut proj = Self::new();
+        for op in &ops {
+            proj.ingest_op(op);
+        }
+        Ok(proj.scope_root_for(scope, [0u8; 32]))
+    }
+
+    /// C2.2 read shadow (observe-only): compare THIS maintained projection's
+    /// governance `scope_root` for `namespace_id` against the same scope
+    /// reconstructed purely from the unified op-store, logging
+    /// `unified_op_store_divergence` on a mismatch. It's how we verify the
+    /// dual-write op-store is COMPLETE (missing no ops the governance DAG has)
+    /// before the op-store becomes the projection's authoritative source (C2.2b).
+    /// Skips silently when this projection hasn't folded the scope, the op-store is
+    /// empty for it, or the store can't be read — none of those are divergences.
+    pub fn shadow_compare_op_store(&self, store: &Store, namespace_id: [u8; 32]) {
+        let scope = ScopeId::from(namespace_id);
+        let Some(dag_root) = self.scope_root_for(&scope, [0u8; 32]) else {
+            return;
+        };
+        match Self::scope_root_from_op_store(store, &scope) {
+            Ok(Some(store_root)) if store_root != dag_root => {
+                tracing::warn!(
+                    marker = "unified_op_store_divergence",
+                    namespace = ?namespace_id,
+                    dag_root = %hex::encode(&dag_root[..8]),
+                    store_root = %hex::encode(&store_root[..8]),
+                    "op-store replay diverges from the governance-DAG fold (dual-write incomplete?)"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => tracing::debug!(
+                %err,
+                namespace = ?namespace_id,
+                "op-store read shadow: op-store load failed; skipping compare"
+            ),
+        }
+    }
+
     /// [`scope_root_for`](Self::scope_root_for) from an EPHEMERAL fold built fresh
     /// from the store, resolving the namespace scope from a `group`. For sync sites
     /// that hold a `Store` but not the node's maintained projection — the C0
