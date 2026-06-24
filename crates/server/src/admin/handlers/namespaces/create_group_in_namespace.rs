@@ -170,6 +170,12 @@ pub async fn handler(
     {
         Ok(report) => {
             report.observe("create_group_in_namespace", "GroupCreated");
+            // C3 Stage 2: mirror the locally-authored GroupCreated into the op-store
+            // (the admin-API authoring path, like the node handlers).
+            calimero_context::scope_projection::ScopeProjections::persist_namespace_head_ops(
+                &state.store,
+                resolved_ns_id.to_bytes(),
+            );
             let group_id = group_id_cgid;
 
             if let Some(name) = body.group_name.as_deref() {
