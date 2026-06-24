@@ -783,23 +783,14 @@ fn refresh_projection_for_cut(
         .read_scope_projections()
         .namespace_to_refresh(datastore, group, heads);
     if let Some(namespace_id) = needs_backfill {
-        // C2.2b read-flip: the unified op-store is the projection's authoritative
-        // backing now (`ops_for_namespace` loads it, falling back to the governance
-        // DAG only for a cold scope). The projection is the sole auth decider, so this
-        // is gated on C2.2's shadow proving the op-store complete in e2e.
+        // The projection folds the governance DAG (`ops_for_namespace`). The C2.2b
+        // read-flip onto the unified op-store is DEFERRED — it drops late-decrypted
+        // membership; see `ops_for_namespace` and the deterministic repro in
+        // `calimero-context` `tests/op_store_reconstruction.rs`.
         if let Some(ops) = ScopeProjections::ops_for_namespace(datastore, namespace_id) {
             node_state
                 .write_scope_projections()
                 .apply_backfill(namespace_id, ops);
-
-            // Cross-check (observe-only): two INDEPENDENT pure reconstructions — the
-            // op-store replay vs the governance-DAG fold — must match. A mismatch
-            // logs `unified_op_store_divergence` (the op-store drifted from the
-            // authoritative-until-C5 governance DAG). Comparing pure reconstructions
-            // (not the maintained projection, which also holds live-ingested ops)
-            // catches an op-store gap even when a live apply masked it. Controlled
-            // frequency (only on an actual backfill); never affects the apply.
-            ScopeProjections::shadow_compare_op_store(datastore, namespace_id);
         }
     }
 }

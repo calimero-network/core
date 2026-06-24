@@ -391,98 +391,27 @@ impl ScopeProjections {
     /// backing via [`load_scope_ops`](crate::unified_op_store::load_scope_ops)) is
     /// DEFERRED: flipping the read onto the op-store broke convergence in the
     /// maintainer's e2e — group-3node / scaffolding-e2e / shared-storage rotation all
-    /// timed out on the joiner's post-write sync — even though the F4 projection-vs-live
-    /// gate stayed clean (the maintained projection still agreed with the live decision)
-    /// AND the op-store-vs-DAG shadow root matched. That a matched-root op-store source
-    /// still breaks sync is the bug to find before flipping (suspect: a cold/at-cut fold
-    /// over the whole-scope `load_scope_ops` set differs from the narrower
-    /// `collect_namespace_ops` set in a way `scope_root` alone doesn't surface).
+    /// timed out on the joiner's post-write sync.
     ///
-    /// Until the flip's e2e comes back clean this stays on the governance DAG, the
-    /// proven-correct source. The op-store keeps being dual-written and the pure-vs-pure
-    /// [`shadow_compare_op_store`](Self::shadow_compare_op_store) keeps measuring its
-    /// completeness on every backfill, so the flip can be re-attempted once that signal
-    /// is provably clean across all e2e suites.
+    /// ROOT CAUSE (pinned deterministically by `tests/op_store_reconstruction.rs`):
+    /// an encrypted group `MemberAdded` can apply to the governance DAG BEFORE its
+    /// group key arrives (keys lag on a separate delivery path; see the
+    /// buffer-awaiting-key replay in `apply_group_op_inner`). The apply-time
+    /// dual-write then decrypts with no key, so the op is frozen into the op-store as
+    /// a `Noop`. `collect_namespace_ops` RE-DECRYPTS the same op at read time once the
+    /// key lands and recovers the real `MemberAdded`, but the op-store still holds the
+    /// `Noop` — so reading membership from the op-store drops the member, the joiner's
+    /// writes are rejected, and sync never converges. `scope_root` doesn't surface it
+    /// because at shadow time neither side has decrypted yet (both `Noop` → roots
+    /// match); the divergence only appears after the key arrives.
+    ///
+    /// Until the op-store faithfully reconstructs late-decrypted membership (e.g.
+    /// re-persist on the key-arrival replay, or re-decrypt on load) this stays on the
+    /// governance DAG, the proven-correct source. The op-store keeps being
+    /// dual-written.
     #[must_use]
     pub fn ops_for_namespace(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
         Self::collect_namespace_ops(store, namespace_id)
-    }
-
-    /// The governance-plane `scope_root` reconstructed purely from the **governance
-    /// DAG** for `namespace_id` (the pre-C2 source) — the C2.2b cross-check's view,
-    /// the inverse of [`scope_root_from_op_store`](Self::scope_root_from_op_store).
-    /// `None` when the DAG head is unreadable or the scope is empty.
-    #[must_use]
-    pub fn scope_root_from_governance_dag(
-        store: &Store,
-        namespace_id: [u8; 32],
-    ) -> Option<[u8; 32]> {
-        let ops = Self::collect_namespace_ops(store, namespace_id)?;
-        if ops.is_empty() {
-            return None;
-        }
-        let scope = ScopeId::from(namespace_id);
-        let mut proj = Self::new();
-        // `ingest_op` per op (not `apply_backfill`): this is a throwaway projection,
-        // so the `backfilled`-set bookkeeping `apply_backfill` does is meaningless
-        // here — matches `scope_root_from_op_store`.
-        for op in &ops {
-            proj.ingest_op(op);
-        }
-        proj.scope_root_for(&scope, [0u8; 32])
-    }
-
-    /// C2.2b cross-check (observe-only): validate the dual-write op-store against
-    /// the governance DAG (authoritative until C5) by comparing two INDEPENDENT
-    /// reconstructions — a pure op-store replay
-    /// ([`scope_root_from_op_store`](Self::scope_root_from_op_store)) vs a pure
-    /// governance-DAG fold
-    /// ([`scope_root_from_governance_dag`](Self::scope_root_from_governance_dag)).
-    ///
-    /// Comparing the PURE op-store replay (not the maintained projection, which also
-    /// holds live `ingest_op`-fed ops) is load-bearing: if `persist_op` failed for an
-    /// op but the live apply still ingested it, the maintained projection would hold
-    /// the op while the op-store doesn't — and a maintained-vs-DAG compare would
-    /// match and miss the gap. The pure replay surfaces it.
-    ///
-    /// Logs `unified_op_store_divergence` on a root mismatch, and
-    /// `unified_op_store_shadow_skipped` when exactly one source is empty (a
-    /// suspicious asymmetry, e.g. a lost DAG head while the op-store has rows).
-    pub fn shadow_compare_op_store(store: &Store, namespace_id: [u8; 32]) {
-        let scope = ScopeId::from(namespace_id);
-        let op_store_root = match Self::scope_root_from_op_store(store, &scope) {
-            Ok(root) => root,
-            Err(err) => {
-                tracing::debug!(
-                    %err,
-                    namespace = ?namespace_id,
-                    "op-store cross-check: op-store load failed; skipping"
-                );
-                return;
-            }
-        };
-        let dag_root = Self::scope_root_from_governance_dag(store, namespace_id);
-        match (op_store_root, dag_root) {
-            (Some(op_store_root), Some(dag_root)) if op_store_root != dag_root => {
-                tracing::warn!(
-                    marker = "unified_op_store_divergence",
-                    namespace = ?namespace_id,
-                    op_store_root = %hex::encode(&op_store_root[..8]),
-                    dag_root = %hex::encode(&dag_root[..8]),
-                    "op-store replay diverges from the governance-DAG fold"
-                );
-            }
-            (Some(_), None) | (None, Some(_)) => {
-                tracing::warn!(
-                    marker = "unified_op_store_shadow_skipped",
-                    namespace = ?namespace_id,
-                    op_store_has = op_store_root.is_some(),
-                    dag_has = dag_root.is_some(),
-                    "op-store cross-check: one source has ops and the other is empty — can't compare"
-                );
-            }
-            _ => {}
-        }
     }
 
     /// [`scope_root_for`](Self::scope_root_for) from an EPHEMERAL fold built fresh
