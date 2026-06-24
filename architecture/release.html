@@ -92,6 +92,36 @@ DEVTOOLS_REF: v1.4.0</pre>
 <h3>Purpose</h3>
 <p>Without this workflow, ABI regressions were only discovered after <code>mero-devtools-js</code> vendored new generated types. The check now runs on every relevant PR so breakage is caught before merging rather than after the downstream tool picks up the change.</p>
 </div>
+<div class="card gc"><h2>E2E op-store completeness reporting (C3 Stage 0)</h2>
+<p>A CI step named <strong>Report unified op-store completeness (C3 Stage 0, observe-only)</strong> runs inside the end-to-end workflow after Docker logs are collected. It makes known structural incompleteness in the op-store visible per scenario rather than silent.</p>
+
+<h3>What the step does</h3>
+<ol>
+<li>Greps <code>docker-logs/</code> for two marker strings:
+  <ul>
+    <li><code>op_store_incomplete</code> — signals gaps in op-store coverage.</li>
+    <li><code>op_store_gate_unavailable</code> — signals that the gate-load mechanism itself could not be reached.</li>
+  </ul>
+</li>
+<li>Classifies the result into one of three outcomes:
+  <ul>
+    <li><strong>Gaps found:</strong> emits a <code>::notice::</code> annotation with the count of incomplete markers.</li>
+    <li><strong>Gate-load failures only (no gap markers):</strong> emits an <code>UNVERIFIED</code> notice — the step explicitly does <em>not</em> claim the store is clean.</li>
+    <li><strong>No markers of either kind:</strong> prints a confirmed-clean message.</li>
+  </ul>
+</li>
+</ol>
+
+<h3>Observe-only behaviour</h3>
+<p>The step <strong>never fails the job</strong>. It is purely informational at C3 Stage 0, giving each subsequent stage a visible baseline to track. The intent is that the marker count falls to zero across stages, at which point the step becomes a <strong>hard gate at C3 Stage 4</strong>.</p>
+
+<h3>Why it was added</h3>
+<p>Previously, op-store incompleteness was silent in CI and only surfaced after downstream tooling consumed the data. Surfacing the markers per scenario on every relevant run allows regressions and progress to be observed incrementally without blocking merges during the remediation period.</p>
+
+<pre class="code"># Markers the step looks for in docker-logs/
+op_store_incomplete
+op_store_gate_unavailable</pre>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
