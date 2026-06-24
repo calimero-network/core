@@ -344,6 +344,45 @@ behavior for a missing node identity and avoids a single inaccessible group bloc
 listing.
 </p>
 
+<h3>Convergence root — <code>ScopeProjections::scope_root_for</code> and <code>group_scope_root_ephemeral</code></h3>
+<p>
+<code>ScopeProjections::scope_root_for(scope)</code> computes a single
+SHA-256 digest over the folded state of a governance scope:
+<code>SHA-256(entities_root ‖ acl_hash ‖ governance_hash)</code>. This
+gives callers a cheap way to detect whether two nodes have converged on
+the same membership/governance state without enumerating members.
+</p>
+<ul>
+  <li><b>Returns <code>None</code></b> when the scope has not been folded
+  yet (i.e. it has no entry in the projection). Callers <b>must</b> treat
+  <code>None</code> as "cannot compare" — never as a divergence signal.
+  False divergences from mid-backfill nodes are the main hazard here.</li>
+  <li><b>ACL component</b> is currently an empty placeholder because
+  <code>SetWriters</code> ops are not yet routed through the governance
+  DAG. The hash over ACL state will become meaningful at C2 when that
+  routing lands.</li>
+</ul>
+<p>
+The companion free function
+<code>ScopeProjections::group_scope_root_ephemeral(group_id, store)</code>
+builds an ephemeral projection from the raw store (no
+<code>NodeState</code> required), adds an ancestry-completeness guard via
+<code>cut_ancestry_complete</code>, and delegates to
+<code>scope_root_for</code>. It returns <code>None</code> when the
+governance DAG cut is not fully folded, preventing false divergence
+reports from nodes that are still mid-backfill. Both symbols are public
+API on <code>ScopeProjections</code>
+(<code>crates/context/src/scope_projections.rs</code>).
+</p>
+<p>
+Behavior is pinned by
+<code>scope_root_for_moves_on_hash_neutral_membership_change_and_is_none_when_unfolded</code>:
+the test holds <code>entities_root</code> fixed, ingests an
+<code>AdminChanged</code> op then a causally-chained <code>MemberAdded</code>
+op, and asserts that <code>scope_root_for</code> returns different values
+before and after, and returns <code>None</code> for an unfolded scope.
+</p>
+
 <h3>Batch role resolution — <code>ScopeProjections::member_roles_for</code></h3>
 <p>
 Where <code>namespace_current_heads</code> answers "is this member present?",
@@ -1185,6 +1224,7 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td><code>ScopeProjections::namespace_current_heads</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>.</td></tr>
   <tr><td><code>ScopeProjections::member_now_ephemeral</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — builds a fresh projection per call: resolves the namespace, folds the DAG via <code>collect_namespace_ops</code>, reads heads after the fold, and returns <code>member_at_cut</code>. Returns <code>None</code> (never decides against the member) on unresolvable namespace, store fault, or incomplete fold.</td></tr>
   <tr><td><code>ScopeProjections::member_now_checked</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — unified membership gate for all four context-layer handlers. Calls <code>member_now_ephemeral</code> first; falls back to <code>MembershipRepository::is_member</code> when projection is undecidable; emits <code>tracing::warn</code> with <code>marker=unified_projection_divergence</code> / <code>plane=membership-query</code> on definite disagreement. Direct <code>MembershipRepository</code> imports removed from <code>get_cascade_status.rs</code>, <code>get_group_upgrade_status.rs</code>, <code>list_all_groups.rs</code>, and <code>list_group_contexts.rs</code>.</td></tr>
+  <tr><td><code>ScopeProjections::scope_root_for</code> + <code>group_scope_root_ephemeral</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — <code>scope_root_for</code> computes <code>SHA-256(entities_root ‖ acl_hash ‖ governance_hash)</code> for a folded scope; returns <code>None</code> when the scope is unfolded (callers must treat as "cannot compare", not divergence). <code>group_scope_root_ephemeral</code> builds a fresh ephemeral projection from the raw store, applies an ancestry-completeness guard, and delegates to <code>scope_root_for</code>; returns <code>None</code> mid-backfill. ACL component is currently empty pending C2 <code>SetWriters</code> routing. Pinned by <code>scope_root_for_moves_on_hash_neutral_membership_change_and_is_none_when_unfolded</code>.</td></tr>
   <tr><td><code>ScopeProjections::role_at_cut_for_group</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves the effective <code>GroupMemberRole</code> at a governance cut via <code>auth_cut_context</code> + <code>member_path_at_cut</code>. Handles direct, inherited-via-admin (<code>Admin</code>), and inherited-via-anchor (anchor role row) cases. Returns <code>None</code> on incomplete ancestry, absent member, unresolvable namespace, or missing anchor row. Prevents spurious <code>membership-role</code> divergence reports by abstaining rather than guessing on missing anchor rows.</td></tr>
   <tr><td><code>AtCutAuthorizer</code> trait + <code>LiveFallbackAuthorizer</code> + <code>EphemeralProjectionAuthorizer</code></td><td><b>Implemented</b></td><td><code>crates/context/src/governance_dag.rs</code> — <code>AtCutAuthorizer</code> declares four required methods: <code>is_admin_at_cut</code>, <code>is_admin_or_capability_at_cut</code>, <code>is_last_admin_at_cut</code>, and <code>membership_path_at_cut</code>. All must return <code>None</code> when <code>parents</code> is empty (trait-level empty-cut contract). <code>LiveFallbackAuthorizer</code> implements all four returning <code>None</code>. <code>EphemeralProjectionAuthorizer</code> holds a <code>Mutex&lt;Option&lt;(ContextGroupId, Arc&lt;FoldedProjection&gt;)&gt;&gt;</code> fold cache; the private <code>folded</code> helper reuses a cached fold for the same group or calls <code>ScopeProjections::ephemeral_projection</code> on a miss. All four at-cut methods delegate through <code>folded</code>; each opens with an empty-parents guard. <code>is_last_admin_at_cut</code> delegates to <code>ScopeProjections::is_last_admin_at_cut</code> (in <code>crates/context/src/scope_projections.rs</code>), which mirrors live last-admin logic at the parent cut. <code>membership_path_at_cut</code> delegates to <code>ScopeProjections::membership_path_at_cut</code>, which calls <code>member_path_at_cut</code> on the folded projection via <code>auth_cut_context</code> and maps the result to <code>AtCutMembershipPath</code>. The standalone <code>GroupGovernanceApplier::apply</code> is unchanged (live-only); see the <em>GroupGovernanceApplier</em> note in the at-cut accessors section above.</td></tr>
   <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
