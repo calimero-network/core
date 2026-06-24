@@ -1137,23 +1137,42 @@ impl ScopeProjections {
     /// (zero markers ⇒ the op-store provably mirrors the gov-DAG for that namespace).
     ///
     /// `dag_ops` is the gov-DAG fold the caller already computed (the backfill walk),
-    /// so this adds one op-store load, not a second DAG walk. Never affects apply.
-    /// Returns the missing op ids (empty ⇒ complete) so it is directly testable; the
-    /// node caller ignores the return and relies on the `op_store_incomplete` marker.
+    /// so this adds one op-store load, not a second DAG walk. It runs only on an
+    /// actual backfill — `namespace_to_refresh` returns `None` for an already-folded
+    /// (warm) cut, so the steady-state per-delta path does NOT pay this; the load
+    /// happens on cold/refresh cuts only, and the whole gate retires at Stage 4 when
+    /// the read flips onto the op-store. Never affects apply.
+    ///
+    /// Returns the missing op ids (empty ⇒ complete OR couldn't-check) so it is
+    /// directly testable; the node caller ignores the return and relies on the
+    /// markers: `op_store_incomplete` (a real gap) and `op_store_gate_unavailable`
+    /// (the op-store load failed, so completeness is UNVERIFIED — distinct from clean,
+    /// so a store fault can't masquerade as a passing gate).
     pub fn check_op_store_completeness(
         store: &Store,
         namespace_id: [u8; 32],
         dag_ops: &[Op],
     ) -> Vec<[u8; 32]> {
+        // Nothing to verify against an empty gov-DAG fold.
+        if dag_ops.is_empty() {
+            return Vec::new();
+        }
         let scope = ScopeId::from(namespace_id);
         let store_ids: HashSet<[u8; 32]> =
             match crate::unified_op_store::load_scope_ops(store, &scope) {
                 Ok(ops) => ops.iter().map(|op| op.id).collect(),
                 Err(err) => {
-                    tracing::debug!(
-                        %err,
+                    // A load fault must NOT read as "complete" (empty missing list):
+                    // CI treats no `op_store_incomplete` as a clean op-store, so a
+                    // store error would silently hide real gaps the gate exists to
+                    // surface. Emit a DISTINCT marker so a couldn't-check is visibly
+                    // different from a verified-clean.
+                    tracing::warn!(
+                        marker = "op_store_gate_unavailable",
                         namespace = ?namespace_id,
-                        "op-store completeness gate: load failed; skipping"
+                        %err,
+                        "op-store completeness gate could not load the op-store — \
+                         completeness UNVERIFIED for this namespace this round"
                     );
                     return Vec::new();
                 }

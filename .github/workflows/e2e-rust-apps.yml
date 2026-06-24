@@ -498,10 +498,19 @@ jobs:
               count=$(grep -rho "op_store_incomplete" docker-logs/ | wc -l | tr -d ' ')
               echo "::notice::op-store incomplete in ${{ matrix.workflow }} — $count marker(s) (expected during C3; observe-only)"
               echo "sample (missing_count per namespace):"
-              grep -rho 'op_store_incomplete[^}]*missing_count=[0-9]*' docker-logs/ | sed -E 's/.*(missing_count=[0-9]*).*/\1/' | sort | uniq -c | head
+              # Match `missing_count=N` anywhere on an op_store_incomplete line — robust
+              # to field ordering. Tolerates the line not carrying the field at all.
+              grep -rho 'op_store_incomplete.*' docker-logs/ | grep -oE 'missing_count=[0-9]+' | sort | uniq -c | head
               grep -rn "op_store_incomplete" docker-logs/ | head -10
           else
               echo "no op_store_incomplete markers — op-store mirrors the gov-DAG for every exercised namespace"
+          fi
+          # A load fault makes completeness UNVERIFIED (distinct from clean) — surface
+          # it so a store error can't read as a passing gate.
+          if grep -rl "op_store_gate_unavailable" docker-logs/ 2>/dev/null | grep -q .; then
+              gc=$(grep -rho "op_store_gate_unavailable" docker-logs/ | wc -l | tr -d ' ')
+              echo "::notice::op-store completeness UNVERIFIED in ${{ matrix.workflow }} — $gc gate-load failure(s)"
+              grep -rn "op_store_gate_unavailable" docker-logs/ | head -5
           fi
 
       - name: List docker-logs/ before upload (debug)
