@@ -1124,71 +1124,22 @@ impl ScopeProjections {
         );
     }
 
-    /// Persist the namespace's current gov-DAG head op(s) to the unified op-store
-    /// (cutover C3 Stage 1, by-construction): a locally-authored governance op writes
-    /// the gov-DAG (`advance_dag_head`) but NOT the op-store, because the dual-write
-    /// only fires on the receive handler. Called right after authoring, this lands the
-    /// just-authored op — now a head — without re-walking the namespace.
+    /// Persist a locally-authored namespace's governance ops to the unified op-store
+    /// (cutover C3 Stage 1, by-construction): a locally-authored op writes the gov-DAG
+    /// (`advance_dag_head`) but NOT the op-store, because the dual-write only fires on
+    /// the receive handler. Called right after authoring.
     ///
-    /// Heads-only is sufficient going forward because the op-store is kept complete
-    /// incrementally: every op is persisted as it is received (the apply handler) or
-    /// authored (here), so a new op's ancestors are already present. Root ops are
-    /// cleartext; an encrypted group head the author holds the key for decodes via
-    /// `decrypt_group_op`. Best-effort and idempotent; never affects authoring.
+    /// This persists the WHOLE gov-DAG fold, not just the current heads. A heads-only
+    /// persist would be racy: the caller authors, then awaits the publish round-trip,
+    /// and the actor can apply a concurrent peer op during that await — advancing the
+    /// head so the just-authored op is no longer a head and a heads-only persist skips
+    /// it. The full walk via [`repersist_namespace_ops`](Self::repersist_namespace_ops)
+    /// captures the authored op wherever it landed in the DAG, reuses
+    /// `collect_namespace_ops`'s read-error logging, and is bounded by `MAX_BACKFILL_OPS`
+    /// (local authoring is infrequent, and re-persisting an unchanged op is idempotent).
+    /// Best-effort; never affects authoring.
     pub fn persist_namespace_head_ops(store: &Store, namespace_id: [u8; 32]) {
-        let heads = match NamespaceDagService::new(store, namespace_id).read_head_record() {
-            Ok(head) => head.parent_hashes,
-            Err(err) => {
-                tracing::debug!(
-                    namespace = ?namespace_id,
-                    %err,
-                    "op-store: governance head unreadable; skipping authored-op persist"
-                );
-                return;
-            }
-        };
-        let op_log = NamespaceOpLogService::new(store, namespace_id);
-        for id in heads {
-            let signed = match op_log.get_signed_op(id) {
-                Ok(Some(signed)) => signed,
-                _ => continue,
-            };
-            let Ok(delta) = signed_namespace_op_to_delta(&signed) else {
-                continue;
-            };
-            let decrypted = match &signed.op {
-                calimero_governance_types::NamespaceOp::Group {
-                    group_id,
-                    key_id,
-                    encrypted,
-                    ..
-                } => calimero_governance_store::decrypt_group_op(
-                    store,
-                    namespace_id,
-                    ContextGroupId::from(*group_id),
-                    key_id,
-                    encrypted,
-                )
-                .ok()
-                .flatten(),
-                calimero_governance_types::NamespaceOp::Root(_) => None,
-            };
-            let op = op_from_namespace_op(
-                &signed,
-                decrypted.as_ref(),
-                delta.id,
-                delta.hlc,
-                &delta.parents,
-            );
-            if let Err(err) = crate::unified_op_store::persist_op(store, &op) {
-                tracing::warn!(
-                    %err,
-                    namespace = ?namespace_id,
-                    op = ?op.id,
-                    "op-store: failed to persist locally-authored governance op"
-                );
-            }
-        }
+        Self::repersist_namespace_ops(store, namespace_id);
     }
 
     /// Observe-only completeness gate (cutover C3 Stage 0): warn when the unified
