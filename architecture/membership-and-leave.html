@@ -615,6 +615,39 @@ false "undecidable" verdict on every group op. The real group-auth projection sh
 fires only on the namespace-envelope group-op path, not through the standalone applier.
 </p>
 
+<h3>UnifiedApplier — projection-backing <code>DeltaApplier&lt;Op&gt;</code></h3>
+<p>
+<code>UnifiedApplier</code> is the C2.0 struct that bridges <code>DagStore&lt;Op&gt;</code> and
+<code>ScopeProjections</code>. It implements <code>DeltaApplier&lt;Op&gt;</code>: its
+<code>apply</code> method acquires a write lock on the inner
+<code>Arc&lt;std::sync::RwLock&lt;ScopeProjections&gt;&gt;</code>, calls
+<code>ScopeProjections::ingest_op</code> with the delta's payload, then releases the lock. The
+lock is a <code>std::sync::RwLock</code> (not a Tokio lock) and is <b>never held across an
+<code>.await</code></b>; lock poison is recovered rather than propagated, matching the stance
+already documented on <code>NodeState::read_scope_projections</code>. Two constructors are provided:
+</p>
+<ul>
+  <li><code>UnifiedApplier::new()</code> — creates a private, standalone projection. Use this for
+  replay pipelines and tests.</li>
+  <li><code>UnifiedApplier::with_projection(Arc&lt;RwLock&lt;ScopeProjections&gt;&gt;)</code> —
+  attaches to the node's live shared projection. This is the C2.1 dual-write seam: governance ops
+  processed by the existing live pipeline are simultaneously ingested into the shared projection.</li>
+</ul>
+<p>
+A <code>projection()</code> accessor exposes the <code>Arc</code> for inspection or cross-checking.
+<code>pub mod unified_applier</code> is exported from <code>crates/context/src/lib.rs</code>,
+making <code>UnifiedApplier</code> part of the crate's public API.
+</p>
+<p>
+Behavior is pinned by
+<code>dag_releases_out_of_order_ops_and_the_projection_converges</code>: a four-op causal chain
+spanning the admin, membership, ACL, and data planes is fed through <code>DagStore&lt;Op&gt;</code>
++ <code>UnifiedApplier</code> in four delivery orders (in-order, full reverse, and two interleaved).
+The test asserts that every op is applied (none stuck pending) and that <code>scope_root</code>
+matches the result of direct in-order folding in all cases — confirming causal ordering and
+projection convergence regardless of receive order.
+</p>
+
 <h3>Shadow authorization check in <code>apply_signed_namespace_op</code></h3>
 <p>
 After a governance op is successfully applied by the live gate, the handler runs a non-blocking
@@ -1228,6 +1261,7 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td><code>ScopeProjections::member_now_checked</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — unified membership gate for all four context-layer handlers. Calls <code>member_now_ephemeral</code> first; falls back to <code>MembershipRepository::is_member</code> when projection is undecidable; emits <code>tracing::warn</code> with <code>marker=unified_projection_divergence</code> / <code>plane=membership-query</code> on definite disagreement. Direct <code>MembershipRepository</code> imports removed from <code>get_cascade_status.rs</code>, <code>get_group_upgrade_status.rs</code>, <code>list_all_groups.rs</code>, and <code>list_group_contexts.rs</code>.</td></tr>
   <tr><td><code>ScopeProjections::scope_root_for</code> + <code>group_scope_root_ephemeral</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — <code>scope_root_for</code> computes <code>SHA-256(entities_root ‖ acl_hash ‖ governance_hash)</code> for a folded scope; returns <code>None</code> when the scope is unfolded (callers must treat as "cannot compare", not divergence). <code>group_scope_root_ephemeral</code> builds a fresh ephemeral projection from the raw store, applies an ancestry-completeness guard, and delegates to <code>scope_root_for</code>; returns <code>None</code> mid-backfill. ACL component is currently empty pending C2 <code>SetWriters</code> routing. Pinned by <code>scope_root_for_moves_on_hash_neutral_membership_change_and_is_none_when_unfolded</code>.</td></tr>
   <tr><td><code>ScopeProjections::role_at_cut_for_group</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves the effective <code>GroupMemberRole</code> at a governance cut via <code>auth_cut_context</code> + <code>member_path_at_cut</code>. Handles direct, inherited-via-admin (<code>Admin</code>), and inherited-via-anchor (anchor role row) cases. Returns <code>None</code> on incomplete ancestry, absent member, unresolvable namespace, or missing anchor row. Prevents spurious <code>membership-role</code> divergence reports by abstaining rather than guessing on missing anchor rows.</td></tr>
+  <tr><td><code>UnifiedApplier</code> + <code>pub mod unified_applier</code></td><td><b>Implemented</b></td><td><code>crates/context/src/unified_applier.rs</code> (exported via <code>crates/context/src/lib.rs</code>) — <code>UnifiedApplier</code> wraps <code>Arc&lt;std::sync::RwLock&lt;ScopeProjections&gt;&gt;</code> and implements <code>DeltaApplier&lt;Op&gt;</code>; <code>apply</code> holds the write lock only across the synchronous <code>ScopeProjections::ingest_op</code> call, never across an <code>.await</code>; lock poison is recovered. <code>new()</code> for standalone/test use; <code>with_projection(arc)</code> as the C2.1 dual-write seam; <code>projection()</code> accessor exposes the <code>Arc</code>. Convergence pinned by <code>dag_releases_out_of_order_ops_and_the_projection_converges</code> (four-op causal chain, four delivery orders, all converge to the same <code>scope_root</code>).</td></tr>
   <tr><td><code>AtCutAuthorizer</code> trait + <code>LiveFallbackAuthorizer</code> + <code>EphemeralProjectionAuthorizer</code></td><td><b>Implemented</b></td><td><code>crates/context/src/governance_dag.rs</code> — <code>AtCutAuthorizer</code> declares four required methods: <code>is_admin_at_cut</code>, <code>is_admin_or_capability_at_cut</code>, <code>is_last_admin_at_cut</code>, and <code>membership_path_at_cut</code>. All must return <code>None</code> when <code>parents</code> is empty (trait-level empty-cut contract). <code>LiveFallbackAuthorizer</code> implements all four returning <code>None</code>. <code>EphemeralProjectionAuthorizer</code> holds a <code>Mutex&lt;Option&lt;(ContextGroupId, Arc&lt;FoldedProjection&gt;)&gt;&gt;</code> fold cache; the private <code>folded</code> helper reuses a cached fold for the same group or calls <code>ScopeProjections::ephemeral_projection</code> on a miss. All four at-cut methods delegate through <code>folded</code>; each opens with an empty-parents guard. <code>is_last_admin_at_cut</code> delegates to <code>ScopeProjections::is_last_admin_at_cut</code> (in <code>crates/context/src/scope_projections.rs</code>), which mirrors live last-admin logic at the parent cut. <code>membership_path_at_cut</code> delegates to <code>ScopeProjections::membership_path_at_cut</code>, which calls <code>member_path_at_cut</code> on the folded projection via <code>auth_cut_context</code> and maps the result to <code>AtCutMembershipPath</code>. The standalone <code>GroupGovernanceApplier::apply</code> is unchanged (live-only); see the <em>GroupGovernanceApplier</em> note in the at-cut accessors section above.</td></tr>
   <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
 </table>
