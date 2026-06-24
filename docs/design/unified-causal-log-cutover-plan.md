@@ -103,11 +103,25 @@ signal only once this canary is green.
   projection / non-group context falls back to the bare entity compare (no
   context drops below the pre-C1 check). This is the kernel security win on the
   general sync path.
-- **C1b (follow-up)** — the remaining compare sites: LevelWise (its verdict is
-  currently advisory off the handshake root — needs `scope_root` threaded through
-  the handshake), the snapshot boundary (`snapshot.rs`), and the protocol
-  selector's converged-decision. Sliced out because LevelWise/snapshot carry
-  their own staleness semantics and are independently reviewable.
+- **C1b (drafted 2026-06-24)** — **LevelWise** brought to HashComparison parity:
+  it now does the same end-of-session peer re-query (the #2407 comment said it
+  *needed* "a second handshake round-trip" to tell real divergence from drift —
+  this is that round-trip, reusing `query_peer_current_root`) and decides on
+  `scope_root` with the same entity fallback. Closes the blind spot on the
+  wide-shallow-tree path.
+- **NOT folded into `scope_root`, deliberately:**
+  - **Snapshot boundary** (`snapshot.rs`) stays entity-root-based. The snapshot
+    streams the *data plane*; its boundary check is streaming-integrity ("did the
+    responder's entity state drift mid-stream"). Folding governance in would abort
+    a perfectly valid entity snapshot whenever governance moves independently
+    (over-conservative). Post-snapshot convergence — including authorization — is
+    verified by the next HC/LevelWise session's `scope_root` verdict (C1a/C1b).
+  - **Protocol selector's `None` arm** ("roots match ⇒ no sync") stays entity-root
+    based. Governance reconciles on its *own* independent tick (the
+    `namespace_sync` beacon), so a selector that skips state-sync on equal entity
+    roots never strands a governance divergence — it's pulled by governance sync,
+    and the following state-sync's `scope_root` verdict confirms convergence.
+    Folding `scope_root` here would only add redundant state-sync work.
 
 **Goal.** Replace the bare entity `root_hash` on the wire and in comparison with
 `scope_root`, where
