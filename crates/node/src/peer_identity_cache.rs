@@ -24,8 +24,8 @@
 //! ## Authenticated, hint-only
 //!
 //! Entries are written **only** from the existing `observe_peer_identity`
-//! gate (signature verified + `MembershipStatus::Member` at the
-//! cross-DAG cut), so the cache never holds a self-asserted claim.
+//! gate (signature verified + member at the cross-DAG cut per the unified
+//! projection), so the cache never holds a self-asserted claim.
 //! Everything here is nonetheless a **routing hint, never authority**:
 //! actual sync re-verifies every governance op's signature at adoption,
 //! so a stale entry costs at most one wasted dial — never correctness.

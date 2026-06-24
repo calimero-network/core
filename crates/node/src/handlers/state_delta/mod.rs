@@ -993,14 +993,14 @@ pub async fn handle_state_delta(
 
     // Apply-time cross-DAG membership check (core#2716 P4). Authorize the
     // delta against the GOVERNANCE PARENT EDGE it carries — the governance
-    // heads the author signed under — resolving membership at that cut via
-    // `acl_view_at`. The group is derived from the CONTEXT's owning group,
+    // heads the author signed under — resolving membership at that cut from the
+    // unified projection. The group is derived from the CONTEXT's owning group,
     // never the signer-supplied `governance_position.group_id`, so a signer
     // cannot cite a different group it belongs to elsewhere to authorize a
     // write here. Reject ineligible ops; buffer when governance state hasn't
     // caught up; otherwise fall through to the existing apply path.
     //
-    // Forward-only is load-bearing: `acl_view_at` observes only the ancestry
+    // Forward-only is load-bearing: the projection observes only the ancestry
     // of the cited heads, so a pre-removal write resolves to `Authorized` on a
     // receiver that has already applied the later removal — peers observing
     // ops in different orders still converge.
