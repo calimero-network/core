@@ -787,6 +787,17 @@ fn refresh_projection_for_cut(
             node_state
                 .write_scope_projections()
                 .apply_backfill(namespace_id, ops);
+
+            // C2.2 read shadow (observe-only): the unified op-store must reconstruct
+            // the same governance scope this backfill just folded from the
+            // governance DAG. A mismatch means the dual-write op-store is missing ops
+            // the governance DAG has — the gap C2.2b's read-flip can't tolerate (the
+            // projection is the sole auth decider). Runs only on an actual backfill
+            // (controlled frequency); the compare logs `unified_op_store_divergence`
+            // and never affects the apply.
+            node_state
+                .read_scope_projections()
+                .shadow_compare_op_store(datastore, namespace_id);
         }
     }
 }
