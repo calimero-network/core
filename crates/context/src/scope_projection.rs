@@ -337,11 +337,24 @@ impl ScopeProjections {
     /// mismatch).
     ///
     /// This is the unified-causal-log convergence signal (cutover plan C0/C1):
-    /// a hash-neutral writer/membership rotation (identical `entities_root`,
-    /// different ACL/governance) yields a different `scope_root`, so sync can
-    /// never declare "converged" while authorization disagrees. `entities_root`
-    /// MUST be the storage Merkle root, not the projection's own entity hash —
-    /// see [`ScopeState::scope_root_with_entities`]'s caller contract.
+    /// a hash-neutral **governance** change — a membership add/remove, admin
+    /// change, policy/subgroup edit — leaves `entities_root` identical yet yields a
+    /// different `scope_root`, so sync can never declare "converged" while
+    /// authorization disagrees. That governance plane is what `entities_root`
+    /// cannot see and what this signal adds.
+    ///
+    /// NOTE on the ACL (writer-set) plane: today the projection's `acl` map is fed
+    /// only by the namespace **governance** DAG, which carries no `SetWriters` ops,
+    /// so `acl_hash` is currently empty here. That is not a gap: a writer-set
+    /// rotation is a storage entity (a hashed `UnorderedMap` child of its anchor),
+    /// so it already MOVES `entities_root` — divergent writer sets therefore yield
+    /// a divergent `scope_root` via the entities component (and are caught by the
+    /// bare `root_hash` too). `acl_hash` becomes a distinct contributor only at C2,
+    /// when the unified op-log folds `SetWriters` into this scope and writer sets
+    /// leave the Merkle tree.
+    ///
+    /// `entities_root` MUST be the storage Merkle root, not the projection's own
+    /// entity hash — see [`ScopeState::scope_root_with_entities`]'s caller contract.
     #[must_use]
     pub fn scope_root_for(&self, scope: &ScopeId, entities_root: [u8; 32]) -> Option<[u8; 32]> {
         self.states
@@ -1770,20 +1783,19 @@ mod tests {
         assert_eq!(reg.scope_root_for(&scope, entities_root), None);
 
         let mut reg = ScopeProjections::new();
-        reg.ingest_op(&build(
-            10,
-            vec![],
-            OpPayload::AdminChanged { new_admin: admin },
-        ));
+        let admin_op = build(10, vec![], OpPayload::AdminChanged { new_admin: admin });
+        reg.ingest_op(&admin_op);
         let before = reg
             .scope_root_for(&scope, entities_root)
             .expect("scope fed");
 
         // A membership add is hash-neutral on the entity root but MUST move
         // scope_root — the whole point of folding governance into the signal.
+        // Chain it under `admin_op` to mirror the real governance DAG shape (the
+        // MemberAdded is a causal child of the prior op, not a sibling at genesis).
         reg.ingest_op(&build(
             20,
-            vec![],
+            vec![admin_op.id],
             OpPayload::MemberAdded {
                 group,
                 member,

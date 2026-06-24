@@ -702,12 +702,16 @@ async fn run_initiator_impl<T: SyncTransport>(
     stats.root_hash_verified = local_root_hash == peer_current_root;
 
     // C0 scope_root shadow (observe-only): when the entity roots AGREE, the bare
-    // `root_hash` declares convergence — but a hash-neutral writer/membership
-    // rotation leaves identical entities under a divergent ACL/governance plane,
-    // which `root_hash` cannot see. Fold our governance projection onto the same
-    // entity root and compare against the peer's `scope_root`; a mismatch here, on
-    // agreeing entity roots, is exactly the blind spot C1 will close. Logged, never
-    // acted on. Both sides skip when either can't fold the scope (`None`).
+    // `root_hash` declares convergence — but a hash-neutral GOVERNANCE change
+    // (membership add/remove, admin/policy/subgroup edit) leaves identical entities
+    // under a divergent governance plane, which `root_hash` cannot see (governance
+    // lives in a separate DAG, not the storage Merkle). Fold our governance
+    // projection onto the same entity root and compare against the peer's
+    // `scope_root`; a mismatch here, on agreeing entity roots, is exactly the blind
+    // spot C1 will close. (Writer-set rotations are NOT this case — they move
+    // `entities_root` via the rotation-log storage entity, so they're already
+    // caught by the bare `root_hash`.) Logged, never acted on. Both sides skip when
+    // either can't fold the scope (`None`).
     if local_root_hash == peer_current_root {
         if let Some(peer_scope_root) = peer_scope_root {
             if let Some(local_scope_root) =

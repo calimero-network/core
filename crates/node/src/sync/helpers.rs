@@ -49,6 +49,15 @@ pub fn get_local_root_hash_for_context(context_id: ContextId) -> Result<[u8; 32]
 /// **Observe-only in C0:** the result is logged for the hash-neutral-rotation
 /// shadow, never fed into any sync decision. C1 promotes it to the authoritative
 /// convergence signal (and switches to the maintained projection).
+///
+/// TODO(perf, C1+): each call is a full `collect_namespace_ops` RocksDB DAG walk,
+/// and a sync session folds independently on both peers (responder + initiator),
+/// so a namespace with deep governance history pays an unbounded O(n) read per
+/// sync tick. Acceptable while this is observe-only, but bound it before/with the
+/// C1 flip — the node-side responders hold a `NodeState`, so they can read the
+/// already-maintained projection (`scope_root_for` on `read_scope_projections()`)
+/// instead of re-folding; the initiator can take a per-session cache or have the
+/// scope_root threaded down rather than recomputed.
 pub(crate) fn local_scope_root(
     store: &Store,
     context_id: &ContextId,
