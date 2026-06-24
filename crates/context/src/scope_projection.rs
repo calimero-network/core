@@ -426,7 +426,12 @@ impl ScopeProjections {
         }
         let scope = ScopeId::from(namespace_id);
         let mut proj = Self::new();
-        proj.apply_backfill(namespace_id, ops);
+        // `ingest_op` per op (not `apply_backfill`): this is a throwaway projection,
+        // so the `backfilled`-set bookkeeping `apply_backfill` does is meaningless
+        // here — matches `scope_root_from_op_store`.
+        for op in &ops {
+            proj.ingest_op(op);
+        }
         proj.scope_root_for(&scope, [0u8; 32])
     }
 
