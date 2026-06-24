@@ -783,9 +783,10 @@ fn refresh_projection_for_cut(
         .read_scope_projections()
         .namespace_to_refresh(datastore, group, heads);
     if let Some(namespace_id) = needs_backfill {
-        // The projection folds the governance DAG (`ops_for_namespace`). The C2.2b
-        // read-flip onto the unified op-store is DEFERRED — it drops late-decrypted
-        // membership; see `ops_for_namespace` and the deterministic repro in
+        // C2.2b read-flip: the unified op-store is the projection's authoritative
+        // backing now (`ops_for_namespace` loads it, falling back to the governance
+        // DAG only for a cold scope). Late-decrypted membership is kept faithful by
+        // the key-delivery re-persist (`repersist_namespace_ops`); see
         // `calimero-context` `tests/op_store_reconstruction.rs`.
         if let Some(ops) = ScopeProjections::ops_for_namespace(datastore, namespace_id) {
             node_state
