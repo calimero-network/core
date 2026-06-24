@@ -1038,6 +1038,7 @@ impl SyncManager {
                             MessagePayload::DagHeadsResponse {
                                 dag_heads,
                                 root_hash,
+                                scope_root: _,
                             },
                         ..
                     } = response
@@ -1508,6 +1509,7 @@ impl SyncManager {
                     MessagePayload::DagHeadsResponse {
                         dag_heads,
                         root_hash,
+                        scope_root: _,
                     },
                 ..
             }) => {
@@ -1811,6 +1813,7 @@ impl SyncManager {
                     MessagePayload::DagHeadsResponse {
                         dag_heads,
                         root_hash,
+                        scope_root: _,
                     },
                 ..
             }) => {
