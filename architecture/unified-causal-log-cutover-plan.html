@@ -182,14 +182,14 @@ unified_causal_log_shadow = true   # default; set false to disable C0 shadow</pr
 <li>The <code>unified_causal_log_shadow</code> feature flag is removed in C1a; the shadow path is promoted to live.</li>
 <li>All other comparison sites remain on the legacy log after C1a lands.</li>
 </ul>
-<h3>C1b (follow-up, deferred)</h3>
-<p>C1b will update the remaining comparison sites that were intentionally left on the legacy log in C1a:</p>
+<h3>C1b (completed 2026-06-24)</h3>
+<p>C1b updated the remaining comparison sites that were intentionally left on the legacy log in C1a. The LevelWise advisory handshake-root verdict was folded onto <code>scope_root</code> as planned. Two sites were <strong>deliberately excluded</strong> from the <code>scope_root</code> migration and remain entity-root-based by explicit design decision:</p>
 <ul>
-<li><strong>LevelWise advisory handshake-root verdict</strong> — deferred because LevelWise verdicts are advisory and carry their own staleness semantics that need a separate design pass.</li>
-<li><strong>Snapshot boundary verdict</strong> — deferred because snapshot ingestion has independent staleness windows; cutting over too early could silently accept a snapshot built against a stale causal root.</li>
-<li><strong>Protocol selector converged-decision</strong> — deferred because the protocol selector aggregates verdicts from multiple sites; it should only be updated after all upstream sites are on the unified log.</li>
+<li><strong>Snapshot streaming-integrity boundary</strong> (<code>snapshot.rs</code>) — kept entity-root-based because the snapshot boundary check validates the integrity of streamed entity data at ingestion time. Threading <code>scope_root</code> through this path would cause the check to accept or reject a snapshot based on causal-log state that may not yet reflect the snapshot's own epoch, silently masking ingestion of a snapshot built against a stale causal root.</li>
+<li><strong>Protocol selector 'roots match → skip sync' arm</strong> — kept entity-root-based because this no-sync fast path compares entity roots as a proxy for whether a full sync can be skipped. Switching it to <code>scope_root</code> would conflate governance-event divergence (which the unified causal log captures) with data-state divergence (which drives the sync decision), potentially causing unnecessary syncs or, worse, skipping a sync when entity state has genuinely diverged.</li>
 </ul>
-<p>C1b also introduces the reversed-shadow arrangement: the legacy log becomes the shadow checked against the now-live unified log. The existing <code>scope_root_shadow_divergence</code> marker infrastructure will be evaluated for polarity changes as part of the C1b design doc.</p>
+<p>These exclusions are permanent for C1b. If a future milestone determines that either site should be moved to <code>scope_root</code>, that work requires its own design pass and canary gate.</p>
+<p>C1b also introduces the reversed-shadow arrangement: the legacy log becomes the shadow checked against the now-live unified log. The existing <code>scope_root_shadow_divergence</code> marker infrastructure was evaluated for polarity changes as part of the C1b design doc.</p>
 </div>
 
 <div class="card gd">
@@ -200,7 +200,7 @@ unified_causal_log_shadow = true   # default; set false to disable C0 shadow</pr
 <li><strong>Legacy log retention</strong> — how long must the legacy log be retained after C1 for rollback purposes, and what is the storage cost on large scopes?</li>
 <li><strong>C1 shadow direction</strong> — during C1 the roles reverse: the unified log becomes live and the legacy log becomes the shadow. Does the existing divergence marker infrastructure need changes to support this reversed polarity?</li>
 <li><strong>Governance event backfill</strong> — nodes that were offline during C0 will have gaps in their shadow log. Does C1 require a backfill protocol, or is a fresh shadow-log start at C1 cutover acceptable?</li>
-<li><strong>C1b comparison-site ordering</strong> — among the LevelWise advisory verdict, snapshot boundary verdict, and protocol selector converged-decision deferred from C1a, what is the safest sequencing and are any of them independent enough to land in parallel?</li>
+<li><strong>C1b comparison-site ordering</strong> — resolved: LevelWise advisory verdict was migrated to <code>scope_root</code>; snapshot boundary verdict and protocol selector converged-decision were explicitly kept entity-root-based (see C1b section above).</li>
 </ul>
 <p>None of these questions need to be answered before C0 is declared complete. They are recorded here so they are not forgotten when C1 planning begins.</p>
 </div>
