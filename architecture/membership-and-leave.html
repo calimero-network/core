@@ -1220,6 +1220,8 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td><code>leave_namespace</code></td><td><b>Implemented</b></td><td>Same <code>member_left.rs</code> apply detects the no-parent case and cascades through descendant groups where the leaver has direct rows; multi-scope owner + last-admin checked upfront. <em>No per-scope key rotation</em>.</td></tr>
   <tr><td>Key rotation on <code>MemberRemoved</code></td><td><b>Implemented</b></td><td><code>crates/governance-store/src/group_governance_publisher.rs</code> (<code>sign_apply_and_publish_inner</code>) + <code>GroupKeyring</code> in <code>group_keys.rs</code> — fresh key wrapped for remaining members, excluding the removed one.</td></tr>
   <tr><td>Role-scoped TEE self-purge</td><td><b>Implemented</b> (ADR 0002; #2680/#2724/#2725)</td><td><code>crates/context/src/self_purge.rs</code> listener + cascade + marker-gated <code>reconcile_sweep</code>; <code>delete_group_local_rows</code> in <code>governance-store/src/local_state.rs</code> deletes signing keys (and, as of #2776, <code>GroupKeyring</code> encryption keys); <code>OpEvent::TeeMemberRemoved</code> emitted from <code>member_removed.rs</code> / <code>member_left.rs</code>.</td></tr>
+  <tr><td>Startup curative sweep (<code>redrive_stranded_ops_sweep</code>)</td><td><b>Implemented</b> (#2848 Part C)</td><td><code>crates/context/src/self_purge.rs</code> — one-shot sweep on startup after <code>op_events</code> subscribe; iterates namespaces via <code>NamespaceRepository::iter_identities</code>, finds decryptable-but-unapplied groups via <code>NamespaceRetryService::groups_with_held_key_buffered_ops</code>, re-drives via <code>redrive_encrypted_ops_for_group_counted</code>; converges up to <code>MAX_PASSES=64</code> with pass-narrowing. <code>auto_follow::spawn</code> called before <code>self_purge::spawn</code> in <code>ContextManager::started</code> (load-bearing ordering — see note above).</td></tr>
+  <tr><td>Born-Open atomic subgroup create (<code>RootOp::GroupCreated</code> <code>restricted</code> field)</td><td><b>Implemented</b> (#2771) — <b>WIRE BREAK</b></td><td><code>crates/primitives/src/context.rs</code> (<code>RootOp::GroupCreated</code>), <code>crates/governance-store/src/ops/group/group_created.rs</code> (<code>group_created::apply</code>) — <code>restricted: bool</code> field added; apply writes subgroup visibility via <code>CapabilitiesRepository::set_subgroup_visibility</code> before queuing <code>OpEvent::SubgroupCreated</code>; gated on <code>has_subgroup_visibility</code> absence. <code>CreateGroupRequest</code> and REST <code>visibility</code> field updated. Op-adapter projection reads <code>restricted</code> from live op (no longer hardcodes <code>true</code>).</td></tr>
   <tr><td>TEE subgroup admission diagnostics (<code>handle_new_subgroup</code>)</td><td><b>Implemented</b></td><td><code>crates/context/src/tee_subgroup_admit.rs</code> — <code>handle_new_subgroup</code> now emits <code>debug!</code> on entry (subgroup + namespace IDs) and at each early-return path (Open subgroup skip, non-key-holder skip, no-root-TEE-members skip); <code>warn!</code> when a TEE member has no admission verdict in the root op-log; <code>info!</code> just before admitting a TEE member into a Restricted subgroup. Set <code>RUST_LOG=calimero_context=debug</code> (or <code>debug</code> on the <code>context</code> crate) to surface per-subgroup TEE admission decisions in logs.</td></tr>
   <tr><td><code>ScopeProjections::namespace_current_heads</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>.</td></tr>
   <tr><td><code>ScopeProjections::member_now_ephemeral</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — builds a fresh projection per call: resolves the namespace, folds the DAG via <code>collect_namespace_ops</code>, reads heads after the fold, and returns <code>member_at_cut</code>. Returns <code>None</code> (never decides against the member) on unresolvable namespace, store fault, or incomplete fold.</td></tr>
@@ -1234,6 +1236,135 @@ This page documents shipped behavior. Each row points at the code that implement
 <!-- ═══════════════════════════════════════════════════════════════════
      10. OPEN QUESTIONS
      ═══════════════════════════════════════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════════
+     9b. STARTUP CURATIVE SWEEP
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Startup curative sweep — <code>redrive_stranded_ops_sweep</code></h2>
+<p>
+At node startup, a one-shot curative sweep re-drives any encrypted ops that are buffered but
+decryptable — that is, the node holds the group key but the op was never applied, typically
+because the <code>GroupCreated</code> event that would have triggered delivery arrived late or
+was dropped. Without this sweep such ops remain stranded forever.
+</p>
+
+<h3>Where it runs</h3>
+<p>
+<code>redrive_stranded_ops_sweep</code> is called from <code>self_purge::run</code>, after
+subscribing to <code>op_events</code> and before entering the main event loop. It blocks the
+event loop until the sweep finishes, but errors are logged and swallowed — the sweep never
+prevents startup.
+</p>
+
+<h3>Algorithm</h3>
+<ol>
+  <li>Call <code>known_namespace_identities</code> (via
+  <code>NamespaceRepository::iter_identities</code>) to enumerate every namespace this node has
+  an identity for.</li>
+  <li>For each namespace, call
+  <code>NamespaceRetryService::groups_with_held_key_buffered_ops</code> (the inverse of
+  <code>groups_awaiting_key</code>) to find groups whose key is already held but which still have
+  buffered ops.</li>
+  <li>Re-drive each group via <code>redrive_encrypted_ops_for_group_counted</code>, which applies
+  as many buffered ops as possible and returns a count of newly applied ops.</li>
+  <li>Loop until a full pass applies nothing new (cross-signer convergence), bounded by
+  <code>MAX_PASSES = 64</code>. Pass-narrowing means only groups that made progress in the
+  previous pass are revisited, avoiding redundant work.</li>
+</ol>
+
+<h3>Spawn ordering — load-bearing</h3>
+<p>
+<code>ContextManager::started</code> calls <code>auto_follow::spawn</code> <strong>before</strong>
+<code>self_purge::spawn</code>. This ordering is intentional and load-bearing:
+<code>auto_follow::spawn</code> subscribes to <code>op_events</code> synchronously on the caller
+thread before spawning its async task, and passes the receiver into <code>auto_follow::run()</code>.
+Because the curative sweep (inside <code>self_purge::run</code>) may emit
+<code>OpEvent::ContextRegistered</code> for previously stranded contexts, the auto-follow receiver
+<strong>must</strong> exist before those events are broadcast — otherwise they are silently dropped
+by the broadcast channel. Reversing the spawn order would silently break auto-follow for any
+context recovered by the startup sweep.
+</p>
+<div class="card ga" style="margin-top:12px;">
+<p style="margin:0;"><b>Reviewers:</b> both call sites in <code>ContextManager::started</code>
+carry inline comments documenting the ordering constraint. Any refactor that reorders
+<code>auto_follow::spawn</code> and <code>self_purge::spawn</code> must preserve the
+<em>subscribe-before-sweep</em> invariant.</p>
+</div>
+
+<h3>Relevant symbols</h3>
+<ul>
+  <li><code>redrive_stranded_ops_sweep</code> — orchestrator; lives in
+  <code>crates/context/src/self_purge.rs</code></li>
+  <li><code>redrive_buffered_ops_for_group</code> — inner per-group apply loop</li>
+  <li><code>redrive_encrypted_ops_for_group_counted</code> — wraps the above and returns
+  a count of newly applied ops for pass-narrowing</li>
+  <li><code>namespace_groups_with_held_key_buffered_ops</code> — store query (inverse of
+  <code>groups_awaiting_key</code>)</li>
+  <li><code>NamespaceRetryService::groups_with_held_key_buffered_ops</code></li>
+  <li><code>NamespaceRepository::iter_identities</code></li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     9c. BORN-OPEN ATOMIC SUBGROUP CREATE
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Born-Open atomic subgroup create — <code>RootOp::GroupCreated</code> wire change</h2>
+<div class="card ga" style="margin-bottom:12px;">
+<p style="margin:0;"><b>⚠ WIRE BREAK.</b> <code>RootOp::GroupCreated</code> has a new Borsh
+field (<code>restricted: bool</code>). Nodes running this version cannot exchange governance ops
+with nodes running the previous wire format. Nodes <strong>must reset</strong> their governance
+op-log before upgrading.</p>
+</div>
+
+<h3>Problem</h3>
+<p>
+Previously, the <code>GroupCreated</code> op carried no visibility information. The
+<code>tee_subgroup_admit</code> subscriber fired on every <code>OpEvent::SubgroupCreated</code> and
+wrote a transient direct <code>ReadOnlyTee</code> membership row for Open subgroups — a row that
+would need to be retracted once a <code>SubgroupVisibilitySet(Open)</code> op arrived. This
+transient row could cause spurious TEE admission flows.
+</p>
+
+<h3>Fix — <code>restricted</code> field on <code>GroupCreated</code></h3>
+<p>
+<code>RootOp::GroupCreated</code> gains a <code>restricted: bool</code> field:
+</p>
+<ul>
+  <li><code>restricted: true</code> (default) — subgroup is born Restricted. Legacy behavior is
+  preserved; no wire difference for groups created this way.</li>
+  <li><code>restricted: false</code> — subgroup is born Open. The apply handler writes the
+  subgroup's visibility key via <code>CapabilitiesRepository::set_subgroup_visibility</code>
+  <strong>during apply</strong>, before <code>OpEvent::SubgroupCreated</code> is queued.
+  <code>tee_subgroup_admit</code> sees the group as already Open when it reacts, skips it, and
+  no transient direct row is written.</li>
+</ul>
+<p>
+The write is gated on <code>CapabilitiesRepository::has_subgroup_visibility</code> absence so
+later <code>SubgroupVisibilitySet</code> flips are never clobbered.
+</p>
+
+<h3>API surface changes</h3>
+<ul>
+  <li><code>CreateGroupRequest</code> gains a <code>restricted: bool</code> field (default
+  <code>true</code>).</li>
+  <li>The <code>create-group-in-namespace</code> REST endpoint accepts an optional
+  <code>visibility</code> field (<code>"open"</code> | <code>"restricted"</code>, default
+  <code>"restricted"</code>).</li>
+  <li>The op-adapter projection reads <code>restricted</code> from the live op instead of
+  hardcoding <code>true</code>.</li>
+</ul>
+
+<h3>Relevant symbols</h3>
+<ul>
+  <li><code>RootOp::GroupCreated</code> — <code>crates/primitives/src/context.rs</code></li>
+  <li><code>group_created::apply</code> — <code>crates/governance-store/src/ops/group/group_created.rs</code></li>
+  <li><code>CapabilitiesRepository::has_subgroup_visibility</code>,
+  <code>CapabilitiesRepository::set_subgroup_visibility</code></li>
+  <li><code>CreateGroupRequest</code>, <code>payload_from_root_op</code></li>
+</ul>
+</div>
+
 <div class="card gc">
 <h2>Open Questions &amp; Follow-ups</h2>
 <ol>
