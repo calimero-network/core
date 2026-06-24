@@ -75,6 +75,14 @@ pub enum Column {
     /// `context_id`-only collision reason as the markers above. NOT
     /// synchronized; auto-created from `Column::iter()` (no DB migration).
     ContextResyncRequested,
+    /// The unified causal-log op-store (cutover C2): one borsh'd `calimero_op::Op`
+    /// per row, keyed `scope(32) ‖ op_id(32)` (see `ScopeUnifiedOp`) — the prefix is
+    /// the op's scope, so a scope's op-log is a contiguous range. Its own column
+    /// during the dual-write transition so its `(scope, op_id)` key cannot collide
+    /// with the same-shaped legacy delta key in `Delta`; the two merge once the
+    /// legacy delta rows retire (C2.5). Synchronized like the planes it will
+    /// subsume. Auto-created from `Column::iter()` at `open_cf` (no DB migration).
+    UnifiedOp,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {

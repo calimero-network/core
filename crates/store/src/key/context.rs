@@ -665,6 +665,70 @@ impl FromKeyParts for ContextDagDelta {
     }
 }
 
+/// Key for a unified causal-log op (cutover C2): `scope(32) ‖ op_id(32)`, in the
+/// [`Column::UnifiedOp`] column. The prefix is the op's **scope** (a
+/// `calimero_op::ScopeId`'s 32 bytes — a namespace root for governance ops, a
+/// context/object scope for data/rotation ops), so a scope's whole op-log is a
+/// contiguous key range that reconstructs that scope's projection. Same 64-byte
+/// shape as [`ContextDagDelta`] but a distinct column so the two cannot collide
+/// during the dual-write transition. Reuses the 32-byte [`DeltaId`] component for
+/// both halves (the store is agnostic to the id's meaning).
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ScopeUnifiedOp(Key<(DeltaId, DeltaId)>);
+
+impl ScopeUnifiedOp {
+    #[must_use]
+    pub fn new(scope: [u8; 32], op_id: [u8; 32]) -> Self {
+        Self(Key(
+            GenericArray::from(scope).concat(GenericArray::from(op_id))
+        ))
+    }
+
+    #[must_use]
+    pub fn scope(&self) -> [u8; 32] {
+        let mut scope = [0; 32];
+        scope.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        scope
+    }
+
+    #[must_use]
+    pub fn op_id(&self) -> [u8; 32] {
+        let mut op_id = [0; 32];
+        op_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        op_id
+    }
+}
+
+impl AsKeyParts for ScopeUnifiedOp {
+    type Components = (DeltaId, DeltaId);
+
+    fn column() -> Column {
+        Column::UnifiedOp
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for ScopeUnifiedOp {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for ScopeUnifiedOp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScopeUnifiedOp")
+            .field("scope", &self.scope())
+            .field("op_id", &self.op_id())
+            .finish()
+    }
+}
+
 impl Debug for ContextDagDelta {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContextDagDelta")
