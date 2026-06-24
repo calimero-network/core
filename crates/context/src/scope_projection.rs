@@ -385,36 +385,33 @@ impl ScopeProjections {
         Ok(proj.scope_root_for(scope, [0u8; 32]))
     }
 
-    /// C2.2 read shadow (observe-only): compare THIS maintained projection's
-    /// governance `scope_root` for `namespace_id` against the same scope
-    /// reconstructed purely from the unified op-store, logging
-    /// `unified_op_store_divergence` on a mismatch. It's how we verify the
-    /// dual-write op-store is COMPLETE (missing no ops the governance DAG has)
-    /// before the op-store becomes the projection's authoritative source (C2.2b).
-    /// Skips silently when this projection hasn't folded the scope, the op-store is
-    /// empty for it, or the store can't be read — none of those are divergences.
-    pub fn shadow_compare_op_store(&self, store: &Store, namespace_id: [u8; 32]) {
-        let scope = ScopeId::from(namespace_id);
-        let Some(dag_root) = self.scope_root_for(&scope, [0u8; 32]) else {
-            return;
-        };
-        match Self::scope_root_from_op_store(store, &scope) {
-            Ok(Some(store_root)) if store_root != dag_root => {
-                tracing::warn!(
-                    marker = "unified_op_store_divergence",
-                    namespace = ?namespace_id,
-                    dag_root = %hex::encode(&dag_root[..8]),
-                    store_root = %hex::encode(&store_root[..8]),
-                    "op-store replay diverges from the governance-DAG fold (dual-write incomplete?)"
-                );
-            }
-            Ok(_) => {}
-            Err(err) => tracing::debug!(
-                %err,
-                namespace = ?namespace_id,
-                "op-store read shadow: op-store load failed; skipping compare"
-            ),
-        }
+    /// The governance ops to fold for `namespace_id`.
+    ///
+    /// The C2.2b read-flip (make the unified op-store the projection's authoritative
+    /// backing via [`load_scope_ops`](crate::unified_op_store::load_scope_ops)) is
+    /// DEFERRED: flipping the read onto the op-store broke convergence in the
+    /// maintainer's e2e — group-3node / scaffolding-e2e / shared-storage rotation all
+    /// timed out on the joiner's post-write sync.
+    ///
+    /// ROOT CAUSE (pinned deterministically by `tests/op_store_reconstruction.rs`):
+    /// an encrypted group `MemberAdded` can apply to the governance DAG BEFORE its
+    /// group key arrives (keys lag on a separate delivery path; see the
+    /// buffer-awaiting-key replay in `apply_group_op_inner`). The apply-time
+    /// dual-write then decrypts with no key, so the op is frozen into the op-store as
+    /// a `Noop`. `collect_namespace_ops` RE-DECRYPTS the same op at read time once the
+    /// key lands and recovers the real `MemberAdded`, but the op-store still holds the
+    /// `Noop` — so reading membership from the op-store drops the member, the joiner's
+    /// writes are rejected, and sync never converges. `scope_root` doesn't surface it
+    /// because at shadow time neither side has decrypted yet (both `Noop` → roots
+    /// match); the divergence only appears after the key arrives.
+    ///
+    /// Until the op-store faithfully reconstructs late-decrypted membership (e.g.
+    /// re-persist on the key-arrival replay, or re-decrypt on load) this stays on the
+    /// governance DAG, the proven-correct source. The op-store keeps being
+    /// dual-written.
+    #[must_use]
+    pub fn ops_for_namespace(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
+        Self::collect_namespace_ops(store, namespace_id)
     }
 
     /// [`scope_root_for`](Self::scope_root_for) from an EPHEMERAL fold built fresh
@@ -477,7 +474,7 @@ impl ScopeProjections {
         if self.backfilled.contains(&namespace_id) {
             return;
         }
-        if let Some(ops) = Self::collect_namespace_ops(store, namespace_id) {
+        if let Some(ops) = Self::ops_for_namespace(store, namespace_id) {
             self.apply_backfill(namespace_id, ops);
         }
         // A `None` (governance head unreadable) leaves the namespace UN-backfilled
@@ -569,7 +566,7 @@ impl ScopeProjections {
             .ok()?
             .to_bytes();
         let mut proj = Self::new();
-        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+        let Some(ops) = Self::ops_for_namespace(store, namespace_id) else {
             // Governance head unreadable (store fault). Don't silently read an empty
             // projection — surface it and let the caller fall back to live.
             tracing::warn!(
@@ -825,7 +822,7 @@ impl ScopeProjections {
     /// projection.
     fn ephemeral_fold(store: &Store, namespace_id: [u8; 32]) -> Option<(Self, Vec<[u8; 32]>)> {
         let mut proj = Self::new();
-        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+        let Some(ops) = Self::ops_for_namespace(store, namespace_id) else {
             tracing::warn!(
                 namespace = ?namespace_id,
                 "ephemeral_fold: governance head unreadable; caller falls back to live"

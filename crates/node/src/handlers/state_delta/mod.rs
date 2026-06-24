@@ -783,21 +783,14 @@ fn refresh_projection_for_cut(
         .read_scope_projections()
         .namespace_to_refresh(datastore, group, heads);
     if let Some(namespace_id) = needs_backfill {
-        if let Some(ops) = ScopeProjections::collect_namespace_ops(datastore, namespace_id) {
+        // The projection folds the governance DAG (`ops_for_namespace`). The C2.2b
+        // read-flip onto the unified op-store is DEFERRED — it drops late-decrypted
+        // membership; see `ops_for_namespace` and the deterministic repro in
+        // `calimero-context` `tests/op_store_reconstruction.rs`.
+        if let Some(ops) = ScopeProjections::ops_for_namespace(datastore, namespace_id) {
             node_state
                 .write_scope_projections()
                 .apply_backfill(namespace_id, ops);
-
-            // C2.2 read shadow (observe-only): the unified op-store must reconstruct
-            // the same governance scope this backfill just folded from the
-            // governance DAG. A mismatch means the dual-write op-store is missing ops
-            // the governance DAG has — the gap C2.2b's read-flip can't tolerate (the
-            // projection is the sole auth decider). Runs only on an actual backfill
-            // (controlled frequency); the compare logs `unified_op_store_divergence`
-            // and never affects the apply.
-            node_state
-                .read_scope_projections()
-                .shadow_compare_op_store(datastore, namespace_id);
         }
     }
 }
