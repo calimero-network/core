@@ -135,6 +135,11 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 )
                 .await?;
                 report.observe("delete_group", "GroupDeleted");
+                // C3 Stage 1: mirror the locally-authored GroupDeleted into the op-store.
+                crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
+                    &datastore,
+                    namespace_id_bytes,
+                );
 
                 // Best-effort unsubscribe — the group is gone now, no point
                 // staying on its topic. Subscriptions for descendants likewise.

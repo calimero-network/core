@@ -225,3 +225,79 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
         "a complete op-store yields a verified-empty missing list"
     );
 }
+
+/// C3 Stage 1: `persist_namespace_head_ops` lands a locally-authored op (written to
+/// the gov-DAG but not the op-store) into the op-store, closing the local-author gap.
+/// Uses a REAL encrypted MemberAdded + key so the persisted op carries the decoded
+/// membership — verifying the payload decodes, not just that the id appears.
+#[test]
+fn persist_namespace_head_ops_lands_locally_authored_op_in_the_op_store() {
+    let store = store();
+    let admin = PrivateKey::random(&mut OsRng).public_key();
+    let member = PrivateKey::random(&mut OsRng).public_key();
+    let ns = ContextGroupId::from([0x33; 32]);
+    let ns_bytes = ns.to_bytes();
+    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    // The author holds the group key (they authored the op) — so the persist path's
+    // decrypt succeeds and the real MemberAdded is folded, not a Noop.
+    let group_key = [0x7C; 32];
+    let key_id = GroupKeyring::new(&store, ns).store_key(&group_key).unwrap();
+
+    // Simulate local authoring: an encrypted MemberAdded is in the gov-DAG (op-log +
+    // head) but NOT the op-store — exactly the gap the local-author path leaves.
+    let inner = GroupOp::MemberAdded {
+        member,
+        role: GroupMemberRole::Member,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&group_key, &inner).unwrap();
+    let signed = SignedNamespaceOp {
+        version: 1,
+        namespace_id: ns_bytes,
+        parent_op_hashes: Vec::new(),
+        state_hash: [0u8; 32],
+        signer: admin,
+        nonce: 1,
+        op: NamespaceOp::Group {
+            group_id: ns_bytes,
+            key_id,
+            encrypted,
+            key_rotation: None,
+        },
+        signature: [0u8; 64],
+    };
+    let delta_id = signed.content_hash().unwrap();
+    NamespaceOpLogService::new(&store, ns_bytes)
+        .store_signed_operation(&signed)
+        .unwrap();
+    NamespaceDagService::new(&store, ns_bytes)
+        .advance_dag_head(delta_id, &[], 0)
+        .unwrap();
+
+    assert!(
+        load_scope_ops(&store, &ScopeId::from(ns_bytes))
+            .unwrap()
+            .is_empty(),
+        "precondition: the locally-authored op is absent from the op-store"
+    );
+
+    ScopeProjections::persist_namespace_head_ops(&store, ns_bytes);
+
+    // The op is now in the op-store AND decodes to the real membership: a fresh fold
+    // of the op-store sees `member` (proves the payload landed, not just the id).
+    let store_ops = load_scope_ops(&store, &ScopeId::from(ns_bytes)).unwrap();
+    assert_eq!(
+        store_ops.iter().map(|op| op.id).collect::<Vec<_>>(),
+        vec![delta_id],
+        "the authored op must now be in the op-store"
+    );
+    let mut proj = ScopeProjections::new();
+    proj.apply_backfill(ns_bytes, store_ops);
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &member, &[delta_id]),
+        Some(true),
+        "the persisted op must decode to the real MemberAdded — the op-store fold sees the member"
+    );
+}

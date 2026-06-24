@@ -277,6 +277,12 @@ impl Handler<JoinContextRequest> for ContextManager {
                              until an admin explicitly add_group_members the joiner"
                         );
                     }
+                    // C3 Stage 1: mirror the locally-authored MemberJoinedOpen into
+                    // the op-store (a no-op if the publish/apply above errored).
+                    crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
+                        &datastore,
+                        ns_id.to_bytes(),
+                    );
                 }
 
                 Ok(JoinContextResponse {
