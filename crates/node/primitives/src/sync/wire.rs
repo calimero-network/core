@@ -351,8 +351,15 @@ pub enum MessagePayload<'a> {
     DagHeadsResponse {
         /// Current DAG head hashes.
         dag_heads: Vec<[u8; 32]>,
-        /// Current root hash.
+        /// Current root hash (the storage-layer entity Merkle root).
         root_hash: Hash,
+        /// The peer's `scope_root` for this context — `root_hash` folded with the
+        /// governance projection's ACL + membership/admin hashes (unified-causal-log
+        /// cutover C0 shadow). `None` when the responder can't resolve/fold the
+        /// scope yet (cold projection), so the initiator skips the shadow compare
+        /// rather than reading a false divergence. Observe-only: no sync decision
+        /// reads this in C0; C1 promotes it to the authoritative convergence signal.
+        scope_root: Option<Hash>,
     },
 
     /// Response to SnapshotBoundaryRequest.

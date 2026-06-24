@@ -302,11 +302,21 @@ impl SyncManager {
                             .unwrap_or([0; 32])
                     });
 
+                    // C0 scope_root shadow: fold our governance projection's ACL +
+                    // membership onto the just-re-read entity root, so the initiator
+                    // can detect a hash-neutral writer/membership rotation that the
+                    // bare `root_hash` hides. `None` (non-group / cold projection) ⇒
+                    // the initiator skips the compare. Observe-only.
+                    let scope_root =
+                        super::helpers::local_scope_root(&datastore, &context_id, current_root)
+                            .map(Hash::from);
+
                     let msg = StreamMessage::Message {
                         sequence_id: sqx.next(),
                         payload: MessagePayload::DagHeadsResponse {
                             dag_heads: Vec::new(),
                             root_hash: Hash::from(current_root),
+                            scope_root,
                         },
                         next_nonce: super::helpers::generate_nonce(),
                     };

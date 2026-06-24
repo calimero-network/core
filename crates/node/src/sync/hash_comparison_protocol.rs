@@ -687,10 +687,11 @@ async fn run_initiator_impl<T: SyncTransport>(
     // rotation log is a hashed `UnorderedMap` child of its anchor now, so it
     // converges through HC's ordinary tree traversal like any other entity; no
     // separate writer-set reconcile is needed.)
-    let peer_current_root = match query_peer_current_root(transport, context_id, identity).await {
-        Ok(Some(root)) => root,
-        Ok(None) | Err(_) => remote_root_hash,
-    };
+    let (peer_current_root, peer_scope_root) =
+        match query_peer_current_root(transport, context_id, identity).await {
+            Ok(Some((root, scope_root))) => (root, scope_root),
+            Ok(None) | Err(_) => (remote_root_hash, None),
+        };
 
     // Close the transport to signal completion to the responder
     transport.close().await?;
@@ -699,6 +700,37 @@ async fn run_initiator_impl<T: SyncTransport>(
         get_local_root_hash_for_context(context_id)
     })?;
     stats.root_hash_verified = local_root_hash == peer_current_root;
+
+    // C0 scope_root shadow (observe-only): when the entity roots AGREE, the bare
+    // `root_hash` declares convergence — but a hash-neutral GOVERNANCE change
+    // (membership add/remove, admin/policy/subgroup edit) leaves identical entities
+    // under a divergent governance plane, which `root_hash` cannot see (governance
+    // lives in a separate DAG, not the storage Merkle). Fold our governance
+    // projection onto the same entity root and compare against the peer's
+    // `scope_root`; a mismatch here, on agreeing entity roots, is exactly the blind
+    // spot C1 will close. (Writer-set rotations are NOT this case — they move
+    // `entities_root` via the rotation-log storage entity, so they're already
+    // caught by the bare `root_hash`.) Logged, never acted on. Both sides skip when
+    // either can't fold the scope (`None`).
+    if local_root_hash == peer_current_root {
+        if let Some(peer_scope_root) = peer_scope_root {
+            if let Some(local_scope_root) =
+                super::helpers::local_scope_root(store, &context_id, local_root_hash)
+            {
+                if local_scope_root != peer_scope_root {
+                    warn!(
+                        marker = "scope_root_shadow_divergence",
+                        %context_id,
+                        entity_root = %hex::encode(&local_root_hash[..8]),
+                        local_scope_root = %hex::encode(&local_scope_root[..8]),
+                        peer_scope_root = %hex::encode(&peer_scope_root[..8]),
+                        "entity roots agree but scope_root differs — hash-neutral \
+                         ACL/membership divergence the current convergence signal hides"
+                    );
+                }
+            }
+        }
+    }
 
     // core#2716: re-anchor the context's persisted `root_hash` to the
     // freshly-merged storage merkle. `context.root_hash` (the value read by
@@ -766,7 +798,7 @@ async fn query_peer_current_root<T: SyncTransport>(
     transport: &mut T,
     context_id: ContextId,
     identity: PublicKey,
-) -> Result<Option<[u8; 32]>> {
+) -> Result<Option<([u8; 32], Option<[u8; 32]>)>> {
     let request = StreamMessage::Init {
         context_id,
         party_id: identity,
@@ -781,9 +813,14 @@ async fn query_peer_current_root<T: SyncTransport>(
 
     match response {
         StreamMessage::Message {
-            payload: MessagePayload::DagHeadsResponse { root_hash, .. },
+            payload:
+                MessagePayload::DagHeadsResponse {
+                    root_hash,
+                    scope_root,
+                    ..
+                },
             ..
-        } => Ok(Some(*root_hash)),
+        } => Ok(Some((*root_hash, scope_root.map(|h| *h)))),
         _ => Ok(None),
     }
 }
@@ -1054,6 +1091,11 @@ async fn run_responder_impl<T: SyncTransport>(
                     payload: MessagePayload::DagHeadsResponse {
                         dag_heads: Vec::new(),
                         root_hash: Hash::from(current_root),
+                        // The deterministic sync simulator reconciles the Merkle tree
+                        // only; it folds no governance projection, so it has no
+                        // scope_root to shadow. The C0 shadow is validated by the e2e
+                        // hash-neutral-rotation canary, not the sim.
+                        scope_root: None,
                     },
                     next_nonce: generate_nonce(),
                 };
