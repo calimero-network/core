@@ -594,6 +594,26 @@
   <p style="margin-top:8px;">Each sync stream authenticates with a challenge derived from the context's encryption domain. The initiating peer signs a challenge nonce, and the responder verifies membership before accepting the stream. This prevents unauthorized peers from syncing context data.</p>
 </div>
 
+<div class="cb" style="margin-bottom:16px; border-left:3px solid #ef4444; padding-left:14px;">
+  <h4 style="color:#ef4444; margin-bottom:8px;"><span class="code">--mock-tee</span> flag (dev/test only) — <span style="color:#ef4444; font-weight:700;">⚠ NOT FOR PRODUCTION</span></h4>
+  <p style="margin-bottom:10px;"><code>merod run</code> gains a <code>--mock-tee</code> flag (also settable via the <code>MEROD_MOCK_TEE</code> environment variable). When active, the fleet-join and attest handlers produce and accept mock attestation quotes instead of requiring real TDX hardware. This is intended exclusively for local development and CI environments where TDX hardware is unavailable.</p>
+  <p style="margin-bottom:10px;">The flag is <strong>refused at startup</strong> (<code>bail!</code>) if the node's <code>TeeConfig</code> has real attestation configured (<code>TeeConfig::has_real_attestation</code> returns <code>true</code>). A loud <code>tracing::warn</code> is emitted on startup whenever mock-tee is active. An additional warning fires if a Phala KMS provider is configured but real attestation is disabled, indicating a likely misconfiguration.</p>
+  <p style="margin-bottom:10px;">The flag is threaded through <code>NodeConfig::mock_tee</code> → <code>AdminState::mock_tee</code> (via <code>AdminState::new</code>) and is <strong>never persisted</strong> to the node config file.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// CLI / env</span><br>
+<span class="comment">// merod run --mock-tee   |   MEROD_MOCK_TEE=1 merod run</span><br><br>
+<span class="comment">// Guard — refuses mock-tee when real KMS attestation is configured</span><br>
+<span class="kw">impl</span> <span class="ty">TeeConfig</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">pub fn</span> <span class="field">has_real_attestation</span>(&amp;self) -&gt; bool { <span class="comment">/* ... */</span> }<br>
+}<br><br>
+<span class="comment">// Propagation path (never persisted)</span><br>
+<span class="ty">RunCommand</span>::<span class="field">mock_tee</span>: bool<br>
+&nbsp;&nbsp;→ <span class="ty">NodeConfig</span>::<span class="field">mock_tee</span>: bool<br>
+&nbsp;&nbsp;&nbsp;&nbsp;→ <span class="ty">AdminState</span>::<span class="field">mock_tee</span>: bool &nbsp;<span class="comment">// via AdminState::new</span>
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> Never set <code>--mock-tee</code> or <code>MEROD_MOCK_TEE</code> in production deployments. The startup <code>bail!</code> guard prevents accidental use when <code>TeeConfig::has_real_attestation</code> is true, but nodes without a real KMS configured will not be protected by that guard — rely on deployment policy and the emitted startup warning instead.</p>
+</div>
+
 <svg viewBox="0 0 960 80" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <marker id="tr-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#f59e0b"/></marker>
