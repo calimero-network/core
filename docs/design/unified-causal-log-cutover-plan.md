@@ -213,47 +213,32 @@ causality (a data op citing a governance cut) stays the existing
 context" = one store holding that context's scope-tagged ops, partitioned by
 scope for projection.
 
-**⚠️ C2 design fork (resolve before C2.0) — what does an `Op` carry at rest?**
-The scaffold's `OpPayload` is the **projected / decoded** form (`Put`,
-`MemberAdded`, `SetWriters`, … with `Noop` for out-of-model ops). That is
-*lossy*: it's enough to fold into `ScopeState`, but it cannot drive the legacy
-governance-store writes that stay authoritative until C5 (membership-repository
-mutations, op-log nonce windows, emitted events, `DivergenceReport`s), and a
-`Noop` carries nothing to replay. Two ways forward:
-  - **Fork A (raw-at-rest, the §9.6 end-state, recommended).** `Op.payload`
-    carries the **original op** (the data `Vec<Action>` / the `SignedGroupOp` /
-    `SignedNamespaceOp` ciphertext / the rotation entry). `op-adapter` flips from
-    an *encoder* to the **fold-time decoder** (raw → projected effect for
-    `ScopeState`); the legacy-store write replays the same raw payload. Matches
-    §9.6 ("`Op.payload` is ciphertext at rest"). Requires reworking the scaffold's
-    `OpPayload` from decoded→raw and re-pointing the projection fold to decode —
-    but it is the form C5 keeps.
-  - **Fork B (dual-representation shim).** Store the raw legacy payloads tagged by
-    plane; derive the projected `Op` for the fold on the side. Less rework now,
-    but it's a transitional representation C5 has to unwind — net more churn.
-**✅ DECIDED 2026-06-24: Fork A** (raw-at-rest). The `OpPayload` raw rework is the
-literal first C2 step (**C2.-1**), so C2.0's `UnifiedApplier` is built against the
-at-rest form C5 keeps.
+**Op representation — resolved 2026-06-24 (no raw rework needed; supersedes the
+earlier "Fork A/B" framing).** A closer read of the code settled this *narrower*
+than the first framing implied:
+- The projection folds the **decoded `OpPayload`** (`ScopeState::apply`), and that
+  is the now-production-critical F5 path — **leave it.** `op-adapter`'s own module
+  doc confirms the end-state is "everything runs on the unified `OpPayload`" with
+  the legacy per-plane types deleted at C5. So the at-rest form C5 keeps is
+  `OpPayload`, *not* a raw legacy blob. "§9.6 ciphertext at rest" means the
+  `OpPayload` value *fields* (e.g. `Put.value`) are encrypted under the scope key —
+  not that the whole op is an opaque legacy payload.
+- The "lossy `Noop`" worry dissolves once you separate two things the first framing
+  conflated: the unified op-log backs **the projection** (auth + data planes, which
+  `OpPayload` covers fully), while the legacy **materialized** state (membership
+  repository rows, the rotation-log child) keeps being written by the **existing
+  typed receive path** (dual-write) until C5, and is read directly — it is *not*
+  replayed from the unified op-log. So the op-log never needs to drive the legacy
+  membership/nonce/event writes; the typed path already does, in parallel.
+- **Out-of-model ops stay on their own channels** (unchanged): `KeyDelivery` rides
+  the key-transport channel and never enters the auth projection; the out-of-model
+  `GroupOp`s (metadata, app/upgrade/TEE config, auto-follow, context↔group bindings)
+  live in their own materialized stores. None of these are part of the
+  convergence/auth log, so `Noop`-in-projection loses nothing — their effects
+  persist on their existing paths.
 
-**C2.-1 shape (raw-at-rest).** `Op.payload` carries the **original op bytes**
-(borsh of `Vec<Action>` for data; the `SignedNamespaceOp` — which wraps group ops
-— for governance; the `RotationLogEntry`/`SetWriters` action for rotation),
-ciphertext where the legacy op is encrypted (§9.6). The decode then happens **at
-fold time, after decrypt**: `ScopeState::apply` calls the `op-adapter` decoders
-(`payload_from_action` / `payload_from_group_op` / `payload_from_root_op` /
-`set_writers_payload`) to derive the projected effect it folds — instead of
-matching a pre-decoded `OpPayload`. Decoded cleartext is therefore **never stored
-at rest** (a privacy requirement, §9.5), only materialized transiently during the
-fold. Crate-dependency consequence: `crates/projection`'s fold gains a decode step
-— either it takes a decoder closure/trait injected by the caller (keeps
-`crates/projection` free of the legacy op types) or depends on `op-adapter`; pick
-the seam that keeps the convergence/isolation property harness intact. Validate
-the whole rework against the **existing fold-equivalence suite** (it already
-asserts the projection resolves the same ACL/membership as the legacy resolvers),
-which must stay green across the representation change. Because this touches the
-now-production-critical F5 projection fold, land it additively: introduce the raw
-form + decode-at-fold behind the same `ScopeState::apply` signature, prove
-equivalence, then drop the decoded `OpPayload` variants.
+Net: the unified `Op` carries the existing `OpPayload`; **no `C2.-1` OpPayload
+rework**, and `crates/projection` is untouched. C2 starts directly at C2.0.
 
 - **C2.0 — `UnifiedApplier` + `DagStore<Op>` foundation (additive, NOT wired).**
   Build `UnifiedApplier: DeltaApplier<Op>` that routes an `Op` by payload to the
