@@ -376,8 +376,20 @@ impl ScopeProjections {
         group: &ContextGroupId,
         entities_root: [u8; 32],
     ) -> Option<[u8; 32]> {
-        let (proj, namespace_id, _heads) = Self::ephemeral_projection(store, group)?;
-        proj.scope_root_for(&ScopeId::from(namespace_id), entities_root)
+        let (proj, namespace_id, heads) = Self::ephemeral_projection(store, group)?;
+        let scope = ScopeId::from(namespace_id);
+        // Defer (`None`) on an INCOMPLETE fold — a node mid-backfill may hold only
+        // part of the governance ancestry of `heads`, and a `scope_root` folded over
+        // a truncated cut would differ from a peer's complete fold purely from the
+        // lag, producing a FALSE divergence (a spurious `scope_root_shadow_divergence`
+        // in C0, and a "never converges" stall once C1 makes it the verdict). Mirror
+        // the other ephemeral at-cut readers (`member_at_cut` et al.), which abstain
+        // on `!cut_ancestry_complete`; the comparison resumes once the cited ancestry
+        // is fully folded.
+        if !proj.cut_ancestry_complete(&scope, &heads) {
+            return None;
+        }
+        proj.scope_root_for(&scope, entities_root)
     }
 
     /// Is the full causal ancestry of `parents` folded in `scope`'s log (no
