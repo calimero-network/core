@@ -586,6 +586,36 @@
 <p>The new <code>membership_path_at_cut</code> method is now used as the <strong>primary authorization source</strong> for the <code>MemberJoinedOpen</code> gate. <code>member_joined_open::apply</code> first calls <code>NamespaceApplyCtx::projection_membership_path</code>, which queries the authorizer for the projection's at-cut path and returns <code>Option&lt;AtCutMembershipPath&gt;</code>. If the projection returns a path (i.e. <code>Some(...)</code>), the gate's match branches operate on <code>AtCutMembershipPath</code> variants directly — the live <code>check_path</code> call is skipped entirely. Only when <code>projection_membership_path</code> returns <code>None</code> (no apply-auth context, incomplete fold, or the default live-only authorizer) does the gate fall back to the live <code>MembershipRepository::check_path</code> read. The previous <code>NamespaceApplyCtx::shadow_membership_path</code> helper, which accepted an eagerly-computed <code>live_path</code> argument and logged a <code>tracing::warn!</code> on divergence, has been replaced by <code>projection_membership_path</code>, which takes no <code>live_path</code> argument and returns the resolved projection path instead of logging. The divergence-comparison logic and the <code>unified_projection_divergence</code> / <code>membership-path</code> warning have been removed entirely. The helper <code>membership_path_kind</code>, which collapsed the live <code>MembershipPath</code> to <code>AtCutMembershipPath</code> for that comparison, is no longer needed by this path.</p>
 <p><strong>Note on <code>AtCutMembershipPath</code>:</strong> This is a simplified three-variant enum (<code>None</code> / <code>Direct</code> / <code>Inherited</code>) distinct from the richer live <code>MemberPathAtCut</code>. It collapses role and anchor detail to only the kind the <code>MemberJoinedOpen</code> gate needs. <code>Option::None</code> returned from <code>membership_path_at_cut</code> (and from <code>projection_membership_path</code>) means "defer to live"; <code>AtCutMembershipPath::None</code> means "not a member at the cut".</p>
 </div>
+<div class="card gd"><h2>Removed: <code>GroupMembershipView::admin_count</code> and <code>member_count</code></h2>
+
+<h3>What Was Removed</h3>
+<p>Two helper methods have been deleted from <code>GroupMembershipView</code>:</p>
+<ul>
+  <li><code>admin_count(&amp;self) → usize</code> — iterated all members via <code>try_fold</code> and counted those with an admin role.</li>
+  <li><code>member_count(&amp;self) → usize</code> — returned the length of the member list.</li>
+</ul>
+<p>The test <code>membership_view_reports_admin_and_member_counts</code>, which was the only production-visible call site for both methods, has also been deleted. The <code>is_admin</code> assertions that were part of that test are already covered by the <code>require_admin</code> and <code>has_another_admin</code> test cases.</p>
+
+<h3>Why</h3>
+<p>Both methods were dead code surfaced during post-F5-migration cleanup. Because <code>GroupMembershipView</code> is <code>pub</code> and re-exported, <code>clippy -D warnings</code> did not flag them automatically — the compiler treats public items as potentially used by downstream crates regardless of actual call sites.</p>
+<p>Production code counts admins and members through <code>MembershipRepository</code> directly:</p>
+<ul>
+  <li><strong>Admin count</strong> — <code>MembershipRepository::count_admins</code></li>
+  <li><strong>Member count</strong> — <code>MembershipRepository::count</code> (direct length query)</li>
+</ul>
+<p>These repository methods are the authoritative paths and operate against the persistent store rather than an in-memory view snapshot.</p>
+
+<h3>Migration</h3>
+<p>If any external code called <code>GroupMembershipView::admin_count</code> or <code>member_count</code>, replace those calls with the corresponding <code>MembershipRepository</code> methods:</p>
+<pre class="code">// Before
+let n_admins  = view.admin_count();
+let n_members = view.member_count();
+
+// After
+let n_admins  = repo.count_admins(group_id)?;
+let n_members = repo.count(group_id)?;</pre>
+<p>No wire format, storage schema, or governance DAG semantics are affected by this removal. The change is purely an internal API surface reduction.</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
