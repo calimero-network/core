@@ -18,7 +18,7 @@
 //! dual-write (C2.1) and per-plane flips build on, exercised by the
 //! out-of-order convergence test below.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use async_trait::async_trait;
 use calimero_dag::{ApplyError, CausalDelta, DeltaApplier};
@@ -27,28 +27,42 @@ use calimero_op::Op;
 use crate::scope_projection::ScopeProjections;
 
 /// Folds unified [`Op`]s into a [`ScopeProjections`] in the order a
-/// `DagStore<Op>` releases them. `Mutex` for interior mutability:
-/// [`DeltaApplier::apply`] takes `&self`, while [`ScopeProjections::ingest_op`]
-/// needs `&mut`.
+/// `DagStore<Op>` releases them.
+///
+/// Holds the projection behind the **same** `Arc<std::sync::RwLock<…>>` that
+/// `ContextManager` / `NodeState` already use for `scope_projections`, so the
+/// dual-write (C2.1) shares the node's live projection via [`with_projection`]
+/// rather than folding into a private copy. The lock is held only across the
+/// synchronous [`ScopeProjections::ingest_op`] — never across an `.await` — so the
+/// `std` (non-async) lock is correct here, matching the node's own usage.
+///
+/// [`with_projection`]: Self::with_projection
 pub struct UnifiedApplier {
-    projection: Mutex<ScopeProjections>,
+    projection: Arc<RwLock<ScopeProjections>>,
 }
 
 impl UnifiedApplier {
+    /// A fresh, private projection — for standalone replay and tests.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            projection: Mutex::new(ScopeProjections::new()),
+            projection: Arc::new(RwLock::new(ScopeProjections::new())),
         }
     }
 
-    /// Consume the applier and return the folded projection — for inspection
-    /// (tests today; a real caller will hold the projection in shared state).
+    /// Fold into an **existing** shared projection — the C2.1 wiring seam, where
+    /// the applier writes into `ContextManager`'s
+    /// `Arc<std::sync::RwLock<ScopeProjections>>` so the unified op-log and the
+    /// node's maintained projection are one and the same.
     #[must_use]
-    pub fn into_projection(self) -> ScopeProjections {
-        self.projection
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner)
+    pub fn with_projection(projection: Arc<RwLock<ScopeProjections>>) -> Self {
+        Self { projection }
+    }
+
+    /// The shared projection handle (read via `.read()`), for inspection.
+    #[must_use]
+    pub fn projection(&self) -> Arc<RwLock<ScopeProjections>> {
+        Arc::clone(&self.projection)
     }
 }
 
@@ -62,10 +76,15 @@ impl Default for UnifiedApplier {
 impl DeltaApplier<Op> for UnifiedApplier {
     async fn apply(&self, delta: &CausalDelta<Op>) -> Result<(), ApplyError> {
         // The DAG has already established that `delta`'s parents are applied, so
-        // folding its op now respects causal order. `ingest_op` is idempotent by
-        // op id, so a re-delivered delta is a safe no-op.
+        // folding its op now respects causal order. `ingest_op` is infallible and
+        // idempotent by op id (a re-delivered delta is a safe no-op), so there is
+        // no failure to surface as `ApplyError`. The lock is held only across this
+        // synchronous fold (no `.await`). On poison we recover the guard rather
+        // than skip — the same deliberate stance `NodeState::read_scope_projections`
+        // documents: a panicking writer elsewhere must not silently blind the
+        // projection.
         self.projection
-            .lock()
+            .write()
             .unwrap_or_else(PoisonError::into_inner)
             .ingest_op(&delta.payload);
         Ok(())
@@ -90,10 +109,7 @@ mod tests {
     const GENESIS: [u8; 32] = [0u8; 32];
 
     fn hlc(ns: u64) -> HybridTimestamp {
-        HybridTimestamp::new(Timestamp::new(
-            NTP64(ns),
-            ID::from(NonZeroU128::new(1).unwrap()),
-        ))
+        HybridTimestamp::new(Timestamp::new(NTP64(ns), ID::from(NonZeroU128::MIN)))
     }
 
     /// Build a fully-formed `Op` (id derived from content) under one scope, with a
@@ -202,7 +218,9 @@ mod tests {
                 assert!(dag.is_applied(&op.id), "op {order:?} left unapplied");
             }
             let got = applier
-                .into_projection()
+                .projection()
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
                 .scope_root_for(&scope, [0u8; 32])
                 .expect("scope fed");
             assert_eq!(
