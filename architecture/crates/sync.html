@@ -285,6 +285,12 @@
   <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> Gossip deltas whose governance ancestry is not yet folded are now held in the pending buffer rather than discarded. No <span class="code">unified_projection_divergence</span> or <span class="code">data_write_decision_shadow</span> warnings are emitted from any write-auth path. These log markers no longer appear for the data-write plane and any alerts configured on them for this path may be retired. Doc comments in <span class="code">peer_identity_cache.rs</span> and <span class="code">namespace_sync.rs</span> have been updated to reference projection-based membership resolution rather than the deleted live resolver.</p>
 </div>
 
+<div class="cb" style="margin-bottom:18px; border-left:3px solid #10b981; padding-left:14px;">
+  <h4 style="color:#10b981; margin-bottom:8px;">Post-Backfill Shadow Compare (<span class="code">refresh_projection_for_cut</span>)</h4>
+  <p style="margin-bottom:10px;">After <span class="code">apply_backfill</span> writes the governance-DAG fold into the maintained projection inside <span class="code">refresh_projection_for_cut</span>, <span class="code">shadow_compare_op_store</span> is now called on the just-refreshed namespace. This runs only on the controlled-frequency backfill code path — not on every op apply — so it does not affect throughput on the hot path.</p>
+  <p style="margin-bottom:10px;">The compare is purely observational: it never modifies the projection, never affects authorization decisions, and never blocks the backfill. Its purpose is to surface discrepancies between the maintained projection and the underlying op-store immediately after a fold, when the two representations should be in closest agreement.</p>
+</div>
+
 <div class="cb" style="margin-bottom:18px; border-left:3px solid #8b5cf6; padding-left:14px;">
   <h4 style="color:#8b5cf6; margin-bottom:8px;">Projection-Authoritative Drain (<span class="code">drain_governance_pending</span>)</h4>
   <p style="margin-bottom:10px;">State deltas that arrived before their governance ancestry was locally available are buffered and re-evaluated by <span class="code">drain_governance_pending</span> once new governance ops are applied. This drain now uses <span class="code">member_at_cut_authoritative</span> (projection) as its <strong>sole decision authority</strong>, replacing the previous <span class="code">acl_view_at</span> (live DAG walk) primary path.</p>
