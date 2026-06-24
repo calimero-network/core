@@ -1520,6 +1520,119 @@ before the fold is attempted at all.
   <code>is_last_admin_at_cut</code>).</li>
 </ul>
 </div>
+<div class="card ga"><h2>Deferred op-store read-flip — <code>ops_for_namespace</code> indirection layer</h2>
+
+<p>
+<strong>Status: C2.2b deferred.</strong> The unified op-store (<code>load_scope_ops</code>) is
+<em>not</em> yet the source of truth for projection rebuilds. All projection-rebuild call sites
+now route through a new stable indirection method, <code>ScopeProjections::ops_for_namespace</code>,
+which currently delegates to <code>collect_namespace_ops</code> (the governance-DAG walk). The
+flip to <code>load_scope_ops</code> is explicitly deferred until the late-decrypted membership
+bug described below is resolved.
+</p>
+
+<h3><code>ops_for_namespace</code> — the stable indirection point</h3>
+<p>
+<code>ScopeProjections::ops_for_namespace(namespace_id, store)</code> is the single dispatch
+point used by every projection-rebuild site:
+</p>
+<ul>
+  <li><code>backfill_namespace</code> in <code>scope_projections.rs</code></li>
+  <li><code>member_now_ephemeral</code> / <code>ephemeral_fold</code> in
+  <code>scope_projections.rs</code></li>
+  <li>The <code>scope_root</code> reconstruction path in <code>scope_projections.rs</code></li>
+  <li><code>refresh_projection_for_cut</code> in the node crate</li>
+</ul>
+<p>
+All four previously called <code>collect_namespace_ops</code> directly. They now call
+<code>ops_for_namespace</code> instead. <code>collect_namespace_ops</code> remains as the
+underlying implementation and is unchanged; <code>ops_for_namespace</code> is a thin wrapper
+that will be flipped to call <code>load_scope_ops</code> at C2.2b without requiring changes at
+any call site.
+</p>
+
+<h3>Why the flip is blocked — late-decrypted membership</h3>
+<p>
+An encrypted <code>MemberAdded</code> op can arrive at a node before that node holds the group
+key. At apply time the op is processed as <code>Noop</code> and written to the op-store with a
+<code>Noop</code> payload. When the group key later arrives — via a keyshare or a
+<code>KeyDelivery</code> event — the governance-DAG walk (<code>collect_namespace_ops</code>)
+re-decrypts the op at <em>read time</em> and correctly surfaces it as <code>MemberAdded</code>.
+The op-store entry is <strong>not</strong> updated; it still records <code>Noop</code>.
+</p>
+<p>
+Consequence: if <code>ops_for_namespace</code> were flipped to <code>load_scope_ops</code> today,
+any member whose <code>MemberAdded</code> op was frozen as <code>Noop</code> at write time would
+silently disappear from the projection after a rebuild. This was confirmed by e2e timeouts on the
+joiner's post-write sync in the <code>group-3node</code>, <code>scaffolding-e2e</code>, and
+<code>shared-storage rotation</code> workflows when the flip was enabled.
+</p>
+<p>
+Two fix candidates are tracked but not yet shipped:
+</p>
+<ul>
+  <li><strong>Re-persist on key-arrival replay.</strong> When a group key arrives and buffered ops
+  are re-driven, overwrite the op-store entry with the now-decrypted payload.</li>
+  <li><strong>Re-decrypt on load.</strong> Have <code>load_scope_ops</code> attempt decryption at
+  read time for any <code>Noop</code>-payload op whose namespace key is now available.</li>
+</ul>
+
+<h3>Removed: <code>shadow_compare_op_store</code> and <code>scope_root_from_governance_dag</code></h3>
+<p>
+The observe-only <code>shadow_compare_op_store</code> method on <code>ScopeProjections</code>
+and its companion <code>scope_root_from_governance_dag</code> have been removed, along with the
+call site in <code>refresh_projection_for_cut</code> that triggered a full governance-DAG fold
+on every backfill.
+</p>
+<p>
+The comparison these methods performed was structurally flawed: the maintained projection holds
+live <code>ingest_op</code>-fed ops that may not yet be written to the op-store. A gap in the
+op-store could therefore be masked by the live apply path, making the divergence invisible to the
+cross-check. The <code>marker=unified_op_store_divergence</code> log signal described in earlier
+sections of this page is no longer emitted; the C2.2b readiness gate is now the
+<code>op_store_reconstruction_matches_governance_dag_for_late_decrypted_membership</code>
+regression test described below.
+</p>
+
+<h3>Regression test — <code>op_store_reconstruction.rs</code></h3>
+<p>
+A new integration test file,
+<code>crates/context/tests/op_store_reconstruction.rs</code>, documents the blocker in
+executable form. The test
+<code>op_store_reconstruction_matches_governance_dag_for_late_decrypted_membership</code>:
+</p>
+<ol>
+  <li>Injects an encrypted <code>MemberAdded</code> op into the governance DAG with the group key
+  present at read time (so <code>collect_namespace_ops</code> surfaces it as
+  <code>MemberAdded</code>).</li>
+  <li>Persists the <em>same</em> op into the op-store as <code>Noop</code>, simulating key-absent
+  apply time (the state the op-store would actually hold for a late-decrypted op).</li>
+  <li>Reconstructs membership both ways — via <code>collect_namespace_ops</code> and via
+  <code>load_scope_ops</code> — and asserts the resulting member sets agree.</li>
+</ol>
+<p>
+The test is marked <code>#[ignore]</code> and is <strong>expected to fail today</strong>. It
+exists as the CI gate for the deferred fix: when either re-persist-on-replay or re-decrypt-on-load
+lands, this test should be the first thing un-ignored to confirm the fix closes the gap. The
+module-level doc comment in the test file explains the full bug chain and serves as design
+documentation for the C2.2b flip.
+</p>
+
+<h3>Summary of changes</h3>
+<ul>
+  <li><code>ScopeProjections::ops_for_namespace</code> introduced; all four projection-rebuild
+  call sites updated from <code>collect_namespace_ops</code> to <code>ops_for_namespace</code>.</li>
+  <li><code>collect_namespace_ops</code> unchanged — still the implementation behind
+  <code>ops_for_namespace</code>.</li>
+  <li><code>shadow_compare_op_store</code> and <code>scope_root_from_governance_dag</code>
+  removed from <code>ScopeProjections</code>; <code>marker=unified_op_store_divergence</code> is
+  no longer emitted.</li>
+  <li><code>refresh_projection_for_cut</code> call site that triggered a shadow fold on every
+  backfill deleted.</li>
+  <li><code>crates/context/tests/op_store_reconstruction.rs</code> added with one
+  <code>#[ignore]</code>-marked failing regression test.</li>
+</ul>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>

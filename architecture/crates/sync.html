@@ -286,9 +286,34 @@
 </div>
 
 <div class="cb" style="margin-bottom:18px; border-left:3px solid #10b981; padding-left:14px;">
-  <h4 style="color:#10b981; margin-bottom:8px;">Post-Backfill Shadow Compare (<span class="code">refresh_projection_for_cut</span>)</h4>
-  <p style="margin-bottom:10px;">After <span class="code">apply_backfill</span> writes the governance-DAG fold into the maintained projection inside <span class="code">refresh_projection_for_cut</span>, <span class="code">shadow_compare_op_store</span> is now called on the just-refreshed namespace. This runs only on the controlled-frequency backfill code path — not on every op apply — so it does not affect throughput on the hot path.</p>
-  <p style="margin-bottom:10px;">The compare is purely observational: it never modifies the projection, never affects authorization decisions, and never blocks the backfill. Its purpose is to surface discrepancies between the maintained projection and the underlying op-store immediately after a fold, when the two representations should be in closest agreement.</p>
+  <h4 style="color:#10b981; margin-bottom:8px;">Projection Rebuild Indirection — <span class="code">ops_for_namespace</span></h4>
+  <p style="margin-bottom:10px;"><span class="code">ScopeProjections::ops_for_namespace</span> is the new stable indirection point for loading ops at every projection-rebuild site. It currently delegates directly to <span class="code">collect_namespace_ops</span> (the governance-DAG walk) — it does <strong>not</strong> yet read from the unified op-store (<span class="code">load_scope_ops</span>). The C2.2b flip to the op-store is explicitly deferred until late-decrypted membership is fixed.</p>
+  <p style="margin-bottom:10px;"><strong>Root cause for the deferral:</strong> an encrypted <span class="code">MemberAdded</span> op can be applied to the governance DAG before its group key arrives. The apply-time dual-write freezes it as <span class="code">Noop</span> in the op-store, while <span class="code">collect_namespace_ops</span> re-decrypts at read time once the key lands. Using the op-store as the projection source would therefore silently drop members and break joiner sync.</p>
+  <p style="margin-bottom:10px;">All three internal projection-rebuild call sites in <code>scope_projection.rs</code> — <span class="code">backfill_namespace</span>, <span class="code">member_now_ephemeral</span>/<span class="code">ephemeral_fold</span>, and the <span class="code">scope_root</span> reconstruction — and the call site in <span class="code">refresh_projection_for_cut</span> in the node crate now call <span class="code">ops_for_namespace</span> instead of <span class="code">collect_namespace_ops</span> directly. <span class="code">collect_namespace_ops</span> remains as the implementation that <span class="code">ops_for_namespace</span> currently delegates to.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Stable indirection layer — all projection-rebuild sites call this</span><br>
+<span class="comment">// Currently delegates to collect_namespace_ops (governance-DAG walk)</span><br>
+<span class="comment">// Will be flipped to load_scope_ops (op-store) once late-decrypt is fixed</span><br>
+<span class="kw">pub(crate) fn</span> <span class="field">ops_for_namespace</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;namespace: &amp;<span class="ty">Namespace</span>,<br>
+) -&gt; <span class="ty">Result</span>&lt;Vec&lt;Op&gt;&gt;<br><br>
+<span class="comment">// Implementation (unchanged); called only via ops_for_namespace</span><br>
+<span class="kw">fn</span> <span class="field">collect_namespace_ops</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;namespace: &amp;<span class="ty">Namespace</span>,<br>
+) -&gt; <span class="ty">Result</span>&lt;Vec&lt;Op&gt;&gt;<br><br>
+<span class="comment">// Removed from ScopeProjections:</span><br>
+<span class="comment">// shadow_compare_op_store  — cross-check was unreliable (see above)</span><br>
+<span class="comment">// scope_root_from_governance_dag — companion to shadow_compare_op_store</span>
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> No <span class="code">shadow_compare_op_store</span> log output is emitted from the backfill path. Any monitoring rules that relied on post-backfill op-store comparison metrics from this path may be retired. The <span class="code">ops_for_namespace</span> indirection is the future flip point; watch for a follow-up change that routes it to <span class="code">load_scope_ops</span> once late-decrypted membership handling is resolved.</p>
+</div>
+
+<div class="cb" style="margin-bottom:18px; border-left:3px solid #10b981; padding-left:14px;">
+  <h4 style="color:#10b981; margin-bottom:8px;">Post-Backfill Shadow Compare (<span class="code">refresh_projection_for_cut</span>) — <strong>Removed</strong></h4>
+  <p style="margin-bottom:10px;">After <span class="code">apply_backfill</span> writes the governance-DAG fold into the maintained projection inside <span class="code">refresh_projection_for_cut</span>, a post-fold cross-check against the op-store was previously triggered via <span class="code">shadow_compare_op_store</span>. <strong>This call and both <span class="code">shadow_compare_op_store</span> and <span class="code">scope_root_from_governance_dag</span> have been removed from <span class="code">ScopeProjections</span>.</strong></p>
+  <p style="margin-bottom:10px;">The cross-check was flawed: the maintained projection holds live <span class="code">ingest_op</span>-fed ops that may not yet be in the op-store (an encrypted <span class="code">MemberAdded</span> op can be applied to the governance DAG before its group key arrives, causing the apply-time dual-write to freeze as <span class="code">Noop</span> in the op-store while <span class="code">collect_namespace_ops</span> re-decrypts at read time once the key lands). The op-store gap was therefore silently masked by the live apply path, making the shadow compare unreliable. No observational backfill check of this kind is performed.</p>
 </div>
 
 <div class="cb" style="margin-bottom:18px; border-left:3px solid #8b5cf6; padding-left:14px;">
