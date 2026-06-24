@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Unified Causal Log Cutover Plan — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Unified Causal Log Cutover Plan</span></div>
+
+<h1>Unified Causal Log <em>Cutover Plan</em></h1>
+<p class="page-subtitle">C0 shadow strategy, wire protocol, divergence marker, and the e2e canary gate that gates C1</p>
+
+<div class="card ga">
+<h2>Overview</h2>
+<p>The unified-causal-log cutover is staged across multiple milestones, conventionally labelled <strong>C0</strong>, <strong>C1</strong>, and beyond. This page documents the <strong>C0 shadow plan</strong> — the phase in which the new causal log is computed and propagated in parallel with the existing log without replacing it. No reads are served from the shadow log during C0; its sole purpose is to validate correctness before any irreversible cutover step is taken.</p>
+<p>The design doc at <code>docs/design/unified-causal-log-cutover-plan.md</code> has been updated with a dedicated C0 section. The material here reflects that section and records the rationale so maintainers can judge when it is safe to proceed to C1.</p>
+</div>
+
+<div class="card gb">
+<h2>What C0 does</h2>
+<p>During C0 every node computes the unified causal log <em>alongside</em> the legacy log. The two logs are kept strictly separate:</p>
+<ul>
+<li>The <strong>legacy log</strong> continues to drive all reads, consensus decisions, and state machine transitions.</li>
+<li>The <strong>shadow log</strong> is computed from the same sequence of events and stored in a parallel structure that is never exposed to application logic.</li>
+<li>At the end of each epoch boundary the node compares the root hash of the shadow log against the root hash transmitted by peers and records any divergence via the <code>scope_root_shadow_divergence</code> marker (described below).</li>
+</ul>
+<p>C0 is considered <em>in-progress</em> until the e2e canary gate defined in this document passes all required conditions. <strong>C1 must not begin before that gate clears.</strong></p>
+</div>
+
+<div class="card gc">
+<h2>Shadow log computation method</h2>
+<p>The shadow log is built by replaying every committed event through the new causal-log assembler while the legacy path runs concurrently. The key properties of this computation are:</p>
+<ol>
+<li><strong>Deterministic ordering</strong> — events are fed to the assembler in the same total order that the consensus layer delivers them, so the resulting DAG is identical on every correctly-behaving replica.</li>
+<li><strong>Incremental hashing</strong> — each new event is appended to the shadow log using the same incremental Merkle construction that C1 will use for the live log, ensuring the hash function under test is the production one.</li>
+<li><strong>Isolation</strong> — the assembler writes to a separate storage column family (or equivalent namespace) tagged <code>shadow:</code>. Reads from application state never touch this namespace during C0.</li>
+<li><strong>No side effects</strong> — the shadow assembler is read-only with respect to consensus; it neither proposes nor votes and does not influence leader election.</li>
+</ol>
+<p>The computation is gated behind a feature flag <code>unified_causal_log_shadow</code> that defaults to <strong>on</strong> for all nodes running the C0 release and can be disabled per-node for performance triage without affecting correctness of the live path.</p>
+</div>
+
+<div class="card gd">
+<h2>Wire protocol additions for C0</h2>
+<p>C0 introduces a small extension to the gossip envelope so that peers can exchange shadow root hashes without polluting the legacy log protocol:</p>
+<pre class="code">// Protobuf excerpt — added in C0
+message ShadowRootAnnouncement {
+  // Epoch sequence number this root covers.
+  uint64 epoch_seq = 1;
+
+  // Scope identifier — matches the existing ScopeId type.
+  bytes scope_id = 2;
+
+  // Merkle root of the shadow causal log at epoch_seq.
+  bytes shadow_root = 3;
+
+  // Sender's node identity for divergence attribution.
+  bytes sender_node_id = 4;
+}</pre>
+<p>Nodes broadcast a <code>ShadowRootAnnouncement</code> immediately after sealing each epoch. Receipt of an announcement triggers a local comparison:</p>
+<ul>
+<li>If the received <code>shadow_root</code> matches the locally computed root, no action is taken.</li>
+<li>If they differ, the node emits a <code>scope_root_shadow_divergence</code> structured log event and increments the corresponding Prometheus counter.</li>
+</ul>
+<p>The announcement messages are <strong>not</strong> stored in the legacy log and carry no consensus weight. They are fire-and-forget gossip with no acknowledgement requirement during C0.</p>
+</div>
+
+<div class="card ga">
+<h2>The scope_root_shadow_divergence marker</h2>
+<p>The <code>scope_root_shadow_divergence</code> marker is the primary observability signal for C0. It is emitted as a structured log event at <code>WARN</code> level and exported as a Prometheus counter with the following labels:</p>
+<ul>
+<li><code>scope_id</code> — the affected scope.</li>
+<li><code>epoch_seq</code> — the epoch at which the divergence was first observed.</li>
+<li><code>local_root</code> — hex-encoded local shadow root (first 8 bytes for brevity).</li>
+<li><code>remote_root</code> — hex-encoded remote shadow root (first 8 bytes).</li>
+<li><code>remote_node_id</code> — the peer whose announcement triggered the comparison.</li>
+</ul>
+<pre class="code">// Example structured log line
+{
+  "level": "WARN",
+  "target": "calimero_causal_log::shadow",
+  "message": "scope_root_shadow_divergence",
+  "scope_id": "abc123",
+  "epoch_seq": 4821,
+  "local_root": "d4e8f1a2...",
+  "remote_root": "9c3b77e0...",
+  "remote_node_id": "node-07"
+}</pre>
+<p>A divergence does <strong>not</strong> halt the node or trigger any recovery during C0. It is purely diagnostic. The canary gate (see below) aggregates these counters across the test fleet to determine whether the shadow implementation is ready for C1.</p>
+</div>
+
+<div class="card gb">
+<h2>Hash-neutral governance rotation — the critical canary scenario</h2>
+<p>A <strong>hash-neutral rotation</strong> is a governance event that changes the membership or key material of a scope without altering the application state hash. Examples include:</p>
+<ul>
+<li>Rotating a node's signing key while keeping its identity stable.</li>
+<li>Adding or removing a passive observer that holds no voting weight.</li>
+<li>Updating scope metadata fields that are excluded from the state Merkle tree.</li>
+</ul>
+<p>Hash-neutral rotations are the hardest class of event for the shadow log to handle correctly because the legacy log's root hash does not change across the rotation, but the unified causal log's root <em>must</em> change — it encodes governance events explicitly in its DAG structure.</p>
+<p>The canary gate therefore requires the test harness to inject at least one hash-neutral governance rotation per test run and assert that the shadow divergence counter <strong>fires</strong> on nodes that have not yet processed the rotation and <strong>clears</strong> once all nodes converge. A canary that never fires on a rotation indicates the shadow log is silently ignoring governance events, which would be a correctness defect.</p>
+</div>
+
+<div class="card gc">
+<h2>The e2e canary gate — pass conditions</h2>
+<p>The canary gate is an end-to-end test suite that must reach a <strong>steady-state pass</strong> before C1 is permitted to begin. The gate has two distinct pass conditions that must both be satisfied:</p>
+<h3>Condition 1 — zero false positives at steady state</h3>
+<p>After a fully-converged cluster has processed all pending events and all nodes agree on epoch boundaries, the <code>scope_root_shadow_divergence</code> counter must read <strong>zero</strong> across all nodes for a sustained observation window (currently defined as 30 consecutive epochs with no divergence events).</p>
+<ul>
+<li>Transient divergences during event processing are expected and do not fail this condition as long as they resolve before the window closes.</li>
+<li>A persistent non-zero counter at steady state indicates a non-determinism bug in the shadow assembler and must be fixed before proceeding.</li>
+</ul>
+<h3>Condition 2 — fires on hash-neutral governance rotation</h3>
+<p>The test harness must confirm that injecting a hash-neutral governance rotation causes the divergence counter to increment on at least one node during the convergence window, and that the counter returns to zero after all nodes process the rotation.</p>
+<ul>
+<li>This condition validates that the shadow log is <em>sensitive</em> to governance events that the legacy hash does not capture.</li>
+<li>A canary run in which no divergence fires during a rotation is treated as a <strong>gate failure</strong>, not a pass, because it indicates the event was silently dropped.</li>
+</ul>
+<p>Both conditions must pass on three consecutive canary runs before C1 work is scheduled.</p>
+</div>
+
+<div class="card gd">
+<h2>Gate failure modes and remediation</h2>
+<p>The following table describes the failure modes the canary gate is designed to catch and the expected remediation path for each:</p>
+<ul>
+<li><strong>Persistent divergence at steady state</strong> — indicates non-deterministic event ordering or a hash function mismatch between the local assembler and peers. Remediation: audit the event ingestion pipeline for ordering guarantees and verify the assembler's hashing matches the wire spec.</li>
+<li><strong>No divergence on hash-neutral rotation</strong> — indicates governance events are not being fed to the shadow assembler. Remediation: verify the governance event bus is wired to the shadow path behind the feature flag.</li>
+<li><strong>Divergence that never clears</strong> — indicates a convergence bug where the shadow DAG cannot reconcile after a fork. Remediation: inspect the merge logic in the causal-log assembler and check for missing causal links in the gossip path.</li>
+<li><strong>Counter fires on non-divergent epochs</strong> — indicates a clock or epoch-boundary mismatch causing nodes to compare roots from different epochs. Remediation: validate that <code>epoch_seq</code> in <code>ShadowRootAnnouncement</code> is derived from the same consensus clock on all nodes.</li>
+</ul>
+</div>
+
+<div class="card ga">
+<h2>C0 to C1 transition criteria — summary</h2>
+<p>A maintainer may schedule C1 work only when all of the following are true:</p>
+<ol>
+<li>The e2e canary gate has passed three consecutive runs with <strong>zero false positives at steady state</strong>.</li>
+<li>The canary has <strong>fired and cleared</strong> correctly on a hash-neutral governance rotation in each of those runs.</li>
+<li>No open issues are tagged <code>c0-blocker</code> in the issue tracker.</li>
+<li>The <code>scope_root_shadow_divergence</code> Prometheus counter has been reviewed by at least one maintainer who is not the author of the shadow assembler.</li>
+<li>The design doc section for C1 has been written and reviewed, incorporating any lessons learned during C0.</li>
+</ol>
+<p><strong>Do not begin C1 speculatively.</strong> The shadow plan exists precisely to surface correctness issues at zero operational risk. Cutting over before the gate passes converts a correctable bug into a potential data-integrity incident.</p>
+</div>
+
+<div class="card gb">
+<h2>Feature flag lifecycle</h2>
+<p>The <code>unified_causal_log_shadow</code> feature flag introduced in C0 follows the standard flag lifecycle for this codebase:</p>
+<ul>
+<li><strong>C0 release</strong> — flag defaults to <code>on</code>; can be disabled per-node via config for performance triage.</li>
+<li><strong>C1 release</strong> — flag is removed; shadow path is promoted to the live path; the legacy path becomes the shadow for a brief overlap window (the C1 shadow plan will describe this separately).</li>
+<li><strong>Never ship C1 with the C0 flag still present</strong> — having two shadow flags simultaneously creates an untestable combination space.</li>
+</ul>
+<p>Config key for the flag:</p>
+<pre class="code"># calimero-node.toml
+[experimental]
+unified_causal_log_shadow = true   # default; set false to disable C0 shadow</pre>
+</div>
+
+<div class="card gc">
+<h2>Relationship to the existing design doc</h2>
+<p>The canonical design document lives at <code>docs/design/unified-causal-log-cutover-plan.md</code> in the repository root. The C0 section added by this change is the authoritative specification; this architecture page is a <em>derived summary</em> intended for browsing alongside other architecture pages.</p>
+<p>If this page and the design doc disagree, the design doc takes precedence. File a documentation bug to reconcile the two.</p>
+<ul>
+<li><code>docs/design/unified-causal-log-cutover-plan.md</code> — authoritative cutover plan; C0 section is in-progress.</li>
+<li><code>crates/causal_log/src/shadow/assembler.rs</code> — shadow assembler implementation.</li>
+<li><code>crates/causal_log/src/shadow/gossip.rs</code> — <code>ShadowRootAnnouncement</code> broadcast logic.</li>
+<li><code>crates/causal_log/src/shadow/divergence.rs</code> — <code>scope_root_shadow_divergence</code> marker emission.</li>
+<li><code>e2e/causal_log_canary/</code> — end-to-end canary test suite including the hash-neutral rotation scenario.</li>
+</ul>
+</div>
+
+<div class="card gd">
+<h2>Open questions for C1 planning</h2>
+<p>The following questions are deliberately left open until the C0 canary gate passes. They should be resolved as part of writing the C1 design doc section:</p>
+<ul>
+<li><strong>Read cutover ordering</strong> — should reads switch to the unified log atomically at an epoch boundary, or is a gradual per-scope migration safer?</li>
+<li><strong>Legacy log retention</strong> — how long must the legacy log be retained after C1 for rollback purposes, and what is the storage cost on large scopes?</li>
+<li><strong>C1 shadow direction</strong> — during C1 the roles reverse: the unified log becomes live and the legacy log becomes the shadow. Does the existing divergence marker infrastructure need changes to support this reversed polarity?</li>
+<li><strong>Governance event backfill</strong> — nodes that were offline during C0 will have gaps in their shadow log. Does C1 require a backfill protocol, or is a fresh shadow-log start at C1 cutover acceptable?</li>
+</ul>
+<p>None of these questions need to be answered before C0 is declared complete. They are recorded here so they are not forgotten when C1 planning begins.</p>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>
