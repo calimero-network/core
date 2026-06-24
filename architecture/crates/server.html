@@ -445,6 +445,12 @@ GET    /admin-api/peers
 <p style="margin-top:10px;"><strong>Key-provisioning failures are now hard errors.</strong> If either key write fails, the request is aborted immediately and the caller receives a 500-style error response. Previously, failures were warn-logged and the request continued, leaving the group in an inconsistent state.</p>
 <p style="margin-top:10px;">Namespace root TEE members are now fully admitted into Restricted subgroups at creation time, because the signing key is available before the op is applied.</p>
 <p style="margin-top:10px;"><strong>Visibility field:</strong> The request body (<span class="code">CreateGroupInNamespaceBody</span>) accepts an optional <span class="code">visibility</span> string. <span class="code">"open"</span> sets <span class="code">restricted = false</span> on the <span class="code">GroupCreated</span> op; <span class="code">"restricted"</span> (or absent/unrecognized) sets <span class="code">restricted = true</span>. This allows callers to create born-Open subgroups in a single REST call without a follow-up update.</p>
+<p style="margin-top:10px;"><strong>Op-store mirroring:</strong> After <span class="code">sign_apply_and_publish_namespace_op</span> successfully authors the <span class="code">GroupCreated</span> op, <span class="code">ScopeProjections::persist_namespace_head_ops</span> is called to persist the op into the unified op-store, ensuring the new group's creation is durably recorded and visible to op-store consumers.</p>
+</div>
+
+<div class="card" style="border-color:#10b981;margin-top:18px;">
+<h3>Op-Store Mirroring for Group Reparenting (POST /namespaces/:id/nest &amp; unnest)</h3>
+<p>After <span class="code">sign_apply_and_publish_namespace_op</span> successfully authors a <span class="code">GroupReparented</span> op in the <span class="code">reparent_group</span> admin handler, <span class="code">ScopeProjections::persist_namespace_head_ops</span> is now called to persist the op into the unified op-store. This mirrors the same behaviour introduced for <span class="code">GroupCreated</span> in <span class="code">create_group_in_namespace</span>, ensuring that all structural group hierarchy changes are durably recorded and visible to op-store consumers immediately after the operation succeeds.</p>
 </div>
 
 <div class="card gd" style="border-color:#f59e0b;">
