@@ -361,35 +361,49 @@ impl<'a> NamespaceGovernance<'a> {
                         // check because the meta did not exist — can now apply.
                         // Re-drive, but only when the node plausibly holds a key
                         // that could decrypt this group's buffered ops. This is
-                        // a CHEAP keyring presence check — a single current-key
-                        // lookup per keyring — NOT an op-log scan: gating with a
+                        // a CHEAP keyring presence check — a single
+                        // first-key-exists lookup per keyring
+                        // (`holds_any_key`) — NOT an op-log scan: gating with a
                         // full op-log scan would defeat the gate's purpose,
                         // since the retry it guards
                         // (`collect_retry_candidates_for_group`) already does a
                         // full scan, so a scanning gate saves nothing on the
                         // GroupCreated hot path. The check mirrors the
                         // dual-keyring resolution the apply/retry path uses
-                        // (#2256): the subgroup's own current key (Restricted)
-                        // OR the namespace current key (Open subgroups encrypt
-                        // under it). Gating on the subgroup current key alone
-                        // was wrong — a node holding only the namespace key
-                        // still has decryptable Open buffered ops and must be
-                        // re-driven. When neither key is held (the common case
-                        // and the deleted-group exit since purge clears keys)
-                        // the retry is skipped without touching the op-log. The
-                        // retry itself still scans the op-log, but only when a
-                        // key is actually held and only on GroupCreated, so the
-                        // scan is bounded. Best-effort: log, never propagate.
+                        // (#2256): the subgroup's own keyring (Restricted) OR
+                        // the namespace keyring (Open subgroups encrypt under
+                        // it). Gating on the subgroup keyring alone was wrong —
+                        // a node holding only the namespace key still has
+                        // decryptable Open buffered ops and must be re-driven.
+                        //
+                        // W3/S1 fix: gate on whether the keyring holds ANY key,
+                        // not just the *current* one. The retry resolves each
+                        // buffered op by its `key_id` (`load_key_by_id`), so
+                        // after a key ROTATION a node may hold only the OLD key
+                        // that a buffered op was encrypted under while
+                        // `load_current_key` returns the newer key (or, if the
+                        // node never received the new delivery, the old key IS
+                        // still the entry but distinct from the op's key_id).
+                        // The old current-key gate produced a false-negative in
+                        // exactly that case — the op was decryptable yet the
+                        // re-drive was skipped. "Holds any key" has no such
+                        // false-negative (if the matching key_id is held, the
+                        // keyring is non-empty); the residual false-positive
+                        // (non-empty keyring without the specific key_id) just
+                        // costs one bounded, self-gating retry scan that finds
+                        // no candidates — harmless. When neither keyring holds
+                        // any key (the common case and the deleted-group exit
+                        // since purge clears keys) the retry is skipped without
+                        // touching the op-log. Best-effort: log, never
+                        // propagate.
                         let gid = *group_id;
                         let gid_typed = ContextGroupId::from(gid);
                         let ns_typed = ContextGroupId::from(self.namespace_id);
                         let holds_key = GroupKeyring::new(self.store, gid_typed)
-                            .load_current_key()
-                            .map(|k| k.is_some())
+                            .holds_any_key()
                             .unwrap_or(false)
                             || GroupKeyring::new(self.store, ns_typed)
-                                .load_current_key()
-                                .map(|k| k.is_some())
+                                .holds_any_key()
                                 .unwrap_or(false);
                         if holds_key {
                             match self.retry_encrypted_ops_for_group(*group_id) {
@@ -1259,13 +1273,18 @@ impl<'a> NamespaceGovernance<'a> {
     ///
     /// TOCTOU caveat (accepted, bounded, benign): the pre/post nonce-window
     /// read is not atomic with the apply, so a concurrent gossip apply of the
-    /// same op between the pre-read and our apply can make us miscount — the
-    /// nonce flips present "underneath" us and we record a `nonce_skip`
-    /// instead of `applied` (or vice versa). The only consequence is the
-    /// convergence count being off, which at worst triggers one extra sweep
-    /// pass; that is bounded by `MAX_PASSES`. The count is a best-effort
-    /// convergence SIGNAL, not a correctness gate — no state can diverge from
-    /// a miscount. The proper long-term fix is to have
+    /// same op can make us miscount. The inflating race is a concurrent apply
+    /// landing BEFORE our apply: we pre-read `was_present == false`, the gossip
+    /// path then windows the nonce, and our `decrypt_and_apply` short-circuits
+    /// to `Ok(None)` WITHOUT writing — yet the post-read sees `now_present ==
+    /// true`, so `!was_present && now_present` holds and we count a false
+    /// "applied" for an op we did not actually apply. (This does NOT produce a
+    /// spurious `nonce_skip`: that branch is taken only when the post-read is
+    /// still `false`, which a concurrent apply cannot cause.) The only
+    /// consequence is the convergence count being over-counted, which at worst
+    /// triggers one extra sweep pass; that is bounded by `MAX_PASSES`. The
+    /// count is a best-effort convergence SIGNAL, not a correctness gate — no
+    /// state can diverge from a miscount. The proper long-term fix is to have
     /// `decrypt_and_apply_group_op` return an explicit `Applied | Skipped |
     /// Failed` outcome instead of inferring it from the window; that refactor
     /// is deliberately deferred.
