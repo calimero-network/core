@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.11.0-rc.7] - 2026-06-24
+
 ### Removed
 
 - **NEAR wallet authentication removed** (BREAKING) — the `near_wallet` auth provider, `NearWalletConfig`, the `near-crypto`/`near-jsonrpc-client`/`near-primitives` dependencies, and the `NEAR_API_KEY` env var are gone. The `WalletType`/`NearNetworkId` types and the wallet add-public-key wire structs (`Payload`, `WalletMetadata`, `SignatureMetadataEnum`, `AddPublicKeyRequest`, …) are removed; `RootKey`/`ClientKey` no longer carry a `wallet` field. Principals whose only root key used NEAR wallet must re-register via another provider (e.g. user/password). NEAR remains supported only as an opaque context-config protocol label (untyped, node-ignored).
@@ -15,6 +17,15 @@
   - New `apps/sorted-kv-store` example; `SortedMap` ABI marker added to the conformance apps
 - **`SortedSet<T>` collection** — the `BTreeSet` to `UnorderedSet`'s `HashSet`: an ordered set with `range`/`prefix`/`page`/`first`/`last`, same add-wins union merge and the same on-disk ordered index as `SortedMap` ([#2559])
 - **In-process unit-test harness (`calimero_sdk::testing::TestHost`)** - Exercise app logic as ordinary Rust under `cargo test` — no WASM build, no node, no merobox. `TestHost::new(MyApp::init)` runs methods via `call`/`view` against an in-memory mock host that records `app::emit!` events and `app::log!` lines and serves a configurable executor identity (`call_as` for multi-author CRDT tests). The `#[app::state]` macro generates the storage bridge; apps opt in with `calimero-storage`'s `testing` feature as a dev-dependency. All core example apps now ship `#[cfg(test)]` tests using it ([#2551])
+- **Local mock-TEE fleet test harness** — `merod run --mock-tee` (dev/test-only, off by default, refuses to start with a real KMS attestation) makes a node produce and accept a synthetic mock attestation quote through the real `fleet-join`/announce/admit path, so the TEE/HA fleet lifecycle can be exercised locally with no TDX hardware. Plus `calimero_tee_attestation::generate_mock_attestation` (additive) ([#2855])
+
+### Fixed
+
+- **TEE replica replication correctness** — three governance/TEE bugs surfaced by the new mock-TEE harness ([#2855]):
+  - a buffered encrypted `ContextRegistered` is now re-driven after its subgroup's `GroupCreated` applies (and via a curative startup sweep), instead of being stranded when the post-`KeyDelivery` retry hit `group not found for state hash computation` (#2848)
+  - `fleet-join`'s first announce into an empty gossipsub mesh no longer returns HTTP 500 — it falls through to the re-announce loop (#2491)
+  - a TEE replica whose namespace root is bootstrapped via the KeyDelivery seed now seeds `CAN_JOIN_OPEN_SUBGROUPS`, so it can replicate Open subgroups via inheritance
+- **Born-Open atomic subgroup create** — `RootOp::GroupCreated` carries visibility, so an Open subgroup is created in one op (no Restricted-then-flip window) and no longer leaves a transient direct `ReadOnlyTee` row (#2771). Wire-breaking change to `GroupCreated`
 
 ## [0.11.0-rc.6] - 2026-06-19
 
@@ -283,6 +294,7 @@ Integrations:
 <!-- versions -->
 
 [unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.6...HEAD
+[0.11.0-rc.7]: https://github.com/calimero-network/core/compare/0.11.0-rc.6...0.11.0-rc.7
 [0.11.0-rc.6]: https://github.com/calimero-network/core/compare/0.11.0-rc.5...0.11.0-rc.6
 [0.11.0-rc.5]: https://github.com/calimero-network/core/compare/0.11.0-rc.4...0.11.0-rc.5
 [0.8.0]: https://github.com/calimero-network/core/compare/0.7.0...0.8.0
@@ -314,6 +326,7 @@ Integrations:
 [#2796]: https://github.com/calimero-network/core/pull/2796
 [#2772]: https://github.com/calimero-network/core/pull/2772
 [#2776]: https://github.com/calimero-network/core/pull/2776
+[#2855]: https://github.com/calimero-network/core/pull/2855
 [#2792]: https://github.com/calimero-network/core/pull/2792
 [#2559]: https://github.com/calimero-network/core/pull/2559
 [#2551]: https://github.com/calimero-network/core/pull/2551
