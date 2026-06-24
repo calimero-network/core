@@ -699,37 +699,43 @@ async fn run_initiator_impl<T: SyncTransport>(
     let local_root_hash = with_runtime_env(runtime_env.clone(), || {
         get_local_root_hash_for_context(context_id)
     })?;
-    stats.root_hash_verified = local_root_hash == peer_current_root;
 
-    // C0 scope_root shadow (observe-only): when the entity roots AGREE, the bare
-    // `root_hash` declares convergence — but a hash-neutral GOVERNANCE change
-    // (membership add/remove, admin/policy/subgroup edit) leaves identical entities
-    // under a divergent governance plane, which `root_hash` cannot see (governance
-    // lives in a separate DAG, not the storage Merkle). Fold our governance
-    // projection onto the same entity root and compare against the peer's
-    // `scope_root`; a mismatch here, on agreeing entity roots, is exactly the blind
-    // spot C1 will close. (Writer-set rotations are NOT this case — they move
-    // `entities_root` via the rotation-log storage entity, so they're already
-    // caught by the bare `root_hash`.) Logged, never acted on. Both sides skip when
-    // either can't fold the scope (`None`).
-    if local_root_hash == peer_current_root {
-        if let Some(peer_scope_root) = peer_scope_root {
-            if let Some(local_scope_root) =
-                super::helpers::local_scope_root(store, &context_id, local_root_hash)
-            {
-                if local_scope_root != peer_scope_root {
-                    warn!(
-                        marker = "scope_root_shadow_divergence",
-                        %context_id,
-                        entity_root = %hex::encode(&local_root_hash[..8]),
-                        local_scope_root = %hex::encode(&local_scope_root[..8]),
-                        peer_scope_root = %hex::encode(&peer_scope_root[..8]),
-                        "entity roots agree but scope_root differs — hash-neutral \
-                         ACL/membership divergence the current convergence signal hides"
-                    );
-                }
-            }
-        }
+    // C1: `scope_root` is the AUTHORITATIVE convergence verdict. It folds the
+    // governance projection's ACL + membership/admin onto the entity root, so two
+    // nodes converge only when BOTH the data plane AND authorization agree — closing
+    // the hash-neutral rotation blind spot the bare entity root left open (the
+    // rotation split-brain family: stale-heads, clear()-tombstone-blindness, the
+    // #2607 verified-but-divergent case). `scope_root` already subsumes the entity
+    // root (it is hashed in), so when both sides resolve a `scope_root` it alone
+    // decides; only when either side can't fold the scope (cold projection /
+    // non-group context, `None`) do we fall back to the bare entity-root compare —
+    // exactly the pre-C1 behaviour, so no context regresses to a weaker check than
+    // before.
+    let local_scope_root = super::helpers::local_scope_root(store, &context_id, local_root_hash);
+    stats.root_hash_verified = match (local_scope_root, peer_scope_root) {
+        (Some(local), Some(peer)) => local == peer,
+        _ => local_root_hash == peer_current_root,
+    };
+
+    // Surface the case the entity root hides: entities AGREE but `scope_root`
+    // differs ⇒ the divergence is purely in the ACL/governance plane. HC's entity
+    // tree-walk has nothing to reconcile here (the entities already match); the
+    // rotation propagates via the ordinary governance sync tick, and the next HC
+    // session re-reads an agreeing `scope_root` once it lands. Distinct marker so a
+    // governance-plane divergence is legible apart from a data-plane one.
+    if !stats.root_hash_verified
+        && local_root_hash == peer_current_root
+        && matches!((local_scope_root, peer_scope_root), (Some(l), Some(p)) if l != p)
+    {
+        warn!(
+            marker = "scope_root_governance_divergence",
+            %context_id,
+            entity_root = %hex::encode(&local_root_hash[..8]),
+            local_scope_root = %hex::encode(&local_scope_root.unwrap_or_default()[..8]),
+            peer_scope_root = %hex::encode(&peer_scope_root.unwrap_or_default()[..8]),
+            "entity roots agree but scope_root differs — ACL/membership divergence; \
+             awaiting governance sync to propagate the rotation"
+        );
     }
 
     // core#2716: re-anchor the context's persisted `root_hash` to the
