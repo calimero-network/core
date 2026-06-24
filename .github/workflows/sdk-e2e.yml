@@ -104,6 +104,18 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm test:e2e
 
+      - name: Endpoint coverage (manifest vs e2e hits)
+        if: always()
+        run: |
+          COVERED="_mero-js/covered-endpoints.json"
+          chmod +x scripts/check-endpoint-coverage.sh
+          if [ -f "$COVERED" ]; then
+            scripts/check-endpoint-coverage.sh crates/server/endpoints.json "$COVERED"
+          else
+            echo "::warning::no covered-endpoints.json produced by the e2e run; \
+            coverage check skipped until the mero-js HttpClient path-recorder lands"
+          fi
+
       - name: Stop merod
         if: always()
         run: kill "${MEROD_PID:-0}" 2>/dev/null || true
