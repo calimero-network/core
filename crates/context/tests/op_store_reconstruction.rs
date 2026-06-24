@@ -30,7 +30,9 @@ use calimero_context::group_store::{
 };
 use calimero_context::scope_projection::{op_from_namespace_op, ScopeProjections};
 use calimero_context::unified_op_store::{load_scope_ops, persist_op};
-use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
+use calimero_context_client::local_governance::{
+    EncryptedGroupOp, GroupOp, NamespaceOp, SignedNamespaceOp,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::ScopeId;
 use calimero_primitives::context::GroupMemberRole;
@@ -164,5 +166,62 @@ fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery
         dag_member,
         "after key delivery the op-store must reconstruct the same membership as the governance \
          DAG; repersist_namespace_ops should have overwritten the frozen Noop with the MemberAdded"
+    );
+}
+
+/// C3 Stage 0: the completeness gate flags exactly the governance ops the gov-DAG
+/// has but the op-store is missing — the deterministic net for the structural
+/// dual-write gaps (local-authoring / genesis) that sank the read-flip in e2e.
+#[test]
+fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
+    let store = store();
+    let admin = PrivateKey::random(&mut OsRng).public_key();
+    let ns = ContextGroupId::from([0x22; 32]);
+    let ns_bytes = ns.to_bytes();
+
+    // Build distinct governance ops as the gov-DAG fold yields them (payload is
+    // irrelevant — the gate compares op ids — so fold each as a Noop envelope).
+    let op = |id: u8| {
+        let signed = SignedNamespaceOp {
+            version: 1,
+            namespace_id: ns_bytes,
+            parent_op_hashes: Vec::new(),
+            state_hash: [0u8; 32],
+            signer: admin,
+            nonce: u64::from(id),
+            op: NamespaceOp::Group {
+                group_id: ns_bytes,
+                key_id: [0u8; 32],
+                encrypted: EncryptedGroupOp {
+                    nonce: [0u8; 12],
+                    ciphertext: Vec::new(),
+                },
+                key_rotation: None,
+            },
+            signature: [0u8; 64],
+        };
+        op_from_namespace_op(&signed, None, [id; 32], hlc(u64::from(id)), &[])
+    };
+    let (op1, op2, op3) = (op(1), op(2), op(3));
+
+    // The gov-DAG fold has all three; the op-store is missing op3 (e.g. it was
+    // authored locally on a path that doesn't dual-write).
+    persist_op(&store, &op1).unwrap();
+    persist_op(&store, &op2).unwrap();
+    let dag_ops = vec![op1, op2, op3.clone()];
+
+    assert_eq!(
+        ScopeProjections::check_op_store_completeness(&store, ns_bytes, &dag_ops),
+        Some(vec![op3.id]),
+        "the gate must flag exactly the op missing from the op-store"
+    );
+
+    // Once the gap is closed, the gate is verified-clean (Some(empty)) — distinct from
+    // None (couldn't-check).
+    persist_op(&store, &op3).unwrap();
+    assert_eq!(
+        ScopeProjections::check_op_store_completeness(&store, ns_bytes, &dag_ops),
+        Some(Vec::new()),
+        "a complete op-store yields a verified-empty missing list"
     );
 }

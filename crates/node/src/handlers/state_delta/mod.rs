@@ -783,11 +783,15 @@ fn refresh_projection_for_cut(
         .read_scope_projections()
         .namespace_to_refresh(datastore, group, heads);
     if let Some(namespace_id) = needs_backfill {
-        // The projection folds the governance DAG (`ops_for_namespace`). The C2.2b
-        // read-flip onto the unified op-store is DEFERRED — it drops late-decrypted
-        // membership; see `ops_for_namespace` and the deterministic repro in
-        // `calimero-context` `tests/op_store_reconstruction.rs`.
+        // The projection folds the governance DAG (`ops_for_namespace`). The read-flip
+        // onto the unified op-store is being re-approached via C3 (make the op-store
+        // authoritative by construction); see the C3 plan + `ops_for_namespace`.
         if let Some(ops) = ScopeProjections::ops_for_namespace(datastore, namespace_id) {
+            // C3 Stage 0 completeness gate (observe-only): the `ops` here are the
+            // gov-DAG fold, so cross-check that the op-store has them all and log
+            // `op_store_incomplete` for any it's missing — the deterministic signal
+            // that a governance apply path isn't dual-writing the op-store.
+            ScopeProjections::check_op_store_completeness(datastore, namespace_id, &ops);
             node_state
                 .write_scope_projections()
                 .apply_backfill(namespace_id, ops);

@@ -1124,6 +1124,81 @@ impl ScopeProjections {
         );
     }
 
+    /// Observe-only completeness gate (cutover C3 Stage 0): warn when the unified
+    /// op-store is MISSING governance ops the gov-DAG has for `namespace_id`.
+    ///
+    /// The op-store is only authoritative once every governance apply path writes it.
+    /// Until then it is a dual-write shadow with structural gaps (locally-authored
+    /// ops and genesis never `persist_op`), and an incomplete op-store surfaces only
+    /// as a 60-second sync timeout in e2e — after a read flips onto it. This compares
+    /// the two op-id sets and emits `op_store_incomplete` with the count + a sample
+    /// missing id, so a gap is a cheap, deterministic, greppable signal INSTEAD of a
+    /// mystery timeout. It is the gate every later C3 stage is checked against
+    /// (zero markers ⇒ the op-store provably mirrors the gov-DAG for that namespace).
+    ///
+    /// `dag_ops` is the gov-DAG fold the caller already computed (the backfill walk),
+    /// so this adds one op-store load, not a second DAG walk. It runs only on an
+    /// actual backfill — `namespace_to_refresh` returns `None` for an already-folded
+    /// (warm) cut, so the steady-state per-delta path does NOT pay this; the load
+    /// happens on cold/refresh cuts only, and the whole gate retires at Stage 4 when
+    /// the read flips onto the op-store. Never affects apply.
+    ///
+    /// Returns `Some(missing_ids)` when the check ran (`Some(vec![])` ⇒ verified
+    /// complete), or `None` when the op-store couldn't be loaded (couldn't-check —
+    /// distinct from clean, so a store fault can't masquerade as a passing gate). The
+    /// node caller ignores the return and relies on the markers: `op_store_incomplete`
+    /// (a real gap) and `op_store_gate_unavailable` (load failed). The `Option`
+    /// distinction is for tests and any future programmatic caller (e.g. the Stage 4
+    /// hard gate).
+    pub fn check_op_store_completeness(
+        store: &Store,
+        namespace_id: [u8; 32],
+        dag_ops: &[Op],
+    ) -> Option<Vec<[u8; 32]>> {
+        // Nothing to verify against an empty gov-DAG fold — verified-complete.
+        if dag_ops.is_empty() {
+            return Some(Vec::new());
+        }
+        let scope = ScopeId::from(namespace_id);
+        let store_ids: HashSet<[u8; 32]> =
+            match crate::unified_op_store::load_scope_ops(store, &scope) {
+                Ok(ops) => ops.iter().map(|op| op.id).collect(),
+                Err(err) => {
+                    // A load fault must NOT read as "complete": CI treats no
+                    // `op_store_incomplete` as a clean op-store, so a store error would
+                    // silently hide real gaps the gate exists to surface. Return `None`
+                    // (couldn't-check, distinct from `Some(vec![])` = verified clean)
+                    // and emit a distinct marker.
+                    tracing::warn!(
+                        marker = "op_store_gate_unavailable",
+                        namespace = ?namespace_id,
+                        %err,
+                        "op-store completeness gate could not load the op-store — \
+                         completeness UNVERIFIED for this namespace this round"
+                    );
+                    return None;
+                }
+            };
+        let missing: Vec<[u8; 32]> = dag_ops
+            .iter()
+            .map(|op| op.id)
+            .filter(|id| !store_ids.contains(id))
+            .collect();
+        if !missing.is_empty() {
+            tracing::warn!(
+                marker = "op_store_incomplete",
+                namespace = ?namespace_id,
+                missing_count = missing.len(),
+                dag_count = dag_ops.len(),
+                op_store_count = store_ids.len(),
+                sample_missing = %hex::encode(&missing[0][..8]),
+                "unified op-store is missing governance ops the gov-DAG has — \
+                 a governance apply path is not dual-writing the op-store"
+            );
+        }
+        Some(missing)
+    }
+
     /// Ingest the ops [`collect_namespace_ops`] gathered and mark the namespace
     /// backfilled — the cheap, lock-held half. Always ingests (no early-out on an
     /// already-backfilled namespace) so a *refresh* re-walk — triggered when the
