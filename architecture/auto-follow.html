@@ -470,6 +470,39 @@ FIND>>>
 </ul>
 </div>
 
+<div class="card gd"><h2>Removed: <code>GroupMembershipView::admin_count</code> and <code>member_count</code></h2>
+<p>
+As part of post-F5-migration cleanup, two methods have been deleted from <code>GroupMembershipView</code>:
+</p>
+<ul>
+  <li><code>admin_count</code> — iterated the full member list and counted admins via <code>try_fold</code>.</li>
+  <li><code>member_count</code> — returned the length of the member list.</li>
+</ul>
+<p>
+Neither method was called anywhere in production code. Counting is done in production via
+<code>MembershipRepository::count_admins</code> and a direct length query on the store result.
+Because <code>GroupMembershipView</code> is <code>pub</code> and re-exported, the Rust compiler
+and <code>clippy -D warnings</code> did not flag these methods as unused automatically, so they
+were identified manually during cleanup.
+</p>
+<p>
+The test <code>membership_view_reports_admin_and_member_counts</code>, which was the sole caller of
+both methods, has also been deleted. The admin-membership assertions it contained are fully covered
+by the existing <code>require_admin</code> and <code>has_another_admin</code> tests.
+</p>
+<h3>Impact on callers</h3>
+<ul>
+  <li><strong>Production code.</strong> No impact — neither method was called outside tests.</li>
+  <li><strong>External crates or integrations.</strong> If any downstream code calls
+  <code>GroupMembershipView::admin_count</code> or <code>GroupMembershipView::member_count</code>,
+  those call sites will fail to compile. Replace them with the repository-level helpers
+  <code>MembershipRepository::count_admins</code> (for admin counts) or a direct
+  <code>.len()</code> on the member collection returned by the store query (for total member
+  counts).</li>
+  <li><strong>No behaviour change.</strong> The deletion is purely structural; no runtime
+  semantics, DAG apply paths, or authorization gates are affected.</li>
+</ul>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
