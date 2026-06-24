@@ -100,6 +100,8 @@ jobs:
         working-directory: _mero-js
         env:
           NODE_BASE_URL: "http://localhost:2428"
+          # The e2e coverage recorder writes the endpoints it hit here.
+          MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
         run: |
           pnpm install --frozen-lockfile
           pnpm test:e2e
@@ -110,10 +112,12 @@ jobs:
           COVERED="_mero-js/covered-endpoints.json"
           chmod +x scripts/check-endpoint-coverage.sh
           if [ -f "$COVERED" ]; then
-            scripts/check-endpoint-coverage.sh crates/server/endpoints.json "$COVERED"
+            # Enforced with a baseline ratchet: a NEW uncovered route fails; the
+            # accepted-uncovered backlog lives in coverage-baseline.json.
+            scripts/check-endpoint-coverage.sh \
+              crates/server/endpoints.json "$COVERED" crates/server/coverage-baseline.json
           else
-            echo "::warning::no covered-endpoints.json produced by the e2e run; \
-            coverage check skipped until the mero-js HttpClient path-recorder lands"
+            echo "::warning::no covered-endpoints.json produced by the e2e run"
           fi
 
       - name: Stop merod
