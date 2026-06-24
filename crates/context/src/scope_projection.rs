@@ -1084,6 +1084,46 @@ impl ScopeProjections {
         Some(ops)
     }
 
+    /// Refresh the unified op-store for `namespace_id` from the governance DAG with
+    /// the keys present NOW — the fix for the read-flip blocker (C2.2c).
+    ///
+    /// The apply-time dual-write decodes each governance op with whatever key was
+    /// available at apply time; an encrypted group op applied BEFORE its group key
+    /// arrived was frozen into the op-store as a `Noop`. Once the key lands (the
+    /// key-delivery / `recover_missing_group_keys` path), this re-walks the namespace
+    /// via [`collect_namespace_ops`](Self::collect_namespace_ops) — the canonical
+    /// decode path, which re-decrypts at read time — and re-persists every op. The
+    /// now-decryptable ops re-decode to their real payload (e.g. `MemberAdded`) and
+    /// OVERWRITE the stale `Noop` (same content-addressed op id), so the op-store
+    /// converges to exactly what the projection folds.
+    ///
+    /// Best-effort and idempotent: it runs only on key delivery (infrequent), is
+    /// bounded by the same `MAX_BACKFILL_OPS` walk cap, and a persist failure just
+    /// leaves the op-store stale until the next delivery — it never affects the
+    /// governance apply. Re-persisting an unchanged op rewrites identical bytes.
+    pub fn repersist_namespace_ops(store: &Store, namespace_id: [u8; 32]) {
+        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+            return;
+        };
+        let mut refreshed = 0usize;
+        for op in &ops {
+            match crate::unified_op_store::persist_op(store, op) {
+                Ok(()) => refreshed += 1,
+                Err(err) => tracing::warn!(
+                    %err,
+                    namespace = ?namespace_id,
+                    op = ?op.id,
+                    "op-store: failed to re-persist governance op after key delivery"
+                ),
+            }
+        }
+        tracing::debug!(
+            namespace = ?namespace_id,
+            count = refreshed,
+            "op-store: re-persisted governance ops with current decryption after key delivery"
+        );
+    }
+
     /// Ingest the ops [`collect_namespace_ops`] gathered and mark the namespace
     /// backfilled — the cheap, lock-held half. Always ingests (no early-out on an
     /// already-backfilled namespace) so a *refresh* re-walk — triggered when the

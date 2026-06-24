@@ -1,30 +1,27 @@
-//! Deterministic repro for the C2.2b read-flip blocker (deferred in PR #2916).
+//! Deterministic before/after for the C2.2b read-flip blocker + its C2.2c fix.
 //!
 //! The unified op-store must reconstruct the SAME namespace-governance membership
 //! that `collect_namespace_ops` (the governance-DAG walk) does — otherwise making
 //! the op-store the projection's authoritative backing silently drops members.
 //!
-//! The bug this pins: an encrypted group `MemberAdded` can be applied to the
-//! governance DAG BEFORE its group key arrives (keys travel on a separate
-//! delivery/pull path and lag — see the buffer-awaiting-key replay in
-//! `apply_group_op_inner`). At that moment the apply-time dual-write decrypts with
-//! no key, so `op_from_namespace_op` folds the op as `Noop` and that `Noop` is
-//! frozen into the op-store. Once the key lands, `collect_namespace_ops`
-//! re-decrypts the SAME op at read time and recovers the real `MemberAdded` — but
-//! the op-store still holds the frozen `Noop`. Flipping the projection onto the
-//! op-store therefore loses the membership, the new member's writes are rejected,
-//! and sync never converges (the joiner-write timeout seen across group-3node /
-//! scaffolding-e2e / shared-storage-rotation when the flip was live).
+//! The bug: an encrypted group `MemberAdded` can be applied to the governance DAG
+//! BEFORE its group key arrives (keys travel on a separate delivery/pull path and
+//! lag — see the buffer-awaiting-key replay in `apply_group_op_inner`). At that
+//! moment the apply-time dual-write decrypts with no key, so `op_from_namespace_op`
+//! folds the op as `Noop` and that `Noop` is frozen into the op-store. Once the key
+//! lands, `collect_namespace_ops` re-decrypts the SAME op at read time and recovers
+//! the real `MemberAdded` — but the op-store still held the frozen `Noop`, so a
+//! projection read off the op-store loses the membership, the new member's writes
+//! are rejected, and sync never converges (the joiner-write timeout seen across
+//! group-3node / scaffolding-e2e / shared-storage-rotation when the flip was live).
+//! `scope_root` doesn't catch it: at shadow time neither side has decrypted yet
+//! (both `Noop` → roots match); the divergence only appears post-key.
 //!
-//! `scope_root` alone does NOT catch this: at the moment the C2.2 shadow runs,
-//! neither side has decrypted yet (both `Noop`), so the roots match. The
-//! divergence only surfaces after the key arrives — which is why only e2e caught
-//! it. This test makes it deterministic.
-//!
-//! Run it with `cargo test -p calimero-context --test op_store_reconstruction --
-//! --ignored`. It is `#[ignore]`d (it FAILS today, on purpose) so it doesn't break
-//! CI; un-ignore it as the gate for the fix that makes `load_scope_ops` faithfully
-//! reconstruct late-decrypted membership.
+//! The fix (`ScopeProjections::repersist_namespace_ops`, called on the
+//! key-delivery path): once the key lands, re-walk the namespace with current
+//! decryption and re-persist every op, overwriting the frozen `Noop` with the real
+//! `MemberAdded`. This test asserts the op-store diverges BEFORE the re-persist and
+//! converges AFTER.
 
 use std::sync::Arc;
 
@@ -70,11 +67,7 @@ fn meta(admin: PublicKey) -> GroupMetaValue {
 }
 
 #[test]
-#[ignore = "reproduces the C2.2b read-flip blocker (PR #2916): the unified op-store freezes a \
-            Noop for an encrypted MemberAdded applied before its group key arrives, while \
-            collect_namespace_ops re-decrypts it once the key is present. Un-ignore as the gate \
-            for the fix that makes load_scope_ops faithfully reconstruct late-decrypted membership."]
-fn op_store_reconstruction_matches_governance_dag_for_late_decrypted_membership() {
+fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery() {
     let store = store();
     let admin = PrivateKey::random(&mut OsRng).public_key();
     let member = PrivateKey::random(&mut OsRng).public_key();
@@ -131,34 +124,45 @@ fn op_store_reconstruction_matches_governance_dag_for_late_decrypted_membership(
     let frozen = op_from_namespace_op(&signed, None, delta_id, hlc(1), &[]);
     persist_op(&store, &frozen).unwrap();
 
-    // Reconstruct the projection BOTH ways the flip could, then read membership at
-    // the op's cut.
     let heads = [delta_id];
 
+    // Read membership from a fresh fold of whatever the op-store currently holds.
+    let store_membership = |store: &Store| {
+        let store_ops = load_scope_ops(store, &ScopeId::from(ns_bytes)).unwrap();
+        let mut proj = ScopeProjections::new();
+        proj.apply_backfill(ns_bytes, store_ops);
+        proj.member_at_cut(store, ns, &member, &heads)
+    };
+
+    // The governance-DAG walk re-decrypts (key present) and sees the member — this
+    // is the truth the op-store must match.
     let dag_ops = ScopeProjections::collect_namespace_ops(&store, ns_bytes).unwrap();
     let mut p_dag = ScopeProjections::new();
     p_dag.apply_backfill(ns_bytes, dag_ops);
     let dag_member = p_dag.member_at_cut(&store, ns, &member, &heads);
-
-    let store_ops = load_scope_ops(&store, &ScopeId::from(ns_bytes)).unwrap();
-    let mut p_store = ScopeProjections::new();
-    p_store.apply_backfill(ns_bytes, store_ops);
-    let store_member = p_store.member_at_cut(&store, ns, &member, &heads);
-
-    // Sanity: the governance-DAG walk re-decrypts and DOES see the member.
     assert_eq!(
         dag_member,
         Some(true),
         "governance-DAG reconstruction should re-decrypt the MemberAdded and see the member"
     );
 
-    // The invariant the flip needs: the op-store reconstruction must agree. It does
-    // NOT today — it froze a Noop, so the member is missing. This is the joiner-write
-    // divergence that broke sync when the read-flip was live.
+    // BEFORE the fix: the op-store froze a Noop, so its reconstruction drops the
+    // member — the joiner-write divergence that broke sync when the flip was live.
     assert_eq!(
-        store_member, dag_member,
-        "op-store reconstruction must match the governance-DAG reconstruction; the op-store froze \
-         a Noop for the encrypted MemberAdded (key absent at apply) while collect re-decrypted it \
-         (key present at read) — flipping onto the op-store drops the member"
+        store_membership(&store),
+        Some(false),
+        "precondition: the op-store froze the encrypted MemberAdded as a Noop"
+    );
+
+    // THE FIX: a key delivery re-persists the namespace's ops with current
+    // decryption, overwriting the frozen Noop with the real MemberAdded.
+    ScopeProjections::repersist_namespace_ops(&store, ns_bytes);
+
+    // AFTER: the op-store reconstruction now matches the governance-DAG fold.
+    assert_eq!(
+        store_membership(&store),
+        dag_member,
+        "after key delivery the op-store must reconstruct the same membership as the governance \
+         DAG; repersist_namespace_ops should have overwritten the frozen Noop with the MemberAdded"
     );
 }
