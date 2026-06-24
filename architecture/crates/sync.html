@@ -499,9 +499,40 @@
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">SnapshotChunk</span>(PageData),<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">DeltaEntries</span>(Vec&lt;CausalDelta&gt;),<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">BloomFilter</span>(BloomData),<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// DagHeadsResponse carries an optional governance scope root</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// None = responder could not fold scope (non-group ctx or store fault)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">DagHeadsResponse</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">scope_root</span>: <span class="ty">Option</span>&lt;Hash&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;},<br>
 }
     </div>
   </div>
+</div>
+
+<h3>scope_root Shadow Divergence</h3>
+<div class="cb" style="margin-bottom:16px; border-left:3px solid #06b6d4; padding-left:14px;">
+  <h4 style="color:#06b6d4; margin-bottom:8px;"><span class="code">local_scope_root</span> helper &amp; <span class="code">scope_root_shadow_divergence</span> marker</h4>
+  <p style="margin-bottom:10px;">A new private helper <span class="code">local_scope_root</span> looks up the group that owns a context and then calls <span class="code">ScopeProjections::group_scope_root_ephemeral</span> to fold the current governance scope root. Returns <span class="code">None</span> for non-group contexts or store faults. A <code>TODO(perf, C1+)</code> note marks the current full DAG walk per session as temporary — it should be replaced with a read from the maintained projection before C1 makes this path load-bearing.</p>
+  <p style="margin-bottom:10px;"><span class="code">DagHeadsResponse</span> gains a <span class="code">scope_root: Option&lt;Hash&gt;</span> field. The responder side in <strong>delta_request.rs</strong> and <strong>hash_comparison.rs</strong> calls <span class="code">local_scope_root</span> and includes the result in every <span class="code">DagHeadsResponse</span> sent. The deterministic sync simulator in <strong>hash_comparison_protocol.rs</strong> sends <span class="code">None</span> because it has no governance projection.</p>
+  <p style="margin-bottom:10px;"><span class="code">query_peer_current_root</span> now returns <span class="code">(root_hash, Option&lt;scope_root&gt;)</span>. After the HC session completes, when local and peer <em>entity</em> roots agree (the old convergence signal), the initiator folds its own <span class="code">scope_root</span> via <span class="code">local_scope_root</span> and compares it against the peer's. A mismatch emits a <span class="code">WARN</span> log tagged with the marker <span class="code">scope_root_shadow_divergence</span>, logging 8-byte hex prefixes of the entity root and both scope roots. No sync decision is altered by this comparison.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Resolves the governance scope root for a context (SyncManager)</span><br>
+<span class="comment">// TODO(perf, C1+): replace full DAG walk with maintained-projection read</span><br>
+<span class="kw">fn</span> <span class="field">local_scope_root</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;store: &amp;<span class="ty">Store</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;context_id: <span class="ty">ContextId</span>,<br>
+) -&gt; <span class="ty">Option</span>&lt;Hash&gt;<br><br>
+<span class="comment">// Returns entity root + optional governance scope root</span><br>
+<span class="kw">async fn</span> <span class="field">query_peer_current_root</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;peer_id: <span class="ty">PeerId</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;context_id: <span class="ty">ContextId</span>,<br>
+) -&gt; <span class="ty">Result</span>&lt;(Hash, <span class="ty">Option</span>&lt;Hash&gt;)&gt;<br><br>
+<span class="comment">// WARN emitted when entity roots agree but scope roots differ:</span><br>
+<span class="comment">// marker=scope_root_shadow_divergence</span><br>
+<span class="comment">// entity_root=&lt;8-byte hex&gt;, local_scope=&lt;8-byte hex&gt;, peer_scope=&lt;8-byte hex&gt;</span>
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> The <span class="code">scope_root</span> field is additive and optional — responders that cannot fold the scope send <span class="code">None</span>, and the initiator skips the shadow comparison in that case, so the protocol is fully backward compatible. Log aggregators should watch for the <span class="code">scope_root_shadow_divergence</span> WARN marker: a hit on a converged-entities scenario indicates real governance divergence that was hidden by the old entity-root-only signal. Downstream code matching on <span class="code">MessagePayload::DagHeadsResponse</span> must be updated to handle or ignore the new <span class="code">scope_root</span> field.</p>
 </div>
 </div>
 

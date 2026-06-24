@@ -28,6 +28,7 @@
     { label: 'Release Process', href: 'release.html', dot: '#10b981' },
     { label: 'Auth Service', href: 'crates/auth.html', dot: '#84cc16' },
     { section: 'Architecture Deep-Dive' },
+{ label: 'Document C0 shadow plan in unified-causal-log cutover design doc', href: 'unified-causal-log-cutover-plan.html', dot: '#10b981' },
 { label: 'Add AuthoredMap and AuthoredVector fields to abi_conformance app', href: 'abi-conformance.html', dot: '#10b981' },
     { label: 'System Overview', href: 'system-overview.html', dot: '#3b82f6' },
     { label: 'Local Governance', href: 'local-governance.html', dot: '#10b981' },
