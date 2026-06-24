@@ -579,7 +579,19 @@ async fn run_initiator_impl<T: SyncTransport>(
         .await
         {
             Ok(Some((root, scope_root))) => (root, scope_root),
-            Ok(None) | Err(_) => (remote_root_hash, None),
+            // Older peer that doesn't answer the re-query — expected, quiet.
+            Ok(None) => (remote_root_hash, None),
+            // Transport fault on the re-query: distinct from the older-peer case, so
+            // log it (a persistent fault degrades the verdict to the stale handshake
+            // root and would otherwise masquerade as a quiet version mismatch).
+            Err(e) => {
+                debug!(
+                    %context_id, %e,
+                    "LevelWise: end-of-session peer re-query failed; \
+                     falling back to the handshake root for the convergence check"
+                );
+                (remote_root_hash, None)
+            }
         };
 
     // Close the transport to signal completion
