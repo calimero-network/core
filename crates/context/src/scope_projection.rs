@@ -329,6 +329,44 @@ impl ScopeProjections {
         Some(ScopeState::acl_view_at(log, parents))
     }
 
+    /// The convergence `scope_root` for `scope`, folding this scope's ACL +
+    /// governance (membership / admin / policy / subgroups) onto the
+    /// **externally-supplied storage Merkle `entities_root`**. `None` when the
+    /// scope isn't folded yet — callers MUST treat that as "can't compare",
+    /// never as a divergence (a cold projection would otherwise read as a false
+    /// mismatch).
+    ///
+    /// This is the unified-causal-log convergence signal (cutover plan C0/C1):
+    /// a hash-neutral writer/membership rotation (identical `entities_root`,
+    /// different ACL/governance) yields a different `scope_root`, so sync can
+    /// never declare "converged" while authorization disagrees. `entities_root`
+    /// MUST be the storage Merkle root, not the projection's own entity hash —
+    /// see [`ScopeState::scope_root_with_entities`]'s caller contract.
+    #[must_use]
+    pub fn scope_root_for(&self, scope: &ScopeId, entities_root: [u8; 32]) -> Option<[u8; 32]> {
+        self.states
+            .get(scope)
+            .map(|state| state.scope_root_with_entities(entities_root))
+    }
+
+    /// [`scope_root_for`](Self::scope_root_for) from an EPHEMERAL fold built fresh
+    /// from the store, resolving the namespace scope from a `group`. For sync sites
+    /// that hold a `Store` but not the node's maintained projection — the C0
+    /// scope_root shadow runs on both the HC initiator (which has no `NodeState`)
+    /// and the responder, so folding from the store keeps the two sides symmetric.
+    /// `None` for a non-group context or a store/DAG fault (caller skips the
+    /// comparison, never treats it as divergence). One per-session fold; the shadow
+    /// runs once per HC session, so the cost is acceptable.
+    #[must_use]
+    pub fn group_scope_root_ephemeral(
+        store: &Store,
+        group: &ContextGroupId,
+        entities_root: [u8; 32],
+    ) -> Option<[u8; 32]> {
+        let (proj, namespace_id, _heads) = Self::ephemeral_projection(store, group)?;
+        proj.scope_root_for(&ScopeId::from(namespace_id), entities_root)
+    }
+
     /// Is the full causal ancestry of `parents` folded in `scope`'s log (no
     /// truncation)? `false` if the scope is unfed or any ancestor is missing.
     /// The authoritative-grant gate (see [`member_at_cut_authoritative`]).
@@ -1700,6 +1738,66 @@ mod tests {
         assert!(reg
             .acl_view_at(&ScopeId::from([0xEE; 32]), &[add.id])
             .is_none());
+    }
+
+    #[test]
+    fn scope_root_for_moves_on_hash_neutral_membership_change_and_is_none_when_unfolded() {
+        let scope = ScopeId::from([0u8; 32]);
+        let group = ContextGroupId::from([3u8; 32]);
+        let admin = PublicKey::from([1u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+        // A FIXED storage entity root — the data plane never changes in this test,
+        // so any movement in scope_root comes purely from the governance plane.
+        let entities_root = [0x42u8; 32];
+
+        let build = |ns: u64, parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
+            let h = hlc(ns);
+            let id = Op::compute_id(scope, &parents, &admin, &h, &payload);
+            Op {
+                id,
+                scope,
+                parents,
+                author: admin,
+                hlc: h,
+                payload,
+                expected_scope_root: [0u8; 32],
+                signature: [0u8; 64],
+            }
+        };
+
+        // An unfolded scope can't be compared — None, never a false divergence.
+        let reg = ScopeProjections::new();
+        assert_eq!(reg.scope_root_for(&scope, entities_root), None);
+
+        let mut reg = ScopeProjections::new();
+        reg.ingest_op(&build(
+            10,
+            vec![],
+            OpPayload::AdminChanged { new_admin: admin },
+        ));
+        let before = reg
+            .scope_root_for(&scope, entities_root)
+            .expect("scope fed");
+
+        // A membership add is hash-neutral on the entity root but MUST move
+        // scope_root — the whole point of folding governance into the signal.
+        reg.ingest_op(&build(
+            20,
+            vec![],
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Member,
+            },
+        ));
+        let after = reg
+            .scope_root_for(&scope, entities_root)
+            .expect("scope fed");
+
+        assert_ne!(
+            before, after,
+            "a hash-neutral membership change must move scope_root"
+        );
     }
 
     #[test]

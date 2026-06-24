@@ -701,6 +701,15 @@ impl SyncManager {
             "Sending DAG heads to peer"
         );
 
+        // C0 scope_root shadow: fold our governance projection's ACL + membership
+        // onto the entity root so the requester can detect a hash-neutral rotation
+        // the bare `root_hash` hides. `None` (non-group / cold projection) ⇒ skip.
+        // Observe-only.
+        let datastore = self.context_client.datastore_handle().into_inner();
+        let scope_root =
+            super::helpers::local_scope_root(&datastore, &context_id, *context.root_hash)
+                .map(calimero_primitives::hash::Hash::from);
+
         // Send response
         let mut sqx = Sequencer::default();
         let msg = StreamMessage::Message {
@@ -708,6 +717,7 @@ impl SyncManager {
             payload: MessagePayload::DagHeadsResponse {
                 dag_heads: context.dag_heads,
                 root_hash: context.root_hash,
+                scope_root,
             },
             next_nonce: super::helpers::generate_nonce(),
         };

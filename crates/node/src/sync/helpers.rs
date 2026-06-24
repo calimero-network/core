@@ -34,6 +34,36 @@ pub fn get_local_root_hash_for_context(context_id: ContextId) -> Result<[u8; 32]
     }
 }
 
+/// This node's `scope_root` for `context_id` at `entities_root` (the storage
+/// Merkle root): resolve the context's owning group, then fold the governance
+/// projection's ACL + membership/admin hashes onto `entities_root`
+/// ([`ScopeProjections::group_scope_root_ephemeral`]).
+///
+/// Folds an EPHEMERAL projection from the `store` (rather than the node's
+/// maintained one) so the HC initiator — which has the store but no `NodeState` —
+/// and the responder compute the signal the same way. `None` for a non-group
+/// context (no governance plane to fold) or a store/DAG fault — the caller MUST
+/// then **skip** the scope_root shadow comparison, never read it as a divergence
+/// (unified-causal-log cutover C0).
+///
+/// **Observe-only in C0:** the result is logged for the hash-neutral-rotation
+/// shadow, never fed into any sync decision. C1 promotes it to the authoritative
+/// convergence signal (and switches to the maintained projection).
+pub(crate) fn local_scope_root(
+    store: &Store,
+    context_id: &ContextId,
+    entities_root: [u8; 32],
+) -> Option<[u8; 32]> {
+    let group = calimero_context::group_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    calimero_context::scope_projection::ScopeProjections::group_scope_root_ephemeral(
+        store,
+        &group,
+        entities_root,
+    )
+}
+
 /// Validates that peer's application ID matches ours.
 ///
 /// # Errors
