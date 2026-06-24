@@ -50,7 +50,7 @@
 <p class="page-subtitle">Every key/value type across all 11 columns with byte layouts</p>
 
 <div class="g4" style="margin-bottom:36px;">
-  <div class="stat"><div class="v">11</div><div class="l">column families</div></div>
+  <div class="stat"><div class="v">12</div><div class="l">column families</div></div>
   <div class="stat"><div class="v">26</div><div class="l">group prefixes</div></div>
   <div class="stat"><div class="v">Borsh</div><div class="l">default codec</div></div>
   <div class="stat"><div class="v">RocksDB</div><div class="l">storage engine</div></div>
@@ -75,7 +75,8 @@
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Application</span>,&nbsp;&nbsp;&nbsp;<span class="comment">// WASM binaries + metadata</span><br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Alias</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// human-readable name → id</span><br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Generic</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// uncategorized data</span><br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Group</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// governance: 20 prefix-partitioned sub-namespaces</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;    <span class="field">Group</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// governance: 20 prefix-partitioned sub-namespaces</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">UnifiedOp</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// durable backing store for the unified causal op-log</span><br>
 }
 </div>
 </div>
@@ -85,7 +86,7 @@
      ════════════════════════════════════════════════════════ -->
 <div class="card gb">
 <h2>Context Column Types</h2>
-<p style="margin-bottom:18px;">Key/value types for the columns that store per-context data: metadata, configuration, shared state, private state, identity, and deltas.</p>
+<p style="margin-bottom:18px;">Key/value types for the columns that store per-context data: metadata, configuration, shared state, private state, identity, deltas, and the unified op-log.</p>
 
 <h3>Meta Column</h3>
 <table class="schema-table">
@@ -181,10 +182,36 @@
   <td class="sl"><span class="byte-layout"><span class="seg seg-id">context_id (32)</span><span class="plus">+</span><span class="seg seg-id2">delta_id (32)</span></span></td>
   <td class="sv">ContextDagDeltaValue</td>
   <td class="sc">Borsh</td>
-  <td class="sd">Causal delta with parents, actions, and verification data</td>
+  <td class="sd">Causal delta with parents, actions, and verification data. Legacy column — retired at C2.5 in favour of <span class="sk">UnifiedOp</span>.</td>
 </tr>
 </tbody>
 </table>
+
+<h3>UnifiedOp Column</h3>
+<p style="margin-bottom:12px;">The <code>Column::UnifiedOp</code> column is the durable backing store for the unified causal op-log introduced in C2. It is a distinct column from <code>Column::Delta</code> to prevent key collisions during the dual-write transition period; legacy <code>Delta</code> rows are retired at C2.5. <code>calimero_store</code> carries no dependency on <code>calimero_op</code> — the value is stored as raw Borsh bytes with an Identity codec and decoded by callers.</p>
+<table class="schema-table">
+<thead><tr><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Codec</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sk">ScopeUnifiedOpKey</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-id">scope (32)</span><span class="plus">+</span><span class="seg seg-id2">op_id (32)</span></span></td>
+  <td class="sv">ScopeUnifiedOpValue</td>
+  <td class="sc">Identity</td>
+  <td class="sd">Unified causal op entry. <code>scope</code> is the context or group ID; <code>op_id</code> is the 32-byte op hash. Value wraps raw Borsh bytes of a <code>calimero_op::SignedOp</code> — decoded outside <code>calimero_store</code> to avoid a circular dependency.</td>
+</tr>
+</tbody>
+</table>
+
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">ScopeUnifiedOpKey</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">scope</span>: [u8; 32],&nbsp;&nbsp;<span class="comment">// context_id or group_id — the logical scope of this op</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">op_id</span>: [u8; 32],&nbsp;&nbsp;<span class="comment">// 32-byte hash uniquely identifying the op</span><br>
+}&nbsp;&nbsp;<span class="comment">// Size = U64 (no prefix byte — distinct column provides isolation)</span><br>
+<br>
+<span class="kw">struct</span> <span class="ty">ScopeUnifiedOpValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">bytes</span>: Vec&lt;u8&gt;,&nbsp;&nbsp;<span class="comment">// raw borsh(SignedOp) — Identity codec, zero extra serialization</span><br>
+}
+</div>
 
 <div class="typedef">
 <span class="kw">struct</span> <span class="ty">ContextDagDeltaValue</span> {<br>
