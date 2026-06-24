@@ -306,6 +306,23 @@ impl ScopeProjections {
         // O(1) dedup: `insert` is true only for a not-yet-seen id.
         if self.seen.entry(op.scope).or_default().insert(op.id) {
             self.logs.entry(op.scope).or_default().push(op.clone());
+        } else if !matches!(op.payload, OpPayload::Noop) {
+            // Already seen, but `op.id` is the SIGNED op's content hash, not the decoded
+            // payload's — so an encrypted op first folded as `Noop` (applied before its
+            // group key arrived) shares an id with its later, decrypted form. The op-log
+            // is what the at-cut auth view (`acl_view_at` → `member_at_cut`) folds, so a
+            // stale `Noop` left here drops the late-decrypted membership even after the
+            // op-store is corrected. Upgrade the log entry in place when a non-`Noop`
+            // payload arrives for a previously-`Noop` id; never downgrade (decryption
+            // only adds info).
+            if let Some(log) = self.logs.get_mut(&op.scope) {
+                if let Some(existing) = log
+                    .iter_mut()
+                    .find(|e| e.id == op.id && matches!(e.payload, OpPayload::Noop))
+                {
+                    *existing = op.clone();
+                }
+            }
         }
     }
 
@@ -385,33 +402,37 @@ impl ScopeProjections {
         Ok(proj.scope_root_for(scope, [0u8; 32]))
     }
 
-    /// The governance ops to fold for `namespace_id`.
+    /// The governance ops to fold for `namespace_id` — cutover C3 Stage 4 read-flip.
     ///
-    /// The C2.2b read-flip (make the unified op-store the projection's authoritative
-    /// backing via [`load_scope_ops`](crate::unified_op_store::load_scope_ops)) is
-    /// DEFERRED: flipping the read onto the op-store broke convergence in the
-    /// maintainer's e2e — group-3node / scaffolding-e2e / shared-storage rotation all
-    /// timed out on the joiner's post-write sync.
+    /// The unified **op-store** is the projection's authoritative backing now:
+    /// [`load_scope_ops`](crate::unified_op_store::load_scope_ops). Falls back to the
+    /// governance-DAG walk ([`collect_namespace_ops`](Self::collect_namespace_ops))
+    /// only when the op-store has no rows for this scope (a cold namespace not yet
+    /// dual-written under an upgrade) or can't be read — a transitional safety net that
+    /// retires with `collect_namespace_ops` at C5.
     ///
-    /// ROOT CAUSE (pinned deterministically by `tests/op_store_reconstruction.rs`):
-    /// an encrypted group `MemberAdded` can apply to the governance DAG BEFORE its
-    /// group key arrives (keys lag on a separate delivery path; see the
-    /// buffer-awaiting-key replay in `apply_group_op_inner`). The apply-time
-    /// dual-write then decrypts with no key, so the op is frozen into the op-store as
-    /// a `Noop`. `collect_namespace_ops` RE-DECRYPTS the same op at read time once the
-    /// key lands and recovers the real `MemberAdded`, but the op-store still holds the
-    /// `Noop` — so reading membership from the op-store drops the member, the joiner's
-    /// writes are rejected, and sync never converges. `scope_root` doesn't surface it
-    /// because at shadow time neither side has decrypted yet (both `Noop` → roots
-    /// match); the divergence only appears after the key arrives.
-    ///
-    /// Until the op-store faithfully reconstructs late-decrypted membership (e.g.
-    /// re-persist on the key-arrival replay, or re-decrypt on load) this stays on the
-    /// governance DAG, the proven-correct source. The op-store keeps being
-    /// dual-written.
+    /// This flip is safe BY CONSTRUCTION, unlike the three earlier attempts that timed
+    /// out in e2e: C3 Stages 1-3 made every governance apply path write the op-store
+    /// (receive + local namespace + local group authoring), and the Stage 0
+    /// completeness gate (`op_store_incomplete`) proves the op-store mirrors the gov-DAG
+    /// across the e2e matrix before this flips. Late-decrypted membership is kept
+    /// faithful by the key-delivery re-persist + the maintained projection's op-log
+    /// upgrade ([`ingest_op`](Self::ingest_op)).
     #[must_use]
     pub fn ops_for_namespace(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
-        Self::collect_namespace_ops(store, namespace_id)
+        let scope = ScopeId::from(namespace_id);
+        match crate::unified_op_store::load_scope_ops(store, &scope) {
+            Ok(ops) if !ops.is_empty() => Some(ops),
+            Ok(_) => Self::collect_namespace_ops(store, namespace_id),
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    namespace = ?namespace_id,
+                    "op-store load failed; falling back to the governance-DAG fold"
+                );
+                Self::collect_namespace_ops(store, namespace_id)
+            }
+        }
     }
 
     /// [`scope_root_for`](Self::scope_root_for) from an EPHEMERAL fold built fresh
