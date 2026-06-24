@@ -1671,6 +1671,103 @@ module-level doc comment in the test file explains the full bug chain and the fi
   a <code>repersist_namespace_ops</code> call.</li>
 </ul>
 </div>
+<div class="card gb"><h2><code>ScopeProjections::persist_namespace_head_ops</code> — mirroring authored ops into the op-store</h2>
+
+<p>
+After a local authoring step publishes a governance op (<code>GroupCreated</code>,
+<code>GroupDeleted</code>, <code>MemberJoinedOpen</code>), the unified op-store must be updated so
+that any subsequent <code>load_scope_ops</code>-based projection rebuild sees the authored op
+without relying on a peer retransmission. The method
+<code>ScopeProjections::persist_namespace_head_ops(store, namespace_id)</code> is the single
+call site for this update.
+</p>
+
+<h3>Why not a heads-only walk</h3>
+<p>
+A naive implementation would read the namespace's current DAG heads immediately after publish and
+persist only those ops. This races: if a concurrent peer op is applied between the local
+<code>publish</code> call and the heads read, the head record advances past the just-authored op.
+The authored op is then unreachable from a heads-only walk and is silently omitted from the
+op-store. The member or group it describes disappears from any rebuild that sources ops from
+<code>load_scope_ops</code>.
+</p>
+
+<h3>Implementation — full gov-DAG fold via <code>repersist_namespace_ops</code></h3>
+<p>
+<code>persist_namespace_head_ops</code> delegates unconditionally to
+<code>repersist_namespace_ops</code>, which performs a full
+<code>collect_namespace_ops</code>-backed fold bounded by <code>MAX_BACKFILL_OPS</code>. This
+walk is read-time decryption-aware, so an authored op that was encrypted at publish time is
+decoded here and written to the op-store with its actual payload (not as <code>Noop</code>). The
+walk captures the authored op regardless of where it landed in the DAG relative to concurrent
+peer ops, because <code>collect_namespace_ops</code> traverses the full ancestry from the current
+head rather than just the head itself.
+</p>
+<p>
+The call is:
+</p>
+<ul>
+  <li><strong>Idempotent.</strong> <code>persist_op</code> is content-addressed by op id; calling
+  it twice for the same op is a no-op.</li>
+  <li><strong>Best-effort.</strong> Errors are logged by <code>repersist_namespace_ops</code>
+  (using the same <code>tracing::warn</code> paths as the key-delivery re-persist) and are
+  never propagated. A failure to update the op-store never causes the authoring step to return
+  an error to the caller.</li>
+  <li><strong>Bounded.</strong> The walk is capped at <code>MAX_BACKFILL_OPS</code>, the same
+  limit used by every other <code>collect_namespace_ops</code>-backed path. An unusually large
+  namespace cannot cause an unbounded fold at authoring time.</li>
+</ul>
+
+<h3>Wired call sites</h3>
+<p>
+The method is called after the governance op is successfully reported or applied, never before.
+A failure at the authoring step is not affected:
+</p>
+<ul>
+  <li><strong><code>create_group</code></strong> — called after <code>GroupCreated</code> is
+  successfully reported to the governance pipeline.</li>
+  <li><strong><code>delete_group</code></strong> — called after <code>GroupDeleted</code> is
+  applied.</li>
+  <li><strong><code>join_context</code></strong> — called after the <code>MemberJoinedOpen</code>
+  op is published. The call is skipped (effectively a no-op path) if the publish or apply step
+  errored.</li>
+  <li><strong><code>join_subgroup_inheritance</code></strong> — called after
+  <code>MemberJoinedOpen</code> is published, following the same skip-on-error pattern.</li>
+</ul>
+
+<h3>Regression test</h3>
+<p>
+The test
+<code>persist_namespace_head_ops_lands_locally_authored_op_in_the_op_store</code> in
+<code>crates/context/tests/op_store_reconstruction.rs</code> verifies the full round-trip:
+</p>
+<ol>
+  <li>An encrypted <code>MemberAdded</code> op is injected into the governance DAG (op-log +
+  DAG head) but <em>not</em> into the op-store, simulating the local-author gap.</li>
+  <li>The test asserts that <code>load_scope_ops</code> returns no entry for the op before the
+  call — confirming the gap exists.</li>
+  <li><code>persist_namespace_head_ops</code> is called.</li>
+  <li>The test asserts the op now appears in the op-store.</li>
+  <li>A fresh projection is folded from the op-store contents and
+  <code>member_at_cut</code> is called. The test asserts it returns <code>Some(true)</code> —
+  proving the encrypted payload was decoded correctly, not merely that the op id was recorded.</li>
+</ol>
+<p>
+The test runs without <code>#[ignore]</code> in CI and is the readiness gate for any future flip
+of <code>ops_for_namespace</code> to source from <code>load_scope_ops</code> at authoring call
+sites.
+</p>
+
+<h3>Relationship to <code>repersist_namespace_ops</code></h3>
+<p>
+<code>repersist_namespace_ops</code> was introduced to recover late-decrypted
+<code>MemberAdded</code> ops after key delivery (see the deferred op-store read-flip section
+above). <code>persist_namespace_head_ops</code> reuses that same mechanism for a different trigger
+— local authoring — ensuring both the key-delivery path and the authoring path produce a
+consistent op-store state. The two call sites share the same underlying fold, the same error
+handling, and the same <code>MAX_BACKFILL_OPS</code> bound.
+</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
