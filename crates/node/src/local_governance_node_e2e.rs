@@ -612,10 +612,10 @@ fn provision_tee_owner_with_sk(
 /// `OpEvent::SubgroupCreated` — the event the `tee_subgroup_admit` subscriber
 /// reacts to. We deliberately do NOT hand-roll the op or hand-insert the key.
 ///
-/// Subgroups have no explicit visibility field on `CreateGroupRequest`; subgroup
-/// visibility defaults to `Restricted` when unset (see
-/// `CapabilitiesRepository::subgroup_visibility`), so a freshly-created subgroup
-/// is Restricted, which is exactly what this path exercises.
+/// Passes `restricted: true` on `CreateGroupRequest` (born-Restricted, #2771);
+/// subgroup visibility also defaults to `Restricted` when the key is absent (see
+/// `CapabilitiesRepository::subgroup_visibility`), so this path exercises a
+/// Restricted subgroup.
 ///
 /// Returns the new subgroup's `ContextGroupId`.
 async fn create_restricted_subgroup(
@@ -662,6 +662,7 @@ async fn create_restricted_subgroup(
             upgrade_policy: UpgradePolicy::Automatic,
             name: Some("restricted-sub".to_owned()),
             parent_group_id: Some(*parent_ns),
+            restricted: true,
         })
         .await
         .expect("create_group");
@@ -706,6 +707,65 @@ async fn create_open_subgroup(
         .expect("set_subgroup_visibility(Open)");
 
     sub_gid
+}
+
+/// Create a **born-Open** subgroup nested under `parent_ns` in ONE op (#2771).
+///
+/// Unlike [`create_open_subgroup`] (which creates Restricted then flips via a
+/// separate `SubgroupVisibilitySet`), this goes through the real
+/// `ContextClient::create_group` path with `restricted: false`, so
+/// `RootOp::GroupCreated { restricted: false }` writes the Open visibility key
+/// DURING apply — before `OpEvent::SubgroupCreated` is drained. The subgroup is
+/// therefore already Open when `tee_subgroup_admit` reacts, so the subscriber
+/// skips it (the TEE reads via inheritance) and no transient direct
+/// `ReadOnlyTee` row is left behind. Mirrors [`create_restricted_subgroup`]'s
+/// `sample_meta`-derived application row.
+///
+/// Returns the new subgroup's `ContextGroupId`.
+async fn create_born_open_subgroup(
+    node: &TestNode,
+    parent_ns: &ContextGroupId,
+    rng: &mut OsRng,
+) -> ContextGroupId {
+    let app_id = ApplicationId::from([0xCCu8; 32]);
+    let app_meta = ApplicationMetaValue::new(
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0xDDu8; 32])),
+        0,
+        "test://app".into(),
+        Box::new([]),
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0xDDu8; 32])),
+        calimero_store::types::PackageInfo {
+            package: "test-package".into(),
+            version: "0.0.0".into(),
+            signer_id: "test-signer".into(),
+        },
+    );
+    node.store
+        .handle()
+        .put(
+            &calimero_store::key::ApplicationMeta::new(app_id),
+            &app_meta,
+        )
+        .expect("seed application meta");
+
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(rng).public_key());
+
+    let resp = node
+        .context_client
+        .create_group(CreateGroupRequest {
+            group_id: Some(sub_gid),
+            app_key: None,
+            application_id: app_id,
+            upgrade_policy: UpgradePolicy::Automatic,
+            name: Some("born-open-sub".to_owned()),
+            parent_group_id: Some(*parent_ns),
+            // Born-Open: visibility carried atomically on GroupCreated (#2771).
+            restricted: false,
+        })
+        .await
+        .expect("create_group(born-open)");
+
+    resp.group_id
 }
 
 /// Poll `cond` until it returns true or the deadline elapses. The admission
@@ -1489,6 +1549,180 @@ async fn restricted_subgroup_created_admits_existing_tee_member() {
     );
 }
 
+/// In-process guard for r2 (`tee-r2-open-no-direct-row`, #2771): with a TEE node
+/// admitted at the namespace ROOT and the `tee_subgroup_admit` subscriber
+/// RUNNING (not shut down), creating a **born-Open** subgroup in ONE op
+/// (`RootOp::GroupCreated { restricted: false }`) must NOT leave a transient
+/// direct `ReadOnlyTee` row in the subgroup — because the visibility key is
+/// written during apply, before `OpEvent::SubgroupCreated` is drained, so the
+/// subgroup is already Open when the subscriber reacts and
+/// `is_open_chain_to_namespace` returns true, making the subscriber skip it.
+///
+/// This is the exact inverse of `restricted_subgroup_created_admits_existing_tee_member`
+/// (which asserts the subscriber DOES admit into a Restricted subgroup). The old
+/// create-Restricted-then-flip-Open path admitted the TEE during the
+/// Restricted birth-window and left the row behind after the flip — the
+/// redundant row #2771 eliminates.
+///
+/// Assertions:
+///   (a) NO direct membership row for the TEE in the born-Open subgroup
+///       (`has_direct_member == false` / `role_of == None`), even though the
+///       subscriber was live the whole time, and
+///   (b) the TEE still REPLICATES the subgroup's context via inheritance: with
+///       this node's namespace identity pointed at the root-admitted TEE, the
+///       inheritance-aware auto-follow gate auto-joins the context registered in
+///       the born-Open subgroup (durable proof: `has_context`).
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x97u8; 32]);
+    // The owner provisions the namespace (admin, identity, TEE policy); the
+    // born-Open create goes through the namespace identity, not `owner_pk`.
+    let _owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // 1) Admit a TEE node at the namespace ROOT via the announce path. Keep the
+    //    TEE secret key: after the born-Open subgroup exists we re-point THIS
+    //    node's namespace identity to the TEE so the auto-follow joiner IS the
+    //    inherited-only TEE (no direct subgroup row), the inheritance path.
+    let tee_sk = PrivateKey::random(&mut rng);
+    let tee_pk = tee_sk.public_key();
+    let nonce = [0x7Fu8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+    assert!(
+        wait_until(
+            || calimero_context::group_store::MembershipRepository::new(&node.store)
+                .is_member(&ns_gid, &tee_pk)
+                .unwrap_or(false)
+        )
+        .await,
+        "TEE node must be admitted at the namespace root first"
+    );
+
+    // 2) Rebind the PROCESS-GLOBAL `tee_subgroup_admit` subscriber to THIS
+    //    node's store/client and KEEP IT RUNNING. Unlike the
+    //    Open-via-flip tests (which shut it down to dodge the
+    //    Restricted-birth-window race), the born-Open fix means the subscriber
+    //    can run freely: the subgroup is Open at `SubgroupCreated` time, so the
+    //    subscriber correctly skips it. Leaving it live is the whole point —
+    //    it's the guard that proves no transient row is written. (`shutdown` +
+    //    `spawn` because `spawn` alone is first-wins and won't rebind; `spawn`
+    //    subscribes synchronously before returning.)
+    calimero_context::tee_subgroup_admit::shutdown();
+    calimero_context::tee_subgroup_admit::spawn(node.store.clone(), node.context_client.clone());
+
+    // 3) Create a BORN-OPEN subgroup in ONE op (restricted: false). The
+    //    visibility key is written during apply, before SubgroupCreated drains.
+    let open_sub = create_born_open_subgroup(&node, &ns_gid, &mut rng).await;
+
+    // Sanity: the subgroup really is Open at the chain level (the property the
+    // subscriber checks).
+    assert!(
+        calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+            .is_open_chain_to_namespace(&open_sub, &ns_gid)
+            .expect("is_open_chain_to_namespace"),
+        "born-Open subgroup must form an Open chain to the namespace root \
+         immediately at create time"
+    );
+
+    // 4) (a) NO direct row for the TEE in the born-Open subgroup — assert it
+    //    HOLDS even after giving the live subscriber ample time to (wrongly)
+    //    write one. We poll for the *absence*: if a transient row were ever
+    //    written, this would observe it.
+    for _ in 0..20 {
+        assert!(
+            !calimero_context::group_store::MembershipRepository::new(&node.store)
+                .has_direct_member(&open_sub, &tee_pk)
+                .unwrap(),
+            "tee-r2: the TEE must have NO direct membership row in a born-Open \
+             subgroup — the subscriber must skip Open subgroups (TEE reads via \
+             inheritance)"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .role_of(&open_sub, &tee_pk)
+            .expect("role_of"),
+        None,
+        "tee-r2: role_of(born_open_sub, TEE) must be None (no direct row)"
+    );
+
+    // 5) (b) Inheritance-replication still works. Re-point THIS node's namespace
+    //    identity to the root-admitted TEE (inherited-only member of the
+    //    subgroup), bind the auto-follow handler, register a context in the
+    //    born-Open subgroup, and assert the TEE auto-joins it via inheritance.
+    calimero_context::group_store::NamespaceRepository::new(&node.store)
+        .store_identity(&ns_gid, &tee_pk, &tee_sk, &[0u8; 32])
+        .expect("re-point namespace identity to the TEE");
+
+    calimero_context::auto_follow::shutdown();
+    calimero_context::auto_follow::spawn(node.store.clone(), node.context_client.clone());
+
+    // Make the subgroup's application a `calimero://` STUB so `join_context`'s
+    // bootstrap is install-skipped and writes `ContextMeta` (the observable),
+    // exactly as `root_admitted_tee_auto_follows_open_subgroup_context` does.
+    let app_id = ApplicationId::from([0xCCu8; 32]);
+    let stub_blob =
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0u8; 32]));
+    let stub_meta = ApplicationMetaValue::new(
+        stub_blob,
+        0,
+        "calimero://stub-app".into(),
+        Box::new([]),
+        stub_blob,
+        calimero_store::types::PackageInfo {
+            package: "stub-package".into(),
+            version: "0.0.0".into(),
+            signer_id: "stub-signer".into(),
+        },
+    );
+    node.store
+        .handle()
+        .put(
+            &calimero_store::key::ApplicationMeta::new(app_id),
+            &stub_meta,
+        )
+        .expect("seed stub application meta");
+
+    let context_id = calimero_primitives::context::ContextId::from([0xC1u8; 32]);
+    calimero_context::group_store::register_context_in_group(&node.store, &open_sub, &context_id)
+        .expect("register context -> born-open subgroup");
+
+    let replicating = wait_until(|| {
+        calimero_governance_store::op_events::notify(
+            calimero_governance_store::op_events::OpEvent::ContextRegistered {
+                group_id: open_sub.to_bytes(),
+                context_id,
+            },
+        );
+        node.context_client
+            .has_context(&context_id)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        replicating,
+        "tee-r2: root-admitted TEE (inherited-only born-Open-subgroup member, no \
+         direct row) must still auto-follow (replicate) the subgroup's context via \
+         the inheritance-aware auto-follow gate"
+    );
+}
+
 /// End-to-end join-into-existing path (proposal.md §12d, Phase 1): a
 /// **Restricted** subgroup already exists on this node (it holds the subgroup
 /// key) when a TEE node is then admitted at the namespace root. An
@@ -1589,6 +1823,475 @@ async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
     );
 }
 
+/// ACCEPTANCE GATE for bug #2848 (mock-TEE harness Task 16 / R1).
+///
+/// Reproduces the "stranded buffered `ContextRegistered`" bug as a deterministic,
+/// in-process, store-only test. On a (re-)admitted member, a buffered encrypted
+/// `GroupOp::ContextRegistered` for a Restricted subgroup is stranded forever
+/// when its subgroup's `GroupCreated` applies AFTER the `KeyDelivery`:
+///
+/// 1. The encrypted `ContextRegistered` arrives without the subgroup key, so the
+///    `NamespaceOp::Group` arm in `apply_signed_op` cannot resolve a key and
+///    effect-SKIPS the op (`governance.rs:357`) — but still LOGS it to the
+///    namespace op-log (`governance.rs:428`). Drop path B.
+/// 2. `KeyDelivery` arrives → `apply_received_group_key` stores the key and calls
+///    `retry_encrypted_ops_for_group`, which re-feeds the buffered op through
+///    `decrypt_and_apply_group_op` → `apply_group_op_inner`.
+/// 3. That retry FAILS at the staleness check (`governance.rs:1231-1232`):
+///    `compute_state_hash(group_id)` raises `MetaError::GroupNotFoundForHash`
+///    (`meta.rs:90-93`) because the subgroup's `GroupMeta` row — written only by
+///    `GroupCreated` apply (`group_created.rs:98`) — is not present yet. The op
+///    stays stranded.
+/// 4. `KeyDelivery` is the ONLY retry trigger. Applying `GroupCreated` later does
+///    NOT re-drive the buffered op, so the context never registers and
+///    `OpEvent::ContextRegistered` is never emitted.
+///
+/// This test drives the bug-triggering ORDER (buffer → KeyDelivery → GroupCreated)
+/// and asserts the OUTCOME the fix will provide: after `GroupCreated` applies, the
+/// buffered op is re-driven, the context becomes registered, and
+/// `OpEvent::ContextRegistered` fires.
+///
+/// This is a red→green regression test for #2848: it FAILS on the pre-fix tree
+/// at step (a)/(b) — the op stays stranded — which proves the harness reproduces
+/// the bug. It PASSES after the #2848 fix in this PR, which re-drives the
+/// buffered op when `GroupCreated` applies.
+///
+/// Store-only (no actor): the bug lives entirely in the synchronous gov-store
+/// apply path, so this drives `apply_signed_namespace_op` directly. That keeps it
+/// fully deterministic — no actor mailbox, no spawned task, no timing — except for
+/// the bounded `op_events` drain at the end (a process-global broadcast channel).
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn restricted_ctx_redriven_after_group_created() {
+    use calimero_context::group_store::{
+        apply_signed_namespace_op, get_group_for_context, GroupKeyring, MembershipRepository,
+        MetaRepository, NamespaceRepository,
+    };
+    use calimero_context_client::local_governance::{
+        GroupOp, NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let mut rng = OsRng;
+
+    // ---- Namespace root provisioning (receiver side) -------------------------
+    // The namespace IS its root group. `ns_gid.to_bytes()` is the namespace id.
+    let ns_gid = ContextGroupId::from([0xD8u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    // `owner` is the namespace-root admin AND the holder/minter of the subgroup
+    // key. It signs the buffered `ContextRegistered`, the `KeyDelivery`, and the
+    // `GroupCreated` (all three require/derive root-admin authority).
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+
+    // `member` is THIS receiver node's namespace identity — the recipient the
+    // `KeyDelivery` envelope is wrapped for, and whose `identity_record`
+    // `apply_received_group_key` reads to unwrap it. Distinct from the owner.
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    assert_ne!(
+        member_pk, owner_pk,
+        "receiver identity must differ from the owner/admin"
+    );
+
+    // Seed the namespace root meta (admin = owner) so `GroupCreated`'s parent
+    // lookup (`MetaRepository::load(parent)`) succeeds and its authorization
+    // (`is_admin(ns, signer=owner)`) passes.
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta(owner_pk))
+        .expect("save namespace root meta");
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+        .expect("add owner as namespace-root admin");
+
+    // The receiver's namespace identity (member_sk). `apply_received_group_key`
+    // unwraps the `KeyDelivery` envelope with THIS key, so the envelope below
+    // must be wrapped for `member_pk`.
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .expect("store receiver namespace identity");
+
+    // ---- The Restricted subgroup (NOT yet created on the receiver) -----------
+    // We pick its id and mint its key OWNER-side. The receiver does NOT hold the
+    // key nor the subgroup meta yet — that is the whole point: the encrypted op
+    // arrives before either is locally present.
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let subgroup_key: [u8; 32] = {
+        use rand::RngCore;
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let key_id = GroupKeyring::key_id_for(&subgroup_key);
+
+    // The context the buffered op registers.
+    let context_id = calimero_primitives::context::ContextId::from([0xC8u8; 32]);
+
+    // A NON-ZERO state_hash on the buffered op is load-bearing: the receiver's
+    // staleness check only calls `compute_state_hash` (which raises
+    // `GroupNotFoundForHash` on a meta-absent subgroup) when
+    // `state_hash != [0u8; 32]`. In production the publisher (subgroup creator)
+    // DOES hold the subgroup meta and so signs a non-zero hash; this stand-in
+    // reproduces that exact condition. (Any non-zero value reaches the meta load
+    // before any hash comparison, so the precise bytes don't matter.)
+    let nonzero_state_hash = [0x11u8; 32];
+
+    // ---- Subscribe to op-events BEFORE driving anything ----------------------
+    // Process-global broadcast; `#[serial]` keeps cross-test events out, but we
+    // still filter strictly on (sub_gid, context_id) when draining at the end.
+    let mut events = calimero_governance_store::op_events::subscribe();
+
+    // ---- Step 1: buffer the encrypted ContextRegistered (effect-skipped) -----
+    let inner_op = GroupOp::ContextRegistered {
+        context_id,
+        application_id: calimero_primitives::application::ApplicationId::from([0xCCu8; 32]),
+        blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
+        source: "calimero://stub-app".to_owned(),
+        service_name: None,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
+
+    let ctx_registered_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        nonzero_state_hash,
+        1,
+        NamespaceOp::Group {
+            group_id: sub_gid.to_bytes(),
+            key_id,
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .expect("sign NamespaceOp::Group(ContextRegistered)");
+
+    apply_signed_namespace_op(&store, &ctx_registered_op)
+        .expect("apply buffered ContextRegistered (effect-skipped, logged)");
+
+    // The op is logged but its effect was skipped: no key locally, so the
+    // context is NOT registered and the subgroup meta does NOT exist.
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        None,
+        "buffered ContextRegistered must be effect-skipped before the key arrives \
+         (logged-but-not-applied — drop path B)"
+    );
+    assert!(
+        MetaRepository::new(&store)
+            .load(&sub_gid)
+            .expect("load subgroup meta")
+            .is_none(),
+        "subgroup meta must NOT exist yet (GroupCreated not applied)"
+    );
+
+    // ---- Step 2: KeyDelivery → retry fires, fails meta-absent (stranded) -----
+    // Wrap the subgroup key for the receiver's namespace identity (member_pk),
+    // exactly as `admit_tee_node` / `add_group_members` would.
+    let envelope = GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &subgroup_key)
+        .expect("wrap subgroup key for receiver");
+
+    let key_delivery_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Root(RootOp::KeyDelivery {
+            group_id: sub_gid.to_bytes(),
+            envelope,
+        }),
+    )
+    .expect("sign KeyDelivery");
+
+    apply_signed_namespace_op(&store, &key_delivery_op).expect("apply KeyDelivery");
+
+    // The key landed (so retry HAD a candidate and DID run)...
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_key_by_id(&key_id)
+            .expect("load key by id")
+            .is_some(),
+        "KeyDelivery must store the subgroup key (the retry trigger ran)"
+    );
+    // ...but the retry FAILED at the staleness check (subgroup meta absent →
+    // GroupNotFoundForHash), so the context is STILL not registered: stranded.
+    // (Watch the test log for "group not found for state hash computation" /
+    // "failed to retry encrypted op after KeyDelivery" — that proves the retry
+    // ran and bailed for the RIGHT reason.)
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        None,
+        "after KeyDelivery the retry must fail (subgroup meta absent) and leave \
+         the ContextRegistered stranded — this is the #2848 trap"
+    );
+
+    // ---- Step 3: GroupCreated for the subgroup applies LAST ------------------
+    // On master this does NOT re-drive the stranded op. The #2848 fix makes
+    // GroupCreated re-trigger the buffered-op retry.
+    let group_created_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        3,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: sub_gid.to_bytes(),
+            parent_id: namespace_id,
+            restricted: true,
+        }),
+    )
+    .expect("sign GroupCreated");
+
+    apply_signed_namespace_op(&store, &group_created_op).expect("apply GroupCreated");
+
+    // Sanity: GroupCreated itself landed (subgroup meta now present).
+    assert!(
+        MetaRepository::new(&store)
+            .load(&sub_gid)
+            .expect("load subgroup meta")
+            .is_some(),
+        "GroupCreated must have written the subgroup meta row"
+    );
+
+    // ---- (a) the previously-buffered ContextRegistered is now applied --------
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        Some(sub_gid),
+        "#2848: after GroupCreated applies, the previously-stranded \
+         ContextRegistered must be re-driven and the context registered to the \
+         subgroup (FAILS on master — the op stays stranded)"
+    );
+
+    // ---- (b) OpEvent::ContextRegistered fired for this context --------------
+    // Bounded drain: by the time the apply returns, any synchronously-emitted
+    // event is already queued. Allow a short poll window for robustness against
+    // the broadcast channel's async delivery.
+    let mut saw_context_registered = false;
+    'drain: for _ in 0..40 {
+        loop {
+            match events.try_recv() {
+                Ok(calimero_governance_store::op_events::OpEvent::ContextRegistered {
+                    group_id,
+                    context_id: ev_ctx,
+                }) if group_id == sub_gid.to_bytes() && ev_ctx == context_id => {
+                    saw_context_registered = true;
+                    break 'drain;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(_) => break,
+            }
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        saw_context_registered,
+        "#2848: re-driving the buffered ContextRegistered must emit \
+         OpEvent::ContextRegistered for (subgroup, context) (FAILS on master — \
+         no re-drive, so the event never fires)"
+    );
+}
+
+/// Review-fix A regression: the live (#2848 Part A) `GroupCreated` re-drive must
+/// fire for an Open subgroup whose buffered op is decryptable via the NAMESPACE
+/// key, even when the node holds NO subgroup current key.
+///
+/// Open subgroups encrypt under the parent namespace key (#2256), and buffered
+/// ops resolve their `key_id` against the subgroup keyring first, then the
+/// namespace keyring. The original Part A gate only checked
+/// `GroupKeyring::new(subgroup).load_current_key().is_some()`, so a node that
+/// holds the namespace key but no subgroup current key — exactly the Open case —
+/// was skipped and the buffered op stayed stranded. The fixed gate
+/// (`group_has_resolvable_buffered_op`) resolves through BOTH keyrings, matching
+/// `collect_retry_candidates_for_group`.
+///
+/// This drives the bug-triggering order (buffer → KeyDelivery of the *namespace*
+/// key → GroupCreated{restricted:false}) and asserts the Open op is re-driven on
+/// GroupCreated. It would FAIL under the subgroup-current-key-only gate (no
+/// subgroup current key is ever stored here) and passes with the dual-keyring
+/// gate.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn open_ctx_redriven_after_group_created_via_namespace_key() {
+    use calimero_context::group_store::{
+        apply_signed_namespace_op, get_group_for_context, GroupKeyring, MembershipRepository,
+        MetaRepository, NamespaceRepository,
+    };
+    use calimero_context_client::local_governance::{
+        GroupOp, NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let mut rng = OsRng;
+
+    // ---- Namespace root provisioning (receiver side) -------------------------
+    let ns_gid = ContextGroupId::from([0xE4u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta(owner_pk))
+        .expect("save namespace root meta");
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+        .expect("add owner as namespace-root admin");
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .expect("store receiver namespace identity");
+
+    // ---- The namespace key: the receiver HOLDS it (delivered with its join) --
+    // An Open subgroup encrypts under THIS key, not under its own subgroup key.
+    // Critically, the receiver never holds a subgroup *current* key — so the old
+    // gate (`load_current_key` on the subgroup) returns None and would skip.
+    // The namespace key is MINTED here but NOT stored on the receiver yet — at
+    // buffer time the receiver must hold no key for the op's `key_id`, so the
+    // op logs-but-effect-skips at the key-resolution stage (drop path B), the
+    // same way R1's Restricted op does. It is delivered to the receiver below,
+    // AFTER buffering, to set up the exact "holds namespace key, no subgroup
+    // current key" state the old gate mis-handled.
+    let namespace_key: [u8; 32] = {
+        use rand::RngCore;
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let key_id = GroupKeyring::key_id_for(&namespace_key);
+
+    // ---- The Open subgroup (NOT yet created on the receiver) ------------------
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let context_id = calimero_primitives::context::ContextId::from([0xC9u8; 32]);
+    let nonzero_state_hash = [0x22u8; 32];
+
+    let mut events = calimero_governance_store::op_events::subscribe();
+
+    // ---- Step 1: buffer the encrypted ContextRegistered (effect-skipped) -----
+    // Encrypted with the NAMESPACE key (Open subgroup, #2256), tagged with the
+    // namespace key_id. The receiver holds NO key for it yet, so it logs-but-
+    // effect-skips at the key-resolution stage.
+    let inner_op = GroupOp::ContextRegistered {
+        context_id,
+        application_id: calimero_primitives::application::ApplicationId::from([0xCEu8; 32]),
+        blob_id: calimero_primitives::blobs::BlobId::from([0xDFu8; 32]),
+        source: "calimero://stub-app".to_owned(),
+        service_name: None,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&namespace_key, &inner_op).expect("encrypt group op");
+
+    let ctx_registered_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        nonzero_state_hash,
+        1,
+        NamespaceOp::Group {
+            group_id: sub_gid.to_bytes(),
+            key_id,
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .expect("sign NamespaceOp::Group(ContextRegistered)");
+
+    apply_signed_namespace_op(&store, &ctx_registered_op)
+        .expect("apply buffered ContextRegistered (effect-skipped, logged)");
+
+    // The op is logged but its effect was skipped: no key locally for its
+    // key_id, so the Group arm cannot resolve a key and skips the effect.
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        None,
+        "buffered Open ContextRegistered must be effect-skipped before the key arrives"
+    );
+
+    // ---- Step 2: deliver the NAMESPACE key (no subgroup current key) ---------
+    // This is the crux of review-fix A: the receiver now holds the namespace key
+    // (so the buffered op IS decryptable) but holds NO subgroup current key. The
+    // old gate (`GroupKeyring::new(subgroup).load_current_key().is_some()`) would
+    // be false here and skip the re-drive; the dual-keyring gate sees it.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .expect("store namespace key on receiver");
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_current_key()
+            .expect("load subgroup current key")
+            .is_none(),
+        "receiver must hold NO subgroup current key (the old gate would skip here)"
+    );
+    assert!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_key_by_id(&key_id)
+            .expect("load namespace key by id")
+            .is_some(),
+        "receiver MUST hold the namespace key (the op is decryptable via it)"
+    );
+
+    // ---- Step 3: GroupCreated{restricted:false} applies → must re-drive ------
+    let group_created_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: sub_gid.to_bytes(),
+            parent_id: namespace_id,
+            restricted: false,
+        }),
+    )
+    .expect("sign GroupCreated{restricted:false}");
+
+    apply_signed_namespace_op(&store, &group_created_op).expect("apply GroupCreated");
+
+    assert!(
+        MetaRepository::new(&store)
+            .load(&sub_gid)
+            .expect("load subgroup meta")
+            .is_some(),
+        "GroupCreated must have written the subgroup meta row"
+    );
+
+    // ---- Assert: the Open op was re-driven via the namespace-key gate --------
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        Some(sub_gid),
+        "review-fix A: GroupCreated must re-drive an Open subgroup's buffered op \
+         that is decryptable via the NAMESPACE key, even with no subgroup current \
+         key (FAILS under the subgroup-current-key-only gate)"
+    );
+
+    let mut saw_context_registered = false;
+    'drain: for _ in 0..40 {
+        loop {
+            match events.try_recv() {
+                Ok(calimero_governance_store::op_events::OpEvent::ContextRegistered {
+                    group_id,
+                    context_id: ev_ctx,
+                }) if group_id == sub_gid.to_bytes() && ev_ctx == context_id => {
+                    saw_context_registered = true;
+                    break 'drain;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(_) => break,
+            }
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        saw_context_registered,
+        "review-fix A: re-driving the Open buffered op must emit \
+         OpEvent::ContextRegistered for (subgroup, context)"
+    );
+}
+
 /// Negative guard locking in the fix: a `TeeAttestationAnnounce` arriving on a
 /// legacy `group/<hex>` topic must NOT be routed into namespace admission. This
 /// is the precise shape of the #2096 bug — if the dispatcher ever resurrects
@@ -1663,6 +2366,659 @@ async fn group_topic_announce_is_not_routed_as_namespace_admission() {
             .expect("count"),
         1,
         "no member should be admitted from a group/ topic announce (owner only)"
+    );
+}
+
+// ===========================================================================
+// TEE timing × visibility scenario matrix
+// ===========================================================================
+//
+// Six deterministic cells = {Open, Restricted} × {created-after-join,
+// late-join, join-with-created}. Each cell drives an explicit ORDER of
+//   (a) admitting a root `ReadOnlyTee`,
+//   (b) creating the subgroup,
+//   (c) registering a context in it,
+// then asserts BOTH:
+//   * Membership — the TEE is a member of the subgroup (a direct `ReadOnlyTee`
+//     row for Restricted; an inherited member with NO direct row for Open).
+//   * Replication — the subgroup's context is actually known/registered on the
+//     TEE side and the auto-follow path resolves to JOIN. For Restricted the
+//     observable is `get_group_for_context(ctx) == Some(subgroup)` (the context
+//     is registered on the receiver after the buffered-op re-drive). For Open
+//     the observable is `has_context(ctx)` becoming true via the live
+//     inheritance-aware auto-follow handler (the durable proof `join_context`
+//     ran). Membership alone is NOT sufficient — every cell asserts replication.
+//
+// The three orderings:
+//   * created-after-join: admit the root TEE first, THEN create the subgroup +
+//     register the context (live fan-out — `tee_subgroup_admit` for Restricted;
+//     inheritance/auto-follow for Open).
+//   * late-join: create the subgroup + register the context FIRST, THEN admit
+//     the root TEE / deliver its key, which must backfill pre-existing state
+//     (for Restricted this is the buffered-ops re-drive path of #2848/#2771;
+//     for Open the inheritance/auto-follow fall-through over a pre-existing
+//     context).
+//   * join-with-created: interleave — the subgroup is created, then the TEE is
+//     admitted, then the context is registered. Explicit and deterministic.
+//
+// CELL → TEST mapping (which test covers each of the 6 cells):
+//
+//   Restricted / created-after-join:
+//     membership  → `restricted_subgroup_created_admits_existing_tee_member`
+//     replication → `restricted_ctx_redriven_after_group_created` (R1, #2848:
+//                   buffered ContextRegistered re-driven once the held key's
+//                   subgroup GroupCreated applies — the created-after-join
+//                   receiver-backfill replication case)
+//   Restricted / late-join:
+//     both        → `tee_matrix_restricted_late_join` (NEW; store-only:
+//                   GroupCreated + buffered ContextRegistered exist FIRST, the
+//                   TEE row is seeded, THEN KeyDelivery arrives and the retry
+//                   re-drives the buffered op — passes ONLY because of the
+//                   #2848/#2771 retry trigger). Membership fan-in for the same
+//                   ordering is also covered by
+//                   `tee_admitted_after_restricted_subgroup_exists_is_fanned_in`.
+//   Restricted / join-with-created:
+//     both        → `tee_matrix_restricted_join_with_created` (NEW; actor
+//                   harness: subgroup created, then root TEE admitted, then
+//                   context registered — interleaved fan-in + replication).
+//   Open / created-after-join:
+//     membership  → `root_admitted_tee_is_member_of_open_subgroup`
+//     replication → `root_admitted_tee_auto_follows_open_subgroup_context`
+//                   (also re-confirmed by
+//                   `integrated_tee_lifecycle_open_replication_and_scoped_root_cascade`)
+//   Open / late-join:
+//     both        → `tee_matrix_open_late_join` (NEW; actor harness: Open
+//                   subgroup + context exist FIRST, THEN the root TEE is
+//                   admitted and must auto-follow the pre-existing context via
+//                   the inheritance fall-through).
+//   Open / join-with-created:
+//     both        → `tee_matrix_open_join_with_created` (NEW; actor harness:
+//                   Open subgroup created, then root TEE admitted, THEN context
+//                   registered — interleaved inheritance membership + replication).
+//
+// All matrix cells are DETERMINISTIC store/actor-level tests (no real libp2p);
+// op order is controlled exactly, which is the whole point of the matrix.
+// ===========================================================================
+
+/// Matrix cell — **Restricted / late-join** (membership + replication).
+///
+/// Late-join ordering: the subgroup and its context exist on the receiver
+/// FIRST (GroupCreated applied, an encrypted ContextRegistered buffered but
+/// effect-skipped for want of the key), the TEE already holds a direct
+/// `ReadOnlyTee` row in the subgroup (seeded as a prior root fan-in would have
+/// left it), and only THEN does the subgroup key arrive via `KeyDelivery`. The
+/// `KeyDelivery` retry must re-drive the buffered op so the context becomes
+/// registered.
+///
+/// This is the genuine "member joins / key lands after the state already
+/// exists, and backfills it" path. It passes ONLY because of the #2848/#2771
+/// retry trigger on `apply_received_group_key` — on the pre-fix tree the
+/// buffered op stays stranded and `get_group_for_context` returns `None`.
+///
+/// Store-only (mirrors R1): the backfill lives entirely in the synchronous
+/// gov-store apply path, so this drives `apply_signed_namespace_op` directly,
+/// keeping it fully deterministic.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn tee_matrix_restricted_late_join() {
+    use calimero_context::group_store::{
+        apply_signed_namespace_op, get_group_for_context, GroupKeyring, MembershipRepository,
+        MetaRepository, NamespaceRepository,
+    };
+    use calimero_context_client::local_governance::{
+        GroupOp, NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let mut rng = OsRng;
+
+    // ---- Namespace root (receiver side) -------------------------------------
+    let ns_gid = ContextGroupId::from([0xDAu8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+
+    // This receiver node's namespace identity (the `KeyDelivery` recipient).
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta(owner_pk))
+        .expect("save namespace root meta");
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+        .expect("add owner as namespace-root admin");
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .expect("store receiver namespace identity");
+
+    // The Restricted subgroup: id + key minted owner-side. The receiver does
+    // not hold the key yet.
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let subgroup_key: [u8; 32] = {
+        use rand::RngCore;
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let key_id = GroupKeyring::key_id_for(&subgroup_key);
+    let context_id = calimero_primitives::context::ContextId::from([0xCAu8; 32]);
+    let nonzero_state_hash = [0x22u8; 32];
+
+    // The TEE node whose membership the late join must end with. In the
+    // late-join ordering the TEE row in the subgroup pre-exists the key (a
+    // prior root fan-in / create-time admission left it); the new event is the
+    // KeyDelivery that lets the held context op finally apply.
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+
+    let mut events = calimero_governance_store::op_events::subscribe();
+
+    // ---- Step 1 (late-join): the subgroup EXISTS first (GroupCreated) -------
+    let group_created_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: sub_gid.to_bytes(),
+            parent_id: namespace_id,
+            restricted: true,
+        }),
+    )
+    .expect("sign GroupCreated");
+    apply_signed_namespace_op(&store, &group_created_op).expect("apply GroupCreated");
+    assert!(
+        MetaRepository::new(&store)
+            .load(&sub_gid)
+            .expect("load subgroup meta")
+            .is_some(),
+        "subgroup meta must exist after GroupCreated (the late-join precondition)"
+    );
+
+    // The subgroup is Restricted by default; seed the TEE's direct ReadOnlyTee
+    // row as a prior root fan-in would have. This is the MEMBERSHIP half.
+    MembershipRepository::new(&store)
+        .add_member(&sub_gid, &tee_pk, GroupMemberRole::ReadOnlyTee)
+        .expect("seed pre-existing ReadOnlyTee row in subgroup");
+
+    // ---- Step 2 (late-join): the context op is buffered, effect-skipped -----
+    // It cannot apply yet — the key has not arrived.
+    let inner_op = GroupOp::ContextRegistered {
+        context_id,
+        application_id: calimero_primitives::application::ApplicationId::from([0xCCu8; 32]),
+        blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
+        source: "calimero://stub-app".to_owned(),
+        service_name: None,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
+    let ctx_registered_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        nonzero_state_hash,
+        2,
+        NamespaceOp::Group {
+            group_id: sub_gid.to_bytes(),
+            key_id,
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .expect("sign NamespaceOp::Group(ContextRegistered)");
+    apply_signed_namespace_op(&store, &ctx_registered_op)
+        .expect("apply buffered ContextRegistered (effect-skipped, logged)");
+
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        None,
+        "pre-key: the context must NOT be registered yet (buffered/effect-skipped)"
+    );
+
+    // ---- Step 3 (late-join): the key/admission lands LAST (KeyDelivery) -----
+    // This is the "member joins after the state already exists" moment. The
+    // retry on apply_received_group_key must re-drive the buffered op; because
+    // the subgroup meta already exists (GroupCreated applied in step 1), the
+    // staleness check passes and the context registers.
+    let envelope = GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &subgroup_key)
+        .expect("wrap subgroup key for receiver");
+    let key_delivery_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        3,
+        NamespaceOp::Root(RootOp::KeyDelivery {
+            group_id: sub_gid.to_bytes(),
+            envelope,
+        }),
+    )
+    .expect("sign KeyDelivery");
+    apply_signed_namespace_op(&store, &key_delivery_op).expect("apply KeyDelivery");
+
+    // ---- MEMBERSHIP: the TEE is a direct ReadOnlyTee member of the subgroup --
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&sub_gid, &tee_pk)
+            .expect("role_of"),
+        Some(GroupMemberRole::ReadOnlyTee),
+        "late-join Restricted: the TEE must be a direct ReadOnlyTee member"
+    );
+
+    // ---- REPLICATION: the buffered context op was re-driven on KeyDelivery ---
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        Some(sub_gid),
+        "late-join Restricted: KeyDelivery must re-drive the buffered \
+         ContextRegistered (#2848/#2771) so the context is registered on the \
+         receiver — pre-fix the op stays stranded and this is None"
+    );
+
+    // The auto-follow Join decision is observable here as the emitted
+    // OpEvent::ContextRegistered (the trigger the auto-follow handler joins on).
+    let mut saw_context_registered = false;
+    'drain: for _ in 0..40 {
+        loop {
+            match events.try_recv() {
+                Ok(calimero_governance_store::op_events::OpEvent::ContextRegistered {
+                    group_id,
+                    context_id: ev_ctx,
+                }) if group_id == sub_gid.to_bytes() && ev_ctx == context_id => {
+                    saw_context_registered = true;
+                    break 'drain;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(_) => break,
+            }
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        saw_context_registered,
+        "late-join Restricted: the re-drive must emit OpEvent::ContextRegistered \
+         (the auto-follow Join trigger) for (subgroup, context)"
+    );
+}
+
+/// Matrix cell — **Restricted / join-with-created** (membership + replication).
+///
+/// Interleaved ordering: the Restricted subgroup is CREATED first (so this node
+/// mints + holds its key), then the root TEE is ADMITTED (live fan-in via the
+/// `tee_subgroup_admit` subscriber's `handle_new_tee_member`), then the CONTEXT
+/// is registered. This is the "concurrent" cell: admission lands between the
+/// subgroup's creation and the context's registration.
+///
+/// Membership: the TEE gains a direct `ReadOnlyTee` row in the subgroup via the
+/// live fan-in. Replication: the context registered after the fan-in is known on
+/// this node (`get_group_for_context == Some(sub)`) and the auto-follow Join
+/// trigger (`OpEvent::ContextRegistered`) fires for the subgroup.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn tee_matrix_restricted_join_with_created() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x98u8; 32]);
+    let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // Rebind the process-global subscriber to THIS node before any subgroup op
+    // fires (it is a first-wins singleton; other e2e tests may have bound it to
+    // a different store). `spawn` subscribes synchronously, so no sleep needed.
+    calimero_context::tee_subgroup_admit::shutdown();
+    calimero_context::tee_subgroup_admit::spawn(node.store.clone(), node.context_client.clone());
+
+    // (b) CREATE the Restricted subgroup first (mints + holds its key).
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    assert!(
+        calimero_context::group_store::GroupKeyring::new(&node.store, sub_gid)
+            .load_current_key()
+            .expect("load key")
+            .is_some(),
+        "creator node must hold the subgroup key before admission (join-with-created)"
+    );
+
+    // (a) ADMIT the root TEE (interleaved — after create, before context). The
+    // root admission's `TeeMemberAdmitted` event drives `handle_new_tee_member`
+    // to fan the TEE into the already-created Restricted subgroup we hold the
+    // key for.
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let nonce = [0x80u8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+
+    // ---- MEMBERSHIP: the TEE is fanned into the pre-created subgroup ---------
+    let fanned_in = wait_until(|| {
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .member_value(&sub_gid, &tee_pk)
+            .ok()
+            .flatten()
+            .map(|v| v.role == GroupMemberRole::ReadOnlyTee)
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        fanned_in,
+        "join-with-created Restricted: root admission must fan the TEE into the \
+         already-created Restricted subgroup"
+    );
+
+    // (c) REGISTER the context LAST (interleave point: after admission). This
+    // node holds the subgroup key, so the registration applies directly and
+    // emits OpEvent::ContextRegistered — the auto-follow Join trigger.
+    let mut events = calimero_governance_store::op_events::subscribe();
+    let context_id = calimero_primitives::context::ContextId::from([0xCBu8; 32]);
+    calimero_context::group_store::register_context_in_group(&node.store, &sub_gid, &context_id)
+        .expect("register context -> restricted subgroup");
+    // `register_context_in_group` only writes the mapping; emit the production
+    // trigger event the apply path would queue so the auto-follow Join decision
+    // is observable for the TEE member.
+    calimero_governance_store::op_events::notify(
+        calimero_governance_store::op_events::OpEvent::ContextRegistered {
+            group_id: sub_gid.to_bytes(),
+            context_id,
+        },
+    );
+
+    // ---- REPLICATION: the context is registered/known on this node ----------
+    assert_eq!(
+        calimero_context::group_store::get_group_for_context(&node.store, &context_id)
+            .expect("get_group_for_context"),
+        Some(sub_gid),
+        "join-with-created Restricted: the post-admission context must be \
+         registered to the subgroup on this node"
+    );
+
+    let mut saw_context_registered = false;
+    'drain: for _ in 0..40 {
+        loop {
+            match events.try_recv() {
+                Ok(calimero_governance_store::op_events::OpEvent::ContextRegistered {
+                    group_id,
+                    context_id: ev_ctx,
+                }) if group_id == sub_gid.to_bytes() && ev_ctx == context_id => {
+                    saw_context_registered = true;
+                    break 'drain;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(_) => break,
+            }
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        saw_context_registered,
+        "join-with-created Restricted: OpEvent::ContextRegistered (the \
+         auto-follow Join trigger) must fire for (subgroup, context)"
+    );
+}
+
+/// Shared driver for the Open matrix cells that end on the auto-follow
+/// replication observable. Re-points THIS node's namespace identity to the
+/// inherited-only TEE, (re)binds the process-global auto-follow handler to this
+/// node, seeds a `calimero://` stub app so `join_context`'s bootstrap completes,
+/// registers `context_id` in `open_sub`, then polls until the TEE replicates it
+/// (`has_context` true) — re-firing the production `OpEvent::ContextRegistered`
+/// trigger each poll to absorb the handler spawn/subscribe race.
+///
+/// Returns whether the TEE ended up replicating the context. Mirrors the body
+/// of `root_admitted_tee_auto_follows_open_subgroup_context`.
+async fn drive_open_auto_follow_replication(
+    node: &TestNode,
+    ns_gid: &ContextGroupId,
+    open_sub: &ContextGroupId,
+    tee_sk: &PrivateKey,
+    tee_pk: &PublicKey,
+    context_id: calimero_primitives::context::ContextId,
+) -> bool {
+    // The auto-follow gate and `join_context` resolve the joiner from the
+    // node's namespace identity; point it at the inherited-only TEE so the
+    // inheritance fall-through (root anchor, no subgroup row) is exercised.
+    calimero_context::group_store::NamespaceRepository::new(&node.store)
+        .store_identity(ns_gid, tee_pk, tee_sk, &[0u8; 32])
+        .expect("re-point namespace identity to the TEE");
+
+    calimero_context::auto_follow::shutdown();
+    calimero_context::auto_follow::spawn(node.store.clone(), node.context_client.clone());
+
+    // `calimero://` stub app so `join_context`'s bootstrap is install-skipped
+    // and writes `ContextMeta` (the durable replication proof).
+    let app_id = ApplicationId::from([0xCCu8; 32]);
+    let stub_blob =
+        calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0u8; 32]));
+    let stub_meta = ApplicationMetaValue::new(
+        stub_blob,
+        0,
+        "calimero://stub-app".into(),
+        Box::new([]),
+        stub_blob,
+        calimero_store::types::PackageInfo {
+            package: "stub-package".into(),
+            version: "0.0.0".into(),
+            signer_id: "stub-signer".into(),
+        },
+    );
+    node.store
+        .handle()
+        .put(
+            &calimero_store::key::ApplicationMeta::new(app_id),
+            &stub_meta,
+        )
+        .expect("seed stub application meta");
+
+    calimero_context::group_store::register_context_in_group(&node.store, open_sub, &context_id)
+        .expect("register context -> open subgroup");
+
+    wait_until(|| {
+        calimero_governance_store::op_events::notify(
+            calimero_governance_store::op_events::OpEvent::ContextRegistered {
+                group_id: open_sub.to_bytes(),
+                context_id,
+            },
+        );
+        node.context_client
+            .has_context(&context_id)
+            .unwrap_or(false)
+    })
+    .await
+}
+
+/// Matrix cell — **Open / late-join** (membership + replication).
+///
+/// Late-join ordering: an Open subgroup AND a context registered in it exist
+/// FIRST, and only THEN is the root TEE admitted. The TEE must backfill: become
+/// an inherited member of the pre-existing Open subgroup (no direct row) and
+/// auto-follow the pre-existing context via the inheritance fall-through.
+///
+/// This differs from the Open created-after-join cell
+/// (`root_admitted_tee_auto_follows_open_subgroup_context`), where the TEE is
+/// admitted before the subgroup/context exist. Here the state pre-exists the
+/// admission, so the auto-follow handler must pick up an already-registered
+/// context rather than reacting to a fresh registration.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn tee_matrix_open_late_join() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x99u8; 32]);
+    let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // Keep `tee_subgroup_admit` off: we assert the Open INHERITANCE path, so no
+    // per-subgroup direct admission must race in a direct row.
+    calimero_context::tee_subgroup_admit::shutdown();
+
+    // (b) + (c) FIRST: create the Open subgroup and register a context in it,
+    // before any TEE is admitted.
+    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    assert!(
+        calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+            .is_open_chain_to_namespace(&open_sub, &ns_gid)
+            .expect("is_open_chain_to_namespace"),
+        "the created subgroup must be Open all the way to the namespace root"
+    );
+    let context_id = calimero_primitives::context::ContextId::from([0xCDu8; 32]);
+    calimero_context::group_store::register_context_in_group(&node.store, &open_sub, &context_id)
+        .expect("pre-register context -> open subgroup (late-join precondition)");
+    assert_eq!(
+        calimero_context::group_store::get_group_for_context(&node.store, &context_id)
+            .expect("get_group_for_context"),
+        Some(open_sub),
+        "the context must be registered to the Open subgroup before admission"
+    );
+
+    // (a) THEN admit the root TEE via the announce path. Keep its secret key:
+    // we re-point this node's namespace identity to it for the auto-follow.
+    let tee_sk = PrivateKey::random(&mut rng);
+    let tee_pk = tee_sk.public_key();
+    let nonce = [0x81u8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+    assert!(
+        wait_until(
+            || calimero_context::group_store::MembershipRepository::new(&node.store)
+                .is_member(&ns_gid, &tee_pk)
+                .unwrap_or(false)
+        )
+        .await,
+        "the TEE must be admitted at the namespace root"
+    );
+
+    // ---- MEMBERSHIP: inherited member of the Open subgroup, no direct row ----
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&node.store)
+            .has_direct_member(&open_sub, &tee_pk)
+            .unwrap(),
+        "late-join Open: no direct row expected — inheritance is the path"
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .is_member(&open_sub, &tee_pk)
+            .unwrap(),
+        "late-join Open: the root TEE must be an inherited member of the \
+         pre-existing Open subgroup"
+    );
+
+    // ---- REPLICATION: the TEE backfills the PRE-EXISTING context ------------
+    let replicating =
+        drive_open_auto_follow_replication(&node, &ns_gid, &open_sub, &tee_sk, &tee_pk, context_id)
+            .await;
+    assert!(
+        replicating,
+        "late-join Open: the root-admitted TEE (inherited-only member) must \
+         auto-follow (replicate) the PRE-EXISTING Open-subgroup context via the \
+         inheritance fall-through"
+    );
+}
+
+/// Matrix cell — **Open / join-with-created** (membership + replication).
+///
+/// Interleaved ordering: the Open subgroup is CREATED first, then the root TEE
+/// is ADMITTED, then the CONTEXT is registered. Admission lands between the
+/// subgroup's creation and the context's registration — the "concurrent" cell
+/// for the Open visibility.
+///
+/// Membership: the TEE is an inherited member of the Open subgroup with no
+/// direct row. Replication: the context registered after admission is
+/// auto-followed (replicated) by the inherited-only TEE.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn tee_matrix_open_join_with_created() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0x9Au8; 32]);
+    let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+
+    // Keep `tee_subgroup_admit` off: the Open inheritance path must not be
+    // masked by a racing direct row on the momentarily-Restricted subgroup.
+    calimero_context::tee_subgroup_admit::shutdown();
+
+    // (b) CREATE the Open subgroup first.
+    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    assert!(
+        calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+            .is_open_chain_to_namespace(&open_sub, &ns_gid)
+            .expect("is_open_chain_to_namespace"),
+        "the created subgroup must be Open all the way to the namespace root"
+    );
+
+    // (a) ADMIT the root TEE (interleaved — after create, before context).
+    let tee_sk = PrivateKey::random(&mut rng);
+    let tee_pk = tee_sk.public_key();
+    let nonce = [0x82u8; 32];
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+    let quote_bytes = mock_quote_bytes(&nonce, &pk_hash);
+    let topic = format!("ns/{}", hex::encode(ns_gid.to_bytes()));
+    node.node_addr
+        .send(announce_network_event(
+            libp2p::PeerId::random(),
+            &topic,
+            quote_bytes,
+            tee_pk,
+            nonce,
+        ))
+        .await
+        .expect("deliver announce");
+    assert!(
+        wait_until(
+            || calimero_context::group_store::MembershipRepository::new(&node.store)
+                .is_member(&ns_gid, &tee_pk)
+                .unwrap_or(false)
+        )
+        .await,
+        "the TEE must be admitted at the namespace root"
+    );
+
+    // ---- MEMBERSHIP: inherited member of the Open subgroup, no direct row ----
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&node.store)
+            .has_direct_member(&open_sub, &tee_pk)
+            .unwrap(),
+        "join-with-created Open: no direct row expected — inheritance is the path"
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .is_member(&open_sub, &tee_pk)
+            .unwrap(),
+        "join-with-created Open: the root TEE must be an inherited member of the \
+         Open subgroup"
+    );
+
+    // (c) REGISTER the context LAST and assert the inherited-only TEE replicates
+    // it via the auto-follow inheritance fall-through.
+    let context_id = calimero_primitives::context::ContextId::from([0xCEu8; 32]);
+    let replicating =
+        drive_open_auto_follow_replication(&node, &ns_gid, &open_sub, &tee_sk, &tee_pk, context_id)
+            .await;
+    assert!(
+        replicating,
+        "join-with-created Open: the inherited-only root TEE must auto-follow \
+         (replicate) the post-admission Open-subgroup context"
     );
 }
 

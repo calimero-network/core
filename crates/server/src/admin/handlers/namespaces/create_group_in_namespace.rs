@@ -20,6 +20,12 @@ use crate::AdminState;
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInNamespaceBody {
     pub group_name: Option<String>,
+    /// Optional subgroup visibility at birth (#2771): `"open"` or
+    /// `"restricted"`. Absent ⇒ `"restricted"` (preserves legacy behavior).
+    /// A born-Open subgroup is Open at `SubgroupCreated`-event time, so
+    /// `tee_subgroup_admit` skips it (TEE reads via inheritance) and no
+    /// transient direct `ReadOnlyTee` row is created.
+    pub visibility: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,6 +90,20 @@ pub async fn handler(
 
     let signer_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
 
+    // Map the optional `visibility` field to the op's `restricted` flag.
+    // Default (absent / unrecognized) ⇒ Restricted, matching legacy behavior.
+    let restricted = match body.visibility.as_deref() {
+        Some(v) if v.eq_ignore_ascii_case("open") => false,
+        Some(v) if v.eq_ignore_ascii_case("restricted") => true,
+        Some(other) => {
+            return parse_api_error(eyre::eyre!(
+                "invalid visibility '{other}': expected \"open\" or \"restricted\""
+            ))
+            .into_response();
+        }
+        None => true,
+    };
+
     let group_id_cgid = calimero_context_config::types::ContextGroupId::from(group_id);
 
     // Mint the subgroup's signing key AND group key BEFORE applying the op.
@@ -134,6 +154,7 @@ pub async fn handler(
         calimero_context_client::local_governance::RootOp::GroupCreated {
             group_id,
             parent_id: namespace_id.to_bytes(),
+            restricted,
         },
     );
 

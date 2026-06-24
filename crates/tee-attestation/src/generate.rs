@@ -89,30 +89,25 @@ pub fn generate_attestation(report_data: [u8; 64]) -> Result<AttestationResult, 
 #[cfg(not(target_os = "linux"))]
 pub fn generate_attestation(report_data: [u8; 64]) -> Result<AttestationResult, AttestationError> {
     warn!("Generating MOCK attestation on non-Linux platform - NOT FOR PRODUCTION USE");
+    Ok(generate_mock_attestation(report_data))
+}
 
-    // Create mock quote structure with placeholder values
+/// Build a mock attestation result on ANY platform. Dev/test only — the quote
+/// is cryptographically invalid and must only be accepted by an `accept_mock`
+/// policy. Used by `merod --mock-tee`.
+pub fn generate_mock_attestation(report_data: [u8; 64]) -> AttestationResult {
     let quote = create_mock_quote(&report_data);
-
-    // Create mock "quote bytes" with marker + report_data
-    let mut quote_bytes = Vec::with_capacity(128);
-
-    // Mock quote header marker (identifies this as mock)
+    let mut quote_bytes = Vec::with_capacity(256);
     quote_bytes.extend_from_slice(MOCK_QUOTE_HEADER);
-
-    // Include the report data so it can be extracted during mock verification
     quote_bytes.extend_from_slice(&report_data);
-
-    // Pad to reasonable size (real quotes are ~4-6KB)
     quote_bytes.resize(256, 0);
-
     let quote_b64 = base64_engine.encode(&quote_bytes);
-
-    Ok(AttestationResult {
+    AttestationResult {
         quote_bytes,
         quote_b64,
         quote,
         is_mock: true,
-    })
+    }
 }
 
 /// Check if the given quote bytes represent a mock attestation.

@@ -64,6 +64,7 @@
 //! evicted TEE node held locally — including the now-useless old key
 //! material the rotation already orphaned.
 
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 use calimero_context_config::types::ContextGroupId;
@@ -140,6 +141,18 @@ async fn run(store: Store, node_client: NodeClient) {
     // fires for `MemberRemoved`, and those rows must be kept for
     // kick-and-rejoin / inheritance-rejoin). Startup-only, not continuous.
     reconcile_sweep(&store, &node_client).await;
+
+    // Curative startup re-drive sweep (#2848 Part C). Runs once, BEFORE the
+    // event loop and AFTER `op_events::subscribe()` above — so any
+    // `OpEvent::ContextRegistered` (or other) events the re-drive emits are
+    // captured by `rx` and not lost. Parts A/B fix the GroupCreated/KeyDelivery
+    // race for FUTURE and live admissions; this sweep recovers a node that was
+    // ALREADY stranded before that fix shipped (GroupCreated long applied, the
+    // `KeyDelivery` retry already failed, no future trigger remains). Best-
+    // effort and structurally SEPARATE from the purge reconcile above (it does
+    // NOT touch the `PendingSelfPurge` CF) so the #2726 subgroup-purge pass can
+    // later attach to this same startup site.
+    redrive_stranded_ops_sweep(&store);
 
     loop {
         let event = match rx.recv().await {
@@ -447,6 +460,204 @@ async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
         skipped,
         "self-purge reconcile sweep complete"
     );
+}
+
+/// Curative startup re-drive sweep (#2848 Part C).
+///
+/// Recovers a node that was stranded between `GroupCreated` and its
+/// `KeyDelivery`: the group op (e.g. `ContextRegistered`) arrived and was
+/// buffered awaiting the key, `GroupCreated` applied, the live one-shot
+/// `KeyDelivery` retry then ran and FAILED (the key had not landed yet), and
+/// no future event re-drives the buffered op. Parts A/B close this race for
+/// future/live admissions; this one-shot startup sweep closes it for nodes
+/// already stranded before the fix shipped.
+///
+/// # What it does
+///
+/// For every namespace this node holds an identity for
+/// ([`known_namespace_identities`]), and for every group under it that has at
+/// least one buffered op whose key the node ALREADY holds
+/// ([`namespace_groups_with_held_key_buffered_ops`] — the inverse of
+/// `groups_awaiting_key`), it calls
+/// [`redrive_buffered_ops_for_group`](calimero_governance_store::redrive_buffered_ops_for_group),
+/// which replays the buffered ops and emits the
+/// `namespace_retry_events{status="redriven"}` metric per re-drive.
+///
+/// The held-key filter is ALSO the deleted-group exit: a purged group has no
+/// key in either keyring, so it is never enumerated. A held-key group with
+/// nothing buffered is likewise never enumerated (the enumerator is driven off
+/// buffered ops). Both are no-ops by construction.
+///
+/// # Cross-signer convergence loop
+///
+/// A single re-drive pass per group applies all ops it can in publish order
+/// per signer, but a later op may only become applicable after an earlier op
+/// from a DIFFERENT signer applied (the apply path tracks the nonce window
+/// per-(group, signer); one pass already orders within a signer, but
+/// cross-signer dependencies need another pass). So we loop the WHOLE sweep
+/// until a full pass applies NOTHING new — measured by the per-group
+/// applied-op count `redrive_buffered_ops_for_group` returns (idempotent
+/// nonce-replays count as zero). Bounded: each pass that makes progress
+/// strictly drains at least one not-yet-applied op, and there are finitely
+/// many, so the loop terminates. A defensive pass cap guards against any
+/// pathological non-convergence.
+///
+/// Note the held-key enumerator stays non-empty even after a group's ops are
+/// applied (the namespace op-log is append-only, so the logged op persists),
+/// so enumeration shrinking is NOT the termination signal — the applied-count
+/// is. Re-driving an already-drained group is a cheap idempotent no-op.
+///
+/// # Pass narrowing (W5)
+///
+/// The first pass enumerates every namespace and every held-key group with
+/// buffered ops. Re-enumerating that full set on EVERY subsequent pass is
+/// wasteful: the append-only op-log keeps returning groups that already
+/// drained, so a naive loop is O(namespaces × groups × ops) × MAX_PASSES even
+/// when only one group ever unblocks another. Instead, each pass records the
+/// `(namespace, group)` pairs that applied ≥1 op, and the NEXT pass visits
+/// only those. This is sound because the cross-signer dependency that needs
+/// extra passes is WITHIN a single group: the nonce window is tracked
+/// per-`(group, signer)`, so applying an op advances only that group's window
+/// and can only unblock a later op IN THE SAME GROUP. A group that applied
+/// nothing this pass therefore cannot become applicable next pass purely
+/// because some OTHER group drained, so dropping it is safe. The convergence
+/// condition is unchanged (an empty progressed set marks the fixpoint), so
+/// termination and the `MAX_PASSES` cap are preserved; we only shrink the work
+/// each pass scans.
+///
+/// # Best-effort
+///
+/// Structurally SEPARATE from the purge reconcile (it does NOT touch the
+/// `PendingSelfPurge` CF). Per-namespace and per-group errors are logged and
+/// swallowed — a re-drive failure must never block node startup, and the next
+/// restart re-runs the sweep.
+fn redrive_stranded_ops_sweep(store: &Store) {
+    // Defensive upper bound on convergence passes. Real convergence needs at
+    // most one pass per cross-signer dependency depth; this cap only fires on
+    // a logic bug and turns a hang into a bounded, logged early-exit.
+    const MAX_PASSES: usize = 64;
+    let namespaces = match calimero_governance_store::known_namespace_identities(store) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                error = ?e,
+                "curative re-drive sweep (#2848): failed to enumerate known namespaces \
+                 — skipping (stranded buffered ops, if any, persist until next restart)"
+            );
+            return;
+        }
+    };
+
+    let scanned_namespaces = namespaces.len();
+    let mut total_redriven = 0usize;
+
+    // Convergence loop: re-run the sweep until a pass applies nothing new. Each
+    // pass drains the buffered set, so this is monotone and bounded.
+    //
+    // Pass narrowing (W5): the first pass enumerates the full held-key set from
+    // the store; every later pass visits ONLY the `(namespace, group)` pairs
+    // that progressed in the previous pass (a group that applied nothing cannot
+    // newly unblock a cross-signer dependency, so revisiting it is pure waste).
+    let mut pass = 0usize;
+    // `None` => first pass, enumerate everything from the store. `Some(set)` =>
+    // visit only these pairs (those that progressed last pass).
+    let mut work: Option<HashSet<([u8; 32], [u8; 32])>> = None;
+    loop {
+        pass += 1;
+        // Pairs that applied ≥1 op this pass; becomes next pass's work set.
+        let mut progressed: HashSet<([u8; 32], [u8; 32])> = HashSet::new();
+
+        // Materialize this pass's (namespace, group) work list.
+        let pass_pairs: Vec<([u8; 32], [u8; 32])> = match &work {
+            Some(narrowed) => narrowed.iter().copied().collect(),
+            None => {
+                let mut pairs = Vec::new();
+                for ns_id in &namespaces {
+                    match calimero_governance_store::namespace_groups_with_held_key_buffered_ops(
+                        store, *ns_id,
+                    ) {
+                        Ok(groups) => {
+                            for group_id in groups {
+                                pairs.push((*ns_id, group_id));
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                namespace = %hex::encode(ns_id),
+                                error = ?e,
+                                "curative re-drive sweep (#2848): failed to enumerate held-key \
+                                 groups with buffered ops — skipping this namespace for this pass"
+                            );
+                        }
+                    }
+                }
+                pairs
+            }
+        };
+
+        for (ns_id, group_id) in pass_pairs {
+            let ns_hex = hex::encode(ns_id);
+            let group_hex = hex::encode(group_id);
+            match calimero_governance_store::redrive_buffered_ops_for_group(store, ns_id, group_id)
+            {
+                Ok(0) => {
+                    // Nothing applied this pass for this group (already
+                    // drained, or its remaining ops still await a
+                    // cross-signer dependency a later pass may unblock).
+                }
+                Ok(applied) => {
+                    let _ = progressed.insert((ns_id, group_id));
+                    total_redriven += applied;
+                    debug!(
+                        namespace = %ns_hex,
+                        group_id = %group_hex,
+                        applied,
+                        "curative re-drive sweep (#2848): re-drove stranded buffered ops"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        namespace = %ns_hex,
+                        group_id = %group_hex,
+                        error = ?e,
+                        "curative re-drive sweep (#2848): re-drive failed for one group \
+                         — continuing (best-effort; next restart retries)"
+                    );
+                }
+            }
+        }
+
+        if progressed.is_empty() {
+            break;
+        }
+        // Narrow the next pass to only the groups that just progressed.
+        work = Some(progressed);
+        if pass >= MAX_PASSES {
+            warn!(
+                scanned_namespaces,
+                passes = pass,
+                total_redriven,
+                "curative re-drive sweep (#2848): hit the convergence pass cap with a pass \
+                 still making progress — stopping (next restart re-runs the sweep)"
+            );
+            break;
+        }
+    }
+
+    if total_redriven > 0 {
+        info!(
+            scanned_namespaces,
+            passes = pass,
+            total_redriven,
+            "curative re-drive sweep (#2848) complete — recovered stranded buffered ops"
+        );
+    } else {
+        debug!(
+            scanned_namespaces,
+            passes = pass,
+            "curative re-drive sweep (#2848) complete — nothing to re-drive"
+        );
+    }
 }
 
 /// What the reconcile should do for one marked namespace. Split out from
@@ -2548,5 +2759,168 @@ mod tests {
                 _ => continue,
             }
         }
+    }
+
+    /// #2848 Part C — the curative startup sweep recovers an already-stranded
+    /// context WITHOUT any pending trigger.
+    ///
+    /// Builds the pre-fix stranded residue (buffered, effect-skipped
+    /// `ContextRegistered`; subgroup key now HELD; subgroup meta now PRESENT;
+    /// NO `GroupCreated`/`KeyDelivery` apply having re-driven it — we write key
+    /// and meta DIRECTLY to bypass the Part A trigger), invokes
+    /// [`redrive_stranded_ops_sweep`], and asserts the buffered op applies (the
+    /// context becomes registered) and that `OpEvent::ContextRegistered` is
+    /// emitted for the (subgroup, context) pair.
+    ///
+    /// Also covers the no-op shapes: a held-key group with nothing buffered
+    /// (the `idle` group below) is enumerated but re-drives nothing, and the
+    /// no-key (deleted/never-keyed) exclusion is asserted at the gov-store
+    /// level in `curative_sweep_redrives_stranded_context`. A second sweep is
+    /// an idempotent no-op. Discriminated by random ids so it tolerates the
+    /// process-global op-event channel.
+    #[tokio::test]
+    async fn curative_sweep_redrives_stranded_context() {
+        use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+        use calimero_governance_store::{
+            apply_signed_namespace_op, get_group_for_context, NamespaceRepository,
+        };
+
+        let store = empty_store();
+        let mut rng = OsRng;
+
+        // Namespace root + this node's identity (makes it a "known" namespace).
+        let mut ns_bytes = [0u8; 32];
+        rng.fill_bytes(&mut ns_bytes);
+        let ns_gid = ContextGroupId::from(ns_bytes);
+        let namespace_id = ns_gid.to_bytes();
+
+        let owner_sk = PrivateKey::random(&mut rng);
+        let owner_pk = owner_sk.public_key();
+        let member_sk = PrivateKey::random(&mut rng);
+        let member_pk = member_sk.public_key();
+
+        MetaRepository::new(&store)
+            .save(&ns_gid, &make_meta(owner_pk))
+            .expect("save ns meta");
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+            .expect("add owner admin");
+        NamespaceRepository::new(&store)
+            .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+            .expect("store our ns identity");
+
+        // The stranded subgroup + its key + the context it registers.
+        let mut sub_bytes = [0u8; 32];
+        rng.fill_bytes(&mut sub_bytes);
+        let sub_gid = ContextGroupId::from(sub_bytes);
+        let mut subgroup_key = [0u8; 32];
+        rng.fill_bytes(&mut subgroup_key);
+        let key_id = GroupKeyring::key_id_for(&subgroup_key);
+        let mut ctx_bytes = [0u8; 32];
+        rng.fill_bytes(&mut ctx_bytes);
+        let context_id = calimero_primitives::context::ContextId::from(ctx_bytes);
+
+        // Subscribe BEFORE the sweep so the re-driven event isn't missed.
+        let mut rx = op_events::subscribe();
+
+        // Step 1: buffer the encrypted ContextRegistered (effect-skipped:
+        // no key, no meta). state_hash == 0 skips the staleness check.
+        let inner_op = calimero_context_client::local_governance::GroupOp::ContextRegistered {
+            context_id,
+            application_id: ApplicationId::from([0xCCu8; 32]),
+            blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
+            source: "calimero://stub-app".to_owned(),
+            service_name: None,
+        };
+        let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt op");
+        let ctx_registered_op = SignedNamespaceOp::sign(
+            &owner_sk,
+            namespace_id,
+            vec![],
+            [0u8; 32],
+            1,
+            NamespaceOp::Group {
+                group_id: sub_gid.to_bytes(),
+                key_id,
+                encrypted,
+                key_rotation: None,
+            },
+        )
+        .expect("sign ContextRegistered");
+        apply_signed_namespace_op(&store, &ctx_registered_op)
+            .expect("buffer ContextRegistered (effect-skipped)");
+        assert_eq!(
+            get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+            None,
+            "must be stranded before the sweep"
+        );
+
+        // Step 2: strand the node — write key + meta DIRECTLY (no apply path,
+        // so the Part A GroupCreated re-drive never fires).
+        let stored = GroupKeyring::new(&store, sub_gid)
+            .store_key(&subgroup_key)
+            .expect("store subgroup key");
+        assert_eq!(stored, key_id);
+        MetaRepository::new(&store)
+            .save(&sub_gid, &make_meta(owner_pk))
+            .expect("save subgroup meta");
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &sub_gid)
+            .expect("nest subgroup under namespace");
+
+        // A held-key-but-nothing-pending group: same namespace, key stored, but
+        // no buffered op. Must be a no-op for the sweep.
+        let mut idle_bytes = [0u8; 32];
+        rng.fill_bytes(&mut idle_bytes);
+        let idle_gid = ContextGroupId::from(idle_bytes);
+        let mut idle_key = [0u8; 32];
+        rng.fill_bytes(&mut idle_key);
+        GroupKeyring::new(&store, idle_gid)
+            .store_key(&idle_key)
+            .expect("store idle key");
+
+        // Step 3: run the curative startup sweep.
+        redrive_stranded_ops_sweep(&store);
+
+        // (a) the previously-stranded ContextRegistered is now applied.
+        assert_eq!(
+            get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+            Some(sub_gid),
+            "#2848 Part C: the curative sweep must register the stranded context"
+        );
+
+        // (b) OpEvent::ContextRegistered fired for (subgroup, context).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let mut saw = false;
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(OpEvent::ContextRegistered {
+                    group_id,
+                    context_id: ev_ctx,
+                }) if group_id == sub_gid.to_bytes() && ev_ctx == context_id => {
+                    saw = true;
+                    break;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            saw,
+            "#2848 Part C: the curative re-drive must emit OpEvent::ContextRegistered"
+        );
+
+        // (c) re-running the sweep is an idempotent no-op (context stays
+        // registered; no panic) — covers the held-key-nothing-pending and the
+        // already-drained shapes converging to zero progress.
+        redrive_stranded_ops_sweep(&store);
+        assert_eq!(
+            get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+            Some(sub_gid),
+            "a second sweep must leave the now-applied context registered (idempotent)"
+        );
     }
 }

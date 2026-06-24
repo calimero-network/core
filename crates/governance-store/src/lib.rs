@@ -103,7 +103,9 @@ pub use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
     apply_received_group_key, apply_signed_namespace_op, apply_signed_namespace_op_at_cut,
     build_group_key_delivery, collect_skeleton_delta_ids_for_group, decrypt_group_op,
-    namespace_groups_awaiting_key, sign_and_publish_namespace_op,
+    known_namespace_identities, namespace_groups_awaiting_key,
+    namespace_groups_with_held_key_buffered_ops, redrive_buffered_ops_for_group,
+    retry_encrypted_ops_for_group, sign_and_publish_namespace_op,
     sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure,
     NamespaceDagService, NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord,
     NamespaceMembershipService, NamespaceOpLogService, NamespaceRetryService, ReparentOutcome,
@@ -1285,21 +1287,30 @@ pub fn apply_local_signed_group_op_at_cut(
 
     let zero_hash = [0u8; 32];
     if op.state_hash != zero_hash {
-        let current_state_hash = MetaRepository::new(store).compute_state_hash(&group_id)?;
-        if op.state_hash != current_state_hash {
-            tracing::debug!(
-                group_id = %hex::encode(group_id.to_bytes()),
-                expected = %hex::encode(op.state_hash),
-                actual = %hex::encode(current_state_hash),
-                nonce = op.nonce,
-                signer = %op.signer,
-                "rejecting op: state_hash mismatch (signed against stale state)"
-            );
-            bail!(
-                "state_hash mismatch: op was signed against {}, current state is {}",
-                hex::encode(op.state_hash),
-                hex::encode(current_state_hash)
-            );
+        // Mirror the namespace receive-side bypass (apply_group_op_inner): if
+        // the subgroup meta row hasn't been written yet — e.g. a group op
+        // buffered/replayed before its GroupCreated lands — there is no state
+        // to hash. `compute_state_hash` would raise GroupNotFoundForHash and
+        // strand the op forever (#2848). Treat absent meta as a bypass;
+        // signature and nonce checks remain in force.
+        let repo = MetaRepository::new(store);
+        if repo.load(&group_id)?.is_some() {
+            let current_state_hash = repo.compute_state_hash(&group_id)?;
+            if op.state_hash != current_state_hash {
+                tracing::debug!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    expected = %hex::encode(op.state_hash),
+                    actual = %hex::encode(current_state_hash),
+                    nonce = op.nonce,
+                    signer = %op.signer,
+                    "rejecting op: state_hash mismatch (signed against stale state)"
+                );
+                bail!(
+                    "state_hash mismatch: op was signed against {}, current state is {}",
+                    hex::encode(op.state_hash),
+                    hex::encode(current_state_hash)
+                );
+            }
         }
     }
 

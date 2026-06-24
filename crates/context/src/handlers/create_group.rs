@@ -32,6 +32,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             upgrade_policy,
             name,
             parent_group_id,
+            restricted,
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -239,6 +240,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
                         group_id: group_id.to_bytes(),
                         parent_id: parent_id.to_bytes(),
+                        restricted,
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,

@@ -6018,6 +6018,7 @@ mod auto_follow_tests {
             NamespaceOp::Root(RootOp::GroupCreated {
                 group_id: new_group_id,
                 parent_id: ns_id,
+                restricted: true,
             }),
         )
         .unwrap();

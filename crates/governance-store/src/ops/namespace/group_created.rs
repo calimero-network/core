@@ -4,7 +4,8 @@
 use super::context::NamespaceApplyCtx;
 use crate::op_events::OpEvent;
 use crate::{
-    ApplyError, GroupCreatedRejection, MembershipRepository, MetaRepository, NamespaceError,
+    ApplyError, CapabilitiesRepository, GroupCreatedRejection, MembershipRepository,
+    MetaRepository, NamespaceError,
 };
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -16,6 +17,7 @@ pub(crate) fn apply(
     op: &SignedNamespaceOp,
     group_id: [u8; 32],
     parent_id: [u8; 32],
+    restricted: bool,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
@@ -117,6 +119,43 @@ pub(crate) fn apply(
         handle.put(&GroupChildIndex::new(parent_id, group_id), &())?;
     }
     MembershipRepository::new(store).add_member(&gid, &op.signer, GroupMemberRole::Admin)?;
+
+    // Born-Open atomic create (#2771): write the subgroup's visibility key
+    // from `restricted` using the SAME mechanism `SubgroupVisibilitySet`
+    // apply uses (`CapabilitiesRepository::set_subgroup_visibility`). This
+    // write happens DURING apply, BEFORE `OpEvent::SubgroupCreated` is
+    // queued/drained (emit-after-persist, #2770) — so when
+    // `tee_subgroup_admit` reacts and walks `is_open_chain_to_namespace`,
+    // it reads the real visibility from the store. A born-Open subgroup is
+    // therefore already Open at admit time, so the TEE is skipped (it reads
+    // via inheritance) and no transient direct `ReadOnlyTee` row is left
+    // behind. `restricted: true` (the default) preserves legacy behavior,
+    // and the absent-key ⇒ Restricted default in `capabilities.rs` stays as
+    // a safety net for old state.
+    //
+    // ONLY write birth visibility on the genuine FIRST create. Birth
+    // visibility is an initial condition, not idempotent state: a duplicate
+    // `GroupCreated` (different nonce, same `group_id`) is a replay, and a
+    // later `SubgroupVisibilitySet` may have flipped the group's visibility
+    // in the meantime — re-asserting the birth value on replay would silently
+    // clobber that flip.
+    //
+    // The gate is the ABSENCE of an explicit visibility key, NOT `!meta_existed`:
+    // the originator's `create_group` handler pre-populates `GroupMeta` before
+    // publishing this op (so `meta_existed` is true on the originator's own
+    // first apply) but does NOT write the visibility key — that key is born
+    // here. So `!has_subgroup_visibility` is true exactly on the first apply
+    // (originator and remote alike) and false on every replay. This mirrors
+    // the idempotent-seed discipline used for the meta write above.
+    let caps = CapabilitiesRepository::new(store);
+    if !caps.has_subgroup_visibility(&gid)? {
+        let visibility = if restricted {
+            calimero_context_config::VisibilityMode::Restricted
+        } else {
+            calimero_context_config::VisibilityMode::Open
+        };
+        caps.set_subgroup_visibility(&gid, visibility)?;
+    }
 
     ctx.queue_event(OpEvent::SubgroupCreated {
         namespace_id,

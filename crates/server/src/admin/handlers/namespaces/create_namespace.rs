@@ -51,6 +51,9 @@ pub async fn handler(
             application_id: req.application_id,
             upgrade_policy: req.upgrade_policy,
             name: req.name,
+            // Root creation has no `GroupCreated` op; `restricted` is ignored
+            // here (kept Restricted for struct completeness). (#2771)
+            restricted: true,
         })
         .await
         .map_err(parse_api_error);

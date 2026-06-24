@@ -781,6 +781,17 @@ impl Actor for ContextManager {
         // Auto-follow handler (see the auto-follow architecture doc) — reacts to governance
         // op-apply events and emits JoinContext on behalf of members
         // with `auto_follow.contexts = true`.
+        //
+        // ORDERING IS LOAD-BEARING (#2848 Part C): `auto_follow::spawn` MUST run
+        // before `self_purge::spawn` below. `auto_follow::spawn` subscribes to
+        // `op_events` SYNCHRONOUSLY on this (actor) thread; the self_purge task
+        // then runs the curative `redrive_stranded_ops_sweep`, which emits
+        // `OpEvent::ContextRegistered` for each recovered context. Auto-follow
+        // has no startup re-scan — those events are the ONLY thing that drives a
+        // swept context into the join/replicate path. Subscribing here first
+        // guarantees auto-follow's receiver exists before the sweep can emit, so
+        // the recovered context is reliably replicated rather than dropped by
+        // the best-effort broadcast. Do not reorder these two spawns.
         auto_follow::spawn(self.datastore.clone(), self.context_client.clone());
         // Self-purge handler (see docs/adr/0002-fleet-tee-leave-protocol.md) — reacts
         // to `OpEvent::TeeMemberRemoved` (paired follow-up emitted ONLY when the

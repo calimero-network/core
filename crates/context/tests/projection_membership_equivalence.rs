@@ -107,6 +107,7 @@ fn fold_subgroup_structure(
         op: NamespaceOp::Root(RootOp::GroupCreated {
             group_id: subgroup.to_bytes(),
             parent_id: namespace,
+            restricted: true,
         }),
         signature: [0u8; 64],
     };

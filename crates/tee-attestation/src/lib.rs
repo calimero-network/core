@@ -46,6 +46,9 @@ mod info;
 mod verify;
 
 pub use error::AttestationError;
-pub use generate::{build_report_data, generate_attestation, is_mock_quote, AttestationResult};
+pub use generate::{
+    build_report_data, generate_attestation, generate_mock_attestation, is_mock_quote,
+    AttestationResult,
+};
 pub use info::{get_tee_info, TeeInfo};
 pub use verify::{verify_attestation, verify_mock_attestation, VerificationResult};
