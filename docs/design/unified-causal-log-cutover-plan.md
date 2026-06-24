@@ -96,6 +96,19 @@ signal only once this canary is green.
 
 ## C1 — `scope_root`: fold ACL + groups into the convergence signal
 
+**Landing incrementally (merge-gated on C0's canary):**
+- **C1a (drafted 2026-06-24)** — the **HashComparison end-of-session verdict**
+  (`hash_comparison_protocol.rs`, the #2607 re-query path C0 instrumented). When
+  both peers resolve a `scope_root` it alone decides `root_hash_verified`; cold
+  projection / non-group context falls back to the bare entity compare (no
+  context drops below the pre-C1 check). This is the kernel security win on the
+  general sync path.
+- **C1b (follow-up)** — the remaining compare sites: LevelWise (its verdict is
+  currently advisory off the handshake root — needs `scope_root` threaded through
+  the handshake), the snapshot boundary (`snapshot.rs`), and the protocol
+  selector's converged-decision. Sliced out because LevelWise/snapshot carry
+  their own staleness semantics and are independently reviewable.
+
 **Goal.** Replace the bare entity `root_hash` on the wire and in comparison with
 `scope_root`, where
 
