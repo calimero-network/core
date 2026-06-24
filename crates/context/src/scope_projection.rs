@@ -306,6 +306,23 @@ impl ScopeProjections {
         // O(1) dedup: `insert` is true only for a not-yet-seen id.
         if self.seen.entry(op.scope).or_default().insert(op.id) {
             self.logs.entry(op.scope).or_default().push(op.clone());
+        } else if !matches!(op.payload, OpPayload::Noop) {
+            // Already seen, but `op.id` is the SIGNED op's content hash, not the
+            // decoded payload's — so an encrypted op first folded as `Noop` (applied
+            // before its group key arrived) shares an id with its later, decrypted
+            // form. The op-log is what the at-cut auth view (`acl_view_at` →
+            // `member_at_cut`) folds, so a stale `Noop` left here drops the
+            // late-decrypted membership even after the op-store is corrected. Upgrade
+            // the log entry in place when a non-`Noop` payload arrives for a
+            // previously-`Noop` id; never downgrade (decryption only adds info).
+            if let Some(log) = self.logs.get_mut(&op.scope) {
+                if let Some(existing) = log
+                    .iter_mut()
+                    .find(|e| e.id == op.id && matches!(e.payload, OpPayload::Noop))
+                {
+                    *existing = op.clone();
+                }
+            }
         }
     }
 

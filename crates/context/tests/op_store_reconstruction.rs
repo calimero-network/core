@@ -166,3 +166,83 @@ fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery
          DAG; repersist_namespace_ops should have overwritten the frozen Noop with the MemberAdded"
     );
 }
+
+/// The case the fresh-projection test above MISSED, which broke the e2e: a
+/// **maintained** projection that already folded the op as `Noop` (live apply
+/// before the key arrived). `op.id` is the signed-op hash, so the `Noop` and the
+/// decrypted form share an id; the op-log dedups by id, so re-ingesting the
+/// corrected op via a later backfill must UPGRADE the stale `Noop` entry — not be
+/// dropped as a duplicate — or `member_at_cut` (which folds the op-log) stays
+/// stuck on the `Noop` and the joiner's writes are rejected forever.
+#[test]
+fn maintained_projection_recovers_late_decrypted_membership_on_backfill() {
+    let store = store();
+    let admin = PrivateKey::random(&mut OsRng).public_key();
+    let member = PrivateKey::random(&mut OsRng).public_key();
+
+    let ns = ContextGroupId::from([0x11; 32]);
+    let ns_bytes = ns.to_bytes();
+
+    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    let group_key = [0x5A; 32];
+    let key_id = GroupKeyring::new(&store, ns).store_key(&group_key).unwrap();
+
+    let inner = GroupOp::MemberAdded {
+        member,
+        role: GroupMemberRole::Member,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&group_key, &inner).unwrap();
+    let signed = SignedNamespaceOp {
+        version: 1,
+        namespace_id: ns_bytes,
+        parent_op_hashes: Vec::new(),
+        state_hash: [0u8; 32],
+        signer: admin,
+        nonce: 1,
+        op: NamespaceOp::Group {
+            group_id: ns_bytes,
+            key_id,
+            encrypted,
+            key_rotation: None,
+        },
+        signature: [0u8; 64],
+    };
+    let delta_id = signed.content_hash().unwrap();
+    NamespaceOpLogService::new(&store, ns_bytes)
+        .store_signed_operation(&signed)
+        .unwrap();
+    NamespaceDagService::new(&store, ns_bytes)
+        .advance_dag_head(delta_id, &[], 0)
+        .unwrap();
+
+    let heads = [delta_id];
+
+    // A MAINTAINED projection that first folded the op WITHOUT the key (the live
+    // apply path before key delivery): the op-log records a `Noop`. The op-store
+    // froze the same `Noop` via the dual-write.
+    let mut proj = ScopeProjections::new();
+    let frozen = op_from_namespace_op(&signed, None, delta_id, hlc(1), &[]);
+    proj.ingest_op(&frozen);
+    persist_op(&store, &frozen).unwrap();
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &member, &heads),
+        Some(false),
+        "precondition: the maintained projection folded the op as a Noop"
+    );
+
+    // Key delivery: the op-store is re-persisted with current decryption, then the
+    // projection backfills from it — exactly the production sequence.
+    ScopeProjections::repersist_namespace_ops(&store, ns_bytes);
+    let ops = ScopeProjections::ops_for_namespace(&store, ns_bytes).unwrap();
+    proj.apply_backfill(ns_bytes, ops);
+
+    // The re-ingested op must UPGRADE the stale Noop in the op-log, not dedup away.
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &member, &heads),
+        Some(true),
+        "the maintained projection must recover the member after the corrected op is re-ingested"
+    );
+}

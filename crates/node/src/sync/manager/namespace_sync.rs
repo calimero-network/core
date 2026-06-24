@@ -1409,20 +1409,35 @@ impl SyncManager {
                         }
 
                         // The arrived key may have made governance ops that were
-                        // applied (and frozen as `Noop` in the unified op-store)
-                        // before the key landed now decode to their real payload.
-                        // Refresh the op-store from the governance DAG with the key
-                        // present so its reconstruction matches the projection — the
-                        // C2.2c fix for the read-flip's late-decrypted-membership gap.
-                        // BEFORE the drain: the projection backs onto the op-store
-                        // now (C2.2b), so the drain's membership re-checks must see the
+                        // applied before the key landed — frozen as `Noop` both in the
+                        // unified op-store (dual-write) and in the maintained
+                        // projection's op-log (the live `ingest_op`) — now decode to
+                        // their real payload. Two-step refresh so the projection, which
+                        // backs onto the op-store (C2.2b), reflects the membership:
+                        //   1. re-persist the op-store from the governance DAG with the
+                        //      key present, then
+                        //   2. re-ingest the corrected ops into the maintained
+                        //      projection. `ingest_op` upgrades the stale `Noop` op-log
+                        //      entries in place (the op id is the signed-op hash, shared
+                        //      by both forms), so `member_at_cut` sees the membership.
+                        // BEFORE the drain: its membership re-checks must see the
                         // corrected ops, not the stale Noop.
                         let store = self.context_client.datastore_handle().into_inner();
                         calimero_context::scope_projection::ScopeProjections::repersist_namespace_ops(
                             &store,
                             namespace_id,
                         );
+                        let refreshed =
+                            calimero_context::scope_projection::ScopeProjections::ops_for_namespace(
+                                &store,
+                                namespace_id,
+                            );
                         drop(store);
+                        if let Some(ops) = refreshed {
+                            self.node_state
+                                .write_scope_projections()
+                                .apply_backfill(namespace_id, ops);
+                        }
 
                         self.drain_governance_pending_after_sync().await;
                     }
