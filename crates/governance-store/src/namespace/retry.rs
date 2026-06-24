@@ -116,6 +116,46 @@ impl<'a> NamespaceRetryService<'a> {
         Ok(held.into_iter().collect())
     }
 
+    /// Cheap per-group gate: `true` iff this group has at least one buffered
+    /// encrypted op whose `key_id` the local node CAN already resolve via the
+    /// dual-keyring order (subgroup keyring first for `Restricted`, then the
+    /// namespace keyring for `Open`, #2256).
+    ///
+    /// This is the single-group equivalent of
+    /// [`groups_with_held_key_buffered_ops`](Self::groups_with_held_key_buffered_ops),
+    /// used to gate the live (#2848 Part A) `GroupCreated` re-drive. Gating on
+    /// the subgroup current key ALONE was wrong: an Open subgroup's buffered
+    /// ops resolve their key against the **namespace** keyring, so a node that
+    /// holds the namespace key but no subgroup current key still has
+    /// decryptable buffered ops yet was skipped. This mirrors exactly the
+    /// resolution `collect_retry_candidates_for_group` then performs, so the
+    /// gate and the work agree.
+    pub fn group_has_resolvable_buffered_op(&self, group_id: [u8; 32]) -> EyreResult<bool> {
+        let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
+        let op_keys = op_log
+            .collect_buffered_group_op_keys()
+            .map_err(|e| eyre::eyre!("op_log.collect_buffered_group_op_keys: {e}"))?;
+        let ns_typed = ContextGroupId::from(self.namespace_id);
+        let gid_typed = ContextGroupId::from(group_id);
+        for (gid, key_id) in op_keys {
+            if gid != group_id {
+                continue;
+            }
+            let resolvable = GroupKeyring::new(self.store, gid_typed)
+                .load_key_by_id(&key_id)
+                .map_err(|e| eyre::eyre!("load_key_by_id(group): {e}"))?
+                .is_some()
+                || GroupKeyring::new(self.store, ns_typed)
+                    .load_key_by_id(&key_id)
+                    .map_err(|e| eyre::eyre!("load_key_by_id(namespace): {e}"))?
+                    .is_some();
+            if resolvable {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn collect_retry_candidates_for_group(
         &self,
         group_id: [u8; 32],

@@ -359,17 +359,27 @@ impl<'a> NamespaceGovernance<'a> {
                         // encrypted ContextRegistered that was buffered before
                         // it landed — and previously bailed at the staleness
                         // check because the meta did not exist — can now apply.
-                        // Re-drive, but only if we hold the subgroup key (cheap
-                        // gate; avoids the full op-log scan in the common
+                        // Re-drive, but only if we can actually decrypt at
+                        // least one buffered op for this group (cheap gate;
+                        // avoids the full retry-candidate scan in the common
                         // no-key case, and is the deleted-group exit since purge
-                        // clears keys). Best-effort: log, never propagate.
-                        let gid = ContextGroupId::from(*group_id);
-                        if GroupKeyring::new(self.store, gid)
-                            .load_current_key()
-                            .ok()
-                            .flatten()
-                            .is_some()
-                        {
+                        // clears keys). The gate resolves each buffered op's
+                        // `key_id` against the subgroup keyring first, then the
+                        // namespace keyring (Open #2256) — exactly like
+                        // `collect_retry_candidates_for_group`/the live apply
+                        // path. Gating on the subgroup *current* key alone was
+                        // wrong: an Open subgroup's buffered ops are encrypted
+                        // under the namespace key, so a node that holds the
+                        // namespace key but no subgroup current key still has
+                        // decryptable buffered ops and must be re-driven.
+                        // Best-effort: log, never propagate.
+                        let gid = *group_id;
+                        let retry_service =
+                            NamespaceRetryService::new(self.store, self.namespace_id);
+                        let has_resolvable = retry_service
+                            .group_has_resolvable_buffered_op(gid)
+                            .unwrap_or(false);
+                        if has_resolvable {
                             match self.retry_encrypted_ops_for_group(*group_id) {
                                 Ok(retry_divergence) => {
                                     if retry_divergence.is_some() {
@@ -1265,16 +1275,25 @@ impl<'a> NamespaceGovernance<'a> {
                 encrypted,
             ) {
                 Ok(_divergence) => {
-                    record_namespace_retry_event("applied");
                     let now_present = load_nonce_window(self.store, &gid_typed, signer)
                         .map(|w| w.contains(nonce))
                         .unwrap_or(false);
                     if !was_present && now_present {
+                        // Genuine apply: the (signer, nonce) was not in the
+                        // window before and is now. Only this path counts and
+                        // only this path increments the "applied" metric — a
+                        // nonce-deduped replay short-circuits to `Ok(None)`
+                        // WITHOUT writing, so counting it as "applied" would
+                        // inflate the metric (review fix B).
+                        record_namespace_retry_event("applied");
                         applied += 1;
                         tracing::info!(
                             group_id = %hex::encode(group_id),
                             "curative re-drive applied a stranded encrypted op (#2848)"
                         );
+                    } else {
+                        // Idempotent nonce-deduped replay: nothing was written.
+                        record_namespace_retry_event("nonce_skip");
                     }
                 }
                 Err(e) => {

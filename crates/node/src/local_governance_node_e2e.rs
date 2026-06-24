@@ -1851,9 +1851,10 @@ async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
 /// buffered op is re-driven, the context becomes registered, and
 /// `OpEvent::ContextRegistered` fires.
 ///
-/// On CURRENT master this test FAILS at step (a)/(b) — the op stays stranded.
-/// That failing state IS the deliverable: it proves the harness reproduces the
-/// bug. The later #2848 fix turns it green.
+/// This is a red→green regression test for #2848: it FAILS on the pre-fix tree
+/// at step (a)/(b) — the op stays stranded — which proves the harness reproduces
+/// the bug. It PASSES after the #2848 fix in this PR, which re-drives the
+/// buffered op when `GroupCreated` applies.
 ///
 /// Store-only (no actor): the bug lives entirely in the synchronous gov-store
 /// apply path, so this drives `apply_signed_namespace_op` directly. That keeps it
@@ -2090,6 +2091,204 @@ async fn restricted_ctx_redriven_after_group_created() {
         "#2848: re-driving the buffered ContextRegistered must emit \
          OpEvent::ContextRegistered for (subgroup, context) (FAILS on master — \
          no re-drive, so the event never fires)"
+    );
+}
+
+/// Review-fix A regression: the live (#2848 Part A) `GroupCreated` re-drive must
+/// fire for an Open subgroup whose buffered op is decryptable via the NAMESPACE
+/// key, even when the node holds NO subgroup current key.
+///
+/// Open subgroups encrypt under the parent namespace key (#2256), and buffered
+/// ops resolve their `key_id` against the subgroup keyring first, then the
+/// namespace keyring. The original Part A gate only checked
+/// `GroupKeyring::new(subgroup).load_current_key().is_some()`, so a node that
+/// holds the namespace key but no subgroup current key — exactly the Open case —
+/// was skipped and the buffered op stayed stranded. The fixed gate
+/// (`group_has_resolvable_buffered_op`) resolves through BOTH keyrings, matching
+/// `collect_retry_candidates_for_group`.
+///
+/// This drives the bug-triggering order (buffer → KeyDelivery of the *namespace*
+/// key → GroupCreated{restricted:false}) and asserts the Open op is re-driven on
+/// GroupCreated. It would FAIL under the subgroup-current-key-only gate (no
+/// subgroup current key is ever stored here) and passes with the dual-keyring
+/// gate.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn open_ctx_redriven_after_group_created_via_namespace_key() {
+    use calimero_context::group_store::{
+        apply_signed_namespace_op, get_group_for_context, GroupKeyring, MembershipRepository,
+        MetaRepository, NamespaceRepository,
+    };
+    use calimero_context_client::local_governance::{
+        GroupOp, NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let mut rng = OsRng;
+
+    // ---- Namespace root provisioning (receiver side) -------------------------
+    let ns_gid = ContextGroupId::from([0xE4u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta(owner_pk))
+        .expect("save namespace root meta");
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+        .expect("add owner as namespace-root admin");
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .expect("store receiver namespace identity");
+
+    // ---- The namespace key: the receiver HOLDS it (delivered with its join) --
+    // An Open subgroup encrypts under THIS key, not under its own subgroup key.
+    // Critically, the receiver never holds a subgroup *current* key — so the old
+    // gate (`load_current_key` on the subgroup) returns None and would skip.
+    // The namespace key is MINTED here but NOT stored on the receiver yet — at
+    // buffer time the receiver must hold no key for the op's `key_id`, so the
+    // op logs-but-effect-skips at the key-resolution stage (drop path B), the
+    // same way R1's Restricted op does. It is delivered to the receiver below,
+    // AFTER buffering, to set up the exact "holds namespace key, no subgroup
+    // current key" state the old gate mis-handled.
+    let namespace_key: [u8; 32] = {
+        use rand::RngCore;
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let key_id = GroupKeyring::key_id_for(&namespace_key);
+
+    // ---- The Open subgroup (NOT yet created on the receiver) ------------------
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let context_id = calimero_primitives::context::ContextId::from([0xC9u8; 32]);
+    let nonzero_state_hash = [0x22u8; 32];
+
+    let mut events = calimero_governance_store::op_events::subscribe();
+
+    // ---- Step 1: buffer the encrypted ContextRegistered (effect-skipped) -----
+    // Encrypted with the NAMESPACE key (Open subgroup, #2256), tagged with the
+    // namespace key_id. The receiver holds NO key for it yet, so it logs-but-
+    // effect-skips at the key-resolution stage.
+    let inner_op = GroupOp::ContextRegistered {
+        context_id,
+        application_id: calimero_primitives::application::ApplicationId::from([0xCEu8; 32]),
+        blob_id: calimero_primitives::blobs::BlobId::from([0xDFu8; 32]),
+        source: "calimero://stub-app".to_owned(),
+        service_name: None,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&namespace_key, &inner_op).expect("encrypt group op");
+
+    let ctx_registered_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        nonzero_state_hash,
+        1,
+        NamespaceOp::Group {
+            group_id: sub_gid.to_bytes(),
+            key_id,
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .expect("sign NamespaceOp::Group(ContextRegistered)");
+
+    apply_signed_namespace_op(&store, &ctx_registered_op)
+        .expect("apply buffered ContextRegistered (effect-skipped, logged)");
+
+    // The op is logged but its effect was skipped: no key locally for its
+    // key_id, so the Group arm cannot resolve a key and skips the effect.
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        None,
+        "buffered Open ContextRegistered must be effect-skipped before the key arrives"
+    );
+
+    // ---- Step 2: deliver the NAMESPACE key (no subgroup current key) ---------
+    // This is the crux of review-fix A: the receiver now holds the namespace key
+    // (so the buffered op IS decryptable) but holds NO subgroup current key. The
+    // old gate (`GroupKeyring::new(subgroup).load_current_key().is_some()`) would
+    // be false here and skip the re-drive; the dual-keyring gate sees it.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .expect("store namespace key on receiver");
+    assert!(
+        GroupKeyring::new(&store, sub_gid)
+            .load_current_key()
+            .expect("load subgroup current key")
+            .is_none(),
+        "receiver must hold NO subgroup current key (the old gate would skip here)"
+    );
+    assert!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_key_by_id(&key_id)
+            .expect("load namespace key by id")
+            .is_some(),
+        "receiver MUST hold the namespace key (the op is decryptable via it)"
+    );
+
+    // ---- Step 3: GroupCreated{restricted:false} applies → must re-drive ------
+    let group_created_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: sub_gid.to_bytes(),
+            parent_id: namespace_id,
+            restricted: false,
+        }),
+    )
+    .expect("sign GroupCreated{restricted:false}");
+
+    apply_signed_namespace_op(&store, &group_created_op).expect("apply GroupCreated");
+
+    assert!(
+        MetaRepository::new(&store)
+            .load(&sub_gid)
+            .expect("load subgroup meta")
+            .is_some(),
+        "GroupCreated must have written the subgroup meta row"
+    );
+
+    // ---- Assert: the Open op was re-driven via the namespace-key gate --------
+    assert_eq!(
+        get_group_for_context(&store, &context_id).expect("get_group_for_context"),
+        Some(sub_gid),
+        "review-fix A: GroupCreated must re-drive an Open subgroup's buffered op \
+         that is decryptable via the NAMESPACE key, even with no subgroup current \
+         key (FAILS under the subgroup-current-key-only gate)"
+    );
+
+    let mut saw_context_registered = false;
+    'drain: for _ in 0..40 {
+        loop {
+            match events.try_recv() {
+                Ok(calimero_governance_store::op_events::OpEvent::ContextRegistered {
+                    group_id,
+                    context_id: ev_ctx,
+                }) if group_id == sub_gid.to_bytes() && ev_ctx == context_id => {
+                    saw_context_registered = true;
+                    break 'drain;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(_) => break,
+            }
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        saw_context_registered,
+        "review-fix A: re-driving the Open buffered op must emit \
+         OpEvent::ContextRegistered for (subgroup, context)"
     );
 }
 
