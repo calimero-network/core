@@ -371,6 +371,14 @@ pub async fn await_namespace_ready(
         .await
         .map_err(|e| ReadyError::PublishMemberJoined(e.to_string()))?;
 
+    // C3 Stage 2: the quorum publish wrote MemberJoinedAt to the local gov-DAG
+    // (`publish_post_gate` → `store_operation`) without the receive handler's
+    // dual-write; mirror it into the op-store so it stays a complete mirror.
+    calimero_context::scope_projection::ScopeProjections::persist_namespace_head_ops(
+        store,
+        namespace_id,
+    );
+
     // step 4: assemble ReadyReport with post-publish observable state.
     // Note the read accessors are best-effort — if the underlying
     // store read fails we substitute defaults rather than fail the
