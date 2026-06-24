@@ -359,27 +359,39 @@ impl<'a> NamespaceGovernance<'a> {
                         // encrypted ContextRegistered that was buffered before
                         // it landed — and previously bailed at the staleness
                         // check because the meta did not exist — can now apply.
-                        // Re-drive, but only if we can actually decrypt at
-                        // least one buffered op for this group (cheap gate;
-                        // avoids the full retry-candidate scan in the common
-                        // no-key case, and is the deleted-group exit since purge
-                        // clears keys). The gate resolves each buffered op's
-                        // `key_id` against the subgroup keyring first, then the
-                        // namespace keyring (Open #2256) — exactly like
-                        // `collect_retry_candidates_for_group`/the live apply
-                        // path. Gating on the subgroup *current* key alone was
-                        // wrong: an Open subgroup's buffered ops are encrypted
-                        // under the namespace key, so a node that holds the
-                        // namespace key but no subgroup current key still has
-                        // decryptable buffered ops and must be re-driven.
-                        // Best-effort: log, never propagate.
+                        // Re-drive, but only when the node plausibly holds a key
+                        // that could decrypt this group's buffered ops. This is
+                        // a CHEAP keyring presence check — a single current-key
+                        // lookup per keyring — NOT an op-log scan: gating with a
+                        // full op-log scan would defeat the gate's purpose,
+                        // since the retry it guards
+                        // (`collect_retry_candidates_for_group`) already does a
+                        // full scan, so a scanning gate saves nothing on the
+                        // GroupCreated hot path. The check mirrors the
+                        // dual-keyring resolution the apply/retry path uses
+                        // (#2256): the subgroup's own current key (Restricted)
+                        // OR the namespace current key (Open subgroups encrypt
+                        // under it). Gating on the subgroup current key alone
+                        // was wrong — a node holding only the namespace key
+                        // still has decryptable Open buffered ops and must be
+                        // re-driven. When neither key is held (the common case
+                        // and the deleted-group exit since purge clears keys)
+                        // the retry is skipped without touching the op-log. The
+                        // retry itself still scans the op-log, but only when a
+                        // key is actually held and only on GroupCreated, so the
+                        // scan is bounded. Best-effort: log, never propagate.
                         let gid = *group_id;
-                        let retry_service =
-                            NamespaceRetryService::new(self.store, self.namespace_id);
-                        let has_resolvable = retry_service
-                            .group_has_resolvable_buffered_op(gid)
-                            .unwrap_or(false);
-                        if has_resolvable {
+                        let gid_typed = ContextGroupId::from(gid);
+                        let ns_typed = ContextGroupId::from(self.namespace_id);
+                        let holds_key = GroupKeyring::new(self.store, gid_typed)
+                            .load_current_key()
+                            .map(|k| k.is_some())
+                            .unwrap_or(false)
+                            || GroupKeyring::new(self.store, ns_typed)
+                                .load_current_key()
+                                .map(|k| k.is_some())
+                                .unwrap_or(false);
+                        if holds_key {
                             match self.retry_encrypted_ops_for_group(*group_id) {
                                 Ok(retry_divergence) => {
                                     if retry_divergence.is_some() {
