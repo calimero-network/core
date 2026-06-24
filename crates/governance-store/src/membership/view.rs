@@ -28,24 +28,11 @@ impl<'a> GroupMembershipView<'a> {
         MembershipRepository::new(self.store).is_member(&self.group_id, member)
     }
 
-    pub fn admin_count(&self) -> EyreResult<usize> {
-        self.list_members()?
-            .iter()
-            .try_fold(0usize, |count, row| match row.1 {
-                GroupMemberRole::Admin => Ok(count + 1),
-                _ => Ok(count),
-            })
-    }
-
     pub fn has_another_admin(&self, excluded: &PublicKey) -> EyreResult<bool> {
         Ok(self
             .list_members()?
             .into_iter()
             .any(|(member, role)| role == GroupMemberRole::Admin && member != *excluded))
-    }
-
-    pub fn member_count(&self) -> EyreResult<usize> {
-        Ok(self.list_members()?.len())
     }
 
     pub fn list_members(&self) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
