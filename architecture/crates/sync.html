@@ -310,6 +310,20 @@
   <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> No <span class="code">shadow_compare_op_store</span> log output is emitted from the backfill path. Any monitoring rules that relied on post-backfill op-store comparison metrics from this path may be retired. The <span class="code">ops_for_namespace</span> indirection is the future flip point; watch for a follow-up change that routes it to <span class="code">load_scope_ops</span> once late-decrypted membership handling is resolved.</p>
 </div>
 
+<div class="cb" style="margin-bottom:18px; border-left:3px solid #06b6d4; padding-left:14px;">
+  <h4 style="color:#06b6d4; margin-bottom:8px;">Op-Store Refresh on Late Key Delivery (<span class="code">recover_missing_group_keys</span>)</h4>
+  <p style="margin-bottom:10px;"><span class="code">SyncManager::recover_missing_group_keys</span> is the single runtime chokepoint for direct group-key delivery. Immediately after a successful key delivery and the existing drain/reconcile steps, <span class="code">ScopeProjections::repersist_namespace_ops</span> is now called for the affected <span class="code">namespace_id</span>. This ensures that any <span class="code">MemberAdded</span> ops that were frozen as <span class="code">Noop</span> in the op-store (because their group key had not yet arrived at apply time) are re-decrypted and written into the op-store immediately when the key lands — without waiting for the next projection rebuild cycle.</p>
+  <p style="margin-bottom:10px;">Because all late-arriving keys flow through <span class="code">recover_missing_group_keys</span>, no other call site needs to trigger <span class="code">repersist_namespace_ops</span> for the key-delivery case. The call is placed after drain/reconcile so the projection is already updated before the op-store is refreshed.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Called in SyncManager after each successful key delivery</span><br>
+<span class="kw">pub(crate) fn</span> <span class="field">repersist_namespace_ops</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;namespace_id: <span class="ty">NamespaceId</span>,<br>
+) -&gt; <span class="ty">Result</span>&lt;()&gt;
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> After this change, late-decrypted <span class="code">MemberAdded</span> ops are persisted to the op-store as soon as their key arrives rather than on the next projection rebuild. No new log markers are emitted; the existing key-delivery trace spans cover this path.</p>
+</div>
+
 <div class="cb" style="margin-bottom:18px; border-left:3px solid #10b981; padding-left:14px;">
   <h4 style="color:#10b981; margin-bottom:8px;">Post-Backfill Shadow Compare (<span class="code">refresh_projection_for_cut</span>) — <strong>Removed</strong></h4>
   <p style="margin-bottom:10px;">After <span class="code">apply_backfill</span> writes the governance-DAG fold into the maintained projection inside <span class="code">refresh_projection_for_cut</span>, a post-fold cross-check against the op-store was previously triggered via <span class="code">shadow_compare_op_store</span>. <strong>This call and both <span class="code">shadow_compare_op_store</span> and <span class="code">scope_root_from_governance_dag</span> have been removed from <span class="code">ScopeProjections</span>.</strong></p>
