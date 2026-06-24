@@ -225,3 +225,62 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
         "a complete op-store yields a verified-empty missing list"
     );
 }
+
+/// C3 Stage 1: `persist_namespace_head_ops` lands a locally-authored op (written to
+/// the gov-DAG but not the op-store) into the op-store, closing the local-author gap.
+#[test]
+fn persist_namespace_head_ops_lands_locally_authored_op_in_the_op_store() {
+    let store = store();
+    let admin = PrivateKey::random(&mut OsRng).public_key();
+    let ns = ContextGroupId::from([0x33; 32]);
+    let ns_bytes = ns.to_bytes();
+    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+
+    // Simulate local authoring: the op is in the gov-DAG (op-log + head) but NOT the
+    // op-store — exactly the gap the local-author path leaves.
+    let signed = SignedNamespaceOp {
+        version: 1,
+        namespace_id: ns_bytes,
+        parent_op_hashes: Vec::new(),
+        state_hash: [0u8; 32],
+        signer: admin,
+        nonce: 1,
+        op: NamespaceOp::Group {
+            group_id: ns_bytes,
+            key_id: [0u8; 32],
+            encrypted: EncryptedGroupOp {
+                nonce: [0u8; 12],
+                ciphertext: Vec::new(),
+            },
+            key_rotation: None,
+        },
+        signature: [0u8; 64],
+    };
+    let delta_id = signed.content_hash().unwrap();
+    NamespaceOpLogService::new(&store, ns_bytes)
+        .store_signed_operation(&signed)
+        .unwrap();
+    NamespaceDagService::new(&store, ns_bytes)
+        .advance_dag_head(delta_id, &[], 0)
+        .unwrap();
+
+    assert!(
+        load_scope_ops(&store, &ScopeId::from(ns_bytes))
+            .unwrap()
+            .is_empty(),
+        "precondition: the locally-authored op is absent from the op-store"
+    );
+
+    ScopeProjections::persist_namespace_head_ops(&store, ns_bytes);
+
+    let ids: Vec<[u8; 32]> = load_scope_ops(&store, &ScopeId::from(ns_bytes))
+        .unwrap()
+        .iter()
+        .map(|op| op.id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec![delta_id],
+        "the authored head op must now be in the op-store"
+    );
+}
