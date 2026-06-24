@@ -805,7 +805,10 @@ async fn run_initiator_impl<T: SyncTransport>(
 /// Returns `Ok(None)` when the peer closes the stream or replies with an
 /// unexpected payload — an older peer that does not handle this mid-session
 /// request — so the caller can fall back to the handshake root.
-async fn query_peer_current_root<T: SyncTransport>(
+/// Mid-session re-query of the peer's CURRENT root + `scope_root` (the #2607
+/// end-of-session convergence read). `pub(crate)` so LevelWise reuses the exact
+/// same re-query to reach HashComparison's authoritative-verdict parity (C1b).
+pub(crate) async fn query_peer_current_root<T: SyncTransport>(
     transport: &mut T,
     context_id: ContextId,
     identity: PublicKey,

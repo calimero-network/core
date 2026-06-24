@@ -566,39 +566,89 @@ async fn run_initiator_impl<T: SyncTransport>(
         }
     }
 
+    // C1b: re-query the peer's CURRENT root + scope_root before closing — the
+    // #2407 comment below noted LevelWise "can't distinguish a real divergence bug
+    // from legitimate drift without a second handshake round-trip"; this IS that
+    // round-trip (parity with HashComparison's #2607 end-of-session read). Falls
+    // back to the stale handshake root only if the peer doesn't answer (older
+    // peer).
+    let (peer_current_root, peer_scope_root) =
+        match super::hash_comparison_protocol::query_peer_current_root(
+            transport, context_id, identity,
+        )
+        .await
+        {
+            Ok(Some((root, scope_root))) => (root, scope_root),
+            // Older peer that doesn't answer the re-query — expected, quiet.
+            Ok(None) => (remote_root_hash, None),
+            // Transport fault on the re-query: distinct from the older-peer case, so
+            // log it (a persistent fault degrades the verdict to the stale handshake
+            // root and would otherwise masquerade as a quiet version mismatch).
+            Err(e) => {
+                debug!(
+                    %context_id, %e,
+                    "LevelWise: end-of-session peer re-query failed; \
+                     falling back to the handshake root for the convergence check"
+                );
+                (remote_root_hash, None)
+            }
+        };
+
     // Close the transport to signal completion
     transport.close().await?;
 
-    // Post-sync convergence check (#2407). Previously this was
-    // silently debug-logged on mismatch with the comment "expected
-    // if local had concurrent changes" — true for one narrow case,
-    // but it also masked actual merge-correctness bugs.
-    //
-    // We can't distinguish "real divergence bug" from "legitimate
-    // bidirectional drift / concurrent local writes" without a
-    // second handshake round-trip, so we surface mismatch at WARN
-    // (was: debug) and rely on the sync manager / metrics consumer
-    // to react to *patterns* of unverified syncs across many ticks
-    // — that's the failure shape #2407 documents.
+    // Post-sync convergence check. `scope_root` is the AUTHORITATIVE verdict (C1b),
+    // parity with HashComparison: it folds the governance projection's ACL +
+    // membership onto the entity root, so LevelWise can't declare converged while
+    // authorization disagrees. When either side can't fold the scope (cold
+    // projection / non-group context, `None`), fall back to the entity-root compare
+    // — now against the peer's RE-QUERIED current root rather than the stale
+    // handshake root, so even the fallback is sharper than the prior #2407 check.
     let local_root_hash = with_runtime_env(runtime_env.clone(), || {
         get_local_root_hash_for_context(context_id)
     })?;
 
-    stats.root_hash_verified = local_root_hash == remote_root_hash;
+    let local_scope_root = super::helpers::local_scope_root(store, &context_id, local_root_hash);
+    stats.root_hash_verified = match (local_scope_root, peer_scope_root) {
+        (Some(local), Some(peer)) => local == peer,
+        _ => local_root_hash == peer_current_root,
+    };
 
     if !stats.root_hash_verified {
-        warn!(
-            %context_id,
-            local_hash = %hex::encode(&local_root_hash[..8]),
-            remote_hash = %hex::encode(&remote_root_hash[..8]),
-            levels_synced = stats.levels_synced,
-            nodes_compared = stats.nodes_compared,
-            entities_merged = stats.entities_merged,
-            "LevelWise sync did not match remote handshake root (#2407). \
-             Legitimate in bidirectional sync or with concurrent local writes; \
-             persistent occurrences across many interval-sync ticks indicate a real \
-             merge convergence bug."
-        );
+        // Entities agree but scope_root differs ⇒ pure ACL/governance divergence
+        // (the case the entity root hides); distinct marker, parity with HC.
+        // Destructure both scope_roots (vs `matches!` + `unwrap_or_default`): this
+        // case needs both resolved, and binding them avoids a dead default branch
+        // and any reliance on `[u8; 32]` being `Copy`.
+        let governance_divergence = match (local_scope_root, peer_scope_root) {
+            (Some(local), Some(peer)) => local_root_hash == peer_current_root && local != peer,
+            _ => false,
+        };
+        if let (true, Some(local_scope_root), Some(peer_scope_root)) =
+            (governance_divergence, local_scope_root, peer_scope_root)
+        {
+            warn!(
+                marker = "scope_root_governance_divergence",
+                %context_id,
+                entity_root = %hex::encode(&local_root_hash[..8]),
+                local_scope_root = %hex::encode(&local_scope_root[..8]),
+                peer_scope_root = %hex::encode(&peer_scope_root[..8]),
+                "entity roots agree but scope_root differs — ACL/membership divergence; \
+                 awaiting governance sync to propagate the rotation"
+            );
+        } else {
+            warn!(
+                %context_id,
+                local_hash = %hex::encode(&local_root_hash[..8]),
+                peer_hash = %hex::encode(&peer_current_root[..8]),
+                levels_synced = stats.levels_synced,
+                nodes_compared = stats.nodes_compared,
+                entities_merged = stats.entities_merged,
+                "LevelWise sync did not converge with the peer's re-queried root. \
+                 Persistent occurrences across many interval-sync ticks indicate a \
+                 real merge convergence bug."
+            );
+        }
     } else {
         debug!(
             %context_id,
@@ -845,6 +895,40 @@ async fn run_responder_loop<T: SyncTransport>(
                 requests_handled += 1;
 
                 info!(%context_id, applied, total, "Applied pushed tombstones (delete-wins)");
+            }
+
+            // C1b: end-of-session convergence re-read, parity with HashComparison
+            // (the #2607 path). Re-read our root NOW — after every leaf/tombstone
+            // applied this session — and fold the governance projection onto it so
+            // the initiator's verdict catches a hash-neutral ACL/membership
+            // divergence the bare entity root hides. `scope_root` is `None` on a
+            // non-group / cold projection ⇒ the initiator falls back to the entity
+            // compare.
+            InitPayload::DagHeadsRequest { .. } => {
+                let current_root = with_runtime_env(runtime_env.clone(), || {
+                    get_local_root_hash_for_context(context_id)
+                })
+                .unwrap_or([0u8; 32]);
+
+                let scope_root = context_client
+                    .map(|cc| cc.datastore_handle().into_inner())
+                    .and_then(|store| {
+                        super::helpers::local_scope_root(&store, &context_id, current_root)
+                    })
+                    .map(calimero_primitives::hash::Hash::from);
+
+                let response = StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::DagHeadsResponse {
+                        dag_heads: Vec::new(),
+                        root_hash: calimero_primitives::hash::Hash::from(current_root),
+                        scope_root,
+                    },
+                    next_nonce: generate_nonce(),
+                };
+                transport.send(&response).await?;
+                sequence_id += 1;
+                requests_handled += 1;
             }
 
             _ => {
