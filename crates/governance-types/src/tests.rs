@@ -1,6 +1,6 @@
 use super::*;
 
-use calimero_primitives::identity::PrivateKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use rand::rngs::OsRng;
 
 fn sample_group_id() -> [u8; 32] {
@@ -565,5 +565,97 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
             "frozen CascadeUpgrade bytes (discriminant 25) decoded as {other:?}; a \
              variant was inserted mid-enum, shifting prior variant tags"
         ),
+    }
+}
+
+// C5.S3b flag-day boundary: an op signed under the OLD schema must be REJECTED on
+// the new build, never silently misparsed. The `version` field is the first borsh
+// field, so it survives the layout change and the version check fires before any
+// signable-bytes reconstruction. These tests pin that boundary so a future refactor
+// can't re-open the window.
+#[test]
+fn pre_flag_day_group_op_version_is_rejected() {
+    let signer = PrivateKey::random(&mut OsRng).public_key();
+    // A struct-shaped op carrying a prior schema version (here v7, the last version
+    // that still had `state_hash`). `verify_signature` must reject on the version
+    // check alone — before touching the (here bogus) signature.
+    let stale = SignedGroupOp {
+        version: SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
+        group_id: sample_group_id(),
+        parent_op_hashes: vec![],
+        signer,
+        nonce: 1,
+        op: GroupOp::Noop,
+        signature: [0u8; 64],
+    };
+    assert!(
+        matches!(
+            stale.verify_signature(),
+            Err(GovernanceError::SchemaVersion { .. })
+        ),
+        "a prior-version group op must be rejected with SchemaVersion, got {:?}",
+        stale.verify_signature()
+    );
+}
+
+#[test]
+fn pre_flag_day_namespace_op_version_is_rejected() {
+    let signer = PrivateKey::random(&mut OsRng).public_key();
+    let stale = SignedNamespaceOp {
+        version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION - 1,
+        namespace_id: sample_group_id(),
+        parent_op_hashes: vec![],
+        signer,
+        nonce: 1,
+        op: NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![],
+        }),
+        signature: [0u8; 64],
+    };
+    assert!(
+        matches!(
+            stale.verify_signature(),
+            Err(GovernanceError::SchemaVersion { .. })
+        ),
+        "a prior-version namespace op must be rejected with SchemaVersion, got {:?}",
+        stale.verify_signature()
+    );
+}
+
+#[test]
+fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
+    // A v7-shaped op still carries the removed `state_hash` field in its borsh bytes.
+    // Decoding it as the v8 struct must NOT silently succeed with a v8-looking op:
+    // either borsh refuses the misaligned/trailing bytes, or it decodes a struct
+    // whose `version` (7) fails the v8 check — never a spurious Ok.
+    #[derive(::borsh::BorshSerialize)]
+    struct V7SignedGroupOp {
+        version: u8,
+        group_id: [u8; 32],
+        parent_op_hashes: Vec<[u8; 32]>,
+        state_hash: [u8; 32],
+        signer: PublicKey,
+        nonce: u64,
+        op: GroupOp,
+        signature: [u8; 64],
+    }
+    let signer = PrivateKey::random(&mut OsRng).public_key();
+    let v7 = V7SignedGroupOp {
+        version: SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
+        group_id: sample_group_id(),
+        parent_op_hashes: vec![],
+        state_hash: [0xAB; 32],
+        signer,
+        nonce: 1,
+        op: GroupOp::Noop,
+        signature: [0u8; 64],
+    };
+    let bytes = ::borsh::to_vec(&v7).expect("encode v7");
+    match ::borsh::from_slice::<SignedGroupOp>(&bytes) {
+        Ok(op) => assert!(
+            op.verify_signature().is_err(),
+            "a v7-encoded op decoded to a SignedGroupOp must still fail verify_signature"
+        ),
+        Err(_) => { /* borsh-level rejection of the old layout is also acceptable */ }
     }
 }
