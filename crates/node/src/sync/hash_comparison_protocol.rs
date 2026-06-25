@@ -712,24 +712,22 @@ async fn run_initiator_impl<T: SyncTransport>(
     // exactly the pre-C1 behaviour, so no context regresses to a weaker check than
     // before.
     let local_scope_root = super::helpers::local_scope_root(store, &context_id, local_root_hash);
-    stats.root_hash_verified = match (local_scope_root, peer_scope_root) {
-        (Some(local), Some(peer)) => local == peer,
-        _ => local_root_hash == peer_current_root,
-    };
+    let verdict = super::helpers::scope_verdict(
+        local_scope_root,
+        peer_scope_root,
+        local_root_hash,
+        peer_current_root,
+    );
+    stats.root_hash_verified = verdict.converged();
 
-    // Surface the case the entity root hides: entities AGREE but `scope_root`
-    // differs ⇒ the divergence is purely in the ACL/governance plane. HC's entity
-    // tree-walk has nothing to reconcile here (the entities already match); the
-    // rotation propagates via the ordinary governance sync tick, and the next HC
-    // session re-reads an agreeing `scope_root` once it lands. Distinct marker so a
+    // Surface the case the entity root hides: entities AGREE but `scope_root` differs
+    // ⇒ the divergence is purely in the ACL/governance plane. HC's entity tree-walk
+    // has nothing to reconcile here (the entities already match); the rotation
+    // propagates via the ordinary governance sync tick, and the next HC session
+    // re-reads an agreeing `scope_root` once it lands. Distinct marker so a
     // governance-plane divergence is legible apart from a data-plane one.
-    // Destructure both scope_roots up front (vs `matches!` + `unwrap_or_default`):
-    // this case is meaningful only when BOTH sides resolved one, and binding them
-    // avoids a dead default branch and any reliance on `[u8; 32]` being `Copy`.
-    if let (Some(local_scope_root), Some(peer_scope_root)) = (local_scope_root, peer_scope_root) {
-        if !stats.root_hash_verified
-            && local_root_hash == peer_current_root
-            && local_scope_root != peer_scope_root
+    if verdict == super::helpers::ScopeVerdict::GovDiverged {
+        if let (Some(local_scope_root), Some(peer_scope_root)) = (local_scope_root, peer_scope_root)
         {
             warn!(
                 marker = "scope_root_governance_divergence",
