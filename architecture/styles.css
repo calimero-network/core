@@ -790,3 +790,27 @@ html.light .typedef { background: #f0f3f6; border-color: #d0d7de; color: #24292f
  /* Allow the type-name cell to wrap so the table doesn't force horizontal scroll. */
  .prim-table .pt-name { white-space: normal; }
 }
+
+/* ── ANIMATED DIAGRAM ENGINE (shared; see seq-diagram.js) ── */
+.diagram-container { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+.diagram-container svg { border-radius: 10px; max-height: 75vh; }
+.diagram-container.seq svg { min-width: 700px; }
+.seq-step { opacity: 0; }
+.diagram-container.animating .seq-step {
+  animation: stepIn .4s ease-out forwards;
+  animation-delay: calc(var(--step-i) * .45s);
+}
+@keyframes stepIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.diagram-tools { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.replay-btn {
+  padding: 6px 16px; border: 1px solid var(--border);
+  background: var(--surface2); color: var(--text-dim);
+  font-family: var(--font-mono); font-size: .74rem;
+  border-radius: 8px; cursor: pointer; transition: all .15s;
+}
+.replay-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--surface); }
+.diagram-desc { font-size: .84rem; color: var(--text-dim); margin-bottom: 14px; line-height: 1.65; }
+@media (prefers-reduced-motion: reduce) {
+  .seq-step { opacity: 1; }
+  .diagram-container.animating .seq-step { animation: none; }
+}

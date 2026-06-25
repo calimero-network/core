@@ -7,12 +7,15 @@
 
   function getBase() {
     const p = location.pathname;
-    if (p.includes('/crates/')) return '../';
+    if (p.includes('/crates/') || p.includes('/protocol/')) return '../';
     return './';
   }
 
   const NAV = [
     { label: 'Home', href: 'index.html', dot: '#f59e0b' },
+    { section: 'Protocol Reference' },
+    { label: 'Overview', href: 'protocol/index.html', dot: '#a5ff11' },
+    { label: '1 · Concepts & Scopes', href: 'protocol/concepts.html', dot: '#a5ff11', sub: true },
     { section: 'For Builders' },
     { label: 'Getting Started', href: 'getting-started.html', dot: '#10b981' },
     { label: 'Core Concepts', href: 'concepts.html', dot: '#10b981' },
@@ -28,8 +31,8 @@
     { label: 'Release Process', href: 'release.html', dot: '#10b981' },
     { label: 'Auth Service', href: 'crates/auth.html', dot: '#84cc16' },
     { section: 'Architecture Deep-Dive' },
-{ label: 'Document C0 shadow plan in unified-causal-log cutover design doc', href: 'unified-causal-log-cutover-plan.html', dot: '#10b981' },
-{ label: 'Add AuthoredMap and AuthoredVector fields to abi_conformance app', href: 'abi-conformance.html', dot: '#10b981' },
+    { label: 'Unified Causal Log Cutover', href: 'unified-causal-log-cutover-plan.html', dot: '#10b981' },
+    { label: 'ABI Conformance', href: 'abi-conformance.html', dot: '#10b981' },
     { label: 'System Overview', href: 'system-overview.html', dot: '#3b82f6' },
     { label: 'Local Governance', href: 'local-governance.html', dot: '#10b981' },
     { label: 'Auto-Follow', href: 'auto-follow.html', dot: '#10b981' },
