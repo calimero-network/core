@@ -226,12 +226,13 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
     );
 }
 
-/// C3 Stage 1: `persist_namespace_head_ops` lands a locally-authored op (written to
-/// the gov-DAG but not the op-store) into the op-store, closing the local-author gap.
+/// C3 Stage 1: a locally-authored op is now written to the op-store ATOMICALLY with
+/// the gov-DAG by `store_signed_operation`, closing the local-author gap at the source;
+/// `repersist_namespace_ops` re-walking the namespace stays idempotent over it.
 /// Uses a REAL encrypted MemberAdded + key so the persisted op carries the decoded
 /// membership — verifying the payload decodes, not just that the id appears.
 #[test]
-fn persist_namespace_head_ops_lands_locally_authored_op_in_the_op_store() {
+fn locally_authored_op_lands_in_the_op_store_atomically() {
     let store = store();
     let admin = PrivateKey::random(&mut OsRng).public_key();
     let member = PrivateKey::random(&mut OsRng).public_key();
@@ -291,9 +292,9 @@ fn persist_namespace_head_ops_lands_locally_authored_op_in_the_op_store() {
         "store_signed_operation must persist the op atomically with the gov-DAG write"
     );
 
-    // `persist_namespace_head_ops` remains idempotent over the now-already-present
-    // op (the redundant per-site re-persist is kept as belt-and-suspenders).
-    ScopeProjections::persist_namespace_head_ops(&store, ns_bytes);
+    // `repersist_namespace_ops` remains idempotent over the now-already-present
+    // op (re-walking and re-persisting rewrites identical bytes).
+    ScopeProjections::repersist_namespace_ops(&store, ns_bytes);
 
     // The op is in the op-store AND decodes to the real membership: a fresh fold
     // of the op-store sees `member` (proves the payload landed, not just the id).

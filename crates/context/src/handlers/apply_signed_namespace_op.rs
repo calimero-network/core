@@ -86,18 +86,6 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         &delta_parents,
                     );
 
-                    // C2.1b dual-write: persist this governance op to the durable
-                    // unified op-store, keyed by its (namespace) scope. Observe-only —
-                    // nothing reads it yet (the per-plane C2 flips switch reads onto
-                    // it). A failure must never affect the governance apply, so it is
-                    // logged, not propagated.
-                    if let Err(err) = crate::unified_op_store::persist_op(&feed_store, &shadow_op) {
-                        tracing::warn!(
-                            %err,
-                            "unified op-store: failed to persist governance op (dual-write)"
-                        );
-                    }
-
                     {
                         // The member this op touches (for the per-member
                         // shadow-compare), if it's a membership op.
