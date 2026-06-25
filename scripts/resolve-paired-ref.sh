@@ -16,6 +16,14 @@ SDK_REPO="${SDK_REPO:-https://github.com/calimero-network/mero-js.git}"
 if [ -n "${PR_BODY:-}" ]; then
   ref="$(printf '%s\n' "$PR_BODY" | sed -n 's/^[[:space:]]*sdk-ref:[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -n1)"
   if [ -n "$ref" ]; then
+    # The ref is fed to `actions/checkout`; restrict it to safe git-ref characters
+    # so a crafted PR body can't smuggle anything else through.
+    case "$ref" in
+      *[!A-Za-z0-9._/-]*)
+        echo "resolve-paired-ref: refusing sdk-ref with illegal characters: $ref" >&2
+        exit 1
+        ;;
+    esac
     echo "$ref"
     exit 0
   fi

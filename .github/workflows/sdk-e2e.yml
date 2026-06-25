@@ -38,10 +38,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust dependencies
         uses: actions/cache@v3
@@ -99,7 +96,7 @@ jobs:
       - name: Run mero-js e2e against booted node
         working-directory: _mero-js
         env:
-          NODE_BASE_URL: "http://localhost:2428"
+          NODE_BASE_URL: "http://localhost:${{ env.SERVER_PORT }}"
           # The e2e coverage recorder writes the endpoints it hit here.
           MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
         run: |
@@ -122,4 +119,6 @@ jobs:
 
       - name: Stop merod
         if: always()
-        run: kill "${MEROD_PID:-0}" 2>/dev/null || true
+        # Guard the PID — an unset MEROD_PID would make `kill 0` signal the whole
+        # process group (it never defaults to 0).
+        run: '[ -n "${MEROD_PID:-}" ] && kill "$MEROD_PID" 2>/dev/null || true'
