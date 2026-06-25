@@ -595,6 +595,39 @@
 <p>The new <code>membership_path_at_cut</code> method is now used as the <strong>primary authorization source</strong> for the <code>MemberJoinedOpen</code> gate. <code>member_joined_open::apply</code> first calls <code>NamespaceApplyCtx::projection_membership_path</code>, which queries the authorizer for the projection's at-cut path and returns <code>Option&lt;AtCutMembershipPath&gt;</code>. If the projection returns a path (i.e. <code>Some(...)</code>), the gate's match branches operate on <code>AtCutMembershipPath</code> variants directly — the live <code>check_path</code> call is skipped entirely. Only when <code>projection_membership_path</code> returns <code>None</code> (no apply-auth context, incomplete fold, or the default live-only authorizer) does the gate fall back to the live <code>MembershipRepository::check_path</code> read. The previous <code>NamespaceApplyCtx::shadow_membership_path</code> helper, which accepted an eagerly-computed <code>live_path</code> argument and logged a <code>tracing::warn!</code> on divergence, has been replaced by <code>projection_membership_path</code>, which takes no <code>live_path</code> argument and returns the resolved projection path instead of logging. The divergence-comparison logic and the <code>unified_projection_divergence</code> / <code>membership-path</code> warning have been removed entirely. The helper <code>membership_path_kind</code>, which collapsed the live <code>MembershipPath</code> to <code>AtCutMembershipPath</code> for that comparison, is no longer needed by this path.</p>
 <p><strong>Note on <code>AtCutMembershipPath</code>:</strong> This is a simplified three-variant enum (<code>None</code> / <code>Direct</code> / <code>Inherited</code>) distinct from the richer live <code>MemberPathAtCut</code>. It collapses role and anchor detail to only the kind the <code>MemberJoinedOpen</code> gate needs. <code>Option::None</code> returned from <code>membership_path_at_cut</code> (and from <code>projection_membership_path</code>) means "defer to live"; <code>AtCutMembershipPath::None</code> means "not a member at the cut".</p>
 </div>
+<div class="card gd"><h2>CI Observability: Governance-Divergence Pull Reporting</h2>
+<p>A non-failing GitHub Actions step named <strong>"Report scope_root governance-divergence pulls"</strong> has been added to the e2e CI workflow. It provides visibility into how often the corrective governance-divergence pull is triggered during a test run without blocking CI on the count.</p>
+
+<h3>What the Step Does</h3>
+<ul>
+  <li>Greps Docker container logs for the structured log marker <code>gov_divergence_pull_triggered</code>.</li>
+  <li>Reports the <strong>total trigger count</strong> across the entire run.</li>
+  <li>Breaks down counts <strong>per <code>context_id</code></strong> to surface any pathological per-tick storm where a single context is responsible for a disproportionate share of pulls.</li>
+</ul>
+
+<h3>Why It Is Non-Failing</h3>
+<p>The step is intentionally designed to <em>observe</em> rather than <em>enforce</em>. A non-zero trigger count is expected and acceptable in normal operation; the step only fails if the log grep itself errors. This matches the intent of the underlying corrective pull: it is a best-effort convergence aid, not a hard invariant.</p>
+
+<h3>Interpreting the Output</h3>
+<ul>
+  <li><strong>Total count of zero</strong> — the divergence path was never hit; governance state was already consistent at every heartbeat tick.</li>
+  <li><strong>Small total, spread across contexts</strong> — normal catch-up after transient lag; no action needed.</li>
+  <li><strong>Large total concentrated on one <code>context_id</code></strong> — indicates a potential pathological storm for that context. Investigate whether the governance epoch is oscillating or whether a peer is repeatedly publishing conflicting heads.</li>
+</ul>
+
+<h3>Finding the Logs</h3>
+<pre class="code"># Example grep pattern used by the CI step
+docker logs &lt;container&gt; 2&gt;&amp;1 | grep gov_divergence_pull_triggered
+
+# Per-context breakdown (approximate shell equivalent)
+docker logs &lt;container&gt; 2&gt;&amp;1 \
+  | grep gov_divergence_pull_triggered \
+  | grep -o 'context_id=[^ ]*' \
+  | sort | uniq -c | sort -rn</pre>
+
+<h3>Relationship to the Corrective Pull</h3>
+<p>The <code>gov_divergence_pull_triggered</code> marker is emitted by the <code>scope_root</code> governance reconciliation path when it detects that the local governance epoch lags behind the epoch carried by an incoming state delta. The corrective pull requests a namespace backfill to close the gap. The CI step makes this otherwise-invisible activity visible in test run logs without introducing a flaky hard gate on trigger frequency.</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
