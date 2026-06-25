@@ -71,6 +71,17 @@ pub(crate) trait ProtocolDispatch {
         our_identity: PublicKey,
         chosen_peer: PeerId,
     ) -> Result<SyncProtocol>;
+
+    /// Pull the namespace governance DAG for `context_id` from `peer`
+    /// (P6.S2). Called when a data-plane sync (HashComparison /
+    /// LevelWise) reports `gov_divergence_detected` — the entity Merkle
+    /// converged but the authoritative `scope_root` did not, so the
+    /// divergence is purely in the ACL/governance plane, which lives
+    /// outside the storage Merkle and is never pulled by the entity
+    /// tree-walk. The manager resolves the namespace for the context
+    /// and issues a `NamespaceBackfillRequest` to the peer. Best-effort:
+    /// a no-op when the context has no resolvable namespace.
+    async fn pull_namespace_governance(&self, context_id: ContextId, peer: PeerId);
 }
 
 /// Protocol-dispatch component.
@@ -266,6 +277,24 @@ impl ProtocolSelector {
                             .await;
                         }
 
+                        // P6.S2: entities converged but the authoritative
+                        // `scope_root` did not ⇒ pure governance-plane
+                        // divergence the entity walk can't reach. Pull the
+                        // namespace governance DAG from this same peer so the
+                        // rotation/ACL change propagates; the next session
+                        // re-reads an agreeing `scope_root`.
+                        if stats.gov_divergence_detected {
+                            info!(
+                                marker = "gov_divergence_pull_triggered",
+                                %context_id,
+                                %chosen_peer,
+                                "scope_root governance divergence — pulling namespace governance from peer"
+                            );
+                            dispatch
+                                .pull_namespace_governance(context_id, chosen_peer)
+                                .await;
+                        }
+
                         Ok(Some(SyncProtocol::HashComparison { root_hash }))
                     }
                     Err(e) => {
@@ -400,6 +429,21 @@ impl ProtocolSelector {
                                 &stats.deferred_root_merges,
                             )
                             .await;
+                        }
+
+                        // P6.S2: governance-plane divergence the entity BFS
+                        // can't reach — pull the namespace governance from this
+                        // peer. Parity with the HashComparison arm above.
+                        if stats.gov_divergence_detected {
+                            info!(
+                                marker = "gov_divergence_pull_triggered",
+                                %context_id,
+                                %chosen_peer,
+                                "scope_root governance divergence — pulling namespace governance from peer"
+                            );
+                            dispatch
+                                .pull_namespace_governance(context_id, chosen_peer)
+                                .await;
                         }
 
                         Ok(Some(SyncProtocol::LevelWise { max_depth }))
