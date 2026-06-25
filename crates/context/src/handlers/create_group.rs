@@ -350,6 +350,24 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             // propagate) any delete error so a partial rollback can't mask
                             // the original apply failure, and so the most useful error
                             // (the genesis apply failure) is the one surfaced.
+                            //
+                            // IDENTITY ROW IS DELIBERATELY NOT ROLLED BACK (#2474).
+                            // The namespace identity created above by
+                            // `get_or_create_namespace_identity` (the keypair backing
+                            // `namespace_id` / `admin_identity` / the signing key) is
+                            // intentionally left in place here. It is derived
+                            // idempotently from the stable `group_id`, so a retry with
+                            // the same `group_id` resolves to the SAME identity →
+                            // SAME founder/admin → SAME signing key. Deleting it would
+                            // risk `get_or_create_namespace_identity` minting a
+                            // DIFFERENT identity (hence a different founder) on retry,
+                            // which is exactly the divergence #2474 closes. Reusing it
+                            // is both safe (it confers no authority on its own —
+                            // authority is established only by the genesis op that just
+                            // failed) and necessary for a deterministic retry. The only
+                            // cost is a harmless dangling identity row if the caller
+                            // never retries; that grants nobody anything and is the
+                            // correct trade against a non-deterministic founder.
                             if let Err(re) = MetaRepository::new(&datastore).delete(&group_id) {
                                 warn!(?re, ?group_id, "rollback: failed to delete root meta");
                             }

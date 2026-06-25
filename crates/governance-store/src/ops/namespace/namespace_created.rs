@@ -82,12 +82,19 @@ pub(crate) fn apply(
     //   * `admin_identity != placeholder` ⇒ a real admin already exists ⇒
     //     genesis is a NO-OP (anti-hijack).
     //
-    // `admin_identity` is THE authority field and is always written in lockstep
-    // with `owner_identity`: the bootstrap KeyDelivery seed
-    // (`seed_bootstrap_admin_if_absent`) writes BOTH as the placeholder, and
-    // the establish branch below writes BOTH as the founder. Because the two
-    // never diverge, the authority field alone is the correct "is this
-    // namespace established?" signal. Keying on `admin_identity` ONLY also
+    // `admin_identity` is THE authority field. This crate's own code paths
+    // always write it together with `owner_identity`: the bootstrap KeyDelivery
+    // seed (`seed_bootstrap_admin_if_absent`) writes BOTH as the placeholder,
+    // and the establish branch below writes BOTH as the founder. They are NOT
+    // guaranteed to be equal in general, though — a partial write (a crash
+    // between two non-atomic `put`s) or an external/legacy writer can leave the
+    // two diverged, and the test
+    // `namespace_created_genesis_proceeds_when_only_admin_is_placeholder`
+    // deliberately constructs exactly such a state. That divergence is harmless
+    // here precisely because the gate keys on `admin_identity` as the SOLE
+    // authority field: "is this namespace established?" is answered correctly
+    // regardless of what `owner_identity` holds. Keying on `admin_identity` ONLY
+    // also
     // fixes a correctness bug in the earlier OR-of-both form: an OR gate could
     // declare a namespace "established" while `admin_identity` was still the
     // placeholder (e.g. a partial write that set only `owner_identity`),
