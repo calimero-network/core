@@ -1,0 +1,21 @@
+error[E0277]: the trait bound `BadStruct: RekeyTarget` is not satisfied
+  --> tests/compile_fail/mergeable_without_rekeytarget.rs:31:20
+   |
+31 | impl Mergeable for BadStruct {
+   |                    ^^^^^^^^^ the trait `RekeyTarget` is not implemented for `BadStruct`
+   |
+   = help: the following other types implement trait `RekeyTarget`:
+             AccessControl
+             AuthoredMap<K, V, S>
+             AuthoredVector<V, S>
+             Box<T>
+             Counter<ALLOW_DECREMENT, S>
+             FrozenValue<T>
+             Option<T>
+             PermissionedStorage<T, A>
+           and $N others
+note: required by a bound in `Mergeable`
+  --> src/collections/crdt_meta.rs
+   |
+   | pub trait Mergeable: crate::collections::rekey::RekeyTarget {
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Mergeable`
