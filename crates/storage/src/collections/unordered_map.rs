@@ -513,6 +513,20 @@ where
         }
     }
 
+    /// Returns the deterministic storage entity id this `key` maps to.
+    ///
+    /// Exposed so callers that reason about an entry's tombstone state — e.g.
+    /// the RGA blob-merge path checking `Index::is_deleted` before re-inserting
+    /// a char absent from `self` — can address the entry's index without a
+    /// second `compute_id` derivation drifting from the map's own keying.
+    pub(crate) fn entry_id<Q>(&self, key: &Q) -> Id
+    where
+        K: Borrow<Q>,
+        Q: AsRef<[u8]> + ?Sized,
+    {
+        compute_id(self.inner.id(), key.as_ref())
+    }
+
     /// Check if the map contains a key.
     ///
     /// # Errors

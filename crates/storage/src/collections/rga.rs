@@ -453,6 +453,54 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         Ok(())
     }
 
+    /// Tombstone-aware RGA character merge (the root-level blob / full-state
+    /// conflict path; see [`crate::collections::crdt_impls`]'s `Mergeable` impl).
+    ///
+    /// For each char in `other`, copy it into `self` ONLY if `self` neither has
+    /// it live NOR has TOMBSTONED it. A char that `self` concurrently deleted
+    /// must stay deleted — delete wins over the live copy in `other`, exactly
+    /// like the element-level `DeleteRef` LWW path
+    /// ([`Interface::apply_delete_ref_action`](crate::interface)). RGA chars are
+    /// immutable once inserted (content + `left` never change for a given
+    /// `CharId`), so there is no concurrent-update-vs-delete race to arbitrate:
+    /// the only conflict is presence-vs-tombstone, and delete wins.
+    ///
+    /// Convergence is preserved: the operation is still commutative,
+    /// associative, and idempotent over the (live-set, tombstone-set) lattice —
+    /// a char is live in the result iff it is live somewhere and tombstoned
+    /// nowhere, which is independent of merge order. The previous `is_none()`-
+    /// only gate resurrected any char `self` had deleted but `other` still held
+    /// (#D2).
+    pub(crate) fn merge_chars_from<S2: StorageAdaptor>(
+        &mut self,
+        other: &ReplicatedGrowableArray<S2>,
+    ) -> Result<(), StoreError> {
+        let other_chars = other.chars.entries()?;
+
+        for (key, char_data) in other_chars {
+            // Propagate a read error instead of swallowing it: `.ok().flatten()`
+            // would treat a transient storage failure as "char absent" and
+            // re-insert, corrupting the array. A genuine absence is `Ok(None)`.
+            if self.chars.get(&key)?.is_some() {
+                // Live in both — keep ours (chars are immutable, so identical).
+                continue;
+            }
+
+            // Absent from `self`'s live set: distinguish "never seen" from
+            // "concurrently deleted". A tombstone means `self` deleted this
+            // char; delete wins, so do NOT resurrect it.
+            let entry_id = self.chars.entry_id(&key);
+            if crate::index::Index::<S>::is_deleted(entry_id)? {
+                continue;
+            }
+
+            // Genuinely new char from `other` — add it (add-wins).
+            let _ = self.chars.insert(key, char_data)?;
+        }
+
+        Ok(())
+    }
+
     // Helper: Get all characters in RGA order (excludes deleted automatically via UnorderedMap)
     //
     // Linearizes the RGA into document order. The result must be a pure
@@ -587,5 +635,175 @@ mod merge_mode_tests {
                 .unwrap();
         });
         assert_eq!(rga.len().unwrap(), 1);
+    }
+}
+
+/// D2 — tombstone-aware blob merge. Exercised across TWO ISOLATED storage
+/// scopes so `self` (the deleter) and `other` (still holding the char live)
+/// have genuinely separate stores, the way two replicas do during a cold-join
+/// / full-state conflict merge. In a single shared store the bug is masked:
+/// `other.chars.entries()` would read the same post-delete child list as
+/// `self`, so the deleted char never re-appears in `other`.
+#[cfg(test)]
+mod tombstone_merge_tests {
+    use super::ReplicatedGrowableArray;
+    use crate::collections::UnorderedMap;
+    use crate::index::Index;
+    use crate::logical_clock::{HybridTimestamp, Timestamp, NTP64};
+    use crate::store::StorageAdaptor;
+
+    /// A non-zero HLC timestamp at physical tick `tick`. Must be non-zero so a
+    /// char's `CharId` never collides with the document-root sentinel
+    /// (`CharId::root()`, which is `(HybridTimestamp::default(), 0)`).
+    fn ts_at(tick: u64) -> HybridTimestamp {
+        let id = *HybridTimestamp::zero().get_id();
+        HybridTimestamp::new(Timestamp::new(NTP64(tick << 32), id))
+    }
+
+    /// Build a generic-`S` RGA whose `chars` map has a deterministic id (same
+    /// across scopes for the same `field_name`), so two replicas share CharIds.
+    fn rga_in<S: StorageAdaptor>(field_name: &str) -> ReplicatedGrowableArray<S> {
+        ReplicatedGrowableArray {
+            chars: UnorderedMap::new_with_field_name_and_crdt_type(
+                None,
+                field_name,
+                crate::collections::CrdtType::Rga,
+            ),
+        }
+    }
+
+    #[test]
+    fn blob_merge_does_not_resurrect_concurrently_deleted_char() {
+        // Two isolated stores standing in for two replicas.
+        type A = crate::store::MockedStorage<811>;
+        type B = crate::store::MockedStorage<812>;
+
+        // Deterministic non-zero timestamp → identical CharIds for "Hi" in both
+        // replicas (and distinct from the root sentinel).
+        let ts = ts_at(1);
+
+        // Replica A: seed "Hi", then delete 'H' (tombstones that char entity).
+        let mut a = rga_in::<A>("content");
+        a.insert_str_at_timestamp(0, ts, "Hi").unwrap();
+        assert_eq!(a.get_text().unwrap(), "Hi");
+        a.delete(0).unwrap(); // delete 'H'
+        assert_eq!(a.get_text().unwrap(), "i");
+
+        // Replica B: seed the SAME "Hi" (identical CharIds), keep all live.
+        let mut b = rga_in::<B>("content");
+        b.insert_str_at_timestamp(0, ts, "Hi").unwrap();
+        assert_eq!(b.get_text().unwrap(), "Hi");
+
+        // Sanity: A genuinely tombstoned the 'H' char entity, and B still holds
+        // the SAME entity id live — i.e. the resurrection scenario is real.
+        let h_key = {
+            // The first char's id is (ts, seq=0); reconstruct its entry id.
+            let id = super::CharId::new(ts, 0);
+            super::CharKey::new(id)
+        };
+        let a_entry = a.chars.entry_id(&h_key);
+        let b_entry = b.chars.entry_id(&h_key);
+        assert_eq!(a_entry, b_entry, "replicas must share the char entity id");
+        assert!(
+            Index::<A>::is_deleted(a_entry).unwrap(),
+            "'H' must be tombstoned on replica A"
+        );
+        assert!(
+            !Index::<B>::is_deleted(b_entry).unwrap(),
+            "'H' must be live on replica B"
+        );
+
+        // The chars-map parent index records the tombstone on the SYNC WIRE:
+        // 'H' is absent from `children` and present in `deleted_children`, and
+        // the parent `full_hash` reflects the deletion. Resurrection is
+        // observable HERE even though `get_text` masks it (`find_by_id` filters
+        // tombstoned ids, so a resurrected child is silently dropped by the
+        // map iterator) — the real damage is the lost tombstone + diverged hash
+        // a peer would then observe.
+        let parent = Index::<A>::get_parent_id(a_entry).unwrap().unwrap();
+        let pre = Index::<A>::get_index(parent).unwrap().unwrap();
+        let pre_hash = pre.full_hash();
+        assert!(
+            pre.deleted_children().contains(&a_entry),
+            "precondition: 'H' must be advertised as deleted before the merge"
+        );
+        assert!(
+            pre.children()
+                .map(|c| c.iter().all(|ci| ci.id() != a_entry))
+                .unwrap_or(true),
+            "precondition: 'H' must NOT be a live child before the merge"
+        );
+
+        // Merge B (live 'H') INTO A (deleted 'H'). Delete must win — the blob
+        // merge must NOT resurrect the char A concurrently deleted.
+        a.merge_chars_from(&b).unwrap();
+
+        let post = Index::<A>::get_index(parent).unwrap().unwrap();
+        assert!(
+            Index::<A>::is_deleted(a_entry).unwrap(),
+            "blob merge un-tombstoned the concurrently-deleted 'H' (D2)"
+        );
+        assert!(
+            post.deleted_children().contains(&a_entry),
+            "blob merge dropped 'H' from the wire tombstone advertisement (D2)"
+        );
+        assert!(
+            post.children()
+                .map(|c| c.iter().all(|ci| ci.id() != a_entry))
+                .unwrap_or(true),
+            "blob merge re-added 'H' as a live child — resurrection (D2)"
+        );
+        assert_eq!(
+            post.full_hash(),
+            pre_hash,
+            "blob merge changed the chars-map hash, diverging from peers that \
+             saw the delete (D2)"
+        );
+        assert_eq!(
+            a.get_text().unwrap(),
+            "i",
+            "visible text must stay 'i' after the merge"
+        );
+
+        // Idempotent: re-merging the same live 'H' must leave A unchanged.
+        a.merge_chars_from(&b).unwrap();
+        assert_eq!(
+            Index::<A>::get_index(parent).unwrap().unwrap().full_hash(),
+            pre_hash,
+            "repeated blob merge must remain idempotent (delete still wins)"
+        );
+
+        // NOTE on convergence: a *deletion* propagates B→A via the element-level
+        // DeleteRef path (which carries the tombstone on the wire), not via this
+        // blob merge — `other.chars.entries()` only yields LIVE chars, so a
+        // delete on A is invisible to a blob merge INTO B by construction. The
+        // audit explicitly scopes the blob-merge fix to non-resurrection; the
+        // DeleteRef path (covered by `tests/rga.rs`'s delta-sync tests) carries
+        // the tombstone for full convergence.
+    }
+
+    #[test]
+    fn blob_merge_still_adds_genuinely_new_chars() {
+        // The tombstone guard must NOT suppress add-wins for chars `self` has
+        // simply never seen.
+        type A = crate::store::MockedStorage<813>;
+        type B = crate::store::MockedStorage<814>;
+
+        let ts = ts_at(1);
+        let mut a = rga_in::<A>("doc");
+        a.insert_str_at_timestamp(0, ts, "Hi").unwrap();
+
+        let mut b = rga_in::<B>("doc");
+        b.insert_str_at_timestamp(0, ts, "Hi").unwrap();
+        // B appends a genuinely new char at a strictly later timestamp.
+        b.insert_str_at_timestamp(2, ts_at(2), "!").unwrap();
+        assert_eq!(b.get_text().unwrap(), "Hi!");
+
+        a.merge_chars_from(&b).unwrap();
+        assert_eq!(
+            a.get_text().unwrap(),
+            "Hi!",
+            "merge must add the genuinely-new '!' char (add-wins still holds)"
+        );
     }
 }

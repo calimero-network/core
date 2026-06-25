@@ -230,26 +230,16 @@ impl CrdtMeta for ReplicatedGrowableArray {
 impl Mergeable for ReplicatedGrowableArray {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // RGA is built on UnorderedMap which has element-level DAG synchronization.
-        // During root-level merge (e.g., periodic full state sync or conflict resolution),
-        // we need to merge the RGA contents by ensuring both nodes have all characters.
+        // During root-level merge (e.g., periodic full state sync or conflict
+        // resolution), we merge the RGA contents by ensuring both nodes have all
+        // characters that neither has tombstoned.
         //
         // We can't use `chars.merge()` because RgaChar doesn't implement Mergeable
-        // (it's a simple data struct, not a CRDT). Instead, we copy all characters
-        // from `other` that we don't have yet.
-        let other_chars = other.chars.entries()?;
-
-        for (key, char_data) in other_chars {
-            // Propagate a read error instead of swallowing it: `.ok().flatten()`
-            // would treat a transient storage failure as "char absent" and
-            // re-insert, corrupting the array. A genuine absence is `Ok(None)`.
-            if self.chars.get(&key)?.is_none() {
-                // Character exists in other but not in self - add it
-                let _ = self.chars.insert(key, char_data)?;
-            }
-            // If character exists in both, keep ours (they should be identical anyway,
-            // since characters are immutable once inserted)
-        }
-
+        // (it's a simple data struct, not a CRDT). `merge_chars_from` copies each
+        // char from `other` that `self` neither holds live nor has TOMBSTONED —
+        // so a concurrently-deleted char is never resurrected (#D2). Delegated to
+        // a generic method so it is unit-testable across isolated storage scopes.
+        self.merge_chars_from(other)?;
         Ok(())
     }
 }
