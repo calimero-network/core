@@ -207,6 +207,31 @@ where
             StorageDelta::Comparisons(_) => "Comparisons",
         };
 
+        // #D1 — advance the local HLC to observe the remote delta's clock
+        // BEFORE applying it. The CRDT ordering (RGA `CharId`, LWW tiebreak)
+        // relies on a Hybrid Logical Clock whose `update` rule guarantees a
+        // locally-minted timestamp issued after observing a remote event sorts
+        // strictly after it. Without feeding the received delta's HLC back into
+        // the clock, a node that observes a remote insert can then stamp its own
+        // next insert with a timestamp ≤ the remote char it causally follows —
+        // converging, but ordered wrong. `CausalActions` carries the
+        // originating delta's HLC; `Actions` (host-side replay of
+        // already-verified state) carries none, so there is nothing to observe.
+        //
+        // A drift-rejected remote timestamp (>5s ahead) must NOT abort the
+        // apply: the actions are still valid replicated state. Log and proceed —
+        // the local clock simply doesn't jump to an implausible future tick.
+        if let StorageDelta::CausalActions { delta_hlc, .. } = &artifact {
+            if let Err(crate::env::HlcDriftError) = crate::env::update_hlc(delta_hlc) {
+                tracing::warn!(
+                    target: "storage::root",
+                    %delta_hlc,
+                    "Root::sync: remote delta HLC rejected by drift guard (>5s ahead); \
+                     applying actions without advancing the local clock to it"
+                );
+            }
+        }
+
         // `match` is an expression — assign directly. `inspect_err` then
         // logs without rewriting the Result; `?` propagates the Err to
         // the caller (the SDK macro's `.expect("fatal: sync failed")`).

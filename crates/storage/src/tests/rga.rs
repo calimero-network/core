@@ -945,3 +945,155 @@ fn test_rga_concurrent_appends_then_delete_delta_sync_converges() {
         hex::encode(n3_final_hash),
     );
 }
+
+/// D1 — the receive/apply path must advance the local HLC to observe a remote
+/// delta's clock. RGA `CharId`s are stamped from the local clock and ordered by
+/// `Reverse(CharId)`, so if a node observes a remote insert (high HLC) but its
+/// own clock stays behind, its NEXT local insert can be stamped ≤ the remote
+/// char it causally follows — converging, but causally wrong ordering.
+///
+/// `Root::sync` now feeds a `CausalActions` delta's `delta_hlc` into
+/// `env::update_hlc` before applying. This test drives a delta whose HLC is far
+/// ahead of the local clock and asserts the next locally-minted timestamp sorts
+/// strictly after the observed remote HLC.
+#[test]
+#[serial_test::serial]
+fn test_sync_advances_local_hlc_to_observe_remote_delta() {
+    use std::collections::BTreeMap;
+
+    use crate::collections::Root;
+    use crate::delta::StorageDelta;
+    use crate::interface::ApplyContext;
+    use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+    use crate::store::MainStorage;
+
+    env::reset_for_testing();
+
+    // A remote delta HLC a couple of seconds ahead of the local wall clock —
+    // within the 5s drift tolerance, so it must be accepted and observed.
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let remote_secs = (now_nanos / 1_000_000_000) + 2;
+    let remote_ntp = remote_secs << 32;
+    let id = ID::from(core::num::NonZeroU128::new(0x1234_5678).unwrap());
+    let remote_hlc = HybridTimestamp::new(Timestamp::new(NTP64(remote_ntp), id));
+
+    // Apply a CausalActions delta with NO actions (we only care about the clock
+    // side effect) but a high delta_hlc.
+    let delta = StorageDelta::CausalActions {
+        actions: vec![],
+        delta_id: [0x42; 32],
+        delta_hlc: remote_hlc,
+        effective_writers: BTreeMap::new(),
+    };
+    let payload = borsh::to_vec(&delta).unwrap();
+    Root::<crate::collections::Vector<u8>, MainStorage>::sync(&payload, &ApplyContext::empty())
+        .unwrap();
+
+    // The next locally-minted timestamp must sort strictly after the remote HLC.
+    let next = env::hlc_timestamp();
+    assert!(
+        next.get_time().as_u64() > remote_hlc.get_time().as_u64(),
+        "after observing a remote delta at {remote_hlc}, the next local timestamp \
+         {next} must sort strictly after it (D1: HLC causality on receive)"
+    );
+}
+
+/// D1 end-to-end through the RGA: node B observes node A's char (delivered as a
+/// CausalActions delta carrying A's HLC) and then inserts locally. Because the
+/// receive path advances B's clock to observe A's HLC, B's new `CharId` sorts
+/// strictly after A's, and the rendered order is causal (B's char anchored
+/// after A's lands after A's char). Before D1, B's clock could stay behind A's,
+/// stamping B's char ≤ A's and inverting the interleave.
+#[test]
+#[serial_test::serial]
+fn test_rga_insert_after_observing_remote_is_causally_ordered() {
+    use std::collections::BTreeMap;
+
+    use crate::address::Id;
+    use crate::collections::{Mergeable, Root};
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::logical_clock::HybridTimestamp;
+    use crate::merge::register_crdt_merge;
+    use crate::store::MainStorage;
+
+    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+    struct RgaDoc {
+        content: ReplicatedGrowableArray,
+    }
+    impl Mergeable for RgaDoc {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.content.merge(&other.content)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let fresh_node = |executor: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<RgaDoc>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(executor);
+    };
+
+    // === Node A: insert 'A' at position 0; capture the delta (carrying A's HLC).
+    fresh_node([1; 32]);
+    let mut a = Root::<RgaDoc, S>::new(|| RgaDoc {
+        content: ReplicatedGrowableArray::new_with_field_name("content"),
+    });
+    a.content.insert(0, 'A').unwrap();
+    let a_data = borsh::to_vec(&*a).unwrap();
+    drop(a);
+    Interface::<S>::save_raw(Id::root(), a_data, Metadata::default()).unwrap();
+    let a_hash = root_hash();
+    let a_delta = commit_causal_delta(&a_hash)
+        .unwrap()
+        .expect("A's insert must produce a delta");
+    // A's HLC for its char — read from the captured delta.
+    let a_hlc: HybridTimestamp = a_delta.hlc;
+    let a_actions = a_delta.actions;
+
+    // === Node B: starts with a clock deliberately behind A. Observe A's delta
+    // (as CausalActions, carrying A's HLC), then insert 'B' at position 1.
+    fresh_node([2; 32]);
+    let causal = StorageDelta::CausalActions {
+        actions: a_actions,
+        delta_id: a_hash,
+        delta_hlc: a_hlc,
+        effective_writers: BTreeMap::new(),
+    };
+    Root::<RgaDoc, S>::sync(&borsh::to_vec(&causal).unwrap(), &ApplyContext::empty()).unwrap();
+
+    let mut b = Root::<RgaDoc, S>::fetch().unwrap();
+    assert_eq!(
+        b.content.get_text().unwrap(),
+        "A",
+        "B must have materialized A's char before its own insert"
+    );
+    // B inserts 'B' AFTER 'A' (position 1). Its CharId is minted from B's clock,
+    // which the receive path advanced to observe A's HLC.
+    let b_hlc_before = env::hlc_timestamp();
+    assert!(
+        b_hlc_before.get_time().as_u64() > a_hlc.get_time().as_u64(),
+        "B's clock must have advanced past A's observed HLC ({a_hlc}); got {b_hlc_before}"
+    );
+    b.content.insert(1, 'B').unwrap();
+
+    // Rendered order is causal: 'A' then 'B'.
+    assert_eq!(
+        b.content.get_text().unwrap(),
+        "AB",
+        "B's insert after observing A must render causally as \"AB\""
+    );
+}
