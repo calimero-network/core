@@ -168,11 +168,23 @@ pub(crate) fn apply(
                 // meta-save. The member row is the authority-bearing row; with a
                 // non-atomic store, if a write fails midway, losing the (#602)
                 // owner repair is less harmful than losing the Admin row.
-                MembershipRepository::new(store).add_member(
-                    &ns_gid,
-                    &founder,
-                    GroupMemberRole::Admin,
-                )?;
+                //
+                // ONLY-UPGRADE, NEVER-DOWNGRADE: `add_member` is a guaranteed
+                // upsert (overwrites the role), and Admin is the top role today,
+                // so an unconditional write would be harmless now. But to stay
+                // correct against a hypothetical future role richer than Admin,
+                // we read the current role and only force Admin when the founder
+                // is absent or a plain Member. This preserves the
+                // seed-before-genesis upgrade path (Member → Admin) while never
+                // clobbering an already-Admin-or-richer row on this re-arrival
+                // branch (where the row already exists).
+                let membership = MembershipRepository::new(store);
+                match membership.role_of(&ns_gid, &founder)? {
+                    None | Some(GroupMemberRole::Member) => {
+                        membership.add_member(&ns_gid, &founder, GroupMemberRole::Admin)?;
+                    }
+                    Some(_) => {}
+                }
                 if meta.owner_identity != founder {
                     let mut repaired = meta.clone();
                     repaired.owner_identity = founder;
@@ -309,6 +321,13 @@ pub(crate) fn apply(
     // genesis handler self-contained and correct regardless of seed-vs-genesis
     // ordering. (If `add_member` ever changes to skip existing rows, this must
     // become an explicit `role_of`-checked force-to-Admin.)
+    //
+    // INVARIANT: add_member must be an unconditional upsert (overwrite, not
+    // skip-if-exists) so the seed-before-genesis ordering upgrades a seeded
+    // Member row to Admin. If add_member ever becomes skip-if-exists, this
+    // handler must switch to an explicit role-upgrade. Covered by the regression
+    // test `namespace_created_genesis_upgrades_seeded_member_founder_to_admin`
+    // (Member → Admin upgrade on this establish path).
     MembershipRepository::new(store).add_member(&ns_gid, &founder, GroupMemberRole::Admin)?;
 
     // ---- Default caps: CAN_JOIN_OPEN_SUBGROUPS. ----

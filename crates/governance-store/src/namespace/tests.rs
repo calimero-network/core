@@ -1832,6 +1832,69 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
 }
 
 #[test]
+fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
+    // Guards the (2a) ONLY-UPGRADE-never-downgrade behavior of the established
+    // same-founder re-arrival branch. `add_member` is an upsert and Admin is the
+    // top role today, so an unconditional write is harmless now — but to stay
+    // correct against a hypothetical future role richer than Admin, the branch
+    // reads the existing role and only forces Admin when the founder is absent or
+    // a plain Member. With the founder ALREADY Admin, a parentless same-founder
+    // genesis re-arrival must leave the role at Admin (never overwrite/downgrade
+    // it).
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xF1u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Pre-establish the namespace fully: meta admin == owner == founder AND an
+    // explicit Admin member row for the founder.
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(founder))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &founder, GroupMemberRole::Admin)
+        .unwrap();
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        Some(GroupMemberRole::Admin),
+        "precondition: founder is already established as Admin"
+    );
+
+    // A parentless same-founder genesis re-arrives (e.g. via sync backfill).
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+        .expect("founder signs NamespaceCreated genesis");
+    gov.apply_signed_op(&signed)
+        .expect("parentless same-founder genesis is an idempotent re-arrival no-op");
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        Some(GroupMemberRole::Admin),
+        "(2a) re-arrival must NEVER downgrade an already-Admin founder row"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "founder remains admin after the idempotent re-arrival"
+    );
+}
+
+#[test]
 fn namespace_created_genesis_signer_must_equal_founder() {
     // #2474 review follow-up: genesis is self-authorizing (it skips
     // `require_namespace_admin`), so the ONLY thing binding the established
