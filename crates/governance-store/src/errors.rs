@@ -358,6 +358,21 @@ pub enum GroupCreatedRejection {
     Unauthorized { signer: String, namespace: String },
 }
 
+/// Reasons `RootOp::NamespaceCreated` (the namespace GENESIS op, #2474) apply
+/// can be rejected.
+#[derive(Debug, Error)]
+pub enum NamespaceCreatedRejection {
+    /// The op's signer does not equal the declared `founder`. Genesis is
+    /// self-authorizing (it skips `require_namespace_admin`), so the only
+    /// thing binding the established admin to the signing key is this check:
+    /// the genesis MUST be signed with the namespace key == the founder's key
+    /// at creation. Without it a non-founder could sign a `NamespaceCreated`
+    /// declaring an arbitrary `founder` and pin a forged admin on a namespace
+    /// that has no prior genesis.
+    #[error("genesis signer {signer} does not match declared founder {founder}")]
+    SignerNotFounder { signer: String, founder: String },
+}
+
 /// Reasons `RootOp::GroupDeleted` apply can be rejected.
 #[derive(Debug, Error)]
 pub enum GroupDeletedRejection {
@@ -464,4 +479,10 @@ pub enum ApplyError {
     /// four distinct rejection causes.
     #[error("MemberJoinedOpen rejected: {0}")]
     MemberJoinedOpenRejected(#[source] MemberJoinedOpenRejection),
+
+    /// `NamespaceCreated` (genesis) op rejected. Wraps a structured
+    /// [`NamespaceCreatedRejection`] so callers can match the specific
+    /// cause (currently only signer != founder).
+    #[error("NamespaceCreated rejected: {0}")]
+    NamespaceCreatedRejected(#[source] NamespaceCreatedRejection),
 }

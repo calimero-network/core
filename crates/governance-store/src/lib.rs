@@ -139,7 +139,7 @@ pub type ResolvedIdentity = (PublicKey, [u8; 32], [u8; 32]);
 pub use self::errors::{
     ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
     GroupDeletedRejection, KeyringError, MemberJoinedOpenRejection, MembershipError, MetaError,
-    NamespaceError, SigningKeysError,
+    NamespaceCreatedRejection, NamespaceError, SigningKeysError,
 };
 
 // ---------------------------------------------------------------------------

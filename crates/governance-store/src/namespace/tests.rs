@@ -1580,6 +1580,54 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
 }
 
 #[test]
+fn namespace_created_genesis_signer_must_equal_founder() {
+    // #2474 review follow-up: genesis is self-authorizing (it skips
+    // `require_namespace_admin`), so the ONLY thing binding the established
+    // admin to a real signing key is the signer==founder check. A non-founder
+    // who signs `NamespaceCreated { founder: <someone-else> }` with their own
+    // key, on a namespace with no prior genesis, must be REJECTED — never
+    // applied (which would pin a forged admin) and never silently no-op'd.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let attacker_sk = PrivateKey::random(&mut rng);
+    let victim_sk = PrivateKey::random(&mut rng);
+    let victim = victim_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xB7u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Attacker declares the victim as founder but signs with their OWN key.
+    let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: victim });
+    let signed =
+        SignedNamespaceOp::sign(&attacker_sk, namespace_id, vec![], [0u8; 32], 0, forged).unwrap();
+
+    let res = gov.apply_signed_op(&signed);
+    assert!(
+        res.is_err(),
+        "genesis whose signer != founder must be rejected, not applied"
+    );
+
+    // No root meta was written — the forged genesis pinned no admin.
+    assert!(
+        MetaRepository::new(&store).load(&ns_gid).unwrap().is_none(),
+        "rejected genesis must leave the namespace with no root meta (no forged admin)"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &victim)
+            .unwrap(),
+        "victim was not made admin by a forged genesis"
+    );
+}
+
+#[test]
 fn replica_op_log_dedup_survives_head_pruning() {
     use calimero_context_client::local_governance::{
         NamespaceOp, SignedGroupOp, SignedNamespaceOp, SIGNED_GROUP_OP_SCHEMA_VERSION,

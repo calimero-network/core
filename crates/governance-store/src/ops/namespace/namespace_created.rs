@@ -18,12 +18,15 @@
 //! idempotent.
 
 use super::context::NamespaceApplyCtx;
-use crate::{CapabilitiesRepository, MembershipRepository, MetaRepository};
+use crate::{
+    ApplyError, CapabilitiesRepository, MembershipRepository, MetaRepository,
+    NamespaceCreatedRejection,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 
 /// The zero public key — the placeholder `admin_identity` that the
 /// bootstrap KeyDelivery seed writes before genesis arrives. It grants
@@ -36,12 +39,32 @@ fn placeholder_admin() -> PublicKey {
 
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
-    _op: &calimero_context_client::local_governance::SignedNamespaceOp,
+    op: &calimero_context_client::local_governance::SignedNamespaceOp,
     founder: PublicKey,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
     let ns_gid = ContextGroupId::from(namespace_id);
+
+    // ---- Self-authorization binding: signer MUST equal the declared founder. ----
+    // Genesis is the one authority-bearing root op that SKIPS
+    // `require_namespace_admin` (there is no prior admin to check against), so
+    // the only thing tying the established admin to a real signing key is this
+    // check. The invariant holds because the genesis is signed with the
+    // namespace key == the founder's key at creation. Without it a non-founder
+    // could sign `NamespaceCreated { founder: <someone-else> }` with their own
+    // key and, on a namespace with no prior genesis, pin a forged/wrong admin.
+    // Enforced BEFORE the anti-hijack/established gate so a mismatched op is
+    // rejected outright (logged as rejected via `ApplyError`, never applied),
+    // never silently treated as a no-op.
+    if op.signer != founder {
+        bail!(ApplyError::NamespaceCreatedRejected(
+            NamespaceCreatedRejection::SignerNotFounder {
+                signer: format!("{}", op.signer),
+                founder: format!("{founder}"),
+            }
+        ));
+    }
 
     // ---- Anti-hijack / idempotency gate. ----
     // Genesis may only ESTABLISH a founder; it may never overwrite one. An
@@ -95,7 +118,16 @@ pub(crate) fn apply(
     // Mirrors the bootstrap seed and the owner-side `store_group_meta`
     // precedent so members admitted before a later `DefaultCapabilitiesSet`
     // gossip still inherit the bit that gates Open-subgroup inheritance.
-    // Gated on absence so an admin-authored override is never clobbered.
+    //
+    // The `is_none()` gate is load-bearing, NOT just an optimization: genesis
+    // can arrive LATE on a backfilling replica — after an admin-authored
+    // `DefaultCapabilitiesSet` has already run and, say, REMOVED
+    // CAN_JOIN_OPEN_SUBGROUPS. Writing the default unconditionally here would
+    // clobber that later admin decision and silently re-grant the bit. Gating
+    // on absence means genesis only ever SEEDS the default when no explicit
+    // caps row exists yet; once any `DefaultCapabilitiesSet` has written one,
+    // genesis leaves it untouched regardless of arrival order. If this gate
+    // condition is ever changed, this no-clobber invariant MUST be preserved.
     let caps = CapabilitiesRepository::new(store);
     if caps.default_capabilities(&ns_gid)?.is_none() {
         caps.set_default_capabilities(&ns_gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)?;

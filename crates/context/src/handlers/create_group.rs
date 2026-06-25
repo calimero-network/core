@@ -270,6 +270,11 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             );
                         }
                         Err(e) => {
+                            // Subgroup GroupCreated intentionally keeps warn-and-
+                            // continue: unlike the namespace-ROOT genesis below, a
+                            // subgroup's authoritative state is recoverable by re-
+                            // applying the (idempotent) GroupCreated op, and a missing
+                            // subgroup op does not strand the namespace founder.
                             tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");
                         }
                     }
@@ -295,10 +300,33 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             );
                         }
                         Err(e) => {
-                            tracing::warn!(
-                                ?e,
-                                "failed to publish NamespaceCreated genesis on namespace DAG"
-                            );
+                            // FATAL for namespace-ROOT creation (#2474): the genesis
+                            // op is what makes the founder authoritative on the DAG.
+                            // If we swallowed this error (the old warn-and-continue),
+                            // the namespace would exist locally with correct meta but
+                            // NO genesis on the DAG — and a backfilling replica would
+                            // fall back to the broken TOFU seed (`seed_bootstrap_admin
+                            // _if_absent`), pinning the wrong admin. That is exactly
+                            // the production bug this PR fixes, so genesis emission
+                            // MUST be atomic with root creation: propagate and fail
+                            // the create.
+                            //
+                            // NOTE: the local root `GroupMetaValue` was already
+                            // written above (line ~166), so a failure here leaves a
+                            // local meta with no published genesis. Returning Err
+                            // surfaces the failure to the caller clearly; full atomic
+                            // rollback of the local writes is out of scope for this
+                            // change. TODO(#2474-followup): add a startup-repair pass
+                            // that re-emits a missing `NamespaceCreated` genesis for
+                            // any locally-owned namespace root whose DAG lacks one,
+                            // so a crash/transient publish failure self-heals on next
+                            // boot. Until then the caller must treat a failed create
+                            // as needing retry.
+                            return Err(eyre::eyre!(
+                                "failed to publish NamespaceCreated genesis on namespace DAG; \
+                                 aborting namespace-root creation (genesis must be atomic with \
+                                 root creation, #2474): {e}"
+                            ));
                         }
                     }
                 }
