@@ -3414,6 +3414,26 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
     ) -> eyre::Result<SyncProtocol> {
         SyncManager::fallback_to_snapshot_sync(self, context_id, our_identity, chosen_peer).await
     }
+
+    async fn pull_namespace_governance(&self, context_id: ContextId, peer: PeerId) {
+        let namespace_id = {
+            let store = self.context_client.datastore_handle().into_inner();
+            namespace_sync::resolve_namespace_id(&store, &context_id)
+        };
+        let Some(namespace_id) = namespace_id else {
+            debug!(
+                %context_id,
+                "scope_root governance pull: could not resolve namespace id; skipping"
+            );
+            return;
+        };
+        // Pull the namespace governance DAG from the peer we just diverged
+        // from — it holds the rotation/ACL op our entity walk couldn't see.
+        // Same `NamespaceBackfillRequest` machinery as the pending-delta and
+        // join backfills, just edge-triggered on the scope_root verdict.
+        self.sync_namespace_from_peer(namespace_id, Some(peer))
+            .await;
+    }
 }
 
 // Driver-dispatch back into `SyncManager` for the cross-actor message

@@ -145,6 +145,11 @@ pub struct LevelWiseStats {
     pub requests_sent: u64,
     /// Whether final root hash was verified against expected.
     pub root_hash_verified: bool,
+    /// Whether the convergence verdict was `GovDiverged` (entity roots
+    /// agreed, authoritative `scope_root` differed). Same meaning and
+    /// caller reaction as [`crate::sync::hash_comparison_protocol::HashComparisonStats::gov_divergence_detected`]:
+    /// the selector pulls the namespace governance DAG from this peer (P6.S2).
+    pub gov_divergence_detected: bool,
     /// Whether parent_ids were truncated due to `MAX_PARENTS_PER_REQUEST`.
     ///
     /// If true, the sync may be incomplete and a follow-up sync might be needed.
@@ -616,10 +621,14 @@ async fn run_initiator_impl<T: SyncTransport>(
         peer_current_root,
     );
     stats.root_hash_verified = verdict.converged();
+    stats.gov_divergence_detected =
+        matches!(verdict, super::helpers::ScopeVerdict::GovDiverged(..));
 
     if !stats.root_hash_verified {
         // Entities agree but scope_root differs ⇒ pure ACL/governance divergence
-        // (the case the entity root hides); distinct marker, parity with HC.
+        // (the case the entity root hides); distinct marker, parity with HC. The
+        // selector reacts to `gov_divergence_detected` by pulling governance from
+        // the peer (P6.S2).
         if let super::helpers::ScopeVerdict::GovDiverged(local_scope_root, peer_scope_root) =
             verdict
         {
@@ -630,7 +639,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                 local_scope_root = %hex::encode(&local_scope_root[..8]),
                 peer_scope_root = %hex::encode(&peer_scope_root[..8]),
                 "entity roots agree but scope_root differs — ACL/membership divergence; \
-                 awaiting governance sync to propagate the rotation"
+                 pulling governance from the peer to propagate the rotation"
             );
         } else {
             warn!(
