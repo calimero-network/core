@@ -955,7 +955,10 @@ impl<'a> NamespaceGovernance<'a> {
         // the real founder over it; an established namespace (non-zero admin) is
         // protected from a forged second genesis. Either ordering — seed first
         // or genesis first — converges on the genesis-supplied founder.
-        let placeholder_admin = PublicKey::from([0u8; 32]);
+        // Shared zero-key sentinel — see `crate::PLACEHOLDER_ADMIN_IDENTITY`.
+        // The genesis anti-hijack gate compares against the SAME constant, so
+        // the seed and the gate cannot drift on this magic value (#2474).
+        let placeholder_admin = crate::placeholder_admin_identity();
         let meta_existed = MetaRepository::new(self.store).load(&gid)?.is_some();
         if !meta_existed {
             let meta = calimero_store::key::GroupMetaValue {

@@ -1580,6 +1580,75 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
 }
 
 #[test]
+fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
+    // #2474 reviewer batch 2, item #4: when the bootstrap seed runs FIRST for
+    // the FOUNDER's own identity, it writes the founder as a non-authoritative
+    // `Member` placeholder row (seed never confers authority). The later genesis
+    // op must make the handler SELF-CONTAINED: it must UPGRADE that existing
+    // `Member` row to `Admin`, not no-op on it leaving a stale `Member`. This
+    // guards the upsert semantics of `add_member` the genesis handler relies on.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xD9u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // ---- Seed FIRST, for the founder's OWN identity (the deliverer happens to
+    // be the founder). The seed writes placeholder meta + the founder as a
+    // non-authoritative `Member`. ----
+    gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
+        .expect("bootstrap seed writes founder as a Member placeholder");
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        Some(GroupMemberRole::Member),
+        "precondition: seed writes the founder as a non-authoritative Member"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "precondition: the seeded founder is NOT yet admin"
+    );
+
+    // ---- Genesis lands and must UPGRADE the founder Member row to Admin. ----
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+        .expect("founder signs NamespaceCreated genesis");
+    gov.apply_signed_op(&signed)
+        .expect("genesis applies over the founder's seeded Member placeholder");
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        Some(GroupMemberRole::Admin),
+        "#2474 item 4: genesis must UPGRADE the seeded Member row to Admin"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "founder is admin after genesis"
+    );
+    let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(meta.admin_identity, founder, "admin_identity == founder");
+    assert_eq!(meta.owner_identity, founder, "owner_identity == founder");
+}
+
+#[test]
 fn namespace_created_genesis_signer_must_equal_founder() {
     // #2474 review follow-up: genesis is self-authorizing (it skips
     // `require_namespace_admin`), so the ONLY thing binding the established

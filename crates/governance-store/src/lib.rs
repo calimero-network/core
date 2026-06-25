@@ -130,6 +130,24 @@ use self::upgrades::extract_application_id;
 /// A resolved member identity: public key plus its two associated 32-byte keys.
 pub type ResolvedIdentity = (PublicKey, [u8; 32], [u8; 32]);
 
+/// The zero-key sentinel written as the placeholder `admin_identity` /
+/// `owner_identity` by the bootstrap KeyDelivery seed
+/// (`NamespaceGovernance::seed_bootstrap_admin_if_absent`) before the
+/// `RootOp::NamespaceCreated` genesis op arrives.
+///
+/// It grants authority to nobody (it can never equal a real signing
+/// identity) and is the single sentinel the genesis anti-hijack gate
+/// (`ops::namespace::namespace_created::apply`) checks to distinguish a
+/// not-yet-established namespace (placeholder admin/owner) from an
+/// established one (real founder). Defined once here so the seed and the
+/// gate cannot drift on the magic value (#2474).
+pub(crate) const PLACEHOLDER_ADMIN_IDENTITY: [u8; 32] = [0u8; 32];
+
+/// The [`PublicKey`] form of [`PLACEHOLDER_ADMIN_IDENTITY`].
+pub(crate) fn placeholder_admin_identity() -> PublicKey {
+    PublicKey::from(PLACEHOLDER_ADMIN_IDENTITY)
+}
+
 // ---------------------------------------------------------------------------
 // Typed errors for group store operations
 // ---------------------------------------------------------------------------

@@ -12,30 +12,22 @@
 //! establishes that authority — there is no prior admin to check against.
 //!
 //! Anti-hijack: a `NamespaceCreated` is applied only when the namespace has no
-//! established founder yet (no root meta with a non-zero `admin_identity`). A
-//! second `NamespaceCreated` on an already-established namespace is a NO-OP, so a
-//! forged second genesis cannot overwrite an existing admin and apply stays
-//! idempotent.
+//! established founder yet — i.e. its root meta is absent, or BOTH
+//! `admin_identity` AND `owner_identity` are still the placeholder sentinel
+//! (`crate::PLACEHOLDER_ADMIN_IDENTITY`). A second `NamespaceCreated` on an
+//! already-established namespace is a NO-OP, so a forged second genesis cannot
+//! overwrite an existing admin and apply stays idempotent.
 
 use super::context::NamespaceApplyCtx;
 use crate::{
-    ApplyError, CapabilitiesRepository, MembershipRepository, MetaRepository,
-    NamespaceCreatedRejection,
+    placeholder_admin_identity, ApplyError, CapabilitiesRepository, MembershipRepository,
+    MetaRepository, NamespaceCreatedRejection,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
-
-/// The zero public key — the placeholder `admin_identity` that the
-/// bootstrap KeyDelivery seed writes before genesis arrives. It grants
-/// authority to nobody (it can never equal a real identity), and it is the
-/// sentinel the anti-hijack gate uses to tell a not-yet-established namespace
-/// (placeholder admin) from an established one (real founder).
-fn placeholder_admin() -> PublicKey {
-    PublicKey::from([0u8; 32])
-}
 
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
@@ -67,18 +59,27 @@ pub(crate) fn apply(
     }
 
     // ---- Anti-hijack / idempotency gate. ----
-    // Genesis may only ESTABLISH a founder; it may never overwrite one. An
-    // established namespace is one whose root meta carries a non-zero
-    // `admin_identity`. A placeholder-admin meta (written by the bootstrap
-    // KeyDelivery seed before genesis arrived) is NOT established, so genesis
-    // is still allowed to fill in the real founder over it — this is what makes
-    // the seed/genesis ordering converge regardless of which lands first.
+    // Genesis may only ESTABLISH a founder; it may never overwrite one. A
+    // namespace is treated as "not yet established" (genesis may overwrite it)
+    // ONLY when BOTH `admin_identity` AND `owner_identity` are the placeholder
+    // sentinel. The bootstrap KeyDelivery seed
+    // (`seed_bootstrap_admin_if_absent`) writes BOTH as the placeholder, so
+    // this is consistent with the seed; requiring both (rather than just
+    // `admin_identity`) hardens the gate against a hypothetical future partial
+    // write that sets one identity but not the other — if EITHER is already a
+    // real identity, the namespace is considered established and genesis is a
+    // no-op. This is what makes the seed/genesis ordering converge regardless
+    // of which lands first. The sentinel itself is shared with the seed via
+    // `crate::PLACEHOLDER_ADMIN_IDENTITY` so the two cannot drift.
+    let placeholder = placeholder_admin_identity();
     let existing = MetaRepository::new(store).load(&ns_gid)?;
     if let Some(meta) = &existing {
-        if meta.admin_identity != placeholder_admin() {
+        let established = meta.admin_identity != placeholder || meta.owner_identity != placeholder;
+        if established {
             tracing::debug!(
                 namespace_id = %hex::encode(namespace_id),
                 established_admin = %meta.admin_identity,
+                established_owner = %meta.owner_identity,
                 %founder,
                 "NamespaceCreated: namespace already has an established founder; \
                  ignoring genesis (anti-hijack no-op)"
@@ -112,6 +113,15 @@ pub(crate) fn apply(
     // `is_admin` also matches `meta.admin_identity`, but the explicit row keeps
     // the founder visible in member enumerations and mirrors the subgroup
     // `GroupCreated` path.
+    //
+    // `add_member` is a guaranteed UPSERT: it unconditionally `put`s the row
+    // with the supplied `role`, overwriting any existing role (it preserves
+    // only `auto_follow`). So if the bootstrap seed previously wrote the
+    // founder as a non-authoritative `Member` placeholder, this call UPGRADES
+    // them to `Admin` rather than no-op'ing on the existing row. That makes the
+    // genesis handler self-contained and correct regardless of seed-vs-genesis
+    // ordering. (If `add_member` ever changes to skip existing rows, this must
+    // become an explicit `role_of`-checked force-to-Admin.)
     MembershipRepository::new(store).add_member(&ns_gid, &founder, GroupMemberRole::Admin)?;
 
     // ---- Default caps: CAN_JOIN_OPEN_SUBGROUPS. ----

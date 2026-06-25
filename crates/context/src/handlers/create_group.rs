@@ -300,33 +300,62 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             );
                         }
                         Err(e) => {
-                            // FATAL for namespace-ROOT creation (#2474): the genesis
-                            // op is what makes the founder authoritative on the DAG.
-                            // If we swallowed this error (the old warn-and-continue),
-                            // the namespace would exist locally with correct meta but
-                            // NO genesis on the DAG — and a backfilling replica would
-                            // fall back to the broken TOFU seed (`seed_bootstrap_admin
-                            // _if_absent`), pinning the wrong admin. That is exactly
-                            // the production bug this PR fixes, so genesis emission
-                            // MUST be atomic with root creation: propagate and fail
-                            // the create.
+                            // Distinguish a real LOCAL APPLY failure from a mere
+                            // no-peers publish outcome (#2474 reviewer batch 2).
                             //
-                            // NOTE: the local root `GroupMetaValue` was already
-                            // written above (line ~166), so a failure here leaves a
-                            // local meta with no published genesis. Returning Err
-                            // surfaces the failure to the caller clearly; full atomic
-                            // rollback of the local writes is out of scope for this
-                            // change. TODO(#2474-followup): add a startup-repair pass
-                            // that re-emits a missing `NamespaceCreated` genesis for
-                            // any locally-owned namespace root whose DAG lacks one,
-                            // so a crash/transient publish failure self-heals on next
-                            // boot. Until then the caller must treat a failed create
-                            // as needing retry.
-                            return Err(eyre::eyre!(
-                                "failed to publish NamespaceCreated genesis on namespace DAG; \
-                                 aborting namespace-root creation (genesis must be atomic with \
-                                 root creation, #2474): {e}"
-                            ));
+                            // `sign_apply_and_publish_namespace_op` is apply-FIRST and
+                            // publish-BEST-EFFORT: it `?`-propagates only the local DAG
+                            // mutation (sign/hash/`apply_signed_op`), while EVERY
+                            // publish/transport error — including the normal cold-start
+                            // `NoPeersSubscribedToTopic` — is caught internally and
+                            // downgraded to a `Degraded` `Ok(report)`. So in today's
+                            // contract an `Err` here already means the genesis op did
+                            // NOT apply to our own store.
+                            //
+                            // We still guard the no-peers variant defensively: if the
+                            // function's contract ever changes to surface a publish
+                            // error, a namespace created offline / on a single node /
+                            // as the first node must STILL succeed — the op is applied
+                            // locally and simply not gossiped yet (sync carries it
+                            // later). So we swallow ONLY `is_no_peers_subscribed_error`
+                            // and treat every other error as the genuine local-apply
+                            // failure it is.
+                            if calimero_network_primitives::client::is_no_peers_subscribed_error(&e)
+                            {
+                                warn!(
+                                    ?e,
+                                    namespace_id = %hex::encode(namespace_id.to_bytes()),
+                                    "NamespaceCreated genesis applied locally but not gossiped \
+                                     (no peers subscribed yet); creation succeeds, sync will \
+                                     propagate the genesis"
+                                );
+                            } else {
+                                // FATAL for namespace-ROOT creation (#2474): the genesis
+                                // op is what makes the founder authoritative on the DAG.
+                                // A LOCAL APPLY failure means the namespace would exist
+                                // locally with correct meta but NO genesis on the DAG —
+                                // and a backfilling replica would fall back to the broken
+                                // TOFU seed (`seed_bootstrap_admin_if_absent`), pinning
+                                // the wrong admin. That is exactly the production bug this
+                                // PR fixes, so a true apply failure MUST fail the create.
+                                //
+                                // NOTE: the local root `GroupMetaValue` was already
+                                // written above (line ~166), so a failure here leaves a
+                                // local meta with no published genesis. Returning Err
+                                // surfaces the failure to the caller clearly; full atomic
+                                // rollback of the local writes is out of scope for this
+                                // change. TODO(#2474-followup): add a startup-repair pass
+                                // that re-emits a missing `NamespaceCreated` genesis for
+                                // any locally-owned namespace root whose DAG lacks one,
+                                // so a crash/transient apply failure self-heals on next
+                                // boot. Until then the caller must treat a failed create
+                                // as needing retry.
+                                return Err(eyre::eyre!(
+                                    "failed to apply NamespaceCreated genesis on namespace DAG; \
+                                     aborting namespace-root creation (genesis must be atomic \
+                                     with root creation, #2474): {e}"
+                                ));
+                            }
                         }
                     }
                 }
