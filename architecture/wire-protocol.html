@@ -910,6 +910,60 @@
 <div class="borsh-note">These are NOT serialized on the wire — they are Actix messages exchanged internally between NetworkManager and NodeManager actors via LazyRecipient&lt;NodeMessage&gt;</div>
 </div>
 
+<div class="card gb"><h2>Wire-Contract CI &amp; PR Checklist</h2>
+<p>Path-filtered CI and a structured PR checklist enforce wire-contract discipline whenever DTO crates change.</p>
+
+<h3>wire-contract.yml — GitHub Actions Workflow</h3>
+<p>The workflow triggers on pull requests that touch any of the following paths:</p>
+<ul>
+  <li><code>crates/server/primitives/**</code></li>
+  <li><code>crates/primitives/**</code></li>
+  <li><code>.github/workflows/wire-contract.yml</code> (self-trigger on workflow edits)</li>
+</ul>
+<p>When triggered it runs the <code>wire_fixtures</code> test suite against the modified crates. The toolchain pin uses <code>dtolnay/rust-toolchain@stable</code> — <strong>not</strong> the archived <code>actions-rs/toolchain@v1</code>.</p>
+<pre class="code">name: wire-contract
+
+on:
+  pull_request:
+    paths:
+      - 'crates/server/primitives/**'
+      - 'crates/primitives/**'
+      - '.github/workflows/wire-contract.yml'
+
+jobs:
+  wire-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p &lt;dto-crate&gt; wire_fixtures</pre>
+<p>Because the paths filter is narrow the check is skipped on PRs that do not touch DTO crates, keeping overall CI time unchanged.</p>
+
+<h3>PR Template — Wire Contract (SDK gate) Section</h3>
+<p>The PR template now includes a dedicated section that contributors must complete whenever the <code>wire-contract.yml</code> check runs:</p>
+<ul>
+  <li><strong>Regenerate fixtures</strong> — run the fixture-generation script and commit the updated golden files.</li>
+  <li><strong>Update endpoints.json</strong> — reflect any added, removed, or renamed message variants in the endpoint registry.</li>
+  <li><strong>Link paired SDK PR</strong> — paste the URL of the corresponding <code>mero-js</code> pull request so reviewers can verify the SDK side is ready before merge.</li>
+</ul>
+
+<h3>sdk-ref Body Convention</h3>
+<p>To wire the live end-to-end suite to a paired SDK branch, add the following line anywhere in the PR body:</p>
+<pre class="code">sdk-ref: &lt;branch-name&gt;</pre>
+<p>For example:</p>
+<pre class="code">sdk-ref: feat/signed-group-op-v4</pre>
+<p>The CI pipeline reads <code>sdk-ref</code> from the PR body and checks out that branch of <code>mero-js</code> when running the live e2e job. If <code>sdk-ref</code> is absent the e2e job falls back to the SDK's <code>main</code> branch. This convention is required — not optional — whenever <code>endpoints.json</code> changes.</p>
+
+<h3>Maintenance Obligations Summary</h3>
+<ol>
+  <li>Change a DTO field or add/remove a message variant.</li>
+  <li><code>wire-contract.yml</code> fires automatically via path filter.</li>
+  <li>Regenerate wire fixtures locally; commit updated golden files.</li>
+  <li>Update <code>endpoints.json</code> to match.</li>
+  <li>Open a paired PR in <code>mero-js</code>; add <code>sdk-ref: &lt;branch&gt;</code> to the server-side PR body.</li>
+  <li>Both PRs must be green before either is merged.</li>
+</ol>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
