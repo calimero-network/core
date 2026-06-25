@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Application Execution — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+<style>
+.fns { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: .85rem; }
+.fns th, .fns td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.fns th { color: var(--text-bright); font-weight: 600; }
+.fns td { color: var(--text-dim); }
+.fns code { white-space: nowrap; font-size: .82rem; }
+.chapter-nav { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border); font-size: .88rem; }
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="index.html">Protocol Reference</a><span class="sep">/</span><span>Application Execution</span></div>
+<h1>Application <em>Execution</em></h1>
+<p class="page-subtitle">Chapter 5 — where data operations come from: running a WASM application.</p>
+
+<div class="card gc">
+<h2>What an execution is</h2>
+<p>An <strong>application</strong> is a WASM module that defines a state machine: data types and the methods that mutate them. An <strong>execution</strong> is one method call. It reads the context's current state, runs deterministic guest code, and produces a set of state changes plus a fresh root hash. Those state changes are the data-plane operations from Chapters 3–4.</p>
+<p>Crucially, execution is <strong>sandboxed and self-contained</strong>: the guest cannot touch the network, the clock, or the disk directly. It can only call back into the host through a fixed set of functions — the ABI. Everything the guest does is therefore observable, bounded, and reproducible.</p>
+<div class="diagram-tools"><button class="replay-btn" onclick="replay('d-exec')">&#9654; Replay</button></div>
+<div class="diagram-container seq animating" id="d-exec"></div>
+</div>
+
+<div class="card ga">
+<h2>The host ABI boundary</h2>
+<p>The guest and the host share nothing but a block of <strong>linear memory</strong> and a set of numbered <strong>registers</strong>. Arguments cross the boundary as <code>(pointer, length)</code> descriptors into guest memory; the host reads or writes those bytes, and hands larger results back through registers the guest then reads. The host bounds-checks every access.</p>
+<div class="diagram-tools"><button class="replay-btn" onclick="replay('d-abi')">&#9654; Replay</button></div>
+<div class="diagram-container" id="d-abi">
+<svg viewBox="0 0 760 330" role="img" aria-label="The host ABI boundary" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ba" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="330" rx="10" fill="#0f0f16"/>
+  <!-- guest -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="28" y="60" width="220" height="200" rx="10" fill="#10151c" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="138" y="48" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">WASM guest (sandbox)</text>
+    <rect x="48" y="86" width="180" height="50" rx="7" fill="#161b22" stroke="#30363d"/>
+    <text x="138" y="108" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">linear memory</text>
+    <text x="138" y="124" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">(ephemeral, per execution)</text>
+    <rect x="48" y="150" width="180" height="42" rx="7" fill="#161b22" stroke="#30363d"/>
+    <text x="138" y="168" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">export: method() -&gt; ()</text>
+    <text x="138" y="182" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">no args, no return</text>
+    <text x="138" y="224" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">cannot reach network /</text>
+    <text x="138" y="237" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">clock / disk directly</text>
+  </g>
+  <!-- boundary -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="300" y1="50" x2="300" y2="280" stroke="#a5ff11" stroke-width="1.3" stroke-dasharray="5 4"/>
+    <text x="300" y="300" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9">ABI boundary</text>
+    <line x1="248" y1="120" x2="358" y2="120" stroke="#8b949e" stroke-width="1.3" marker-end="url(#ba)"/>
+    <text x="303" y="112" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">host call (ptr,len)</text>
+    <line x1="358" y1="150" x2="248" y2="150" stroke="#8b949e" stroke-width="1.3" marker-end="url(#ba)"/>
+    <text x="303" y="166" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">result via register</text>
+  </g>
+  <!-- host -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="360" y="60" width="180" height="86" rx="10" fill="#13160f" stroke="#a5ff11" stroke-width="1.4"/>
+    <text x="450" y="48" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">Host runtime</text>
+    <text x="450" y="92" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">registers · buffers</text>
+    <text x="450" y="110" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">bounds checks · limits</text>
+    <text x="450" y="128" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">crypto · time · random</text>
+  </g>
+  <!-- storage layers -->
+  <g class="seq-step" style="--step-i:3">
+    <line x1="560" y1="103" x2="600" y2="103" stroke="#8b949e" stroke-width="1.3" marker-end="url(#ba)"/>
+    <rect x="600" y="62" width="138" height="34" rx="7" fill="#16222e" stroke="#39d0d8"/>
+    <text x="669" y="83" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9">replicated state</text>
+    <rect x="600" y="104" width="138" height="34" rx="7" fill="#161b22" stroke="#444c56"/>
+    <text x="669" y="125" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">private state</text>
+    <rect x="600" y="146" width="138" height="34" rx="7" fill="#161b22" stroke="#444c56"/>
+    <text x="669" y="167" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">ordered index</text>
+    <text x="669" y="200" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">node storage</text>
+  </g>
+</svg>
+</div>
+</div>
+
+<div class="card gb">
+<h2>What the host offers</h2>
+<p>The ABI is a fixed catalog of host functions. The guest never does anything outside this list — which is exactly why execution stays deterministic and bounded. The families:</p>
+<table class="fns">
+<tr><th>Family</th><th>Examples</th><th>Purpose</th></tr>
+<tr><td>Context / input</td><td><code>context_id</code>, <code>executor_id</code>, <code>input</code>, <code>read_register</code></td><td>Read who is calling, in which context, with what arguments.</td></tr>
+<tr><td>State</td><td><code>storage_read</code>, <code>storage_write</code>, <code>storage_remove</code></td><td>Read and mutate replicated context state. Writes are buffered (below).</td></tr>
+<tr><td>Output</td><td><code>value_return</code>, <code>log</code>, <code>emit</code></td><td>Return a result, log a line, emit an application event.</td></tr>
+<tr><td>Commit</td><td><code>commit</code> / root-state functions</td><td>Finalize buffered writes into a new state root and an artifact.</td></tr>
+<tr><td>Crypto</td><td><code>ed25519_verify</code></td><td>Verify signatures inside guest logic (deterministic).</td></tr>
+<tr><td>Host-provided</td><td><code>time_now</code>, <code>random_bytes</code></td><td>The <em>only</em> sources of non-determinism — injected by the host, never read by the guest itself.</td></tr>
+<tr><td>Cross-context</td><td><code>xcall</code></td><td>Queue a fire-and-forget call into another context on the same node.</td></tr>
+<tr><td>Blobs</td><td><code>blob_*</code></td><td>Stream large binary artifacts outside the state tree.</td></tr>
+</table>
+</div>
+
+<div class="card gd">
+<h2>Three storage layers</h2>
+<p>Not everything a guest writes should replicate. The ABI exposes three distinct layers, and the guest chooses per write:</p>
+<div class="g3">
+<div class="cb"><h4>Replicated</h4><p>The shared context state. Writes here become operations that sync to every member and fold into the scope root. This is "the app's state."</p></div>
+<div class="cb"><h4>Private</h4><p>Node-local state that never leaves the machine and never enters the scope root. For per-node caches and secrets.</p></div>
+<div class="cb"><h4>Ordered index</h4><p>A node-local, byte-ordered secondary index for range and prefix queries — a local accelerator, also never replicated.</p></div>
+</div>
+<p style="margin-top:10px">Only the <strong>replicated</strong> layer produces operations. The other two are conveniences that stay on one node and have no effect on convergence.</p>
+</div>
+
+<div class="card ga">
+<h2>Determinism is the contract</h2>
+<p>Every node that applies the same operation must reach the same state, so execution must be a pure function of <em>(prior state, input, injected host values)</em>. The runtime enforces this:</p>
+<ul>
+<li><strong>Writes buffer, then commit.</strong> A <code>storage_write</code> updates an in-execution buffer that later reads can see, but nothing is persisted until <code>commit</code>. If the guest traps or never commits, every change is discarded — execution is transactional.</li>
+<li><strong>Non-determinism is injected, not reached.</strong> A guest can't read the clock or an RNG on its own; it asks the host via <code>time_now</code> / <code>random_bytes</code>, so those values are controlled and recorded rather than free.</li>
+<li><strong>Resources are bounded.</strong> Memory pages, stack depth, and the counts and sizes of logs, events, cross-calls, and storage keys/values are all capped. Exceeding a limit traps the execution — which, being uncommitted, changes nothing.</li>
+<li><strong>The method shape is fixed.</strong> Exported methods take no arguments and return nothing; input arrives through <code>input()</code> and results leave through <code>value_return</code>, so a method signature can't smuggle in hidden state.</li>
+</ul>
+</div>
+
+<div class="card gb">
+<h2>From execution to operations</h2>
+<p>A successful <code>commit</code> yields an <strong>outcome</strong>: the return value, any logs and events, the cross-context calls to dispatch, the new state <strong>root hash</strong>, and an <strong>artifact</strong> describing the committed state changes.</p>
+<p>That artifact is the bridge back to the core: its committed writes are packaged as <strong>data-plane operations</strong> (<code>Put</code> / <code>Delete</code>) in the context scope — each stamped with the executor's identity, the scope's current heads as parents, and a hybrid timestamp. From there they are exactly the operations of Chapters 3–4: appended to the DAG, folded into the root, and ready to broadcast.</p>
+<div class="step"><span class="n">handoff</span><h4>Execution ends where the write path begins.</h4>
+<p>This chapter stops at "an outcome exists." <strong>Chapter 8</strong> picks it up: how the outcome is signed, persisted atomically, and broadcast to the context's members.</p></div>
+</div>
+
+<div class="card gc">
+<h2>Where this leads</h2>
+<p>We now know where data operations originate. The other planes — access control, membership, admin — don't come from WASM; they come from <strong>governance</strong>, which is <strong>Chapter 6</strong>.</p>
+</div>
+
+<div class="chapter-nav">
+<span><a href="projection.html">← State, Projection &amp; the Root Hash</a></span>
+<span><a href="governance.html">Governance →</a></span>
+</div>
+
+</div>
+</div>
+<script src="../seq-diagram.js"></script>
+<script>
+  window.SEQ_DIAGRAMS = [{
+    id: 'd-exec',
+    title: 'One application method call',
+    lanes: [
+      { label: 'Caller', color: '#f0883e' },
+      { label: 'Runtime', color: '#3fb950' },
+      { label: 'WASM guest', color: '#58a6ff' },
+      { label: 'Storage', color: '#39d0d8' }
+    ],
+    steps: [
+      { from: 0, to: 1, label: 'execute(method, input)' },
+      { from: 1, to: 1, label: 'instantiate module' },
+      { from: 1, to: 2, label: 'call method()' },
+      { from: 2, to: 1, label: 'input() → read args', dashed: true },
+      { from: 2, to: 3, label: 'storage_read(k)' },
+      { from: 3, to: 2, label: 'value', dashed: true },
+      { from: 2, to: 2, label: 'storage_write(k, v) → buffered', color: '#f0883e' },
+      { from: 2, to: 1, label: 'emit(event) / log' },
+      { from: 2, to: 1, label: 'commit()', color: '#a5ff11' },
+      { from: 1, to: 3, label: 'persist writes → new root_hash' },
+      { from: 1, to: 0, label: 'Outcome { returns, events, artifact, root_hash }', dashed: true }
+    ]
+  }];
+</script>
+<script src="../nav.js"></script>
+</body>
+</html>
