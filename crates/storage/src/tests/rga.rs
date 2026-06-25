@@ -1063,7 +1063,7 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
         env::set_executor_id(executor);
     };
 
-    // === Node A: insert 'A' at position 0; capture the delta (carrying A's HLC).
+    // === Node A: insert 'A' at position 0; capture the delta (carrying A's char).
     fresh_node([1; 32]);
     let mut a = Root::<RgaDoc, S>::new(|| RgaDoc {
         content: ReplicatedGrowableArray::new_with_field_name("content"),
@@ -1076,12 +1076,33 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
     let a_delta = commit_causal_delta(&a_hash)
         .unwrap()
         .expect("A's insert must produce a delta");
-    // A's HLC for its char — read from the captured delta.
-    let a_hlc: HybridTimestamp = a_delta.hlc;
     let a_actions = a_delta.actions;
 
-    // === Node B: starts with a clock deliberately behind A. Observe A's delta
-    // (as CausalActions, carrying A's HLC), then insert 'B' at position 1.
+    // A's advertised HLC, set deliberately ~2s AHEAD of the real wall clock
+    // (within the 5s drift tolerance, so `update_hlc` accepts it). This is the
+    // crux of making the test DISCRIMINATING: B mints its own CharId from the
+    // real wall clock, which is naturally BEHIND this future HLC. So B's mint
+    // can only end up after A's HLC if the receive path actually advanced B's
+    // clock to observe it. Without setting A ahead, B's wall clock alone would
+    // already exceed A's HLC and the test would pass even with the receive-path
+    // advance removed (the trivial pass the reviewer flagged).
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let a_future_secs = (now_nanos / 1_000_000_000) + 2;
+    let a_hlc = HybridTimestamp::new(crate::logical_clock::Timestamp::new(
+        crate::logical_clock::NTP64(a_future_secs << 32),
+        *a_delta.hlc.get_id(),
+    ));
+    assert!(
+        a_hlc.get_time().as_u64() > a_delta.hlc.get_time().as_u64(),
+        "A's advertised HLC must be set ahead of B's natural clock to make the test \
+         discriminate the receive-path advance"
+    );
+
+    // === Node B: clock at real wall-time, deliberately BEHIND A's future HLC.
+    // Observe A's delta (carrying A's future HLC), then insert 'B' at position 1.
     fresh_node([2; 32]);
     let causal = StorageDelta::CausalActions {
         actions: a_actions,
@@ -1097,18 +1118,44 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
         "A",
         "B must have materialized A's char before its own insert"
     );
-    // B inserts 'B' AFTER 'A' (position 1). Its CharId is minted from B's clock,
-    // which the receive path advanced to observe A's HLC.
-    let b_hlc_before = env::hlc_timestamp();
-    assert!(
-        b_hlc_before.get_time().as_u64() > a_hlc.get_time().as_u64(),
-        "B's clock must have advanced past A's observed HLC ({a_hlc}); got {b_hlc_before}"
-    );
-    b.content.insert(1, 'B').unwrap();
 
-    // Rendered order is causal: 'A' then 'B'.
+    // B inserts 'B' AFTER 'A' (position 1). `insert` MINTS a fresh CharId from
+    // B's HLC — the operative event. Capture B's insert as a delta and read its
+    // `hlc`, which is the timestamp embedded in the CharId B just minted. This
+    // proves the *mint* (not merely a `hlc_timestamp()` read) advanced past A's
+    // observed HLC: the receive path moved B's clock on `Root::sync`, so the
+    // mint is forced strictly later. A test that only read `hlc_timestamp()`
+    // could pass for an unrelated reason (e.g. B's wall clock simply being
+    // ahead); asserting on the minted CharId's HLC closes that gap.
+    reset_delta_context();
+    set_current_heads(vec![a_hash]);
+    b.content.insert(1, 'B').unwrap();
+    let b_data = borsh::to_vec(&*b).unwrap();
+    drop(b);
+    Interface::<S>::save_raw(Id::root(), b_data, Metadata::default()).unwrap();
+    let b_hash = Index::<S>::get_hashes_for(Id::root())
+        .unwrap()
+        .map(|(full, _)| full)
+        .unwrap_or([0; 32]);
+    let b_delta = commit_causal_delta(&b_hash)
+        .unwrap()
+        .expect("B's insert must produce a delta");
+    let b_minted_hlc: HybridTimestamp = b_delta.hlc;
+
+    assert!(
+        b_minted_hlc.get_time().as_u64() > a_hlc.get_time().as_u64(),
+        "the CharId B MINTED for its insert ({b_minted_hlc}) must sort strictly after \
+         A's observed HLC ({a_hlc}) — proving Root::sync advanced B's clock on the \
+         receive path, not just that a clock read happened to be larger (D1)"
+    );
+
+    // Rendered order is causal: 'A' then 'B' (B's later CharId sorts after A's).
     assert_eq!(
-        b.content.get_text().unwrap(),
+        Root::<RgaDoc, S>::fetch()
+            .unwrap()
+            .content
+            .get_text()
+            .unwrap(),
         "AB",
         "B's insert after observing A must render causally as \"AB\""
     );
