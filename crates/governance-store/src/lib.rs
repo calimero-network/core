@@ -36,6 +36,29 @@ pub mod metrics;
 pub mod op_events;
 pub mod registration_notify;
 
+/// Op-store mirror hook (cutover C3 Stage 4). `calimero-context` registers a function
+/// here at startup that persists a namespace's just-applied governance op into the
+/// unified op-store. The local-author publish paths call it RIGHT AFTER the local
+/// apply and BEFORE the publish round-trip, so the op-store never lags the gov-DAG
+/// within the publish-await window — closing the gap where the read-flip would
+/// transiently see stale membership (and the completeness gate would fire). It is a
+/// non-capturing `fn` pointer (not a closure) to keep this crate free of a context
+/// dependency; `None` until registered (e.g. in tests), in which case it is a no-op.
+type OpStorePersistHook = fn(&Store, [u8; 32]);
+static OP_STORE_PERSIST_HOOK: std::sync::OnceLock<OpStorePersistHook> = std::sync::OnceLock::new();
+
+/// Register the op-store mirror hook. Idempotent — only the first registration wins.
+pub fn set_op_store_persist_hook(hook: OpStorePersistHook) {
+    let _ = OP_STORE_PERSIST_HOOK.set(hook);
+}
+
+/// Run the registered op-store mirror hook for `namespace_id`, if any.
+pub(crate) fn run_op_store_persist_hook(store: &Store, namespace_id: [u8; 32]) {
+    if let Some(hook) = OP_STORE_PERSIST_HOOK.get() {
+        hook(store, namespace_id);
+    }
+}
+
 pub mod absorb;
 pub mod absorb_record;
 pub mod authorizer;
