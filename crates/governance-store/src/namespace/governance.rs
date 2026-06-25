@@ -576,13 +576,6 @@ impl<'a> NamespaceGovernance<'a> {
 
         self.apply_signed_op(&signed)?;
 
-        // C3 Stage 4: mirror the just-applied op into the unified op-store NOW —
-        // synchronously, before the publish round-trip below — so the op-store never
-        // lags the gov-DAG within the publish-await window (where the read-flip would
-        // transiently see stale membership). Op is in the gov-DAG the moment apply
-        // returns; no reason to wait for publish.
-        crate::run_op_store_persist_hook(self.store, self.namespace_id);
-
         // Notify the readiness FSM that we just advanced the local DAG on
         // the publisher path. Without this, `state_per_namespace` only
         // populates from gossipsub-receive deliveries — a node that
@@ -798,11 +791,6 @@ impl<'a> NamespaceGovernance<'a> {
         // advance the head for it — orphaning it from the DAG head lineage.
         self.advance_dag_head(delta_id, &parent_ids, head.next_nonce)?;
         self.store_operation(&signed)?;
-
-        // C3 Stage 4: mirror the just-stored op into the unified op-store NOW,
-        // before the publish below — same window-closing rationale as
-        // `sign_apply_and_publish` (the quorum / group-publish post-gate path).
-        crate::run_op_store_persist_hook(self.store, self.namespace_id);
 
         // Same signal as in `sign_apply_and_publish` above — the local DAG
         // just advanced on the publisher path, so the readiness FSM needs

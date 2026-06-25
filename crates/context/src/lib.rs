@@ -533,17 +533,6 @@ impl ContextManager {
     ) -> Self {
         let ack_router = Arc::clone(context_client.ack_router());
 
-        // C3 Stage 4: register the op-store mirror hook so the governance-store
-        // local-author publish paths persist the just-applied op into the unified
-        // op-store synchronously, before the publish round-trip — closing the window
-        // where the op-store lags the gov-DAG. Non-capturing `fn`, idempotent.
-        calimero_governance_store::set_op_store_persist_hook(|store, namespace_id| {
-            crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
-                store,
-                namespace_id,
-            );
-        });
-
         Self {
             datastore,
             node_client,
