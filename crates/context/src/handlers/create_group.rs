@@ -300,112 +300,100 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             );
                         }
                         Err(e) => {
-                            // Distinguish a real LOCAL APPLY failure from a mere
-                            // no-peers publish outcome (#2474 reviewer batch 2).
+                            // An `Err` here is, by contract, a LOCAL APPLY failure —
+                            // never a publish/transport failure (#2474 reviewer batch 5).
                             //
                             // `sign_apply_and_publish_namespace_op` is apply-FIRST and
                             // publish-BEST-EFFORT: it `?`-propagates only the local DAG
                             // mutation (sign/hash/`apply_signed_op`), while EVERY
                             // publish/transport error — including the normal cold-start
                             // `NoPeersSubscribedToTopic` — is caught internally and
-                            // downgraded to a `Degraded` `Ok(report)`. So in today's
-                            // contract an `Err` here already means the genesis op did
-                            // NOT apply to our own store.
+                            // downgraded to a `Degraded` `Ok(report)`. So an `Err` here
+                            // already means the genesis op did NOT apply to our own
+                            // store; there is no no-peers case to special-case (a
+                            // namespace created offline / on a single node still gets
+                            // `Ok` because apply succeeds and the publish is swallowed).
+                            // The assert pins that contract so a future change that
+                            // started surfacing publish errors trips loudly in test/dev
+                            // instead of silently rolling back a perfectly-good genesis.
+                            debug_assert!(
+                                !calimero_network_primitives::client::is_no_peers_subscribed_error(
+                                    &e
+                                ),
+                                "sign_apply_and_publish is apply-first/publish-best-effort; \
+                                 Err must mean a local apply failure, not no-peers"
+                            );
+
+                            // FATAL for namespace-ROOT creation (#2474): the genesis op
+                            // is what makes the founder authoritative on the DAG. A LOCAL
+                            // APPLY failure means the namespace would exist locally with
+                            // correct meta but NO genesis on the DAG — and a backfilling
+                            // replica would fall back to the broken TOFU seed
+                            // (`seed_bootstrap_admin_if_absent`), pinning the wrong admin.
+                            // That is exactly the production bug this PR fixes, so a true
+                            // apply failure MUST fail the create.
                             //
-                            // We still guard the no-peers variant defensively: if the
-                            // function's contract ever changes to surface a publish
-                            // error, a namespace created offline / on a single node /
-                            // as the first node must STILL succeed — the op is applied
-                            // locally and simply not gossiped yet (sync carries it
-                            // later). So we swallow ONLY `is_no_peers_subscribed_error`
-                            // and treat every other error as the genuine local-apply
-                            // failure it is.
-                            if calimero_network_primitives::client::is_no_peers_subscribed_error(&e)
+                            // ROLLBACK (#2474 reviewer batch 3): the local root rows were
+                            // already written above (the `GroupMetaValue`, the founder
+                            // Admin member row, the default caps, the group encryption
+                            // key, the auto-stored signing key, and the optional name
+                            // metadata seed). Leaving them behind on a genesis-apply
+                            // failure would strand an orphaned root: the top-of-handler
+                            // "group already exists" guard would then make every retry
+                            // with the same group id fail PERMANENTLY (unrecoverable
+                            // without store surgery), while the DAG carries no genesis.
+                            // calimero-store has no atomic multi-key write, so we undo
+                            // each write explicitly, mirroring the writes above, before
+                            // returning Err. After this the namespace is cleanly ABSENT
+                            // and a retry with the same group id flows through the normal
+                            // create path again. Each delete is idempotent; we log (not
+                            // propagate) any delete error so a partial rollback can't mask
+                            // the original apply failure, and so the most useful error
+                            // (the genesis apply failure) is the one surfaced.
+                            if let Err(re) = MetaRepository::new(&datastore).delete(&group_id) {
+                                warn!(?re, ?group_id, "rollback: failed to delete root meta");
+                            }
+                            if let Err(re) = MembershipRepository::new(&datastore)
+                                .remove_member(&group_id, &admin_identity)
                             {
                                 warn!(
-                                    ?e,
-                                    namespace_id = %hex::encode(namespace_id.to_bytes()),
-                                    "NamespaceCreated genesis applied locally but not gossiped \
-                                     (no peers subscribed yet); creation succeeds, sync will \
-                                     propagate the genesis"
+                                    ?re,
+                                    ?group_id,
+                                    "rollback: failed to delete founder member row"
                                 );
-                            } else {
-                                // FATAL for namespace-ROOT creation (#2474): the genesis
-                                // op is what makes the founder authoritative on the DAG.
-                                // A LOCAL APPLY failure means the namespace would exist
-                                // locally with correct meta but NO genesis on the DAG —
-                                // and a backfilling replica would fall back to the broken
-                                // TOFU seed (`seed_bootstrap_admin_if_absent`), pinning
-                                // the wrong admin. That is exactly the production bug this
-                                // PR fixes, so a true apply failure MUST fail the create.
-                                //
-                                // ROLLBACK (#2474 reviewer batch 3): the local root rows
-                                // were already written above (the `GroupMetaValue`, the
-                                // founder Admin member row, the default caps, the group
-                                // encryption key, the auto-stored signing key, and the
-                                // optional name metadata seed). Leaving them behind on a
-                                // genesis-apply failure would strand an orphaned root: the
-                                // top-of-handler "group already exists" guard would then
-                                // make every retry with the same group id fail
-                                // PERMANENTLY (unrecoverable without store surgery), while
-                                // the DAG carries no genesis. calimero-store has no atomic
-                                // multi-key write, so we undo each write explicitly,
-                                // mirroring the writes above, before returning Err. After
-                                // this the namespace is cleanly ABSENT and a retry with the
-                                // same group id flows through the normal create path again.
-                                // Each delete is idempotent; we log (not propagate) any
-                                // delete error so a partial rollback can't mask the
-                                // original apply failure, and so the most useful error
-                                // (the genesis apply failure) is the one surfaced.
-                                if let Err(re) = MetaRepository::new(&datastore).delete(&group_id) {
-                                    warn!(?re, ?group_id, "rollback: failed to delete root meta");
-                                }
-                                if let Err(re) = MembershipRepository::new(&datastore)
-                                    .remove_member(&group_id, &admin_identity)
-                                {
-                                    warn!(
-                                        ?re,
-                                        ?group_id,
-                                        "rollback: failed to delete founder member row"
-                                    );
-                                }
-                                if let Err(re) = CapabilitiesRepository::new(&datastore)
-                                    .delete_default(&group_id)
-                                {
-                                    warn!(
-                                        ?re,
-                                        ?group_id,
-                                        "rollback: failed to delete default caps"
-                                    );
-                                }
-                                if let Err(re) = GroupKeyring::new(&datastore, group_id)
-                                    .delete_key_by_id(&key_id)
-                                {
-                                    warn!(?re, ?group_id, "rollback: failed to delete group key");
-                                }
-                                if let Err(re) = SigningKeysRepository::new(&datastore)
-                                    .delete_key(&group_id, &admin_identity)
-                                {
-                                    warn!(?re, ?group_id, "rollback: failed to delete signing key");
-                                }
-                                if name.is_some() {
-                                    if let Err(re) =
-                                        MetadataRepository::new(&datastore).delete_group(&group_id)
-                                    {
-                                        warn!(
-                                            ?re,
-                                            ?group_id,
-                                            "rollback: failed to delete group name metadata"
-                                        );
-                                    }
-                                }
-                                return Err(eyre::eyre!(
-                                    "failed to apply NamespaceCreated genesis on namespace DAG; \
-                                     aborting namespace-root creation and rolling back local \
-                                     root rows so a retry with the same group id succeeds \
-                                     (genesis must be atomic with root creation, #2474): {e}"
-                                ));
                             }
+                            if let Err(re) =
+                                CapabilitiesRepository::new(&datastore).delete_default(&group_id)
+                            {
+                                warn!(?re, ?group_id, "rollback: failed to delete default caps");
+                            }
+                            if let Err(re) =
+                                GroupKeyring::new(&datastore, group_id).delete_key_by_id(&key_id)
+                            {
+                                warn!(?re, ?group_id, "rollback: failed to delete group key");
+                            }
+                            if let Err(re) = SigningKeysRepository::new(&datastore)
+                                .delete_key(&group_id, &admin_identity)
+                            {
+                                warn!(?re, ?group_id, "rollback: failed to delete signing key");
+                            }
+                            if name.is_some() {
+                                if let Err(re) =
+                                    MetadataRepository::new(&datastore).delete_group(&group_id)
+                                {
+                                    warn!(
+                                        ?re,
+                                        ?group_id,
+                                        "rollback: failed to delete group name metadata"
+                                    );
+                                }
+                            }
+                            return Err(eyre::eyre!(
+                                "failed to apply NamespaceCreated genesis on namespace DAG; \
+                                 aborting namespace-root creation and rolling back local \
+                                 root rows so a retry with the same group id succeeds \
+                                 (genesis must be atomic with root creation, #2474): {e}"
+                            ));
                         }
                     }
                 }
