@@ -55,6 +55,23 @@ impl Mergeable for NestedMap {
     }
 }
 
+// `RekeyTarget` is a supertrait of `Mergeable`: this struct nests a collection
+// (`map`), so it must re-key that collection's id deterministically relative to
+// the entry id it is stored under, or the nested map keeps a per-replica random
+// id and diverges. Delegate to the inner collection under a field-namespaced id.
+impl calimero_storage::collections::rekey::RekeyTarget for NestedMap {
+    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.map,
+            calimero_storage::collections::rekey::field_child_id(parent_id, "map")
+        );
+    }
+
+    fn register_nested_value_types() {
+        calimero_storage::register_rekey_if_supported!(UnorderedMap<String, LwwRegister<String>>);
+    }
+}
+
 /// File record for blob metadata
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize, Serialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
@@ -80,6 +97,13 @@ impl Mergeable for FileRecord {
         }
         Ok(())
     }
+}
+
+// `RekeyTarget` is a supertrait of `Mergeable`. `FileRecord` is a leaf (no nested
+// collection — it is merged whole-record LWW by `uploaded_at`), so the no-op
+// default impl is correct: there are no nested ids to re-key.
+impl calimero_storage::collections::rekey::RekeyTarget for FileRecord {
+    fn rekey_relative_to(&mut self, _parent_id: calimero_storage::address::Id) {}
 }
 
 // PRIVATE STATE (Node-local, NOT synchronized)

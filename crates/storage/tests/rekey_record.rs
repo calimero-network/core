@@ -50,9 +50,16 @@ impl RekeyTarget for FixedStats {
     }
 }
 
-/// Same shape, but NOT a `RekeyTarget` and never registered — i.e. the pre-fix
-/// world. Its nested counter keeps a per-replica-random id, so the blob differs
-/// and concurrent writes are last-writer-wins'd (data loss).
+/// Same shape, but never REGISTERED — i.e. the pre-fix world. Re-key dispatch is
+/// by registry lookup (`register_rekey_if_supported!`), not by the trait bound,
+/// so a type that is never registered keeps a per-replica-random nested id, its
+/// blob differs, and concurrent writes are last-writer-wins'd (data loss).
+///
+/// Since #D5 made `RekeyTarget` a supertrait of `Mergeable`, this type MUST
+/// still impl `RekeyTarget` to be `Mergeable` at all — "Mergeable without
+/// RekeyTarget" is no longer expressible (that is the whole point of D5). The
+/// pre-fix data-loss case is reproduced not by omitting the impl but by
+/// deliberately NOT registering the thunk in `unregistered_value_loses_data_pre_fix`.
 #[derive(BorshSerialize, BorshDeserialize, Default)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct UnfixedStats {
@@ -62,6 +69,12 @@ struct UnfixedStats {
 impl Mergeable for UnfixedStats {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.wins.merge(&other.wins)
+    }
+}
+
+impl RekeyTarget for UnfixedStats {
+    fn rekey_relative_to(&mut self, parent_id: Id) {
+        rekey_field_if_supported!(&mut self.wins, field_child_id(parent_id, "wins"));
     }
 }
 
@@ -81,6 +94,14 @@ macro_rules! team_app {
         impl Mergeable for $app {
             fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
                 self.teams.merge(&other.teams)
+            }
+        }
+        // `RekeyTarget` is a supertrait of `Mergeable` (#D5): re-key the nested
+        // `teams` collection. (This is the ROOT app type; the per-VALUE rekey of
+        // `$val` is governed by registration, exercised by the tests below.)
+        impl RekeyTarget for $app {
+            fn rekey_relative_to(&mut self, parent_id: Id) {
+                rekey_field_if_supported!(&mut self.teams, field_child_id(parent_id, "teams"));
             }
         }
         impl TeamApp for $app {
@@ -310,6 +331,16 @@ struct DeepAppManual {
 impl Mergeable for DeepAppManual {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.groups.merge(&other.groups)
+    }
+}
+
+// `RekeyTarget` is a supertrait of `Mergeable` (#D5). Re-key the root `groups`
+// collection. The deliberate pre-#2581 gap this fixture tests is the MISSING
+// `register_nested_value_types` override on `InnerManual` (above), not a missing
+// `RekeyTarget` impl — so this root impl is correct and complete.
+impl RekeyTarget for DeepAppManual {
+    fn rekey_relative_to(&mut self, parent_id: Id) {
+        rekey_field_if_supported!(&mut self.groups, field_child_id(parent_id, "groups"));
     }
 }
 

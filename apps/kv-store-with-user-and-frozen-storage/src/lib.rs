@@ -45,6 +45,24 @@ impl Mergeable for NestedMap {
     }
 }
 
+// `RekeyTarget` is a supertrait of `Mergeable`: this struct nests a collection
+// (`map`), so a hand-written `impl Mergeable` must also implement `RekeyTarget`
+// (`#[derive(Mergeable)]` generates both) and re-key that collection's id
+// deterministically relative to the entry id it is stored under, or the nested
+// map keeps a per-replica random id and diverges.
+impl calimero_storage::collections::rekey::RekeyTarget for NestedMap {
+    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.map,
+            calimero_storage::collections::rekey::field_child_id(parent_id, "map")
+        );
+    }
+
+    fn register_nested_value_types() {
+        calimero_storage::register_rekey_if_supported!(UnorderedMap<String, LwwRegister<String>>);
+    }
+}
+
 #[app::event]
 pub enum Event<'a> {
     Inserted {

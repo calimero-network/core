@@ -613,6 +613,17 @@ where
 // value is a separate entity (merged per-entity), the writer set converges via
 // the rotation log, and `frozen` is genesis-immutable and deliberately not
 // adopted from the peer (so a forged root-state delta can't freeze rotation).
+// #D5: RekeyTarget supertrait. The cell's value is a separate, per-entity
+// synced entity and the wrapper id is deterministic at construction, so there
+// is no value-path nested id to re-key — a no-op, like its merge.
+impl<T, S> crate::collections::rekey::RekeyTarget for WriterSetCell<T, S>
+where
+    T: BorshSerialize + BorshDeserialize + Mergeable + 'static,
+    S: StorageAdaptor,
+{
+    fn rekey_relative_to(&mut self, _parent_id: crate::address::Id) {}
+}
+
 #[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for WriterSetCell<T, S>
 where
@@ -672,6 +683,16 @@ mod tests {
     /// Mergeable test value — max-wins on merge so it's a valid CRDT.
     #[derive(BorshSerialize, BorshDeserialize, Default, Debug, PartialEq, Clone, Copy)]
     struct TestVal(u64);
+
+    // RekeyTarget supertrait of Mergeable (#D5).
+    impl crate::collections::rekey::RekeyTarget for TestVal {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.0,
+                crate::collections::rekey::field_child_id(parent_id, "0")
+            );
+        }
+    }
 
     impl Mergeable for TestVal {
         fn merge(&mut self, other: &Self) -> Result<(), MergeError> {

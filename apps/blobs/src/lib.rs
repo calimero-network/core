@@ -73,6 +73,13 @@ impl calimero_storage::collections::Mergeable for FileRecord {
     }
 }
 
+// `RekeyTarget` is a supertrait of `Mergeable`. `FileRecord` is a leaf (merged
+// atomically as a whole record by `uploaded_at`, no nested collection), so the
+// no-op default impl is correct: there are no nested ids to re-key.
+impl calimero_storage::collections::rekey::RekeyTarget for FileRecord {
+    fn rekey_relative_to(&mut self, _parent_id: calimero_storage::address::Id) {}
+}
+
 /// Application state for the file sharing system.
 #[app::state(emits = FileShareEvent)]
 pub struct FileShareState {

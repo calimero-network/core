@@ -290,11 +290,23 @@ where
     }
 }
 
+// #D5: RekeyTarget supertrait — delegate to the inner collection.
+impl<K, V, S> crate::collections::rekey::RekeyTarget for AuthoredMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + 'static,
+    S: StorageAdaptor,
+{
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        self.inner.rekey_relative_to(parent_id);
+    }
+}
+
 #[diagnostic::do_not_recommend]
 impl<K, V, S> Mergeable for AuthoredMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
-    V: BorshSerialize + BorshDeserialize + Mergeable,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + Mergeable + 'static,
     S: StorageAdaptor,
 {
     /// `AuthoredMap` deliberately does **not** perform structural merge.

@@ -621,6 +621,15 @@ fn test_rga_delete_after_merge_delta_sync_converges() {
     struct RgaDoc {
         content: ReplicatedGrowableArray,
     }
+    // RekeyTarget supertrait of Mergeable (#D5).
+    impl crate::collections::rekey::RekeyTarget for RgaDoc {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.content,
+                crate::collections::rekey::field_child_id(parent_id, "content")
+            );
+        }
+    }
     impl Mergeable for RgaDoc {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.content.merge(&other.content)
@@ -787,6 +796,15 @@ fn test_rga_concurrent_appends_then_delete_delta_sync_converges() {
     #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
     struct RgaDoc {
         content: ReplicatedGrowableArray,
+    }
+    // RekeyTarget supertrait of Mergeable (#D5).
+    impl crate::collections::rekey::RekeyTarget for RgaDoc {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.content,
+                crate::collections::rekey::field_child_id(parent_id, "content")
+            );
+        }
     }
     impl Mergeable for RgaDoc {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
@@ -1015,6 +1033,15 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
     struct RgaDoc {
         content: ReplicatedGrowableArray,
     }
+    // RekeyTarget supertrait of Mergeable (#D5).
+    impl crate::collections::rekey::RekeyTarget for RgaDoc {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.content,
+                crate::collections::rekey::field_child_id(parent_id, "content")
+            );
+        }
+    }
     impl Mergeable for RgaDoc {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.content.merge(&other.content)
@@ -1107,6 +1134,15 @@ fn test_rga_real_interleave_merge_converges() {
     #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
     struct RgaDoc {
         content: ReplicatedGrowableArray,
+    }
+    // RekeyTarget supertrait of Mergeable (#D5).
+    impl crate::collections::rekey::RekeyTarget for RgaDoc {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.content,
+                crate::collections::rekey::field_child_id(parent_id, "content")
+            );
+        }
     }
     impl Mergeable for RgaDoc {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {

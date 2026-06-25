@@ -287,6 +287,17 @@ where
     }
 }
 
+// #D5: RekeyTarget supertrait — delegate to the inner vector.
+impl<V, S> crate::collections::rekey::RekeyTarget for AuthoredVector<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + 'static,
+    S: StorageAdaptor,
+{
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        self.inner.rekey_relative_to(parent_id);
+    }
+}
+
 #[diagnostic::do_not_recommend]
 impl<V, S> Mergeable for AuthoredVector<V, S>
 where

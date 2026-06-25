@@ -63,6 +63,10 @@ impl ToTokens for StateImpl<'_> {
         let rekey_register_method = generate_rekey_register_method(ident, generics, orig);
         let rekey_call = quote! { <#ident #ty_generics>::__calimero_register_rekey(); };
 
+        // Generate the `RekeyTarget` impl (supertrait of the `Mergeable` impl
+        // above). Without it, the supertrait bound (#D5) fails to compile.
+        let rekey_target_impl = generate_rekey_target_impl(ident, generics, orig);
+
         // Generate registration hook
         let registration_hook = generate_registration_hook(ident, &ty_generics, &rekey_call);
 
@@ -98,6 +102,10 @@ impl ToTokens for StateImpl<'_> {
 
             // Auto-generated CRDT merge support
             #merge_impl
+
+            // Auto-generated deterministic re-key support (RekeyTarget — the
+            // supertrait of the Mergeable impl above; #D5)
+            #rekey_target_impl
 
             // Auto-generated registration hook
             #registration_hook
@@ -763,6 +771,99 @@ fn generate_rekey_register_method(
                 #calls
             }
         }
+    }
+}
+
+/// Generate the `RekeyTarget` impl for the state struct.
+///
+/// `RekeyTarget` is a supertrait of `Mergeable` (#D5): a `Mergeable` type that
+/// nests a collection must also re-key that collection's id deterministically,
+/// or its nested collection keeps a per-replica `Id::random()` and diverges
+/// permanently with no runtime error (the #2577 data loss). `#[app::state]`
+/// generates a `Mergeable` impl, so it must generate the matching `RekeyTarget`
+/// impl too — the same way `#[derive(Mergeable)]` does — or the supertrait
+/// bound fails to compile.
+///
+/// The generated `rekey_relative_to` cascades over the struct's fields,
+/// re-keying each nested collection field under a field-namespaced child of the
+/// parent id (via `rekey_field_if_supported!`, which autoref-dispatches to a
+/// real re-key for `RekeyTarget` fields and a no-op for leaves). The generated
+/// `register_nested_value_types` re-runs the same per-field scan
+/// (`rekey_register_calls`) the WASM load hook uses, so the cascade walks the
+/// reachable value graph.
+///
+/// Enums get no impl: they have no `Mergeable` impl either (state enums are not
+/// merged field-by-field), so there is no supertrait bound to satisfy.
+fn generate_rekey_target_impl(
+    ident: &Ident,
+    generics: &Generics,
+    orig: &StructOrEnumItem,
+) -> TokenStream {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let fields = match orig {
+        StructOrEnumItem::Struct(s) => &s.fields,
+        StructOrEnumItem::Enum(_) => return quote! {},
+    };
+
+    let rekey_body = generate_struct_rekey(fields);
+    let register_body = rekey_register_calls(fields);
+
+    quote! {
+        impl #impl_generics ::calimero_storage::collections::rekey::RekeyTarget
+            for #ident #ty_generics #where_clause
+        {
+            fn rekey_relative_to(
+                &mut self,
+                parent_id: ::calimero_storage::address::Id,
+            ) {
+                #rekey_body
+            }
+
+            fn register_nested_value_types() {
+                #register_body
+            }
+        }
+    }
+}
+
+/// Emit the per-field re-key cascade body for a struct's `rekey_relative_to`.
+///
+/// Mirrors `#[derive(Mergeable)]`'s field scan: each field is re-keyed relative
+/// to a field-namespaced child of the parent id so sibling collection fields get
+/// distinct id namespaces and every replica derives identical nested ids.
+/// `rekey_field_if_supported!` autoref-dispatches — a real re-key for fields
+/// whose type implements `RekeyTarget`, a no-op for leaf fields. Each expansion
+/// MUST stay in its own block (the macro defines per-invocation helper traits).
+fn generate_struct_rekey(fields: &syn::Fields) -> TokenStream {
+    match fields {
+        syn::Fields::Named(named) => {
+            let calls = named.named.iter().map(|f| {
+                let name = f.ident.as_ref().expect("named field has ident");
+                let name_str = name.to_string();
+                quote! {
+                    ::calimero_storage::rekey_field_if_supported!(
+                        &mut self.#name,
+                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
+                    );
+                }
+            });
+            quote! { #(#calls)* }
+        }
+        syn::Fields::Unnamed(unnamed) => {
+            let calls = unnamed.unnamed.iter().enumerate().map(|(i, _)| {
+                let idx = syn::Index::from(i);
+                let name_str = i.to_string();
+                quote! {
+                    ::calimero_storage::rekey_field_if_supported!(
+                        &mut self.#idx,
+                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
+                    );
+                }
+            });
+            quote! { #(#calls)* }
+        }
+        syn::Fields::Unit => quote! {},
     }
 }
 

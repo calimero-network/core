@@ -72,6 +72,21 @@ use crate::store::StorageAdaptor;
 // Bonus: it makes the `error_non_mergeable_field` golden drift-proof as new
 // `Mergeable` impls land. `do_not_recommend` only affects diagnostics, never
 // trait resolution.
+// `RekeyTarget` is a supertrait of `Mergeable` (#D5). `Option`/`Box` delegate
+// re-keying to the inner value so a nested collection inside an `Option`/`Box`
+// field is still registered.
+impl<T: super::rekey::RekeyTarget + 'static> super::rekey::RekeyTarget for Option<T> {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        if let Some(inner) = self.as_mut() {
+            inner.rekey_relative_to(parent_id);
+        }
+    }
+
+    fn register_nested_value_types() {
+        T::register_nested_value_types();
+    }
+}
+
 #[diagnostic::do_not_recommend]
 impl<T: Mergeable + Clone> Mergeable for Option<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
@@ -97,6 +112,16 @@ impl<T: Mergeable + Clone> Mergeable for Option<T> {
 // through (`Box` is in the lint's pass-through list) only for the trait bound
 // to fail later with an unhelpful diagnostic. Trivial delegation makes the
 // claim honest.
+impl<T: super::rekey::RekeyTarget + 'static> super::rekey::RekeyTarget for Box<T> {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        (**self).rekey_relative_to(parent_id);
+    }
+
+    fn register_nested_value_types() {
+        T::register_nested_value_types();
+    }
+}
+
 #[diagnostic::do_not_recommend]
 impl<T: Mergeable> Mergeable for Box<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
@@ -123,8 +148,14 @@ impl<T: 'static> CrdtMeta for LwwRegister<T> {
     }
 }
 
+// LwwRegister wraps a single value and contains no nested collection
+// (`can_contain_crdts() == false`), so re-keying is a no-op.
+impl<T: 'static> super::rekey::RekeyTarget for LwwRegister<T> {
+    fn rekey_relative_to(&mut self, _parent_id: crate::address::Id) {}
+}
+
 #[diagnostic::do_not_recommend]
-impl<T: Clone> Mergeable for LwwRegister<T> {
+impl<T: Clone + 'static> Mergeable for LwwRegister<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Use existing merge implementation
         LwwRegister::merge(self, other);

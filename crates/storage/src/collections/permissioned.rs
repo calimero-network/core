@@ -377,14 +377,25 @@ where
     }
 }
 
+// #D5: RekeyTarget supertrait — delegate to the inner cell (a no-op, as above).
+impl<T, A> crate::collections::rekey::RekeyTarget for PermissionedStorage<T, A>
+where
+    T: BorshSerialize + BorshDeserialize + Mergeable + Default + 'static,
+    A: Authorizer + 'static,
+{
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        self.inner.rekey_relative_to(parent_id);
+    }
+}
+
 // Root-state merge is a no-op, exactly as for `WriterSetCell`: the value is a
 // separate entity (merged per-entity) and the writer set converges via the
 // verified rotation log. Delegated so the semantics stay identical.
 #[diagnostic::do_not_recommend]
 impl<T, A> Mergeable for PermissionedStorage<T, A>
 where
-    T: BorshSerialize + BorshDeserialize + Mergeable + Default,
-    A: Authorizer,
+    T: BorshSerialize + BorshDeserialize + Mergeable + Default + 'static,
+    A: Authorizer + 'static,
 {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.inner.merge(&other.inner)
@@ -500,6 +511,16 @@ mod tests {
     /// Max-wins Mergeable test value (a valid CRDT).
     #[derive(BorshSerialize, BorshDeserialize, Default, Debug, PartialEq, Clone, Copy)]
     struct TestVal(u64);
+
+    // RekeyTarget supertrait of Mergeable (#D5).
+    impl crate::collections::rekey::RekeyTarget for TestVal {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.0,
+                crate::collections::rekey::field_child_id(parent_id, "0")
+            );
+        }
+    }
 
     impl Mergeable for TestVal {
         fn merge(&mut self, other: &Self) -> Result<(), MergeError> {

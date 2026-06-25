@@ -67,7 +67,16 @@ pub trait CrdtMeta {
     }
 }
 
-/// Marker trait for types that can be merged (all CRDTs)
+/// Marker trait for types that can be merged (all CRDTs).
+///
+/// `RekeyTarget` is a **supertrait** (#D5): any `Mergeable` type that nests a
+/// collection must also register that collection's deterministic-id re-key
+/// thunk, or its nested collection keeps a per-replica `Id::random()` and
+/// diverges permanently — with NO runtime error. `#[derive(Mergeable)]`
+/// generates both impls together, so the danger is only a HAND-WRITTEN `impl
+/// Mergeable`: requiring `RekeyTarget` makes "forgot to register" a compile
+/// error instead of silent data loss. A leaf-only struct (no nested
+/// collection) satisfies it with the no-op default `rekey_relative_to`.
 #[diagnostic::on_unimplemented(
     message = "(calimero)> `{Self}` cannot be stored in replicated state — it is not a CRDT",
     label = "this type has no merge semantics",
@@ -76,7 +85,7 @@ pub trait CrdtMeta {
             use `UnorderedMap`/`UnorderedSet`/`Vector` for collections; or `#[derive(Mergeable)]` \
             on your own struct (every field must itself be `Mergeable`)."
 )]
-pub trait Mergeable {
+pub trait Mergeable: crate::collections::rekey::RekeyTarget {
     /// Merge with another instance of the same type
     ///
     /// # Errors

@@ -69,6 +69,86 @@ help: consider restricting type parameter `T` with trait `BorshSerialize`
 6 | struct MyState<T: calimero_sdk::borsh::BorshSerialize>(T);
   |                 +++++++++++++++++++++++++++++++++++++
 
+error[E0310]: the parameter type `T` may not live long enough
+ --> tests/macros/invalid_nested_generics.rs:5:1
+  |
+5 | #[app::state]
+  | ^^^^^^^^^^^^^
+  | |
+  | the parameter type `T` must be valid for the static lifetime...
+  | ...so that the type `MyState<T>` will meet its required lifetime bounds...
+  |
+note: ...that is required by this bound
+ --> $WORKSPACE/crates/storage/src/collections/crdt_meta.rs
+  |
+  | pub trait Mergeable: crate::collections::rekey::RekeyTarget {
+  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider adding an explicit lifetime bound
+  |
+6 | struct MyState<T: 'static>(T);
+  |                 +++++++++
+
+error[E0310]: the parameter type `T` may not live long enough
+ --> tests/macros/invalid_nested_generics.rs:5:1
+  |
+5 | #[app::state]
+  | ^^^^^^^^^^^^^
+  | |
+  | the parameter type `T` must be valid for the static lifetime...
+  | ...so that the type `T` will meet its required lifetime bounds...
+  |
+note: ...that is required by this bound
+ --> $WORKSPACE/crates/storage/src/collections/crdt_meta.rs
+  |
+  | pub trait Mergeable: crate::collections::rekey::RekeyTarget {
+  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider adding an explicit lifetime bound
+  |
+6 | struct MyState<T: 'static>(T);
+  |                 +++++++++
+
+error[E0310]: the parameter type `T` may not live long enough
+ --> tests/macros/invalid_nested_generics.rs:5:1
+  |
+5 | #[app::state]
+  | ^^^^^^^^^^^^^
+  | |
+  | the parameter type `T` must be valid for the static lifetime...
+  | ...so that the type `MyState<T>` will meet its required lifetime bounds...
+  |
+note: ...that is required by this bound
+ --> $WORKSPACE/crates/storage/src/collections/rekey.rs
+  |
+  | pub trait RekeyTarget: Any {
+  |                        ^^^
+  = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider adding an explicit lifetime bound
+  |
+6 | struct MyState<T: 'static>(T);
+  |                 +++++++++
+
+error[E0310]: the parameter type `T` may not live long enough
+ --> tests/macros/invalid_nested_generics.rs:5:1
+  |
+5 | #[app::state]
+  | ^^^^^^^^^^^^^
+  | |
+  | the parameter type `T` must be valid for the static lifetime...
+  | ...so that the type `T` will meet its required lifetime bounds...
+  |
+note: ...that is required by this bound
+ --> $WORKSPACE/crates/storage/src/collections/rekey.rs
+  |
+  | pub trait RekeyTarget: Any {
+  |                        ^^^
+  = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider adding an explicit lifetime bound
+  |
+6 | struct MyState<T: 'static>(T);
+  |                 +++++++++
+
 error[E0277]: (calimero)> `T` cannot be stored in replicated state — it is not a CRDT
  --> tests/macros/invalid_nested_generics.rs:5:1
   |

@@ -26,6 +26,17 @@ impl Mergeable for TeamMetrics {
     }
 }
 
+// `RekeyTarget` is a supertrait of `Mergeable` (#D5): re-key the nested `teams`
+// collection deterministically (mirrors `apps/team-metrics-custom`).
+impl calimero_storage::collections::rekey::RekeyTarget for TeamMetrics {
+    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.teams,
+            calimero_storage::collections::rekey::field_child_id(parent_id, "teams")
+        );
+    }
+}
+
 impl TeamMetrics {
     fn record_win(&mut self, team: &str) -> app::Result<()> {
         // Mirrors how real apps write methods: `app::Result` + `?` (StoreError
@@ -74,6 +85,16 @@ impl Mergeable for Inline {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         self.a.merge(&other.a)?;
         self.b.merge(&other.b)
+    }
+}
+
+// `RekeyTarget` is a supertrait of `Mergeable` (#D5): re-key both nested counters
+// under distinct field-namespaced child ids.
+impl calimero_storage::collections::rekey::RekeyTarget for Inline {
+    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
+        use calimero_storage::collections::rekey::field_child_id;
+        calimero_storage::rekey_field_if_supported!(&mut self.a, field_child_id(parent_id, "a"));
+        calimero_storage::rekey_field_if_supported!(&mut self.b, field_child_id(parent_id, "b"));
     }
 }
 

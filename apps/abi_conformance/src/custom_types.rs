@@ -57,3 +57,22 @@ impl calimero_storage::collections::Mergeable for MergeableRecord {
         Ok(())
     }
 }
+
+// `RekeyTarget` is a supertrait of `Mergeable`: a hand-written `impl Mergeable`
+// must also implement `RekeyTarget` (`#[derive(Mergeable)]` generates both). The
+// `counter` field is a collection whose nested id is re-keyed deterministically
+// here; `name` (`LwwRegister`) is a leaf, for which the macro dispatches to a
+// no-op.
+impl calimero_storage::collections::rekey::RekeyTarget for MergeableRecord {
+    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
+        use calimero_storage::collections::rekey::field_child_id;
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.counter,
+            field_child_id(parent_id, "counter")
+        );
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.name,
+            field_child_id(parent_id, "name")
+        );
+    }
+}

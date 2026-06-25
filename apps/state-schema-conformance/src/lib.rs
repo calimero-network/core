@@ -55,6 +55,24 @@ impl calimero_storage::collections::Mergeable for Profile {
     }
 }
 
+// `RekeyTarget` is a supertrait of `Mergeable`: a hand-written `impl Mergeable`
+// must also implement `RekeyTarget` (`#[derive(Mergeable)]` generates both). The
+// `visit_count` field is a collection whose nested id is re-keyed
+// deterministically here; `bio` (`LwwRegister`) is a leaf (no-op dispatch).
+impl calimero_storage::collections::rekey::RekeyTarget for Profile {
+    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
+        use calimero_storage::collections::rekey::field_child_id;
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.bio,
+            field_child_id(parent_id, "bio")
+        );
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.visit_count,
+            field_child_id(parent_id, "visit_count")
+        );
+    }
+}
+
 // Variant types
 #[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[serde(crate = "calimero_sdk::serde")]
