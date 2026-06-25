@@ -2406,12 +2406,17 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
 ///      repaired by a later seed call, not skipped forever (PR #2473, finding C).
 ///
 /// `seed_bootstrap_admin_if_absent` writes two non-atomic rows: group meta and
-/// the admin member row. A crash between them leaves meta present but the member
-/// row missing. Gating the whole seed on `MetaRepository::new(..).load().is_some()` would
-/// return early forever and never add the member row, so encrypted replay keeps
-/// failing the verifier-membership check with no way to self-repair. The fix
-/// gates each row on its own presence and always ensures the member row exists,
-/// so a later `KeyDelivery` re-entry repairs the partial seed.
+/// the deliverer's member row. A crash between them leaves meta present but the
+/// member row missing. Gating the whole seed on
+/// `MetaRepository::new(..).load().is_some()` would return early forever and
+/// never add the member row, so encrypted replay keeps failing the verifier-
+/// membership check with no way to self-repair. The fix gates each row on its
+/// own presence and always ensures the member row exists, so a later
+/// `KeyDelivery` re-entry repairs the partial seed.
+///
+/// #2474: the seeded member row is now a non-authoritative `Member` (NOT
+/// `Admin`) — founding authority comes from the `NamespaceCreated` genesis, not
+/// the KeyDelivery signer. This test asserts the repair idempotency of that row.
 #[test]
 fn seed_bootstrap_admin_repairs_missing_member_row() {
     use calimero_primitives::identity::PrivateKey;
@@ -2430,7 +2435,8 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
 
     let gov = NamespaceGovernance::new(&store, namespace_id);
 
-    // ---- First seed: both meta and the admin member row are written. ----
+    // ---- First seed: both meta and the (non-authoritative) member row are
+    // written. #2474: the member row is `Member`, not `Admin`. ----
     gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
         .expect("initial seed");
     assert!(MetaRepository::new(&store).load(&ns_gid).unwrap().is_some());
@@ -2438,8 +2444,8 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
         MembershipRepository::new(&store)
             .role_of(&ns_gid, &founder)
             .unwrap(),
-        Some(GroupMemberRole::Admin),
-        "first seed must add the admin member row"
+        Some(GroupMemberRole::Member),
+        "first seed must add the deliverer's member row (non-authoritative)"
     );
 
     // ---- Simulate the partial-seed crash: meta survives, member row lost. ----
@@ -2463,8 +2469,8 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
         MembershipRepository::new(&store)
             .role_of(&ns_gid, &founder)
             .unwrap(),
-        Some(GroupMemberRole::Admin),
-        "re-seed must repair the missing admin member row"
+        Some(GroupMemberRole::Member),
+        "re-seed must repair the missing member row"
     );
 }
 

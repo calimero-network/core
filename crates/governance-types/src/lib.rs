@@ -534,6 +534,33 @@ pub enum RootOp {
         signed_invitation: SignedGroupOpenInvitation,
         joined_at: u64,
     },
+    /// **Namespace genesis (#2474).** The first op in every namespace DAG:
+    /// authoritatively records the namespace's founding administrator/owner.
+    ///
+    /// Root-namespace creation previously emitted NO governance op — the
+    /// founder lived only in the creator's local `GroupMetaValue`, so a
+    /// bootstrapping replica replaying the synced DAG could never learn the
+    /// owner and fell back to trust-on-first-use seeding from the
+    /// KeyDelivery signer (`seed_bootstrap_admin_if_absent`). When the
+    /// deliverer was a non-owner member the replica pinned the WRONG admin
+    /// and permanently rejected the true owner's ops, wedging backfill.
+    ///
+    /// This op closes that gap: emitted as the genesis (nonce 0, no parents,
+    /// `state_hash == [0u8; 32]`) signed with the namespace signing key, it
+    /// is **self-authorizing** — apply does NOT call `require_namespace_admin`
+    /// because genesis is what establishes that authority. It writes the root
+    /// `GroupMetaValue` with `admin_identity == owner_identity == founder` and
+    /// an Admin member row for the founder with default caps.
+    ///
+    /// **Anti-hijack:** apply is a no-op if the namespace already has root
+    /// meta (an established founder). A forged second genesis cannot overwrite
+    /// an existing admin; apply is idempotent.
+    ///
+    /// **Wire note:** appended at the END of `RootOp` so existing borsh
+    /// discriminants do not renumber. It is still a borsh schema addition;
+    /// consumers pinning this crate (e.g. mero-tee) must reset/coordinate a
+    /// core-rev bump.
+    NamespaceCreated { founder: PublicKey },
 }
 
 impl NamespaceOp {
@@ -554,6 +581,7 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::MemberJoinedAt { .. }) => "member_joined_at",
             NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => "member_joined_open",
             NamespaceOp::Root(RootOp::KeyDelivery { .. }) => "key_delivery",
+            NamespaceOp::Root(RootOp::NamespaceCreated { .. }) => "namespace_created",
             NamespaceOp::Group { .. } => "group_op",
         }
     }

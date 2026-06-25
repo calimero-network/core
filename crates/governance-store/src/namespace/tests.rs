@@ -1210,10 +1210,24 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
 
     let gov = NamespaceGovernance::new(&store, namespace_id);
 
-    // ---- Bare bootstrap seed: this is the ONLY thing that establishes the root
-    // meta + founding admin on the replica (the real fleet-join KeyDelivery
-    // path). It must also leave the root's default caps set to include
-    // CAN_JOIN_OPEN_SUBGROUPS. ----
+    // ---- Genesis establishes the founder as the authoritative namespace admin
+    // (#2474: this used to come from the bootstrap seed's KeyDelivery-signer
+    // TOFU; it now comes from the replayable `NamespaceCreated` genesis op). The
+    // founder here IS the verifier that authors the TEE ops below, so it must be
+    // admin for those ops to apply. ----
+    {
+        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+        let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let signed_genesis =
+            SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+                .expect("sign genesis");
+        gov.apply_signed_op(&signed_genesis)
+            .expect("genesis NamespaceCreated establishes the founding admin");
+    }
+
+    // The bootstrap seed still runs on the real fleet-join KeyDelivery path; it
+    // is now a no-op for the (already established) meta but still ensures the
+    // root's default caps include CAN_JOIN_OPEN_SUBGROUPS.
     gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
         .expect("bootstrap seed");
 
@@ -1222,7 +1236,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
             .default_capabilities(&ns_gid)
             .unwrap(),
         Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
-        "bootstrap seed must set the root's default caps so members admitted \
+        "genesis/seed must set the root's default caps so members admitted \
          before the DefaultCapabilitiesSet gossip inherit CAN_JOIN_OPEN_SUBGROUPS"
     );
 
@@ -1338,38 +1352,25 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
 }
 
 #[test]
-#[ignore = "RED reproduction for #2474 — expected to FAIL until the namespace-genesis \
-            founder fix lands (Option A: RootOp::NamespaceCreated, or Option B: \
-            owner_identity carried in the KeyDelivery envelope). Remove #[ignore] \
-            and invert the assertion when GREEN."]
-fn replica_seeded_from_non_owner_rejects_true_owner_ops() {
-    // #2474 REPRODUCTION (production-confirmed 2026-06-25).
+fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
+    // #2474 REGRESSION GUARD (was the RED reproduction; now GREEN under Option A).
     //
-    // `seed_bootstrap_admin_if_absent` seeds a bootstrapping replica's namespace
-    // founding admin/owner from the *KeyDelivery signer* (trust-on-first-use).
-    // The signer need only HOLD the group key — i.e. be ANY current member — so
-    // in a normal multi-member namespace the key-deliverer is frequently a
-    // NON-OWNER member. When that happens the replica pins the WRONG founding
-    // admin and then REJECTS every authority-checked root op signed by the TRUE
-    // owner. The FIRST such op — the owner's `RootOp::GroupCreated` creating a
-    // subgroup under the namespace root — fails the `execute_group_created`
-    // authority check (`GroupCreatedRejection::Unauthorized`), and the namespace
-    // DAG backfill wedges permanently at that op. It does NOT self-heal: the
-    // `meta_existed`/`if_absent` guard turns a later correct KeyDelivery into a
-    // no-op.
+    // BEFORE the fix: `seed_bootstrap_admin_if_absent` TOFU-seeded the founding
+    // admin from the *KeyDelivery signer*. The signer need only HOLD the group
+    // key (any current member), so when a NON-OWNER delivered the key the replica
+    // pinned the WRONG admin and REJECTED the true owner's first authority-bearing
+    // root op (`GroupCreated` under the root), wedging backfill permanently.
     //
-    // This test reproduces that wedge end-to-end against the SAME apply path the
-    // backfill uses (`NamespaceGovernance::apply_signed_op`):
-    //  1. true owner = OWNER; key-deliverer = a DIFFERENT non-owner member.
-    //  2. seed the replica via `seed_bootstrap_admin_if_absent(ns, &NON_OWNER)`
-    //     (mirrors a KeyDelivery minted by the non-owner).
-    //  3. drive an OWNER-signed `RootOp::GroupCreated` (subgroup under the root).
+    // AFTER the fix (Option A): namespace root creation emits a replayable
+    // `RootOp::NamespaceCreated { founder }` GENESIS op. A backfilling replica
+    // applies it (nonce 0, first in the DAG) BEFORE any owner op, so the correct
+    // founding admin is established authoritatively from the synced DAG — the
+    // non-owner KeyDelivery seed can no longer pin the wrong admin, and the
+    // owner's `GroupCreated` APPLIES.
     //
-    // RED state (today): step 3 is REJECTED with the not-admin /
-    // lacks-CAN_CREATE_SUBGROUP error. The asserts below pin that rejection.
-    // GREEN (after the fix): the owner is the authoritative founding admin, so
-    // step 3 APPLIES — at which point this test must be updated to assert
-    // success (invert the asserts, drop `#[ignore]`).
+    // This exercises the realistic backfill order (genesis applied first, then a
+    // non-owner KeyDelivery seed lands, then the owner's GroupCreated) against the
+    // SAME apply path the backfill uses (`NamespaceGovernance::apply_signed_op`).
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -1384,10 +1385,8 @@ fn replica_seeded_from_non_owner_rejects_true_owner_ops() {
     let owner_sk = PrivateKey::random(&mut rng);
     let owner = owner_sk.public_key();
 
-    // A DIFFERENT, non-owner member of the namespace. In a real multi-member
-    // namespace this is whoever happened to deliver the group key to the
-    // bootstrapping replica — it is NOT the owner, but it holds the key so it
-    // can (and routinely does) mint the KeyDelivery the replica TOFU-trusts.
+    // A DIFFERENT, non-owner member of the namespace — whoever happened to
+    // deliver the group key to the bootstrapping replica. It is NOT the owner.
     let non_owner_sk = PrivateKey::random(&mut rng);
     let non_owner = non_owner_sk.public_key();
     assert_ne!(
@@ -1400,30 +1399,50 @@ fn replica_seeded_from_non_owner_rejects_true_owner_ops() {
 
     let gov = NamespaceGovernance::new(&store, namespace_id);
 
-    // ---- Replica bootstrap: the ONLY thing that establishes root meta + the
-    // founding admin on this replica is the KeyDelivery TOFU seed, and it seeds
-    // from the NON-OWNER deliverer (the #2474 bug condition). ----
-    gov.seed_bootstrap_admin_if_absent(namespace_id, &non_owner)
-        .expect("bootstrap seed from the (non-owner) KeyDelivery signer");
+    // ---- Step 1: the GENESIS op the backfill replays FIRST. Signed by the true
+    // owner, nonce 0, no parents — exactly what `handlers/create_group.rs` emits
+    // on root creation. This establishes the founding admin authoritatively. ----
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&owner_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+            .expect("owner signs NamespaceCreated genesis");
+    gov.apply_signed_op(&signed_genesis)
+        .expect("genesis NamespaceCreated must apply on the bare replica");
 
-    // Confirm the replica pinned the WRONG founding admin: it believes the
-    // non-owner is the admin, and does NOT recognise the true owner.
+    // The true owner is now the recognised founding admin; the non-owner is not.
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &non_owner)
+            .is_admin(&ns_gid, &owner)
             .unwrap(),
-        "seed pinned the non-owner deliverer as the namespace admin (the bug)"
+        "genesis must establish the TRUE owner as the namespace admin"
     );
     assert!(
         !MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &owner)
+            .is_admin(&ns_gid, &non_owner)
             .unwrap(),
-        "the TRUE owner is NOT recognised as admin on the wrongly-seeded replica"
+        "the non-owner must NOT be admin after genesis"
     );
 
-    // ---- The first authority-bearing root op the backfill would replay: the
-    // owner's own `GroupCreated` nesting a subgroup directly under the namespace
-    // root. Signed by the TRUE owner, applied through the backfill apply path. ----
+    // ---- Step 2: a non-owner KeyDelivery seed lands. It used to overwrite the
+    // admin; now it is forbidden from establishing authority — it adds only a
+    // non-authoritative member row and never touches the established admin. ----
+    gov.seed_bootstrap_admin_if_absent(namespace_id, &non_owner)
+        .expect("bootstrap seed from the (non-owner) KeyDelivery signer");
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &non_owner)
+            .unwrap(),
+        "#2474: a non-owner KeyDelivery seed must NOT pin the admin (the wedge is gone)"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &owner)
+            .unwrap(),
+        "the true owner remains the admin after the non-owner seed"
+    );
+
+    // ---- Step 3: the owner's first authority-bearing root op now APPLIES. ----
     let subgroup_id = [0xC5u8; 32];
     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
         group_id: subgroup_id,
@@ -1433,30 +1452,131 @@ fn replica_seeded_from_non_owner_rejects_true_owner_ops() {
     let signed = SignedNamespaceOp::sign(&owner_sk, namespace_id, vec![], [0u8; 32], 1, create_op)
         .expect("owner signs GroupCreated");
 
-    let result = gov.apply_signed_op(&signed);
-
-    // RED assertion: the owner's op is REJECTED because the replica was seeded
-    // with the non-owner as admin. This is the permanent backfill wedge.
-    let err = result.expect_err(
-        "#2474: owner-signed GroupCreated is REJECTED on a replica seeded from a \
-         non-owner KeyDelivery signer (the wedge). When the genesis-founder fix \
-         lands this op APPLIES and this expect_err must be inverted.",
-    );
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("is neither an admin of namespace") && msg.contains("CAN_CREATE_SUBGROUP"),
-        "expected the GroupCreated not-admin / lacks-CAN_CREATE_SUBGROUP rejection, \
-         got: {msg}"
+    gov.apply_signed_op(&signed).expect(
+        "#2474 GREEN: owner-signed GroupCreated APPLIES once genesis establishes the admin",
     );
 
-    // And the wedge is permanent for the subgroup: its meta never gets written.
+    // The subgroup meta is written — backfill is no longer wedged.
     assert!(
         MetaRepository::new(&store)
             .load(&ContextGroupId::from(subgroup_id))
             .unwrap()
-            .is_none(),
-        "the subgroup must not have been created — the backfill is wedged at this op"
+            .is_some(),
+        "the subgroup must be created — backfill proceeds past the owner's GroupCreated"
     );
+}
+
+#[test]
+fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
+    // Unit coverage for the `NamespaceCreated` apply handler (#2474):
+    //  (a) on a BARE store it writes admin == owner == founder with no prior
+    //      state and the default CAN_JOIN_OPEN_SUBGROUPS caps;
+    //  (b) a SECOND `NamespaceCreated` (forged second genesis) on an established
+    //      namespace is a NO-OP — it cannot overwrite the established admin;
+    //  (c) a seed-PLACEHOLDER meta (admin == zero) does NOT block genesis —
+    //      genesis fills in the real founder over it, proving seed-vs-genesis
+    //      ordering converges either way.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::MemberCapabilities;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+    let attacker_sk = PrivateKey::random(&mut rng);
+    let attacker = attacker_sk.public_key();
+
+    // ---- (a) bare-store genesis ----
+    {
+        let store = test_store();
+        let namespace_id = [0xA1u8; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+        let gov = NamespaceGovernance::new(&store, namespace_id);
+
+        let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let signed =
+            SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+                .unwrap();
+        gov.apply_signed_op(&signed)
+            .expect("bare-store genesis applies");
+
+        let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        assert_eq!(meta.admin_identity, founder, "admin == founder");
+        assert_eq!(meta.owner_identity, founder, "owner == founder");
+        assert!(
+            MembershipRepository::new(&store)
+                .is_admin(&ns_gid, &founder)
+                .unwrap(),
+            "founder is admin"
+        );
+        assert_eq!(
+            CapabilitiesRepository::new(&store)
+                .default_capabilities(&ns_gid)
+                .unwrap(),
+            Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+            "genesis seeds default CAN_JOIN_OPEN_SUBGROUPS caps"
+        );
+
+        // ---- (b) anti-hijack: a second, forged genesis is a no-op ----
+        let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: attacker });
+        let signed_forged =
+            SignedNamespaceOp::sign(&attacker_sk, namespace_id, vec![], [0u8; 32], 1, forged)
+                .unwrap();
+        gov.apply_signed_op(&signed_forged)
+            .expect("forged second genesis applies as a no-op (no error)");
+
+        let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        assert_eq!(
+            meta.admin_identity, founder,
+            "anti-hijack: established admin is NOT overwritten by a forged genesis"
+        );
+        assert!(
+            !MembershipRepository::new(&store)
+                .is_admin(&ns_gid, &attacker)
+                .unwrap(),
+            "anti-hijack: the attacker did not become admin"
+        );
+    }
+
+    // ---- (c) placeholder seed meta does NOT block genesis ----
+    {
+        let store = test_store();
+        let namespace_id = [0xA2u8; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+        let gov = NamespaceGovernance::new(&store, namespace_id);
+
+        // A non-owner seed runs first, writing placeholder meta (admin == zero).
+        gov.seed_bootstrap_admin_if_absent(namespace_id, &attacker)
+            .expect("placeholder seed");
+        let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        assert_eq!(
+            meta.admin_identity,
+            PublicKey::from([0u8; 32]),
+            "seed writes a placeholder (zero) admin, granting authority to nobody"
+        );
+        assert!(
+            !MembershipRepository::new(&store)
+                .is_admin(&ns_gid, &attacker)
+                .unwrap(),
+            "the non-owner deliverer is NOT admin after the seed"
+        );
+
+        // Genesis then lands and fills in the real founder over the placeholder.
+        let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let signed =
+            SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+                .unwrap();
+        gov.apply_signed_op(&signed)
+            .expect("genesis applies over the placeholder seed meta");
+        let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        assert_eq!(
+            meta.admin_identity, founder,
+            "genesis overwrites the placeholder admin with the real founder"
+        );
+    }
 }
 
 #[test]

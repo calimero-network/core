@@ -229,13 +229,20 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 let signer_sk = PrivateKey::from(sk_bytes);
                 // Strict-tree refactor: GroupCreated is now an atomic
                 // create+nest op. It ONLY applies to subgroups — the namespace
-                // root itself has no parent by definition. For root creation
-                // (parent_group_id is None), the group's existence is recorded
-                // by the pre-populated GroupMeta and the namespace identity in
-                // the store; we skip the op entirely. Peers learn of a
-                // namespace only when they're invited (MemberJoined), so there's
-                // no replication gap. See spec
-                // docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
+                // root itself has no parent by definition.
+                //
+                // #2474: root creation (parent_group_id is None) now emits a
+                // replayable `RootOp::NamespaceCreated { founder }` GENESIS op so
+                // a bootstrapping replica derives the founding admin/owner
+                // authoritatively from the synced DAG instead of TOFU-seeding it
+                // from the KeyDelivery signer. This is the FIRST op in the
+                // namespace DAG (nonce 0, no parents — the head record is empty
+                // for a brand-new namespace), signed+published via the same path
+                // subgroup GroupCreated uses. It self-authorizes on apply
+                // (genesis establishes authority; see
+                // `ops/namespace/namespace_created.rs`). Previously root creation
+                // emitted NO op and the founder lived only in the creator's local
+                // GroupMeta, which is exactly the gap #2474 closes.
                 if let Some(parent_id) = parent_group_id {
                     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
                         group_id: group_id.to_bytes(),
@@ -264,6 +271,34 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         }
                         Err(e) => {
                             tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");
+                        }
+                    }
+                } else {
+                    let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreated {
+                        founder: admin_identity,
+                    });
+                    match calimero_governance_store::sign_apply_and_publish_namespace_op(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        namespace_id.to_bytes(),
+                        &signer_sk,
+                        genesis_op,
+                    )
+                    .await
+                    {
+                        Ok(report) => {
+                            report.observe("create_group", "NamespaceCreated");
+                            crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
+                                &datastore,
+                                namespace_id.to_bytes(),
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                ?e,
+                                "failed to publish NamespaceCreated genesis on namespace DAG"
+                            );
                         }
                     }
                 }
