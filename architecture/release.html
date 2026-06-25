@@ -122,6 +122,41 @@ DEVTOOLS_REF: v1.4.0</pre>
 op_store_incomplete
 op_store_gate_unavailable</pre>
 </div>
+<div class="card gd"><h2>Live paired SDK e2e CI workflow</h2>
+<p>The <code>.github/workflows/sdk-e2e.yml</code> workflow provides a <strong>behavioral gate</strong> on every relevant PR: it builds <code>merod</code> from the PR branch, boots a real node, and drives the <code>mero-js</code> e2e suite against it over actual HTTP. Static fixture or schema tests cannot catch wiring errors introduced when a renamed or removed parameter causes the SDK to send the old request shape and the node returns a <code>4xx</code>; this workflow will.</p>
+
+<h3>What the workflow does</h3>
+<ol>
+<li>Builds <code>merod</code> from the PR branch.</li>
+<li>Boots a single node with embedded auth on a configurable port.</li>
+<li>Runs the <code>mero-js</code> e2e suite against that node via the <code>NODE_BASE_URL</code> environment variable.</li>
+<li>Runs the endpoint-coverage check.</li>
+<li>Stops <code>merod</code> via <code>MEROD_PID</code>. The stop step guards against accidentally signaling the whole process group when the variable is unset — if <code>MEROD_PID</code> is empty the signal is skipped rather than sent to PID 0 or the group leader.</li>
+</ol>
+
+<h3>Resolving the paired mero-js ref</h3>
+<p>The companion script <code>resolve-paired-ref.sh</code> determines which <code>mero-js</code> branch to test against using a three-level priority:</p>
+<ol>
+<li><strong>Explicit override:</strong> an <code>sdk-ref: &lt;branch&gt;</code> line anywhere in the PR body.</li>
+<li><strong>Same-named branch:</strong> a branch on the <code>mero-js</code> repo with the same name as the core PR branch.</li>
+<li><strong>Default:</strong> <code>master</code>.</li>
+</ol>
+<p>The resolved ref is validated before use. It is rejected if it:</p>
+<ul>
+<li>contains characters outside the safe git-ref character set,</li>
+<li>contains <code>..</code> (path traversal),</li>
+<li>starts with <code>-</code> (option injection), or</li>
+<li>starts with <code>/</code> (absolute path).</li>
+</ul>
+
+<h3>Pointing a PR at a paired SDK branch</h3>
+<p>If your core PR requires a matching change in <code>mero-js</code>, add a line to the PR description:</p>
+<pre class="code">sdk-ref: my-feature-branch</pre>
+<p>The workflow will check out that branch of <code>mero-js</code> instead of <code>master</code>. Without this line the script falls back to a same-named branch if one exists, then to <code>master</code>.</p>
+
+<h3>Why this catches what static tests miss</h3>
+<p>A renamed or removed parameter in a handler causes the SDK to send the old request shape; the node returns a <code>4xx</code> and the workflow fails on the core developer's PR — before the downstream SDK picks up the change. Schema and ABI checks validate structure; the SDK e2e workflow validates <em>behaviour</em> across a live HTTP boundary.</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
