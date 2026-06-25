@@ -73,6 +73,33 @@ pub(crate) fn apply(
         ));
     }
 
+    // ---- TRUE-genesis gate: the op MUST be the DAG root (no parents). ----
+    // `NamespaceCreated` is by definition the FIRST op in the namespace DAG.
+    // A brand-new namespace has no persisted head, so `read_head_record`
+    // (namespace/dag.rs) returns an EMPTY `parent_hashes`, and the signer
+    // (`sign_apply_and_publish`) signs the genesis with
+    // `parent_op_hashes == []`. Any `NamespaceCreated` carrying parents was
+    // therefore minted against an EXISTING DAG head — i.e. injected late onto a
+    // namespace that already has history — and must never be allowed to
+    // establish/re-found the founder. Rejecting on non-empty parents enforces
+    // the reviewer's intent ("only the true first op can establish the
+    // founder") without relying on `op.nonce`, which is informational here: DAG
+    // sequencing comes from `read_head_record().next_nonce`, not `op.nonce`.
+    //
+    // CAVEAT for the tracked startup-repair re-emit follow-up: if a future
+    // repair path re-emits a genesis on an ALREADY-rooted namespace, it must
+    // either emit at the genesis position (with NO parents — i.e. against an
+    // empty head) so it passes this gate, or be routed through a distinct,
+    // explicitly-authorized repair op. Do NOT relax this gate to admit a
+    // parented `NamespaceCreated`, or the anti-hijack guarantee collapses.
+    if !op.parent_op_hashes.is_empty() {
+        bail!(ApplyError::NamespaceCreatedRejected(
+            NamespaceCreatedRejection::NotGenesis {
+                parent_count: op.parent_op_hashes.len(),
+            }
+        ));
+    }
+
     // ---- Anti-hijack / idempotency gate. ----
     // Genesis may only ESTABLISH a founder; it may never overwrite one. The
     // gate keys SOLELY on `admin_identity`, the authority field:

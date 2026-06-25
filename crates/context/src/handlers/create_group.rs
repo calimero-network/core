@@ -236,8 +236,14 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // a bootstrapping replica derives the founding admin/owner
                 // authoritatively from the synced DAG instead of TOFU-seeding it
                 // from the KeyDelivery signer. This is the FIRST op in the
-                // namespace DAG (nonce 0, no parents — the head record is empty
-                // for a brand-new namespace), signed+published via the same path
+                // namespace DAG — its defining invariant is that it has NO
+                // parents (the head record is empty for a brand-new namespace,
+                // so `read_head_record` returns empty `parent_hashes`). Its
+                // nonce is 1, not 0 (`read_head_record` defaults `next_nonce` to
+                // 1 when the head is absent); `op.nonce` is informational and
+                // signature-covered, but DAG sequencing comes from
+                // `read_head_record().next_nonce`, never from `op.nonce`. The
+                // genesis is signed+published via the same path
                 // subgroup GroupCreated uses. It self-authorizes on apply
                 // (genesis establishes authority; see
                 // `ops/namespace/namespace_created.rs`). Previously root creation

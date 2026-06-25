@@ -1363,7 +1363,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     //
     // AFTER the fix (Option A): namespace root creation emits a replayable
     // `RootOp::NamespaceCreated { founder }` GENESIS op. A backfilling replica
-    // applies it (nonce 0, first in the DAG) BEFORE any owner op, so the correct
+    // applies it (the parentless FIRST op in the DAG) BEFORE any owner op, so the correct
     // founding admin is established authoritatively from the synced DAG — the
     // non-owner KeyDelivery seed can no longer pin the wrong admin, and the
     // owner's `GroupCreated` APPLIES.
@@ -1400,8 +1400,11 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     let gov = NamespaceGovernance::new(&store, namespace_id);
 
     // ---- Step 1: the GENESIS op the backfill replays FIRST. Signed by the true
-    // owner, nonce 0, no parents — exactly what `handlers/create_group.rs` emits
-    // on root creation. This establishes the founding admin authoritatively. ----
+    // owner with NO parents (the defining genesis invariant) — exactly what
+    // `handlers/create_group.rs` emits on root creation. (`op.nonce` is
+    // informational here; sequencing comes from the head record. The 0 below is
+    // an arbitrary placeholder the apply path does not consult for ordering.)
+    // This establishes the founding admin authoritatively. ----
     let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner });
     let signed_genesis =
         SignedNamespaceOp::sign(&owner_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
@@ -1873,6 +1876,76 @@ fn namespace_created_genesis_signer_must_equal_founder() {
             .is_admin(&ns_gid, &victim)
             .unwrap(),
         "victim was not made admin by a forged genesis"
+    );
+}
+
+#[test]
+fn namespace_created_with_parents_is_rejected_as_non_genesis() {
+    // #2474 batch-7: `NamespaceCreated` is the DAG ROOT — its defining invariant
+    // is that it has NO parents. A brand-new namespace has an empty head, so the
+    // real genesis (`handlers/create_group.rs` via `sign_apply_and_publish`) is
+    // signed with `parent_op_hashes == []`. A `NamespaceCreated` carrying
+    // parents was therefore minted against an EXISTING DAG head — injected late
+    // onto a namespace with history — and must be REJECTED even when
+    // signer == founder, so it can never establish/re-found the founder.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xD9u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Self-consistent (signer == founder) but PARENTED genesis: a fabricated
+    // parent op-hash makes this not the DAG root.
+    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![[0x11u8; 32]],
+        [0u8; 32],
+        2,
+        parented,
+    )
+    .unwrap();
+
+    let res = gov.apply_signed_op(&signed);
+    assert!(
+        res.is_err(),
+        "a NamespaceCreated carrying parents must be rejected (not the DAG root), \
+         even with signer == founder"
+    );
+
+    // No meta written — the parented op established no founder.
+    assert!(
+        MetaRepository::new(&store).load(&ns_gid).unwrap().is_none(),
+        "rejected non-genesis NamespaceCreated must leave the namespace with no root meta"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "no Admin row may be written for a rejected non-genesis NamespaceCreated"
+    );
+
+    // Sanity: the REAL genesis path (no parents, same founder) still applies.
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 1, genesis).unwrap();
+    gov.apply_signed_op(&signed_genesis)
+        .expect("parentless genesis (the DAG root) still applies");
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "parentless genesis establishes the founder as Admin"
     );
 }
 

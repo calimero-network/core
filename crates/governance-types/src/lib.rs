@@ -545,8 +545,12 @@ pub enum RootOp {
     /// deliverer was a non-owner member the replica pinned the WRONG admin
     /// and permanently rejected the true owner's ops, wedging backfill.
     ///
-    /// This op closes that gap: emitted as the genesis (nonce 0, no parents,
-    /// `state_hash == [0u8; 32]`) signed with the namespace signing key, it
+    /// This op closes that gap: emitted as the genesis — the FIRST op in the
+    /// namespace DAG, defined by having NO parents (its nonce is 1, since the
+    /// head record defaults `next_nonce` to 1 when absent; `op.nonce` is
+    /// informational/signature-covered, sequencing comes from
+    /// `read_head_record().next_nonce`), `state_hash == [0u8; 32]` —
+    /// signed with the namespace signing key, it
     /// is **self-authorizing** — apply does NOT call `require_namespace_admin`
     /// because genesis is what establishes that authority. It writes the root
     /// `GroupMetaValue` with `admin_identity == owner_identity == founder` and

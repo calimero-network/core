@@ -371,6 +371,20 @@ pub enum NamespaceCreatedRejection {
     /// that has no prior genesis.
     #[error("genesis signer {signer} does not match declared founder {founder}")]
     SignerNotFounder { signer: String, founder: String },
+
+    /// The op carries a non-empty parent set, so it is NOT the DAG root.
+    /// `NamespaceCreated` is the GENESIS op — the first op in the namespace
+    /// DAG, signed with an empty `parent_op_hashes` (a brand-new namespace has
+    /// no head, so `read_head_record` returns empty parents; see
+    /// `namespace/dag.rs`). Only the true parentless first op may establish the
+    /// founder; a `NamespaceCreated` injected LATE onto an existing DAG (which
+    /// necessarily references prior heads as parents) is rejected here so it can
+    /// never be used to hijack or re-found an in-flight namespace.
+    #[error(
+        "NamespaceCreated is not the DAG root: it carries {parent_count} parent op-hash(es); \
+         the genesis op must have no parents"
+    )]
+    NotGenesis { parent_count: usize },
 }
 
 /// Reasons `RootOp::GroupDeleted` apply can be rejected.

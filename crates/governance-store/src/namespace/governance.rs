@@ -892,9 +892,13 @@ impl<'a> NamespaceGovernance<'a> {
     /// confirmed). The authoritative founder now comes from the replayable
     /// `RootOp::NamespaceCreated` genesis op
     /// (`ops/namespace/namespace_created.rs`), emitted at namespace creation in
-    /// `handlers/create_group.rs`. The genesis is nonce-0 / first in the DAG, so
-    /// backfill applies it before any owner op and the correct admin row is
-    /// present by the time owner ops apply.
+    /// `handlers/create_group.rs`. The genesis is the FIRST op in the DAG —
+    /// defined by having NO parents (its nonce is 1, since `read_head_record`
+    /// defaults `next_nonce` to 1 when the head is absent; `op.nonce` is
+    /// informational/signature-covered, DAG sequencing derives from
+    /// `read_head_record().next_nonce`, not `op.nonce`). Being the parentless
+    /// root, backfill applies it before any owner op and the correct admin row
+    /// is present by the time owner ops apply.
     ///
     /// Strictly gated and idempotent:
     /// - only acts when `group_id` is the namespace root (`== namespace_id`);
