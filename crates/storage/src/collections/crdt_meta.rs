@@ -267,6 +267,58 @@ macro_rules! is_crdt {
     };
 }
 
+/// Implement `Mergeable` as a whole-record **last-write-wins** for a leaf struct
+/// that is stored as a collection value but is NOT made of CRDT fields — e.g. an
+/// immutable upload record (`FileRecord { id, name, size, uploaded_at, .. }`)
+/// keyed by a monotonic `uploaded_at`/version field. `#[derive(Mergeable)]`
+/// can't express this: it requires every field to be `Mergeable`, which would
+/// force each plain `String`/`u64` into a `LwwRegister`/`Counter` — overkill for
+/// a record that is replaced atomically.
+///
+/// This macro is the storage-crate-provided alternative so application authors
+/// write ZERO `RekeyTarget` boilerplate (the maintainer's #2950 review point):
+/// it emits BOTH the LWW `Mergeable` impl AND the matching no-op `RekeyTarget`
+/// impl together, in one line. The no-op `RekeyTarget` is correct because a
+/// whole-record-LWW leaf has no nested collection id to re-key. The supertrait
+/// guard still bites: a HAND-WRITTEN `impl Mergeable` on a struct that DOES nest
+/// a collection cannot use this macro (it would silently never re-key) — that
+/// path stays a compile error until the author derives or re-keys explicitly.
+///
+/// The second argument names a field on `$t` whose `PartialOrd` decides the
+/// winner: `other` replaces `self` iff `other.$tie > self.$tie` (ties keep
+/// `self`, so merge is idempotent and order-independent for distinct tie
+/// values). `$t` must be `Clone`.
+///
+/// ```ignore
+/// calimero_storage::impl_atomic_lww!(FileRecord, uploaded_at);
+/// ```
+#[macro_export]
+macro_rules! impl_atomic_lww {
+    ($t:ty, $tie:ident) => {
+        impl $crate::collections::Mergeable for $t {
+            fn merge(
+                &mut self,
+                other: &Self,
+            ) -> ::core::result::Result<(), $crate::collections::crdt_meta::MergeError> {
+                // Last-write-wins by the monotonic tie-breaker. Strict `>` keeps
+                // `self` on ties, so the merge is idempotent and the outcome is
+                // independent of which side is `self` for distinct tie values.
+                if other.$tie > self.$tie {
+                    *self = ::core::clone::Clone::clone(other);
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+
+        // Whole-record-LWW leaf: no nested collection id to re-key, so the
+        // no-op `rekey_relative_to` is correct. Emitted here (not by the app)
+        // so the author writes no `RekeyTarget` code.
+        impl $crate::collections::rekey::RekeyTarget for $t {
+            fn rekey_relative_to(&mut self, _parent_id: $crate::address::Id) {}
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,5 +345,63 @@ mod tests {
             }
             other => panic!("expected MergeError::StorageError, got {other:?}"),
         }
+    }
+
+    // A leaf record merged by `impl_atomic_lww!`, mirroring an app upload record:
+    // plain non-CRDT fields, replaced atomically by a monotonic tie-breaker.
+    #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+    struct Upload {
+        name: String,
+        size: u64,
+        uploaded_at: u64,
+    }
+    crate::impl_atomic_lww!(Upload, uploaded_at);
+
+    #[test]
+    fn impl_atomic_lww_is_last_write_wins_by_tie_field() {
+        use crate::collections::Mergeable;
+
+        let older = Upload {
+            name: "a".to_owned(),
+            size: 1,
+            uploaded_at: 10,
+        };
+        let newer = Upload {
+            name: "b".to_owned(),
+            size: 2,
+            uploaded_at: 20,
+        };
+
+        // Newer (higher tie) wins regardless of merge direction.
+        let mut x = older.clone();
+        x.merge(&newer).unwrap();
+        assert_eq!(x, newer, "higher uploaded_at must replace self");
+
+        let mut y = newer.clone();
+        y.merge(&older).unwrap();
+        assert_eq!(y, newer, "lower uploaded_at must NOT replace a newer self");
+
+        // Idempotent / order-independent for distinct tie values.
+        let mut z = older.clone();
+        z.merge(&newer).unwrap();
+        z.merge(&newer).unwrap();
+        assert_eq!(z, newer, "repeated merge stays at the winner");
+    }
+
+    #[test]
+    fn impl_atomic_lww_emits_a_noop_rekey_target() {
+        // The macro emits `RekeyTarget` (supertrait of `Mergeable`); a leaf has
+        // no nested id to re-key, so `rekey_relative_to` is a no-op that leaves
+        // the value byte-identical.
+        use crate::collections::rekey::RekeyTarget;
+
+        let mut u = Upload {
+            name: "x".to_owned(),
+            size: 7,
+            uploaded_at: 3,
+        };
+        let before = u.clone();
+        u.rekey_relative_to(crate::address::Id::root());
+        assert_eq!(u, before, "atomic-LWW leaf re-key must be a no-op");
     }
 }

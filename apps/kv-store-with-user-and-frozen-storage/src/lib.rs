@@ -28,39 +28,15 @@ pub struct KvStore {
     frozen_items: FrozenStorage<String>,
 }
 
-// Define the nested map type for user_items_nested
-// It must implement Mergeable, Borsh, and Default
-#[derive(Debug, BorshSerialize, BorshDeserialize, Default)]
+// Define the nested map type for user_items_nested.
+//
+// `#[derive(Mergeable)]` generates the field-by-field merge AND the matching
+// `RekeyTarget` impl, so the nested collection re-keys deterministically with no
+// hand-written boilerplate. (Needs Borsh + Default too.)
+#[derive(Debug, BorshSerialize, BorshDeserialize, Default, Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct NestedMap {
     map: UnorderedMap<String, LwwRegister<String>>,
-}
-
-impl Mergeable for NestedMap {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        self.map.merge(&other.map)
-    }
-}
-
-// `RekeyTarget` is a supertrait of `Mergeable`: this struct nests a collection
-// (`map`), so a hand-written `impl Mergeable` must also implement `RekeyTarget`
-// (`#[derive(Mergeable)]` generates both) and re-key that collection's id
-// deterministically relative to the entry id it is stored under, or the nested
-// map keeps a per-replica random id and diverges.
-impl calimero_storage::collections::rekey::RekeyTarget for NestedMap {
-    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
-        calimero_storage::rekey_field_if_supported!(
-            &mut self.map,
-            calimero_storage::collections::rekey::field_child_id(parent_id, "map")
-        );
-    }
-
-    fn register_nested_value_types() {
-        calimero_storage::register_rekey_if_supported!(UnorderedMap<String, LwwRegister<String>>);
-    }
 }
 
 #[app::event]

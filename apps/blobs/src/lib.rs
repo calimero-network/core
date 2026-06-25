@@ -53,32 +53,15 @@ pub struct FileRecord {
     pub uploaded_at: u64,
 }
 
-// Manual `Mergeable` impl for `FileRecord` — opaque LWW per file ID.
+// Whole-record last-write-wins per file ID, keyed by `uploaded_at`.
 //
-// Why manual instead of `#[derive(Mergeable)]`? `FileRecord` is treated
-// atomically (one full record per file_id). Deriving would require every
-// inner field (`String`, `u64`, ...) to be Mergeable, forcing each to be
-// wrapped in `LwwRegister` / `Counter` — overkill for an immutable upload
-// record. The hand-rolled impl uses `uploaded_at` as the LWW tiebreaker,
-// which is correct for atomic uploads.
-impl calimero_storage::collections::Mergeable for FileRecord {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        if other.uploaded_at > self.uploaded_at {
-            *self = other.clone();
-        }
-        Ok(())
-    }
-}
-
-// `RekeyTarget` is a supertrait of `Mergeable`. `FileRecord` is a leaf (merged
-// atomically as a whole record by `uploaded_at`, no nested collection), so the
-// no-op default impl is correct: there are no nested ids to re-key.
-impl calimero_storage::collections::rekey::RekeyTarget for FileRecord {
-    fn rekey_relative_to(&mut self, _parent_id: calimero_storage::address::Id) {}
-}
+// Why not `#[derive(Mergeable)]`? `FileRecord` is treated atomically (one full
+// record per file_id). Deriving would require every inner field (`String`,
+// `u64`, ...) to be Mergeable, forcing each into a `LwwRegister` / `Counter` —
+// overkill for an immutable upload record. `impl_atomic_lww!` is the
+// storage-crate-provided way to get the atomic LWW `Mergeable` AND the matching
+// (no-op, leaf) `RekeyTarget` in one line — no hand-written `RekeyTarget`.
+calimero_storage::impl_atomic_lww!(FileRecord, uploaded_at);
 
 /// Application state for the file sharing system.
 #[app::state(emits = FileShareEvent)]

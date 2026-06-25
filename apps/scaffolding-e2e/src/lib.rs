@@ -39,40 +39,24 @@ const BASE58_ENCODED_MAX_SIZE: usize = 44;
 
 // HELPER TYPES
 
-/// Nested map type for user storage
-#[derive(Debug, BorshSerialize, BorshDeserialize, Default)]
+/// Nested map type for user storage.
+///
+/// `#[derive(Mergeable)]` generates the field-by-field merge AND the matching
+/// `RekeyTarget` impl, so this nested collection re-keys deterministically with
+/// no hand-written boilerplate.
+#[derive(Debug, BorshSerialize, BorshDeserialize, Default, Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct NestedMap {
     map: UnorderedMap<String, LwwRegister<String>>,
 }
 
-impl Mergeable for NestedMap {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        self.map.merge(&other.map)
-    }
-}
-
-// `RekeyTarget` is a supertrait of `Mergeable`: this struct nests a collection
-// (`map`), so it must re-key that collection's id deterministically relative to
-// the entry id it is stored under, or the nested map keeps a per-replica random
-// id and diverges. Delegate to the inner collection under a field-namespaced id.
-impl calimero_storage::collections::rekey::RekeyTarget for NestedMap {
-    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
-        calimero_storage::rekey_field_if_supported!(
-            &mut self.map,
-            calimero_storage::collections::rekey::field_child_id(parent_id, "map")
-        );
-    }
-
-    fn register_nested_value_types() {
-        calimero_storage::register_rekey_if_supported!(UnorderedMap<String, LwwRegister<String>>);
-    }
-}
-
-/// File record for blob metadata
+/// File record for blob metadata.
+///
+/// Merged as an atomic whole-record last-write-wins by `uploaded_at` (an
+/// immutable upload record, not a struct of CRDT fields, so `#[derive(Mergeable)]`
+/// doesn't apply). `impl_atomic_lww!` is the storage-crate-provided way to get
+/// both the LWW `Mergeable` and the (no-op, leaf) `RekeyTarget` with no
+/// hand-written `RekeyTarget`.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize, Serialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
@@ -87,24 +71,7 @@ pub struct FileRecord {
     pub uploaded_at: u64,
 }
 
-impl Mergeable for FileRecord {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        if other.uploaded_at > self.uploaded_at {
-            *self = other.clone();
-        }
-        Ok(())
-    }
-}
-
-// `RekeyTarget` is a supertrait of `Mergeable`. `FileRecord` is a leaf (no nested
-// collection — it is merged whole-record LWW by `uploaded_at`), so the no-op
-// default impl is correct: there are no nested ids to re-key.
-impl calimero_storage::collections::rekey::RekeyTarget for FileRecord {
-    fn rekey_relative_to(&mut self, _parent_id: calimero_storage::address::Id) {}
-}
+calimero_storage::impl_atomic_lww!(FileRecord, uploaded_at);
 
 // PRIVATE STATE (Node-local, NOT synchronized)
 

@@ -39,40 +39,14 @@ pub enum Status {
     Completed { result: String },
 }
 
-/// Mergeable struct from module (tests CRDT in modules)
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+/// Mergeable struct from module (tests CRDT in modules).
+///
+/// `#[derive(Mergeable)]` generates the field-by-field merge AND the matching
+/// `RekeyTarget` impl (re-keying the `counter` collection, no-op for the
+/// `LwwRegister` leaf) — no hand-written `RekeyTarget` boilerplate.
+#[derive(Debug, BorshSerialize, BorshDeserialize, calimero_storage::collections::Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct MergeableRecord {
     pub counter: Counter,
     pub name: LwwRegister<String>,
-}
-
-impl calimero_storage::collections::Mergeable for MergeableRecord {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        self.counter.merge(&other.counter)?;
-        self.name.merge(&other.name);
-        Ok(())
-    }
-}
-
-// `RekeyTarget` is a supertrait of `Mergeable`: a hand-written `impl Mergeable`
-// must also implement `RekeyTarget` (`#[derive(Mergeable)]` generates both). The
-// `counter` field is a collection whose nested id is re-keyed deterministically
-// here; `name` (`LwwRegister`) is a leaf, for which the macro dispatches to a
-// no-op.
-impl calimero_storage::collections::rekey::RekeyTarget for MergeableRecord {
-    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
-        use calimero_storage::collections::rekey::field_child_id;
-        calimero_storage::rekey_field_if_supported!(
-            &mut self.counter,
-            field_child_id(parent_id, "counter")
-        );
-        calimero_storage::rekey_field_if_supported!(
-            &mut self.name,
-            field_child_id(parent_id, "name")
-        );
-    }
 }

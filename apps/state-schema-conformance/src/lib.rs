@@ -36,41 +36,16 @@ pub struct Person {
     age: u32,
 }
 
-// Profile with all CRDT fields (can be used directly in UnorderedMap)
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+// Profile with all CRDT fields (can be used directly in UnorderedMap).
+//
+// `#[derive(Mergeable)]` generates the field-by-field merge AND the matching
+// `RekeyTarget` impl (re-keying the `visit_count` collection, no-op for the
+// `LwwRegister` leaf) — no hand-written `RekeyTarget` boilerplate.
+#[derive(Debug, BorshSerialize, BorshDeserialize, calimero_storage::collections::Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct Profile {
     bio: LwwRegister<Option<String>>,
     visit_count: Counter,
-}
-
-impl calimero_storage::collections::Mergeable for Profile {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        self.bio.merge(&other.bio);
-        self.visit_count.merge(&other.visit_count)?;
-        Ok(())
-    }
-}
-
-// `RekeyTarget` is a supertrait of `Mergeable`: a hand-written `impl Mergeable`
-// must also implement `RekeyTarget` (`#[derive(Mergeable)]` generates both). The
-// `visit_count` field is a collection whose nested id is re-keyed
-// deterministically here; `bio` (`LwwRegister`) is a leaf (no-op dispatch).
-impl calimero_storage::collections::rekey::RekeyTarget for Profile {
-    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
-        use calimero_storage::collections::rekey::field_child_id;
-        calimero_storage::rekey_field_if_supported!(
-            &mut self.bio,
-            field_child_id(parent_id, "bio")
-        );
-        calimero_storage::rekey_field_if_supported!(
-            &mut self.visit_count,
-            field_child_id(parent_id, "visit_count")
-        );
-    }
 }
 
 // Variant types
