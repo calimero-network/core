@@ -293,10 +293,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     {
                         Ok(report) => {
                             report.observe("create_group", "NamespaceCreated");
-                            crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
-                                &datastore,
-                                namespace_id.to_bytes(),
-                            );
+                            // No explicit op-store persist here: the genesis op is
+                            // written to the unified op-store ATOMICALLY inside
+                            // `sign_apply_and_publish_namespace_op`'s apply (C3 Stage 4,
+                            // #2927/#2933), exactly like the GroupCreated branch above.
                         }
                         Err(e) => {
                             // An `Err` here is, by contract, a LOCAL APPLY failure —

@@ -540,11 +540,20 @@ this release will self-heal on the next restart without operator intervention.
 <h3>TEE-Replica Bootstrap — Seed Root Default Capabilities</h3>
 <p>
 <code>seed_bootstrap_admin_if_absent</code> (the <code>KeyDelivery</code>-seed path used by TEE
-replicas) now also seeds the namespace root's default capabilities to
+replicas) seeds the namespace root's default capabilities to
 <code>CAN_JOIN_OPEN_SUBGROUPS</code> when that capability key is absent. The seed is gated on
 absence so it is idempotent and never clobbers a later admin-authored
 <code>DefaultCapabilitiesSet</code> op. Without this, a TEE replica could hold the group key
 but still be unable to join Open subgroups because the capability row was never written.
+</p>
+<p>
+<strong>Founder is no longer pinned here (#2474).</strong> This path no longer pins the
+<code>KeyDelivery</code> signer as admin/owner. It now writes a <strong>non-authoritative
+placeholder</strong> (zero-key <code>admin_identity</code>) plus a <code>Member</code> row for the
+deliverer, alongside the default-capabilities bootstrap above. The real founding admin is
+derived authoritatively from the synced DAG genesis op
+(<code>RootOp::NamespaceCreated { founder }</code>), which overwrites the placeholder on apply —
+replacing the previous trust-on-first-<code>KeyDelivery</code> behavior.
 </p>
 <p>
 <strong>Pre-existing stranded replicas</strong> need either a restart (triggering the startup
