@@ -240,24 +240,31 @@ pub fn logical_counter(ts: &HybridTimestamp) -> u32 {
 /// Derive a 16-byte HLC instance seed from a 32-byte executor id.
 ///
 /// The HLC instance id is 16 bytes (`u128`) but the executor public key is 32
-/// bytes. Folding ALL 32 bytes into the 16-byte seed is load-bearing for
-/// uniqueness: two executors that merely share a 16-byte prefix (e.g. truncated
-/// or structured keys) must still get DISTINCT HLC ids — otherwise their
+/// bytes. Compressing 32 bytes into 16 must be collision-resistant: two
+/// executors with distinct keys must get DISTINCT HLC ids — otherwise their
 /// timestamps share the same id space, two concurrently-minted `CharId`s
 /// collide, and one replica's character is silently lost during RGA sync.
 ///
-/// The previous seeding (`take(16)` + a dead `for i in 32..16` loop) only used
-/// the first 16 bytes, so any two keys with a shared prefix collapsed to one
-/// HLC id. XOR-folding the high 16 bytes onto the low 16 spreads the whole key
-/// into the seed. The fold is the identity on the low half plus the high half,
-/// so it never zeroes a non-zero key (the constructor's zero→1 guard still
-/// covers the all-zero input).
+/// We hash the full 32-byte executor id with SHA-256 (the same digest
+/// `compute_id` and the index hashing use — already a crate dependency) and
+/// take the first 16 bytes of the digest as the seed. This is the right tool
+/// for compressing a key while preserving distinctness:
+///
+/// - **Collision-resistant.** Distinct keys yield distinct digests with
+///   cryptographic probability, so distinct executors get distinct seeds. There
+///   is no structural input that collapses two keys to one seed.
+/// - **No trivial all-zero seed.** The prior XOR-fold (`seed[i % 16] ^= key[i]`)
+///   collapsed any key with `key[i] == key[i + 16]` (e.g. `[k; 32]`) to an
+///   all-zero seed, defeating the constructor's zero→1 guard for a whole family
+///   of keys. A SHA-256 prefix has no such structure; producing an all-zero
+///   16-byte prefix would require a (computationally infeasible) preimage. The
+///   zero→1 guard in [`LogicalClock::new`] remains as a final safety net.
 #[must_use]
 pub fn hlc_seed_from_executor_id(executor_id: &[u8; 32]) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(executor_id);
     let mut seed = [0u8; 16];
-    for (i, byte) in executor_id.iter().enumerate() {
-        seed[i % 16] ^= *byte;
-    }
+    seed.copy_from_slice(&digest[..16]);
     seed
 }
 
@@ -617,83 +624,107 @@ mod tests {
         }
     }
 
-    /// Reproduce the old seeding bug (D4): the WASM path seeded the 16-byte HLC
-    /// id from only the FIRST 16 bytes of the 32-byte executor id (`take(16)`,
-    /// plus a dead `for i in 32..16` loop). Two executors that share a 16-byte
-    /// prefix but differ in the high 16 bytes therefore collapsed to one HLC id.
-    /// This test demonstrates the collision the old logic produced.
+    /// Reproduce the XOR-fold seeding bug (D4): the prior fix folded the high 16
+    /// bytes of the executor id onto the low 16 (`seed[i % 16] ^= key[i]`). Any
+    /// key with `key[i] == key[i + 16]` for all `i` — most starkly `[k; 32]` —
+    /// XOR-cancels to an ALL-ZERO seed, so every such executor collapses to the
+    /// same (zero→1-guarded) HLC id. This test demonstrates both failure modes
+    /// of the fold the SHA-256 digest replaces.
     #[test]
-    fn test_old_seeding_collides_on_shared_prefix() {
-        // The OLD seeding logic, reproduced verbatim.
-        fn old_seed(executor_id: &[u8; 32]) -> [u8; 16] {
-            let mut buf = [0u8; 16];
-            for (i, byte) in executor_id.iter().enumerate().take(buf.len()) {
-                buf[i] = *byte;
+    fn test_old_xor_fold_collapses_repeated_key_to_zero() {
+        // The OLD (XOR-fold) seeding logic, reproduced verbatim.
+        fn xor_fold_seed(executor_id: &[u8; 32]) -> [u8; 16] {
+            let mut seed = [0u8; 16];
+            for (i, byte) in executor_id.iter().enumerate() {
+                seed[i % 16] ^= *byte;
             }
-            // Dead loop: `32..16` is empty.
-            for i in executor_id.len()..buf.len() {
-                buf[i] = executor_id[i % executor_id.len()];
-            }
-            buf
+            seed
         }
 
-        let mut a = [7u8; 32];
-        let mut b = [7u8; 32];
-        // Same 16-byte prefix, different high halves.
-        a[16] = 1;
-        b[16] = 2;
+        // `[k; 32]` collapses to all-zero for ANY byte k.
+        for k in [1u8, 7, 42, 255] {
+            assert_eq!(
+                xor_fold_seed(&[k; 32]),
+                [0u8; 16],
+                "XOR-fold collapses [{k}; 32] to an all-zero seed (this is the bug)"
+            );
+        }
 
+        // Two DISTINCT repeated keys therefore collide on the same seed.
         assert_eq!(
-            old_seed(&a),
-            old_seed(&b),
-            "old seeding must collide on shared 16-byte prefix (this is the bug)"
+            xor_fold_seed(&[1u8; 32]),
+            xor_fold_seed(&[2u8; 32]),
+            "distinct repeated keys collide under the XOR-fold (this is the bug)"
         );
     }
 
-    /// The fixed seeding folds ALL 32 bytes into the 16-byte id, so executors
-    /// that share a 16-byte prefix get DISTINCT HLC ids — no CharId collision,
-    /// no silent character loss during RGA sync.
+    /// The SHA-256 seeding is collision-resistant: distinct executor ids — even
+    /// the adversarial `[k; 32]` family that XOR-fold collapsed — yield DISTINCT
+    /// seeds and DISTINCT HLC ids, so no `CharId` collision and no silent
+    /// character loss during RGA sync.
     #[test]
-    fn test_fixed_seeding_distinct_on_shared_prefix() {
-        let mut a = [7u8; 32];
-        let mut b = [7u8; 32];
-        a[16] = 1;
-        b[16] = 2;
+    fn test_sha256_seeding_distinct_for_distinct_keys() {
+        // Adversarial set: the repeated-byte keys the XOR-fold mapped to one
+        // all-zero seed, plus shared-prefix keys, plus a structured key.
+        let keys: [[u8; 32]; 6] = [
+            [1u8; 32],
+            [2u8; 32],
+            [255u8; 32],
+            {
+                let mut k = [7u8; 32];
+                k[16] = 1; // shares the low 16 bytes with the next
+                k
+            },
+            {
+                let mut k = [7u8; 32];
+                k[16] = 2;
+                k
+            },
+            [0u8; 32], // genuine all-zero input (zero→1 guard territory)
+        ];
 
-        assert_ne!(
-            hlc_seed_from_executor_id(&a),
-            hlc_seed_from_executor_id(&b),
-            "fixed seeding must distinguish keys differing only in the high 16 bytes"
-        );
+        // Every pair of distinct keys must map to distinct seeds.
+        let seeds: Vec<[u8; 16]> = keys.iter().map(hlc_seed_from_executor_id).collect();
+        for i in 0..seeds.len() {
+            for j in (i + 1)..seeds.len() {
+                assert_ne!(
+                    seeds[i], seeds[j],
+                    "distinct keys {:?} / {:?} must seed distinctly (collision-resistance)",
+                    keys[i], keys[j]
+                );
+            }
+        }
 
-        // And distinct seeds yield distinct HLC ids on the production seeding path.
-        let mut hlc_a = LogicalClock::new(|buf| {
-            buf.copy_from_slice(&hlc_seed_from_executor_id(&a));
-        });
-        let mut hlc_b = LogicalClock::new(|buf| {
-            buf.copy_from_slice(&hlc_seed_from_executor_id(&b));
-        });
+        // And the production seeding path mints distinct HLC ids for the
+        // previously-colliding [1;32] vs [2;32] pair.
+        let mut hlc_a =
+            LogicalClock::new(|buf| buf.copy_from_slice(&hlc_seed_from_executor_id(&[1u8; 32])));
+        let mut hlc_b =
+            LogicalClock::new(|buf| buf.copy_from_slice(&hlc_seed_from_executor_id(&[2u8; 32])));
         let time = AtomicU64::new(1_000_000_000_000_000_000);
         let ts_a = hlc_a.new_timestamp(|| time.load(Ordering::Relaxed));
         let ts_b = hlc_b.new_timestamp(|| time.load(Ordering::Relaxed));
         assert_ne!(
             ts_a.get_id(),
             ts_b.get_id(),
-            "shared-prefix executors must mint distinct HLC ids"
+            "[1;32] and [2;32] executors must mint distinct HLC ids (XOR-fold collapsed both)"
         );
     }
 
-    /// Folding never collapses a non-zero key to the all-zero seed (the
-    /// constructor's zero→1 guard only catches genuine all-zero input).
+    /// The SHA-256 prefix never collapses a non-zero key to the all-zero seed
+    /// (producing an all-zero 16-byte prefix would need an infeasible preimage),
+    /// so the constructor's zero→1 guard only ever fires for genuine input that
+    /// happens to hash to a zero prefix — which no real key does.
     #[test]
-    fn test_fixed_seeding_low_half_only_is_preserved() {
-        // A key whose high 16 bytes are zero must seed exactly its low 16 bytes.
-        let mut k = [0u8; 32];
-        k[0] = 0xAB;
-        k[15] = 0xCD;
-        let seed = hlc_seed_from_executor_id(&k);
-        assert_eq!(seed[0], 0xAB);
-        assert_eq!(seed[15], 0xCD);
+    fn test_sha256_seeding_repeated_key_is_non_zero() {
+        // The exact inputs the XOR-fold zeroed must now seed to a non-zero id.
+        for k in [1u8, 7, 42, 255] {
+            assert_ne!(
+                hlc_seed_from_executor_id(&[k; 32]),
+                [0u8; 16],
+                "SHA-256 seeding of [{k}; 32] must not be all-zero (XOR-fold's bug)"
+            );
+        }
     }
 
     #[test]
