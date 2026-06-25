@@ -1446,7 +1446,15 @@ impl SyncManager {
             // peer instead of doing nothing. Cold/non-group projections resolve
             // `None` and fall back to the entity-root compare inside `scope_verdict`,
             // so a partially-warmed node never raises a false governance divergence.
-            if matches!(selection.protocol, SyncProtocol::None) {
+            // Only a peer that folded its OWN scope_root can drive a governance
+            // divergence — `scope_verdict` reports `GovDiverged` only when both
+            // sides resolve one. When the peer's is `None` (cold / non-group) the
+            // verdict falls back to the entity-root compare, which already agreed
+            // here (selection == None). So short-circuit on `peer_scope_root` before
+            // touching the store, keeping the hot no-op path store-free.
+            if let (SyncProtocol::None, Some(peer_scope_root)) =
+                (&selection.protocol, peer_scope_root)
+            {
                 let local_root = *context.root_hash;
                 let local_scope_root = {
                     let store = self.context_client.datastore_handle().into_inner();
@@ -1454,7 +1462,7 @@ impl SyncManager {
                 };
                 let verdict = super::helpers::scope_verdict(
                     local_scope_root,
-                    peer_scope_root.map(|h| *h),
+                    Some(*peer_scope_root),
                     local_root,
                     *peer_root_hash,
                 );
@@ -1470,6 +1478,15 @@ impl SyncManager {
                     );
                     self.pull_namespace_governance(context_id, chosen_peer)
                         .await;
+                    // Completion marker so the e2e report (and operators) can
+                    // correlate the trigger with its outcome — the `Ok(None)` below
+                    // is otherwise indistinguishable from "entities already in sync".
+                    debug!(
+                        marker = "gov_divergence_pull_complete",
+                        %context_id,
+                        %chosen_peer,
+                        "pre-sync governance pull issued; convergence verified next session"
+                    );
                     return Ok(None);
                 }
             }
