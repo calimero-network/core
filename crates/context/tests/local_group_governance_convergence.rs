@@ -1467,6 +1467,8 @@ fn state_hash_mismatch_does_not_reject_concurrent_ops() {
         },
     )
     .unwrap();
+    // nonce is per-signer: admin_c's nonce=1 does not collide with admin_a's
+    // nonce=1 — each signer has its own independent nonce window.
     let op_c = SignedGroupOp::sign(
         &admin_c_sk,
         gid_bytes,
@@ -1532,6 +1534,22 @@ fn state_hash_mismatch_does_not_reject_concurrent_ops() {
     assert_eq!(
         final_b, final_c,
         "nodes converge to identical state regardless of apply order"
+    );
+
+    // Replay safety is unaffected by dropping the state_hash gate: the per-signer
+    // NONCE WINDOW (not state_hash) is the anti-replay guard, and it is unchanged.
+    // Re-applying op_a (admin_a, nonce 1) is a no-op — the nonce is already in the
+    // window — so a DAG replay of a seen op cannot double-apply its mutation.
+    assert!(
+        apply_local_signed_group_op(&node_b, &op_a).is_ok(),
+        "replaying op_a is accepted (deduped, not errored)"
+    );
+    let after_replay_b = MetaRepository::new(&node_b)
+        .compute_state_hash(&gid)
+        .unwrap();
+    assert_eq!(
+        final_b, after_replay_b,
+        "replaying a seen op is a no-op — nonce window dedups it, state is unchanged"
     );
 }
 
