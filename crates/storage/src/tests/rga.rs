@@ -946,16 +946,9 @@ fn test_rga_concurrent_appends_then_delete_delta_sync_converges() {
     );
 }
 
-/// D1 — the receive/apply path must advance the local HLC to observe a remote
-/// delta's clock. RGA `CharId`s are stamped from the local clock and ordered by
-/// `Reverse(CharId)`, so if a node observes a remote insert (high HLC) but its
-/// own clock stays behind, its NEXT local insert can be stamped ≤ the remote
-/// char it causally follows — converging, but causally wrong ordering.
-///
-/// `Root::sync` now feeds a `CausalActions` delta's `delta_hlc` into
-/// `env::update_hlc` before applying. This test drives a delta whose HLC is far
-/// ahead of the local clock and asserts the next locally-minted timestamp sorts
-/// strictly after the observed remote HLC.
+/// D1 — `Root::sync` must advance the local HLC to observe a remote delta's
+/// clock. After applying a `CausalActions` delta with a high `delta_hlc`, the
+/// next locally-minted timestamp must sort strictly after it.
 #[test]
 #[serial_test::serial]
 fn test_sync_advances_local_hlc_to_observe_remote_delta() {
@@ -969,8 +962,8 @@ fn test_sync_advances_local_hlc_to_observe_remote_delta() {
 
     env::reset_for_testing();
 
-    // A remote delta HLC a couple of seconds ahead of the local wall clock —
-    // within the 5s drift tolerance, so it must be accepted and observed.
+    // Remote HLC ~2s ahead of the local wall clock (within the 5s drift
+    // tolerance, so it is accepted and observed).
     let now_nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -980,8 +973,7 @@ fn test_sync_advances_local_hlc_to_observe_remote_delta() {
     let id = ID::from(core::num::NonZeroU128::new(0x1234_5678).unwrap());
     let remote_hlc = HybridTimestamp::new(Timestamp::new(NTP64(remote_ntp), id));
 
-    // Apply a CausalActions delta with NO actions (we only care about the clock
-    // side effect) but a high delta_hlc.
+    // Empty-action delta — we assert only the clock side effect.
     let delta = StorageDelta::CausalActions {
         actions: vec![],
         delta_id: [0x42; 32],
@@ -1001,12 +993,9 @@ fn test_sync_advances_local_hlc_to_observe_remote_delta() {
     );
 }
 
-/// D1 end-to-end through the RGA: node B observes node A's char (delivered as a
-/// CausalActions delta carrying A's HLC) and then inserts locally. Because the
-/// receive path advances B's clock to observe A's HLC, B's new `CharId` sorts
-/// strictly after A's, and the rendered order is causal (B's char anchored
-/// after A's lands after A's char). Before D1, B's clock could stay behind A's,
-/// stamping B's char ≤ A's and inverting the interleave.
+/// D1 end-to-end: B observes A's char (CausalActions delta carrying A's HLC),
+/// then inserts locally. The receive path advances B's clock past A's HLC, so
+/// B's `CharId` sorts after A's and the rendered order is causal ("AB").
 #[test]
 #[serial_test::serial]
 fn test_rga_insert_after_observing_remote_is_causally_ordered() {
@@ -1095,5 +1084,130 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
         b.content.get_text().unwrap(),
         "AB",
         "B's insert after observing A must render causally as \"AB\""
+    );
+}
+
+/// D3 — real RGA interleave + convergence merge (the `sync_compliance` test
+/// only checks `crdt_type`). Two replicas concurrently insert distinct runs at
+/// the same gap; merging in either order must converge to identical text/hash,
+/// with each run kept as a contiguous block between the base anchors.
+#[test]
+#[serial_test::serial]
+fn test_rga_real_interleave_merge_converges() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::collections::{Mergeable, Root};
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::merge::register_crdt_merge;
+    use crate::store::MainStorage;
+
+    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+    struct RgaDoc {
+        content: ReplicatedGrowableArray,
+    }
+    impl Mergeable for RgaDoc {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.content.merge(&other.content)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |root_data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), root_data, Metadata::default()).unwrap();
+        let hash = root_hash();
+        commit_causal_delta(&hash)
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<RgaDoc, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh_node = |executor: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<RgaDoc>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(executor);
+    };
+
+    // Genesis: shared base "ab" (identical CharIds on every replica).
+    fresh_node([9; 32]);
+    let mut g = Root::<RgaDoc, S>::new(|| RgaDoc {
+        content: ReplicatedGrowableArray::new_with_field_name("content"),
+    });
+    g.content.insert_str(0, "ab").unwrap();
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base_actions = capture(g_data);
+    let base_hash = root_hash();
+
+    // Replica X: insert "XX" at the a|b gap (position 1).
+    fresh_node([1; 32]);
+    import(base_actions.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let mut x = Root::<RgaDoc, S>::fetch().unwrap();
+    x.content.insert_str(1, "XX").unwrap();
+    let x_data = borsh::to_vec(&*x).unwrap();
+    drop(x);
+    let x_delta = capture(x_data);
+
+    // Replica Y: insert "YY" at the same a|b gap (position 1), concurrently.
+    fresh_node([2; 32]);
+    import(base_actions.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let mut y = Root::<RgaDoc, S>::fetch().unwrap();
+    y.content.insert_str(1, "YY").unwrap();
+    let y_data = borsh::to_vec(&*y).unwrap();
+    drop(y);
+    let y_delta = capture(y_data);
+
+    // Materialize a node from base + the two inserts applied in `order`.
+    let converge = |executor: [u8; 32], deltas: &[Vec<Action>]| -> (String, [u8; 32]) {
+        fresh_node(executor);
+        import(base_actions.clone());
+        for d in deltas {
+            reset_delta_context();
+            set_current_heads(vec![base_hash]);
+            import(d.clone());
+        }
+        let text = Root::<RgaDoc, S>::fetch()
+            .unwrap()
+            .content
+            .get_text()
+            .unwrap();
+        (text, root_hash())
+    };
+
+    // X-then-Y vs Y-then-X must converge identically (commutativity).
+    let (xy_text, xy_hash) = converge([3; 32], &[x_delta.clone(), y_delta.clone()]);
+    let (yx_text, yx_hash) = converge([4; 32], &[y_delta, x_delta]);
+
+    assert_eq!(
+        (xy_text.as_str(), xy_hash),
+        (yx_text.as_str(), yx_hash),
+        "concurrent RGA inserts must converge regardless of merge order: \
+         X-then-Y={xy_text:?}/{} vs Y-then-X={yx_text:?}/{}",
+        hex::encode(xy_hash),
+        hex::encode(yx_hash),
+    );
+
+    // Each run stays a contiguous block between the base anchors; the
+    // higher-CharId run sorts first (`Reverse(CharId)`).
+    assert!(
+        xy_text == "aXXYYb" || xy_text == "aYYXXb",
+        "RGA interleave must keep each insert a contiguous block between a and b, got {xy_text:?}"
     );
 }

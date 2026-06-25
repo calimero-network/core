@@ -207,27 +207,19 @@ where
             StorageDelta::Comparisons(_) => "Comparisons",
         };
 
-        // #D1 — advance the local HLC to observe the remote delta's clock
-        // BEFORE applying it. The CRDT ordering (RGA `CharId`, LWW tiebreak)
-        // relies on a Hybrid Logical Clock whose `update` rule guarantees a
-        // locally-minted timestamp issued after observing a remote event sorts
-        // strictly after it. Without feeding the received delta's HLC back into
-        // the clock, a node that observes a remote insert can then stamp its own
-        // next insert with a timestamp ≤ the remote char it causally follows —
-        // converging, but ordered wrong. `CausalActions` carries the
-        // originating delta's HLC; `Actions` (host-side replay of
-        // already-verified state) carries none, so there is nothing to observe.
-        //
-        // A drift-rejected remote timestamp (>5s ahead) must NOT abort the
-        // apply: the actions are still valid replicated state. Log and proceed —
-        // the local clock simply doesn't jump to an implausible future tick.
+        // #D1 — observe the remote delta's HLC before applying it, so a later
+        // local insert is stamped strictly after the remote char it causally
+        // follows (RGA CharId / LWW ordering). `CausalActions` carries the
+        // delta's HLC; `Actions` (host-side replay) carries none. A
+        // drift-rejected timestamp (>5s ahead) is logged, not fatal — the
+        // actions are still valid replicated state.
         if let StorageDelta::CausalActions { delta_hlc, .. } = &artifact {
             if let Err(crate::env::HlcDriftError) = crate::env::update_hlc(delta_hlc) {
                 tracing::warn!(
                     target: "storage::root",
                     %delta_hlc,
                     "Root::sync: remote delta HLC rejected by drift guard (>5s ahead); \
-                     applying actions without advancing the local clock to it"
+                     applying without advancing the local clock"
                 );
             }
         }

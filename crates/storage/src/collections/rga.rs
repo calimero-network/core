@@ -454,23 +454,15 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     }
 
     /// Tombstone-aware RGA character merge (the root-level blob / full-state
-    /// conflict path; see [`crate::collections::crdt_impls`]'s `Mergeable` impl).
+    /// conflict path; see `crdt_impls`'s `Mergeable` impl).
     ///
-    /// For each char in `other`, copy it into `self` ONLY if `self` neither has
-    /// it live NOR has TOMBSTONED it. A char that `self` concurrently deleted
-    /// must stay deleted — delete wins over the live copy in `other`, exactly
-    /// like the element-level `DeleteRef` LWW path
-    /// ([`Interface::apply_delete_ref_action`](crate::interface)). RGA chars are
-    /// immutable once inserted (content + `left` never change for a given
-    /// `CharId`), so there is no concurrent-update-vs-delete race to arbitrate:
-    /// the only conflict is presence-vs-tombstone, and delete wins.
-    ///
-    /// Convergence is preserved: the operation is still commutative,
-    /// associative, and idempotent over the (live-set, tombstone-set) lattice —
-    /// a char is live in the result iff it is live somewhere and tombstoned
-    /// nowhere, which is independent of merge order. The previous `is_none()`-
-    /// only gate resurrected any char `self` had deleted but `other` still held
-    /// (#D2).
+    /// Copies each char from `other` into `self` unless `self` already holds it
+    /// live or has tombstoned it. A char `self` concurrently deleted stays
+    /// deleted — delete wins, like the `DeleteRef` LWW path. RGA chars are
+    /// immutable, so the only conflict is presence-vs-tombstone (no
+    /// update-vs-delete race). Still commutative/associative/idempotent: a char
+    /// is live iff live somewhere and tombstoned nowhere, independent of merge
+    /// order. The prior `is_none()`-only gate resurrected deleted chars (#D2).
     pub(crate) fn merge_chars_from<S2: StorageAdaptor>(
         &mut self,
         other: &ReplicatedGrowableArray<S2>,
@@ -638,12 +630,10 @@ mod merge_mode_tests {
     }
 }
 
-/// D2 — tombstone-aware blob merge. Exercised across TWO ISOLATED storage
-/// scopes so `self` (the deleter) and `other` (still holding the char live)
-/// have genuinely separate stores, the way two replicas do during a cold-join
-/// / full-state conflict merge. In a single shared store the bug is masked:
-/// `other.chars.entries()` would read the same post-delete child list as
-/// `self`, so the deleted char never re-appears in `other`.
+/// D2 — tombstone-aware blob merge, across two isolated storage scopes so the
+/// deleter and the holder have separate stores (as two replicas do). A shared
+/// store would mask the bug: `other.chars.entries()` would read the deleter's
+/// own post-delete child list.
 #[cfg(test)]
 mod tombstone_merge_tests {
     use super::ReplicatedGrowableArray;
@@ -652,9 +642,8 @@ mod tombstone_merge_tests {
     use crate::logical_clock::{HybridTimestamp, Timestamp, NTP64};
     use crate::store::StorageAdaptor;
 
-    /// A non-zero HLC timestamp at physical tick `tick`. Must be non-zero so a
-    /// char's `CharId` never collides with the document-root sentinel
-    /// (`CharId::root()`, which is `(HybridTimestamp::default(), 0)`).
+    /// Non-zero HLC at physical tick `tick`, so a `CharId` never collides with
+    /// the root sentinel `(HybridTimestamp::default(), 0)`.
     fn ts_at(tick: u64) -> HybridTimestamp {
         let id = *HybridTimestamp::zero().get_id();
         HybridTimestamp::new(Timestamp::new(NTP64(tick << 32), id))
@@ -713,13 +702,10 @@ mod tombstone_merge_tests {
             "'H' must be live on replica B"
         );
 
-        // The chars-map parent index records the tombstone on the SYNC WIRE:
-        // 'H' is absent from `children` and present in `deleted_children`, and
-        // the parent `full_hash` reflects the deletion. Resurrection is
-        // observable HERE even though `get_text` masks it (`find_by_id` filters
-        // tombstoned ids, so a resurrected child is silently dropped by the
-        // map iterator) — the real damage is the lost tombstone + diverged hash
-        // a peer would then observe.
+        // Resurrection is observable on the sync wire (parent `children` /
+        // `deleted_children` / `full_hash`), not in `get_text` — `find_by_id`
+        // filters tombstoned ids, so a resurrected char is silently dropped by
+        // the map iterator. The lost tombstone + diverged hash is the damage.
         let parent = Index::<A>::get_parent_id(a_entry).unwrap().unwrap();
         let pre = Index::<A>::get_index(parent).unwrap().unwrap();
         let pre_hash = pre.full_hash();
@@ -773,13 +759,10 @@ mod tombstone_merge_tests {
             "repeated blob merge must remain idempotent (delete still wins)"
         );
 
-        // NOTE on convergence: a *deletion* propagates B→A via the element-level
-        // DeleteRef path (which carries the tombstone on the wire), not via this
-        // blob merge — `other.chars.entries()` only yields LIVE chars, so a
-        // delete on A is invisible to a blob merge INTO B by construction. The
-        // audit explicitly scopes the blob-merge fix to non-resurrection; the
-        // DeleteRef path (covered by `tests/rga.rs`'s delta-sync tests) carries
-        // the tombstone for full convergence.
+        // A deletion propagates B→A via the DeleteRef path (which carries the
+        // tombstone on the wire), not via this blob merge — `entries()` yields
+        // only live chars. The blob-merge fix is scoped to non-resurrection;
+        // convergence of the delete is covered by the delta-sync tests.
     }
 
     #[test]
