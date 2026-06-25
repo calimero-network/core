@@ -512,6 +512,26 @@ jobs:
               echo "no op_store_incomplete or op_store_gate_unavailable markers — op-store mirrors the gov-DAG for every exercised namespace"
           fi
 
+      - name: Report scope_root governance-divergence pulls (P6.S2, observe-only)
+        if: always()
+        run: |
+          # P6.S2 routes the GovDiverged verdict (entities agree, scope_root differs)
+          # into an actual governance pull from the diverging peer — previously this
+          # case only warned. `gov_divergence_pull_triggered` fires each time the
+          # selector issues that pull. This step is INFORMATIONAL (never fails): it
+          # confirms the corrective pull fires on rotation scenarios and lets us watch
+          # for a pathological storm (the same context pulling every single tick would
+          # show as a very high count for one context_id).
+          if grep -rl "gov_divergence_pull_triggered" docker-logs/ 2>/dev/null | grep -q .; then
+              count=$(grep -rho "gov_divergence_pull_triggered" docker-logs/ | wc -l | tr -d ' ')
+              echo "::notice::scope_root governance pulls in ${{ matrix.workflow }} — $count trigger(s)"
+              echo "per-context trigger counts (watch for a single context dominating = storm):"
+              grep -rho 'gov_divergence_pull_triggered.*' docker-logs/ \
+                | grep -oE 'context_id=[0-9a-f]+' | sort | uniq -c | sort -rn | head -10
+          else
+              echo "no gov_divergence_pull_triggered markers — no scope_root governance divergence pulled this run"
+          fi
+
       - name: List docker-logs/ before upload (debug)
         if: always()
         run: ls -la docker-logs/ 2>&1 || echo "docker-logs/ missing"

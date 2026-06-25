@@ -1819,7 +1819,7 @@ per-site scaffolding.
   <li><strong><code>sign_apply_and_publish_group_op</code> wrapper.</strong> The crate-private
   function in <code>lib.rs</code> that wrapped
   <code>calimero_governance_store::sign_apply_and_publish</code> and appended a
-  <code>persist_namespace_head_ops</code> call is deleted entirely. All ~19 call sites
+  <code>persist_namespace_head_ops</code> call is deleted entirely. All ~15 call sites
   (<code>add_group_members</code>, <code>admit_tee_node</code>, <code>create_context</code>,
   <code>delete_context</code>, <code>detach_context_from_group</code>, <code>join_context</code>,
   <code>leave_group</code>, <code>leave_namespace</code>, <code>set_member_auto_follow</code>,
@@ -1885,9 +1885,12 @@ reflect the atomic-write path:
   <li>An encrypted <code>MemberAdded</code> op is passed through <code>store_signed_operation</code>
   (the atomic path).</li>
   <li>The test asserts the op appears in the op-store <em>immediately after</em> that call, with
-  no intervening <code>persist_namespace_head_ops</code> call required.</li>
-  <li>The test then calls <code>repersist_namespace_ops</code> and asserts the op-store state is
-  unchanged — confirming idempotency over an already-present entry.</li>
+  no intervening <code>persist_namespace_head_ops</code> call required — authoring handlers need
+  only call <code>calimero_governance_store::sign_apply_and_publish</code> directly; no post-author
+  mirror step is needed.</li>
+  <li>The test then calls <code>ScopeProjections::repersist_namespace_ops</code> directly
+  (replacing the now-deleted <code>persist_namespace_head_ops</code> alias) and asserts the
+  op-store state is unchanged — confirming idempotency over an already-present entry.</li>
 </ol>
 <p>
 The test runs without <code>#[ignore]</code> in CI and is the readiness gate confirming that the
