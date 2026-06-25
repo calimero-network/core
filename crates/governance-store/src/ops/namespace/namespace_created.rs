@@ -36,11 +36,11 @@
 //!          genesis-shaped; do not act on it).
 //!        * `admin_identity != founder` — established by someone else: pure no-op,
 //!          touch nothing (anti-hijack).
-//!      WHY no `Err` here: a parented or late `NamespaceCreated` (e.g. a duplicate
-//!      replayed via DAG sync) used to return `Err(NotGenesis)`, which the
-//!      `apply_signed_op` caller can treat as fatal and STALL DAG processing
-//!      (#591). On an established namespace nothing can be hijacked, so there is
-//!      no reason to error — we no-op and let the DAG advance.
+//!          WHY no `Err` here: a parented or late `NamespaceCreated` (e.g. a duplicate
+//!          replayed via DAG sync) used to return `Err(NotGenesis)`, which the
+//!          `apply_signed_op` caller can treat as fatal and STALL DAG processing
+//!          (#591). On an established namespace nothing can be hijacked, so there is
+//!          no reason to error — we no-op and let the DAG advance.
 //!
 //!   3. **If NOT established (admin == placeholder) ⇒ this op is trying to FOUND
 //!      the namespace, so enforce the genesis invariants, THEN establish:**
@@ -67,9 +67,9 @@
 //!   * ESTABLISHED (parented OR parentless) ⇒ `Ok(())` no-op — never `Err` (the
 //!     #591 fix: the namespace is already founded, so a head-advance is harmless
 //!     and erroring would risk a DAG stall).
-//! The two parented cases differ on purpose: the ESTABLISHED one is a no-op `Ok`
-//! (already founded, nothing to brick), the NOT-established one is `Err`
-//! (a no-op `Ok` there would advance the head and brick the later genesis).
+//!     The two parented cases differ on purpose: the ESTABLISHED one is a no-op `Ok`
+//!     (already founded, nothing to brick), the NOT-established one is `Err`
+//!     (a no-op `Ok` there would advance the head and brick the later genesis).
 
 use super::context::NamespaceApplyCtx;
 use crate::{
