@@ -1233,7 +1233,9 @@ impl SyncManager {
                 .await?;
 
             match peer_state {
-                Some((peer_root_hash, _peer_dag_heads)) if *peer_root_hash != [0; 32] => {
+                Some((peer_root_hash, _peer_dag_heads, _peer_scope_root))
+                    if *peer_root_hash != [0; 32] =>
+                {
                     // Peer has state - use snapshot sync for efficient bootstrap
                     info!(
                         %context_id,
@@ -1423,7 +1425,7 @@ impl SyncManager {
             .query_peer_dag_state(context_id, chosen_peer, our_identity, stream)
             .await?;
 
-        if let Some((peer_root_hash, peer_dag_heads)) = peer_state {
+        if let Some((peer_root_hash, peer_dag_heads, peer_scope_root)) = peer_state {
             // Build handshakes for protocol selection (CIP §2.3)
             // Uses shared functions from calimero_node_primitives::sync::state_machine
             let local_hs = self.build_local_handshake(context);
@@ -1431,6 +1433,46 @@ impl SyncManager {
 
             // Select optimal sync protocol based on state comparison
             let selection = select_protocol(&local_hs, &remote_hs);
+
+            // P6.S3: `select_protocol` decides on the ENTITY plane only (root_hash +
+            // dag_heads), so when entities already agree it returns `None` — "nothing
+            // to sync". But a pure governance-plane divergence (rotation / ACL change
+            // the entity Merkle can't see, since governance lives outside it) is
+            // exactly that case: entities equal, `scope_root` differs. Without this
+            // check it would go uncorrected — the post-sync P6.S2 hook only fires
+            // when HC/LevelWise actually run, which a `None` selection skips. Compute
+            // the authoritative `scope_verdict` from the peer's wire-carried
+            // `scope_root` and, on a pre-sync `GovDiverged`, pull governance from the
+            // peer instead of doing nothing. Cold/non-group projections resolve
+            // `None` and fall back to the entity-root compare inside `scope_verdict`,
+            // so a partially-warmed node never raises a false governance divergence.
+            if matches!(selection.protocol, SyncProtocol::None) {
+                let local_root = *context.root_hash;
+                let local_scope_root = {
+                    let store = self.context_client.datastore_handle().into_inner();
+                    super::helpers::local_scope_root(&store, &context_id, local_root)
+                };
+                let verdict = super::helpers::scope_verdict(
+                    local_scope_root,
+                    peer_scope_root.map(|h| *h),
+                    local_root,
+                    *peer_root_hash,
+                );
+                if let super::helpers::ScopeVerdict::GovDiverged(local_sr, peer_sr) = verdict {
+                    info!(
+                        marker = "gov_divergence_pull_triggered",
+                        %context_id,
+                        %chosen_peer,
+                        local_scope_root = %hex::encode(&local_sr[..8]),
+                        peer_scope_root = %hex::encode(&peer_sr[..8]),
+                        "entities agree but scope_root differs pre-sync — pulling governance \
+                         from peer (no entity walk needed)"
+                    );
+                    self.pull_namespace_governance(context_id, chosen_peer)
+                        .await;
+                    return Ok(None);
+                }
+            }
 
             info!(
                 %context_id,
@@ -1481,17 +1523,29 @@ impl SyncManager {
         Ok(None)
     }
 
-    /// Query peer for their DAG state (root_hash and dag_heads) without triggering full sync.
+    /// Query peer for their DAG state (root_hash, dag_heads, and scope_root)
+    /// without triggering full sync.
     ///
-    /// Returns `Ok(Some((root_hash, dag_heads)))` if peer responded successfully,
-    /// `Ok(None)` if peer had no valid response or no state, or `Err` on communication error.
+    /// Returns `Ok(Some((root_hash, dag_heads, scope_root)))` if peer responded
+    /// successfully (`scope_root` is `None` when the peer couldn't fold one — cold
+    /// projection / non-group context), `Ok(None)` if peer had no valid response or
+    /// no state, or `Err` on communication error. The `scope_root` lets the caller
+    /// decide a pre-sync `scope_verdict` so a pure governance-plane divergence
+    /// (entities agree, ACL/membership differs) is caught even when the entity-root
+    /// compare would say "no sync needed" (cutover P6.S3).
     async fn query_peer_dag_state(
         &self,
         context_id: ContextId,
         chosen_peer: PeerId,
         our_identity: PublicKey,
         stream: &mut Stream,
-    ) -> eyre::Result<Option<(calimero_primitives::hash::Hash, Vec<[u8; DIGEST_SIZE]>)>> {
+    ) -> eyre::Result<
+        Option<(
+            calimero_primitives::hash::Hash,
+            Vec<[u8; DIGEST_SIZE]>,
+            Option<calimero_primitives::hash::Hash>,
+        )>,
+    > {
         let request_msg = StreamMessage::Init {
             context_id,
             party_id: our_identity,
@@ -1509,7 +1563,7 @@ impl SyncManager {
                     MessagePayload::DagHeadsResponse {
                         dag_heads,
                         root_hash,
-                        scope_root: _,
+                        scope_root,
                     },
                 ..
             }) => {
@@ -1520,13 +1574,34 @@ impl SyncManager {
                     peer_root_hash = %root_hash,
                     "Received peer DAG state for comparison"
                 );
-                Ok(Some((root_hash, dag_heads)))
+                Ok(Some((root_hash, dag_heads, scope_root)))
             }
             _ => {
                 debug!(%context_id, %chosen_peer, "Failed to get peer DAG state for comparison");
                 Ok(None)
             }
         }
+    }
+
+    /// Pull the namespace governance DAG for `context_id` from `peer`
+    /// (cutover P6.S2/S3). Resolves the namespace and issues a
+    /// `NamespaceBackfillRequest` — the same machinery as the pending-delta and
+    /// join backfills, edge-triggered on a `scope_root` governance divergence.
+    /// Best-effort: a no-op when the context has no resolvable namespace.
+    async fn pull_namespace_governance(&self, context_id: ContextId, peer: PeerId) {
+        let namespace_id = {
+            let store = self.context_client.datastore_handle().into_inner();
+            namespace_sync::resolve_namespace_id(&store, &context_id)
+        };
+        let Some(namespace_id) = namespace_id else {
+            debug!(
+                %context_id,
+                "scope_root governance pull: could not resolve namespace id; skipping"
+            );
+            return;
+        };
+        self.sync_namespace_from_peer(namespace_id, Some(peer))
+            .await;
     }
 
     async fn initiate_sync_inner(
@@ -3416,23 +3491,7 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
     }
 
     async fn pull_namespace_governance(&self, context_id: ContextId, peer: PeerId) {
-        let namespace_id = {
-            let store = self.context_client.datastore_handle().into_inner();
-            namespace_sync::resolve_namespace_id(&store, &context_id)
-        };
-        let Some(namespace_id) = namespace_id else {
-            debug!(
-                %context_id,
-                "scope_root governance pull: could not resolve namespace id; skipping"
-            );
-            return;
-        };
-        // Pull the namespace governance DAG from the peer we just diverged
-        // from — it holds the rotation/ACL op our entity walk couldn't see.
-        // Same `NamespaceBackfillRequest` machinery as the pending-delta and
-        // join backfills, just edge-triggered on the scope_root verdict.
-        self.sync_namespace_from_peer(namespace_id, Some(peer))
-            .await;
+        SyncManager::pull_namespace_governance(self, context_id, peer).await
     }
 }
 
