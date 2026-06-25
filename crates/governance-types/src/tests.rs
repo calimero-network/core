@@ -662,28 +662,24 @@ fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
         SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
         "v7 bytes must begin with the old schema version"
     );
-    match ::borsh::from_slice::<SignedGroupOp>(&bytes) {
-        Ok(op) => {
-            // The decode misparsed the shifted bytes, but the version survived — make
-            // that dependency explicit so a future refactor that checks the signature
-            // before the version can't let this test pass while a real misparse slips
-            // through.
-            assert_eq!(
-                op.version,
-                SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
-                "decoded version must be the old schema version (byte 0)"
-            );
-            assert!(
-                matches!(
-                    op.verify_signature(),
-                    Err(GovernanceError::SchemaVersion { .. })
-                ),
-                "a v7-decoded op must be rejected on the version check, got {:?}",
-                op.verify_signature()
-            );
-        }
-        // If borsh instead rejects the misaligned/trailing bytes outright, that's also
-        // a clean rejection of the old layout.
-        Err(_) => {}
+    // If borsh decodes the misaligned bytes (the likely case — it doesn't validate
+    // field counts), the decode misparsed the shifted bytes but the version survived;
+    // assert that dependency explicitly so a future refactor checking the signature
+    // before the version can't let a real misparse slip through. If borsh instead
+    // rejects the old layout outright, that is also a clean rejection (nothing to do).
+    if let Ok(op) = ::borsh::from_slice::<SignedGroupOp>(&bytes) {
+        assert_eq!(
+            op.version,
+            SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
+            "decoded version must be the old schema version (byte 0)"
+        );
+        assert!(
+            matches!(
+                op.verify_signature(),
+                Err(GovernanceError::SchemaVersion { .. })
+            ),
+            "a v7-decoded op must be rejected on the version check, got {:?}",
+            op.verify_signature()
+        );
     }
 }
