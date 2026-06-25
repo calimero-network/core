@@ -142,16 +142,6 @@ pub struct HashComparisonStats {
     /// merge did not converge the two peers — see #2407 for the
     /// failure mode this guards against.
     pub root_hash_verified: bool,
-    /// Whether the convergence verdict was `GovDiverged` — the entity
-    /// roots agreed but the authoritative `scope_root` differed, i.e. a
-    /// pure ACL/governance-plane divergence that the entity Merkle walk
-    /// can't reconcile (governance lives outside the storage Merkle).
-    /// The caller (`ProtocolSelector`) reacts by pulling the namespace
-    /// governance DAG from the same peer (P6.S2) — without it, a node
-    /// with no stuck deltas would otherwise just warn and never converge
-    /// the governance plane. Distinct from `root_hash_verified == false`,
-    /// which also covers data-plane divergence.
-    pub gov_divergence_detected: bool,
     /// Root-state byte blobs the DFS encountered on remote leaves
     /// that the host can't merge by itself (separate-address-space
     /// merge registry — see [`crate::sync::helpers::apply_leaf_with_crdt_merge`]).
@@ -729,16 +719,13 @@ async fn run_initiator_impl<T: SyncTransport>(
         peer_current_root,
     );
     stats.root_hash_verified = verdict.converged();
-    stats.gov_divergence_detected =
-        matches!(verdict, super::helpers::ScopeVerdict::GovDiverged(..));
 
     // Surface the case the entity root hides: entities AGREE but `scope_root` differs
     // ⇒ the divergence is purely in the ACL/governance plane. HC's entity tree-walk
     // has nothing to reconcile here (the entities already match) — governance ops
-    // live outside the storage Merkle. The selector reacts to
-    // `gov_divergence_detected` by pulling the namespace governance DAG from this
-    // same peer (P6.S2); distinct marker so a governance-plane divergence is legible
-    // apart from a data-plane one.
+    // live outside the storage Merkle. This is observability only; the corrective
+    // governance pull is centralised post-sync in the manager (P6.S3), so it covers
+    // Snapshot / DeltaSync syncs too, not just HC / LevelWise.
     if let super::helpers::ScopeVerdict::GovDiverged(local_scope_root, peer_scope_root) = verdict {
         warn!(
             marker = "scope_root_governance_divergence",
