@@ -1975,16 +1975,20 @@ fn namespace_created_genesis_signer_must_equal_founder() {
 
 #[test]
 fn namespace_created_with_parents_is_rejected_as_non_genesis() {
-    // #2474 batch-8 / #591: `NamespaceCreated` is the DAG ROOT — its defining
-    // invariant is that it has NO parents. A brand-new namespace has an empty
-    // head, so the real genesis (`handlers/create_group.rs` via
-    // `sign_apply_and_publish`) is signed with `parent_op_hashes == []`. A
-    // `NamespaceCreated` carrying parents was therefore minted against an
-    // EXISTING DAG head — injected late onto a namespace with history. It is
-    // structurally NOT the genesis, so it must NOT establish/re-found the founder
-    // even when signer == founder. But for liveness-consistency with #591 it is a
-    // harmless logged NO-OP (`Ok(())`), NOT an `Err`: erroring here could stall
-    // DAG processing. The op simply touches nothing — no meta, no Admin row.
+    // #2474: `NamespaceCreated` is the DAG ROOT — its defining invariant is that
+    // it has NO parents. A brand-new namespace has an empty head, so the real
+    // genesis (`handlers/create_group.rs` via `sign_apply_and_publish`) is signed
+    // with `parent_op_hashes == []`. A `NamespaceCreated` carrying parents was
+    // therefore minted against an EXISTING DAG head — injected late onto a
+    // namespace with history — and must be REJECTED with `Err(NotGenesis)` even
+    // when signer == founder, so it can never establish/re-found the founder.
+    //
+    // The `Err` is LOAD-BEARING, not cosmetic: in `apply_signed_op`,
+    // `apply_root_op(op)?` runs BEFORE `advance_dag_head`, so an `Err` here
+    // leaves the head EMPTY and the namespace establishable. A no-op `Ok` would
+    // advance the head on a bare namespace and BRICK the later parentless
+    // genesis. (The head-not-advanced behaviour is pinned by its own test below,
+    // `namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head`.)
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -2020,24 +2024,21 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
 
     let res = gov.apply_signed_op(&signed);
     assert!(
-        res.is_ok(),
+        res.is_err(),
         "a NamespaceCreated carrying parents on a not-yet-established namespace \
-         must be a harmless no-op (Ok), never Err — erroring stalls DAG processing \
-         (#591). Got: {res:?}"
+         must be rejected (not the DAG root), even with signer == founder. Got: {res:?}"
     );
 
-    // No meta written — the parented op established no founder (it is structurally
-    // not the genesis, so it does NOT establish authority despite returning Ok).
+    // No meta written — the rejected op established no founder.
     assert!(
         MetaRepository::new(&store).load(&ns_gid).unwrap().is_none(),
-        "a parented (non-genesis) NamespaceCreated must leave the namespace with no \
-         root meta — it is a no-op, not an establish"
+        "rejected non-genesis NamespaceCreated must leave the namespace with no root meta"
     );
     assert!(
         !MembershipRepository::new(&store)
             .is_admin(&ns_gid, &founder)
             .unwrap(),
-        "no Admin row may be written for a parented (non-genesis) NamespaceCreated"
+        "no Admin row may be written for a rejected non-genesis NamespaceCreated"
     );
 
     // Sanity: the REAL genesis path (no parents, same founder) still applies.
@@ -2051,6 +2052,87 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
             .is_admin(&ns_gid, &founder)
             .unwrap(),
         "parentless genesis establishes the founder as Admin"
+    );
+}
+
+#[test]
+fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
+    // Pins the EXACT regression reverted in this change. A parented
+    // `NamespaceCreated` on a BARE (not-yet-established) namespace MUST return
+    // `Err`, and crucially MUST NOT advance the DAG head — otherwise a
+    // subsequent legitimate PARENTLESS genesis could no longer apply (a
+    // non-empty head means the genesis is no longer the structural root), which
+    // would BRICK establishment.
+    //
+    // Why the `Err`/no-advance coupling matters: `apply_signed_op`
+    // (namespace/governance.rs) calls `apply_root_op(op)?` and ONLY on `Ok` then
+    // runs `advance_dag_head` + `store_operation`. So an `Err` from the handler
+    // propagates BEFORE the head advances. A no-op `Ok()` (the reverted
+    // regression) would have advanced the head here and wedged establishment.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xDBu8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Precondition: a brand-new namespace has an EMPTY head.
+    let head_before = gov.read_head_record().expect("read head on bare namespace");
+    assert!(
+        head_before.parent_hashes.is_empty(),
+        "a bare namespace must start with an empty DAG head; got {head_before:?}"
+    );
+
+    // Parented (non-genesis) NamespaceCreated on the bare namespace.
+    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![[0x22u8; 32]],
+        [0u8; 32],
+        2,
+        parented,
+    )
+    .unwrap();
+    let res = gov.apply_signed_op(&signed);
+    assert!(
+        res.is_err(),
+        "parented NamespaceCreated on a bare namespace must Err (not the DAG root). Got: {res:?}"
+    );
+
+    // THE pin: the head was NOT advanced by the rejected op. An `Err` propagates
+    // before `advance_dag_head`, so the head must still be empty.
+    let head_after = gov
+        .read_head_record()
+        .expect("read head after rejected parented op");
+    assert!(
+        head_after.parent_hashes.is_empty(),
+        "the rejected parented NamespaceCreated must NOT advance the DAG head — a no-op Ok \
+         here would have bricked establishment. head_after = {head_after:?}"
+    );
+
+    // Consequence: a subsequent PARENTLESS genesis still applies cleanly and
+    // establishes the founder (it would be impossible if the head had advanced).
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 1, genesis).unwrap();
+    gov.apply_signed_op(&signed_genesis).expect(
+        "the parentless genesis still applies because the rejected parented op did not \
+         advance the head",
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "the parentless genesis establishes the founder as Admin after the rejected parented op"
     );
 }
 

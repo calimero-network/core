@@ -44,24 +44,32 @@
 //!
 //!   3. **If NOT established (admin == placeholder) ⇒ this op is trying to FOUND
 //!      the namespace, so enforce the genesis invariants, THEN establish:**
-//!        * (#596) no-parents FIRST — `if !op.parent_op_hashes.is_empty()` it is
-//!          structurally NOT the genesis, so it does NOT establish the founder.
-//!          But it is a logged `Ok(())` NO-OP, never an `Err` (#591
-//!          liveness-consistency: erroring could stall DAG processing). Checked
-//!          before the signer check so a parented founding op never leaks/pins
-//!          the declared founder.
-//!        * then `if op.signer != founder` → `SignerNotFounder` (this is the ONE
-//!          and only `Err` this handler returns).
+//!        * (#596) no-parents FIRST — `if !op.parent_op_hashes.is_empty()` →
+//!          `Err(NotGenesis)`. Structural: a parented op was minted against an
+//!          existing DAG head, so it is NOT the genesis and is REJECTED
+//!          regardless of signer (checked before the signer check so a parented
+//!          founding op never leaks/pins the declared founder). It MUST be `Err`,
+//!          not a no-op `Ok`: an `Err` propagates BEFORE `advance_dag_head` runs
+//!          in `apply_signed_op`, so the head stays empty and the namespace
+//!          stays establishable; a no-op `Ok` would advance the head on a bare
+//!          namespace and BRICK establishment. (Backfill is retry-tolerant, so
+//!          this never permanently stalls the DAG.)
+//!        * then `if op.signer != founder` → `SignerNotFounder`.
 //!        * then establish: write meta `admin == owner == founder`, the founder's
 //!          Admin member row, and the default caps.
 //!
 //! NET INVARIANT: a `NamespaceCreated` only ESTABLISHES the founder when
-//! (NOT established AND parentless AND signer == founder). In EVERY other case it
-//! is a harmless no-op `Ok(())` — never an `Err` — EXCEPT the signer-mismatched
-//! parentless founding attempt, which is `SignerNotFounder`. The structural
-//! no-parents check is therefore load-bearing only while the namespace is NOT yet
-//! established (it gates FOUNDING, stopping a parented op from forging the genesis
-//! admin); once a real admin exists it is irrelevant.
+//! (NOT established AND parentless AND signer == founder).
+//!   * NOT-established + parented ⇒ `Err(NotGenesis)` — prevents a head-advance
+//!     that would brick establishment; backfill retry-tolerance means no
+//!     permanent stall.
+//!   * NOT-established + parentless + signer != founder ⇒ `Err(SignerNotFounder)`.
+//!   * ESTABLISHED (parented OR parentless) ⇒ `Ok(())` no-op — never `Err` (the
+//!     #591 fix: the namespace is already founded, so a head-advance is harmless
+//!     and erroring would risk a DAG stall).
+//! The two parented cases differ on purpose: the ESTABLISHED one is a no-op `Ok`
+//! (already founded, nothing to brick), the NOT-established one is `Err`
+//! (a no-op `Ok` there would advance the head and brick the later genesis).
 
 use super::context::NamespaceApplyCtx;
 use crate::{
@@ -73,7 +81,6 @@ use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
-use tracing::warn;
 
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
@@ -250,30 +257,39 @@ pub(crate) fn apply(
     // EMPTY `parent_hashes`, and the signer (`sign_apply_and_publish`) signs the
     // genesis with `parent_op_hashes == []`. A `NamespaceCreated` carrying
     // parents on a not-yet-established namespace was therefore minted against an
-    // EXISTING DAG head — it is structurally NOT the genesis, so it MUST NOT
-    // establish the founder (checking parents first means we never even
+    // EXISTING DAG head — it is structurally NOT the genesis, so it is REJECTED
+    // regardless of signer (checking parents first means we never even
     // consult/leak the declared founder for a structurally-invalid founding op).
     //
-    // HOWEVER it is also NOT an `Err`: for liveness-consistency with the #591
-    // decision (this handler never returns `Err` on an established namespace, to
-    // avoid stalling DAG processing), a parented `NamespaceCreated` on a
-    // NOT-yet-established namespace is likewise a harmless logged no-op `Ok(())`.
-    // It still does NOT establish the founder (a parented op is structurally not
-    // the genesis) — it just doesn't hard-error, so the DAG can advance. The net
-    // invariant is that a `NamespaceCreated` ESTABLISHES only when (not-established
-    // AND parentless AND signer == founder); in every other case it is a harmless
-    // no-op, never an `Err`. DAG sequencing comes from
-    // `read_head_record().next_nonce`, not the informational `op.nonce`.
+    // WHY `Err` (and NOT a no-op `Ok`): `apply_signed_op` (governance.rs) calls
+    // `apply_root_op(op)?` and, ONLY on `Ok`, then runs `advance_dag_head` +
+    // `store_operation`. Returning `Err` here propagates BEFORE `advance_dag_head`
+    // runs, so the DAG head is NOT advanced and the namespace stays establishable
+    // by a subsequent parentless genesis. A no-op `Ok(())` here would advance the
+    // head on a BARE namespace, after which the legitimate parentless genesis can
+    // no longer apply cleanly (the head is non-empty) — BRICKING establishment.
+    //
+    // The "DAG stall" worry that might motivate a no-op is unfounded: a parented
+    // `NamespaceCreated` on a bare namespace is essentially unreachable in a
+    // VALID DAG (a parented op only applies after its parents, by which point the
+    // parentless genesis has already established the namespace, so the ESTABLISHED
+    // branch (step 2) handles it as a harmless `Ok` no-op). And the backfill path
+    // is retry-tolerant — it logs "failed to apply ... from backfill" and
+    // continues, never a permanent stall.
+    //
+    // CONTRAST: the ESTABLISHED + parented case (step 2a above) MUST STAY an `Ok`
+    // no-op (the #591 fix). On an already-founded namespace, advancing the head
+    // is harmless and erroring could stall the DAG. Only this NOT-established +
+    // parented case returns `Err`.
+    //
+    // DAG sequencing comes from `read_head_record().next_nonce`, not the
+    // informational `op.nonce`.
     if !op.parent_op_hashes.is_empty() {
-        warn!(
-            namespace_id = %hex::encode(namespace_id),
-            %founder,
-            parent_count = op.parent_op_hashes.len(),
-            "NamespaceCreated: parented op on a not-yet-established namespace is not \
-             genesis-shaped; no-op (does NOT establish the founder, never Err — #591 \
-             liveness consistency)"
-        );
-        return Ok(());
+        bail!(ApplyError::NamespaceCreatedRejected(
+            NamespaceCreatedRejection::NotGenesis {
+                parent_count: op.parent_op_hashes.len(),
+            }
+        ));
     }
 
     // ---- (3b) Self-authorization binding: signer MUST equal the founder. ----
