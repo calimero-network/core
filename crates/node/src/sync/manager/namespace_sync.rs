@@ -1115,11 +1115,16 @@ impl SyncManager {
     /// [`StoredNamespaceEntry::Opaque`] skeleton and `extract_signed_op`
     /// returns `None` for it — backfilling from such a peer yields nothing for
     /// group ops and would never release a governance-pending delta.
+    /// Pull the namespace governance DAG from `peer` (or a mesh peer when `None`).
+    /// Returns the number of governance ops received in the backfill response — `0`
+    /// on any best-effort failure (no peer, stream/​send/​recv error, unexpected
+    /// response), so a caller correcting a divergence can tell whether the pull
+    /// actually delivered anything rather than treating it as a silent no-op.
     pub(super) async fn sync_namespace_from_peer(
         &self,
         namespace_id: [u8; 32],
         peer: Option<PeerId>,
-    ) {
+    ) -> usize {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
         let peer = match peer {
@@ -1135,7 +1140,7 @@ impl SyncManager {
                         namespace_id = %hex::encode(namespace_id),
                         "no mesh peers for namespace sync"
                     );
-                    return;
+                    return 0;
                 };
                 p
             }
@@ -1143,7 +1148,7 @@ impl SyncManager {
 
         let Ok(mut stream) = self.sync_network.open_stream(peer).await else {
             debug!("failed to open stream for namespace sync");
-            return;
+            return 0;
         };
 
         let msg = StreamMessage::Init {
@@ -1161,7 +1166,7 @@ impl SyncManager {
 
         if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {
             debug!(%err, "failed to send NamespaceBackfillRequest");
-            return;
+            return 0;
         }
 
         match crate::sync::stream::recv(&mut stream, None, self.sync_config.timeout).await {
@@ -1295,9 +1300,11 @@ impl SyncManager {
                 // permanently locked out of group decryption.
                 self.recover_missing_group_keys(namespace_id, Some(peer))
                     .await;
+                ops_received
             }
             _ => {
                 debug!("unexpected response to namespace sync request");
+                0
             }
         }
     }

@@ -1426,6 +1426,11 @@ impl SyncManager {
             .await?;
 
         if let Some((peer_root_hash, peer_dag_heads, peer_scope_root)) = peer_state {
+            // Normalise the peer's wire-carried scope_root to bytes once; it feeds
+            // both the pre-sync and post-sync governance-divergence checks below
+            // (`[u8; 32]` is `Copy`, so each check reads it independently).
+            let peer_scope_root = peer_scope_root.map(|h| *h);
+
             // Build handshakes for protocol selection (CIP §2.3)
             // Uses shared functions from calimero_node_primitives::sync::state_machine
             let local_hs = self.build_local_handshake(context);
@@ -1462,7 +1467,7 @@ impl SyncManager {
                 };
                 let verdict = super::helpers::scope_verdict(
                     local_scope_root,
-                    Some(*peer_scope_root),
+                    Some(peer_scope_root),
                     local_root,
                     *peer_root_hash,
                 );
@@ -1476,15 +1481,19 @@ impl SyncManager {
                         "entities agree but scope_root differs pre-sync — pulling governance \
                          from peer (no entity walk needed)"
                     );
-                    self.pull_namespace_governance(context_id, chosen_peer)
+                    let ops_pulled = self
+                        .pull_namespace_governance(context_id, chosen_peer)
                         .await;
                     // Completion marker so the e2e report (and operators) can
-                    // correlate the trigger with its outcome — the `Ok(None)` below
-                    // is otherwise indistinguishable from "entities already in sync".
+                    // correlate the trigger with its outcome — `ops_pulled == 0`
+                    // flags a pull that delivered nothing (best-effort failure or an
+                    // already-converged peer), which the `Ok(None)` below would
+                    // otherwise hide as "entities already in sync".
                     debug!(
                         marker = "gov_divergence_pull_complete",
                         %context_id,
                         %chosen_peer,
+                        ops_pulled,
                         "pre-sync governance pull issued; convergence verified next session"
                     );
                     return Ok(None);
@@ -1521,7 +1530,7 @@ impl SyncManager {
                     })
                 });
 
-            return self
+            let exec_result = self
                 .protocol_selector
                 .execute(
                     self,
@@ -1535,6 +1544,82 @@ impl SyncManager {
                     stream,
                 )
                 .await;
+
+            // P6.S3: centralised post-sync governance reconciliation. After ANY data
+            // backend runs (HashComparison / LevelWise / Snapshot / DeltaSync), the
+            // entity plane may have converged while governance still differs —
+            // governance lives outside the storage Merkle, so no entity walk reaches
+            // it. This replaces the per-protocol hooks that only fired for HC /
+            // LevelWise, so a snapshot/delta sync converges its governance plane too.
+            //
+            // The decision is a DIRECT scope_root inequality, not a
+            // GovDiverged-vs-DataDiverged sub-classification. The manager only holds
+            // the peer's HANDSHAKE entity root — the peer may have advanced during the
+            // sync — so an entity-root compare here could misclassify a real
+            // governance divergence as "data" and SKIP the pull, which is the
+            // dangerous direction: a permanent governance stall. A governance pull is
+            // idempotent and returns 0 ops when governance is already in sync, so
+            // pulling whenever the authoritative scope_root still differs over-pulls
+            // at worst during a still-converging data plane — harmless and
+            // self-limiting (once scope_roots agree the pull stops). Runs only on a
+            // successful sync; gated on `peer_scope_root` so the no-divergence path
+            // stays store-free.
+            //
+            // `Ok(Some(_))` not `is_ok()`: a data backend must have actually RUN.
+            // `execute` returns `Ok(None)` for the `SyncProtocol::None` selection
+            // (entities already in sync) — which the pre-sync `GovDiverged` check
+            // above already handled — so running the post-sync block on `Ok(None)`
+            // would just repeat a store read + fold on every converged tick.
+            if matches!(exec_result, Ok(Some(_))) {
+                if let Some(peer_scope_root) = peer_scope_root {
+                    // Re-read the POST-sync local root (entities may have merged). On a
+                    // store fault, SKIP rather than fold a verdict against a stale
+                    // pre-sync root — the next tick re-checks against fresh state.
+                    let local_root = match self.context_client.get_context(&context_id) {
+                        Ok(Some(ctx)) => Some(*ctx.root_hash),
+                        Ok(None) => {
+                            warn!(%context_id, "post-sync gov check: context vanished; skipping");
+                            None
+                        }
+                        Err(err) => {
+                            warn!(%context_id, %err, "post-sync gov check: get_context failed; skipping");
+                            None
+                        }
+                    };
+                    if let Some(local_root) = local_root {
+                        let local_scope_root = {
+                            let store = self.context_client.datastore_handle().into_inner();
+                            super::helpers::local_scope_root(&store, &context_id, local_root)
+                        };
+                        // `None` (cold / incomplete fold) abstains — same as the
+                        // verdict's cold-fallback: never pull on an unresolved scope.
+                        if let Some(local_sr) = local_scope_root {
+                            if local_sr != peer_scope_root {
+                                info!(
+                                    marker = "gov_divergence_pull_triggered",
+                                    %context_id,
+                                    %chosen_peer,
+                                    local_scope_root = %hex::encode(&local_sr[..8]),
+                                    peer_scope_root = %hex::encode(&peer_scope_root[..8]),
+                                    "scope_root still differs post-sync — pulling governance from peer"
+                                );
+                                let ops_pulled = self
+                                    .pull_namespace_governance(context_id, chosen_peer)
+                                    .await;
+                                debug!(
+                                    marker = "gov_divergence_pull_complete",
+                                    %context_id,
+                                    %chosen_peer,
+                                    ops_pulled,
+                                    "post-sync governance pull issued; convergence verified next session"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            return exec_result;
         }
 
         Ok(None)
@@ -1604,8 +1689,10 @@ impl SyncManager {
     /// (cutover P6.S2/S3). Resolves the namespace and issues a
     /// `NamespaceBackfillRequest` — the same machinery as the pending-delta and
     /// join backfills, edge-triggered on a `scope_root` governance divergence.
-    /// Best-effort: a no-op when the context has no resolvable namespace.
-    async fn pull_namespace_governance(&self, context_id: ContextId, peer: PeerId) {
+    /// Returns the number of governance ops the backfill delivered (`0` when the
+    /// namespace can't be resolved or the best-effort pull came back empty), so the
+    /// divergence-correction caller can log the outcome rather than discarding it.
+    async fn pull_namespace_governance(&self, context_id: ContextId, peer: PeerId) -> usize {
         let namespace_id = {
             let store = self.context_client.datastore_handle().into_inner();
             namespace_sync::resolve_namespace_id(&store, &context_id)
@@ -1615,10 +1702,10 @@ impl SyncManager {
                 %context_id,
                 "scope_root governance pull: could not resolve namespace id; skipping"
             );
-            return;
+            return 0;
         };
         self.sync_namespace_from_peer(namespace_id, Some(peer))
-            .await;
+            .await
     }
 
     async fn initiate_sync_inner(
@@ -3506,10 +3593,6 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
     ) -> eyre::Result<SyncProtocol> {
         SyncManager::fallback_to_snapshot_sync(self, context_id, our_identity, chosen_peer).await
     }
-
-    async fn pull_namespace_governance(&self, context_id: ContextId, peer: PeerId) {
-        SyncManager::pull_namespace_governance(self, context_id, peer).await
-    }
 }
 
 // Driver-dispatch back into `SyncManager` for the cross-actor message
@@ -3518,7 +3601,7 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
 #[async_trait::async_trait(?Send)]
 impl super::driver::SyncDriverDispatch for SyncManager {
     async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) {
-        SyncManager::sync_namespace_from_peer(self, namespace_id, None).await
+        let _ops = SyncManager::sync_namespace_from_peer(self, namespace_id, None).await;
     }
 
     async fn initiate_namespace_join(
