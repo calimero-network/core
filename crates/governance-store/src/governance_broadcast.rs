@@ -90,9 +90,11 @@ pub const OP_ACK_HEAVY_TIMEOUT: Duration = Duration::from_secs(10);
 #[must_use]
 pub fn timeout_for_namespace_op(op: &NamespaceOp) -> Duration {
     match op {
-        NamespaceOp::Root(RootOp::AdminChanged { .. } | RootOp::PolicyUpdated { .. }) => {
-            OP_ACK_CHEAP_TIMEOUT
-        }
+        NamespaceOp::Root(
+            RootOp::AdminChanged { .. }
+            | RootOp::PolicyUpdated { .. }
+            | RootOp::NamespaceCreated { .. },
+        ) => OP_ACK_CHEAP_TIMEOUT,
         NamespaceOp::Root(
             RootOp::MemberJoined { .. }
             | RootOp::MemberJoinedAt { .. }

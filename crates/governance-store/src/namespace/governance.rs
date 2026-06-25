@@ -280,9 +280,10 @@ impl<'a> NamespaceGovernance<'a> {
                         // admit_tee_node) of a group key to a member that
                         // can't yet decrypt the group. Reuse the joiner-side
                         // apply: unwrap for our identity, store, seed the
-                        // bootstrap admin from the op signer (the trust
-                        // anchor — only an existing key-holding member can
-                        // mint this), and replay buffered ops. Best-effort:
+                        // bootstrap scaffolding (placeholder meta + own member
+                        // row + default caps — NOT the founding admin, which
+                        // comes from the NamespaceCreated genesis since #2474),
+                        // and replay buffered ops. Best-effort:
                         // a failure here must not block the DAG (every later
                         // op would orphan), so errors are logged, not
                         // propagated.
@@ -873,65 +874,49 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(report)
     }
 
-    /// Seed the founding admin/owner of the namespace root group from the
-    /// trust anchor that bootstrapped us (the KeyDelivery signer), when no
-    /// group meta exists locally.
+    /// Seed the namespace root's bootstrap rows (placeholder meta, the
+    /// deliverer's own member row, and default caps) when no local state exists.
     ///
-    /// This closes the no-invitation bootstrap gap for TEE fleet-join: the
-    /// founding owner/admin row is written purely locally at namespace
-    /// creation (`handlers/create_group.rs`) and is NOT a replayable
-    /// governance op, so a node that replays the namespace DAG never learns
-    /// who the admin is and rejects every authority-checked op. The invited
-    /// path recovers this from the invitation; the TEE path has none, so we
-    /// take the KeyDelivery signer — which can only be an existing member of
-    /// this namespace (they hold the group key), and for the bootstrap case
-    /// is the owner that admitted us.
+    /// This closes the no-invitation bootstrap gap for TEE fleet-join: a node
+    /// that replays the namespace DAG needs a root meta row + its own membership
+    /// so the encrypted-op replay path can read state and pass its membership
+    /// checks. The invited path recovers this from the invitation; the TEE path
+    /// has none, so this seed provides the minimal scaffolding on the first
+    /// `KeyDelivery`.
+    ///
+    /// #2474 — this seed NO LONGER establishes the founding admin/owner. It
+    /// previously TOFU-trusted the KeyDelivery signer as the namespace admin,
+    /// but the signer need only HOLD the group key (any current member), so when
+    /// a non-owner delivered the key the replica pinned the WRONG admin and
+    /// permanently rejected the true owner's ops, wedging backfill (production-
+    /// confirmed). The authoritative founder now comes from the replayable
+    /// `RootOp::NamespaceCreated` genesis op
+    /// (`ops/namespace/namespace_created.rs`), emitted at namespace creation in
+    /// `handlers/create_group.rs`. The genesis is the FIRST op in the DAG —
+    /// defined by having NO parents (its nonce is 1, since `read_head_record`
+    /// defaults `next_nonce` to 1 when the head is absent; `op.nonce` is
+    /// informational/signature-covered, DAG sequencing derives from
+    /// `read_head_record().next_nonce`, not `op.nonce`). Being the parentless
+    /// root, backfill applies it before any owner op and the correct admin row
+    /// is present by the time owner ops apply.
     ///
     /// Strictly gated and idempotent:
     /// - only acts when `group_id` is the namespace root (`== namespace_id`);
-    /// - only acts when no `GroupMetaValue` is stored yet, so an established
-    ///   node (invited joiner, or a node that already synced meta) keeps its
-    ///   authoritative copy and this is a no-op;
+    /// - the meta it writes (when absent) has a ZERO `admin_identity`/
+    ///   `owner_identity` — a placeholder that grants authority to nobody. The
+    ///   genesis op recognises this placeholder (admin == zero) and overwrites it
+    ///   with the real founder; an established namespace (non-zero admin) is left
+    ///   untouched, so seed-vs-genesis ordering converges either way;
+    /// - the deliverer's own member row is written as a non-authoritative
+    ///   `Member` (not `Admin`);
     /// - `target_application_id` is left zero and self-heals on the first
-    ///   `ContextRegistered` apply (same contract as `join_group`).
+    ///   `ContextRegistered` apply (same contract as `join_group`);
+    /// - each row is gated on its OWN presence so a partial seed self-repairs on
+    ///   a later re-entry.
     ///
-    /// THREAT MODEL — trust-on-first-use limitation (PR #2473 finding 3):
-    /// `KeyDelivery` carries no signer-authority check on apply
-    /// (`apply_root_op` returns `Ok(())` for it; the side-effect only checks
-    /// `envelope.recipient == our namespace identity`). To mint a `KeyDelivery`
-    /// the signer must merely HOLD the group key — i.e. be ANY current member
-    /// of this namespace, not necessarily the owner/admin. So if a non-owner
-    /// member races the owner and their `KeyDelivery` lands first, this seeds
-    /// the WRONG `admin_identity`/`owner_identity` locally.
-    ///
-    /// Blast radius is bounded and local-only:
-    /// - NOT a cross-node privilege escalation — the seeded meta is node-local
-    ///   state, never gossiped; no peer trusts it.
-    /// - Effect is a LOCAL DoS on this one bootstrapping replica: subsequent
-    ///   authority-checked ops from the true owner (`require_namespace_admin`)
-    ///   are rejected. It does NOT self-heal: the meta-exists guard above turns
-    ///   a later correct `KeyDelivery` into a no-op, and there is no root-admin
-    ///   `AdminChanged` to overwrite it — recovery requires a namespace teardown
-    ///   + re-sync.
-    ///
-    /// Why this is not tightened to "seed only from a DAG-shown admin": the
-    /// namespace ROOT's founding admin/owner is never recorded as a replayable
-    /// governance op (`execute_group_created` rejects a self-parent and notes
-    /// "namespace roots are created via a different path … no GroupCreated op";
-    /// `RootOp` has no namespace-genesis variant). At bootstrap the replica has
-    /// applied NO authority-bearing root op yet — every owner-authored op is
-    /// itself buffered behind this seed (chicken-and-egg). So there is no local,
-    /// DAG-derived admin signal to validate the `KeyDelivery` signer against,
-    /// which is exactly why TOFU is used at all.
-    ///
-    /// RECOMMENDED FOLLOW-UP (correct root-of-trust, deferred — it is a
-    /// wire-protocol change, not a contained fix): add a replayable
-    /// `RootOp::NamespaceCreated { founder }` (or equivalent genesis op) emitted
-    /// by `handlers/create_group.rs` at namespace creation, so a bootstrapping
-    /// replica derives the founding admin/owner authoritatively from the synced
-    /// governance DAG genesis and drops the `KeyDelivery`-signer TOFU entirely.
-    /// That touches the `RootOp` borsh discriminant set and must be coordinated
-    /// as a versioned schema change.
+    /// Because no authority is conferred here, the old trust-on-first-use threat
+    /// (PR #2473 finding 3 / #2474) is closed: a non-owner KeyDelivery can no
+    /// longer pin the wrong admin.
     // `pub(crate)` (not private) so the repair/idempotency invariant below is
     // directly exercisable from `group_store::tests` without driving a full
     // `KeyDelivery` apply; it is not part of any published surface.
@@ -959,6 +944,25 @@ impl<'a> NamespaceGovernance<'a> {
         // and ALWAYS ensure the admin member row exists. A later `KeyDelivery`
         // re-enters here and repairs whichever half a previous partial seed left
         // behind. Both writes are individually idempotent, so re-running is safe.
+        // #2474: the bootstrap seed no longer pins the founding ADMIN/OWNER
+        // identity from the KeyDelivery deliverer. The deliverer need only HOLD
+        // the group key (any current member), so TOFU-trusting them as admin
+        // pinned the WRONG admin whenever a non-owner delivered the key and
+        // permanently wedged backfill. The authoritative founder now comes from
+        // the replayable `RootOp::NamespaceCreated` genesis op
+        // (`ops/namespace/namespace_created.rs`).
+        //
+        // The seed still writes a placeholder root meta when none exists so the
+        // encrypted-op replay path has a meta row to read, but with a ZERO
+        // `admin_identity`/`owner_identity` — granting authority to NOBODY. The
+        // genesis op recognises this placeholder (admin == zero) and fills in
+        // the real founder over it; an established namespace (non-zero admin) is
+        // protected from a forged second genesis. Either ordering — seed first
+        // or genesis first — converges on the genesis-supplied founder.
+        // Shared zero-key sentinel — see `crate::PLACEHOLDER_ADMIN_IDENTITY`.
+        // The genesis anti-hijack gate compares against the SAME constant, so
+        // the seed and the gate cannot drift on this magic value (#2474).
+        let placeholder_admin = crate::placeholder_admin_identity();
         let meta_existed = MetaRepository::new(self.store).load(&gid)?.is_some();
         if !meta_existed {
             let meta = calimero_store::key::GroupMetaValue {
@@ -968,14 +972,19 @@ impl<'a> NamespaceGovernance<'a> {
                 ),
                 upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
                 created_at: 0,
-                admin_identity: (*founder),
-                owner_identity: (*founder),
+                admin_identity: placeholder_admin,
+                owner_identity: placeholder_admin,
                 migration: None,
                 auto_join: true,
             };
             MetaRepository::new(self.store).save(&gid, &meta)?;
         }
 
+        // Own-membership bootstrap: ensure the deliverer has a member row so the
+        // encrypted-op replay membership checks pass — but as a non-authoritative
+        // `Member`, NOT `Admin`. Founding authority is established by genesis, not
+        // here. If genesis (or another path) has already recorded a richer role
+        // for this identity, leave it untouched.
         let member_existed = MembershipRepository::new(self.store)
             .role_of(&gid, founder)?
             .is_some();
@@ -983,7 +992,7 @@ impl<'a> NamespaceGovernance<'a> {
             MembershipRepository::new(self.store).add_member(
                 &gid,
                 founder,
-                GroupMemberRole::Admin,
+                GroupMemberRole::Member,
             )?;
         }
 
@@ -1021,7 +1030,8 @@ impl<'a> NamespaceGovernance<'a> {
                 meta_seeded = !meta_existed,
                 member_seeded = !member_existed,
                 default_caps_seeded = !default_caps_existed,
-                "seeded/repaired founding namespace admin from KeyDelivery signer (TEE bootstrap)"
+                "seeded/repaired namespace bootstrap rows (placeholder meta + deliverer \
+                 member + default caps); founding admin comes from NamespaceCreated genesis"
             );
         }
         Ok(())

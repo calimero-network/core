@@ -1210,10 +1210,24 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
 
     let gov = NamespaceGovernance::new(&store, namespace_id);
 
-    // ---- Bare bootstrap seed: this is the ONLY thing that establishes the root
-    // meta + founding admin on the replica (the real fleet-join KeyDelivery
-    // path). It must also leave the root's default caps set to include
-    // CAN_JOIN_OPEN_SUBGROUPS. ----
+    // ---- Genesis establishes the founder as the authoritative namespace admin
+    // (#2474: this used to come from the bootstrap seed's KeyDelivery-signer
+    // TOFU; it now comes from the replayable `NamespaceCreated` genesis op). The
+    // founder here IS the verifier that authors the TEE ops below, so it must be
+    // admin for those ops to apply. ----
+    {
+        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+        let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let signed_genesis =
+            SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+                .expect("sign genesis");
+        gov.apply_signed_op(&signed_genesis)
+            .expect("genesis NamespaceCreated establishes the founding admin");
+    }
+
+    // The bootstrap seed still runs on the real fleet-join KeyDelivery path; it
+    // is now a no-op for the (already established) meta but still ensures the
+    // root's default caps include CAN_JOIN_OPEN_SUBGROUPS.
     gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
         .expect("bootstrap seed");
 
@@ -1222,7 +1236,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
             .default_capabilities(&ns_gid)
             .unwrap(),
         Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
-        "bootstrap seed must set the root's default caps so members admitted \
+        "genesis/seed must set the root's default caps so members admitted \
          before the DefaultCapabilitiesSet gossip inherit CAN_JOIN_OPEN_SUBGROUPS"
     );
 
@@ -1253,12 +1267,21 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         },
     )
     .unwrap();
+    // FIDELITY: these are NON-genesis ops applied AFTER the genesis applied
+    // above, so the DAG head is non-empty. Sign each against the current head's
+    // `parent_hashes` / `next_nonce` (as the production signer does), rather than
+    // empty parents.
+    let head = gov.read_head_record().expect("read head after genesis");
+    assert!(
+        !head.parent_hashes.is_empty(),
+        "DAG head must be non-empty after the genesis applied"
+    );
     let policy_ns_op = SignedNamespaceOp::sign(
         &founder_sk,
         namespace_id,
-        vec![],
+        head.parent_hashes.clone(),
         [0u8; 32],
-        1,
+        head.next_nonce,
         NamespaceOp::Group {
             group_id: namespace_id,
             key_id,
@@ -1287,12 +1310,15 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         },
     )
     .unwrap();
+    // Re-read the head: the policy op above advanced it, so the join op chains
+    // off the new head (non-genesis fidelity).
+    let head = gov.read_head_record().expect("read head after policy op");
     let join_ns_op = SignedNamespaceOp::sign(
         &founder_sk,
         namespace_id,
-        vec![],
+        head.parent_hashes.clone(),
         [0u8; 32],
-        2,
+        head.next_nonce,
         NamespaceOp::Group {
             group_id: namespace_id,
             key_id,
@@ -1334,6 +1360,1119 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
             crate::membership::MembershipPath::Inherited { .. }
         ),
         "Open child must resolve to Inherited for the TEE so its context replicates"
+    );
+}
+
+#[test]
+fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
+    // #2474 REGRESSION GUARD (was the RED reproduction; now GREEN under Option A).
+    //
+    // BEFORE the fix: `seed_bootstrap_admin_if_absent` TOFU-seeded the founding
+    // admin from the *KeyDelivery signer*. The signer need only HOLD the group
+    // key (any current member), so when a NON-OWNER delivered the key the replica
+    // pinned the WRONG admin and REJECTED the true owner's first authority-bearing
+    // root op (`GroupCreated` under the root), wedging backfill permanently.
+    //
+    // AFTER the fix (Option A): namespace root creation emits a replayable
+    // `RootOp::NamespaceCreated { founder }` GENESIS op. A backfilling replica
+    // applies it (the parentless FIRST op in the DAG) BEFORE any owner op, so the correct
+    // founding admin is established authoritatively from the synced DAG — the
+    // non-owner KeyDelivery seed can no longer pin the wrong admin, and the
+    // owner's `GroupCreated` APPLIES.
+    //
+    // This exercises the realistic backfill order (genesis applied first, then a
+    // non-owner KeyDelivery seed lands, then the owner's GroupCreated) against the
+    // SAME apply path the backfill uses (`NamespaceGovernance::apply_signed_op`).
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    // The TRUE owner/founder of the namespace (in production: the node whose
+    // keypair created the namespace root in `handlers/create_group.rs`).
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner = owner_sk.public_key();
+
+    // A DIFFERENT, non-owner member of the namespace — whoever happened to
+    // deliver the group key to the bootstrapping replica. It is NOT the owner.
+    let non_owner_sk = PrivateKey::random(&mut rng);
+    let non_owner = non_owner_sk.public_key();
+    assert_ne!(
+        owner, non_owner,
+        "the key-deliverer must be a different identity than the true owner"
+    );
+
+    let namespace_id = [0xC4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // ---- Step 1: the GENESIS op the backfill replays FIRST. Signed by the true
+    // owner with NO parents (the defining genesis invariant) — exactly what
+    // `handlers/create_group.rs` emits on root creation. (`op.nonce` is
+    // informational here; sequencing comes from the head record. The 0 below is
+    // an arbitrary placeholder the apply path does not consult for ordering.)
+    // This establishes the founding admin authoritatively. ----
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&owner_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+            .expect("owner signs NamespaceCreated genesis");
+    gov.apply_signed_op(&signed_genesis)
+        .expect("genesis NamespaceCreated must apply on the bare replica");
+
+    // The true owner is now the recognised founding admin; the non-owner is not.
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &owner)
+            .unwrap(),
+        "genesis must establish the TRUE owner as the namespace admin"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &non_owner)
+            .unwrap(),
+        "the non-owner must NOT be admin after genesis"
+    );
+
+    // ---- Step 2: a non-owner KeyDelivery seed lands. It used to overwrite the
+    // admin; now it is forbidden from establishing authority — it adds only a
+    // non-authoritative member row and never touches the established admin. ----
+    gov.seed_bootstrap_admin_if_absent(namespace_id, &non_owner)
+        .expect("bootstrap seed from the (non-owner) KeyDelivery signer");
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &non_owner)
+            .unwrap(),
+        "#2474: a non-owner KeyDelivery seed must NOT pin the admin (the wedge is gone)"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &owner)
+            .unwrap(),
+        "the true owner remains the admin after the non-owner seed"
+    );
+
+    // ---- Step 3: the owner's first authority-bearing root op now APPLIES. ----
+    // FIDELITY: this `GroupCreated` is a NON-genesis op, so it must be signed
+    // against the CURRENT DAG head — which is non-empty now that the genesis
+    // applied (the genesis delta is the sole head). Signing it with `vec![]`
+    // parents would be unrealistic (it would look like a second genesis). Read
+    // the real head and sign with its `parent_hashes` / `next_nonce`, exactly as
+    // the production signer (`sign_apply_and_publish`) does.
+    let head = gov.read_head_record().expect("read DAG head after genesis");
+    assert!(
+        !head.parent_hashes.is_empty(),
+        "the DAG head must be non-empty after the genesis applied (the genesis delta \
+         is the current head)"
+    );
+    let subgroup_id = [0xC5u8; 32];
+    let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+        group_id: subgroup_id,
+        parent_id: namespace_id,
+        restricted: true,
+    });
+    let signed = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        head.parent_hashes.clone(),
+        [0u8; 32],
+        head.next_nonce,
+        create_op,
+    )
+    .expect("owner signs GroupCreated");
+
+    gov.apply_signed_op(&signed).expect(
+        "#2474 GREEN: owner-signed GroupCreated APPLIES once genesis establishes the admin",
+    );
+
+    // The subgroup meta is written — backfill is no longer wedged.
+    assert!(
+        MetaRepository::new(&store)
+            .load(&ContextGroupId::from(subgroup_id))
+            .unwrap()
+            .is_some(),
+        "the subgroup must be created — backfill proceeds past the owner's GroupCreated"
+    );
+}
+
+#[test]
+fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
+    // Unit coverage for the `NamespaceCreated` apply handler (#2474):
+    //  (a) on a BARE store it writes admin == owner == founder with no prior
+    //      state and the default CAN_JOIN_OPEN_SUBGROUPS caps;
+    //  (b) a SECOND `NamespaceCreated` (forged second genesis) on an established
+    //      namespace is a NO-OP — it cannot overwrite the established admin;
+    //  (c) a seed-PLACEHOLDER meta (admin == zero) does NOT block genesis —
+    //      genesis fills in the real founder over it, proving seed-vs-genesis
+    //      ordering converges either way.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::MemberCapabilities;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+    let attacker_sk = PrivateKey::random(&mut rng);
+    let attacker = attacker_sk.public_key();
+
+    // ---- (a) bare-store genesis ----
+    {
+        let store = test_store();
+        let namespace_id = [0xA1u8; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+        let gov = NamespaceGovernance::new(&store, namespace_id);
+
+        let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let signed =
+            SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+                .unwrap();
+        gov.apply_signed_op(&signed)
+            .expect("bare-store genesis applies");
+
+        let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        assert_eq!(meta.admin_identity, founder, "admin == founder");
+        assert_eq!(meta.owner_identity, founder, "owner == founder");
+        assert!(
+            MembershipRepository::new(&store)
+                .is_admin(&ns_gid, &founder)
+                .unwrap(),
+            "founder is admin"
+        );
+        assert_eq!(
+            CapabilitiesRepository::new(&store)
+                .default_capabilities(&ns_gid)
+                .unwrap(),
+            Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+            "genesis seeds default CAN_JOIN_OPEN_SUBGROUPS caps"
+        );
+
+        // ---- (b) anti-hijack: a second, forged genesis is a no-op ----
+        let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: attacker });
+        let signed_forged =
+            SignedNamespaceOp::sign(&attacker_sk, namespace_id, vec![], [0u8; 32], 1, forged)
+                .unwrap();
+        gov.apply_signed_op(&signed_forged)
+            .expect("forged second genesis applies as a no-op (no error)");
+
+        let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        assert_eq!(
+            meta.admin_identity, founder,
+            "anti-hijack: established admin is NOT overwritten by a forged genesis"
+        );
+        assert!(
+            !MembershipRepository::new(&store)
+                .is_admin(&ns_gid, &attacker)
+                .unwrap(),
+            "anti-hijack: the attacker did not become admin"
+        );
+    }
+
+    // ---- (c) placeholder seed meta does NOT block genesis ----
+    {
+        let store = test_store();
+        let namespace_id = [0xA2u8; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+        let gov = NamespaceGovernance::new(&store, namespace_id);
+
+        // A non-owner seed runs first, writing placeholder meta (admin == zero).
+        gov.seed_bootstrap_admin_if_absent(namespace_id, &attacker)
+            .expect("placeholder seed");
+        let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        assert_eq!(
+            meta.admin_identity,
+            PublicKey::from([0u8; 32]),
+            "seed writes a placeholder (zero) admin, granting authority to nobody"
+        );
+        assert!(
+            !MembershipRepository::new(&store)
+                .is_admin(&ns_gid, &attacker)
+                .unwrap(),
+            "the non-owner deliverer is NOT admin after the seed"
+        );
+
+        // Genesis then lands and fills in the real founder over the placeholder.
+        let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let signed =
+            SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+                .unwrap();
+        gov.apply_signed_op(&signed)
+            .expect("genesis applies over the placeholder seed meta");
+        let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        assert_eq!(
+            meta.admin_identity, founder,
+            "genesis overwrites the placeholder admin with the real founder"
+        );
+    }
+
+    // ---- (d) nonce-0 forged genesis on a BARE store is rejected by the
+    // signer==founder check, NOT silently accepted as the true genesis ----
+    // #2474 reviewer batch 3, item #4: case (b) above covers a forged SECOND
+    // genesis (nonce=1) on an established namespace, which the anti-hijack gate
+    // turns into a no-op. This sub-case covers a forged FIRST genesis (nonce=0)
+    // on a bare namespace: an attacker tries to be the true genesis but names a
+    // DIFFERENT founder than they sign with. This is caught EARLIER, by the
+    // signer==founder check (before the anti-hijack/established gate ever runs),
+    // and is REJECTED (Err) rather than no-op'd — a mismatched forgery must never
+    // pin an admin even on a fresh namespace.
+    {
+        let store = test_store();
+        let namespace_id = [0xA3u8; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+        let gov = NamespaceGovernance::new(&store, namespace_id);
+
+        // Attacker signs the genuine FIRST op (nonce=0, empty parents) but names
+        // the founder as someone else (here: `founder`).
+        let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let signed =
+            SignedNamespaceOp::sign(&attacker_sk, namespace_id, vec![], [0u8; 32], 0, forged)
+                .unwrap();
+        assert!(
+            gov.apply_signed_op(&signed).is_err(),
+            "nonce-0 forged genesis (signer != founder) must be REJECTED by the \
+             signer==founder check, not accepted as the true genesis"
+        );
+        assert!(
+            MetaRepository::new(&store).load(&ns_gid).unwrap().is_none(),
+            "rejected nonce-0 forgery leaves the bare namespace with no root meta"
+        );
+        assert!(
+            !MembershipRepository::new(&store)
+                .is_admin(&ns_gid, &founder)
+                .unwrap(),
+            "the falsely-declared founder was not made admin"
+        );
+        assert!(
+            !MembershipRepository::new(&store)
+                .is_admin(&ns_gid, &attacker)
+                .unwrap(),
+            "the attacker signer was not made admin"
+        );
+    }
+}
+
+#[test]
+fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
+    // #2474 reviewer batch 4-5, item #1: the anti-hijack gate keys SOLELY on
+    // `admin_identity`. This pins the fix for the earlier OR-of-both gate, which
+    // would have treated a meta with `admin_identity == placeholder` but
+    // `owner_identity != placeholder` as "established" and wedged the namespace
+    // with no real admin forever. The authority-field-only gate must instead let
+    // genesis PROCEED on such a partial-write state and write the real founder
+    // as admin (repair), since `admin_identity == placeholder` means no real
+    // admin exists yet.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+    let stray_owner_sk = PrivateKey::random(&mut rng);
+    let stray_owner = stray_owner_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xA4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Construct a partial-write state: admin_identity is still the placeholder
+    // sentinel (no real admin), but owner_identity is a real (non-placeholder)
+    // key. The OR-of-both gate would have called this "established" and refused
+    // genesis; the authority-field-only gate must not.
+    let mut partial = sample_meta_with_admin(founder);
+    partial.admin_identity = PublicKey::from([0u8; 32]);
+    partial.owner_identity = stray_owner;
+    MetaRepository::new(&store).save(&ns_gid, &partial).unwrap();
+
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+        .expect("founder signs NamespaceCreated genesis");
+    gov.apply_signed_op(&signed)
+        .expect("genesis proceeds when admin_identity is still the placeholder");
+
+    let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(
+        meta.admin_identity, founder,
+        "gate keys on admin_identity only: genesis repairs the placeholder admin to the founder"
+    );
+    assert_eq!(
+        meta.owner_identity, founder,
+        "genesis establishes the founder as owner too"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "founder is admin after the repairing genesis"
+    );
+}
+
+#[test]
+fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
+    // #2474 reviewer batch 2, item #4: when the bootstrap seed runs FIRST for
+    // the FOUNDER's own identity, it writes the founder as a non-authoritative
+    // `Member` placeholder row (seed never confers authority). The later genesis
+    // op must make the handler SELF-CONTAINED: it must UPGRADE that existing
+    // `Member` row to `Admin`, not no-op on it leaving a stale `Member`. This
+    // guards the upsert semantics of `add_member` the genesis handler relies on.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xD9u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // ---- Seed FIRST, for the founder's OWN identity (the deliverer happens to
+    // be the founder). The seed writes placeholder meta + the founder as a
+    // non-authoritative `Member`. ----
+    gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
+        .expect("bootstrap seed writes founder as a Member placeholder");
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        Some(GroupMemberRole::Member),
+        "precondition: seed writes the founder as a non-authoritative Member"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "precondition: the seeded founder is NOT yet admin"
+    );
+
+    // ---- Genesis lands and must UPGRADE the founder Member row to Admin. ----
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+        .expect("founder signs NamespaceCreated genesis");
+    gov.apply_signed_op(&signed)
+        .expect("genesis applies over the founder's seeded Member placeholder");
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        Some(GroupMemberRole::Admin),
+        "#2474 item 4: genesis must UPGRADE the seeded Member row to Admin"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "founder is admin after genesis"
+    );
+    let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(meta.admin_identity, founder, "admin_identity == founder");
+    assert_eq!(meta.owner_identity, founder, "owner_identity == founder");
+}
+
+#[test]
+fn namespace_created_genesis_ensures_member_row_for_established_founder() {
+    // #2474 reviewer batch 3, item #2: if some path wrote a NON-placeholder
+    // root `admin_identity` == founder BEFORE genesis arrives, the anti-hijack
+    // gate takes the early-return "already established" path and does NOT
+    // re-write the root meta. But the founder's explicit Admin MEMBER ROW may
+    // never have been written by that path. The handler must, on this
+    // SAME-founder early-return, still ensure the Admin member row exists
+    // (idempotent upsert) so the founder is enumerable as Admin. Crucially this
+    // must happen ONLY when the established admin == the op's founder; a
+    // different established admin must stay a pure no-op (covered by the
+    // anti-hijack case in `namespace_created_genesis_on_bare_store_and_anti_hijack`).
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::MemberCapabilities;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xE3u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Pre-establish the root meta with admin == owner == founder but write NO
+    // member row — simulating a path that set a real `admin_identity` before
+    // genesis applied.
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(founder))
+        .unwrap();
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        None,
+        "precondition: no explicit member row for the founder yet"
+    );
+
+    // Genesis arrives for the SAME founder. The established gate short-circuits
+    // the meta rewrite but must still ensure the Admin member row.
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+        .expect("founder signs NamespaceCreated genesis");
+    gov.apply_signed_op(&signed)
+        .expect("genesis applies as an idempotent same-founder re-arrival");
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        Some(GroupMemberRole::Admin),
+        "#2474 item 2: genesis must ensure the founder's Admin member row on the \
+         established same-founder path"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "founder is admin after the idempotent genesis"
+    );
+    // #2474 reviewer batch 4-5, item #2: the same-founder early-return path must
+    // also seed the Open-join default caps, not just the Admin member row. The
+    // pre-established meta wrote no caps row, so genesis is responsible for it.
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&ns_gid)
+            .unwrap(),
+        Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+        "#2474 item 2: same-founder re-arrival seeds default CAN_JOIN_OPEN_SUBGROUPS caps"
+    );
+}
+
+#[test]
+fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
+    // Guards the (2a) ONLY-UPGRADE-never-downgrade behavior of the established
+    // same-founder re-arrival branch. `add_member` is an upsert and Admin is the
+    // top role today, so an unconditional write is harmless now — but to stay
+    // correct against a hypothetical future role richer than Admin, the branch
+    // reads the existing role and only forces Admin when the founder is absent or
+    // a plain Member. With the founder ALREADY Admin, a parentless same-founder
+    // genesis re-arrival must leave the role at Admin (never overwrite/downgrade
+    // it).
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xF1u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Pre-establish the namespace fully: meta admin == owner == founder AND an
+    // explicit Admin member row for the founder.
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(founder))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &founder, GroupMemberRole::Admin)
+        .unwrap();
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        Some(GroupMemberRole::Admin),
+        "precondition: founder is already established as Admin"
+    );
+
+    // A parentless same-founder genesis re-arrives (e.g. via sync backfill).
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+        .expect("founder signs NamespaceCreated genesis");
+    gov.apply_signed_op(&signed)
+        .expect("parentless same-founder genesis is an idempotent re-arrival no-op");
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        Some(GroupMemberRole::Admin),
+        "(2a) re-arrival must NEVER downgrade an already-Admin founder row"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "founder remains admin after the idempotent re-arrival"
+    );
+}
+
+#[test]
+fn namespace_created_genesis_signer_must_equal_founder() {
+    // #2474 review follow-up: genesis is self-authorizing (it skips
+    // `require_namespace_admin`), so the ONLY thing binding the established
+    // admin to a real signing key is the signer==founder check. A non-founder
+    // who signs `NamespaceCreated { founder: <someone-else> }` with their own
+    // key, on a namespace with no prior genesis, must be REJECTED — never
+    // applied (which would pin a forged admin) and never silently no-op'd.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let attacker_sk = PrivateKey::random(&mut rng);
+    let victim_sk = PrivateKey::random(&mut rng);
+    let victim = victim_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xB7u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Attacker declares the victim as founder but signs with their OWN key.
+    let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: victim });
+    let signed =
+        SignedNamespaceOp::sign(&attacker_sk, namespace_id, vec![], [0u8; 32], 0, forged).unwrap();
+
+    let res = gov.apply_signed_op(&signed);
+    assert!(
+        res.is_err(),
+        "genesis whose signer != founder must be rejected, not applied"
+    );
+
+    // No root meta was written — the forged genesis pinned no admin.
+    assert!(
+        MetaRepository::new(&store).load(&ns_gid).unwrap().is_none(),
+        "rejected genesis must leave the namespace with no root meta (no forged admin)"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &victim)
+            .unwrap(),
+        "victim was not made admin by a forged genesis"
+    );
+}
+
+#[test]
+fn namespace_created_with_parents_is_rejected_as_non_genesis() {
+    // #2474: `NamespaceCreated` is the DAG ROOT — its defining invariant is that
+    // it has NO parents. A brand-new namespace has an empty head, so the real
+    // genesis (`handlers/create_group.rs` via `sign_apply_and_publish`) is signed
+    // with `parent_op_hashes == []`. A `NamespaceCreated` carrying parents was
+    // therefore minted against an EXISTING DAG head — injected late onto a
+    // namespace with history — and must be REJECTED with `Err(NotGenesis)` even
+    // when signer == founder, so it can never establish/re-found the founder.
+    //
+    // The `Err` is LOAD-BEARING, not cosmetic: in `apply_signed_op`,
+    // `apply_root_op(op)?` runs BEFORE `advance_dag_head`, so an `Err` here
+    // leaves the head EMPTY and the namespace establishable. A no-op `Ok` would
+    // advance the head on a bare namespace and BRICK the later parentless
+    // genesis. (The head-not-advanced behaviour is pinned by its own test below,
+    // `namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head`.)
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    // Distinct from the `[0xD9u8; 32]` used by
+    // `namespace_created_genesis_upgrades_seeded_member_founder_to_admin`. Each
+    // test uses a fresh `test_store()` so the shared id was never a live bug,
+    // but a unique id removes the latent collision and keeps the two tests
+    // independent under any future shared-store refactor.
+    let namespace_id = [0xDAu8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Self-consistent (signer == founder) but PARENTED genesis: a fabricated
+    // parent op-hash makes this not the DAG root.
+    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![[0x11u8; 32]],
+        [0u8; 32],
+        2,
+        parented,
+    )
+    .unwrap();
+
+    let res = gov.apply_signed_op(&signed);
+    assert!(
+        res.is_err(),
+        "a NamespaceCreated carrying parents on a not-yet-established namespace \
+         must be rejected (not the DAG root), even with signer == founder. Got: {res:?}"
+    );
+
+    // No meta written — the rejected op established no founder.
+    assert!(
+        MetaRepository::new(&store).load(&ns_gid).unwrap().is_none(),
+        "rejected non-genesis NamespaceCreated must leave the namespace with no root meta"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "no Admin row may be written for a rejected non-genesis NamespaceCreated"
+    );
+
+    // Sanity: the REAL genesis path (no parents, same founder) still applies.
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 1, genesis).unwrap();
+    gov.apply_signed_op(&signed_genesis)
+        .expect("parentless genesis (the DAG root) still applies");
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "parentless genesis establishes the founder as Admin"
+    );
+}
+
+#[test]
+fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
+    // Pins the EXACT regression reverted in this change. A parented
+    // `NamespaceCreated` on a BARE (not-yet-established) namespace MUST return
+    // `Err`, and crucially MUST NOT advance the DAG head — otherwise a
+    // subsequent legitimate PARENTLESS genesis could no longer apply (a
+    // non-empty head means the genesis is no longer the structural root), which
+    // would BRICK establishment.
+    //
+    // Why the `Err`/no-advance coupling matters: `apply_signed_op`
+    // (namespace/governance.rs) calls `apply_root_op(op)?` and ONLY on `Ok` then
+    // runs `advance_dag_head` + `store_operation`. So an `Err` from the handler
+    // propagates BEFORE the head advances. A no-op `Ok()` (the reverted
+    // regression) would have advanced the head here and wedged establishment.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xDBu8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Precondition: a brand-new namespace has an EMPTY head.
+    let head_before = gov.read_head_record().expect("read head on bare namespace");
+    assert!(
+        head_before.parent_hashes.is_empty(),
+        "a bare namespace must start with an empty DAG head; got {head_before:?}"
+    );
+
+    // Parented (non-genesis) NamespaceCreated on the bare namespace.
+    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![[0x22u8; 32]],
+        [0u8; 32],
+        2,
+        parented,
+    )
+    .unwrap();
+    let res = gov.apply_signed_op(&signed);
+    assert!(
+        res.is_err(),
+        "parented NamespaceCreated on a bare namespace must Err (not the DAG root). Got: {res:?}"
+    );
+
+    // THE pin: the head was NOT advanced by the rejected op. An `Err` propagates
+    // before `advance_dag_head`, so the head must still be empty.
+    let head_after = gov
+        .read_head_record()
+        .expect("read head after rejected parented op");
+    assert!(
+        head_after.parent_hashes.is_empty(),
+        "the rejected parented NamespaceCreated must NOT advance the DAG head — a no-op Ok \
+         here would have bricked establishment. head_after = {head_after:?}"
+    );
+
+    // Consequence: a subsequent PARENTLESS genesis still applies cleanly and
+    // establishes the founder (it would be impossible if the head had advanced).
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 1, genesis).unwrap();
+    gov.apply_signed_op(&signed_genesis).expect(
+        "the parentless genesis still applies because the rejected parented op did not \
+         advance the head",
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "the parentless genesis establishes the founder as Admin after the rejected parented op"
+    );
+}
+
+#[test]
+fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
+    // #591: a PARENTED `NamespaceCreated` arriving on an ALREADY-ESTABLISHED
+    // namespace (e.g. a duplicate/late genesis replayed via DAG sync) must be a
+    // NO-OP that returns `Ok(())`, NOT `Err(NotGenesis)`. The old apply order
+    // ran the no-parents gate BEFORE the established check, so it returned
+    // `Err` here, which the `apply_signed_op` caller can treat as fatal and
+    // STALL DAG processing. On an established namespace nothing can be
+    // hijacked, so the structural parents check must not even be consulted.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xC4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Establish the namespace via a clean parentless genesis.
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 1, genesis).unwrap();
+    gov.apply_signed_op(&signed_genesis)
+        .expect("parentless genesis establishes the namespace");
+    let meta_before = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(
+        meta_before.admin_identity, founder,
+        "precondition: established"
+    );
+
+    // A PARENTED `NamespaceCreated` (same founder) now arrives late on the
+    // established namespace. It must be a NO-OP, returning Ok — not Err.
+    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed_parented = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![[0x22u8; 32]],
+        [0u8; 32],
+        2,
+        parented,
+    )
+    .unwrap();
+    let res = gov.apply_signed_op(&signed_parented);
+    assert!(
+        res.is_ok(),
+        "#591: a parented NamespaceCreated on an established namespace must be a \
+         no-op (Ok), never Err(NotGenesis) — erroring stalls DAG processing"
+    );
+
+    // The established admin is untouched.
+    let meta_after = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(
+        meta_after.admin_identity, founder,
+        "the established admin is unchanged by the late parented no-op"
+    );
+}
+
+#[test]
+fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
+    // Reviewer refinement: on an ESTABLISHED namespace whose `admin_identity`
+    // equals the op's founder, repair/ensure work (Admin member row, default
+    // caps, #602 owner_identity repair) must run ONLY for a GENESIS-SHAPED
+    // (parentless) op. A PARENTED `NamespaceCreated` is structurally not a
+    // genesis even when it names the established founder, so it must be a PURE
+    // no-op that mutates NOTHING — not the member row, not caps, not owner meta.
+    // (It still returns Ok, per #591, so the DAG does not stall.)
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+    let stray_owner = PrivateKey::random(&mut rng).public_key();
+
+    let store = test_store();
+    let namespace_id = [0xC6u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Pre-establish meta DIRECTLY (not via genesis): admin == founder
+    // (established) but owner DIVERGED, and crucially NO Admin member row and
+    // NO default caps row exist. Under the old code a same-founder re-arrival
+    // would repair all three; here the op is PARENTED, so none of it must fire.
+    let mut diverged = sample_meta_with_admin(founder);
+    diverged.owner_identity = stray_owner;
+    MetaRepository::new(&store)
+        .save(&ns_gid, &diverged)
+        .unwrap();
+    // Sanity: no explicit member row / no caps row yet. We probe the EXPLICIT
+    // row with `role_of` (not `is_admin`, which also matches `meta.admin_identity`
+    // and would be true here regardless of the row).
+    assert!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap()
+            .is_none(),
+        "precondition: founder has no explicit Admin member row"
+    );
+    assert!(
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&ns_gid)
+            .unwrap()
+            .is_none(),
+        "precondition: no default caps row"
+    );
+
+    // PARENTED same-founder `NamespaceCreated` arrives on the established ns.
+    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed_parented = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![[0x33u8; 32]],
+        [0u8; 32],
+        2,
+        parented,
+    )
+    .unwrap();
+    gov.apply_signed_op(&signed_parented)
+        .expect("parented same-founder op on an established namespace is a no-op (Ok), per #591");
+
+    // Nothing was mutated: owner stays DIVERGED, no member row, no caps row.
+    let meta_after = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(
+        meta_after.admin_identity, founder,
+        "admin unchanged by the parented no-op"
+    );
+    assert_eq!(
+        meta_after.owner_identity, stray_owner,
+        "parented op must NOT run the #602 owner_identity repair (not genesis-shaped)"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap()
+            .is_none(),
+        "parented op must NOT ensure the Admin member row (not genesis-shaped)"
+    );
+    assert!(
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&ns_gid)
+            .unwrap()
+            .is_none(),
+        "parented op must NOT seed default caps (not genesis-shaped)"
+    );
+}
+
+#[test]
+fn namespace_created_same_founder_repairs_diverged_owner_identity() {
+    // #602: if a path established the root meta with `admin_identity == founder`
+    // but a DIVERGED `owner_identity` (a partial write or legacy writer that set
+    // admin but not owner), an idempotent same-founder `NamespaceCreated`
+    // re-arrival must REPAIR `owner_identity` back to the founder while
+    // preserving every other meta field.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+    let stray_owner = PrivateKey::random(&mut rng).public_key();
+
+    let store = test_store();
+    let namespace_id = [0xC5u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Pre-establish meta: admin == founder (established), but owner DIVERGED to
+    // a stray non-founder key. Use `sample_meta_with_admin` so other fields
+    // (app_key, target_application_id, upgrade_policy, created_at, auto_join)
+    // carry distinctive non-default values we can assert are preserved.
+    let mut diverged = sample_meta_with_admin(founder);
+    diverged.owner_identity = stray_owner;
+    MetaRepository::new(&store)
+        .save(&ns_gid, &diverged)
+        .unwrap();
+
+    // Same-founder genesis re-arrives (parentless idempotent re-arrival).
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+        .expect("founder signs idempotent genesis");
+    gov.apply_signed_op(&signed)
+        .expect("idempotent same-founder re-arrival applies as a no-op-with-repair");
+
+    let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(meta.admin_identity, founder, "admin stays the founder");
+    assert_eq!(
+        meta.owner_identity, founder,
+        "#602: same-founder re-arrival repairs the diverged owner_identity to the founder"
+    );
+    // All other fields are preserved from the pre-established meta.
+    assert_eq!(
+        meta.app_key, diverged.app_key,
+        "app_key preserved across the owner repair"
+    );
+    assert_eq!(
+        meta.target_application_id, diverged.target_application_id,
+        "target_application_id preserved across the owner repair"
+    );
+    assert_eq!(
+        meta.upgrade_policy, diverged.upgrade_policy,
+        "upgrade_policy preserved across the owner repair"
+    );
+    assert_eq!(
+        meta.created_at, diverged.created_at,
+        "created_at preserved across the owner repair"
+    );
+    assert_eq!(
+        meta.auto_join, diverged.auto_join,
+        "auto_join preserved across the owner repair"
+    );
+
+    // The founder's Admin member row is also ensured on this path.
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "same-founder re-arrival ensures the founder's Admin member row"
+    );
+}
+
+#[test]
+fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
+    // #2931 reviewer B1: pins the HEAD-ATOMICITY contract that lets
+    // `handlers/create_group.rs` roll back a failed root-genesis WITHOUT
+    // touching the `NamespaceGovHead`.
+    //
+    // The concern: if `apply_signed_op` advanced the DAG head while applying
+    // the genesis and a later step failed, the head would stay advanced; a
+    // retry would then re-sign the genesis with a non-empty `parent_op_hashes`
+    // and trip the no-parents `NotGenesis` gate, wedging the namespace forever.
+    //
+    // It cannot happen because the apply is head-atomic BY ORDERING: in
+    // `apply_signed_op` the op-kind apply (`apply_root_op` → the
+    // `NamespaceCreated` handler) runs FIRST and only on its success does the
+    // function reach `advance_dag_head` + `store_operation`. A failing genesis
+    // `?`-propagates before the head is ever written. This test drives a
+    // genuine genesis APPLY failure (signer != declared founder, a parentless
+    // op so it is the would-be DAG root) and asserts the head is left exactly
+    // as it was pre-genesis (empty heads, next_nonce == 1), so a retry re-signs
+    // a clean parentless genesis that passes the gate.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let attacker_sk = PrivateKey::random(&mut rng);
+    let real_founder_sk = PrivateKey::random(&mut rng);
+    let real_founder = real_founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xDBu8; 32];
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Pre-genesis head is empty / absent: no heads, next_nonce starts at 1.
+    let before = gov.read_head_record().unwrap();
+    assert!(
+        before.parent_hashes.is_empty(),
+        "fresh namespace must have an empty DAG head before genesis"
+    );
+    assert_eq!(
+        before.next_nonce, 1,
+        "fresh namespace next_nonce must be 1 before genesis"
+    );
+
+    // A PARENTLESS NamespaceCreated (the would-be DAG root) whose apply FAILS:
+    // signer (attacker) != declared founder (real_founder) trips the
+    // SignerNotFounder gate inside the genesis handler — a real apply error
+    // raised AFTER `apply_root_op` is entered but BEFORE `advance_dag_head`.
+    let bad_genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
+        founder: real_founder,
+    });
+    let signed_bad = SignedNamespaceOp::sign(
+        &attacker_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        bad_genesis,
+    )
+    .unwrap();
+
+    let res = gov.apply_signed_op(&signed_bad);
+    assert!(
+        res.is_err(),
+        "a genesis whose signer != declared founder must fail to apply"
+    );
+
+    // THE KEY ASSERTION: the failed genesis did NOT advance the head.
+    let after = gov.read_head_record().unwrap();
+    assert!(
+        after.parent_hashes.is_empty(),
+        "a failed genesis apply must NOT advance the namespace DAG head \
+         (head-atomicity, #2931); leaving it advanced would wedge every retry"
+    );
+    assert_eq!(
+        after.next_nonce, 1,
+        "a failed genesis apply must leave next_nonce at the pre-genesis value"
+    );
+
+    // A clean, parentless retry by the REAL founder now applies — proving the
+    // namespace is not wedged after the failed attempt.
+    let good_genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
+        founder: real_founder,
+    });
+    let signed_good = SignedNamespaceOp::sign(
+        &real_founder_sk,
+        namespace_id,
+        vec![], // empty parents — read from the still-empty head on retry
+        [0u8; 32],
+        1,
+        good_genesis,
+    )
+    .unwrap();
+    gov.apply_signed_op(&signed_good)
+        .expect("clean parentless genesis applies after a prior failed attempt");
+
+    // Genesis succeeded: head is now advanced exactly once.
+    let final_head = gov.read_head_record().unwrap();
+    assert_eq!(
+        final_head.parent_hashes.len(),
+        1,
+        "successful genesis advances the head to a single root entry"
+    );
+    assert_eq!(
+        final_head.next_nonce, 2,
+        "successful genesis bumps next_nonce to 2"
     );
 }
 

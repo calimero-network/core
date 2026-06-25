@@ -358,6 +358,53 @@ pub enum GroupCreatedRejection {
     Unauthorized { signer: String, namespace: String },
 }
 
+/// Reasons `RootOp::NamespaceCreated` (the namespace GENESIS op, #2474) apply
+/// can be rejected.
+#[derive(Debug, Error)]
+pub enum NamespaceCreatedRejection {
+    /// The op's signer does not equal the declared `founder`. Genesis is
+    /// self-authorizing (it skips `require_namespace_admin`), so the only
+    /// thing binding the established admin to the signing key is this check:
+    /// the genesis MUST be signed with the namespace key == the founder's key
+    /// at creation. Without it a non-founder could sign a `NamespaceCreated`
+    /// declaring an arbitrary `founder` and pin a forged admin on a namespace
+    /// that has no prior genesis.
+    #[error("genesis signer {signer} does not match declared founder {founder}")]
+    SignerNotFounder { signer: String, founder: String },
+
+    /// The op carries a non-empty parent set on a NOT-yet-established namespace,
+    /// so it is NOT the DAG root. `NamespaceCreated` is the GENESIS op — the
+    /// first op in the namespace DAG, signed with an empty `parent_op_hashes` (a
+    /// brand-new namespace has no head, so `read_head_record` returns empty
+    /// parents; see `namespace/dag.rs`). Only the true parentless first op may
+    /// establish the founder; a parented `NamespaceCreated` on a bare namespace
+    /// is rejected here.
+    ///
+    /// WHY `Err` (and not a no-op): `apply_root_op` returning `Err` propagates
+    /// BEFORE `advance_dag_head` runs in `apply_signed_op` (governance.rs), so
+    /// the DAG head is NOT advanced and the namespace stays establishable by a
+    /// subsequent parentless genesis. A no-op `Ok(())` here would advance the
+    /// head on a bare namespace and BRICK establishment (the head is no longer
+    /// empty, so the legitimate parentless genesis can never apply cleanly). The
+    /// "DAG stall" worry is unfounded: a parented `NamespaceCreated` on a bare
+    /// namespace is essentially unreachable in a valid DAG (a parented op only
+    /// applies after its parents, by which point the parentless genesis has
+    /// already established the namespace and the ESTABLISHED branch handles it as
+    /// `Ok`), and the backfill path is retry-tolerant (it logs and continues,
+    /// never a permanent stall).
+    ///
+    /// CONTRAST with the ESTABLISHED + parented case: on an ALREADY-established
+    /// namespace a parented `NamespaceCreated` is a no-op `Ok(())` (the #591
+    /// fix), because the namespace is already founded — advancing the head there
+    /// is harmless and erroring would risk a stall. Only the NOT-established +
+    /// parented case returns this `Err`.
+    #[error(
+        "NamespaceCreated is not the DAG root: it carries {parent_count} parent op-hash(es) \
+         on a not-yet-established namespace; the genesis op must have no parents"
+    )]
+    NotGenesis { parent_count: usize },
+}
+
 /// Reasons `RootOp::GroupDeleted` apply can be rejected.
 #[derive(Debug, Error)]
 pub enum GroupDeletedRejection {
@@ -464,4 +511,10 @@ pub enum ApplyError {
     /// four distinct rejection causes.
     #[error("MemberJoinedOpen rejected: {0}")]
     MemberJoinedOpenRejected(#[source] MemberJoinedOpenRejection),
+
+    /// `NamespaceCreated` (genesis) op rejected. Wraps a structured
+    /// [`NamespaceCreatedRejection`] so callers can match the specific
+    /// cause (currently only signer != founder).
+    #[error("NamespaceCreated rejected: {0}")]
+    NamespaceCreatedRejected(#[source] NamespaceCreatedRejection),
 }

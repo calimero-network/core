@@ -62,6 +62,20 @@ impl<'a> GroupKeyring<'a> {
         Ok(handle.get(&entry)?.map(|v: GroupKeyValue| v.group_key))
     }
 
+    /// Delete a single stored group key by its `key_id`. Idempotent (a missing
+    /// entry is a no-op). Unlike [`Self::delete_all_for_group`] this does NOT
+    /// require the membership-removed purge precondition, because it targets one
+    /// caller-named key — its sole use is the create-group rollback path
+    /// (#2474), which deletes the exact key it just stored when a namespace-root
+    /// genesis apply fails, so the partially-written root is cleanly absent and
+    /// a retry with the same group id succeeds.
+    pub fn delete_key_by_id(&self, key_id: &[u8; 32]) -> EyreResult<()> {
+        let entry = GroupKeyEntry::new(self.group_id.to_bytes(), *key_id);
+        let mut handle = self.store.handle();
+        handle.delete(&entry)?;
+        Ok(())
+    }
+
     /// Returns the latest key by `created_at`.
     pub fn load_current_key_record(&self) -> EyreResult<Option<StoredGroupKey>> {
         let gid = self.group_id.to_bytes();

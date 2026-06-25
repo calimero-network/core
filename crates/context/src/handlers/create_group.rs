@@ -229,13 +229,26 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 let signer_sk = PrivateKey::from(sk_bytes);
                 // Strict-tree refactor: GroupCreated is now an atomic
                 // create+nest op. It ONLY applies to subgroups — the namespace
-                // root itself has no parent by definition. For root creation
-                // (parent_group_id is None), the group's existence is recorded
-                // by the pre-populated GroupMeta and the namespace identity in
-                // the store; we skip the op entirely. Peers learn of a
-                // namespace only when they're invited (MemberJoined), so there's
-                // no replication gap. See spec
-                // docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
+                // root itself has no parent by definition.
+                //
+                // #2474: root creation (parent_group_id is None) now emits a
+                // replayable `RootOp::NamespaceCreated { founder }` GENESIS op so
+                // a bootstrapping replica derives the founding admin/owner
+                // authoritatively from the synced DAG instead of TOFU-seeding it
+                // from the KeyDelivery signer. This is the FIRST op in the
+                // namespace DAG — its defining invariant is that it has NO
+                // parents (the head record is empty for a brand-new namespace,
+                // so `read_head_record` returns empty `parent_hashes`). Its
+                // nonce is 1, not 0 (`read_head_record` defaults `next_nonce` to
+                // 1 when the head is absent); `op.nonce` is informational and
+                // signature-covered, but DAG sequencing comes from
+                // `read_head_record().next_nonce`, never from `op.nonce`. The
+                // genesis is signed+published via the same path
+                // subgroup GroupCreated uses. It self-authorizes on apply
+                // (genesis establishes authority; see
+                // `ops/namespace/namespace_created.rs`). Previously root creation
+                // emitted NO op and the founder lived only in the creator's local
+                // GroupMeta, which is exactly the gap #2474 closes.
                 if let Some(parent_id) = parent_group_id {
                     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
                         group_id: group_id.to_bytes(),
@@ -256,7 +269,202 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             report.observe("create_group", "GroupCreated");
                         }
                         Err(e) => {
+                            // Subgroup GroupCreated intentionally keeps warn-and-
+                            // continue: unlike the namespace-ROOT genesis below, a
+                            // subgroup's authoritative state is recoverable by re-
+                            // applying the (idempotent) GroupCreated op, and a missing
+                            // subgroup op does not strand the namespace founder.
                             tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");
+                        }
+                    }
+                } else {
+                    let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreated {
+                        founder: admin_identity,
+                    });
+                    match calimero_governance_store::sign_apply_and_publish_namespace_op(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        namespace_id.to_bytes(),
+                        &signer_sk,
+                        genesis_op,
+                    )
+                    .await
+                    {
+                        Ok(report) => {
+                            report.observe("create_group", "NamespaceCreated");
+                            // No explicit op-store persist here: the genesis op is
+                            // written to the unified op-store ATOMICALLY inside
+                            // `sign_apply_and_publish_namespace_op`'s apply (C3 Stage 4,
+                            // #2927/#2933), exactly like the GroupCreated branch above.
+                        }
+                        Err(e) => {
+                            // An `Err` here is, by contract, a LOCAL APPLY failure —
+                            // never a publish/transport failure (#2474 reviewer batch 5).
+                            //
+                            // `sign_apply_and_publish_namespace_op` is apply-FIRST and
+                            // publish-BEST-EFFORT: it `?`-propagates only the local DAG
+                            // mutation (sign/hash/`apply_signed_op`), while EVERY
+                            // publish/transport error — including the normal cold-start
+                            // `NoPeersSubscribedToTopic` — is caught internally and
+                            // downgraded to a `Degraded` `Ok(report)`. So an `Err` here
+                            // already means the genesis op did NOT apply to our own
+                            // store; there is no no-peers case to special-case (a
+                            // namespace created offline / on a single node still gets
+                            // `Ok` because apply succeeds and the publish is swallowed).
+                            //
+                            // RELEASE-SAFE CONTRACT GUARD (#2474 reviewer batch 8):
+                            // formerly a `debug_assert!` pinned the above contract — but a
+                            // debug_assert is a NO-OP in release. If the apply-first/
+                            // publish-best-effort contract ever DRIFTS and a no-peers error
+                            // starts surfacing as `Err` in a release build, the rollback
+                            // below would WRONGLY fire on a genesis that DID apply locally
+                            // (apply-first means a no-peers error implies the local apply
+                            // already succeeded), destroying a perfectly-good root. So we
+                            // guard at runtime in every build profile: if the `Err` is a
+                            // no-peers error, treat it as SUCCESS — skip the rollback and
+                            // do NOT return `Err`, because the local apply is known-good.
+                            if calimero_network_primitives::client::is_no_peers_subscribed_error(&e)
+                            {
+                                warn!(
+                                    ?group_id,
+                                    "no-peers surfaced as Err from apply-first publish \
+                                     (contract drift); genesis was applied locally — NOT \
+                                     rolling back"
+                                );
+                                info!(
+                                    ?group_id,
+                                    ?parent_group_id,
+                                    %admin_identity,
+                                    "group created (genesis applied locally; publish degraded \
+                                     to no-peers)"
+                                );
+                                return Ok(CreateGroupResponse { group_id });
+                            }
+
+                            // FATAL for namespace-ROOT creation (#2474): the genesis op
+                            // is what makes the founder authoritative on the DAG. A LOCAL
+                            // APPLY failure means the namespace would exist locally with
+                            // correct meta but NO genesis on the DAG — and a backfilling
+                            // replica would fall back to the broken TOFU seed
+                            // (`seed_bootstrap_admin_if_absent`), pinning the wrong admin.
+                            // That is exactly the production bug this PR fixes, so a true
+                            // apply failure MUST fail the create.
+                            //
+                            // ROLLBACK (#2474 reviewer batch 3): the local root rows were
+                            // already written (the `GroupMetaValue`, the founder Admin
+                            // member row, the default caps, the group encryption key, and
+                            // the optional name metadata — all written above in this async
+                            // block; PLUS the auto-stored signing key, which is written
+                            // PRE-ASYNC in `handle()` via `SigningKeysRepository::store_key`
+                            // before this future is spawned). Leaving them behind on a
+                            // genesis-apply
+                            // failure would strand an orphaned root: the top-of-handler
+                            // "group already exists" guard would then make every retry
+                            // with the same group id fail PERMANENTLY (unrecoverable
+                            // without store surgery), while the DAG carries no genesis.
+                            // calimero-store has no atomic multi-key write, so we undo
+                            // each write explicitly, mirroring the writes above, before
+                            // returning Err. After this the namespace is cleanly ABSENT
+                            // and a retry with the same group id flows through the normal
+                            // create path again. Each delete is idempotent; we log (not
+                            // propagate) any delete error so a partial rollback can't mask
+                            // the original apply failure, and so the most useful error
+                            // (the genesis apply failure) is the one surfaced.
+                            //
+                            // IDENTITY ROW IS DELIBERATELY NOT ROLLED BACK (#2474).
+                            // The namespace identity created above by
+                            // `get_or_create_namespace_identity` (the keypair backing
+                            // `namespace_id` / `admin_identity` / the signing key) is
+                            // intentionally left in place here. It is derived
+                            // idempotently from the stable `group_id`, so a retry with
+                            // the same `group_id` resolves to the SAME identity →
+                            // SAME founder/admin → SAME signing key. Deleting it would
+                            // risk `get_or_create_namespace_identity` minting a
+                            // DIFFERENT identity (hence a different founder) on retry,
+                            // which is exactly the divergence #2474 closes. Reusing it
+                            // is both safe (it confers no authority on its own —
+                            // authority is established only by the genesis op that just
+                            // failed) and necessary for a deterministic retry. The only
+                            // cost is a harmless dangling identity row if the caller
+                            // never retries; that grants nobody anything and is the
+                            // correct trade against a non-deterministic founder.
+                            //
+                            // NAMESPACE DAG HEAD IS DELIBERATELY NOT ROLLED BACK, AND
+                            // NEEDS NO ROLLBACK (#2931 reviewer B1). One might fear that
+                            // a failed genesis leaves the `NamespaceGovHead` advanced —
+                            // so a retry re-signs the genesis with a non-empty
+                            // `parent_op_hashes`, which the no-parents genesis check now
+                            // treats as a non-genesis NO-OP (#591): the retry would then
+                            // NEVER establish the founder, silently wedging the
+                            // `group_id`. It cannot happen: the apply is HEAD-ATOMIC by
+                            // ordering, not by
+                            // transaction. In `NamespaceGovernance::apply_signed_op`
+                            // (governance-store) the op-kind apply runs FIRST
+                            // (`apply_root_op(op, root)?`, which dispatches the
+                            // `NamespaceCreated` genesis), and ONLY on its success does
+                            // the function reach `advance_dag_head` + `store_operation`.
+                            // A genesis that fails `?`-propagates out of `apply_root_op`
+                            // before `advance_dag_head` is ever called, and
+                            // `sign_apply_and_publish` only READS the head
+                            // (`read_head_record`) to sign against — it never writes it.
+                            // So an `Err` here means the head was NEVER advanced: it is
+                            // still the empty/absent pre-genesis head, and a retry
+                            // re-signs a clean parentless genesis that passes the gate.
+                            // There is therefore nothing to undo. (See the
+                            // `genesis_apply_failure_leaves_namespace_head_unadvanced`
+                            // test in governance-store for the pinned assertion.)
+                            if let Err(re) = MetaRepository::new(&datastore).delete(&group_id) {
+                                warn!(?re, ?group_id, "rollback: failed to delete root meta");
+                            }
+                            if let Err(re) = MembershipRepository::new(&datastore)
+                                .remove_member(&group_id, &admin_identity)
+                            {
+                                warn!(
+                                    ?re,
+                                    ?group_id,
+                                    "rollback: failed to delete founder member row"
+                                );
+                            }
+                            if let Err(re) =
+                                CapabilitiesRepository::new(&datastore).delete_default(&group_id)
+                            {
+                                warn!(?re, ?group_id, "rollback: failed to delete default caps");
+                            }
+                            if let Err(re) =
+                                GroupKeyring::new(&datastore, group_id).delete_key_by_id(&key_id)
+                            {
+                                warn!(?re, ?group_id, "rollback: failed to delete group key");
+                            }
+                            // Delete the signing key stored PRE-ASYNC in `handle()`
+                            // via `SigningKeysRepository::store_key(&group_id,
+                            // &admin_identity, sk)`. Both store and delete key the
+                            // row by `GroupSigningKey::new(group_id, public_key)`, so
+                            // `delete_key(&group_id, &admin_identity)` here targets the
+                            // EXACT same row that was stored for this namespace root —
+                            // it removes the right key, not a different identity's.
+                            if let Err(re) = SigningKeysRepository::new(&datastore)
+                                .delete_key(&group_id, &admin_identity)
+                            {
+                                warn!(?re, ?group_id, "rollback: failed to delete signing key");
+                            }
+                            if name.is_some() {
+                                if let Err(re) =
+                                    MetadataRepository::new(&datastore).delete_group(&group_id)
+                                {
+                                    warn!(
+                                        ?re,
+                                        ?group_id,
+                                        "rollback: failed to delete group name metadata"
+                                    );
+                                }
+                            }
+                            return Err(eyre::eyre!(
+                                "failed to apply NamespaceCreated genesis on namespace DAG; \
+                                 aborting namespace-root creation and rolling back local \
+                                 root rows so a retry with the same group id succeeds \
+                                 (genesis must be atomic with root creation, #2474): {e}"
+                            ));
                         }
                     }
                 }
