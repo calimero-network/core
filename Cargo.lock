@@ -1339,6 +1339,7 @@ dependencies = [
  "calimero-network-primitives",
  "calimero-node-primitives",
  "calimero-op",
+ "calimero-op-adapter",
  "calimero-primitives",
  "calimero-projection",
  "calimero-storage",

@@ -1407,20 +1407,42 @@ impl SyncManager {
                         if let Some(report) = divergence {
                             self.reconcile_after_divergence(report).await;
                         }
-                        self.drain_governance_pending_after_sync().await;
 
-                        // The arrived key may have made governance ops that were
-                        // applied (and frozen as `Noop` in the unified op-store)
-                        // before the key landed now decode to their real payload.
-                        // Refresh the op-store from the governance DAG with the key
-                        // present so its reconstruction matches the projection — the
-                        // C2.2c fix for the read-flip's late-decrypted-membership gap.
+                        // The arrived key may have made governance ops applied (and
+                        // frozen as `Noop`) before the key landed now decode to their
+                        // real payload. Two-step refresh so the projection — which backs
+                        // onto the op-store after the C3 Stage 4 flip — reflects the
+                        // membership: (1) re-persist the op-store from the gov-DAG with
+                        // the key present, then (2) re-ingest the corrected ops into the
+                        // MAINTAINED projection (`ingest_op` upgrades the stale `Noop`
+                        // op-log entries in place). BEFORE the drain, whose membership
+                        // re-checks must see the corrected ops, not the stale `Noop`.
+                        //
+                        // The in-process re-ingest reads the gov-DAG fold
+                        // (`collect_namespace_ops`), NOT the op-store read-back: the
+                        // re-persist is best-effort, so a partial `persist_op` failure
+                        // must not leave the maintained projection with fewer ops than
+                        // the gov-DAG (the exact gap the flip closes). We have the
+                        // freshly-decrypted fold in hand here; the op-store mirror is
+                        // for the cold-start read path.
                         let store = self.context_client.datastore_handle().into_inner();
                         calimero_context::scope_projection::ScopeProjections::repersist_namespace_ops(
                             &store,
                             namespace_id,
                         );
+                        let refreshed =
+                            calimero_context::scope_projection::ScopeProjections::collect_namespace_ops(
+                                &store,
+                                namespace_id,
+                            );
                         drop(store);
+                        if let Some(ops) = refreshed {
+                            self.node_state
+                                .write_scope_projections()
+                                .apply_backfill(namespace_id, ops);
+                        }
+
+                        self.drain_governance_pending_after_sync().await;
                     }
                     Err(err) => {
                         warn!(

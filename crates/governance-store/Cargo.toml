@@ -32,6 +32,8 @@ calimero-crypto.workspace = true
 calimero-dag.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
+calimero-op.workspace = true
+calimero-op-adapter.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-storage.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
@@ -40,7 +42,8 @@ calimero-utils-actix.workspace = true
 [dev-dependencies]
 # Fold-equivalence: cross-check the unified projection's membership fold
 # against this crate's live membership resolver over the same op sequences.
-calimero-op.workspace = true
+# (`calimero-op` is now a regular dependency — used by `unified_op_decode` —
+# so it no longer needs a dev-dependency entry.)
 calimero-projection.workspace = true
 # Serializes the op-event tests, which observe a process-global broadcast bus
 # (`op_events`) and would otherwise cross-talk / flood under parallel execution.
