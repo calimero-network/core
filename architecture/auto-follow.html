@@ -607,6 +607,130 @@ API surface changes:
   op is needed. Any tooling that issued a two-step create+flip can be simplified.</li>
 </ul>
 </div>
+<div class="card ga"><h2>Namespace Genesis — <code>RootOp::NamespaceCreated</code></h2>
+
+<p>
+<strong>(#2474 / #2932)</strong> A new <code>NamespaceCreated { founder: PublicKey }</code>
+variant is appended to the <code>RootOp</code> enum. It is the <strong>first op in every
+namespace DAG</strong>: no parents, nonce 1, signed with the namespace key. It carries the
+<code>namespace_created</code> op-kind label and is classified as a cheap-timeout op in
+<code>governance_broadcast</code>.
+</p>
+
+<div class="card gb" style="margin:16px 0;">
+<p style="margin:0;">
+<strong>Wire break.</strong> <code>NamespaceCreated</code> is appended at the end of the
+<code>RootOp</code> enum so existing Borsh discriminants do not renumber. It is nevertheless a
+Borsh-breaking addition for any consumer that pins <code>calimero-governance-types</code>. All
+nodes in a namespace must coordinate a reset before deploying the new binary. Consumers such as
+<code>mero-tee</code> must bump their core-rev dependency accordingly.
+</p>
+</div>
+
+<h3>Apply Rules</h3>
+<p>
+The handler in <code>ops/namespace/namespace_created.rs</code> is <strong>self-authorizing</strong>
+— it does not call <code>require_namespace_admin</code>. Established-ness is keyed solely on
+<code>admin_identity != PLACEHOLDER_ADMIN_IDENTITY</code>. The handler branches as follows:
+</p>
+<ul>
+  <li><strong>Not established + has parents:</strong> returns
+  <code>Err(NamespaceCreatedRejected(NotGenesis { parent_count }))</code>. This is
+  load-bearing: an <code>Err</code> propagates before <code>advance_dag_head</code>, so the
+  head remains empty and a subsequent parentless genesis can still apply.</li>
+  <li><strong>Not established + no parents + signer ≠ founder:</strong> returns
+  <code>Err(NamespaceCreatedRejected(SignerNotFounder))</code>.</li>
+  <li><strong>Not established + no parents + signer == founder:</strong> writes root meta with
+  <code>admin == owner == founder</code> (preserving other fields from any existing partial
+  meta), unconditionally upserts the founder's <code>Admin</code> member row, and seeds default
+  <code>CAN_JOIN_OPEN_SUBGROUPS</code> capabilities if absent.</li>
+  <li><strong>Established + same founder + no parents (genesis-shaped re-arrival):</strong>
+  ensures the <code>Admin</code> member row (upgrade-only, never downgrade), repairs a diverged
+  <code>owner_identity</code> back to the founder, seeds default caps if absent. Returns
+  <code>Ok</code>.</li>
+  <li><strong>Established + same founder + has parents:</strong> pure no-op <code>Ok</code>
+  (not genesis-shaped; no state mutation).</li>
+  <li><strong>Established + different founder:</strong> pure no-op <code>Ok</code>
+  (anti-hijack guard).</li>
+</ul>
+
+<h3>Placeholder Admin Identity</h3>
+<p>
+A module-level constant <code>PLACEHOLDER_ADMIN_IDENTITY: [u8; 32] = [0u8; 32]</code> and
+companion function <code>placeholder_admin_identity() -> PublicKey</code> are defined in
+<code>governance-store/src/lib.rs</code>. The all-zeros encoding is cryptographically safe: it
+corresponds to the Ed25519 torsion/identity point, outside the prime-order subgroup, so no real
+keypair can produce it.
+</p>
+
+<h3>Seed Behavior Change — Authority No Longer Conferred by <code>seed_bootstrap_admin_if_absent</code></h3>
+<p>
+<code>seed_bootstrap_admin_if_absent</code> now writes the <code>PLACEHOLDER_ADMIN_IDENTITY</code>
+sentinel as both <code>admin_identity</code> and <code>owner_identity</code>. The
+<code>KeyDelivery</code> signer receives a non-authoritative <code>GroupMemberRole::Member</code>
+row instead of <code>Admin</code>. The real founding admin is established only when the
+<code>NamespaceCreated</code> genesis op is applied:
+</p>
+<ul>
+  <li><strong>Genesis arrives after seed:</strong> the handler detects the placeholder and
+  overwrites <code>admin_identity</code> / <code>owner_identity</code> with the founder, then
+  upgrades the founder's member row to <code>Admin</code>.</li>
+  <li><strong>Genesis arrives before seed:</strong> the namespace is already established; the
+  seed writes into an already-established store and the anti-hijack no-op path applies on any
+  re-arrival of the genesis op.</li>
+</ul>
+<p>
+Both orderings converge on the genesis-supplied founder as the authoritative admin. The former
+trust-on-first-<code>KeyDelivery</code> behavior — where the deliverer's identity was pinned as
+admin — has been removed. <strong>Any operator documentation or threat-model notes describing
+the seed as the source of admin authority are now obsolete.</strong>
+</p>
+
+<h3>Trust Residual on Bare Replicas (#2932)</h3>
+<p>
+A TEE replica that has received a <code>KeyDelivery</code> but not yet the
+<code>NamespaceCreated</code> genesis op is in a <em>partially-established</em> state: it holds
+the placeholder admin identity and a <code>Member</code> row for the deliverer. It cannot
+authorize admin-level ops until the genesis op arrives and overwrites the placeholder. Operators
+should ensure the genesis op is replicated promptly; the startup sweep described in the
+<em>Re-drive Buffered Ops</em> section will retry any buffered ops once the meta row is
+established.
+</p>
+
+<h3>New Error Types</h3>
+<ul>
+  <li><code>NamespaceCreatedRejection::SignerNotFounder</code> — signer key does not match the
+  declared <code>founder</code> field.</li>
+  <li><code>NamespaceCreatedRejection::NotGenesis { parent_count }</code> — the op has parents
+  but the namespace is not yet established.</li>
+  <li><code>ApplyError::NamespaceCreatedRejected(NamespaceCreatedRejection)</code> — wraps the
+  above and is returned from the apply handler without advancing the DAG head.</li>
+</ul>
+
+<h3><code>GroupKeyring::delete_key_by_id</code></h3>
+<p>
+A new method <code>GroupKeyring::delete_key_by_id(key_id: &amp;[u8; 32])</code> deletes a
+single stored group key by its id. Unlike <code>delete_all_for_group</code> it does not require
+the membership-removed purge precondition. Its sole intended use is the namespace-root genesis
+rollback path, where a key installed speculatively must be removed if the genesis op is
+subsequently rejected.
+</p>
+
+<h3>Key Files</h3>
+<ul>
+  <li><code>calimero-governance-types/src/root_op.rs</code> — <code>RootOp::NamespaceCreated</code>
+  variant (appended).</li>
+  <li><code>governance-store/src/ops/namespace/namespace_created.rs</code> — apply handler.</li>
+  <li><code>governance-store/src/lib.rs</code> — <code>PLACEHOLDER_ADMIN_IDENTITY</code> constant
+  and <code>placeholder_admin_identity()</code> helper.</li>
+  <li><code>governance-store/src/errors.rs</code> — <code>NamespaceCreatedRejection</code> enum
+  and <code>ApplyError::NamespaceCreatedRejected</code> variant.</li>
+  <li><code>governance-store/src/keyring.rs</code> — <code>GroupKeyring::delete_key_by_id</code>.</li>
+  <li><code>governance-store/src/namespace/tests.rs</code>,
+  <code>governance-store/src/tests.rs</code> — regression and unit tests (13 new cases including
+  the <code>#2474</code> regression guard).</li>
+</ul>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
