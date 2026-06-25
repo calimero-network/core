@@ -49,6 +49,21 @@ pub(crate) fn apply(
     // Enforced BEFORE the anti-hijack/established gate so a mismatched op is
     // rejected outright (logged as rejected via `ApplyError`, never applied),
     // never silently treated as a no-op.
+    //
+    // RESIDUAL (#2474 reviewer batch 3): this check only blocks MISMATCHED
+    // forgeries (signer signs a genesis naming a DIFFERENT founder). It does
+    // NOT block a SELF-CONSISTENT forged genesis — an attacker who signs
+    // `NamespaceCreated { founder: <self> }` on a BARE namespace passes this
+    // check (signer == founder == attacker) and becomes that namespace's admin.
+    // Nothing here binds `namespace_id` to the legitimate founder, because today
+    // `namespace_id` is RANDOM and unrelated to any key. The anti-hijack gate
+    // below only protects an ALREADY-established namespace; it cannot tell a
+    // legitimate first genesis from a forged first genesis on a bare one.
+    // The tracked long-term fix is to make the namespace id a root-of-trust by
+    // deriving it as `namespace_id = H(founder ‖ …)`, so a self-consistent
+    // forged genesis would target a different (attacker-derived) namespace id
+    // and could never collide with the legitimate one. See the #2474
+    // root-of-trust follow-up.
     if op.signer != founder {
         bail!(ApplyError::NamespaceCreatedRejected(
             NamespaceCreatedRejection::SignerNotFounder {
@@ -76,6 +91,40 @@ pub(crate) fn apply(
     if let Some(meta) = &existing {
         let established = meta.admin_identity != placeholder || meta.owner_identity != placeholder;
         if established {
+            // The namespace already has an established founder. Genesis may
+            // never OVERWRITE one, so we return early without re-writing the
+            // root meta. There are two sub-cases:
+            //
+            //  (1) `meta.admin_identity == founder` — the SAME founder is
+            //      re-arriving (idempotent genesis, or some path wrote a
+            //      non-placeholder root `admin_identity` for the founder before
+            //      genesis applied). The meta is already correct, but the
+            //      founder's explicit Admin member row may NOT have been written
+            //      (the path that set `admin_identity` need not have created the
+            //      member row). Ensure it here with an idempotent upsert so the
+            //      founder is always enumerable as Admin, regardless of which
+            //      write landed first. This mirrors the establish branch below.
+            //
+            //  (2) `meta.admin_identity != founder` — the namespace was
+            //      established by SOMEONE ELSE. This MUST stay a pure no-op: we
+            //      must NOT touch membership, or a forged second genesis would
+            //      grant its declared founder an Admin member row on a namespace
+            //      they do not own. That is the anti-hijack guarantee, so the
+            //      member-row upsert is gated strictly on admin == founder.
+            if meta.admin_identity == founder {
+                MembershipRepository::new(store).add_member(
+                    &ns_gid,
+                    &founder,
+                    GroupMemberRole::Admin,
+                )?;
+                tracing::debug!(
+                    namespace_id = %hex::encode(namespace_id),
+                    %founder,
+                    "NamespaceCreated: founder already established; ensured Admin member row \
+                     (idempotent re-arrival)"
+                );
+                return Ok(());
+            }
             tracing::debug!(
                 namespace_id = %hex::encode(namespace_id),
                 established_admin = %meta.admin_identity,

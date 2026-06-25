@@ -1577,6 +1577,51 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
             "genesis overwrites the placeholder admin with the real founder"
         );
     }
+
+    // ---- (d) nonce-0 forged genesis on a BARE store is rejected by the
+    // signer==founder check, NOT silently accepted as the true genesis ----
+    // #2474 reviewer batch 3, item #4: case (b) above covers a forged SECOND
+    // genesis (nonce=1) on an established namespace, which the anti-hijack gate
+    // turns into a no-op. This sub-case covers a forged FIRST genesis (nonce=0)
+    // on a bare namespace: an attacker tries to be the true genesis but names a
+    // DIFFERENT founder than they sign with. This is caught EARLIER, by the
+    // signer==founder check (before the anti-hijack/established gate ever runs),
+    // and is REJECTED (Err) rather than no-op'd — a mismatched forgery must never
+    // pin an admin even on a fresh namespace.
+    {
+        let store = test_store();
+        let namespace_id = [0xA3u8; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+        let gov = NamespaceGovernance::new(&store, namespace_id);
+
+        // Attacker signs the genuine FIRST op (nonce=0, empty parents) but names
+        // the founder as someone else (here: `founder`).
+        let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let signed =
+            SignedNamespaceOp::sign(&attacker_sk, namespace_id, vec![], [0u8; 32], 0, forged)
+                .unwrap();
+        assert!(
+            gov.apply_signed_op(&signed).is_err(),
+            "nonce-0 forged genesis (signer != founder) must be REJECTED by the \
+             signer==founder check, not accepted as the true genesis"
+        );
+        assert!(
+            MetaRepository::new(&store).load(&ns_gid).unwrap().is_none(),
+            "rejected nonce-0 forgery leaves the bare namespace with no root meta"
+        );
+        assert!(
+            !MembershipRepository::new(&store)
+                .is_admin(&ns_gid, &founder)
+                .unwrap(),
+            "the falsely-declared founder was not made admin"
+        );
+        assert!(
+            !MembershipRepository::new(&store)
+                .is_admin(&ns_gid, &attacker)
+                .unwrap(),
+            "the attacker signer was not made admin"
+        );
+    }
 }
 
 #[test]
@@ -1646,6 +1691,71 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
     let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
     assert_eq!(meta.admin_identity, founder, "admin_identity == founder");
     assert_eq!(meta.owner_identity, founder, "owner_identity == founder");
+}
+
+#[test]
+fn namespace_created_genesis_ensures_member_row_for_established_founder() {
+    // #2474 reviewer batch 3, item #2: if some path wrote a NON-placeholder
+    // root `admin_identity` == founder BEFORE genesis arrives, the anti-hijack
+    // gate takes the early-return "already established" path and does NOT
+    // re-write the root meta. But the founder's explicit Admin MEMBER ROW may
+    // never have been written by that path. The handler must, on this
+    // SAME-founder early-return, still ensure the Admin member row exists
+    // (idempotent upsert) so the founder is enumerable as Admin. Crucially this
+    // must happen ONLY when the established admin == the op's founder; a
+    // different established admin must stay a pure no-op (covered by the
+    // anti-hijack case in `namespace_created_genesis_on_bare_store_and_anti_hijack`).
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xE3u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Pre-establish the root meta with admin == owner == founder but write NO
+    // member row — simulating a path that set a real `admin_identity` before
+    // genesis applied.
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(founder))
+        .unwrap();
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        None,
+        "precondition: no explicit member row for the founder yet"
+    );
+
+    // Genesis arrives for the SAME founder. The established gate short-circuits
+    // the meta rewrite but must still ensure the Admin member row.
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+        .expect("founder signs NamespaceCreated genesis");
+    gov.apply_signed_op(&signed)
+        .expect("genesis applies as an idempotent same-founder re-arrival");
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
+        Some(GroupMemberRole::Admin),
+        "#2474 item 2: genesis must ensure the founder's Admin member row on the \
+         established same-founder path"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "founder is admin after the idempotent genesis"
+    );
 }
 
 #[test]
