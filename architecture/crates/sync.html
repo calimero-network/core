@@ -566,54 +566,61 @@
   </div>
 </div>
 
-<h3>Sync Stats &amp; gov_divergence_detected</h3>
+<h3>Post-Sync Governance Reconciliation (<span class="code">handle_dag_sync</span>)</h3>
 <div class="cb" style="margin-bottom:16px; border-left:3px solid #10b981; padding-left:14px;">
-  <h4 style="color:#10b981; margin-bottom:8px;"><span class="code">HashComparisonStats</span> &amp; <span class="code">LevelWiseStats</span> — <span class="code">gov_divergence_detected</span> field</h4>
-  <p style="margin-bottom:10px;"><span class="code">HashComparisonStats</span> and <span class="code">LevelWiseStats</span> each gain a boolean field <span class="code">gov_divergence_detected</span>, set to <span class="code">true</span> when the convergence verdict is <span class="code">ScopeVerdict::GovDiverged</span>. This exposes the governance-plane divergence signal to the <span class="code">ProtocolSelector</span> without it needing to re-examine the verdict. Callers inspecting these structs should check this field to detect ACL/governance-plane divergence after a sync session completes.</p>
+  <h4 style="color:#10b981; margin-bottom:8px;">Governance divergence check moved to <span class="code">handle_dag_sync</span></h4>
+  <p style="margin-bottom:10px;">Governance reconciliation after a sync session is now owned exclusively by <span class="code">handle_dag_sync</span> in the sync manager, not by individual protocol backends. After <span class="code">execute</span> returns <span class="code">Ok(Some(_))</span> — meaning a data backend actually ran (Hash Comparison, LevelWise, Snapshot, Delta Sync, or any future backend) — the manager re-reads the post-sync local <span class="code">scope_root</span> and compares it byte-for-byte against the peer's handshake <span class="code">scope_root</span>. If they differ, <span class="code">pull_namespace_governance</span> is called immediately. A store fault on the post-sync root read causes the check to be skipped with a warn and deferred to the next tick.</p>
+  <p style="margin-bottom:10px;"><strong><span class="code">Ok(None)</span> is excluded:</strong> when <span class="code">execute</span> returns <span class="code">Ok(None)</span> (i.e., <span class="code">SyncProtocol::None</span> — entities were already in sync), the post-sync check does not run, avoiding a redundant store read and scope_root fold on every converged tick. The pre-sync GovDiverged path (described in the ProtocolDispatch section) handles that case.</p>
+  <p style="margin-bottom:10px;"><strong>All backends covered:</strong> Previously, only Hash Comparison and LevelWise could trigger a governance pull (via a <span class="code">gov_divergence_detected</span> flag on their stats structs). Snapshot and Delta Sync never triggered such a pull, leaving peers that converged entity state via those backends stuck with a diverged governance plane. The manager-level check fires after all data backends.</p>
+  <p style="margin-bottom:10px;"><span class="code">gov_divergence_detected: bool</span> has been <strong>removed</strong> from both <span class="code">HashComparisonStats</span> and <span class="code">LevelWiseStats</span>. HC and LevelWise still compute the <span class="code">ScopeVerdict</span> for <span class="code">root_hash_verified</span> and the <span class="code">scope_root_governance_divergence</span> warning log, but no longer propagate a divergence flag to the selector.</p>
   <div class="typedef" style="margin-top:12px;">
-<span class="comment">// Both structs gain this field</span><br>
+<span class="comment">// Post-sync check in handle_dag_sync — fires on Ok(Some(_)) only</span><br>
+<span class="comment">// if post_sync_scope_root != peer_handshake_scope_root {</span><br>
+<span class="comment">//     let ops = self.pull_namespace_governance(context_id, peer).await;</span><br>
+<span class="comment">//     info!(marker = "gov_divergence_pull_triggered", ops_pulled = ops, ...);</span><br>
+<span class="comment">// }</span><br><br>
+<span class="comment">// gov_divergence_detected removed from both stats structs</span><br>
 <span class="kw">pub struct</span> <span class="ty">HashComparisonStats</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// ... existing fields ...</span><br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">gov_divergence_detected</span>: bool,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// ... existing fields (no gov_divergence_detected) ...</span><br>
 }<br><br>
 <span class="kw">pub struct</span> <span class="ty">LevelWiseStats</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// ... existing fields ...</span><br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">gov_divergence_detected</span>: bool,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// ... existing fields (no gov_divergence_detected) ...</span><br>
 }
   </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> The <span class="code">gov_divergence_pull_triggered</span> info marker is now emitted by the sync manager after any data-backend sync session, not only HC/LevelWise. Any dashboards or alerts previously relying on <span class="code">gov_divergence_detected</span> in protocol stats should be retired; watch the manager-level <span class="code">gov_divergence_pull_triggered</span> and <span class="code">gov_divergence_pull_complete</span> markers instead.</p>
 </div>
 
-<h3>ProtocolDispatch — <span class="code">pull_namespace_governance</span></h3>
+<h3><span class="code">pull_namespace_governance</span> — inherent method &amp; op-count return</h3>
 <div class="cb" style="margin-bottom:16px; border-left:3px solid #8b5cf6; padding-left:14px;">
-  <h4 style="color:#8b5cf6; margin-bottom:8px;"><span class="code">ProtocolDispatch::pull_namespace_governance</span> trait method</h4>
-  <p style="margin-bottom:10px;">A new async method <span class="code">pull_namespace_governance(context_id, peer)</span> is added to the <span class="code">ProtocolDispatch</span> trait. It is best-effort: a no-op if the context has no resolvable namespace. Implementors of <span class="code">ProtocolDispatch</span> must implement this method. The trait impl now contains a one-line delegation to the inherent <span class="code">SyncManager::pull_namespace_governance</span> method (see below).</p>
-  <p style="margin-bottom:10px;">The namespace-resolution + <span class="code">sync_namespace_from_peer</span> logic is now an <strong>inherent async method on <span class="code">SyncManager</span></strong>: it resolves the namespace ID for the given context via <span class="code">namespace_sync::resolve_namespace_id</span> and calls <span class="code">sync_namespace_from_peer</span> targeting the specific peer. This allows both the post-sync (P6.S2) <span class="code">ProtocolDispatch</span> trait forwarder and the new pre-sync (P6.S3) entities-agree path to share the same implementation. The <span class="code">ProtocolDispatch</span> trait impl is a one-line forward: <span class="code">SyncManager::pull_namespace_governance(self, …).await</span>.</p>
-  <p style="margin-bottom:10px;">After a successful <span class="code">HashComparison</span> or <span class="code">LevelWise</span> session, if <span class="code">gov_divergence_detected</span> is <span class="code">true</span>, the <span class="code">ProtocolSelector</span> calls <span class="code">pull_namespace_governance</span> and logs a <span class="code">gov_divergence_pull_triggered</span> info marker. Previously the protocol initiator only emitted a warning ("awaiting governance sync") with no corrective action. The pull is self-limiting: once governance converges the verdict is no longer <span class="code">GovDiverged</span> and no further pull is issued. The <span class="code">warn!</span> log in both <span class="code">run_initiator_impl</span> functions changes text from <em>"awaiting governance sync to propagate the rotation"</em> to <em>"pulling governance from the peer to propagate the rotation"</em>.</p>
-  <p style="margin-bottom:10px;"><strong>Pre-sync governance divergence (entities-agree path):</strong> When <span class="code">select_protocol</span> returns <span class="code">SyncProtocol::None</span> (entity roots agree, no entity walk needed) and the peer advertised a non-<span class="code">None</span> <span class="code">scope_root</span> (surfaced from <span class="code">query_peer_dag_state</span> — see below), the sync manager computes a <span class="code">scope_verdict</span>. If the verdict is <span class="code">ScopeVerdict::GovDiverged</span> (local and peer <span class="code">scope_root</span>s differ despite identical entity roots), it calls <span class="code">pull_namespace_governance</span> targeting that peer and returns early, bypassing the entity walk entirely. This fills the gap where a governance rotation or ACL change — invisible to the entity Merkle — would otherwise persist uncorrected across every sync tick. The store read for <span class="code">scope_verdict</span> is gated on <span class="code">peer_scope_root</span> being <span class="code">Some</span>: when a peer sends <span class="code">scope_root: None</span> (cold projection or non-group context) the datastore is never touched, keeping the common already-in-sync path free of I/O. After successfully issuing a pre-sync governance pull the manager emits a <span class="code">debug</span>-level log with <span class="code">marker = "gov_divergence_pull_complete"</span>, pairing with the <span class="code">gov_divergence_pull_triggered</span> info log so operators and e2e steps can correlate trigger with completion.</p>
+  <h4 style="color:#8b5cf6; margin-bottom:8px;"><span class="code">SyncManager::pull_namespace_governance</span> — inherent method, returns <span class="code">usize</span></h4>
+  <p style="margin-bottom:10px;"><span class="code">pull_namespace_governance</span> is an <strong>inherent async method on <span class="code">SyncManager</span></strong>. It is best-effort: resolves the namespace ID for the given context via <span class="code">namespace_sync::resolve_namespace_id</span>, calls <span class="code">sync_namespace_from_peer</span> targeting the specific peer, and returns the number of governance ops delivered. All early-return and error paths return <span class="code">0</span>.</p>
+  <p style="margin-bottom:10px;"><span class="code">pull_namespace_governance</span> is <strong>no longer a method on the <span class="code">ProtocolDispatch</span> trait</strong>. The trait method and its implementation have been removed. The manager calls the inherent method directly from <span class="code">handle_dag_sync</span> (post-sync path) and from the pre-sync entities-agree path.</p>
+  <p style="margin-bottom:10px;"><span class="code">sync_namespace_from_peer</span> and <span class="code">pull_namespace_governance</span> previously returned <span class="code">Result&lt;()&gt;</span>. They now return <span class="code">Result&lt;usize&gt;</span> — the number of governance ops delivered by the backfill response. The <span class="code">SyncDriverDispatch::sync_namespace_from_peer</span> wrapper discards the count with <span class="code">let _ops = ...</span>.</p>
+  <p style="margin-bottom:10px;"><strong>Pre-sync governance divergence (entities-agree path):</strong> When <span class="code">select_protocol</span> returns <span class="code">SyncProtocol::None</span> (entity roots agree, no entity walk needed) and the peer advertised a non-<span class="code">None</span> <span class="code">scope_root</span>, the sync manager computes a <span class="code">scope_verdict</span>. If the verdict is <span class="code">ScopeVerdict::GovDiverged</span>, it calls <span class="code">pull_namespace_governance</span> and returns early, bypassing the entity walk. The <span class="code">gov_divergence_pull_complete</span> debug log now includes an <span class="code">ops_pulled</span> field. The store read for <span class="code">scope_verdict</span> is gated on <span class="code">peer_scope_root</span> being <span class="code">Some</span>: when a peer sends <span class="code">scope_root: None</span> the datastore is never touched.</p>
+  <p style="margin-bottom:10px;"><strong>Post-sync path (all backends):</strong> After <span class="code">execute</span> returns <span class="code">Ok(Some(_))</span>, <span class="code">handle_dag_sync</span> re-reads the local <span class="code">scope_root</span>, compares it to the peer's handshake <span class="code">scope_root</span>, and calls <span class="code">pull_namespace_governance</span> when they differ. The returned op count is included in the <span class="code">gov_divergence_pull_triggered</span> info log. The pull is self-limiting: once governance converges, roots match and no further pull is issued. The <span class="code">warn!</span> log in <span class="code">run_initiator_impl</span> changed from <em>"awaiting governance sync to propagate the rotation"</em> to <em>"pulling governance from the peer to propagate the rotation"</em>.</p>
   <div class="typedef" style="margin-top:12px;">
-<span class="comment">// Inherent method — shared by pre-sync and post-sync paths</span><br>
+<span class="comment">// Inherent method — called by pre-sync and post-sync paths</span><br>
+<span class="comment">// Returns the number of governance ops delivered (0 on error/no-op)</span><br>
 <span class="kw">async fn</span> <span class="field">SyncManager::pull_namespace_governance</span>(<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
 &nbsp;&nbsp;&nbsp;&nbsp;context_id: <span class="ty">ContextId</span>,<br>
 &nbsp;&nbsp;&nbsp;&nbsp;peer: <span class="ty">PeerId</span>,<br>
-) -&gt; <span class="ty">Result</span>&lt;()&gt;<br><br>
-<span class="comment">// ProtocolDispatch trait impl — one-line delegation</span><br>
-<span class="comment">// async fn pull_namespace_governance(...) {</span><br>
-<span class="comment">//     SyncManager::pull_namespace_governance(self, context_id, peer).await</span><br>
-<span class="comment">// }</span><br><br>
+) -&gt; <span class="ty">Result</span>&lt;usize&gt;<br><br>
+<span class="comment">// sync_namespace_from_peer now returns usize (op count)</span><br>
+<span class="comment">// SyncDriverDispatch wrapper discards with: let _ops = ...;</span><br><br>
 <span class="comment">// Pre-sync entities-agree path (SyncProtocol::None + peer scope_root Some)</span><br>
 <span class="comment">// if scope_verdict == ScopeVerdict::GovDiverged {</span><br>
-<span class="comment">//     self.pull_namespace_governance(context_id, peer).await;</span><br>
-<span class="comment">//     debug!(marker = "gov_divergence_pull_complete", context_id, peer);</span><br>
+<span class="comment">//     let ops = self.pull_namespace_governance(context_id, peer).await?;</span><br>
+<span class="comment">//     debug!(marker = "gov_divergence_pull_complete", ops_pulled = ops, ...);</span><br>
 <span class="comment">//     return; // bypass entity walk</span><br>
 <span class="comment">// }</span><br><br>
-<span class="comment">// ProtocolSelector: after successful HC or LevelWise session</span><br>
-<span class="comment">// if stats.gov_divergence_detected {</span><br>
-<span class="comment">//     dispatch.pull_namespace_governance(context_id, peer).await;</span><br>
-<span class="comment">//     info!(marker = "gov_divergence_pull_triggered", context_id, peer);</span><br>
+<span class="comment">// Post-sync path in handle_dag_sync — fires on Ok(Some(_)) only</span><br>
+<span class="comment">// if post_sync_scope_root != peer_handshake_scope_root {</span><br>
+<span class="comment">//     let ops = self.pull_namespace_governance(context_id, peer).await?;</span><br>
+<span class="comment">//     info!(marker = "gov_divergence_pull_triggered", ops_pulled = ops, ...);</span><br>
 <span class="comment">// }</span>
   </div>
-  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> The <span class="code">gov_divergence_pull_triggered</span> info marker indicates an active governance pull was issued due to <span class="code">scope_root</span> divergence (post-sync path). The <span class="code">gov_divergence_pull_complete</span> debug marker indicates the same for the pre-sync entities-agree path. Monitor both markers together to verify governance convergence — e2e report steps and runbooks should treat them as a paired set. Monitor for pathological per-tick storms where a single <span class="code">context_id</span> dominates the count — this would indicate governance is not converging. The pull is self-limiting once governance converges. The old "awaiting governance sync" warn text no longer appears; it is replaced by "pulling governance from the peer to propagate the rotation".</p>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> The <span class="code">gov_divergence_pull_triggered</span> info marker (post-sync) and <span class="code">gov_divergence_pull_complete</span> debug marker (pre-sync) both now include an <span class="code">ops_pulled</span> field. <span class="code">ops_pulled == 0</span> indicates a best-effort failure or an already-converged peer. Monitor both markers together to verify governance convergence. The <span class="code">pull_namespace_governance</span> trait method on <span class="code">ProtocolDispatch</span> no longer exists; any custom <span class="code">ProtocolDispatch</span> implementations must remove it.</p>
 </div>
 
 <h3>scope_root Shadow Divergence</h3>
