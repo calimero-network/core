@@ -480,6 +480,58 @@ jobs:
           fi
           echo "no unified_projection_divergence markers — projection agrees with the live decision"
 
+      - name: Assert unified op-store completeness (C3 Stage 4, HARD gate)
+        if: always()
+        run: |
+          # The C3 completeness gate logs `op_store_incomplete` whenever the unified
+          # op-store is missing a governance op the gov-DAG has — i.e. some apply path
+          # isn't dual-writing the op-store. This turns "incomplete op-store" from a
+          # mystery 60s sync timeout (how the read-flip failed three times) into a
+          # cheap, specific signal naming the missing op count per namespace.
+          #
+          # HARD gate from C3 Stage 4: the read now flips onto the op-store
+          # (`ops_for_namespace`), so a gov-DAG op the op-store lacks is a correctness
+          # bug, not a known transitional gap. Stages 1-3 closed every apply-path write
+          # gap; any marker here means a path was missed and MUST be fixed before merge.
+          if grep -rl "op_store_incomplete" docker-logs/ 2>/dev/null | grep -q .; then
+              count=$(grep -rho "op_store_incomplete" docker-logs/ | wc -l | tr -d ' ')
+              echo "::error::op-store incomplete in ${{ matrix.workflow }} — $count marker(s); a governance apply path is not writing the op-store (read-flip is unsafe)"
+              echo "sample (missing_count per namespace):"
+              # Match `missing_count=N` anywhere on an op_store_incomplete line — robust
+              # to field ordering. Tolerates the line not carrying the field at all.
+              grep -rho 'op_store_incomplete.*' docker-logs/ | grep -oE 'missing_count=[0-9]+' | sort | uniq -c | head -10
+              grep -rn "op_store_incomplete" docker-logs/ | head -10
+              exit 1
+          elif grep -rl "op_store_gate_unavailable" docker-logs/ 2>/dev/null | grep -q .; then
+              # No gap markers, but the gate couldn't load the op-store somewhere — do
+              # NOT claim a clean mirror, that would be a false "verified" line.
+              gc=$(grep -rho "op_store_gate_unavailable" docker-logs/ | wc -l | tr -d ' ')
+              echo "::notice::op-store completeness UNVERIFIED in ${{ matrix.workflow }} — no gaps seen but $gc gate-load failure(s); mirror NOT confirmed"
+              grep -rn "op_store_gate_unavailable" docker-logs/ | head -5
+          else
+              echo "no op_store_incomplete or op_store_gate_unavailable markers — op-store mirrors the gov-DAG for every exercised namespace"
+          fi
+
+      - name: Report scope_root governance-divergence pulls (P6.S2, observe-only)
+        if: always()
+        run: |
+          # P6.S2 routes the GovDiverged verdict (entities agree, scope_root differs)
+          # into an actual governance pull from the diverging peer — previously this
+          # case only warned. `gov_divergence_pull_triggered` fires each time the
+          # selector issues that pull. This step is INFORMATIONAL (never fails): it
+          # confirms the corrective pull fires on rotation scenarios and lets us watch
+          # for a pathological storm (the same context pulling every single tick would
+          # show as a very high count for one context_id).
+          if grep -rl "gov_divergence_pull_triggered" docker-logs/ 2>/dev/null | grep -q .; then
+              count=$(grep -rho "gov_divergence_pull_triggered" docker-logs/ | wc -l | tr -d ' ')
+              echo "::notice::scope_root governance pulls in ${{ matrix.workflow }} — $count trigger(s)"
+              echo "per-context trigger counts (watch for a single context dominating = storm):"
+              grep -rho 'gov_divergence_pull_triggered.*' docker-logs/ \
+                | grep -oE 'context_id=[0-9a-f]+' | sort | uniq -c | sort -rn | head -10
+          else
+              echo "no gov_divergence_pull_triggered markers — no scope_root governance divergence pulled this run"
+          fi
+
       - name: List docker-logs/ before upload (debug)
         if: always()
         run: ls -la docker-logs/ 2>&1 || echo "docker-logs/ missing"

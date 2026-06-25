@@ -90,10 +90,20 @@ fleet / per-group key story, see <a href="tee-fleet-ha.html">TEE Fleet HA</a>.
 <ul style="line-height:1.65;color:var(--text-dim);margin:0;padding-left:1.25rem;">
 <li><strong>Key fetch fails</strong> — Confirm <span class="code">tee.kms.phala.url</span> is reachable; KMS <span class="code">/health</span> returns 200; KMS can access the TEE attestation socket (e.g. dstack on Phala).</li>
 <li><strong>KMS rejects attestation</strong> — Dev: mock attestation per mero-tee docs. Prod: align measurement policy with <a href="https://github.com/calimero-network/mero-tee/blob/master/crates/mero-kms-phala/README.md" target="_blank" rel="noopener">mero-kms-phala</a>.</li>
-<li><strong>Mock vs production</strong> — <span class="code">accept_mock</span> and <span class="code">MEROD_ALLOW_MOCK_KMS_ATTESTATION</span> are for development only.</li>
+<li><strong>Mock vs production</strong> — <span class="code">accept_mock</span> and <span class="code">MEROD_ALLOW_MOCK_KMS_ATTESTATION</span> are for development only. The <span class="code">generate_mock_attestation(report_data)</span> function in <span class="code">calimero-tee-attestation</span> is a public, OS-independent API that produces a structurally valid but cryptographically invalid quote; it is accepted only by KMS policies with <span class="code">accept_mock = true</span> and must never be used in production.</li>
+<li><strong>Local fleet testing without TDX hardware</strong> — Pass <span class="code">merod run --mock-tee</span> to enable the dev/test-only mock-TEE harness. The node produces and accepts a synthetic attestation quote (via <span class="code">generate_mock_attestation</span>) through the real fleet-join / announce / admit path, allowing full TEE/HA fleet lifecycle testing on a laptop. This mode is <em>disabled by default</em> and will <strong>refuse to start</strong> if a real KMS attestation endpoint is configured — it must never be used in production.</li>
 </ul>
 </div>
 </details>
+
+<div class="card gb">
+<h2>Known fixes (PR #2855)</h2>
+<ul style="line-height:1.65;color:var(--text-dim);">
+<li><strong>Buffered <code>ContextRegistered</code> re-driven after <code>GroupCreated</code></strong> — A buffered encrypted <code>ContextRegistered</code> event that arrived before its subgroup's <code>GroupCreated</code> had applied was previously stranded. It is now re-driven once <code>GroupCreated</code> applies, ensuring the context is correctly registered (fixes #2848).</li>
+<li><strong>Fleet-join first announce no longer 500s on empty mesh</strong> — <code>fleet-join</code>'s initial announce into an empty gossipsub mesh previously returned HTTP 500. This is now handled gracefully (fixes #2491).</li>
+<li><strong>KeyDelivery-bootstrapped replica seeds <code>CAN_JOIN_OPEN_SUBGROUPS</code></strong> — A TEE replica bootstrapped via a KeyDelivery seed now correctly seeds the <code>CAN_JOIN_OPEN_SUBGROUPS</code> capability so it can replicate Open subgroups via inheritance, matching the behaviour of nodes that joined through the normal fleet path.</li>
+</ul>
+</div>
 
 <div class="card gb">
 <h2>Attestation flow</h2>

@@ -1,6 +1,6 @@
 use super::*;
 
-use calimero_primitives::identity::PrivateKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use rand::rngs::OsRng;
 
 fn sample_group_id() -> [u8; 32] {
@@ -20,7 +20,6 @@ fn sign_and_verify_round_trip() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member,
@@ -43,7 +42,6 @@ fn wrong_key_fails() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member,
@@ -68,7 +66,6 @@ fn tampered_op_fails() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member,
@@ -91,7 +88,6 @@ fn replay_distinct_content_hash() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member,
@@ -104,7 +100,6 @@ fn replay_distinct_content_hash() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         2,
         GroupOp::MemberAdded {
             member,
@@ -130,7 +125,6 @@ fn signable_bytes_deterministic() {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION,
         group_id: [1u8; 32],
         parent_op_hashes: vec![],
-        state_hash: [0u8; 32],
         signer: pk,
         nonce: 42,
         op: GroupOp::Noop,
@@ -159,11 +153,11 @@ fn namespace_op_sign_verify_root() {
         &sk,
         sample_namespace_id(),
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
             parent_id: sample_namespace_id(),
+            restricted: true,
         }),
     )
     .expect("sign");
@@ -186,7 +180,6 @@ fn namespace_op_sign_verify_group() {
         &sk,
         sample_namespace_id(),
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Group {
             group_id: sample_group_id(),
@@ -210,7 +203,6 @@ fn namespace_op_tampered_fails() {
         &sk,
         sample_namespace_id(),
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::AdminChanged {
             new_admin: sk.public_key(),
@@ -231,11 +223,11 @@ fn namespace_op_content_hash_distinct() {
         &sk,
         sample_namespace_id(),
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
             parent_id: sample_namespace_id(),
+            restricted: true,
         }),
     )
     .expect("sign");
@@ -244,11 +236,11 @@ fn namespace_op_content_hash_distinct() {
         &sk,
         sample_namespace_id(),
         vec![],
-        [0u8; 32],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
             parent_id: sample_namespace_id(),
+            restricted: true,
         }),
     )
     .expect("sign");
@@ -269,12 +261,12 @@ fn namespace_signable_bytes_deterministic() {
         version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION,
         namespace_id: sample_namespace_id(),
         parent_op_hashes: vec![],
-        state_hash: [0u8; 32],
         signer: pk,
         nonce: 42,
         op: NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
             parent_id: sample_namespace_id(),
+            restricted: true,
         }),
     };
     let a = namespace_signable_bytes(&s).expect("bytes");
@@ -301,7 +293,6 @@ fn cascade_target_application_set_sign_verify() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeTargetApplicationSet {
             from_app_key: [9u8; 32],
@@ -328,7 +319,6 @@ fn cascade_group_migration_set_sign_verify() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeGroupMigrationSet {
             from_app_key: [9u8; 32],
@@ -359,7 +349,6 @@ fn cascade_target_distinct_from_single_group_target() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::TargetApplicationSet {
             app_key: new_app_key,
@@ -372,7 +361,6 @@ fn cascade_target_distinct_from_single_group_target() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeTargetApplicationSet {
             from_app_key: [9u8; 32],
@@ -409,7 +397,6 @@ fn cascade_target_from_app_key_changes_hash() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeTargetApplicationSet {
             from_app_key: [9u8; 32],
@@ -423,7 +410,6 @@ fn cascade_target_from_app_key_changes_hash() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeTargetApplicationSet {
             from_app_key: [8u8; 32], // only this differs
@@ -579,5 +565,121 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
             "frozen CascadeUpgrade bytes (discriminant 25) decoded as {other:?}; a \
              variant was inserted mid-enum, shifting prior variant tags"
         ),
+    }
+}
+
+// C5.S3b flag-day boundary: an op signed under the OLD schema must be REJECTED on
+// the new build, never silently misparsed. The `version` field is the first borsh
+// field, so it survives the layout change and the version check fires before any
+// signable-bytes reconstruction. These tests pin that boundary so a future refactor
+// can't re-open the window.
+#[test]
+fn pre_flag_day_group_op_version_is_rejected() {
+    let signer = PrivateKey::random(&mut OsRng).public_key();
+    // A struct-shaped op carrying a prior schema version (here v7, the last version
+    // that still had `state_hash`). `verify_signature` must reject on the version
+    // check alone — before touching the (here bogus) signature.
+    let stale = SignedGroupOp {
+        version: SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
+        group_id: sample_group_id(),
+        parent_op_hashes: vec![],
+        signer,
+        nonce: 1,
+        op: GroupOp::Noop,
+        signature: [0u8; 64],
+    };
+    assert!(
+        matches!(
+            stale.verify_signature(),
+            Err(GovernanceError::SchemaVersion { .. })
+        ),
+        "a prior-version group op must be rejected with SchemaVersion, got {:?}",
+        stale.verify_signature()
+    );
+}
+
+#[test]
+fn pre_flag_day_namespace_op_version_is_rejected() {
+    let signer = PrivateKey::random(&mut OsRng).public_key();
+    let stale = SignedNamespaceOp {
+        version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION - 1,
+        namespace_id: sample_group_id(),
+        parent_op_hashes: vec![],
+        signer,
+        nonce: 1,
+        op: NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![],
+        }),
+        signature: [0u8; 64],
+    };
+    assert!(
+        matches!(
+            stale.verify_signature(),
+            Err(GovernanceError::SchemaVersion { .. })
+        ),
+        "a prior-version namespace op must be rejected with SchemaVersion, got {:?}",
+        stale.verify_signature()
+    );
+}
+
+#[test]
+fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
+    // A v7-shaped op still carries the removed `state_hash` field in its borsh bytes,
+    // between `parent_op_hashes` and `signer`. borsh is a flat format with no field
+    // names, so decoding these bytes as the v8 struct will (most likely) SUCCEED —
+    // consuming the 32 `state_hash` bytes as the start of `signer` and shifting the
+    // rest into a garbage `signer`/`nonce`/`op`. That successful-but-garbage decode
+    // IS a misparse; the only thing that saves us is that `version` is the FIRST
+    // byte, read intact as the old value, so `verify_signature` rejects on the
+    // version check. This test pins exactly that: the old version survives in byte 0,
+    // and the decoded op is rejected with `SchemaVersion` rather than verifying.
+    #[derive(::borsh::BorshSerialize)]
+    struct V7SignedGroupOp {
+        version: u8,
+        group_id: [u8; 32],
+        parent_op_hashes: Vec<[u8; 32]>,
+        state_hash: [u8; 32],
+        signer: PublicKey,
+        nonce: u64,
+        op: GroupOp,
+        signature: [u8; 64],
+    }
+    let signer = PrivateKey::random(&mut OsRng).public_key();
+    let v7 = V7SignedGroupOp {
+        version: SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
+        group_id: sample_group_id(),
+        parent_op_hashes: vec![],
+        state_hash: [0xAB; 32],
+        signer,
+        nonce: 1,
+        op: GroupOp::Noop,
+        signature: [0u8; 64],
+    };
+    let bytes = ::borsh::to_vec(&v7).expect("encode v7");
+    // Deterministic: byte 0 is the version, untouched by the layout shift.
+    assert_eq!(
+        bytes[0],
+        SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
+        "v7 bytes must begin with the old schema version"
+    );
+    // If borsh decodes the misaligned bytes (the likely case — it doesn't validate
+    // field counts), the decode misparsed the shifted bytes but the version survived;
+    // assert that dependency explicitly so a future refactor checking the signature
+    // before the version can't let a real misparse slip through. If borsh instead
+    // rejects the old layout outright, that is also a clean rejection (nothing to do).
+    if let Ok(op) = ::borsh::from_slice::<SignedGroupOp>(&bytes) {
+        assert_eq!(
+            op.version,
+            SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
+            "decoded version must be the old schema version (byte 0)"
+        );
+        assert!(
+            matches!(
+                op.verify_signature(),
+                Err(GovernanceError::SchemaVersion { .. })
+            ),
+            "a v7-decoded op must be rejected on the version check, got {:?}",
+            op.verify_signature()
+        );
     }
 }

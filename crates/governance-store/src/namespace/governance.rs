@@ -1,11 +1,13 @@
 use crate::{
-    DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+    CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository,
+    NamespaceRepository,
 };
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, KeyEnvelope, NamespaceOp, RootOp,
     SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -150,77 +152,6 @@ impl<'a> NamespaceGovernance<'a> {
             .collect_skeleton_delta_ids_for_group(group_id)
     }
 
-    /// Convergence claim baked into `SignedNamespaceOp.state_hash` at sign time.
-    ///
-    /// `Group` commits to the wrapped group's current meta+member set — the
-    /// same input the receiver recomputes in `apply_group_op_inner` to detect
-    /// a stale signer (mirrors `apply_local_signed_group_op` in the group-op
-    /// path).
-    ///
-    /// `Root` commits to the namespace's own meta+member set, but only for
-    /// variants whose correctness depends on it — see
-    /// `root_op_commits_to_namespace_state`. Additive/idempotent variants
-    /// (`KeyDelivery`) and subgroup-scoped mutations
-    /// (`GroupCreated`/`GroupReparented`/`GroupDeleted`) pass the zero
-    /// bypass to avoid coarse over-rejection on unrelated concurrent
-    /// activity.
-    ///
-    /// Pre-bootstrap groups/namespaces have no meta row to hash, so we fall
-    /// through to the documented zero-value bypass that the receiver also
-    /// recognizes.
-    ///
-    /// # Zero-hash bypass extends to gated variants too
-    ///
-    /// The receiver checks `op.state_hash != [0u8; 32]` before recomputing,
-    /// which means a gated variant (e.g. `AdminChanged`, `PolicyUpdated`)
-    /// signed with `state_hash == [0u8; 32]` skips the staleness check.
-    /// This is deliberate: pre-fix on-disk ops (signed before this change
-    /// landed) carry the zero hash, and rejecting them on replay would
-    /// break a node's ability to apply its own backfilled history. Net
-    /// effect: post-fix peers sign and verify; pre-fix ops bypass — same
-    /// semantics as the existing v1/v2 deployment. The bypass closes once
-    /// every signer has rolled forward and stopped emitting zero hashes;
-    /// no schema bump needed.
-    ///
-    /// **Known limitation:** there is no runtime enforcement that a
-    /// signer post-upgrade cannot emit `[0u8; 32]` to skip the check.
-    /// Defending against that case is not the purpose of this guard —
-    /// signature verification and the per-op authorization checks
-    /// (`require_namespace_admin`, capability checks, membership
-    /// recompute on the receiver) remain in force regardless of the
-    /// hash value. The staleness guard is a convergence aid for
-    /// concurrent-signer races between *honest* signers, not a
-    /// defence against adversarial signers — those are caught at the
-    /// authorization layer.
-    ///
-    /// # TOCTOU window between sign and apply
-    ///
-    /// Callers compute this hash, then sign, then apply locally and
-    /// publish. Between the compute call and the local apply, another
-    /// op could land — but every governance signer in the codebase
-    /// runs through the same actor mailbox (the `NodeManager` actor for
-    /// node-issued ops, or a single per-namespace driver for receiver
-    /// paths), which serializes applies for a given namespace.
-    /// `read_head_record` + this hash compute + local apply therefore
-    /// run atomically with respect to other governance applies on the
-    /// same node. The window only matters for divergence *across* nodes,
-    /// which is exactly what the staleness check on the receive side is
-    /// for.
-    fn state_hash_for_op(&self, op: &NamespaceOp) -> EyreResult<[u8; 32]> {
-        let target_gid = match op {
-            NamespaceOp::Group { group_id, .. } => ContextGroupId::from(*group_id),
-            NamespaceOp::Root(root) if root_op_commits_to_namespace_state(root) => {
-                ContextGroupId::from(self.namespace_id)
-            }
-            NamespaceOp::Root(_) => return Ok([0u8; 32]),
-        };
-        let repo = MetaRepository::new(self.store);
-        if repo.load(&target_gid)?.is_none() {
-            return Ok([0u8; 32]);
-        }
-        repo.compute_state_hash(&target_gid)
-    }
-
     pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
         op.verify_signature()
             .map_err(|e| eyre::eyre!("signed namespace op: {e}"))?;
@@ -278,9 +209,10 @@ impl<'a> NamespaceGovernance<'a> {
                         // admit_tee_node) of a group key to a member that
                         // can't yet decrypt the group. Reuse the joiner-side
                         // apply: unwrap for our identity, store, seed the
-                        // bootstrap admin from the op signer (the trust
-                        // anchor — only an existing key-holding member can
-                        // mint this), and replay buffered ops. Best-effort:
+                        // bootstrap scaffolding (placeholder meta + own member
+                        // row + default caps — NOT the founding admin, which
+                        // comes from the NamespaceCreated genesis since #2474),
+                        // and replay buffered ops. Best-effort:
                         // a failure here must not block the DAG (every later
                         // op would orphan), so errors are logged, not
                         // propagated.
@@ -350,6 +282,73 @@ impl<'a> NamespaceGovernance<'a> {
                         // an existing row from a prior `join_context` is
                         // left untouched.
                         restore_member_context_identities(self.store, &group_id_typed, member)?;
+                    }
+                    RootOp::GroupCreated { group_id, .. } => {
+                        // #2848: GroupCreated just wrote this subgroup's meta +
+                        // admin row (via `apply_root_op` above), so an
+                        // encrypted ContextRegistered that was buffered before
+                        // it landed — and previously bailed at the staleness
+                        // check because the meta did not exist — can now apply.
+                        // Re-drive, but only when the node plausibly holds a key
+                        // that could decrypt this group's buffered ops. This is
+                        // a CHEAP keyring presence check — a single
+                        // first-key-exists lookup per keyring
+                        // (`holds_any_key`) — NOT an op-log scan: gating with a
+                        // full op-log scan would defeat the gate's purpose,
+                        // since the retry it guards
+                        // (`collect_retry_candidates_for_group`) already does a
+                        // full scan, so a scanning gate saves nothing on the
+                        // GroupCreated hot path. The check mirrors the
+                        // dual-keyring resolution the apply/retry path uses
+                        // (#2256): the subgroup's own keyring (Restricted) OR
+                        // the namespace keyring (Open subgroups encrypt under
+                        // it). Gating on the subgroup keyring alone was wrong —
+                        // a node holding only the namespace key still has
+                        // decryptable Open buffered ops and must be re-driven.
+                        //
+                        // W3/S1 fix: gate on whether the keyring holds ANY key,
+                        // not just the *current* one. The retry resolves each
+                        // buffered op by its `key_id` (`load_key_by_id`), so
+                        // after a key ROTATION a node may hold only the OLD key
+                        // that a buffered op was encrypted under while
+                        // `load_current_key` returns the newer key (or, if the
+                        // node never received the new delivery, the old key IS
+                        // still the entry but distinct from the op's key_id).
+                        // The old current-key gate produced a false-negative in
+                        // exactly that case — the op was decryptable yet the
+                        // re-drive was skipped. "Holds any key" has no such
+                        // false-negative (if the matching key_id is held, the
+                        // keyring is non-empty); the residual false-positive
+                        // (non-empty keyring without the specific key_id) just
+                        // costs one bounded, self-gating retry scan that finds
+                        // no candidates — harmless. When neither keyring holds
+                        // any key (the common case and the deleted-group exit
+                        // since purge clears keys) the retry is skipped without
+                        // touching the op-log. Best-effort: log, never
+                        // propagate.
+                        let gid = *group_id;
+                        let gid_typed = ContextGroupId::from(gid);
+                        let ns_typed = ContextGroupId::from(self.namespace_id);
+                        let holds_key = GroupKeyring::new(self.store, gid_typed)
+                            .holds_any_key()
+                            .unwrap_or(false)
+                            || GroupKeyring::new(self.store, ns_typed)
+                                .holds_any_key()
+                                .unwrap_or(false);
+                        if holds_key {
+                            match self.retry_encrypted_ops_for_group(*group_id) {
+                                Ok(retry_divergence) => {
+                                    if retry_divergence.is_some() {
+                                        result.divergence = retry_divergence;
+                                    }
+                                }
+                                Err(e) => tracing::warn!(
+                                    ?e,
+                                    group_id = %hex::encode(group_id),
+                                    "retry after GroupCreated failed (#2848)"
+                                ),
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -487,12 +486,10 @@ impl<'a> NamespaceGovernance<'a> {
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
         let op_timeout = timeout_for_namespace_op(&op);
-        let state_hash = self.state_hash_for_op(&op)?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
             head.parent_hashes,
-            state_hash,
             head.next_nonce,
             op,
         )?;
@@ -587,14 +584,6 @@ impl<'a> NamespaceGovernance<'a> {
         assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
             .map_err(|e| eyre::eyre!(e))?;
 
-        // No-local-apply path: nothing has mutated state on this node yet,
-        // so the current `state_hash_for_op` value IS the pre-apply view
-        // every receiver will compare against. Capture it here (rather
-        // than inside `publish_post_gate`) so the call shape stays uniform
-        // with the apply-first path below, which must capture before its
-        // local mutation runs.
-        let state_hash = self.state_hash_for_op(&op)?;
-
         // Quorum / no-local-apply path: a publish that never reaches a
         // quorum is a genuine failure — nothing was applied locally to
         // fall back on. `best_effort = false` keeps the hard error.
@@ -603,7 +592,6 @@ impl<'a> NamespaceGovernance<'a> {
             ack_router,
             signer_sk,
             op,
-            state_hash,
             topic,
             mesh,
             known,
@@ -621,14 +609,6 @@ impl<'a> NamespaceGovernance<'a> {
     /// passes `best_effort = true`: it has no gate of its own (the local
     /// apply is unconditional), so a publish failure here is non-fatal and
     /// the op propagates via sync rather than diverging on a retry.
-    ///
-    /// `state_hash` MUST be the receiver-equivalent pre-apply hash —
-    /// i.e. computed BEFORE the caller ran
-    /// `sign_apply_local_group_op_borsh`. The apply-first path computes
-    /// the hash inside its own scope (where the pre-apply state is still
-    /// visible) and passes it in here. Recomputing inside this function
-    /// would shift the hash forward and every member-mutating op would
-    /// permanently bail on the receiver's staleness check.
     // Gossip-publish entry on the namespace governance path: transport handles,
     // the op, and ack/gate sizing are orthogonal with no cohesive grouping.
     #[allow(clippy::too_many_arguments, reason = "orthogonal broadcast-path args")]
@@ -638,7 +618,6 @@ impl<'a> NamespaceGovernance<'a> {
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
-        state_hash: [u8; 32],
         mesh: usize,
         known: usize,
         best_effort: bool,
@@ -649,7 +628,6 @@ impl<'a> NamespaceGovernance<'a> {
             ack_router,
             signer_sk,
             op,
-            state_hash,
             topic,
             mesh,
             known,
@@ -663,10 +641,6 @@ impl<'a> NamespaceGovernance<'a> {
     /// [`sign_and_publish_post_gate`]. Takes the caller's `mesh` snapshot
     /// to feed the metric; the subscriber count is re-sampled at publish
     /// time (see below) so transient peer departures don't skew `min_acks`.
-    ///
-    /// `state_hash` must be the pre-apply hash captured by the caller
-    /// before any local mutation. See `sign_and_publish_post_gate`'s doc
-    /// for the constraint and why we no longer recompute here.
     ///
     /// `best_effort` selects the failure mode of the publish:
     /// * `false` (quorum / no-local-apply path) — a publish that gathers
@@ -683,7 +657,6 @@ impl<'a> NamespaceGovernance<'a> {
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
-        state_hash: [u8; 32],
         topic: TopicHash,
         mesh: usize,
         known_at_gate: usize,
@@ -698,7 +671,6 @@ impl<'a> NamespaceGovernance<'a> {
             signer_sk,
             self.namespace_id,
             head.parent_hashes,
-            state_hash,
             head.next_nonce,
             op,
         )?;
@@ -804,65 +776,49 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(report)
     }
 
-    /// Seed the founding admin/owner of the namespace root group from the
-    /// trust anchor that bootstrapped us (the KeyDelivery signer), when no
-    /// group meta exists locally.
+    /// Seed the namespace root's bootstrap rows (placeholder meta, the
+    /// deliverer's own member row, and default caps) when no local state exists.
     ///
-    /// This closes the no-invitation bootstrap gap for TEE fleet-join: the
-    /// founding owner/admin row is written purely locally at namespace
-    /// creation (`handlers/create_group.rs`) and is NOT a replayable
-    /// governance op, so a node that replays the namespace DAG never learns
-    /// who the admin is and rejects every authority-checked op. The invited
-    /// path recovers this from the invitation; the TEE path has none, so we
-    /// take the KeyDelivery signer — which can only be an existing member of
-    /// this namespace (they hold the group key), and for the bootstrap case
-    /// is the owner that admitted us.
+    /// This closes the no-invitation bootstrap gap for TEE fleet-join: a node
+    /// that replays the namespace DAG needs a root meta row + its own membership
+    /// so the encrypted-op replay path can read state and pass its membership
+    /// checks. The invited path recovers this from the invitation; the TEE path
+    /// has none, so this seed provides the minimal scaffolding on the first
+    /// `KeyDelivery`.
+    ///
+    /// #2474 — this seed NO LONGER establishes the founding admin/owner. It
+    /// previously TOFU-trusted the KeyDelivery signer as the namespace admin,
+    /// but the signer need only HOLD the group key (any current member), so when
+    /// a non-owner delivered the key the replica pinned the WRONG admin and
+    /// permanently rejected the true owner's ops, wedging backfill (production-
+    /// confirmed). The authoritative founder now comes from the replayable
+    /// `RootOp::NamespaceCreated` genesis op
+    /// (`ops/namespace/namespace_created.rs`), emitted at namespace creation in
+    /// `handlers/create_group.rs`. The genesis is the FIRST op in the DAG —
+    /// defined by having NO parents (its nonce is 1, since `read_head_record`
+    /// defaults `next_nonce` to 1 when the head is absent; `op.nonce` is
+    /// informational/signature-covered, DAG sequencing derives from
+    /// `read_head_record().next_nonce`, not `op.nonce`). Being the parentless
+    /// root, backfill applies it before any owner op and the correct admin row
+    /// is present by the time owner ops apply.
     ///
     /// Strictly gated and idempotent:
     /// - only acts when `group_id` is the namespace root (`== namespace_id`);
-    /// - only acts when no `GroupMetaValue` is stored yet, so an established
-    ///   node (invited joiner, or a node that already synced meta) keeps its
-    ///   authoritative copy and this is a no-op;
+    /// - the meta it writes (when absent) has a ZERO `admin_identity`/
+    ///   `owner_identity` — a placeholder that grants authority to nobody. The
+    ///   genesis op recognises this placeholder (admin == zero) and overwrites it
+    ///   with the real founder; an established namespace (non-zero admin) is left
+    ///   untouched, so seed-vs-genesis ordering converges either way;
+    /// - the deliverer's own member row is written as a non-authoritative
+    ///   `Member` (not `Admin`);
     /// - `target_application_id` is left zero and self-heals on the first
-    ///   `ContextRegistered` apply (same contract as `join_group`).
+    ///   `ContextRegistered` apply (same contract as `join_group`);
+    /// - each row is gated on its OWN presence so a partial seed self-repairs on
+    ///   a later re-entry.
     ///
-    /// THREAT MODEL — trust-on-first-use limitation (PR #2473 finding 3):
-    /// `KeyDelivery` carries no signer-authority check on apply
-    /// (`apply_root_op` returns `Ok(())` for it; the side-effect only checks
-    /// `envelope.recipient == our namespace identity`). To mint a `KeyDelivery`
-    /// the signer must merely HOLD the group key — i.e. be ANY current member
-    /// of this namespace, not necessarily the owner/admin. So if a non-owner
-    /// member races the owner and their `KeyDelivery` lands first, this seeds
-    /// the WRONG `admin_identity`/`owner_identity` locally.
-    ///
-    /// Blast radius is bounded and local-only:
-    /// - NOT a cross-node privilege escalation — the seeded meta is node-local
-    ///   state, never gossiped; no peer trusts it.
-    /// - Effect is a LOCAL DoS on this one bootstrapping replica: subsequent
-    ///   authority-checked ops from the true owner (`require_namespace_admin`)
-    ///   are rejected. It does NOT self-heal: the meta-exists guard above turns
-    ///   a later correct `KeyDelivery` into a no-op, and there is no root-admin
-    ///   `AdminChanged` to overwrite it — recovery requires a namespace teardown
-    ///   + re-sync.
-    ///
-    /// Why this is not tightened to "seed only from a DAG-shown admin": the
-    /// namespace ROOT's founding admin/owner is never recorded as a replayable
-    /// governance op (`execute_group_created` rejects a self-parent and notes
-    /// "namespace roots are created via a different path … no GroupCreated op";
-    /// `RootOp` has no namespace-genesis variant). At bootstrap the replica has
-    /// applied NO authority-bearing root op yet — every owner-authored op is
-    /// itself buffered behind this seed (chicken-and-egg). So there is no local,
-    /// DAG-derived admin signal to validate the `KeyDelivery` signer against,
-    /// which is exactly why TOFU is used at all.
-    ///
-    /// RECOMMENDED FOLLOW-UP (correct root-of-trust, deferred — it is a
-    /// wire-protocol change, not a contained fix): add a replayable
-    /// `RootOp::NamespaceCreated { founder }` (or equivalent genesis op) emitted
-    /// by `handlers/create_group.rs` at namespace creation, so a bootstrapping
-    /// replica derives the founding admin/owner authoritatively from the synced
-    /// governance DAG genesis and drops the `KeyDelivery`-signer TOFU entirely.
-    /// That touches the `RootOp` borsh discriminant set and must be coordinated
-    /// as a versioned schema change.
+    /// Because no authority is conferred here, the old trust-on-first-use threat
+    /// (PR #2473 finding 3 / #2474) is closed: a non-owner KeyDelivery can no
+    /// longer pin the wrong admin.
     // `pub(crate)` (not private) so the repair/idempotency invariant below is
     // directly exercisable from `group_store::tests` without driving a full
     // `KeyDelivery` apply; it is not part of any published surface.
@@ -890,6 +846,25 @@ impl<'a> NamespaceGovernance<'a> {
         // and ALWAYS ensure the admin member row exists. A later `KeyDelivery`
         // re-enters here and repairs whichever half a previous partial seed left
         // behind. Both writes are individually idempotent, so re-running is safe.
+        // #2474: the bootstrap seed no longer pins the founding ADMIN/OWNER
+        // identity from the KeyDelivery deliverer. The deliverer need only HOLD
+        // the group key (any current member), so TOFU-trusting them as admin
+        // pinned the WRONG admin whenever a non-owner delivered the key and
+        // permanently wedged backfill. The authoritative founder now comes from
+        // the replayable `RootOp::NamespaceCreated` genesis op
+        // (`ops/namespace/namespace_created.rs`).
+        //
+        // The seed still writes a placeholder root meta when none exists so the
+        // encrypted-op replay path has a meta row to read, but with a ZERO
+        // `admin_identity`/`owner_identity` — granting authority to NOBODY. The
+        // genesis op recognises this placeholder (admin == zero) and fills in
+        // the real founder over it; an established namespace (non-zero admin) is
+        // protected from a forged second genesis. Either ordering — seed first
+        // or genesis first — converges on the genesis-supplied founder.
+        // Shared zero-key sentinel — see `crate::PLACEHOLDER_ADMIN_IDENTITY`.
+        // The genesis anti-hijack gate compares against the SAME constant, so
+        // the seed and the gate cannot drift on this magic value (#2474).
+        let placeholder_admin = crate::placeholder_admin_identity();
         let meta_existed = MetaRepository::new(self.store).load(&gid)?.is_some();
         if !meta_existed {
             let meta = calimero_store::key::GroupMetaValue {
@@ -899,14 +874,19 @@ impl<'a> NamespaceGovernance<'a> {
                 ),
                 upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
                 created_at: 0,
-                admin_identity: (*founder),
-                owner_identity: (*founder),
+                admin_identity: placeholder_admin,
+                owner_identity: placeholder_admin,
                 migration: None,
                 auto_join: true,
             };
             MetaRepository::new(self.store).save(&gid, &meta)?;
         }
 
+        // Own-membership bootstrap: ensure the deliverer has a member row so the
+        // encrypted-op replay membership checks pass — but as a non-authoritative
+        // `Member`, NOT `Admin`. Founding authority is established by genesis, not
+        // here. If genesis (or another path) has already recorded a richer role
+        // for this identity, leave it untouched.
         let member_existed = MembershipRepository::new(self.store)
             .role_of(&gid, founder)?
             .is_some();
@@ -914,19 +894,46 @@ impl<'a> NamespaceGovernance<'a> {
             MembershipRepository::new(self.store).add_member(
                 &gid,
                 founder,
-                GroupMemberRole::Admin,
+                GroupMemberRole::Member,
             )?;
         }
 
-        // Nothing to do (and nothing to log) if both halves were already
+        // Seed the root's default capabilities so members added before the
+        // separate `DefaultCapabilitiesSet` gossip arrives still inherit
+        // `CAN_JOIN_OPEN_SUBGROUPS`, the bit that gates inheritance into Open
+        // child subgroups. This mirrors the owner-side precedent in
+        // `context::handlers::store_group_meta` (which sets the same default
+        // when bootstrapping root meta from gossip).
+        //
+        // Without this, a TEE replica that bootstraps the namespace root via
+        // this seed path admits its own `MemberJoinedViaTeeAttestation` row
+        // with `caps = 0` (the row snapshots the group's default caps at apply
+        // time), so `check_path` of any Open subgroup returns `None`,
+        // auto-follow declines to `join_context`, and the Open subgroup's
+        // context never replicates on the replica.
+        //
+        // Gated on its own absence so re-running (and a steady-state re-entry)
+        // is idempotent and never clobbers an admin-authored override that the
+        // gossiped `DefaultCapabilitiesSet` may have since installed.
+        let default_caps_existed = CapabilitiesRepository::new(self.store)
+            .default_capabilities(&gid)?
+            .is_some();
+        if !default_caps_existed {
+            CapabilitiesRepository::new(self.store)
+                .set_default_capabilities(&gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)?;
+        }
+
+        // Nothing to do (and nothing to log) if all halves were already
         // present — the common steady-state re-entry.
-        if !meta_existed || !member_existed {
+        if !meta_existed || !member_existed || !default_caps_existed {
             tracing::info!(
                 namespace_id = %hex::encode(group_id),
                 %founder,
                 meta_seeded = !meta_existed,
                 member_seeded = !member_existed,
-                "seeded/repaired founding namespace admin from KeyDelivery signer (TEE bootstrap)"
+                default_caps_seeded = !default_caps_existed,
+                "seeded/repaired namespace bootstrap rows (placeholder meta + deliverer \
+                 member + default caps); founding admin comes from NamespaceCreated genesis"
             );
         }
         Ok(())
@@ -1160,23 +1167,107 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(retry_divergence)
     }
 
+    /// Curative re-drive variant that returns the count of ops it ACTUALLY
+    /// applied (#2848 Part C). The `Option<DivergenceReport>` returned by
+    /// [`retry_encrypted_ops_for_group`](Self::retry_encrypted_ops_for_group)
+    /// is not a usable progress signal — a re-driven `ContextRegistered`
+    /// applies yet reports `None` (divergence is surfaced only for
+    /// `MemberRemoved`/`MemberLeft`), and an already-applied op is
+    /// nonce-deduped to `Ok(None)` too. The startup sweep needs to know
+    /// whether a pass made progress; this counts it directly.
+    ///
+    /// "Applied" is detected by the nonce window: a candidate whose
+    /// (signer, nonce) was NOT in the window before the apply but IS after it
+    /// was genuinely applied this call; an op already in the window is an
+    /// idempotent nonce-skip and does not count. This avoids threading an
+    /// `applied` flag through the whole apply stack while still distinguishing
+    /// a real apply from a no-op replay.
+    ///
+    /// TOCTOU caveat (accepted, bounded, benign): the pre/post nonce-window
+    /// read is not atomic with the apply, so a concurrent gossip apply of the
+    /// same op can make us miscount. The inflating race is a concurrent apply
+    /// landing BEFORE our apply: we pre-read `was_present == false`, the gossip
+    /// path then windows the nonce, and our `decrypt_and_apply` short-circuits
+    /// to `Ok(None)` WITHOUT writing — yet the post-read sees `now_present ==
+    /// true`, so `!was_present && now_present` holds and we count a false
+    /// "applied" for an op we did not actually apply. (This does NOT produce a
+    /// spurious `nonce_skip`: that branch is taken only when the post-read is
+    /// still `false`, which a concurrent apply cannot cause.) The only
+    /// consequence is the convergence count being over-counted, which at worst
+    /// triggers one extra sweep pass; that is bounded by `MAX_PASSES`. The
+    /// count is a best-effort convergence SIGNAL, not a correctness gate — no
+    /// state can diverge from a miscount. The proper long-term fix is to have
+    /// `decrypt_and_apply_group_op` return an explicit `Applied | Skipped |
+    /// Failed` outcome instead of inferring it from the window; that refactor
+    /// is deliberately deferred.
+    fn redrive_encrypted_ops_for_group_counted(&self, group_id: [u8; 32]) -> EyreResult<usize> {
+        let gid_typed = ContextGroupId::from(group_id);
+        let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
+        let retry_candidates = retry_service
+            .collect_retry_candidates_for_group(group_id)
+            .map_err(|e| eyre::eyre!("collect_retry_candidates_for_group: {e}"))?;
+        if !retry_candidates.is_empty() {
+            record_namespace_retry_event("collected");
+        }
+
+        let mut applied = 0usize;
+        for candidate in &retry_candidates {
+            let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
+                continue;
+            };
+            let signer = &candidate.signed_op.signer;
+            let nonce = candidate.signed_op.nonce;
+            // Pre-apply nonce-window membership tells a real apply apart from an
+            // idempotent replay: `apply_group_op_inner` short-circuits an
+            // already-windowed nonce to `Ok(None)` WITHOUT mutating, and
+            // advances the window only on a genuine apply.
+            let was_present = load_nonce_window(self.store, &gid_typed, signer)
+                .map(|w| w.contains(nonce))
+                .unwrap_or(false);
+            match self.decrypt_and_apply_group_op(
+                &candidate.signed_op,
+                &gid_typed,
+                &candidate.group_key,
+                encrypted,
+            ) {
+                Ok(_divergence) => {
+                    let now_present = load_nonce_window(self.store, &gid_typed, signer)
+                        .map(|w| w.contains(nonce))
+                        .unwrap_or(false);
+                    if !was_present && now_present {
+                        // Genuine apply: the (signer, nonce) was not in the
+                        // window before and is now. Only this path counts and
+                        // only this path increments the "applied" metric — a
+                        // nonce-deduped replay short-circuits to `Ok(None)`
+                        // WITHOUT writing, so counting it as "applied" would
+                        // inflate the metric (review fix B).
+                        record_namespace_retry_event("applied");
+                        applied += 1;
+                        tracing::info!(
+                            group_id = %hex::encode(group_id),
+                            "curative re-drive applied a stranded encrypted op (#2848)"
+                        );
+                    } else {
+                        // Idempotent nonce-deduped replay: nothing was written.
+                        record_namespace_retry_event("nonce_skip");
+                    }
+                }
+                Err(e) => {
+                    record_namespace_retry_event("failed");
+                    tracing::warn!(
+                        group_id = %hex::encode(group_id),
+                        error = %format!("{e:#}"),
+                        "curative re-drive: failed to apply a buffered encrypted op (#2848)"
+                    );
+                }
+            }
+        }
+
+        Ok(applied)
+    }
+
     /// Decrypt an encrypted group op and apply it via
     /// [`apply_group_op_inner`](Self::apply_group_op_inner).
-    ///
-    /// # Hash-domain invariant
-    ///
-    /// `ns_op.state_hash` is propagated unchanged into the synthesized
-    /// `SignedGroupOp.state_hash`. This is correct because callers
-    /// always invoke this for `NamespaceOp::Group { encrypted, .. }`,
-    /// and `NamespaceGovernance::state_hash_for_op` computes the hash
-    /// over the *subgroup* (not the namespace root) for that variant —
-    /// the same domain `apply_group_op_inner`'s staleness guard then
-    /// recomputes locally. A future refactor that calls this for a
-    /// `NamespaceOp::Root` variant would silently pass the wrong
-    /// domain in, so the precondition is documented here rather than
-    /// type-enforced (the param type is the wrapping `SignedNamespaceOp`
-    /// regardless of variant, and pulling the variant info upstream
-    /// would ripple through every receive path).
     fn decrypt_and_apply_group_op(
         &self,
         ns_op: &SignedNamespaceOp,
@@ -1190,7 +1281,6 @@ impl<'a> NamespaceGovernance<'a> {
             version: calimero_context_client::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,
             group_id: group_id.to_bytes(),
             parent_op_hashes: ns_op.parent_op_hashes.clone(),
-            state_hash: ns_op.state_hash,
             signer: ns_op.signer,
             nonce: ns_op.nonce,
             op: inner_op,
@@ -1209,25 +1299,17 @@ impl<'a> NamespaceGovernance<'a> {
         let nonce = signed_group_op.nonce;
         let op = &signed_group_op.op;
 
-        // Nonce dedup MUST run before the staleness check below.
-        //
-        // `retry_encrypted_ops_for_group` (fires on every KeyDelivery) reads
-        // back the entire op log for the group and re-feeds each entry
-        // through `decrypt_and_apply_group_op` → `apply_group_op_inner`.
-        // Already-applied ops therefore arrive here a second (or third…)
-        // time with their original `state_hash` — which was the group state
-        // *before* this op landed, i.e. inevitably different from the
-        // current state once the op has been applied. Running the staleness
-        // check first would `bail!` on every such replay; running the nonce
-        // dedup first cleanly short-circuits them to `Ok(None)`.
-        // Windowed dedup: a nonce is a duplicate iff it's at or below the
-        // contiguous floor OR already in the above-floor set. This is what
-        // fixes #2516 — two concurrent same-signer ops are DAG siblings with
-        // consecutive nonces, so they can arrive in either order. The old
-        // `nonce <= last` guard advanced a single high-water mark on the
-        // first to land and then dropped the lower-nonce sibling forever; the
-        // window holds the higher one in `above` and still applies the lower
-        // one when it arrives.
+        // Windowed nonce dedup (the anti-replay gate; C5.S3b removed the op-level
+        // state_hash staleness check that used to follow it).
+        // `retry_encrypted_ops_for_group` (fires on every KeyDelivery) reads back
+        // the entire op log for the group and re-feeds each entry through
+        // `decrypt_and_apply_group_op` → `apply_group_op_inner`, so already-applied
+        // ops arrive again; the window short-circuits them to `Ok(None)`.
+        // A nonce is a duplicate iff it's at or below the contiguous floor OR
+        // already in the above-floor set. This is what fixes #2516 — two concurrent
+        // same-signer ops are DAG siblings with consecutive nonces and can arrive in
+        // either order; the window holds the higher one in `above` and still applies
+        // the lower one when it arrives.
         let mut nonce_window = load_nonce_window(self.store, group_id, signer)?;
         if nonce_window.contains(nonce) {
             tracing::debug!(
@@ -1237,37 +1319,6 @@ impl<'a> NamespaceGovernance<'a> {
                 "ignoring namespace group op with already-processed nonce"
             );
             return Ok(None);
-        }
-
-        // Staleness telemetry. `state_hash_for_op` commits to the wrapped
-        // group's pre-apply meta+member set; on receive we recompute and
-        // surface a structured warning when they disagree. We do NOT
-        // `bail!` on mismatch — that would reject legitimate concurrent
-        // ops in the multi-node case where peers A and B simultaneously
-        // sign against their (then-current) view and the second to land
-        // on peer C has already drifted. The local group-op equivalent
-        // (`apply_local_signed_group_op` in `group_store/mod.rs`) hard-
-        // bails because group state is per-subgroup and concurrent same-
-        // subgroup ops are rare; namespace-wrapped ops are shipped through
-        // the shared root DAG and concurrent contention is the norm —
-        // rejecting here breaks multi-node convergence in the
-        // scaffolding-e2e / group-3node suites. The PR caveat on #2500
-        // documents this trade-off: state_hash verification stays as a
-        // divergence signal, not an apply gate. Anchor-sync reconcile is
-        // the recovery path for genuinely diverged peers.
-        if signed_group_op.state_hash != [0u8; 32] {
-            let current = MetaRepository::new(self.store).compute_state_hash(group_id)?;
-            if signed_group_op.state_hash != current {
-                tracing::warn!(
-                    group_id = %hex::encode(group_id.to_bytes()),
-                    expected = %hex::encode(signed_group_op.state_hash),
-                    actual = %hex::encode(current),
-                    nonce,
-                    signer = %signer,
-                    "namespace group op state_hash mismatch (signed against stale state; \
-                     applying anyway — see PR #2500 caveat)"
-                );
-            }
         }
 
         if let GroupOp::ContextRegistered {
@@ -1475,48 +1526,10 @@ impl<'a> NamespaceGovernance<'a> {
         op: &SignedNamespaceOp,
         root: &RootOp,
     ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
-        // Staleness telemetry for root ops whose correctness depends on
-        // the namespace's own meta+member set (`root_op_commits_to_
-        // namespace_state` whitelist). Same shape as the group-op branch
-        // in `apply_group_op_inner` — warn on mismatch, apply anyway.
-        // Hard-rejection would over-reject the namespace path because
-        // concurrent root ops (e.g. simultaneous joins or policy updates
-        // from different admins) are the common case. The PR #2500
-        // caveat documents this trade-off; anchor-sync reconcile remains
-        // the recovery path for genuinely diverged peers.
-        //
-        // `GroupCreated` / `GroupReparented` / `GroupDeleted` are NOT
-        // gated by `root_op_commits_to_namespace_state` and skip this
-        // check entirely. Their authoritative state lives on the
-        // affected subgroup, not the namespace root.
-        if root_op_commits_to_namespace_state(root) && op.state_hash != [0u8; 32] {
-            let ns_gid = ContextGroupId::from(self.namespace_id);
-            let repo = MetaRepository::new(self.store);
-            // Mirror the sign-side bypass: if the namespace meta row
-            // hasn't been seeded yet (cold-start, bootstrap, joiner
-            // catching up via backfill), there is no state to hash. The
-            // sign side falls through to `[0u8; 32]` for the same case,
-            // but a non-zero claim can still reach a node whose meta is
-            // not yet present (e.g. a peer that signed after their
-            // bootstrap finished but the joiner receives the op before
-            // applying the namespace genesis ops). Treat as a bypass —
-            // there is no honest claim we can refute. Authorization
-            // and signature verification remain in force.
-            if let Some(_meta) = repo.load(&ns_gid)? {
-                let current = repo.compute_state_hash(&ns_gid)?;
-                if op.state_hash != current {
-                    tracing::warn!(
-                        namespace_id = %hex::encode(self.namespace_id),
-                        expected = %hex::encode(op.state_hash),
-                        actual = %hex::encode(current),
-                        nonce = op.nonce,
-                        signer = %op.signer,
-                        "namespace root op state_hash mismatch (signed against stale state; \
-                         applying anyway — see PR #2500 caveat)"
-                    );
-                }
-            }
-        }
+        // C5.S3b removed the op-level state_hash staleness telemetry that used to
+        // run here for state-committing root variants. `scope_root` is the
+        // convergence signal now; signature + the nonce window (applied by the
+        // caller) remain the safety gates.
 
         // Per-variant logic lives in `ops/namespace/<variant>.rs` (#2481). The
         // op's causal cut + the at-cut authorizer ride along so the gates can
@@ -1530,30 +1543,6 @@ impl<'a> NamespaceGovernance<'a> {
         super::super::ops::namespace::dispatch_root_op(&mut ctx, op, root)?;
         Ok(ctx.take_events())
     }
-}
-
-/// Whether a root op's correctness depends on the namespace's current
-/// meta+member set, and therefore should carry a non-zero `state_hash`
-/// committing to it.
-///
-/// Included: variants that mutate or read namespace authorization state —
-/// `AdminChanged` (admin identity), `PolicyUpdated` (policy bytes are
-/// authoritative state), `MemberJoined`/`MemberJoinedOpen` (member set).
-///
-/// Excluded: `KeyDelivery` (additive, idempotent — a stale delivery is
-/// still a valid delivery), and `GroupCreated`/`GroupReparented`/
-/// `GroupDeleted` (their authoritative state is on the affected subgroup,
-/// not on the namespace root). Gating those would over-reject on unrelated
-/// concurrent namespace activity.
-fn root_op_commits_to_namespace_state(op: &RootOp) -> bool {
-    matches!(
-        op,
-        RootOp::AdminChanged { .. }
-            | RootOp::PolicyUpdated { .. }
-            | RootOp::MemberJoined { .. }
-            | RootOp::MemberJoinedAt { .. }
-            | RootOp::MemberJoinedOpen { .. }
-    )
 }
 
 /// Apply a signed namespace op with the LIVE apply-auth gates (no causal cut).
@@ -1640,6 +1629,21 @@ pub fn apply_received_group_key(
     )
 }
 
+/// Re-drive any buffered encrypted group ops for `group_id` that were
+/// effect-skipped because their dependencies (key or subgroup meta) were
+/// not yet present. See
+/// [`NamespaceGovernance::retry_encrypted_ops_for_group`]. Used by the
+/// context crate to recover ops stranded between `GroupCreated` and
+/// `KeyDelivery` (#2848). The #2848 Part C curative startup sweep is the
+/// in-tree caller and lands in a follow-up task.
+pub fn retry_encrypted_ops_for_group(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: [u8; 32],
+) -> EyreResult<Option<super::super::DivergenceReport>> {
+    NamespaceGovernance::new(store, namespace_id).retry_encrypted_ops_for_group(group_id)
+}
+
 /// Distinct group ids in `namespace_id` that have at least one buffered
 /// encrypted group op the local node cannot yet decrypt because it holds
 /// no key for that group (nor the namespace key, which `Open` subgroups
@@ -1651,6 +1655,49 @@ pub fn namespace_groups_awaiting_key(
     namespace_id: [u8; 32],
 ) -> EyreResult<Vec<[u8; 32]>> {
     NamespaceRetryService::new(store, namespace_id).groups_awaiting_key()
+}
+
+/// Distinct group ids in `namespace_id` that have at least one buffered
+/// encrypted group op the local node CAN already decrypt — the inverse of
+/// [`namespace_groups_awaiting_key`]. This is the held-key, buffered-op set
+/// the #2848 Part C curative startup sweep re-drives: a node stranded before
+/// the live re-drive landed holds the key but has no future trigger.
+pub fn namespace_groups_with_held_key_buffered_ops(
+    store: &Store,
+    namespace_id: [u8; 32],
+) -> EyreResult<Vec<[u8; 32]>> {
+    NamespaceRetryService::new(store, namespace_id).groups_with_held_key_buffered_ops()
+}
+
+/// Enumerate every namespace this node holds an identity for — the node's
+/// full set of known namespaces. The #2848 Part C curative startup sweep
+/// iterates this to re-drive stranded buffered ops across all of them.
+pub fn known_namespace_identities(store: &Store) -> EyreResult<Vec<[u8; 32]>> {
+    Ok(NamespaceRepository::new(store)
+        .iter_identities()?
+        .into_iter()
+        .map(|gid| gid.to_bytes())
+        .collect())
+}
+
+/// Curative re-drive of a single group's buffered encrypted ops for the
+/// #2848 Part C startup sweep. Returns the count of ops it ACTUALLY applied
+/// this call (idempotent nonce-replays are not counted) — the sweep uses this
+/// as its monotone convergence signal.
+///
+/// Metric emission is delegated to the inner
+/// `redrive_encrypted_ops_for_group_counted`, which records
+/// `namespace_retry_events{status="applied"}` only on genuine applies and
+/// `status="nonce_skip"` on dedup. We intentionally do NOT emit a per-call
+/// `status="redriven"` counter here: that inflated the metric on every sweep
+/// pass over an already-drained group, so the count reflected invocations
+/// rather than ops actually recovered.
+pub fn redrive_buffered_ops_for_group(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: [u8; 32],
+) -> EyreResult<usize> {
+    NamespaceGovernance::new(store, namespace_id).redrive_encrypted_ops_for_group_counted(group_id)
 }
 
 pub async fn sign_apply_and_publish_namespace_op(

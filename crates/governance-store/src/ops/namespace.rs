@@ -21,6 +21,7 @@ mod group_deleted;
 mod group_reparented;
 mod member_joined;
 mod member_joined_open;
+mod namespace_created;
 mod policy_updated;
 
 pub(crate) use context::NamespaceApplyCtx;
@@ -39,7 +40,8 @@ pub(crate) fn dispatch_root_op(
         RootOp::GroupCreated {
             group_id,
             parent_id,
-        } => group_created::apply(ctx, op, *group_id, *parent_id),
+            restricted,
+        } => group_created::apply(ctx, op, *group_id, *parent_id, *restricted),
         RootOp::GroupDeleted {
             root_group_id,
             cascade_group_ids,
@@ -69,6 +71,10 @@ pub(crate) fn dispatch_root_op(
         RootOp::MemberJoinedOpen { member, group_id } => {
             member_joined_open::apply(ctx, op, *member, *group_id)
         }
+        // Self-authorizing namespace genesis. SECURITY residual (#2932): a
+        // self-consistent forged genesis on a BARE namespace is not blocked here
+        // — see the SECURITY note in `namespace_created::apply`.
+        RootOp::NamespaceCreated { founder } => namespace_created::apply(ctx, op, *founder),
         // `RootOp` is `#[non_exhaustive]` in `calimero-governance-types`,
         // so the wildcard is required at compile time. New variants land
         // here as `Ok(())` (silent no-op) until wired up explicitly —

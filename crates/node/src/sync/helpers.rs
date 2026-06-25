@@ -34,6 +34,98 @@ pub fn get_local_root_hash_for_context(context_id: ContextId) -> Result<[u8; 32]
     }
 }
 
+/// This node's `scope_root` for `context_id` at `entities_root` (the storage
+/// Merkle root): resolve the context's owning group, then fold the governance
+/// projection's ACL + membership/admin hashes onto `entities_root`
+/// ([`ScopeProjections::group_scope_root_ephemeral`]).
+///
+/// Folds an EPHEMERAL projection from the `store` (rather than the node's
+/// maintained one) so the HC initiator — which has the store but no `NodeState` —
+/// and the responder compute the signal the same way. `None` for a non-group
+/// context (no governance plane to fold) or a store/DAG fault — the caller MUST
+/// then **skip** the scope_root shadow comparison, never read it as a divergence
+/// (unified-causal-log cutover C0).
+///
+/// **Observe-only in C0:** the result is logged for the hash-neutral-rotation
+/// shadow, never fed into any sync decision. C1 promotes it to the authoritative
+/// convergence signal (and switches to the maintained projection).
+///
+/// TODO(perf, C1+): each call is a full `collect_namespace_ops` RocksDB DAG walk,
+/// and a sync session folds independently on both peers (responder + initiator),
+/// so a namespace with deep governance history pays an unbounded O(n) read per
+/// sync tick. Acceptable while this is observe-only, but bound it before/with the
+/// C1 flip — the node-side responders hold a `NodeState`, so they can read the
+/// already-maintained projection (`scope_root_for` on `read_scope_projections()`)
+/// instead of re-folding; the initiator can take a per-session cache or have the
+/// scope_root threaded down rather than recomputed.
+pub(crate) fn local_scope_root(
+    store: &Store,
+    context_id: &ContextId,
+    entities_root: [u8; 32],
+) -> Option<[u8; 32]> {
+    let group = calimero_context::group_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    calimero_context::scope_projection::ScopeProjections::group_scope_root_ephemeral(
+        store,
+        &group,
+        entities_root,
+    )
+}
+
+/// The cross-plane convergence verdict between two peers (cutover P6.S1 — the single
+/// source of truth all sync protocols decide against).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScopeVerdict {
+    /// Both planes agree — the authoritative `scope_root` matched, or (when a scope
+    /// can't be folded) the bare entity roots matched.
+    Converged,
+    /// Entity roots agree but `scope_root` differs ⇒ pure ACL/governance divergence
+    /// (the hash-neutral case the entity root hides; awaits governance sync). Carries
+    /// the two resolved scope roots `(local, peer)` so callers log them without
+    /// re-destructuring the `Option`s the verdict already proved were `Some`.
+    GovDiverged([u8; 32], [u8; 32]),
+    /// Entity roots differ ⇒ the data plane needs reconciliation.
+    DataDiverged,
+}
+
+impl ScopeVerdict {
+    pub(crate) fn converged(self) -> bool {
+        matches!(self, ScopeVerdict::Converged)
+    }
+}
+
+/// The authoritative convergence verdict (C1): `scope_root` folds entities + ACL +
+/// membership/admin, so when BOTH sides resolve one it alone decides — closing the
+/// hash-neutral rotation blind spot. When either side can't fold the scope (cold
+/// projection / non-group context, `None`), fall back to the bare entity-root compare
+/// — exactly the pre-C1 behaviour, so no context regresses to a weaker check.
+///
+/// Previously this verdict was open-coded identically in `hash_comparison_protocol`,
+/// `level_sync`, and the delta paths; P6.S1 makes it one function so every sync
+/// protocol reaches the same conclusion and the later stages can route off it.
+pub(crate) fn scope_verdict(
+    local_scope_root: Option<[u8; 32]>,
+    peer_scope_root: Option<[u8; 32]>,
+    local_entity_root: [u8; 32],
+    peer_entity_root: [u8; 32],
+) -> ScopeVerdict {
+    match (local_scope_root, peer_scope_root) {
+        (Some(local), Some(peer)) if local == peer => ScopeVerdict::Converged,
+        (Some(local), Some(peer)) if local_entity_root == peer_entity_root => {
+            ScopeVerdict::GovDiverged(local, peer)
+        }
+        (Some(_), Some(_)) => ScopeVerdict::DataDiverged,
+        // Asymmetric `None` (exactly one side has a cold projection / non-group
+        // context) intentionally falls back to the bare entity-root compare rather
+        // than reporting GovDiverged: we can't fold a scope_root we don't have, so
+        // treating the mismatch as governance divergence would raise a false alarm
+        // on a partially-warmed node. This is the pre-C1 check — don't "fix" it.
+        _ if local_entity_root == peer_entity_root => ScopeVerdict::Converged,
+        _ => ScopeVerdict::DataDiverged,
+    }
+}
+
 /// Validates that peer's application ID matches ours.
 ///
 /// # Errors
@@ -1326,5 +1418,53 @@ mod empty_chain_placement_tests {
         // apply path must defer instead of placing it, so the predicate
         // must report "unsafe" here.
         assert!(!super::empty_chain_placement_is_safe(false, false));
+    }
+
+    use super::{scope_verdict, ScopeVerdict};
+    const A: [u8; 32] = [0xAA; 32];
+    const B: [u8; 32] = [0xBB; 32];
+    const E1: [u8; 32] = [0x11; 32];
+    const E2: [u8; 32] = [0x22; 32];
+
+    #[test]
+    fn scope_verdict_both_resolved_and_equal_is_converged() {
+        assert_eq!(
+            scope_verdict(Some(A), Some(A), E1, E2),
+            ScopeVerdict::Converged
+        );
+        assert!(scope_verdict(Some(A), Some(A), E1, E2).converged());
+    }
+
+    #[test]
+    fn scope_verdict_scope_differs_entities_agree_is_gov_diverged() {
+        // scope_root is authoritative: entities matching doesn't mean converged.
+        // The verdict carries the resolved roots so callers log without re-unwrapping.
+        assert_eq!(
+            scope_verdict(Some(A), Some(B), E1, E1),
+            ScopeVerdict::GovDiverged(A, B)
+        );
+        assert!(!scope_verdict(Some(A), Some(B), E1, E1).converged());
+    }
+
+    #[test]
+    fn scope_verdict_scope_and_entities_both_differ_is_data_diverged() {
+        assert_eq!(
+            scope_verdict(Some(A), Some(B), E1, E2),
+            ScopeVerdict::DataDiverged
+        );
+    }
+
+    #[test]
+    fn scope_verdict_cold_projection_falls_back_to_entity_compare() {
+        // Either side `None` ⇒ pre-C1 entity-root compare (no regression to weaker).
+        assert_eq!(
+            scope_verdict(None, Some(A), E1, E1),
+            ScopeVerdict::Converged
+        );
+        assert_eq!(
+            scope_verdict(Some(A), None, E1, E2),
+            ScopeVerdict::DataDiverged
+        );
+        assert_eq!(scope_verdict(None, None, E1, E1), ScopeVerdict::Converged);
     }
 }

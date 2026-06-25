@@ -95,7 +95,6 @@ fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_casca
         &admin_sk,
         r.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeUpgrade {
             from_app_key: APP_KEY_1,
@@ -175,7 +174,6 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
         &admin_sk,
         root.to_bytes(),
         vec![[0u8; 32]],
-        [0u8; 32],
         1,
         GroupOp::GroupMetadataSet {
             name: Some("label".to_owned()),
@@ -190,7 +188,6 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
         &admin_sk,
         root.to_bytes(),
         vec![op_p_hash],
-        [0u8; 32],
         2,
         GroupOp::CascadeUpgrade {
             from_app_key: APP_KEY_1,
@@ -297,7 +294,6 @@ fn two_op_reverse_delivery_drops_migration_characterization() {
             &admin_sk,
             r.to_bytes(),
             vec![],
-            [0u8; 32],
             1,
             GroupOp::CascadeTargetApplicationSet {
                 from_app_key: APP_KEY_1,
@@ -314,7 +310,6 @@ fn two_op_reverse_delivery_drops_migration_characterization() {
             &admin_sk,
             r.to_bytes(),
             vec![],
-            [0u8; 32],
             2,
             GroupOp::CascadeGroupMigrationSet {
                 from_app_key: APP_KEY_1,

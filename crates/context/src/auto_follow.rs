@@ -42,7 +42,7 @@ use calimero_context_client::group::JoinContextRequest;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
-use tokio::sync::Semaphore;
+use tokio::sync::{broadcast, Semaphore};
 use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
 
@@ -183,8 +183,26 @@ pub fn spawn(store: Store, context_client: ContextClient) {
     }
     let limiter = Arc::new(RateLimiter::new(DEFAULT_BURST, DEFAULT_PER));
     let task_limiter = Arc::clone(&limiter);
+    // Subscribe SYNCHRONOUSLY here, on the caller's thread, BEFORE spawning the
+    // task — do NOT defer the `op_events::subscribe()` into the async `run`.
+    //
+    // Ordering guarantee (#2848 Part C): `ContextManager::started` calls
+    // `auto_follow::spawn` BEFORE `self_purge::spawn` on the same (actor)
+    // thread. The self_purge task runs the curative `redrive_stranded_ops_sweep`,
+    // which emits `OpEvent::ContextRegistered` for each context it recovers.
+    // Those events are how a recovered context reaches auto-follow's join path —
+    // auto-follow has NO startup re-scan of existing contexts, it is purely
+    // event-driven. If auto-follow only subscribed inside its own async `run`,
+    // that subscribe would race the self_purge task's sweep: the sweep could
+    // emit (and the broadcast drop) the `ContextRegistered` before auto-follow's
+    // receiver existed, leaving the recovered context written to the store but
+    // never joined/replicated. Subscribing on the spawn thread makes the
+    // receiver provably exist before `self_purge::spawn` is even called, so the
+    // sweep's emits are always delivered. (tokio broadcast only delivers to
+    // receivers created before the send.)
+    let rx = op_events::subscribe();
     let abort = tokio::spawn(async move {
-        run(store, context_client, task_limiter).await;
+        run(rx, store, context_client, task_limiter).await;
     })
     .abort_handle();
     *slot = Some(HandleState { abort, limiter });
@@ -207,8 +225,16 @@ pub fn shutdown() {
     }
 }
 
-async fn run(store: Store, context_client: ContextClient, limiter: Arc<RateLimiter>) {
-    let mut rx = op_events::subscribe();
+async fn run(
+    mut rx: broadcast::Receiver<OpEvent>,
+    store: Store,
+    context_client: ContextClient,
+    limiter: Arc<RateLimiter>,
+) {
+    // NOTE: the `rx` receiver is created in `spawn` (synchronously, before the
+    // task is scheduled) — NOT here — so it provably exists before
+    // `self_purge::spawn`'s curative sweep can emit. See `spawn` for the
+    // ordering rationale (#2848 Part C). Do not move the subscribe back here.
     info!("auto-follow handler started");
 
     loop {

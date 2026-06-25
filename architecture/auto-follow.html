@@ -300,79 +300,11 @@ to retrieve the candidate's <em>actual</em> role at the anchor group, falling ba
 <code>ReadOnlyTee</code> — rather than a uniform <code>Member</code>.
 </p>
 
-<h3><code>acl_view_at</code> — Branch 1 fast-path</h3>
-<p>
-Branch 1 fires when the DAG heads match local state and there is no <em>direct</em>
-<code>GroupMember</code> row for the signer. It previously returned
-<code>MembershipStatus::Member(GroupMemberRole::Member)</code> for every
-<code>Inherited</code> path variant. It now mirrors <code>enumerate_inherited</code>:
-</p>
-<ul>
-  <li>A <code>via_admin: true</code> path resolves to <code>Admin</code>.</li>
-  <li>A <code>via_admin: false</code> path calls <code>role_of(&amp;anchor, signer)</code> and
-  returns the real role (e.g. <code>ReadOnlyTee</code>).</li>
-</ul>
-
-<h3>Fail-closed behaviour</h3>
-<p>
-Two cases that were previously fail-open now fail closed to
-<code>MembershipStatus::NeverMember</code> with a <code>warn!</code> log so violations are
-observable:
-</p>
-<ul>
-  <li><b>Non-admin Inherited arm:</b> returns <code>NeverMember</code> when
-  <code>role_of</code> returns <code>None</code> (anchor row deleted between
-  <code>check_path</code> and <code>role_of</code> reads).</li>
-  <li><b>Direct arm</b> (unreachable by construction, reachable under store inconsistency):
-  returns <code>NeverMember</code> instead of <code>Member</code>.</li>
-</ul>
-<p>
-Callers must treat <code>NeverMember</code> as <strong>authoritative and final</strong>, not
-retriable, because Branch 1 runs only at a committed state cut.
-</p>
-
-<h3><code>debug_assert</code> pin invariants</h3>
-<ul>
-  <li>A <code>debug_assert!(false, ...)</code> is added to the <code>Direct</code> arm so that
-  any future refactor routing <code>role_of</code> and <code>check_path</code> at different keys
-  panics immediately in debug/test builds while release falls through to fail-closed
-  <code>NeverMember</code>.</li>
-  <li>A <code>debug_assert!(repo.is_admin(&amp;anchor, signer)?)</code> is added to the
-  <code>via_admin: true</code> arm to catch any future <code>check_path</code> change that sets
-  <code>via_admin</code> without genuine admin authority at the anchor.</li>
-</ul>
-
-<h3>INVARIANT &amp; TOCTOU semantics</h3>
-<p>
-<code>acl_view_at</code>'s non-atomic multi-read pattern (<code>check_path</code> then
-<code>role_of</code>) is coherent only under the per-context exclusive
-<code>ContextLock</code> guard from <code>calimero_context::ContextManager</code>. Two TOCTOU
-directions exist:
-</p>
-<ul>
-  <li><b>Row deleted between reads</b> → <code>NeverMember</code>; treated as authoritative
-  (conservative, correct).</li>
-  <li><b>Row replaced between reads</b> (role escalation window) → closed only by the
-  <code>ContextLock</code> guarantee.</li>
-</ul>
-<p>
-The admin arm is asymmetric: it reads no anchor role row (a creator/owner may have no member
-row), while the non-admin arm always reads the anchor role. Any future caller that invokes
-<code>acl_view_at</code> without an exclusive <code>ContextLock</code> must fold
-<code>check_path</code> and <code>role_of</code> into one atomic read to avoid TOCTOU.
-</p>
-
 <h3>New regression tests</h3>
 <ul>
   <li><code>enumerate_inherited_members_preserves_read_only_tee_role</code> — verifies the
   enumeration path returns <code>ReadOnlyTee</code> for an inherited member carrying that
   role.</li>
-  <li><code>acl_view_at_branch1_preserves_inherited_read_only_tee_role</code> — verifies the
-  ACL fast-path returns <code>ReadOnlyTee</code> for an inherited <code>ReadOnlyTee</code>
-  member.</li>
-  <li><code>acl_view_at_branch1_inherited_admin_resolves_to_admin</code> — verifies the
-  ACL fast-path returns <code>Admin</code> for an inherited admin, and exercises the
-  <code>debug_assert</code> in the <code>via_admin</code> arm.</li>
 </ul>
 </div>
 
@@ -385,6 +317,19 @@ row), while the non-admin arm always reads the anchor role. Any future caller th
   <li><b>Observability.</b> Every auto-join emits a structured <code>info!</code> log line
   with <code>group_id</code> and <code>context_id</code>. Failures emit <code>warn!</code> with
   the underlying error. No new metrics — the log stream is enough for postmortems.</li>
+  <li><b><code>state_hash</code> mismatch warnings.</b> In
+  <code>apply_local_signed_group_op_at_cut</code>, a mismatch between the op's signed
+  <code>state_hash</code> and the recomputed current hash previously caused a hard error that
+  dropped the op. It now emits a structured <code>tracing::warn!</code> (including op variant,
+  expected/actual hashes, nonce, and signer) and <em>proceeds to apply the op</em>. A
+  <code>local group op state_hash mismatch</code> warning is therefore expected under concurrent
+  multi-node governance activity and does not indicate a rejected op; it is staleness telemetry
+  only. The absent-meta bypass (skip hash check when the subgroup meta row does not yet exist,
+  #2848) is preserved unchanged. Additionally, the per-signer nonce-window load and containment
+  check (<code>load_nonce_window</code>) now runs <em>before</em> the <code>state_hash</code>
+  comparison block, so a replayed op returns <code>Ok(())</code> early without ever reaching the
+  hash logic and cannot emit a misleading mismatch warning for an op that is actually being
+  discarded.</li>
   <li><b>Membership-path authorization.</b> The <code>member_joined_open::apply</code> gate
   now evaluates membership-path authorization against the causal-cut projection state via
   <code>NamespaceApplyCtx::projection_membership_path</code>, which returns
@@ -403,13 +348,24 @@ FIND>>>
   <li><b>Observability.</b> Every auto-join emits a structured <code>info!</code> log line
   with <code>group_id</code> and <code>context_id</code>. Failures emit <code>warn!</code> with
   the underlying error. No new metrics — the log stream is enough for postmortems.</li>
-  <li><b>Membership-path divergence plane.</b> The <code>member_joined_open::apply</code> gate
-  now emits a <code>tracing::warn!</code> with marker <code>unified_projection_divergence</code>
-  and <code>plane=membership-path</code> whenever the projection's at-cut membership path
-  disagrees with the live <code>check_path</code> result. Operators monitoring
-  <code>unified_projection_divergence</code> warnings should expect this new
-  <code>membership-path</code> variant. The gate's actual admission decision is unchanged —
-  it still acts on the live <code>check_path</code> result.</li>
+  <li><b>Membership-path authorization.</b> The <code>member_joined_open::apply</code> gate
+  now evaluates membership-path authorization entirely against the unified projection via
+  <code>AtCutAuthorizer::membership_path_at_cut</code>. The former live DAG walk
+  (<code>acl_view_at</code> / <code>prefix_walk_membership</code> / <code>MembershipStatus</code>)
+  has been removed; those symbols no longer exist. The live <code>check_path</code> call is a
+  fallback used only when the projection returns <code>None</code> (no apply-auth context,
+  incomplete fold, or default live-only authorizer). The
+  <code>shadow_membership_path</code> divergence-logging helper has also been removed.</li>
+FIND>>>
+<<<REPLACE
+  <li><b>Membership-path authorization.</b> The <code>member_joined_open::apply</code> gate
+  now evaluates membership-path authorization entirely against the unified projection via
+  <code>AtCutAuthorizer::membership_path_at_cut</code>. The former live DAG walk
+  (<code>acl_view_at</code> / <code>prefix_walk_membership</code> / <code>MembershipStatus</code>)
+  has been removed; those symbols no longer exist. The live <code>check_path</code> call is a
+  fallback used only when the projection returns <code>None</code> (no apply-auth context,
+  incomplete fold, or default live-only authorizer). The
+  <code>shadow_membership_path</code> divergence-logging helper has also been removed.</li>
   <li><b>Authorization source.</b> <code>PermissionChecker::is_admin</code> and
   <code>is_authorized_with_capability</code> now use the projection-at-cut verdict as
   authoritative when available. Live store queries are a fallback only when the authorizer
@@ -483,15 +439,11 @@ FIND>>>
   <code>AtCutAuthorizer::is_last_admin_at_cut</code> to read the pre-mutation admin set from
   the projection as of the op's parent cut. The live membership computation is used only as a
   fallback when no apply-auth context is present (local pre-checks, cascades, tests) or the fold
-  is incomplete; this fallback path is noted as retiring in a follow-up. The
-  <code>shadow_last_admin</code> helper — which compared the projection's at-cut verdict against
-  the live verdict and emitted <code>unified_projection_divergence</code> /
-  <code>plane=last-admin</code> warnings on mismatch — has been deleted now that the gate
-  resolves authoritatively from the projection. <code>GroupApplyCtx::new</code> calls
-  <code>.with_apply_auth(parents, authorizer)</code> on the <code>MembershipPolicy</code> it
-  constructs, passing the same parents and authorizer already used by
-  <code>PermissionChecker</code>, activating the projection-at-cut last-admin gate for all
-  group-op apply paths.</li>
+  is incomplete. The <code>shadow_last_admin</code> helper and all
+  <code>unified_projection_divergence</code> / <code>plane=last-admin</code> warnings have been
+  deleted. <code>GroupApplyCtx::new</code> calls <code>.with_apply_auth(parents, authorizer)</code>
+  on the <code>MembershipPolicy</code> it constructs, activating the projection-at-cut last-admin
+  gate for all group-op apply paths.</li>
   <li><code>crates/context/src/authorizer.rs</code> (or equivalent) — <code>AtCutAuthorizer</code>
   trait gains the required <code>is_admin_or_capability_at_cut</code> method, the
   <code>is_last_admin_at_cut</code> method, and the new required
@@ -505,7 +457,13 @@ FIND>>>
   <code>parents</code> slice returns <code>None</code> (defer to live), consistent with the
   existing <code>is_admin_at_cut</code> pattern. <code>LiveFallbackAuthorizer</code> implements
   all three methods as always-<code>None</code>, keeping all non-apply-auth constructions on
-  the live-fallback path.</li>
+  the live-fallback path.
+  <br><b>Note:</b> the live governance-cut resolver (<code>acl_view_at</code>,
+  <code>MembershipStatus</code>, <code>prefix_walk_membership</code>,
+  <code>MembershipTransition</code>, <code>resolve_membership_from_transitions</code>,
+  <code>heads_equal</code>, <code>MAX_PREFIX_WALK_NODES</code>) has been deleted from
+  <code>governance-store/src/membership/status.rs</code>. Membership authorization is now
+  handled entirely by the unified projection; do not reference these removed symbols.</li>
 FIND>>>
 <<<REPLACE
   <li><code>crates/context/src/authorizer.rs</code> (or equivalent) — <code>AtCutAuthorizer</code>
@@ -525,6 +483,267 @@ FIND>>>
 </ul>
 </div>
 
+<div class="card gd"><h2>Re-drive Buffered Ops on GroupCreated &amp; Born-Open Subgroups <em>(#2848 / #2771)</em></h2>
+
+<p>
+This section documents four related changes that close a permanent-stall window where buffered
+encrypted ops for a subgroup could never be applied, and extends <code>RootOp::GroupCreated</code>
+to carry subgroup visibility at creation time.
+</p>
+
+<h3>The Stall Window (Motivation)</h3>
+<p>
+The only previous trigger for retrying buffered encrypted ops was <code>KeyDelivery</code>. If
+<code>KeyDelivery</code> arrived <em>before</em> <code>GroupCreated</code>, the retry failed
+immediately because the subgroup's <code>GroupMeta</code> row did not yet exist, and no
+subsequent trigger ever re-fired. The buffered ops remained stranded indefinitely. This affected
+re-admitted members and any topology where DAG op ordering placed <code>GroupCreated</code> after
+the key delivery.
+</p>
+
+<h3>Part A — Re-drive on GroupCreated Apply</h3>
+<p>
+After <code>RootOp::GroupCreated</code> is applied, the governance layer now checks whether the
+node holds any key for the new subgroup (or the namespace key, for Open subgroups). If a key is
+held, it immediately calls the buffered-op retry path for that group — the same path that
+<code>KeyDelivery</code> triggers. This closes the stall window regardless of which op arrives
+first.
+</p>
+<p>
+The retry is triggered on both apply entry points:
+</p>
+<ul>
+  <li><code>apply_local_signed_group_op_at_cut</code> — local group-op path.</li>
+  <li><code>NamespaceGovernance::apply_group_op_inner</code> — namespace envelope path.</li>
+</ul>
+
+<h3>Part B — Bypass <code>state_hash</code> Staleness Check When Subgroup Meta Is Absent</h3>
+<p>
+Both apply paths now skip the <code>state_hash</code> staleness check entirely when the
+subgroup's <code>GroupMeta</code> row does not yet exist, rather than calling
+<code>compute_state_hash</code> and failing with <code>GroupNotFoundForHash</code>. This mirrors
+the existing zero-hash fast-path and makes the meta-absent case consistent with it:
+</p>
+<pre class="code">// Before: compute_state_hash → GroupNotFoundForHash
+// After:
+if meta_absent || state_hash == ZERO_HASH {
+    // skip staleness check
+}</pre>
+
+<h3>Part C — Curative Startup Sweep</h3>
+<p>
+A one-shot <code>redrive_stranded_ops_sweep</code> runs at node startup (inside
+<code>self_purge::run</code>, after subscribing to <code>op_events</code> and before the event
+loop). It:
+</p>
+<ol>
+  <li>Iterates every namespace the node holds an identity for.</li>
+  <li>Finds groups with buffered ops whose key is already held (the inverse of
+  <code>groups_awaiting_key</code>).</li>
+  <li>Re-drives each one via <code>redrive_encrypted_ops_for_group_counted</code>.</li>
+  <li>Loops until a full pass applies nothing new (cross-signer convergence), bounded by
+  <code>MAX_PASSES = 64</code>, with pass-narrowing so only groups that made progress in the
+  previous pass are revisited.</li>
+</ol>
+<p>
+Errors are logged and swallowed; the sweep never blocks startup. Nodes that were stranded before
+this release will self-heal on the next restart without operator intervention.
+</p>
+
+<h3>TEE-Replica Bootstrap — Seed Root Default Capabilities</h3>
+<p>
+<code>seed_bootstrap_admin_if_absent</code> (the <code>KeyDelivery</code>-seed path used by TEE
+replicas) seeds the namespace root's default capabilities to
+<code>CAN_JOIN_OPEN_SUBGROUPS</code> when that capability key is absent. The seed is gated on
+absence so it is idempotent and never clobbers a later admin-authored
+<code>DefaultCapabilitiesSet</code> op. Without this, a TEE replica could hold the group key
+but still be unable to join Open subgroups because the capability row was never written.
+</p>
+<p>
+<strong>Founder is no longer pinned here (#2474).</strong> This path no longer pins the
+<code>KeyDelivery</code> signer as admin/owner. It now writes a <strong>non-authoritative
+placeholder</strong> (zero-key <code>admin_identity</code>) plus a <code>Member</code> row for the
+deliverer, alongside the default-capabilities bootstrap above. The real founding admin is
+derived authoritatively from the synced DAG genesis op
+(<code>RootOp::NamespaceCreated { founder }</code>), which overwrites the placeholder on apply —
+replacing the previous trust-on-first-<code>KeyDelivery</code> behavior.
+</p>
+<p>
+<strong>Pre-existing stranded replicas</strong> need either a restart (triggering the startup
+sweep in Part C) or a gossiped <code>DefaultCapabilitiesSet</code> op from an admin to acquire
+the capability row.
+</p>
+
+<h3>Born-Open Atomic Subgroup Create (<code>RootOp::GroupCreated</code> wire change)</h3>
+<p>
+<code>RootOp::GroupCreated</code> gains a boolean <code>restricted</code> field
+(<strong>Borsh wire break — nodes must reset</strong>). The apply handler writes the subgroup's
+visibility key via <code>CapabilitiesRepository::set_subgroup_visibility</code> during apply,
+before <code>OpEvent::SubgroupCreated</code> is queued, and only on first apply (gated on
+<code>has_subgroup_visibility</code> absence to avoid clobbering a later
+<code>SubgroupVisibilitySet</code> flip):
+</p>
+<ul>
+  <li><code>restricted: false</code> — subgroup is born Open; <code>tee_subgroup_admit</code>
+  skips it and no transient direct <code>ReadOnlyTee</code> row is written.</li>
+  <li><code>restricted: true</code> — legacy behavior; subgroup is born Restricted. This is
+  the default and preserves wire compatibility for any tooling that constructs the op directly.</li>
+</ul>
+<p>
+The op-adapter projection now reads <code>restricted</code> from the live op instead of
+hardcoding <code>true</code>.
+</p>
+<p>
+API surface changes:
+</p>
+<ul>
+  <li><code>CreateGroupRequest</code> gains a <code>restricted</code> field (default
+  <code>true</code>).</li>
+  <li>The <code>create-group-in-namespace</code> REST endpoint accepts an optional
+  <code>visibility</code> field (<code>"open"</code> or <code>"restricted"</code>, default
+  <code>"restricted"</code>).</li>
+</ul>
+
+<h3>Operator Checklist</h3>
+<ul>
+  <li><strong>Wire break.</strong> The <code>RootOp::GroupCreated</code> Borsh shape has
+  changed. All nodes in a namespace must reset before the new binary is deployed; mixed-version
+  clusters will fail to deserialize the op.</li>
+  <li><strong>Stranded replicas.</strong> TEE replicas admitted before this release may lack the
+  root default-capability row. A restart or a gossiped <code>DefaultCapabilitiesSet</code> from
+  an admin is required for those nodes to join Open subgroups.</li>
+  <li><strong>Startup sweep.</strong> The sweep is logged at <code>info!</code> level per group
+  re-driven and at <code>warn!</code> on error. A clean node with no buffered ops completes the
+  sweep in a single pass with no log output beyond the start/end lines.</li>
+  <li><strong>Born-Open subgroups.</strong> Creating a subgroup with
+  <code>visibility: "open"</code> is now atomic — no separate <code>SubgroupVisibilitySet</code>
+  op is needed. Any tooling that issued a two-step create+flip can be simplified.</li>
+</ul>
+</div>
+<div class="card ga"><h2>Namespace Genesis — <code>RootOp::NamespaceCreated</code></h2>
+
+<p>
+<strong>(#2474 / #2932)</strong> A new <code>NamespaceCreated { founder: PublicKey }</code>
+variant is appended to the <code>RootOp</code> enum. It is the <strong>first op in every
+namespace DAG</strong>: no parents, nonce 1, signed with the namespace key. It carries the
+<code>namespace_created</code> op-kind label and is classified as a cheap-timeout op in
+<code>governance_broadcast</code>.
+</p>
+
+<div class="card gb" style="margin:16px 0;">
+<p style="margin:0;">
+<strong>Wire break.</strong> <code>NamespaceCreated</code> is appended at the end of the
+<code>RootOp</code> enum so existing Borsh discriminants do not renumber. It is nevertheless a
+Borsh-breaking addition for any consumer that pins <code>calimero-governance-types</code>. All
+nodes in a namespace must coordinate a reset before deploying the new binary. Consumers such as
+<code>mero-tee</code> must bump their core-rev dependency accordingly.
+</p>
+</div>
+
+<h3>Apply Rules</h3>
+<p>
+The handler in <code>ops/namespace/namespace_created.rs</code> is <strong>self-authorizing</strong>
+— it does not call <code>require_namespace_admin</code>. Established-ness is keyed solely on
+<code>admin_identity != PLACEHOLDER_ADMIN_IDENTITY</code>. The handler branches as follows:
+</p>
+<ul>
+  <li><strong>Not established + has parents:</strong> returns
+  <code>Err(NamespaceCreatedRejected(NotGenesis { parent_count }))</code>. This is
+  load-bearing: an <code>Err</code> propagates before <code>advance_dag_head</code>, so the
+  head remains empty and a subsequent parentless genesis can still apply.</li>
+  <li><strong>Not established + no parents + signer ≠ founder:</strong> returns
+  <code>Err(NamespaceCreatedRejected(SignerNotFounder))</code>.</li>
+  <li><strong>Not established + no parents + signer == founder:</strong> writes root meta with
+  <code>admin == owner == founder</code> (preserving other fields from any existing partial
+  meta), unconditionally upserts the founder's <code>Admin</code> member row, and seeds default
+  <code>CAN_JOIN_OPEN_SUBGROUPS</code> capabilities if absent.</li>
+  <li><strong>Established + same founder + no parents (genesis-shaped re-arrival):</strong>
+  ensures the <code>Admin</code> member row (upgrade-only, never downgrade), repairs a diverged
+  <code>owner_identity</code> back to the founder, seeds default caps if absent. Returns
+  <code>Ok</code>.</li>
+  <li><strong>Established + same founder + has parents:</strong> pure no-op <code>Ok</code>
+  (not genesis-shaped; no state mutation).</li>
+  <li><strong>Established + different founder:</strong> pure no-op <code>Ok</code>
+  (anti-hijack guard).</li>
+</ul>
+
+<h3>Placeholder Admin Identity</h3>
+<p>
+A module-level constant <code>PLACEHOLDER_ADMIN_IDENTITY: [u8; 32] = [0u8; 32]</code> and
+companion function <code>placeholder_admin_identity() -> PublicKey</code> are defined in
+<code>governance-store/src/lib.rs</code>. The all-zeros encoding is cryptographically safe: it
+corresponds to the Ed25519 torsion/identity point, outside the prime-order subgroup, so no real
+keypair can produce it.
+</p>
+
+<h3>Seed Behavior Change — Authority No Longer Conferred by <code>seed_bootstrap_admin_if_absent</code></h3>
+<p>
+<code>seed_bootstrap_admin_if_absent</code> now writes the <code>PLACEHOLDER_ADMIN_IDENTITY</code>
+sentinel as both <code>admin_identity</code> and <code>owner_identity</code>. The
+<code>KeyDelivery</code> signer receives a non-authoritative <code>GroupMemberRole::Member</code>
+row instead of <code>Admin</code>. The real founding admin is established only when the
+<code>NamespaceCreated</code> genesis op is applied:
+</p>
+<ul>
+  <li><strong>Genesis arrives after seed:</strong> the handler detects the placeholder and
+  overwrites <code>admin_identity</code> / <code>owner_identity</code> with the founder, then
+  upgrades the founder's member row to <code>Admin</code>.</li>
+  <li><strong>Genesis arrives before seed:</strong> the namespace is already established; the
+  seed writes into an already-established store and the anti-hijack no-op path applies on any
+  re-arrival of the genesis op.</li>
+</ul>
+<p>
+Both orderings converge on the genesis-supplied founder as the authoritative admin. The former
+trust-on-first-<code>KeyDelivery</code> behavior — where the deliverer's identity was pinned as
+admin — has been removed. <strong>Any operator documentation or threat-model notes describing
+the seed as the source of admin authority are now obsolete.</strong>
+</p>
+
+<h3>Trust Residual on Bare Replicas (#2932)</h3>
+<p>
+A TEE replica that has received a <code>KeyDelivery</code> but not yet the
+<code>NamespaceCreated</code> genesis op is in a <em>partially-established</em> state: it holds
+the placeholder admin identity and a <code>Member</code> row for the deliverer. It cannot
+authorize admin-level ops until the genesis op arrives and overwrites the placeholder. Operators
+should ensure the genesis op is replicated promptly; the startup sweep described in the
+<em>Re-drive Buffered Ops</em> section will retry any buffered ops once the meta row is
+established.
+</p>
+
+<h3>New Error Types</h3>
+<ul>
+  <li><code>NamespaceCreatedRejection::SignerNotFounder</code> — signer key does not match the
+  declared <code>founder</code> field.</li>
+  <li><code>NamespaceCreatedRejection::NotGenesis { parent_count }</code> — the op has parents
+  but the namespace is not yet established.</li>
+  <li><code>ApplyError::NamespaceCreatedRejected(NamespaceCreatedRejection)</code> — wraps the
+  above and is returned from the apply handler without advancing the DAG head.</li>
+</ul>
+
+<h3><code>GroupKeyring::delete_key_by_id</code></h3>
+<p>
+A new method <code>GroupKeyring::delete_key_by_id(key_id: &amp;[u8; 32])</code> deletes a
+single stored group key by its id. Unlike <code>delete_all_for_group</code> it does not require
+the membership-removed purge precondition. Its sole intended use is the namespace-root genesis
+rollback path, where a key installed speculatively must be removed if the genesis op is
+subsequently rejected.
+</p>
+
+<h3>Key Files</h3>
+<ul>
+  <li><code>calimero-governance-types/src/root_op.rs</code> — <code>RootOp::NamespaceCreated</code>
+  variant (appended).</li>
+  <li><code>governance-store/src/ops/namespace/namespace_created.rs</code> — apply handler.</li>
+  <li><code>governance-store/src/lib.rs</code> — <code>PLACEHOLDER_ADMIN_IDENTITY</code> constant
+  and <code>placeholder_admin_identity()</code> helper.</li>
+  <li><code>governance-store/src/errors.rs</code> — <code>NamespaceCreatedRejection</code> enum
+  and <code>ApplyError::NamespaceCreatedRejected</code> variant.</li>
+  <li><code>governance-store/src/keyring.rs</code> — <code>GroupKeyring::delete_key_by_id</code>.</li>
+  <li><code>governance-store/src/namespace/tests.rs</code>,
+  <code>governance-store/src/tests.rs</code> — regression and unit tests (13 new cases including
+  the <code>#2474</code> regression guard).</li>
+</ul>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>

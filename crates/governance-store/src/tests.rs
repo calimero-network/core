@@ -423,7 +423,6 @@ fn apply_local_signed_group_op_nonce_and_admin() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: member_pk,
@@ -436,15 +435,13 @@ fn apply_local_signed_group_op_nonce_and_admin() {
         .is_member(&gid, &member_pk)
         .unwrap());
 
-    let op_dup_nonce =
-        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 1, GroupOp::Noop).unwrap();
+    let op_dup_nonce = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 1, GroupOp::Noop).unwrap();
     assert!(
         apply_local_signed_group_op(&store, &op_dup_nonce).is_ok(),
         "duplicate nonce should be silently accepted (idempotent)"
     );
 
-    let op2 =
-        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 2, GroupOp::Noop).unwrap();
+    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).unwrap();
     apply_local_signed_group_op(&store, &op2).unwrap();
 
     let non_admin_sk = PrivateKey::random(&mut rng);
@@ -455,7 +452,6 @@ fn apply_local_signed_group_op_nonce_and_admin() {
         &non_admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: PrivateKey::random(&mut rng).public_key(),
@@ -503,7 +499,6 @@ fn apply_local_signed_group_op_out_of_order_siblings_2516() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         2,
         GroupOp::MemberAdded {
             member: member_high,
@@ -528,7 +523,6 @@ fn apply_local_signed_group_op_out_of_order_siblings_2516() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: member_low,
@@ -606,7 +600,6 @@ fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member,
@@ -732,7 +725,6 @@ fn reject_read_only_tee_via_member_added() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: tee_pk,
@@ -776,7 +768,6 @@ fn reject_read_only_tee_via_member_role_set() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberRoleSet {
             member: member_pk,
@@ -823,7 +814,6 @@ fn apply_local_member_alias_member_signer_or_admin() {
         &member_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberMetadataSet {
             member: member_pk,
@@ -847,7 +837,6 @@ fn apply_local_member_alias_member_signer_or_admin() {
         &other_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberMetadataSet {
             member: member_pk,
@@ -862,7 +851,6 @@ fn apply_local_member_alias_member_signer_or_admin() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberMetadataSet {
             member: member_pk,
@@ -917,7 +905,6 @@ fn apply_local_context_alias_admin_or_creator() {
         &creator_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::ContextRegistered {
             context_id,
@@ -934,7 +921,6 @@ fn apply_local_context_alias_admin_or_creator() {
         &creator_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         2,
         GroupOp::ContextMetadataSet {
             context_id,
@@ -952,7 +938,6 @@ fn apply_local_context_alias_admin_or_creator() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::ContextMetadataSet {
             context_id,
@@ -1004,7 +989,6 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberCapabilitySet {
             member: member_m,
@@ -1025,7 +1009,6 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         2,
         GroupOp::UpgradePolicySet {
             policy: UpgradePolicy::Automatic,
@@ -1042,15 +1025,8 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
         UpgradePolicy::Automatic
     );
 
-    let op_del = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        vec![],
-        [0u8; 32],
-        3,
-        GroupOp::GroupDelete,
-    )
-    .unwrap();
+    let op_del =
+        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 3, GroupOp::GroupDelete).unwrap();
     apply_local_signed_group_op(&store, &op_del).unwrap();
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
@@ -1079,7 +1055,6 @@ fn apply_local_signed_group_op_rejects_last_admin_removal() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         dummy_member_removed_op(admin_pk),
     )
@@ -2168,15 +2143,7 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
 
     let mut rng = OsRng;
     let signer_sk = PrivateKey::random(&mut rng);
-    let op = SignedGroupOp::sign(
-        &signer_sk,
-        gid.to_bytes(),
-        vec![],
-        [0u8; 32],
-        1,
-        GroupOp::Noop,
-    )
-    .unwrap();
+    let op = SignedGroupOp::sign(&signer_sk, gid.to_bytes(), vec![], 1, GroupOp::Noop).unwrap();
     let op_bytes = borsh::to_vec(&op).unwrap();
     append_op_log_entry(&store, &gid, 1, &op_bytes).unwrap();
     set_op_head(&store, &gid, 1, vec![[0x11; 32]]).unwrap();
@@ -2270,7 +2237,6 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
         &signer_sk,
         gid.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
@@ -2289,7 +2255,6 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
         &signer_sk,
         gid.to_bytes(),
         vec![],
-        [0u8; 32],
         2,
         GroupOp::MemberJoinedViaTeeAttestation {
             member: PublicKey::from([0xD3; 32]),
@@ -2310,7 +2275,6 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
         &signer_sk,
         gid.to_bytes(),
         vec![],
-        [0u8; 32],
         3,
         GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m2".to_owned()],
@@ -2406,12 +2370,17 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
 ///      repaired by a later seed call, not skipped forever (PR #2473, finding C).
 ///
 /// `seed_bootstrap_admin_if_absent` writes two non-atomic rows: group meta and
-/// the admin member row. A crash between them leaves meta present but the member
-/// row missing. Gating the whole seed on `MetaRepository::new(..).load().is_some()` would
-/// return early forever and never add the member row, so encrypted replay keeps
-/// failing the verifier-membership check with no way to self-repair. The fix
-/// gates each row on its own presence and always ensures the member row exists,
-/// so a later `KeyDelivery` re-entry repairs the partial seed.
+/// the deliverer's member row. A crash between them leaves meta present but the
+/// member row missing. Gating the whole seed on
+/// `MetaRepository::new(..).load().is_some()` would return early forever and
+/// never add the member row, so encrypted replay keeps failing the verifier-
+/// membership check with no way to self-repair. The fix gates each row on its
+/// own presence and always ensures the member row exists, so a later
+/// `KeyDelivery` re-entry repairs the partial seed.
+///
+/// #2474: the seeded member row is now a non-authoritative `Member` (NOT
+/// `Admin`) — founding authority comes from the `NamespaceCreated` genesis, not
+/// the KeyDelivery signer. This test asserts the repair idempotency of that row.
 #[test]
 fn seed_bootstrap_admin_repairs_missing_member_row() {
     use calimero_primitives::identity::PrivateKey;
@@ -2430,7 +2399,8 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
 
     let gov = NamespaceGovernance::new(&store, namespace_id);
 
-    // ---- First seed: both meta and the admin member row are written. ----
+    // ---- First seed: both meta and the (non-authoritative) member row are
+    // written. #2474: the member row is `Member`, not `Admin`. ----
     gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
         .expect("initial seed");
     assert!(MetaRepository::new(&store).load(&ns_gid).unwrap().is_some());
@@ -2438,8 +2408,8 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
         MembershipRepository::new(&store)
             .role_of(&ns_gid, &founder)
             .unwrap(),
-        Some(GroupMemberRole::Admin),
-        "first seed must add the admin member row"
+        Some(GroupMemberRole::Member),
+        "first seed must add the deliverer's member row (non-authoritative)"
     );
 
     // ---- Simulate the partial-seed crash: meta survives, member row lost. ----
@@ -2463,8 +2433,8 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
         MembershipRepository::new(&store)
             .role_of(&ns_gid, &founder)
             .unwrap(),
-        Some(GroupMemberRole::Admin),
-        "re-seed must repair the missing admin member row"
+        Some(GroupMemberRole::Member),
+        "re-seed must repair the missing member row"
     );
 }
 
@@ -2478,7 +2448,6 @@ fn append_tee_policy_op(store: &Store, group: &ContextGroupId, seq: u64, mrtd: &
         &signer_sk,
         group.to_bytes(),
         vec![],
-        [0u8; 32],
         seq,
         GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec![mrtd.to_owned()],
@@ -2586,7 +2555,6 @@ fn apply_tee_policy_op_on_subgroup_rejected() {
         &admin_sk,
         child.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m".to_owned()],
@@ -3247,7 +3215,6 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         dummy_member_removed_op(member_pk),
     )
@@ -3270,7 +3237,6 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         2,
         GroupOp::MemberAdded {
             member: member_pk,
@@ -3372,7 +3338,6 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
         &admin_sk,
         subgroup.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         dummy_member_removed_op(member_pk),
     )
@@ -3392,7 +3357,6 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
         &admin_sk,
         subgroup.to_bytes(),
         vec![],
-        [0u8; 32],
         2,
         GroupOp::MemberAdded {
             member: member_pk,
@@ -3501,7 +3465,6 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
         &member_sk,
         ns_id,
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: member_pk,
@@ -3576,7 +3539,6 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
         &admin_sk,
         gid.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: rejoiner_pk,
@@ -4230,9 +4192,6 @@ fn deny_list_member_added_op_clears_existing_entry() {
         &admin_sk,
         gid.to_bytes(),
         vec![],
-        MetaRepository::new(&store)
-            .compute_state_hash(&gid)
-            .unwrap(),
         1,
         GroupOp::MemberAdded {
             member: target_pk,
@@ -4284,9 +4243,6 @@ fn deny_list_member_removed_op_marks_entry() {
         &admin_sk,
         gid.to_bytes(),
         vec![],
-        MetaRepository::new(&store)
-            .compute_state_hash(&gid)
-            .unwrap(),
         1,
         dummy_member_removed_op(target_pk),
     )
@@ -4326,9 +4282,6 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
         &admin_sk,
         gid.to_bytes(),
         vec![],
-        MetaRepository::new(&store)
-            .compute_state_hash(&gid)
-            .unwrap(),
         1,
         dummy_member_removed_op(target_pk),
     )
@@ -4343,9 +4296,6 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
         &admin_sk,
         gid.to_bytes(),
         vec![rm.content_hash().unwrap()],
-        MetaRepository::new(&store)
-            .compute_state_hash(&gid)
-            .unwrap(),
         2,
         GroupOp::MemberAdded {
             member: target_pk,
@@ -4422,7 +4372,6 @@ fn metadata_set_does_not_change_group_state_hash() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::GroupMetadataSet {
             name: Some("renamed".to_owned()),
@@ -4490,7 +4439,6 @@ fn member_metadata_self_set_allowed_others_gated() {
         &alice_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberMetadataSet {
             member: alice_pk,
@@ -4506,7 +4454,6 @@ fn member_metadata_self_set_allowed_others_gated() {
         &alice_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         2,
         GroupOp::MemberMetadataSet {
             member: bob_pk,
@@ -4522,7 +4469,6 @@ fn member_metadata_self_set_allowed_others_gated() {
         &alice_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         3,
         GroupOp::GroupMetadataSet {
             name: Some("nope".to_owned()),
@@ -4540,7 +4486,6 @@ fn member_metadata_self_set_allowed_others_gated() {
         &alice_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         4,
         GroupOp::GroupMetadataSet {
             name: Some("renamed".to_owned()),
@@ -4896,9 +4841,6 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
         &admin_sk,
         gid.to_bytes(),
         vec![],
-        MetaRepository::new(&store)
-            .compute_state_hash(&gid)
-            .unwrap(),
         1,
         GroupOp::MemberRemoved {
             member: target_pk,
@@ -5241,7 +5183,6 @@ fn is_tee_admitted_identity_matches_tee_joined_member() {
         &signer_sk,
         gid.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberJoinedViaTeeAttestation {
             member: tee_node,
@@ -5307,7 +5248,6 @@ mod auto_follow_tests {
             &admin_sk,
             gid_bytes,
             vec![],
-            [0u8; 32],
             1,
             GroupOp::MemberSetAutoFollow {
                 target: member_sk.public_key(),
@@ -5335,7 +5275,6 @@ mod auto_follow_tests {
             &member_sk,
             gid_bytes,
             vec![],
-            [0u8; 32],
             1,
             GroupOp::MemberSetAutoFollow {
                 target: member_sk.public_key(),
@@ -5373,7 +5312,6 @@ mod auto_follow_tests {
             &member_sk,
             gid_bytes,
             vec![],
-            [0u8; 32],
             1,
             GroupOp::MemberSetAutoFollow {
                 target: other_sk.public_key(),
@@ -5415,7 +5353,6 @@ mod auto_follow_tests {
             &admin_sk,
             gid_bytes,
             vec![],
-            [0u8; 32],
             1,
             GroupOp::MemberSetAutoFollow {
                 target: stranger,
@@ -5451,7 +5388,6 @@ mod auto_follow_tests {
             &member_sk,
             gid_bytes,
             vec![],
-            [0u8; 32],
             1,
             GroupOp::MemberSetAutoFollow {
                 target: member_sk.public_key(),
@@ -5467,7 +5403,6 @@ mod auto_follow_tests {
             &admin_sk,
             gid_bytes,
             vec![],
-            [0u8; 32],
             1,
             GroupOp::MemberRoleSet {
                 member: member_sk.public_key(),
@@ -5513,7 +5448,6 @@ mod auto_follow_tests {
             &member_sk,
             gid_bytes,
             vec![],
-            [0u8; 32],
             1,
             GroupOp::MemberSetAutoFollow {
                 target: member_sk.public_key(),
@@ -5538,7 +5472,6 @@ mod auto_follow_tests {
             &admin_sk,
             gid_bytes,
             vec![],
-            [0u8; 32],
             1,
             GroupOp::ContextRegistered {
                 context_id,
@@ -5621,7 +5554,6 @@ mod auto_follow_tests {
             &admin_sk,
             gid_bytes,
             vec![],
-            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member: new_member_pk,
@@ -5721,7 +5653,6 @@ mod auto_follow_tests {
                 &admin_sk,
                 gid_bytes,
                 vec![],
-                [0u8; 32],
                 1,
                 GroupOp::MemberAdded {
                     member: target_pk,
@@ -5739,7 +5670,6 @@ mod auto_follow_tests {
                 &target_sk,
                 gid_bytes,
                 vec![],
-                [0u8; 32],
                 1,
                 GroupOp::MemberSetAutoFollow {
                     target: target_pk,
@@ -5800,7 +5730,6 @@ mod auto_follow_tests {
             &admin_sk,
             gid_bytes,
             vec![],
-            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member: new_member_pk,
@@ -5912,7 +5841,6 @@ mod auto_follow_tests {
             &admin_sk,
             gid_bytes,
             vec![],
-            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member: new_member_pk,
@@ -6013,11 +5941,11 @@ mod auto_follow_tests {
             &admin_sk,
             ns_id,
             vec![],
-            [0u8; 32],
             1,
             NamespaceOp::Root(RootOp::GroupCreated {
                 group_id: new_group_id,
                 parent_id: ns_id,
+                restricted: true,
             }),
         )
         .unwrap();
@@ -6266,9 +6194,6 @@ mod tee_member_removed_event_tests {
             &admin_sk,
             gid.to_bytes(),
             vec![],
-            MetaRepository::new(&store)
-                .compute_state_hash(&gid)
-                .unwrap(),
             1,
             dummy_member_removed_op(tee_pk),
         )
@@ -6318,9 +6243,6 @@ mod tee_member_removed_event_tests {
             &admin_sk,
             gid.to_bytes(),
             vec![],
-            MetaRepository::new(&store)
-                .compute_state_hash(&gid)
-                .unwrap(),
             1,
             dummy_member_removed_op(target_pk),
         )
@@ -6391,9 +6313,6 @@ mod tee_member_removed_event_tests {
             &admin_sk,
             ns_gid.to_bytes(),
             vec![],
-            MetaRepository::new(&store)
-                .compute_state_hash(&ns_gid)
-                .unwrap(),
             1,
             dummy_member_removed_op(tee_pk),
         )
@@ -6510,9 +6429,6 @@ mod tee_member_removed_event_tests {
             &admin_sk,
             ns_gid.to_bytes(),
             vec![],
-            MetaRepository::new(&store)
-                .compute_state_hash(&ns_gid)
-                .unwrap(),
             1,
             dummy_member_removed_op(tee_pk),
         )
@@ -6591,9 +6507,6 @@ mod tee_member_removed_event_tests {
             &admin_sk,
             ns_gid.to_bytes(),
             vec![],
-            MetaRepository::new(&store)
-                .compute_state_hash(&ns_gid)
-                .unwrap(),
             1,
             dummy_member_removed_op(member_pk),
         )
@@ -6670,9 +6583,6 @@ mod tee_member_removed_event_tests {
                 &tee_sk,
                 gid.to_bytes(),
                 vec![],
-                MetaRepository::new(&store)
-                    .compute_state_hash(&gid)
-                    .unwrap(),
                 1,
                 GroupOp::MemberLeft {
                     member: tee_pk,
@@ -6719,9 +6629,6 @@ mod tee_member_removed_event_tests {
                 &leaver_sk,
                 gid.to_bytes(),
                 vec![],
-                MetaRepository::new(&store)
-                    .compute_state_hash(&gid)
-                    .unwrap(),
                 1,
                 GroupOp::MemberLeft {
                     member: leaver_pk,
@@ -6740,4 +6647,55 @@ mod tee_member_removed_event_tests {
             );
         }
     }
+}
+
+#[test]
+fn placeholder_admin_identity_never_equals_a_real_key() {
+    // #599: documents/pins WHY the all-zeros sentinel
+    // (`PLACEHOLDER_ADMIN_IDENTITY`) is safe to use in place of an
+    // `Option<PublicKey>`: no legitimate Ed25519 signing identity can ever
+    // serialize to all-zeros, so the genesis established-check can never
+    // confuse a placeholder for a real founder (or vice-versa).
+    //
+    // An Ed25519 public key is `A = a·B`, a point in the prime-order subgroup
+    // generated by the basepoint `B`. The all-zeros encoding decodes to the
+    // curve's identity / low-order (torsion) point, which lies OUTSIDE that
+    // prime-order subgroup, so no public key derived from a secret scalar can
+    // equal it. We assert that across many freshly generated keypairs the
+    // public key is NEVER the sentinel.
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let sentinel = placeholder_admin_identity();
+    assert_eq!(
+        *sentinel.digest(),
+        PLACEHOLDER_ADMIN_IDENTITY,
+        "the PublicKey form of the sentinel must round-trip to the all-zeros bytes"
+    );
+
+    let mut rng = OsRng;
+    for _ in 0..256 {
+        let pk = PrivateKey::random(&mut rng).public_key();
+        assert_ne!(
+            pk, sentinel,
+            "a freshly generated keypair's public key must never equal the all-zeros sentinel"
+        );
+        assert_ne!(
+            *pk.digest(),
+            PLACEHOLDER_ADMIN_IDENTITY,
+            "a freshly generated keypair's raw bytes must never be all-zeros"
+        );
+    }
+
+    // The sentinel is not a valid signing key: it cannot verify a signature
+    // produced by any real key, and (being the identity/torsion point) is not a
+    // usable verifying key. Asserting it rejects a real signature confirms it
+    // can never stand in for a legitimate signing identity.
+    let signer = PrivateKey::random(&mut rng);
+    let sig = signer.sign(b"genesis").expect("sign test message");
+    assert!(
+        sentinel.verify(b"genesis", &sig).is_err(),
+        "the all-zeros sentinel must not verify a signature from a real key — \
+         it is not a legitimate signing identity"
+    );
 }

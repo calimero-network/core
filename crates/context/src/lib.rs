@@ -41,6 +41,8 @@ pub mod migration_plan;
 pub mod scope_projection;
 pub mod self_purge;
 pub mod tee_subgroup_admit;
+pub mod unified_applier;
+pub mod unified_op_store;
 
 pub(crate) use cache::{BoundedCache, Evictable};
 
@@ -55,7 +57,6 @@ pub(crate) use cache::{BoundedCache, Evictable};
 // new crate and not re-exported.
 pub mod group_store {
     pub use calimero_governance_store::{
-        acl_view_at,
         apply_local_signed_group_op,
         apply_received_group_key,
         apply_signed_namespace_op,
@@ -97,7 +98,6 @@ pub mod group_store {
         MembershipError,
         MembershipPath,
         MembershipRepository,
-        MembershipStatus,
         MetaError,
         MetaRepository,
         MetadataRepository,
@@ -532,6 +532,7 @@ impl ContextManager {
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
         let ack_router = Arc::clone(context_client.ack_router());
+
         Self {
             datastore,
             node_client,
@@ -782,6 +783,17 @@ impl Actor for ContextManager {
         // Auto-follow handler (see the auto-follow architecture doc) — reacts to governance
         // op-apply events and emits JoinContext on behalf of members
         // with `auto_follow.contexts = true`.
+        //
+        // ORDERING IS LOAD-BEARING (#2848 Part C): `auto_follow::spawn` MUST run
+        // before `self_purge::spawn` below. `auto_follow::spawn` subscribes to
+        // `op_events` SYNCHRONOUSLY on this (actor) thread; the self_purge task
+        // then runs the curative `redrive_stranded_ops_sweep`, which emits
+        // `OpEvent::ContextRegistered` for each recovered context. Auto-follow
+        // has no startup re-scan — those events are the ONLY thing that drives a
+        // swept context into the join/replicate path. Subscribing here first
+        // guarantees auto-follow's receiver exists before the sweep can emit, so
+        // the recovered context is reliably replicated rather than dropped by
+        // the best-effort broadcast. Do not reorder these two spawns.
         auto_follow::spawn(self.datastore.clone(), self.context_client.clone());
         // Self-purge handler (see docs/adr/0002-fleet-tee-leave-protocol.md) — reacts
         // to `OpEvent::TeeMemberRemoved` (paired follow-up emitted ONLY when the

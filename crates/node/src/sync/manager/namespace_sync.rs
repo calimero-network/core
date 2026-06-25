@@ -225,9 +225,9 @@ impl SyncManager {
     /// The gossip apply path (`network_event/namespace.rs`) already drains the
     /// governance-pending buffer when a namespace op applies, but the
     /// **sync/backfill** apply paths here did not — a parity gap. A late
-    /// joiner's first post-join state delta is buffered as
-    /// `MembershipStatus::Unknown` until the local node learns the joiner's
-    /// membership op; when that op arrives via sync (beacon-triggered
+    /// joiner's first post-join state delta is buffered as an incomplete-cut
+    /// (the projection can't yet resolve membership) until the local node
+    /// learns the joiner's membership op; when that op arrives via sync (beacon-triggered
     /// governance sync or catch-up backfill) rather than gossip, nothing
     /// re-evaluated the buffer, so the delta sat there forever and the two
     /// nodes' context root hashes never reconverged.
@@ -1115,11 +1115,16 @@ impl SyncManager {
     /// [`StoredNamespaceEntry::Opaque`] skeleton and `extract_signed_op`
     /// returns `None` for it — backfilling from such a peer yields nothing for
     /// group ops and would never release a governance-pending delta.
+    /// Pull the namespace governance DAG from `peer` (or a mesh peer when `None`).
+    /// Returns the number of governance ops received in the backfill response — `0`
+    /// on any best-effort failure (no peer, stream/​send/​recv error, unexpected
+    /// response), so a caller correcting a divergence can tell whether the pull
+    /// actually delivered anything rather than treating it as a silent no-op.
     pub(super) async fn sync_namespace_from_peer(
         &self,
         namespace_id: [u8; 32],
         peer: Option<PeerId>,
-    ) {
+    ) -> usize {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
         let peer = match peer {
@@ -1135,7 +1140,7 @@ impl SyncManager {
                         namespace_id = %hex::encode(namespace_id),
                         "no mesh peers for namespace sync"
                     );
-                    return;
+                    return 0;
                 };
                 p
             }
@@ -1143,7 +1148,7 @@ impl SyncManager {
 
         let Ok(mut stream) = self.sync_network.open_stream(peer).await else {
             debug!("failed to open stream for namespace sync");
-            return;
+            return 0;
         };
 
         let msg = StreamMessage::Init {
@@ -1161,7 +1166,7 @@ impl SyncManager {
 
         if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {
             debug!(%err, "failed to send NamespaceBackfillRequest");
-            return;
+            return 0;
         }
 
         match crate::sync::stream::recv(&mut stream, None, self.sync_config.timeout).await {
@@ -1295,9 +1300,11 @@ impl SyncManager {
                 // permanently locked out of group decryption.
                 self.recover_missing_group_keys(namespace_id, Some(peer))
                     .await;
+                ops_received
             }
             _ => {
                 debug!("unexpected response to namespace sync request");
+                0
             }
         }
     }
@@ -1407,6 +1414,41 @@ impl SyncManager {
                         if let Some(report) = divergence {
                             self.reconcile_after_divergence(report).await;
                         }
+
+                        // The arrived key may have made governance ops applied (and
+                        // frozen as `Noop`) before the key landed now decode to their
+                        // real payload. Two-step refresh so the projection — which backs
+                        // onto the op-store after the C3 Stage 4 flip — reflects the
+                        // membership: (1) re-persist the op-store from the gov-DAG with
+                        // the key present, then (2) re-ingest the corrected ops into the
+                        // MAINTAINED projection (`ingest_op` upgrades the stale `Noop`
+                        // op-log entries in place). BEFORE the drain, whose membership
+                        // re-checks must see the corrected ops, not the stale `Noop`.
+                        //
+                        // The in-process re-ingest reads the gov-DAG fold
+                        // (`collect_namespace_ops`), NOT the op-store read-back: the
+                        // re-persist is best-effort, so a partial `persist_op` failure
+                        // must not leave the maintained projection with fewer ops than
+                        // the gov-DAG (the exact gap the flip closes). We have the
+                        // freshly-decrypted fold in hand here; the op-store mirror is
+                        // for the cold-start read path.
+                        let store = self.context_client.datastore_handle().into_inner();
+                        calimero_context::scope_projection::ScopeProjections::repersist_namespace_ops(
+                            &store,
+                            namespace_id,
+                        );
+                        let refreshed =
+                            calimero_context::scope_projection::ScopeProjections::collect_namespace_ops(
+                                &store,
+                                namespace_id,
+                            );
+                        drop(store);
+                        if let Some(ops) = refreshed {
+                            self.node_state
+                                .write_scope_projections()
+                                .apply_backfill(namespace_id, ops);
+                        }
+
                         self.drain_governance_pending_after_sync().await;
                     }
                     Err(err) => {

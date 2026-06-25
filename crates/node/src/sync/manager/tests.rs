@@ -369,7 +369,6 @@ mod key_recovery_trigger {
             &signer_sk,
             namespace_id,
             vec![],
-            [0u8; 32],
             1,
             NamespaceOp::Group {
                 group_id,

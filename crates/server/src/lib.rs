@@ -35,15 +35,26 @@ pub struct AdminState {
     pub store: Store,
     pub ctx_client: ContextClient,
     pub node_client: NodeClient,
+    /// DEV/TEST ONLY. When true, the TEE admin handlers produce and accept mock
+    /// attestation quotes instead of requiring real TDX hardware. Insecure —
+    /// never enable in production. Sourced from `merod run --mock-tee`
+    /// (`MEROD_MOCK_TEE`).
+    pub mock_tee: bool,
 }
 
 impl AdminState {
     #[must_use]
-    pub const fn new(store: Store, ctx_client: ContextClient, node_client: NodeClient) -> Self {
+    pub const fn new(
+        store: Store,
+        ctx_client: ContextClient,
+        node_client: NodeClient,
+        mock_tee: bool,
+    ) -> Self {
         Self {
             store,
             ctx_client,
             node_client,
+            mock_tee,
         }
     }
 }
@@ -54,6 +65,7 @@ pub async fn start(
     node_client: NodeClient,
     datastore: Store,
     mut prom_registry: Registry,
+    mock_tee: bool,
 ) -> EyreResult<()> {
     let mut config = config;
 
@@ -113,6 +125,7 @@ pub async fn start(
         datastore.clone(),
         ctx_client.clone(),
         node_client.clone(),
+        mock_tee,
     ));
     let mounted = mount_runtime_services(
         app,

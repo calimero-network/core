@@ -525,6 +525,16 @@ merod --home /data --node mynode init \
 <h3>TEE Mode</h3>
 <p>When <span class="code">[tee]</span> configuration is present, merod fetches a storage encryption key from a KMS at startup using TDX attestation. See <a href="../tee-mode.html">TEE Mode</a> for full details.</p>
 <p style="margin-top:10px;"><strong>Note:</strong> The <span class="code">NEAR_API_KEY</span> environment variable is no longer referenced by merod and should be removed from any runbooks or environment configurations.</p>
+
+<h4 style="margin-top:20px;color:#f59e0b;">--mock-tee <span style="color:#ef4444;font-size:0.75em;font-weight:600;vertical-align:middle;">DEV/TEST ONLY</span></h4>
+<p><span class="code">merod run</span> accepts a <span class="code">--mock-tee</span> flag (also settable via the <span class="code">MEROD_MOCK_TEE</span> environment variable). When active, the fleet-join and attest handlers produce and accept mock attestation quotes instead of requiring real TDX hardware.</p>
+<ul style="margin-top:10px;margin-bottom:10px;padding-left:1.4em;line-height:1.8;">
+  <li><strong>Refused at startup</strong> if <span class="code">TeeConfig::has_real_attestation</span> returns <span class="code">true</span> — i.e. the node's <span class="code">[tee]</span> config has real KMS attestation configured. The node will <span class="code">bail!</span> rather than start in an insecure state.</li>
+  <li>A loud <span class="code">tracing::warn</span> is emitted on startup whenever mock-tee is active. An additional warning fires if a Phala KMS provider is configured but real attestation is disabled, flagging likely misconfiguration.</li>
+  <li>The flag is threaded through <span class="code">RunCommand::mock_tee</span> → <span class="code">NodeConfig::mock_tee</span> → <span class="code">AdminState::mock_tee</span> (via <span class="code">AdminState::new</span>) and is <strong>never persisted</strong> to <span class="code">config.toml</span>.</li>
+  <li><span class="code">TeeConfig::has_real_attestation</span> is the predicate used as the deny-list guard — it returns <span class="code">true</span> when the TEE configuration references real attestation infrastructure.</li>
+</ul>
+<p><strong style="color:#ef4444;">⚠ Must never be used in production.</strong> This flag exists solely for development and testing on machines without TDX hardware.</p>
 </div>
 
 <h2 id="meroctl">meroctl</h2>

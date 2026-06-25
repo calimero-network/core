@@ -42,7 +42,86 @@ plumbing once the projection is authoritative for the signal. The decision cut
 
 ---
 
+## C0 — `scope_root` shadow (pre-C1 de-risk, observe-only)
+
+**Status: in progress (2026-06-24).** A de-risking precursor to C1, chosen over
+flipping straight to the new signal — same shadow→flip discipline that carried
+F4b/F5. C0 changes **no sync decision**: it computes `scope_root` alongside the
+existing `root_hash`, exchanges it, and **logs** when the two signals would
+*disagree about convergence* — i.e. `entities_root` (the current `root_hash`)
+agrees between two peers but `scope_root` differs. That disagreement is exactly
+the hash-neutral ACL/membership rotation the current signal is blind to (the
+root cause behind the rotation split-brain family: stale-heads, clear()
+tombstone-blindness, #2607 verified-but-divergent). C0 proves the new signal
+catches it in real e2e *before* C1 makes it load-bearing.
+
+**Where.** Reuse the #2607 end-of-session convergence re-query in
+`crates/node/src/sync/hash_comparison_protocol.rs` (`query_peer_current_root` →
+`DagHeadsResponse`). The responder additionally computes and returns its
+`scope_root`; the initiator computes its own and compares. **`root_hash` /
+`root_hash_verified` keep driving every decision** — `scope_root` is logged, never
+acted on.
+
+**Computing a context's `scope_root`.** `entities_root` = the existing storage
+Merkle `root_hash` for the context (unchanged, `get_local_root_hash_for_context`
+/ `DagHeadsResponse.root_hash`). The ACL + governance come from the **maintained
+projection**: resolve `context → group → namespace` (`get_group_for_context` +
+`NamespaceRepository::resolve`) to the namespace `ScopeId`, then
+`ScopeProjections::scope_root_for(scope, entities_root)` (new, thin) returns
+`states.get(scope).map(|s| s.scope_root_with_entities(entities_root))`. `None`
+(scope not folded yet) ⇒ skip the shadow comparison for that session — never a
+false divergence on a cold projection.
+
+**Wire.** Add `scope_root: Option<Hash>` to `DagHeadsResponse`
+(`crates/node/primitives/src/sync/wire.rs`). `Option` so a node that can't
+resolve/fold the scope sends `None` and the initiator skips — no false signal.
+Safe under the flag-day rule (all nodes redeploy together; e2e runs one build),
+and it is the **same field C1 promotes** to the authoritative compare, so the
+throwaway is one `Option` unwrap.
+
+**Marker.** Log `scope_root_shadow_divergence` (gate marker, like the F5 planes)
+at WARN when `local_entities_root == peer_entities_root && local_scope_root !=
+peer_scope_root` (the blind spot), and a quieter `debug!` for the inverse
+(`entities` differ — already caught by `root_hash`, expected mid-sync). The e2e
+divergence gate greps the WARN marker; a hit on a *converged-entities* scenario
+is the proof C0 is looking for, and on a *should-converge* scenario it's a real
+bug the old signal hid.
+
+**e2e gate.** A **hash-neutral-rotation canary**: two nodes reach an identical
+`entities_root`, one rotates its writer set; assert the shadow fires
+`scope_root_shadow_divergence` until the rotation propagates and `acl_hash`
+agrees, then stops. Plus: existing concurrent-rotation/governance scenarios show
+**zero** shadow divergence at steady state (no false positives). C1 promotes the
+signal only once this canary is green.
+
 ## C1 — `scope_root`: fold ACL + groups into the convergence signal
+
+**Landing incrementally (merge-gated on C0's canary):**
+- **C1a (drafted 2026-06-24)** — the **HashComparison end-of-session verdict**
+  (`hash_comparison_protocol.rs`, the #2607 re-query path C0 instrumented). When
+  both peers resolve a `scope_root` it alone decides `root_hash_verified`; cold
+  projection / non-group context falls back to the bare entity compare (no
+  context drops below the pre-C1 check). This is the kernel security win on the
+  general sync path.
+- **C1b (drafted 2026-06-24)** — **LevelWise** brought to HashComparison parity:
+  it now does the same end-of-session peer re-query (the #2407 comment said it
+  *needed* "a second handshake round-trip" to tell real divergence from drift —
+  this is that round-trip, reusing `query_peer_current_root`) and decides on
+  `scope_root` with the same entity fallback. Closes the blind spot on the
+  wide-shallow-tree path.
+- **NOT folded into `scope_root`, deliberately:**
+  - **Snapshot boundary** (`snapshot.rs`) stays entity-root-based. The snapshot
+    streams the *data plane*; its boundary check is streaming-integrity ("did the
+    responder's entity state drift mid-stream"). Folding governance in would abort
+    a perfectly valid entity snapshot whenever governance moves independently
+    (over-conservative). Post-snapshot convergence — including authorization — is
+    verified by the next HC/LevelWise session's `scope_root` verdict (C1a/C1b).
+  - **Protocol selector's `None` arm** ("roots match ⇒ no sync") stays entity-root
+    based. Governance reconciles on its *own* independent tick (the
+    `namespace_sync` beacon), so a selector that skips state-sync on equal entity
+    roots never strands a governance divergence — it's pulled by governance sync,
+    and the following state-sync's `scope_root` verdict confirms convergence.
+    Folding `scope_root` here would only add redundant state-sync work.
 
 **Goal.** Replace the bare entity `root_hash` on the wire and in comparison with
 `scope_root`, where

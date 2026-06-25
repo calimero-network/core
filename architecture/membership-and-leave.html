@@ -192,6 +192,20 @@ Per-member capability bits (<code>crates/context/config/src/lib.rs</code>, <code
   member never receives the new key, so it cannot decrypt anything written after eviction. This is
   the forward-secrecy mechanism for the namespace's future writes. Owner-initiated removal is the
   cryptographically-complete leave path.</li>
+  <li><b>Namespace genesis op</b> (<code>create_group.rs</code>, <code>parent_group_id == None</code>
+  branch): when a namespace root is created, the handler signs, applies, and publishes a
+  <code>RootOp::NamespaceCreated { founder: admin_identity }</code> genesis op via
+  <code>sign_apply_and_publish_namespace_op</code>. A <code>NoPeersSubscribed</code> error from
+  publish is treated as success (apply succeeded locally; publish is best-effort). Any other
+  genesis-apply error triggers a full rollback of all locally-written root rows — meta, founder
+  Admin member row, default caps, group key, and signing key (plus optional name metadata) — via
+  individual idempotent deletes (<code>GroupKeyring::delete_key_by_id</code>,
+  <code>SigningKeysRepository::delete_key</code>, <code>MetaRepository::delete</code>,
+  <code>MembershipRepository::remove_member</code>, <code>CapabilitiesRepository::delete_default</code>,
+  <code>MetadataRepository::delete_group</code>) before returning <code>Err</code>. The namespace
+  identity row is deliberately <em>not</em> rolled back so a retry obtains the same
+  identity/founder. The DAG head does not require rollback because <code>apply_signed_op</code> is
+  head-atomic (the head advances only after a successful apply).</li>
 </ul>
 </div>
 
@@ -229,12 +243,12 @@ of when the receiver learns about the removal.
 <h3>How it's implemented</h3>
 <p>
 Every state delta carries a <code>governance_position</code> field that names the governance-DAG
-heads the author observed at sign time. On receive, the apply path calls
-<code>membership_status_at(signer, delta.governance_position)</code> — which walks the
-<em>ancestry</em> of the signed heads and replays the membership state machine. The walk visits
+heads the author observed at sign time. On receive, the apply path evaluates membership at the
+signed heads via the unified projection — which resolves the ancestry of those heads and derives
+the membership state from the folded projection. The resolution visits
 only the prefix that was already final when the delta was signed; anything causally <em>after</em>
 the signed cut (including a later <code>MemberRemoved</code> for this signer) is invisible to
-the walk and cannot retroactively invalidate the delta.
+the resolution and cannot retroactively invalidate the delta.
 </p>
 <p>
 The namespace-level applier (<code>NamespaceGovernanceApplier</code> in
@@ -244,8 +258,11 @@ The namespace-level applier (<code>NamespaceGovernanceApplier</code> in
 rather than the cut-free <code>apply_signed_namespace_op</code>. Passing <code>delta.parents</code>
 as the causal cut ensures membership is evaluated at the position the author signed against.
 <code>LIVE_FALLBACK_AUTHORIZER</code> is a placeholder authorizer that delegates to the live store;
-it is intended to be replaced by a projection-backed authorizer in a future stage (stage&nbsp;3b),
-at which point no call-site changes will be needed.
+membership authorization for all other paths is now handled entirely by the unified projection
+(<code>EphemeralProjectionAuthorizer</code> / <code>ScopeProjections</code>) — the
+<code>acl_view_at</code>, <code>MembershipStatus</code>, <code>prefix_walk_membership</code>,
+<code>MembershipTransition</code>, <code>heads_equal</code>, and <code>MAX_PREFIX_WALK_NODES</code>
+helpers that previously backed the live DAG-walk resolver have been deleted.
 </p>
 
 <h3>Resolving the current governance cut — <code>ScopeProjections::namespace_current_heads</code></h3>
@@ -341,6 +358,74 @@ behavior for a missing node identity and avoids a single inaccessible group bloc
 listing.
 </p>
 
+<h3>Op-store reconstruction root — <code>ScopeProjections::scope_root_from_op_store</code> and <code>shadow_compare_op_store</code></h3>
+<p>
+<code>ScopeProjections::scope_root_from_op_store(scope_id, store)</code> provides an independent
+view of a scope's governance root derived entirely from the persisted op log rather than the
+maintained in-memory projection:
+</p>
+<ol>
+  <li>Loads all ops for the given <code>ScopeId</code> via <code>load_scope_ops</code>.</li>
+  <li>Replays them into a fresh <code>ScopeProjections</code> instance (causal ordering recovered
+  through <code>DagStore&lt;Op&gt;</code> + <code>UnifiedApplier</code>).</li>
+  <li>Returns the resulting <code>scope_root</code> computed with a fixed zero
+  <code>entities_root</code>.</li>
+</ol>
+<p>
+Returns <code>Ok(None)</code> when the scope has no persisted ops; <code>Err</code> on store
+faults. This is intended for completeness verification before C2.2b — not for hot-path membership
+decisions.
+</p>
+<p>
+<code>ScopeProjections::shadow_compare_op_store(namespace_id, store)</code> is an observe-only
+companion that compares the maintained projection's <code>scope_root</code> against the
+op-store reconstruction. On mismatch it emits a <code>tracing::warn</code> with
+<code>marker=unified_op_store_divergence</code> and truncated hex of both roots.
+<b>This log marker is the e2e gate signal for C2.2b readiness.</b> The method silently skips
+(no divergence reported) when the scope is unfolded, the op-store is empty for it, or the store
+read fails — none of those conditions count as divergence. <code>calimero_op</code> /
+<code>ScopeId</code> types stay inside the context crate and are not leaked into the node crate.
+</p>
+
+<h3>Convergence root — <code>ScopeProjections::scope_root_for</code> and <code>group_scope_root_ephemeral</code></h3>
+<p>
+<code>ScopeProjections::scope_root_for(scope)</code> computes a single
+SHA-256 digest over the folded state of a governance scope:
+<code>SHA-256(entities_root ‖ acl_hash ‖ governance_hash)</code>. This
+gives callers a cheap way to detect whether two nodes have converged on
+the same membership/governance state without enumerating members.
+</p>
+<ul>
+  <li><b>Returns <code>None</code></b> when the scope has not been folded
+  yet (i.e. it has no entry in the projection). Callers <b>must</b> treat
+  <code>None</code> as "cannot compare" — never as a divergence signal.
+  False divergences from mid-backfill nodes are the main hazard here.</li>
+  <li><b>ACL component</b> is currently an empty placeholder because
+  <code>SetWriters</code> ops are not yet routed through the governance
+  DAG. The hash over ACL state will become meaningful at C2 when that
+  routing lands.</li>
+</ul>
+<p>
+The companion free function
+<code>ScopeProjections::group_scope_root_ephemeral(group_id, store)</code>
+builds an ephemeral projection from the raw store (no
+<code>NodeState</code> required), adds an ancestry-completeness guard via
+<code>cut_ancestry_complete</code>, and delegates to
+<code>scope_root_for</code>. It returns <code>None</code> when the
+governance DAG cut is not fully folded, preventing false divergence
+reports from nodes that are still mid-backfill. Both symbols are public
+API on <code>ScopeProjections</code>
+(<code>crates/context/src/scope_projections.rs</code>).
+</p>
+<p>
+Behavior is pinned by
+<code>scope_root_for_moves_on_hash_neutral_membership_change_and_is_none_when_unfolded</code>:
+the test holds <code>entities_root</code> fixed, ingests an
+<code>AdminChanged</code> op then a causally-chained <code>MemberAdded</code>
+op, and asserts that <code>scope_root_for</code> returns different values
+before and after, and returns <code>None</code> for an unfolded scope.
+</p>
+
 <h3>Batch role resolution — <code>ScopeProjections::member_roles_for</code></h3>
 <p>
 Where <code>namespace_current_heads</code> answers "is this member present?",
@@ -369,7 +454,10 @@ returns the live list unchanged.
 <p>
 <b>Operator note.</b> <code>membership-role</code> divergence warnings in logs indicate a
 pre-flip validation failure. They will block the eventual flip of <code>list_group_members</code>
-from the live store to the projection as the authoritative source.
+from the live store to the projection as the authoritative source. Note that
+<code>acl_view_at</code> and <code>MembershipStatus</code> (the former live DAG-walk resolver
+types) are no longer available; divergence detection now operates entirely through
+<code>ScopeProjections</code> projection methods.
 </p>
 
 <h3>Full effective-member enumeration — <code>ScopeProjections::member_entries_with</code></h3>
@@ -570,6 +658,39 @@ false "undecidable" verdict on every group op. The real group-auth projection sh
 fires only on the namespace-envelope group-op path, not through the standalone applier.
 </p>
 
+<h3>UnifiedApplier — projection-backing <code>DeltaApplier&lt;Op&gt;</code></h3>
+<p>
+<code>UnifiedApplier</code> is the C2.0 struct that bridges <code>DagStore&lt;Op&gt;</code> and
+<code>ScopeProjections</code>. It implements <code>DeltaApplier&lt;Op&gt;</code>: its
+<code>apply</code> method acquires a write lock on the inner
+<code>Arc&lt;std::sync::RwLock&lt;ScopeProjections&gt;&gt;</code>, calls
+<code>ScopeProjections::ingest_op</code> with the delta's payload, then releases the lock. The
+lock is a <code>std::sync::RwLock</code> (not a Tokio lock) and is <b>never held across an
+<code>.await</code></b>; lock poison is recovered rather than propagated, matching the stance
+already documented on <code>NodeState::read_scope_projections</code>. Two constructors are provided:
+</p>
+<ul>
+  <li><code>UnifiedApplier::new()</code> — creates a private, standalone projection. Use this for
+  replay pipelines and tests.</li>
+  <li><code>UnifiedApplier::with_projection(Arc&lt;RwLock&lt;ScopeProjections&gt;&gt;)</code> —
+  attaches to the node's live shared projection. This is the C2.1 dual-write seam: governance ops
+  processed by the existing live pipeline are simultaneously ingested into the shared projection.</li>
+</ul>
+<p>
+A <code>projection()</code> accessor exposes the <code>Arc</code> for inspection or cross-checking.
+<code>pub mod unified_applier</code> is exported from <code>crates/context/src/lib.rs</code>,
+making <code>UnifiedApplier</code> part of the crate's public API.
+</p>
+<p>
+Behavior is pinned by
+<code>dag_releases_out_of_order_ops_and_the_projection_converges</code>: a four-op causal chain
+spanning the admin, membership, ACL, and data planes is fed through <code>DagStore&lt;Op&gt;</code>
++ <code>UnifiedApplier</code> in four delivery orders (in-order, full reverse, and two interleaved).
+The test asserts that every op is applied (none stuck pending) and that <code>scope_root</code>
+matches the result of direct in-order folding in all cases — confirming causal ordering and
+projection convergence regardless of receive order.
+</p>
+
 <h3>Shadow authorization check in <code>apply_signed_namespace_op</code></h3>
 <p>
 After a governance op is successfully applied by the live gate, the handler runs a non-blocking
@@ -609,22 +730,35 @@ After a governance op is successfully applied by the live gate, the handler runs
 effect on whether an op is accepted or rejected.
 </p>
 
+<h3>Concurrent-op convergence test — <code>state_hash_mismatch_does_not_reject_concurrent_ops</code></h3>
+<p>
+The integration test <code>state_hash_mismatch_does_not_reject_concurrent_ops</code> (replacing
+the old <code>state_hash_prevents_concurrent_op_divergence</code>) pins the convergence
+semantics for concurrent ops authored against the same genesis state. Two admins independently
+add different members (D and E) against the same genesis state; the ops are applied in opposite
+orders on two nodes. The test asserts: (1) both ops succeed on both nodes, (2) both nodes
+converge to the identical four-member set, (3) <code>compute_state_hash</code> produces equal
+values on both nodes, and (4) replaying a seen op is a no-op — the nonce window dedups it, the
+member count does not change, and the state hash is unchanged. The old test asserted that the
+second concurrent op <em>must</em> fail; that hard-reject behavior is no longer correct and the
+old test has been removed.
+</p>
+
 <h3>Where this can break</h3>
 <p>
 Two classes of change would silently re-introduce the divergence described above:
 </p>
 <ul>
-  <li><b>Calling the check with the wrong position.</b> Any caller of
-  <code>membership_status_at</code> that passes the receiver's current state (or any
-  post-cut heuristic) instead of the signed delta position breaks forward-only. The three
-  production call sites — gossip-receive, governance-pending drain, and snapshot-sync replay
-  — each carry inline comments naming this contract; reviewers should flag any new caller
-  that doesn't pass <code>delta.governance_position</code> verbatim.</li>
-  <li><b>Changing the prefix walk to visit descendants.</b> A "performance optimization" that
-  has the BFS catch up to local heads after visiting the signed heads would observe ops the
-  signer hadn't signed against, including later <code>MemberRemoved</code> ops. The forward-only
-  contract is documented on the public <code>membership_status_at</code> function; the
-  internal BFS in <code>prefix_walk_membership</code> implements it, and the
+  <li><b>Calling the projection with the wrong position.</b> Any caller of the at-cut membership
+  resolver that passes the receiver's current state (or any post-cut heuristic) instead of the
+  signed delta position breaks forward-only. The three production call sites — gossip-receive,
+  governance-pending drain, and snapshot-sync replay — each carry inline comments naming this
+  contract; reviewers should flag any new caller that doesn't pass
+  <code>delta.governance_position</code> verbatim.</li>
+  <li><b>Expanding the cut resolution to visit descendants.</b> A "performance optimization" that
+  advances the resolved cut beyond the signed heads would observe ops the signer hadn't signed
+  against, including later <code>MemberRemoved</code> ops. The forward-only contract is
+  documented on the public projection at-cut methods; the
   <code>prefix_walk_forward_only_*</code> regression tests pin the boundary.</li>
 </ul>
 
@@ -1176,19 +1310,156 @@ This page documents shipped behavior. Each row points at the code that implement
   <tr><td><code>leave_namespace</code></td><td><b>Implemented</b></td><td>Same <code>member_left.rs</code> apply detects the no-parent case and cascades through descendant groups where the leaver has direct rows; multi-scope owner + last-admin checked upfront. <em>No per-scope key rotation</em>.</td></tr>
   <tr><td>Key rotation on <code>MemberRemoved</code></td><td><b>Implemented</b></td><td><code>crates/governance-store/src/group_governance_publisher.rs</code> (<code>sign_apply_and_publish_inner</code>) + <code>GroupKeyring</code> in <code>group_keys.rs</code> — fresh key wrapped for remaining members, excluding the removed one.</td></tr>
   <tr><td>Role-scoped TEE self-purge</td><td><b>Implemented</b> (ADR 0002; #2680/#2724/#2725)</td><td><code>crates/context/src/self_purge.rs</code> listener + cascade + marker-gated <code>reconcile_sweep</code>; <code>delete_group_local_rows</code> in <code>governance-store/src/local_state.rs</code> deletes signing keys (and, as of #2776, <code>GroupKeyring</code> encryption keys); <code>OpEvent::TeeMemberRemoved</code> emitted from <code>member_removed.rs</code> / <code>member_left.rs</code>.</td></tr>
+  <tr><td>Startup curative sweep (<code>redrive_stranded_ops_sweep</code>)</td><td><b>Implemented</b> (#2848 Part C)</td><td><code>crates/context/src/self_purge.rs</code> — one-shot sweep on startup after <code>op_events</code> subscribe; iterates namespaces via <code>NamespaceRepository::iter_identities</code>, finds decryptable-but-unapplied groups via <code>NamespaceRetryService::groups_with_held_key_buffered_ops</code>, re-drives via <code>redrive_encrypted_ops_for_group_counted</code>; converges up to <code>MAX_PASSES=64</code> with pass-narrowing. <code>auto_follow::spawn</code> called before <code>self_purge::spawn</code> in <code>ContextManager::started</code> (load-bearing ordering — see note above).</td></tr>
+  <tr><td>Born-Open atomic subgroup create (<code>RootOp::GroupCreated</code> <code>restricted</code> field)</td><td><b>Implemented</b> (#2771) — <b>WIRE BREAK</b></td><td><code>crates/primitives/src/context.rs</code> (<code>RootOp::GroupCreated</code>), <code>crates/governance-store/src/ops/group/group_created.rs</code> (<code>group_created::apply</code>) — <code>restricted: bool</code> field added; apply writes subgroup visibility via <code>CapabilitiesRepository::set_subgroup_visibility</code> before queuing <code>OpEvent::SubgroupCreated</code>; gated on <code>has_subgroup_visibility</code> absence. <code>CreateGroupRequest</code> and REST <code>visibility</code> field updated. Op-adapter projection reads <code>restricted</code> from live op (no longer hardcodes <code>true</code>).</td></tr>
   <tr><td>TEE subgroup admission diagnostics (<code>handle_new_subgroup</code>)</td><td><b>Implemented</b></td><td><code>crates/context/src/tee_subgroup_admit.rs</code> — <code>handle_new_subgroup</code> now emits <code>debug!</code> on entry (subgroup + namespace IDs) and at each early-return path (Open subgroup skip, non-key-holder skip, no-root-TEE-members skip); <code>warn!</code> when a TEE member has no admission verdict in the root op-log; <code>info!</code> just before admitting a TEE member into a Restricted subgroup. Set <code>RUST_LOG=calimero_context=debug</code> (or <code>debug</code> on the <code>context</code> crate) to surface per-subgroup TEE admission decisions in logs.</td></tr>
   <tr><td><code>ScopeProjections::namespace_current_heads</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves a <code>ContextGroupId</code> to its namespace, reads the namespace DAG head, and returns parent hashes as the current-state cut argument. Returns <code>None</code> on unresolvable group or unreadable head; callers fall back to <code>check_group_membership_path</code>.</td></tr>
   <tr><td><code>ScopeProjections::member_now_ephemeral</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — builds a fresh projection per call: resolves the namespace, folds the DAG via <code>collect_namespace_ops</code>, reads heads after the fold, and returns <code>member_at_cut</code>. Returns <code>None</code> (never decides against the member) on unresolvable namespace, store fault, or incomplete fold.</td></tr>
   <tr><td><code>ScopeProjections::member_now_checked</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — unified membership gate for all four context-layer handlers. Calls <code>member_now_ephemeral</code> first; falls back to <code>MembershipRepository::is_member</code> when projection is undecidable; emits <code>tracing::warn</code> with <code>marker=unified_projection_divergence</code> / <code>plane=membership-query</code> on definite disagreement. Direct <code>MembershipRepository</code> imports removed from <code>get_cascade_status.rs</code>, <code>get_group_upgrade_status.rs</code>, <code>list_all_groups.rs</code>, and <code>list_group_contexts.rs</code>.</td></tr>
+  <tr><td><code>ScopeProjections::scope_root_for</code> + <code>group_scope_root_ephemeral</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — <code>scope_root_for</code> computes <code>SHA-256(entities_root ‖ acl_hash ‖ governance_hash)</code> for a folded scope; returns <code>None</code> when the scope is unfolded (callers must treat as "cannot compare", not divergence). <code>group_scope_root_ephemeral</code> builds a fresh ephemeral projection from the raw store, applies an ancestry-completeness guard, and delegates to <code>scope_root_for</code>; returns <code>None</code> mid-backfill. ACL component is currently empty pending C2 <code>SetWriters</code> routing. Pinned by <code>scope_root_for_moves_on_hash_neutral_membership_change_and_is_none_when_unfolded</code>.</td></tr>
   <tr><td><code>ScopeProjections::role_at_cut_for_group</code></td><td><b>Implemented</b></td><td><code>crates/context/src/scope_projections.rs</code> — resolves the effective <code>GroupMemberRole</code> at a governance cut via <code>auth_cut_context</code> + <code>member_path_at_cut</code>. Handles direct, inherited-via-admin (<code>Admin</code>), and inherited-via-anchor (anchor role row) cases. Returns <code>None</code> on incomplete ancestry, absent member, unresolvable namespace, or missing anchor row. Prevents spurious <code>membership-role</code> divergence reports by abstaining rather than guessing on missing anchor rows.</td></tr>
+  <tr><td><code>UnifiedApplier</code> + <code>pub mod unified_applier</code></td><td><b>Implemented</b></td><td><code>crates/context/src/unified_applier.rs</code> (exported via <code>crates/context/src/lib.rs</code>) — <code>UnifiedApplier</code> wraps <code>Arc&lt;std::sync::RwLock&lt;ScopeProjections&gt;&gt;</code> and implements <code>DeltaApplier&lt;Op&gt;</code>; <code>apply</code> holds the write lock only across the synchronous <code>ScopeProjections::ingest_op</code> call, never across an <code>.await</code>; lock poison is recovered. <code>new()</code> for standalone/test use; <code>with_projection(arc)</code> as the C2.1 dual-write seam; <code>projection()</code> accessor exposes the <code>Arc</code>. Convergence pinned by <code>dag_releases_out_of_order_ops_and_the_projection_converges</code> (four-op causal chain, four delivery orders, all converge to the same <code>scope_root</code>).</td></tr>
+  <tr><td><code>unified_op_store</code> — <code>persist_op</code> + <code>load_scope_ops</code></td><td><b>Implemented</b> (no production call sites yet)</td><td><code>crates/context/src/unified_op_store.rs</code> (exported as <code>pub mod unified_op_store</code> from <code>crates/context/src/lib.rs</code>) — <code>persist_op</code> Borsh-serializes an <code>Op</code> and writes it under <code>ScopeUnifiedOpKey</code> in <code>Column::UnifiedOp</code>; idempotent because the key is content-addressed by op id. <code>load_scope_ops</code> performs a seek-then-entries range scan over the scope prefix and deserializes all rows back into <code>Vec&lt;Op&gt;</code>. <b>Rows are returned in key order, not causal order</b> — callers must replay the loaded ops through <code>DagStore&lt;Op&gt;</code> + <code>UnifiedApplier</code> to recover causal ordering and rebuild projections; heads are deliberately not persisted. No production apply or sync path calls these functions yet. Behavior is pinned by <code>persisted_op_log_reloads_and_replays_to_the_same_projection</code>: persists a three-op causal chain (<code>AdminChanged → MemberAdded → SetWriters</code>), reloads from a fresh store handle, replays through <code>DagStore&lt;Op&gt;</code> + <code>UnifiedApplier</code>, and asserts the reconstructed <code>scope_root</code> matches an independent in-memory fold; also asserts loading an empty scope returns zero rows.</td></tr>
+  <tr><td><code>ScopeProjections::check_op_store_completeness</code></td><td><b>Implemented</b> (diagnostic-only observe gate; retires at C3 Stage 4)</td><td><code>crates/context/src/scope_projections.rs</code> — accepts an already-computed gov-DAG fold (<code>dag_ops</code>) and calls <code>load_scope_ops</code> to compare op-id sets. Emits <code>op_store_incomplete</code> warn on gaps; emits <code>op_store_gate_unavailable</code> and returns <code>None</code> when the store is unreadable. Returns <code>None</code> (unverifiable), <code>Some(vec![])</code> (verified complete), or <code>Some(ids)</code> (missing ids). Pinned by <code>completeness_gate_flags_governance_ops_missing_from_the_op_store</code> in <code>crates/context/tests/op_store_reconstruction.rs</code>.</td></tr>
+  <tr><td><code>ScopeProjections::scope_root_from_op_store</code> + <code>ScopeProjections::shadow_compare_op_store</code></td><td><b>Implemented</b> (observe-only; C2.2b gate)</td><td><code>crates/context/src/scope_projections.rs</code> — <code>scope_root_from_op_store</code> loads all persisted ops for a given <code>ScopeId</code> via <code>load_scope_ops</code>, folds them into a fresh <code>ScopeProjections</code> instance, and returns the governance <code>scope_root</code> using a fixed zero <code>entities_root</code>. Returns <code>Ok(None)</code> when no ops exist for the scope; <code>Err</code> on store faults. This is the op-store's independent view of a scope's governance root, intended for completeness verification before C2.2b. <code>shadow_compare_op_store</code> is an observe-only method that compares the maintained (governance-DAG) projection's <code>scope_root</code> against the op-store reconstruction for a given namespace. On mismatch it logs a <code>tracing::warn</code> with <code>marker=unified_op_store_divergence</code> and truncated hex of both roots — <b>this log marker is the e2e gate signal for C2.2b readiness</b>. Silently skips (no divergence reported) when the scope is unfolded, the op-store is empty for it, or the store read fails. <code>calimero_op</code>/<code>ScopeId</code> types remain entirely inside the context crate and are not leaked into the node crate. Behavior is pinned by two additional assertions in the existing <code>persisted_op_log_reloads_and_replays_to_the_same_projection</code> test: one verifying <code>scope_root_from_op_store</code> equals the expected in-memory fold result, and one verifying it returns <code>None</code> for a scope that has no persisted ops.</td></tr>
   <tr><td><code>AtCutAuthorizer</code> trait + <code>LiveFallbackAuthorizer</code> + <code>EphemeralProjectionAuthorizer</code></td><td><b>Implemented</b></td><td><code>crates/context/src/governance_dag.rs</code> — <code>AtCutAuthorizer</code> declares four required methods: <code>is_admin_at_cut</code>, <code>is_admin_or_capability_at_cut</code>, <code>is_last_admin_at_cut</code>, and <code>membership_path_at_cut</code>. All must return <code>None</code> when <code>parents</code> is empty (trait-level empty-cut contract). <code>LiveFallbackAuthorizer</code> implements all four returning <code>None</code>. <code>EphemeralProjectionAuthorizer</code> holds a <code>Mutex&lt;Option&lt;(ContextGroupId, Arc&lt;FoldedProjection&gt;)&gt;&gt;</code> fold cache; the private <code>folded</code> helper reuses a cached fold for the same group or calls <code>ScopeProjections::ephemeral_projection</code> on a miss. All four at-cut methods delegate through <code>folded</code>; each opens with an empty-parents guard. <code>is_last_admin_at_cut</code> delegates to <code>ScopeProjections::is_last_admin_at_cut</code> (in <code>crates/context/src/scope_projections.rs</code>), which mirrors live last-admin logic at the parent cut. <code>membership_path_at_cut</code> delegates to <code>ScopeProjections::membership_path_at_cut</code>, which calls <code>member_path_at_cut</code> on the folded projection via <code>auth_cut_context</code> and maps the result to <code>AtCutMembershipPath</code>. The standalone <code>GroupGovernanceApplier::apply</code> is unchanged (live-only); see the <em>GroupGovernanceApplier</em> note in the at-cut accessors section above.</td></tr>
   <tr><td>Owner identity + <code>TransferOwnership</code></td><td><b>Implemented</b></td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code> (<code>ops/group/transfer_ownership.rs</code>), <code>OwnerImmuneFromRemoval</code> / <code>OwnerCannotSelfLeave</code> gates in <code>MemberRemoved</code> / <code>MemberLeft</code>.</td></tr>
+  <tr><td>Namespace genesis op (<code>RootOp::NamespaceCreated</code>)</td><td><b>Implemented</b></td><td><code>crates/context/src/handlers/create_group.rs</code> (<code>parent_group_id == None</code> branch) — signs, applies, and publishes <code>RootOp::NamespaceCreated { founder: admin_identity }</code> via <code>sign_apply_and_publish_namespace_op</code>; <code>NoPeersSubscribed</code> from publish treated as success; any other error triggers rollback of all locally-written root rows (meta, founder Admin member row, default caps, group key, signing key, optional name metadata) via <code>GroupKeyring::delete_key_by_id</code>, <code>SigningKeysRepository::delete_key</code>, <code>MetaRepository::delete</code>, <code>MembershipRepository::remove_member</code>, <code>CapabilitiesRepository::delete_default</code>, <code>MetadataRepository::delete_group</code>; namespace identity row deliberately excluded from rollback so retries reuse the same identity/founder; DAG head is head-atomic and does not require rollback.</td></tr>
 </table>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
      10. OPEN QUESTIONS
      ═══════════════════════════════════════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════════
+     9b. STARTUP CURATIVE SWEEP
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Startup curative sweep — <code>redrive_stranded_ops_sweep</code></h2>
+<p>
+At node startup, a one-shot curative sweep re-drives any encrypted ops that are buffered but
+decryptable — that is, the node holds the group key but the op was never applied, typically
+because the <code>GroupCreated</code> event that would have triggered delivery arrived late or
+was dropped. Without this sweep such ops remain stranded forever.
+</p>
+
+<h3>Where it runs</h3>
+<p>
+<code>redrive_stranded_ops_sweep</code> is called from <code>self_purge::run</code>, after
+subscribing to <code>op_events</code> and before entering the main event loop. It blocks the
+event loop until the sweep finishes, but errors are logged and swallowed — the sweep never
+prevents startup.
+</p>
+
+<h3>Algorithm</h3>
+<ol>
+  <li>Call <code>known_namespace_identities</code> (via
+  <code>NamespaceRepository::iter_identities</code>) to enumerate every namespace this node has
+  an identity for.</li>
+  <li>For each namespace, call
+  <code>NamespaceRetryService::groups_with_held_key_buffered_ops</code> (the inverse of
+  <code>groups_awaiting_key</code>) to find groups whose key is already held but which still have
+  buffered ops.</li>
+  <li>Re-drive each group via <code>redrive_encrypted_ops_for_group_counted</code>, which applies
+  as many buffered ops as possible and returns a count of newly applied ops.</li>
+  <li>Loop until a full pass applies nothing new (cross-signer convergence), bounded by
+  <code>MAX_PASSES = 64</code>. Pass-narrowing means only groups that made progress in the
+  previous pass are revisited, avoiding redundant work.</li>
+</ol>
+
+<h3>Spawn ordering — load-bearing</h3>
+<p>
+<code>ContextManager::started</code> calls <code>auto_follow::spawn</code> <strong>before</strong>
+<code>self_purge::spawn</code>. This ordering is intentional and load-bearing:
+<code>auto_follow::spawn</code> subscribes to <code>op_events</code> synchronously on the caller
+thread before spawning its async task, and passes the receiver into <code>auto_follow::run()</code>.
+Because the curative sweep (inside <code>self_purge::run</code>) may emit
+<code>OpEvent::ContextRegistered</code> for previously stranded contexts, the auto-follow receiver
+<strong>must</strong> exist before those events are broadcast — otherwise they are silently dropped
+by the broadcast channel. Reversing the spawn order would silently break auto-follow for any
+context recovered by the startup sweep.
+</p>
+<div class="card ga" style="margin-top:12px;">
+<p style="margin:0;"><b>Reviewers:</b> both call sites in <code>ContextManager::started</code>
+carry inline comments documenting the ordering constraint. Any refactor that reorders
+<code>auto_follow::spawn</code> and <code>self_purge::spawn</code> must preserve the
+<em>subscribe-before-sweep</em> invariant.</p>
+</div>
+
+<h3>Relevant symbols</h3>
+<ul>
+  <li><code>redrive_stranded_ops_sweep</code> — orchestrator; lives in
+  <code>crates/context/src/self_purge.rs</code></li>
+  <li><code>redrive_buffered_ops_for_group</code> — inner per-group apply loop</li>
+  <li><code>redrive_encrypted_ops_for_group_counted</code> — wraps the above and returns
+  a count of newly applied ops for pass-narrowing</li>
+  <li><code>namespace_groups_with_held_key_buffered_ops</code> — store query (inverse of
+  <code>groups_awaiting_key</code>)</li>
+  <li><code>NamespaceRetryService::groups_with_held_key_buffered_ops</code></li>
+  <li><code>NamespaceRepository::iter_identities</code></li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     9c. BORN-OPEN ATOMIC SUBGROUP CREATE
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Born-Open atomic subgroup create — <code>RootOp::GroupCreated</code> wire change</h2>
+<div class="card ga" style="margin-bottom:12px;">
+<p style="margin:0;"><b>⚠ WIRE BREAK.</b> <code>RootOp::GroupCreated</code> has a new Borsh
+field (<code>restricted: bool</code>). Nodes running this version cannot exchange governance ops
+with nodes running the previous wire format. Nodes <strong>must reset</strong> their governance
+op-log before upgrading.</p>
+</div>
+
+<h3>Problem</h3>
+<p>
+Previously, the <code>GroupCreated</code> op carried no visibility information. The
+<code>tee_subgroup_admit</code> subscriber fired on every <code>OpEvent::SubgroupCreated</code> and
+wrote a transient direct <code>ReadOnlyTee</code> membership row for Open subgroups — a row that
+would need to be retracted once a <code>SubgroupVisibilitySet(Open)</code> op arrived. This
+transient row could cause spurious TEE admission flows.
+</p>
+
+<h3>Fix — <code>restricted</code> field on <code>GroupCreated</code></h3>
+<p>
+<code>RootOp::GroupCreated</code> gains a <code>restricted: bool</code> field:
+</p>
+<ul>
+  <li><code>restricted: true</code> (default) — subgroup is born Restricted. Legacy behavior is
+  preserved; no wire difference for groups created this way.</li>
+  <li><code>restricted: false</code> — subgroup is born Open. The apply handler writes the
+  subgroup's visibility key via <code>CapabilitiesRepository::set_subgroup_visibility</code>
+  <strong>during apply</strong>, before <code>OpEvent::SubgroupCreated</code> is queued.
+  <code>tee_subgroup_admit</code> sees the group as already Open when it reacts, skips it, and
+  no transient direct row is written.</li>
+</ul>
+<p>
+The write is gated on <code>CapabilitiesRepository::has_subgroup_visibility</code> absence so
+later <code>SubgroupVisibilitySet</code> flips are never clobbered.
+</p>
+
+<h3>API surface changes</h3>
+<ul>
+  <li><code>CreateGroupRequest</code> gains a <code>restricted: bool</code> field (default
+  <code>true</code>).</li>
+  <li>The <code>create-group-in-namespace</code> REST endpoint accepts an optional
+  <code>visibility</code> field (<code>"open"</code> | <code>"restricted"</code>, default
+  <code>"restricted"</code>).</li>
+  <li>The op-adapter projection reads <code>restricted</code> from the live op instead of
+  hardcoding <code>true</code>.</li>
+</ul>
+
+<h3>Relevant symbols</h3>
+<ul>
+  <li><code>RootOp::GroupCreated</code> — <code>crates/primitives/src/context.rs</code></li>
+  <li><code>group_created::apply</code> — <code>crates/governance-store/src/ops/group/group_created.rs</code></li>
+  <li><code>CapabilitiesRepository::has_subgroup_visibility</code>,
+  <code>CapabilitiesRepository::set_subgroup_visibility</code></li>
+  <li><code>CreateGroupRequest</code>, <code>payload_from_root_op</code></li>
+</ul>
+</div>
+
 <div class="card gc">
 <h2>Open Questions &amp; Follow-ups</h2>
 <ol>
@@ -1278,6 +1549,383 @@ before the fold is attempted at all.
   (it already returns <code>None</code> unconditionally for all methods, including the new
   <code>is_last_admin_at_cut</code>).</li>
 </ul>
+</div>
+<div class="card ga"><h2>Deferred op-store read-flip — <code>ops_for_namespace</code> indirection layer</h2>
+
+<p>
+<strong>Status: C2.2b deferred.</strong> The unified op-store (<code>load_scope_ops</code>) is
+<em>not</em> yet the source of truth for projection rebuilds. All projection-rebuild call sites
+now route through a new stable indirection method, <code>ScopeProjections::ops_for_namespace</code>,
+which currently delegates to <code>collect_namespace_ops</code> (the governance-DAG walk). The
+flip to <code>load_scope_ops</code> is explicitly deferred until the late-decrypted membership
+bug described below is resolved.
+</p>
+
+<h3><code>ops_for_namespace</code> — the stable indirection point</h3>
+<p>
+<code>ScopeProjections::ops_for_namespace(namespace_id, store)</code> is the single dispatch
+point used by every projection-rebuild site:
+</p>
+<ul>
+  <li><code>backfill_namespace</code> in <code>scope_projections.rs</code></li>
+  <li><code>member_now_ephemeral</code> / <code>ephemeral_fold</code> in
+  <code>scope_projections.rs</code></li>
+  <li>The <code>scope_root</code> reconstruction path in <code>scope_projections.rs</code></li>
+  <li><code>refresh_projection_for_cut</code> in the node crate</li>
+</ul>
+<p>
+All four previously called <code>collect_namespace_ops</code> directly. They now call
+<code>ops_for_namespace</code> instead. <code>collect_namespace_ops</code> remains as the
+underlying implementation and is unchanged; <code>ops_for_namespace</code> is a thin wrapper
+that will be flipped to call <code>load_scope_ops</code> at C2.2b without requiring changes at
+any call site.
+</p>
+
+<h3>Why the flip was blocked — late-decrypted membership (resolved by C2.2c)</h3>
+<p>
+An encrypted <code>MemberAdded</code> op can arrive at a node before that node holds the group
+key. At apply time the op is processed as <code>Noop</code> and written to the op-store with a
+<code>Noop</code> payload. When the group key later arrives — via a keyshare or a
+<code>KeyDelivery</code> event — the governance-DAG walk (<code>collect_namespace_ops</code>)
+re-decrypts the op at <em>read time</em> and correctly surfaces it as <code>MemberAdded</code>.
+Previously, the op-store entry was <strong>not</strong> updated; it still recorded <code>Noop</code>.
+</p>
+<p>
+Consequence: if <code>ops_for_namespace</code> were flipped to <code>load_scope_ops</code> before
+this was fixed, any member whose <code>MemberAdded</code> op was frozen as <code>Noop</code> at
+write time would silently disappear from the projection after a rebuild. This was confirmed by e2e
+timeouts on the joiner's post-write sync in the <code>group-3node</code>,
+<code>scaffolding-e2e</code>, and <code>shared-storage rotation</code> workflows.
+</p>
+<p>
+<strong>Fix: <code>ScopeProjections::repersist_namespace_ops</code>.</strong> After any group key
+is delivered, the key-delivery path calls
+<code>ScopeProjections::repersist_namespace_ops(namespace_id, store)</code>, which re-walks the
+namespace through <code>collect_namespace_ops</code> (the canonical read-time decryption path) and
+calls <code>persist_op</code> for every op it finds. Because ops are content-addressed by the same
+op id, a now-decryptable op (e.g. <code>MemberAdded</code>) overwrites the stale <code>Noop</code>
+that was frozen at apply time when the key was absent. The method is best-effort (errors are logged
+but not propagated), idempotent, and bounded by the same <code>MAX_BACKFILL_OPS</code> walk cap
+used elsewhere.
+</p>
+
+<h3><code>ScopeProjections::check_op_store_completeness</code> — diagnostic completeness gate</h3>
+<p>
+<code>ScopeProjections::check_op_store_completeness(dag_ops, store)</code> is a diagnostic-only
+observe gate that compares the op-ids from an already-computed gov-DAG fold (<code>dag_ops</code>)
+against the op-ids loaded from the unified op-store via <code>load_scope_ops</code>. For every op
+present in the gov-DAG fold but absent from the op-store it emits an <code>op_store_incomplete</code>
+<code>tracing::warn</code> event carrying <code>missing_count</code>, <code>dag_count</code>,
+<code>op_store_count</code>, and a hex-encoded <code>sample_missing</code> id. If the op-store
+cannot be loaded at all it emits a distinct <code>op_store_gate_unavailable</code> marker and
+returns <code>None</code> so a store fault cannot masquerade as a verified-clean result.
+</p>
+<p>Return semantics:</p>
+<ul>
+  <li><code>None</code> — op-store was unreadable; completeness is unverified. Callers <b>must not</b>
+  treat this as a clean result.</li>
+  <li><code>Some(vec![])</code> — verified complete; every gov-DAG op-id is present in the
+  op-store.</li>
+  <li><code>Some(ids)</code> — those op-ids are present in the gov-DAG fold but missing from the
+  op-store.</li>
+</ul>
+<p>
+This method is <b>diagnostic-only</b> and has no effect on whether ops are accepted or rejected.
+It retires at C3 Stage 4 when the authoritative read path flips onto the op-store. The companion
+regression test
+<code>completeness_gate_flags_governance_ops_missing_from_the_op_store</code> in
+<code>crates/context/tests/op_store_reconstruction.rs</code> builds three governance ops, persists
+only two to the op-store, calls <code>check_op_store_completeness</code> with all three as the
+dag-fold, and asserts the return is <code>Some(vec![op3.id])</code>; after persisting the third it
+asserts the return becomes <code>Some(vec![])</code>, confirming the <code>None</code> vs
+empty-vec distinction works correctly.
+</p>
+
+<h3>Removed: <code>shadow_compare_op_store</code> and <code>scope_root_from_governance_dag</code></h3>
+<p>
+The observe-only <code>shadow_compare_op_store</code> method on <code>ScopeProjections</code>
+and its companion <code>scope_root_from_governance_dag</code> have been removed, along with the
+call site in <code>refresh_projection_for_cut</code> that triggered a full governance-DAG fold
+on every backfill.
+</p>
+<p>
+The comparison these methods performed was structurally flawed: the maintained projection holds
+live <code>ingest_op</code>-fed ops that may not yet be written to the op-store. A gap in the
+op-store could therefore be masked by the live apply path, making the divergence invisible to the
+cross-check. The <code>marker=unified_op_store_divergence</code> log signal described in earlier
+sections of this page is no longer emitted; the C2.2b readiness gate is now the
+<code>op_store_reconstruction_matches_governance_dag_for_late_decrypted_membership</code>
+regression test described below.
+</p>
+
+<h3>Regression test — <code>op_store_reconstruction.rs</code></h3>
+<p>
+The integration test file
+<code>crates/context/tests/op_store_reconstruction.rs</code> is the CI regression gate for this
+fix. The test is named
+<code>op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery</code> and is
+structured as an explicit before/after:
+</p>
+<ol>
+  <li>Injects an encrypted <code>MemberAdded</code> op into the governance DAG with the group key
+  absent at write time, persisting the op-store entry as <code>Noop</code>.</li>
+  <li><strong>Before</strong> re-persist: asserts that <code>load_scope_ops</code> reconstruction
+  sees <code>Some(false)</code> for the member (the frozen <code>Noop</code> state).</li>
+  <li>Calls <code>repersist_namespace_ops</code> to simulate key delivery.</li>
+  <li><strong>After</strong> re-persist: asserts that the op-store reconstruction matches the
+  governance-DAG fold — the member is now <code>Some(true)</code>.</li>
+</ol>
+<p>
+The test runs in CI without <code>#[ignore]</code> and serves as the C2.2c readiness gate. The
+module-level doc comment in the test file explains the full bug chain and the fix.
+</p>
+
+<h3>Summary of changes</h3>
+<ul>
+  <li><code>ScopeProjections::ops_for_namespace</code> introduced; all four projection-rebuild
+  call sites updated from <code>collect_namespace_ops</code> to <code>ops_for_namespace</code>.</li>
+  <li><code>collect_namespace_ops</code> unchanged — still the implementation behind
+  <code>ops_for_namespace</code>.</li>
+  <li><code>shadow_compare_op_store</code> and <code>scope_root_from_governance_dag</code>
+  removed from <code>ScopeProjections</code>; <code>marker=unified_op_store_divergence</code> is
+  no longer emitted.</li>
+  <li><code>refresh_projection_for_cut</code> call site that triggered a shadow fold on every
+  backfill deleted.</li>
+  <li><code>ScopeProjections::repersist_namespace_ops</code> added; called by the key-delivery
+  path after a group key arrives to overwrite stale <code>Noop</code> op-store entries with their
+  now-decryptable payloads. Best-effort, idempotent, bounded by <code>MAX_BACKFILL_OPS</code>.</li>
+  <li><code>crates/context/tests/op_store_reconstruction.rs</code> updated: test renamed to
+  <code>op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery</code>,
+  <code>#[ignore]</code> removed, body restructured into an explicit before/after assertion around
+  a <code>repersist_namespace_ops</code> call.</li>
+</ul>
+</div>
+<div class="card gb"><h2><code>ScopeProjections::persist_namespace_head_ops</code> — mirroring authored ops into the op-store</h2>
+
+<p>
+After a local authoring step publishes a governance op (<code>GroupCreated</code>,
+<code>GroupDeleted</code>, <code>MemberJoinedOpen</code>), the unified op-store must be updated so
+that any subsequent <code>load_scope_ops</code>-based projection rebuild sees the authored op
+without relying on a peer retransmission. The method
+<code>ScopeProjections::persist_namespace_head_ops(store, namespace_id)</code> is the single
+call site for this update.
+</p>
+
+<h3>Why not a heads-only walk</h3>
+<p>
+A naive implementation would read the namespace's current DAG heads immediately after publish and
+persist only those ops. This races: if a concurrent peer op is applied between the local
+<code>publish</code> call and the heads read, the head record advances past the just-authored op.
+The authored op is then unreachable from a heads-only walk and is silently omitted from the
+op-store. The member or group it describes disappears from any rebuild that sources ops from
+<code>load_scope_ops</code>.
+</p>
+
+<h3>Implementation — full gov-DAG fold via <code>repersist_namespace_ops</code></h3>
+<p>
+<code>persist_namespace_head_ops</code> delegates unconditionally to
+<code>repersist_namespace_ops</code>, which performs a full
+<code>collect_namespace_ops</code>-backed fold bounded by <code>MAX_BACKFILL_OPS</code>. This
+walk is read-time decryption-aware, so an authored op that was encrypted at publish time is
+decoded here and written to the op-store with its actual payload (not as <code>Noop</code>). The
+walk captures the authored op regardless of where it landed in the DAG relative to concurrent
+peer ops, because <code>collect_namespace_ops</code> traverses the full ancestry from the current
+head rather than just the head itself.
+</p>
+<p>
+The call is:
+</p>
+<ul>
+  <li><strong>Idempotent.</strong> <code>persist_op</code> is content-addressed by op id; calling
+  it twice for the same op is a no-op.</li>
+  <li><strong>Best-effort.</strong> Errors are logged by <code>repersist_namespace_ops</code>
+  (using the same <code>tracing::warn</code> paths as the key-delivery re-persist) and are
+  never propagated. A failure to update the op-store never causes the authoring step to return
+  an error to the caller.</li>
+  <li><strong>Bounded.</strong> The walk is capped at <code>MAX_BACKFILL_OPS</code>, the same
+  limit used by every other <code>collect_namespace_ops</code>-backed path. An unusually large
+  namespace cannot cause an unbounded fold at authoring time.</li>
+</ul>
+
+<h3>Unified authoring wrapper — <code>sign_apply_and_publish_group_op</code></h3>
+<p>
+Rather than calling <code>persist_namespace_head_ops</code> individually in each handler,
+all group-op authoring is routed through a single crate-internal async wrapper:
+<code>crate::sign_apply_and_publish_group_op</code>. It calls
+<code>calimero_governance_store::sign_apply_and_publish</code> and, on success, resolves the
+namespace from the group ID via <code>NamespaceRepository::resolve</code> and calls
+<code>ScopeProjections::persist_namespace_head_ops</code>. A namespace-resolve failure logs a
+<code>tracing::warn</code> identifying the group ID but does not fail the authoring operation.
+</p>
+<p>
+<strong>Callers must not call <code>calimero_governance_store::sign_apply_and_publish</code>
+directly for group ops.</strong> Using the wrapper ensures the op-store is always updated at the
+single chokepoint and that namespace-resolve failures are observable via tracing warnings.
+</p>
+
+<h3>Wired call sites</h3>
+<p>
+The method is called after the governance op is successfully published or applied, never before.
+A failure at the authoring step is not affected:
+</p>
+<ul>
+  <li><strong><code>create_group</code></strong> — called after <code>GroupCreated</code> is
+  successfully reported to the governance pipeline.</li>
+  <li><strong><code>delete_group</code></strong> — called after <code>GroupDeleted</code> is
+  applied.</li>
+  <li><strong><code>join_context</code></strong> — called after the <code>MemberJoinedOpen</code>
+  op is published. The call is skipped (effectively a no-op path) if the publish or apply step
+  errored.</li>
+  <li><strong><code>join_subgroup_inheritance</code></strong> — called after
+  <code>MemberJoinedOpen</code> is published, following the same skip-on-error pattern.</li>
+  <li><strong>All other group-op handlers</strong> — <code>add_group_members</code>,
+  <code>admit_tee_node</code>, <code>create_context</code> (two call sites),
+  <code>delete_context</code>, <code>detach_context_from_group</code>, <code>leave_group</code>,
+  <code>leave_namespace</code>, <code>set_member_auto_follow</code>,
+  <code>set_member_capabilities</code>, <code>set_subgroup_visibility</code>,
+  <code>set_tee_admission_policy</code>, <code>update_member_role</code>, <code>upgrade_group</code>
+  (four call sites), <code>dispatch_cascade</code>, and the generic governance handler in
+  <code>lib.rs</code> all call <code>crate::sign_apply_and_publish_group_op</code> instead of the
+  underlying store function.</li>
+</ul>
+<p>
+<strong>Exception — <code>remove_group_members</code>.</strong> The key-rotation removal path uses
+<code>sign_apply_and_publish_removal</code> (not the standard publish function) and cannot use the
+wrapper. After each removal it inlines the same namespace-resolve +
+<code>persist_namespace_head_ops</code> logic directly. A namespace-resolve failure logs a
+<code>tracing::warn</code> identifying the group ID.
+</p>
+
+<h3>Regression test</h3>
+<p>
+The test
+<code>persist_namespace_head_ops_lands_locally_authored_op_in_the_op_store</code> in
+<code>crates/context/tests/op_store_reconstruction.rs</code> verifies the full round-trip:
+</p>
+<ol>
+  <li>An encrypted <code>MemberAdded</code> op is injected into the governance DAG (op-log +
+  DAG head) but <em>not</em> into the op-store, simulating the local-author gap.</li>
+  <li>The test asserts that <code>load_scope_ops</code> returns no entry for the op before the
+  call — confirming the gap exists.</li>
+  <li><code>persist_namespace_head_ops</code> is called.</li>
+  <li>The test asserts the op now appears in the op-store.</li>
+  <li>A fresh projection is folded from the op-store contents and
+  <code>member_at_cut</code> is called. The test asserts it returns <code>Some(true)</code> —
+  proving the encrypted payload was decoded correctly, not merely that the op id was recorded.</li>
+</ol>
+<p>
+The test runs without <code>#[ignore]</code> in CI and is the readiness gate for any future flip
+of <code>ops_for_namespace</code> to source from <code>load_scope_ops</code> at authoring call
+sites.
+</p>
+
+<h3>Relationship to <code>repersist_namespace_ops</code></h3>
+<p>
+<code>repersist_namespace_ops</code> was introduced to recover late-decrypted
+<code>MemberAdded</code> ops after key delivery (see the deferred op-store read-flip section
+above). <code>persist_namespace_head_ops</code> reuses that same mechanism for a different trigger
+— local authoring — ensuring both the key-delivery path and the authoring path produce a
+consistent op-store state. The two call sites share the same underlying fold, the same error
+handling, and the same <code>MAX_BACKFILL_OPS</code> bound.
+</p>
+</div>
+<div class="card gc"><h2>Atomic op-store write — removal of per-site dual-write scaffolding</h2>
+<p>
+<strong>Status: shipped.</strong> <code>store_signed_operation</code> now persists every
+governance op atomically at apply time, making all per-site op-store write calls redundant. This
+section documents what was removed and why, and supersedes the
+<em>Deferred op-store read-flip</em> and
+<em><code>persist_namespace_head_ops</code></em> sections above where they describe the old
+per-site scaffolding.
+</p>
+
+<h3>What was removed</h3>
+<ul>
+  <li><strong>Receive-handler dual-write.</strong> The <code>persist_op</code> call inside
+  <code>apply_signed_namespace_op</code> that was labelled <em>C2.1b dual-write</em> has been
+  deleted. The <code>ingest_op</code> fold into the live projection is deliberately kept; only
+  the now-redundant durable-store write is gone.</li>
+  <li><strong><code>sign_apply_and_publish_group_op</code> wrapper.</strong> The crate-private
+  function in <code>lib.rs</code> that wrapped
+  <code>calimero_governance_store::sign_apply_and_publish</code> and appended a
+  <code>persist_namespace_head_ops</code> call is deleted entirely. All ~15 call sites
+  (<code>add_group_members</code>, <code>admit_tee_node</code>, <code>create_context</code>,
+  <code>delete_context</code>, <code>detach_context_from_group</code>, <code>join_context</code>,
+  <code>leave_group</code>, <code>leave_namespace</code>, <code>set_member_auto_follow</code>,
+  <code>set_member_capabilities</code>, <code>set_subgroup_visibility</code>,
+  <code>set_tee_admission_policy</code>, <code>update_member_role</code>,
+  <code>upgrade_group</code>, <code>dispatch_cascade</code>, and others) now call
+  <code>calimero_governance_store::sign_apply_and_publish</code> directly.</li>
+  <li><strong><code>ScopeProjections::persist_namespace_head_ops</code>.</strong> The thin alias
+  for <code>repersist_namespace_ops</code> that documented the <em>C3 Stage 1/2/3</em> per-site
+  persist pattern is deleted from <code>scope_projections.rs</code>. All call sites are also
+  removed: <code>create_group</code>, <code>delete_group</code>, <code>join_context</code>,
+  <code>join_subgroup_inheritance</code>, <code>remove_group_members</code>,
+  <code>join_namespace</code> (node crate), <code>reparent_group</code> (admin API), and
+  <code>create_group_in_namespace</code> (admin API).</li>
+</ul>
+
+<h3>Why the per-site scaffolding was safe to delete</h3>
+<p>
+<code>store_signed_operation</code> is called on every apply path — both local authoring and
+peer-receive — and now writes the op into the unified op-store as part of the same atomic
+commit. Because the persist is guaranteed at the apply chokepoint, no handler needs to issue a
+separate post-publish persist call. The two problems the scaffolding addressed are resolved at
+source:
+</p>
+<ul>
+  <li><strong>Local-author gap.</strong> A locally authored op is written by
+  <code>store_signed_operation</code> at apply time, before the handler returns. There is no
+  window in which the op could be absent from the op-store after a successful publish.</li>
+  <li><strong>Late-decrypted membership.</strong> <code>repersist_namespace_ops</code> (called by
+  the key-delivery path) still overwrites stale <code>Noop</code> entries with their
+  now-decryptable payloads. The atomic write path records the best payload available at apply
+  time; the key-delivery re-persist corrects any entry frozen as <code>Noop</code> before the
+  group key arrived. Both paths remain in place; only the redundant per-site calls are removed.</li>
+</ul>
+
+<h3>Race that the old heads-only walk would have introduced</h3>
+<p>
+The deleted <code>persist_namespace_head_ops</code> performed a full
+<code>collect_namespace_ops</code>-backed fold after publish to avoid a heads-only-walk race
+(a concurrent peer op advancing the head past the just-authored op before the walk ran). The
+atomic write in <code>store_signed_operation</code> sidesteps this entirely: the authored op is
+written at apply time under its content-addressed op id, so its presence in the op-store is
+independent of where the DAG head points afterward.
+</p>
+
+<h3>Surviving use of <code>repersist_namespace_ops</code></h3>
+<p>
+<code>repersist_namespace_ops</code> itself is <strong>not</strong> deleted. It continues to
+serve the key-delivery path: when a group key arrives late, the key-delivery handler calls
+<code>repersist_namespace_ops</code> to re-walk the namespace via
+<code>collect_namespace_ops</code> and overwrite any op-store entries that were frozen as
+<code>Noop</code> at apply time because the key was absent. This is the only remaining call site.
+</p>
+
+<h3>Updated test — <code>locally_authored_op_lands_in_the_op_store_atomically</code></h3>
+<p>
+The test previously named
+<code>persist_namespace_head_ops_lands_locally_authored_op_in_the_op_store</code> is renamed
+<code>locally_authored_op_lands_in_the_op_store_atomically</code>. Its structure is updated to
+reflect the atomic-write path:
+</p>
+<ol>
+  <li>An encrypted <code>MemberAdded</code> op is passed through <code>store_signed_operation</code>
+  (the atomic path).</li>
+  <li>The test asserts the op appears in the op-store <em>immediately after</em> that call, with
+  no intervening <code>persist_namespace_head_ops</code> call required — authoring handlers need
+  only call <code>calimero_governance_store::sign_apply_and_publish</code> directly; no post-author
+  mirror step is needed.</li>
+  <li>The test then calls <code>ScopeProjections::repersist_namespace_ops</code> directly
+  (replacing the now-deleted <code>persist_namespace_head_ops</code> alias) and asserts the
+  op-store state is unchanged — confirming idempotency over an already-present entry.</li>
+</ol>
+<p>
+The test runs without <code>#[ignore]</code> in CI and is the readiness gate confirming that the
+atomic-write path is sufficient and that the per-site scaffolding carried no load that
+<code>store_signed_operation</code> does not now cover.
+</p>
 </div>
 </div>
 </div>

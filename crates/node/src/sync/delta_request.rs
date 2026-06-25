@@ -93,6 +93,8 @@ fn verify_fetched_parent(
     delta_id: [u8; 32],
     fetched: &FetchedDelta,
     datastore: &calimero_store::Store,
+    // The maintained projection, for at-cut membership authorization (F5 #29b).
+    node_state: &crate::NodeState,
 ) -> VerifiedParent {
     use calimero_context_config::types::GovernanceParentEdge;
 
@@ -150,7 +152,7 @@ fn verify_fetched_parent(
     }
 
     // Group/membership authorization — including the group-id anti-bypass the
-    // old `GroupIdCheck` performed — is done by `authorize_delta_at_edge`
+    // old `GroupIdCheck` performed — is done by `authorize_delta_at_edge_projected`
     // below (after the ReadOnly gate), deriving the group from the context.
 
     // ReadOnly check — parity with the gossip apply path.
@@ -171,11 +173,22 @@ fn verify_fetched_parent(
         return VerifiedParent::Skip;
     }
 
-    match crate::handlers::state_delta::authorize_delta_at_edge(
+    // Resolve membership at the cited cut FROM THE PROJECTION (F5 #29b), parity
+    // with the gossip path.
+    match crate::handlers::state_delta::authorize_delta_at_edge_projected(
         datastore,
         context_id,
         &fetched.author_id,
         pos.as_ref(),
+        |group, heads| {
+            crate::handlers::state_delta::resolve_cut_membership(
+                node_state,
+                datastore,
+                group,
+                &fetched.author_id,
+                heads,
+            )
+        },
     ) {
         crate::handlers::state_delta::DeltaAuthOutcome::Authorized { .. }
         | crate::handlers::state_delta::DeltaAuthOutcome::Ungated => {
@@ -323,6 +336,7 @@ impl SyncManager {
                             missing_id,
                             &fetched,
                             &datastore,
+                            &self.node_state,
                         ) {
                             VerifiedParent::Apply { position } => position,
                             VerifiedParent::Skip => continue,
@@ -687,6 +701,15 @@ impl SyncManager {
             "Sending DAG heads to peer"
         );
 
+        // C0 scope_root shadow: fold our governance projection's ACL + membership
+        // onto the entity root so the requester can detect a hash-neutral rotation
+        // the bare `root_hash` hides. `None` (non-group / cold projection) ⇒ skip.
+        // Observe-only.
+        let datastore = self.context_client.datastore_handle().into_inner();
+        let scope_root =
+            super::helpers::local_scope_root(&datastore, &context_id, *context.root_hash)
+                .map(calimero_primitives::hash::Hash::from);
+
         // Send response
         let mut sqx = Sequencer::default();
         let msg = StreamMessage::Message {
@@ -694,6 +717,7 @@ impl SyncManager {
             payload: MessagePayload::DagHeadsResponse {
                 dag_heads: context.dag_heads,
                 root_hash: context.root_hash,
+                scope_root,
             },
             next_nonce: super::helpers::generate_nonce(),
         };

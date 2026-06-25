@@ -266,6 +266,12 @@ impl ProtocolSelector {
                             .await;
                         }
 
+                        // P6.S3: the post-sync governance-divergence pull moved to
+                        // a single check in the manager (`handle_dag_sync`, after
+                        // `execute` returns) so it covers EVERY data backend —
+                        // Snapshot / DeltaSync as well as HC / LevelWise — not just
+                        // the two that compute the verdict here. The selector stays
+                        // a pure data-transfer step.
                         Ok(Some(SyncProtocol::HashComparison { root_hash }))
                     }
                     Err(e) => {
@@ -402,6 +408,9 @@ impl ProtocolSelector {
                             .await;
                         }
 
+                        // P6.S3: post-sync governance pull centralised in the
+                        // manager (covers all data backends); see the HashComparison
+                        // arm above.
                         Ok(Some(SyncProtocol::LevelWise { max_depth }))
                     }
                     Err(e) => {

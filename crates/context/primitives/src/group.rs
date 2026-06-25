@@ -41,6 +41,11 @@ pub struct CreateGroupRequest {
     pub upgrade_policy: UpgradePolicy,
     pub name: Option<String>,
     pub parent_group_id: Option<ContextGroupId>,
+    /// Subgroup visibility at birth (#2771). `true` = Restricted (default,
+    /// preserves legacy behavior), `false` = born-Open. Only meaningful when
+    /// `parent_group_id` is set (subgroup creation); ignored for root
+    /// creation, which has no `GroupCreated` op.
+    pub restricted: bool,
 }
 
 impl Message for CreateGroupRequest {

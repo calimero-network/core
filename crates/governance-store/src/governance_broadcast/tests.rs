@@ -126,6 +126,7 @@ fn timeout_classifier_assigns_per_op_kind() {
         timeout_for_namespace_op(&NamespaceOp::Root(RootOp::GroupCreated {
             group_id: [0u8; 32],
             parent_id: [0u8; 32],
+            restricted: true,
         })),
         OP_ACK_MEMBER_CHANGE_TIMEOUT
     );
@@ -177,7 +178,6 @@ fn mk_signed_op(sk: &PrivateKey, namespace_id: [u8; 32]) -> SignedNamespaceOp {
         sk,
         namespace_id,
         Vec::new(),
-        [0u8; 32],
         0,
         NamespaceOp::Root(RootOp::AdminChanged {
             new_admin: sk.public_key(),

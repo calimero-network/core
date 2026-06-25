@@ -50,7 +50,7 @@
 <p class="page-subtitle">Every key/value type across all 11 columns with byte layouts</p>
 
 <div class="g4" style="margin-bottom:36px;">
-  <div class="stat"><div class="v">11</div><div class="l">column families</div></div>
+  <div class="stat"><div class="v">12</div><div class="l">column families</div></div>
   <div class="stat"><div class="v">26</div><div class="l">group prefixes</div></div>
   <div class="stat"><div class="v">Borsh</div><div class="l">default codec</div></div>
   <div class="stat"><div class="v">RocksDB</div><div class="l">storage engine</div></div>
@@ -76,6 +76,7 @@
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Alias</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// human-readable name → id</span><br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Generic</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// uncategorized data</span><br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Group</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// governance: 20 prefix-partitioned sub-namespaces</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">UnifiedOp</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// unified causal-log op-store: scope‖op_id → borsh(calimero_op::Op)</span><br>
 }
 </div>
 </div>
@@ -85,7 +86,7 @@
      ════════════════════════════════════════════════════════ -->
 <div class="card gb">
 <h2>Context Column Types</h2>
-<p style="margin-bottom:18px;">Key/value types for the columns that store per-context data: metadata, configuration, shared state, private state, identity, and deltas.</p>
+<p style="margin-bottom:18px;">Key/value types for the columns that store per-context data: metadata, configuration, shared state, private state, identity, deltas, and unified ops.</p>
 
 <h3>Meta Column</h3>
 <table class="schema-table">
@@ -185,6 +186,32 @@
 </tr>
 </tbody>
 </table>
+
+<h3>UnifiedOp Column</h3>
+<p style="margin-bottom:10px;">Holds one <code>calimero_op::Op</code> per row, written by the context layer during the dual-write transition. This column is kept separate from <code>Column::Delta</code> to prevent key collisions; the two are intended to merge once legacy delta rows retire in a later cutover slice.</p>
+<table class="schema-table">
+<thead><tr><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Codec</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sk">ScopeUnifiedOp</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-id">scope (32)</span><span class="plus">+</span><span class="seg seg-id2">op_id (32)</span></span></td>
+  <td class="sv">Slice (raw bytes)</td>
+  <td class="sc">Identity</td>
+  <td class="sd">Borsh-serialized <code>calimero_op::Op</code>; <code>calimero-store</code> treats the value as opaque — callers must borsh-serialize/deserialize the <code>Op</code> themselves</td>
+</tr>
+</tbody>
+</table>
+
+<div class="typedef">
+<span class="comment">// key/context.rs — re-exported from crate::key</span><br>
+<span class="kw">pub struct</span> <span class="ty">ScopeUnifiedOp</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">scope</span>: [u8; 32],&nbsp;&nbsp;<span class="comment">// typically a context_id</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">op_id</span>: [u8; 32],<br>
+}&nbsp;&nbsp;<span class="comment">// Size = U64, COLUMN = Column::UnifiedOp</span><br>
+<br>
+<span class="comment">// types/context.rs — re-exported from crate::types</span><br>
+<span class="comment">// Value type: Identity codec (raw bytes); calimero_store has no dep on calimero_op</span>
+</div>
 
 <div class="typedef">
 <span class="kw">struct</span> <span class="ty">ContextDagDeltaValue</span> {<br>

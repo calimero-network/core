@@ -135,7 +135,6 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: new_member,
@@ -161,8 +160,8 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
             .unwrap()
     );
 
-    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 2, GroupOp::Noop)
-        .expect("sign op2");
+    let op2 =
+        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).expect("sign op2");
     let payload2 = borsh_to_vec(&op2).expect("borsh encode op2");
 
     apply_wire_payload(&store_a, &payload2);
@@ -211,7 +210,6 @@ fn two_nodes_converge_on_target_application_and_migration() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::TargetApplicationSet {
             app_key: [0x11; 32],
@@ -224,7 +222,6 @@ fn two_nodes_converge_on_target_application_and_migration() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         2,
         GroupOp::GroupMigrationSet {
             migration: Some(b"v1-migration".to_vec()),
@@ -304,7 +301,6 @@ fn two_nodes_converge_on_namespace_member_joined() {
         &joiner_sk,
         ns_id,
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner_pk,
@@ -355,7 +351,6 @@ fn member_joined_at_rejects_expired_invitation() {
         &joiner_sk,
         ns_id,
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: joiner_pk,
@@ -410,7 +405,6 @@ fn member_joined_at_accepts_in_window_invitation() {
         &joiner_sk,
         ns_id,
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: joiner_pk,
@@ -463,7 +457,6 @@ fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual(
         &joiner_sk,
         ns_id,
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: joiner_pk,
@@ -515,7 +508,6 @@ fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock()
         &joiner_sk,
         ns_id,
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: joiner_pk,
@@ -561,7 +553,6 @@ fn member_joined_at_ignores_zero_expiration() {
         &joiner_sk,
         ns_id,
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: joiner_pk,
@@ -638,7 +629,6 @@ fn recursive_invite_joins_all_descendant_groups() {
             &joiner_sk,
             ns_id.to_bytes(),
             vec![],
-            [0u8; 32],
             (i + 1) as u64,
             NamespaceOp::Root(RootOp::MemberJoined {
                 member: joiner_pk,
@@ -781,7 +771,6 @@ fn two_nodes_converge_on_context_alias_as_admin() {
         &creator_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::ContextRegistered {
             context_id,
@@ -796,7 +785,6 @@ fn two_nodes_converge_on_context_alias_as_admin() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::ContextMetadataSet {
             context_id,
@@ -855,7 +843,6 @@ fn op_log_records_applied_ops_and_head_advances() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: new_member,
@@ -876,8 +863,8 @@ fn op_log_records_applied_ops_and_head_advances() {
     let decoded: SignedGroupOp = borsh::from_slice(&log[0].1).unwrap();
     assert_eq!(decoded.nonce, op1.nonce);
 
-    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 2, GroupOp::Noop)
-        .expect("sign op2");
+    let op2 =
+        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).expect("sign op2");
     apply_local_signed_group_op(&store, &op2).unwrap();
 
     let head2 = get_op_head(&store, &gid).unwrap().expect("head after op2");
@@ -907,8 +894,7 @@ fn duplicate_op_is_idempotent() {
         .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
         .unwrap();
 
-    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 1, GroupOp::Noop)
-        .expect("sign op");
+    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 1, GroupOp::Noop).expect("sign op");
     let payload = borsh_to_vec(&op).expect("encode");
 
     apply_wire_payload(&store, &payload);
@@ -949,7 +935,6 @@ fn offline_node_replays_missed_ops_from_log() {
         &admin_sk,
         gid_bytes,
         vec![[0u8; 32]],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: member1,
@@ -962,7 +947,6 @@ fn offline_node_replays_missed_ops_from_log() {
         &admin_sk,
         gid_bytes,
         vec![op1_hash],
-        [0u8; 32],
         2,
         GroupOp::MemberAdded {
             member: member2,
@@ -1036,7 +1020,6 @@ async fn dag_applies_ops_in_causal_order() {
         &admin_sk,
         gid_bytes,
         vec![[0u8; 32]],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: member1,
@@ -1052,7 +1035,6 @@ async fn dag_applies_ops_in_causal_order() {
         &admin_sk,
         gid_bytes,
         vec![op1_hash],
-        [0u8; 32],
         2,
         GroupOp::MemberAdded {
             member: member2,
@@ -1120,7 +1102,6 @@ async fn dag_concurrent_ops_create_two_heads() {
         &admin_sk,
         gid_bytes,
         vec![[0u8; 32]],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: member1,
@@ -1132,7 +1113,6 @@ async fn dag_concurrent_ops_create_two_heads() {
         &admin_sk,
         gid_bytes,
         vec![[0u8; 32]],
-        [0u8; 32],
         2,
         GroupOp::MemberAdded {
             member: member2,
@@ -1169,15 +1149,8 @@ async fn dag_concurrent_ops_create_two_heads() {
     // Merge op referencing both heads
     let hash_a = op_a.content_hash().unwrap();
     let hash_b = op_b.content_hash().unwrap();
-    let merge_op = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        vec![hash_a, hash_b],
-        [0u8; 32],
-        3,
-        GroupOp::Noop,
-    )
-    .unwrap();
+    let merge_op =
+        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![hash_a, hash_b], 3, GroupOp::Noop).unwrap();
     dag.add_delta(signed_op_to_delta(&merge_op).unwrap(), &applier)
         .await
         .unwrap();
@@ -1204,15 +1177,7 @@ async fn dag_duplicate_delta_is_idempotent() {
         .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
         .unwrap();
 
-    let op = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        vec![[0u8; 32]],
-        [0u8; 32],
-        1,
-        GroupOp::Noop,
-    )
-    .unwrap();
+    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![[0u8; 32]], 1, GroupOp::Noop).unwrap();
     let delta = signed_op_to_delta(&op).unwrap();
 
     let applier = GroupGovernanceApplier::new(store.clone());
@@ -1244,15 +1209,8 @@ async fn dag_deep_chain_with_out_of_order_delivery() {
     let mut ops = Vec::new();
     let mut prev_hash: Vec<[u8; 32]> = vec![[0u8; 32]];
     for i in 1..=5u64 {
-        let op = SignedGroupOp::sign(
-            &admin_sk,
-            gid_bytes,
-            prev_hash.clone(),
-            [0u8; 32],
-            i,
-            GroupOp::Noop,
-        )
-        .unwrap();
+        let op =
+            SignedGroupOp::sign(&admin_sk, gid_bytes, prev_hash.clone(), i, GroupOp::Noop).unwrap();
         prev_hash = vec![op.content_hash().unwrap()];
         ops.push(op);
     }
@@ -1315,15 +1273,7 @@ fn rejects_op_with_too_many_parents() {
             h
         })
         .collect();
-    let op_ok = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        parents_256,
-        [0u8; 32],
-        1,
-        GroupOp::Noop,
-    )
-    .unwrap();
+    let op_ok = SignedGroupOp::sign(&admin_sk, gid_bytes, parents_256, 1, GroupOp::Noop).unwrap();
     assert!(apply_local_signed_group_op(&store, &op_ok).is_ok());
 
     // 257 parents should be rejected
@@ -1335,15 +1285,7 @@ fn rejects_op_with_too_many_parents() {
             h
         })
         .collect();
-    let op_bad = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        parents_257,
-        [0u8; 32],
-        2,
-        GroupOp::Noop,
-    )
-    .unwrap();
+    let op_bad = SignedGroupOp::sign(&admin_sk, gid_bytes, parents_257, 2, GroupOp::Noop).unwrap();
     assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
 }
 
@@ -1365,15 +1307,8 @@ fn dag_heads_are_capped_at_max() {
 
     // Create 70 concurrent ops (all with genesis parent) to exceed MAX_DAG_HEADS (64)
     for i in 1..=70u64 {
-        let op = SignedGroupOp::sign(
-            &admin_sk,
-            gid_bytes,
-            vec![[0u8; 32]],
-            [0u8; 32],
-            i,
-            GroupOp::Noop,
-        )
-        .unwrap();
+        let op =
+            SignedGroupOp::sign(&admin_sk, gid_bytes, vec![[0u8; 32]], i, GroupOp::Noop).unwrap();
         apply_local_signed_group_op(&store, &op).unwrap();
     }
 
@@ -1384,15 +1319,8 @@ fn dag_heads_are_capped_at_max() {
         head.dag_heads.len()
     );
     // The last op's hash should be present (not truncated)
-    let last_op = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        vec![[0u8; 32]],
-        [0u8; 32],
-        70,
-        GroupOp::Noop,
-    )
-    .unwrap();
+    let last_op =
+        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![[0u8; 32]], 70, GroupOp::Noop).unwrap();
     let last_hash = last_op.content_hash().unwrap();
     assert!(
         head.dag_heads.contains(&last_hash),
@@ -1401,7 +1329,17 @@ fn dag_heads_are_capped_at_max() {
 }
 
 #[test]
-fn state_hash_prevents_concurrent_op_divergence() {
+fn concurrent_independent_member_adds_converge() {
+    // Two admins concurrently apply INDEPENDENT ops (each adds a different member)
+    // against the same genesis state. Both nodes must converge to the same member
+    // set regardless of apply order — the CRDT convergence property the cutover
+    // relies on (no op-level staleness gate rejects a legitimate concurrent
+    // sibling). Signature + the per-signer nonce window are the only apply gates.
+    //
+    // Independent ADDS (not an admin-removes-admin scenario) deliberately avoid an
+    // authorization-order confound: under the live-fallback authorizer a removed
+    // admin's later op would fail on *authorization*, masking the convergence
+    // property this test pins down.
     let mut rng = OsRng;
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1414,19 +1352,11 @@ fn state_hash_prevents_concurrent_op_divergence() {
     let admin_c_sk = PrivateKey::random(&mut rng);
     let admin_c_pk = admin_c_sk.public_key();
     let new_member_d = PrivateKey::random(&mut rng).public_key();
-
-    // Test exercises admin-removing-admin semantics under concurrent state.
-    // The owner-immunity gate (`CannotRemoveOwner`) would block op_c if
-    // admin_a were the owner — assign owner to a separate "founder" identity
-    // so neither admin_a nor admin_c is owner-protected.
-    let founder_pk = PrivateKey::random(&mut rng).public_key();
-    let mut meta = sample_meta(admin_a_pk);
-    meta.owner_identity = founder_pk;
+    let new_member_e = PrivateKey::random(&mut rng).public_key();
 
     for store in [&node_b, &node_c] {
-        MetaRepository::new(store).save(&gid, &meta).unwrap();
-        MembershipRepository::new(store)
-            .add_member(&gid, &founder_pk, GroupMemberRole::Admin)
+        MetaRepository::new(store)
+            .save(&gid, &sample_meta(admin_a_pk))
             .unwrap();
         MembershipRepository::new(store)
             .add_member(&gid, &admin_a_pk, GroupMemberRole::Admin)
@@ -1436,23 +1366,23 @@ fn state_hash_prevents_concurrent_op_divergence() {
             .unwrap();
     }
 
-    let state_hash_b = MetaRepository::new(&node_b)
+    let meta_hash_b = MetaRepository::new(&node_b)
         .compute_state_hash(&gid)
         .unwrap();
-    let state_hash_c = MetaRepository::new(&node_c)
+    let meta_hash_c = MetaRepository::new(&node_c)
         .compute_state_hash(&gid)
         .unwrap();
     assert_eq!(
-        state_hash_b, state_hash_c,
-        "nodes start with identical state hash"
+        meta_hash_b, meta_hash_c,
+        "nodes start with identical group-meta hash"
     );
 
-    // A signs: add member D (against current state)
+    // A adds D; C adds E — independent, non-conflicting, both authored against the
+    // SAME genesis state (concurrent).
     let op_a = SignedGroupOp::sign(
         &admin_a_sk,
         gid_bytes,
         vec![[0u8; 32]],
-        state_hash_b,
         1,
         GroupOp::MemberAdded {
             member: new_member_d,
@@ -1460,60 +1390,102 @@ fn state_hash_prevents_concurrent_op_divergence() {
         },
     )
     .unwrap();
-
-    // C signs: remove A (against the SAME state — concurrent)
+    // nonce is per-signer: admin_c's nonce=1 does not collide with admin_a's
+    // nonce=1 — each signer has its own independent nonce window.
     let op_c = SignedGroupOp::sign(
         &admin_c_sk,
         gid_bytes,
         vec![[0u8; 32]],
-        state_hash_c,
         1,
-        dummy_member_removed(admin_a_pk),
+        GroupOp::MemberAdded {
+            member: new_member_e,
+            role: GroupMemberRole::Member,
+        },
     )
     .unwrap();
 
-    // Node B receives op_a first, then op_c
-    let result_a_on_b = apply_local_signed_group_op(&node_b, &op_a);
-    assert!(result_a_on_b.is_ok(), "op_a should succeed on node_b");
-
-    let result_c_on_b = apply_local_signed_group_op(&node_b, &op_c);
+    // Node B applies op_a then op_c; node C applies them in the opposite order.
     assert!(
-        result_c_on_b.is_err(),
-        "op_c should FAIL on node_b (state changed after op_a)"
-    );
-
-    // Node C receives op_c first, then op_a
-    let result_c_on_c = apply_local_signed_group_op(&node_c, &op_c);
-    assert!(result_c_on_c.is_ok(), "op_c should succeed on node_c");
-
-    let result_a_on_c = apply_local_signed_group_op(&node_c, &op_a);
-    assert!(
-        result_a_on_c.is_err(),
-        "op_a should FAIL on node_c (state changed after op_c)"
-    );
-
-    // Node B: A is still admin, D was added, C's removal of A was rejected
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&node_b)
-            .is_member(&gid, &admin_a_pk)
-            .unwrap()
+        apply_local_signed_group_op(&node_b, &op_a).is_ok(),
+        "op_a applies on node_b"
     );
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&node_b)
-            .is_member(&gid, &new_member_d)
-            .unwrap()
+        apply_local_signed_group_op(&node_b, &op_c).is_ok(),
+        "concurrent op_c also applies on node_b (no staleness gate)"
     );
 
-    // Node C: A was removed by C, D was NOT added
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&node_c)
-            .is_member(&gid, &admin_a_pk)
-            .unwrap()
+        apply_local_signed_group_op(&node_c, &op_c).is_ok(),
+        "op_c applies on node_c"
     );
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&node_c)
-            .is_member(&gid, &new_member_d)
-            .unwrap()
+        apply_local_signed_group_op(&node_c, &op_a).is_ok(),
+        "concurrent op_a also applies on node_c"
+    );
+
+    // Both nodes converge to {A, C admins + D, E members}, regardless of order.
+    for (label, store) in [("node_b", &node_b), ("node_c", &node_c)] {
+        let m = calimero_context::group_store::MembershipRepository::new(store);
+        assert!(
+            m.is_member(&gid, &admin_a_pk).unwrap(),
+            "{label}: A present"
+        );
+        assert!(
+            m.is_member(&gid, &admin_c_pk).unwrap(),
+            "{label}: C present"
+        );
+        assert!(
+            m.is_member(&gid, &new_member_d).unwrap(),
+            "{label}: D added"
+        );
+        assert!(
+            m.is_member(&gid, &new_member_e).unwrap(),
+            "{label}: E added"
+        );
+    }
+
+    // `compute_state_hash` sorts members by pubkey, so the converged hashes match
+    // — order-independent convergence.
+    let final_b = MetaRepository::new(&node_b)
+        .compute_state_hash(&gid)
+        .unwrap();
+    let final_c = MetaRepository::new(&node_c)
+        .compute_state_hash(&gid)
+        .unwrap();
+    assert_eq!(
+        final_b, final_c,
+        "nodes converge to identical state regardless of apply order"
+    );
+
+    // The per-signer NONCE WINDOW is the anti-replay guard. Re-applying op_a
+    // (admin_a, nonce 1) is a no-op — the nonce is already in the window — so a DAG
+    // replay of a seen op cannot double-apply its mutation.
+    let members_before_replay = MembershipRepository::new(&node_b)
+        .list(&gid, 0, usize::MAX)
+        .unwrap()
+        .len();
+    assert!(
+        apply_local_signed_group_op(&node_b, &op_a).is_ok(),
+        "replaying op_a is accepted (deduped, not errored)"
+    );
+    let after_replay_b = MetaRepository::new(&node_b)
+        .compute_state_hash(&gid)
+        .unwrap();
+    assert_eq!(
+        final_b, after_replay_b,
+        "replaying a seen op is a no-op — nonce window dedups it, state is unchanged"
+    );
+    // Pin the actual member set, not just its hash: the dedup must return before
+    // `apply_group_op_mutations`, so no duplicate member row escapes (a future
+    // regression where the dedup fires but a side-effect still mutates would slip
+    // past a hash-only check if the side-effect were hash-neutral).
+    let members_after_replay = MembershipRepository::new(&node_b)
+        .list(&gid, 0, usize::MAX)
+        .unwrap()
+        .len();
+    assert_eq!(
+        members_before_replay, members_after_replay,
+        "replay must not add a duplicate member row"
     );
 }
 
@@ -1573,7 +1545,6 @@ fn cascade_removal_on_member_kick() {
         &admin_sk,
         gid_bytes,
         vec![[0u8; 32]],
-        [0u8; 32],
         1,
         dummy_member_removed(member_pk),
     )
@@ -1646,7 +1617,6 @@ fn cascade_removal_deterministic_across_nodes() {
         &admin_sk,
         gid_bytes,
         vec![[0u8; 32]],
-        [0u8; 32],
         1,
         dummy_member_removed(member_pk),
     )
@@ -1677,105 +1647,6 @@ fn cascade_removal_deterministic_across_nodes() {
 // member_joined_context_op_propagates test removed:
 // MemberJoinedContext governance op was removed — context membership
 // is now derived from group membership + visibility.
-
-#[test]
-fn state_hash_allows_sequential_ops() {
-    let mut rng = OsRng;
-    let gid = sample_group_id();
-    let gid_bytes = gid.to_bytes();
-    let store = empty_store();
-
-    let admin_sk = PrivateKey::random(&mut rng);
-    let admin_pk = admin_sk.public_key();
-    MetaRepository::new(&store)
-        .save(&gid, &sample_meta(admin_pk))
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
-        .unwrap();
-
-    let member1 = PrivateKey::random(&mut rng).public_key();
-    let member2 = PrivateKey::random(&mut rng).public_key();
-
-    // Op1: add member1, signed against initial state
-    let state1 = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    let op1 = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        vec![[0u8; 32]],
-        state1,
-        1,
-        GroupOp::MemberAdded {
-            member: member1,
-            role: GroupMemberRole::Member,
-        },
-    )
-    .unwrap();
-    apply_local_signed_group_op(&store, &op1).unwrap();
-
-    // Op2: add member2, signed against state AFTER op1
-    let state2 = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    assert_ne!(
-        state1, state2,
-        "state hash should change after adding member1"
-    );
-    let op2 = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        vec![op1.content_hash().unwrap()],
-        state2,
-        2,
-        GroupOp::MemberAdded {
-            member: member2,
-            role: GroupMemberRole::Member,
-        },
-    )
-    .unwrap();
-    apply_local_signed_group_op(&store, &op2).unwrap();
-
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&gid, &member1)
-            .unwrap()
-    );
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&gid, &member2)
-            .unwrap()
-    );
-}
-
-#[test]
-fn state_hash_zero_skips_validation() {
-    let mut rng = OsRng;
-    let gid = sample_group_id();
-    let gid_bytes = gid.to_bytes();
-    let store = empty_store();
-
-    let admin_sk = PrivateKey::random(&mut rng);
-    let admin_pk = admin_sk.public_key();
-    MetaRepository::new(&store)
-        .save(&gid, &sample_meta(admin_pk))
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
-        .unwrap();
-
-    let op = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        vec![[0u8; 32]],
-        [0u8; 32],
-        1,
-        GroupOp::Noop,
-    )
-    .unwrap();
-    assert!(apply_local_signed_group_op(&store, &op).is_ok());
-}
 
 #[test]
 fn group_member_with_keys_persists_and_retrieves() {
@@ -1900,7 +1771,6 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         &joiner_sk,
         ns_id,
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner_pk,

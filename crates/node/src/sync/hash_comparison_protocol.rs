@@ -687,10 +687,11 @@ async fn run_initiator_impl<T: SyncTransport>(
     // rotation log is a hashed `UnorderedMap` child of its anchor now, so it
     // converges through HC's ordinary tree traversal like any other entity; no
     // separate writer-set reconcile is needed.)
-    let peer_current_root = match query_peer_current_root(transport, context_id, identity).await {
-        Ok(Some(root)) => root,
-        Ok(None) | Err(_) => remote_root_hash,
-    };
+    let (peer_current_root, peer_scope_root) =
+        match query_peer_current_root(transport, context_id, identity).await {
+            Ok(Some((root, scope_root))) => (root, scope_root),
+            Ok(None) | Err(_) => (remote_root_hash, None),
+        };
 
     // Close the transport to signal completion to the responder
     transport.close().await?;
@@ -698,7 +699,44 @@ async fn run_initiator_impl<T: SyncTransport>(
     let local_root_hash = with_runtime_env(runtime_env.clone(), || {
         get_local_root_hash_for_context(context_id)
     })?;
-    stats.root_hash_verified = local_root_hash == peer_current_root;
+
+    // C1: `scope_root` is the AUTHORITATIVE convergence verdict. It folds the
+    // governance projection's ACL + membership/admin onto the entity root, so two
+    // nodes converge only when BOTH the data plane AND authorization agree — closing
+    // the hash-neutral rotation blind spot the bare entity root left open (the
+    // rotation split-brain family: stale-heads, clear()-tombstone-blindness, the
+    // #2607 verified-but-divergent case). `scope_root` already subsumes the entity
+    // root (it is hashed in), so when both sides resolve a `scope_root` it alone
+    // decides; only when either side can't fold the scope (cold projection /
+    // non-group context, `None`) do we fall back to the bare entity-root compare —
+    // exactly the pre-C1 behaviour, so no context regresses to a weaker check than
+    // before.
+    let local_scope_root = super::helpers::local_scope_root(store, &context_id, local_root_hash);
+    let verdict = super::helpers::scope_verdict(
+        local_scope_root,
+        peer_scope_root,
+        local_root_hash,
+        peer_current_root,
+    );
+    stats.root_hash_verified = verdict.converged();
+
+    // Surface the case the entity root hides: entities AGREE but `scope_root` differs
+    // ⇒ the divergence is purely in the ACL/governance plane. HC's entity tree-walk
+    // has nothing to reconcile here (the entities already match) — governance ops
+    // live outside the storage Merkle. This is observability only; the corrective
+    // governance pull is centralised post-sync in the manager (P6.S3), so it covers
+    // Snapshot / DeltaSync syncs too, not just HC / LevelWise.
+    if let super::helpers::ScopeVerdict::GovDiverged(local_scope_root, peer_scope_root) = verdict {
+        warn!(
+            marker = "scope_root_governance_divergence",
+            %context_id,
+            entity_root = %hex::encode(&local_root_hash[..8]),
+            local_scope_root = %hex::encode(&local_scope_root[..8]),
+            peer_scope_root = %hex::encode(&peer_scope_root[..8]),
+            "entity roots agree but scope_root differs — ACL/membership divergence; \
+             pulling governance from the peer to propagate the rotation"
+        );
+    }
 
     // core#2716: re-anchor the context's persisted `root_hash` to the
     // freshly-merged storage merkle. `context.root_hash` (the value read by
@@ -762,11 +800,14 @@ async fn run_initiator_impl<T: SyncTransport>(
 /// Returns `Ok(None)` when the peer closes the stream or replies with an
 /// unexpected payload — an older peer that does not handle this mid-session
 /// request — so the caller can fall back to the handshake root.
-async fn query_peer_current_root<T: SyncTransport>(
+/// Mid-session re-query of the peer's CURRENT root + `scope_root` (the #2607
+/// end-of-session convergence read). `pub(crate)` so LevelWise reuses the exact
+/// same re-query to reach HashComparison's authoritative-verdict parity (C1b).
+pub(crate) async fn query_peer_current_root<T: SyncTransport>(
     transport: &mut T,
     context_id: ContextId,
     identity: PublicKey,
-) -> Result<Option<[u8; 32]>> {
+) -> Result<Option<([u8; 32], Option<[u8; 32]>)>> {
     let request = StreamMessage::Init {
         context_id,
         party_id: identity,
@@ -781,9 +822,14 @@ async fn query_peer_current_root<T: SyncTransport>(
 
     match response {
         StreamMessage::Message {
-            payload: MessagePayload::DagHeadsResponse { root_hash, .. },
+            payload:
+                MessagePayload::DagHeadsResponse {
+                    root_hash,
+                    scope_root,
+                    ..
+                },
             ..
-        } => Ok(Some(*root_hash)),
+        } => Ok(Some((*root_hash, scope_root.map(|h| *h)))),
         _ => Ok(None),
     }
 }
@@ -1054,6 +1100,11 @@ async fn run_responder_impl<T: SyncTransport>(
                     payload: MessagePayload::DagHeadsResponse {
                         dag_heads: Vec::new(),
                         root_hash: Hash::from(current_root),
+                        // The deterministic sync simulator reconciles the Merkle tree
+                        // only; it folds no governance projection, so it has no
+                        // scope_root to shadow. The C0 shadow is validated by the e2e
+                        // hash-neutral-rotation canary, not the sim.
+                        scope_root: None,
                     },
                     next_nonce: generate_nonce(),
                 };

@@ -24,9 +24,8 @@ use calimero_governance_store::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
 };
-use calimero_governance_types::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
-use calimero_op_adapter::{payload_from_group_op, payload_from_root_op, set_writers_payload};
+use calimero_op_adapter::set_writers_payload;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
@@ -197,63 +196,11 @@ pub fn load_rotation_log_direct(
     })
 }
 
-/// Convert a namespace governance op into the unified [`Op`] graph node it
-/// occupies — **always** a node, never `None`: membership ops carry their
-/// payload, and every other op (non-membership Root op, encrypted/undecryptable
-/// Group op, key transport) folds to [`OpPayload::Noop`]. The node MUST still
-/// exist so an ancestry walk can traverse *through* it; dropping it would
-/// truncate the walk and orphan every membership op behind it.
-///
-/// Governance ops are keyed under the **namespace** scope, not per-group. The
-/// live system keeps ONE governance DAG per namespace and a data write cites
-/// namespace-wide `governance_dag_heads`, so membership has to resolve over the
-/// whole namespace ancestry (a per-group log truncates the walk at the first
-/// cross-scope node — that was the bug). Membership for a specific group is read
-/// out of the folded view's `groups[group]`; the per-scope-DAG split is a
-/// post-cutover concern.
-///
-/// `id`/`hlc`/`parents` are the governance **delta's own** id, hlc, and parents
-/// (its `parent_op_hashes`) so the projection mirrors the governance DAG and the
-/// cut maps onto it (see [`build_op`]). `decrypted_group_op` is the cleartext
-/// `GroupOp` for a `NamespaceOp::Group` (via
-/// `calimero_governance_store::decrypt_group_op`), or `None` when it couldn't be
-/// decrypted — in which case the node is still recorded as `Noop`.
-#[must_use]
-pub fn op_from_namespace_op(
-    signed: &SignedNamespaceOp,
-    decrypted_group_op: Option<&GroupOp>,
-    id: [u8; 32],
-    hlc: HybridTimestamp,
-    parents: &[[u8; 32]],
-) -> Op {
-    let payload = match &signed.op {
-        // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF, not a
-        // direct membership: live's apply requires `check_path == Inherited` and
-        // writes NO persistent `GroupMember` row, re-deriving the membership from
-        // the anchor each time (so it is revoked when the anchor's membership is
-        // removed, and restored on rejoin). Folding it as a direct `MemberAdded`
-        // would make it permanent and survive anchor removal (the over-grant). Fold
-        // it as a `Noop` graph node; the inheritance walk in
-        // `AclView::is_member_at_cut` derives the membership from the foldable
-        // anchor membership + visibility + cap (default cap via base fact), so it
-        // tracks the anchor both ways.
-        NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => OpPayload::Noop,
-        NamespaceOp::Root(root) => {
-            payload_from_root_op(root, signed.signer).unwrap_or(OpPayload::Noop)
-        }
-        NamespaceOp::Group { group_id, .. } => decrypted_group_op
-            .and_then(|g| payload_from_group_op(ContextGroupId::from(*group_id), g))
-            .unwrap_or(OpPayload::Noop),
-    };
-    build_op(
-        id,
-        ScopeId::from(signed.namespace_id),
-        signed.signer,
-        hlc,
-        parents,
-        payload,
-    )
-}
+// `op_from_namespace_op` now lives in `calimero-governance-store` (so the
+// governance apply can build the decoded op and write it to the unified op-store
+// atomically with the gov-DAG put). Re-exported here unchanged so the projection
+// callers/tests in this crate keep using `crate::scope_projection::op_from_namespace_op`.
+pub use calimero_governance_store::unified_op_decode::op_from_namespace_op;
 
 /// In-memory registry of unified-op [`ScopeState`] projections, keyed by
 /// [`ScopeId`].
@@ -284,6 +231,12 @@ pub struct ScopeProjections {
     /// Op ids already retained per scope — gives `ingest_op` O(1) dedup of a
     /// replayed delta instead of an O(n) scan of the log.
     seen: HashMap<ScopeId, HashSet<[u8; 32]>>,
+    /// Index in `logs` of each op id currently folded as `Noop`, per scope. The
+    /// late-decrypt upgrade (a non-`Noop` payload re-ingested for a `Noop`-folded id)
+    /// uses it to replace the entry in O(1) instead of scanning the whole log, and the
+    /// common no-upgrade re-ingest skips the scan entirely (id not present here).
+    /// Entries are removed once upgraded, so it only ever holds still-undecrypted ops.
+    noop_log_pos: HashMap<ScopeId, HashMap<[u8; 32], usize>>,
     /// Namespaces already replayed from persisted state, so `backfill_namespace`
     /// walks each governance DAG at most once (the live feed maintains it after).
     backfilled: HashSet<[u8; 32]>,
@@ -305,7 +258,37 @@ impl ScopeProjections {
         self.states.entry(op.scope).or_default().apply(op);
         // O(1) dedup: `insert` is true only for a not-yet-seen id.
         if self.seen.entry(op.scope).or_default().insert(op.id) {
-            self.logs.entry(op.scope).or_default().push(op.clone());
+            let log = self.logs.entry(op.scope).or_default();
+            if matches!(op.payload, OpPayload::Noop) {
+                // Remember where this still-undecrypted op sits so a later decrypted
+                // re-ingest can upgrade it in O(1) (see below).
+                let _ = self
+                    .noop_log_pos
+                    .entry(op.scope)
+                    .or_default()
+                    .insert(op.id, log.len());
+            }
+            log.push(op.clone());
+        } else if !matches!(op.payload, OpPayload::Noop) {
+            // Already seen, but `op.id` is the SIGNED op's content hash, not the decoded
+            // payload's — so an encrypted op first folded as `Noop` (applied before its
+            // group key arrived) shares an id with its later, decrypted form. The op-log
+            // is what the at-cut auth view (`acl_view_at` → `member_at_cut`) folds, so a
+            // stale `Noop` left here drops the late-decrypted membership even after the
+            // op-store is corrected. Upgrade the log entry in place when a non-`Noop`
+            // payload arrives for a previously-`Noop` id; never downgrade (decryption
+            // only adds info). Only ids currently folded as `Noop` are candidates, so the
+            // common re-ingest (already a real payload) is an O(1) miss, and an actual
+            // upgrade is an O(1) indexed replace — no log scan either way.
+            if let Some(idx) = self
+                .noop_log_pos
+                .get_mut(&op.scope)
+                .and_then(|m| m.remove(&op.id))
+            {
+                if let Some(entry) = self.logs.get_mut(&op.scope).and_then(|l| l.get_mut(idx)) {
+                    *entry = op.clone();
+                }
+            }
         }
     }
 
@@ -327,6 +310,125 @@ impl ScopeProjections {
     ) -> Option<calimero_authz::AclView> {
         let log = self.logs.get(scope)?;
         Some(ScopeState::acl_view_at(log, parents))
+    }
+
+    /// The convergence `scope_root` for `scope`, folding this scope's ACL +
+    /// governance (membership / admin / policy / subgroups) onto the
+    /// **externally-supplied storage Merkle `entities_root`**. `None` when the
+    /// scope isn't folded yet — callers MUST treat that as "can't compare",
+    /// never as a divergence (a cold projection would otherwise read as a false
+    /// mismatch).
+    ///
+    /// This is the unified-causal-log convergence signal (cutover plan C0/C1):
+    /// a hash-neutral **governance** change — a membership add/remove, admin
+    /// change, policy/subgroup edit — leaves `entities_root` identical yet yields a
+    /// different `scope_root`, so sync can never declare "converged" while
+    /// authorization disagrees. That governance plane is what `entities_root`
+    /// cannot see and what this signal adds.
+    ///
+    /// NOTE on the ACL (writer-set) plane: today the projection's `acl` map is fed
+    /// only by the namespace **governance** DAG, which carries no `SetWriters` ops,
+    /// so `acl_hash` is currently empty here. That is not a gap: a writer-set
+    /// rotation is a storage entity (a hashed `UnorderedMap` child of its anchor),
+    /// so it already MOVES `entities_root` — divergent writer sets therefore yield
+    /// a divergent `scope_root` via the entities component (and are caught by the
+    /// bare `root_hash` too). `acl_hash` becomes a distinct contributor only at C2,
+    /// when the unified op-log folds `SetWriters` into this scope and writer sets
+    /// leave the Merkle tree.
+    ///
+    /// `entities_root` MUST be the storage Merkle root, not the projection's own
+    /// entity hash — see [`ScopeState::scope_root_with_entities`]'s caller contract.
+    #[must_use]
+    pub fn scope_root_for(&self, scope: &ScopeId, entities_root: [u8; 32]) -> Option<[u8; 32]> {
+        self.states
+            .get(scope)
+            .map(|state| state.scope_root_with_entities(entities_root))
+    }
+
+    /// The governance-plane `scope_root` reconstructed PURELY from the unified
+    /// op-store for `scope` — load every persisted op for the scope and fold it,
+    /// then read `scope_root_for` with a fixed (zero) `entities_root` so the result
+    /// reflects only the membership / admin / ACL planes the op-store backs.
+    ///
+    /// The C2.2 read-shadow's view: compared against the governance-DAG fold, a
+    /// mismatch means the dual-write op-store is missing ops the governance DAG has.
+    /// `Ok(None)` when the scope has no persisted ops; `Err` on a store fault.
+    pub fn scope_root_from_op_store(
+        store: &Store,
+        scope: &ScopeId,
+    ) -> eyre::Result<Option<[u8; 32]>> {
+        let ops = crate::unified_op_store::load_scope_ops(store, scope)?;
+        if ops.is_empty() {
+            return Ok(None);
+        }
+        let mut proj = Self::new();
+        for op in &ops {
+            proj.ingest_op(op);
+        }
+        Ok(proj.scope_root_for(scope, [0u8; 32]))
+    }
+
+    /// The governance ops to fold for `namespace_id` — cutover C3 Stage 4 read-flip.
+    ///
+    /// The unified **op-store** is the projection's authoritative backing now:
+    /// [`load_scope_ops`](crate::unified_op_store::load_scope_ops). Falls back to the
+    /// governance-DAG walk ([`collect_namespace_ops`](Self::collect_namespace_ops))
+    /// only when the op-store has no rows for this scope (a cold namespace not yet
+    /// dual-written under an upgrade) or can't be read — a transitional safety net that
+    /// retires with `collect_namespace_ops` at C5.
+    ///
+    /// This flip is safe BY CONSTRUCTION, unlike the three earlier attempts that timed
+    /// out in e2e: C3 Stages 1-3 made every governance apply path write the op-store
+    /// (receive + local namespace + local group authoring), and the Stage 0
+    /// completeness gate (`op_store_incomplete`) proves the op-store mirrors the gov-DAG
+    /// across the e2e matrix before this flips. Late-decrypted membership is kept
+    /// faithful by the key-delivery re-persist + the maintained projection's op-log
+    /// upgrade ([`ingest_op`](Self::ingest_op)).
+    #[must_use]
+    pub fn ops_for_namespace(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
+        let scope = ScopeId::from(namespace_id);
+        match crate::unified_op_store::load_scope_ops(store, &scope) {
+            Ok(ops) if !ops.is_empty() => Some(ops),
+            Ok(_) => Self::collect_namespace_ops(store, namespace_id),
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    namespace = ?namespace_id,
+                    "op-store load failed; falling back to the governance-DAG fold"
+                );
+                Self::collect_namespace_ops(store, namespace_id)
+            }
+        }
+    }
+
+    /// [`scope_root_for`](Self::scope_root_for) from an EPHEMERAL fold built fresh
+    /// from the store, resolving the namespace scope from a `group`. For sync sites
+    /// that hold a `Store` but not the node's maintained projection — the C0
+    /// scope_root shadow runs on both the HC initiator (which has no `NodeState`)
+    /// and the responder, so folding from the store keeps the two sides symmetric.
+    /// `None` for a non-group context or a store/DAG fault (caller skips the
+    /// comparison, never treats it as divergence). One per-session fold; the shadow
+    /// runs once per HC session, so the cost is acceptable.
+    #[must_use]
+    pub fn group_scope_root_ephemeral(
+        store: &Store,
+        group: &ContextGroupId,
+        entities_root: [u8; 32],
+    ) -> Option<[u8; 32]> {
+        let (proj, namespace_id, heads) = Self::ephemeral_projection(store, group)?;
+        let scope = ScopeId::from(namespace_id);
+        // Defer (`None`) on an INCOMPLETE fold — a node mid-backfill may hold only
+        // part of the governance ancestry of `heads`, and a `scope_root` folded over
+        // a truncated cut would differ from a peer's complete fold purely from the
+        // lag, producing a FALSE divergence (a spurious `scope_root_shadow_divergence`
+        // in C0, and a "never converges" stall once C1 makes it the verdict). Mirror
+        // the other ephemeral at-cut readers (`member_at_cut` et al.), which abstain
+        // on `!cut_ancestry_complete`; the comparison resumes once the cited ancestry
+        // is fully folded.
+        if !proj.cut_ancestry_complete(&scope, &heads) {
+            return None;
+        }
+        proj.scope_root_for(&scope, entities_root)
     }
 
     /// Is the full causal ancestry of `parents` folded in `scope`'s log (no
@@ -359,7 +461,7 @@ impl ScopeProjections {
         if self.backfilled.contains(&namespace_id) {
             return;
         }
-        if let Some(ops) = Self::collect_namespace_ops(store, namespace_id) {
+        if let Some(ops) = Self::ops_for_namespace(store, namespace_id) {
             self.apply_backfill(namespace_id, ops);
         }
         // A `None` (governance head unreadable) leaves the namespace UN-backfilled
@@ -451,7 +553,7 @@ impl ScopeProjections {
             .ok()?
             .to_bytes();
         let mut proj = Self::new();
-        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+        let Some(ops) = Self::ops_for_namespace(store, namespace_id) else {
             // Governance head unreadable (store fault). Don't silently read an empty
             // projection — surface it and let the caller fall back to live.
             tracing::warn!(
@@ -707,7 +809,7 @@ impl ScopeProjections {
     /// projection.
     fn ephemeral_fold(store: &Store, namespace_id: [u8; 32]) -> Option<(Self, Vec<[u8; 32]>)> {
         let mut proj = Self::new();
-        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+        let Some(ops) = Self::ops_for_namespace(store, namespace_id) else {
             tracing::warn!(
                 namespace = ?namespace_id,
                 "ephemeral_fold: governance head unreadable; caller falls back to live"
@@ -967,6 +1069,121 @@ impl ScopeProjections {
             ));
         }
         Some(ops)
+    }
+
+    /// Refresh the unified op-store for `namespace_id` from the governance DAG with
+    /// the keys present NOW — the fix for the read-flip blocker (C2.2c).
+    ///
+    /// The apply-time dual-write decodes each governance op with whatever key was
+    /// available at apply time; an encrypted group op applied BEFORE its group key
+    /// arrived was frozen into the op-store as a `Noop`. Once the key lands (the
+    /// key-delivery / `recover_missing_group_keys` path), this re-walks the namespace
+    /// via [`collect_namespace_ops`](Self::collect_namespace_ops) — the canonical
+    /// decode path, which re-decrypts at read time — and re-persists every op. The
+    /// now-decryptable ops re-decode to their real payload (e.g. `MemberAdded`) and
+    /// OVERWRITE the stale `Noop` (same content-addressed op id), so the op-store
+    /// converges to exactly what the projection folds.
+    ///
+    /// Best-effort and idempotent: it runs only on key delivery (infrequent), is
+    /// bounded by the same `MAX_BACKFILL_OPS` walk cap, and a persist failure just
+    /// leaves the op-store stale until the next delivery — it never affects the
+    /// governance apply. Re-persisting an unchanged op rewrites identical bytes.
+    pub fn repersist_namespace_ops(store: &Store, namespace_id: [u8; 32]) {
+        let Some(ops) = Self::collect_namespace_ops(store, namespace_id) else {
+            return;
+        };
+        let mut refreshed = 0usize;
+        for op in &ops {
+            match crate::unified_op_store::persist_op(store, op) {
+                Ok(()) => refreshed += 1,
+                Err(err) => tracing::warn!(
+                    %err,
+                    namespace = ?namespace_id,
+                    op = ?op.id,
+                    "op-store: failed to re-persist governance op after key delivery"
+                ),
+            }
+        }
+        tracing::debug!(
+            namespace = ?namespace_id,
+            count = refreshed,
+            "op-store: re-persisted governance ops with current decryption after key delivery"
+        );
+    }
+
+    /// Observe-only completeness gate (cutover C3 Stage 0): warn when the unified
+    /// op-store is MISSING governance ops the gov-DAG has for `namespace_id`.
+    ///
+    /// The op-store is only authoritative once every governance apply path writes it.
+    /// Until then it is a dual-write shadow with structural gaps (locally-authored
+    /// ops and genesis never `persist_op`), and an incomplete op-store surfaces only
+    /// as a 60-second sync timeout in e2e — after a read flips onto it. This compares
+    /// the two op-id sets and emits `op_store_incomplete` with the count + a sample
+    /// missing id, so a gap is a cheap, deterministic, greppable signal INSTEAD of a
+    /// mystery timeout. It is the gate every later C3 stage is checked against
+    /// (zero markers ⇒ the op-store provably mirrors the gov-DAG for that namespace).
+    ///
+    /// `dag_ops` is the gov-DAG fold the caller already computed (the backfill walk),
+    /// so this adds one op-store load, not a second DAG walk. It runs only on an
+    /// actual backfill — `namespace_to_refresh` returns `None` for an already-folded
+    /// (warm) cut, so the steady-state per-delta path does NOT pay this; the load
+    /// happens on cold/refresh cuts only, and the whole gate retires at Stage 4 when
+    /// the read flips onto the op-store. Never affects apply.
+    ///
+    /// Returns `Some(missing_ids)` when the check ran (`Some(vec![])` ⇒ verified
+    /// complete), or `None` when the op-store couldn't be loaded (couldn't-check —
+    /// distinct from clean, so a store fault can't masquerade as a passing gate). The
+    /// node caller ignores the return and relies on the markers: `op_store_incomplete`
+    /// (a real gap) and `op_store_gate_unavailable` (load failed). The `Option`
+    /// distinction is for tests and any future programmatic caller (e.g. the Stage 4
+    /// hard gate).
+    pub fn check_op_store_completeness(
+        store: &Store,
+        namespace_id: [u8; 32],
+        dag_ops: &[Op],
+    ) -> Option<Vec<[u8; 32]>> {
+        // Nothing to verify against an empty gov-DAG fold — verified-complete.
+        if dag_ops.is_empty() {
+            return Some(Vec::new());
+        }
+        let scope = ScopeId::from(namespace_id);
+        let store_ids: HashSet<[u8; 32]> =
+            match crate::unified_op_store::load_scope_ops(store, &scope) {
+                Ok(ops) => ops.iter().map(|op| op.id).collect(),
+                Err(err) => {
+                    // A load fault must NOT read as "complete": CI treats no
+                    // `op_store_incomplete` as a clean op-store, so a store error would
+                    // silently hide real gaps the gate exists to surface. Return `None`
+                    // (couldn't-check, distinct from `Some(vec![])` = verified clean)
+                    // and emit a distinct marker.
+                    tracing::warn!(
+                        marker = "op_store_gate_unavailable",
+                        namespace = ?namespace_id,
+                        %err,
+                        "op-store completeness gate could not load the op-store — \
+                         completeness UNVERIFIED for this namespace this round"
+                    );
+                    return None;
+                }
+            };
+        let missing: Vec<[u8; 32]> = dag_ops
+            .iter()
+            .map(|op| op.id)
+            .filter(|id| !store_ids.contains(id))
+            .collect();
+        if !missing.is_empty() {
+            tracing::warn!(
+                marker = "op_store_incomplete",
+                namespace = ?namespace_id,
+                missing_count = missing.len(),
+                dag_count = dag_ops.len(),
+                op_store_count = store_ids.len(),
+                sample_missing = %hex::encode(&missing[0][..8]),
+                "unified op-store is missing governance ops the gov-DAG has — \
+                 a governance apply path is not dual-writing the op-store"
+            );
+        }
+        Some(missing)
     }
 
     /// Ingest the ops [`collect_namespace_ops`] gathered and mark the namespace
@@ -1441,6 +1658,7 @@ mod tests {
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
     };
+    use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_op::OpPayload;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_storage::entities::OpMask;
@@ -1460,7 +1678,6 @@ mod tests {
             version: 1,
             namespace_id,
             parent_op_hashes: Vec::new(),
-            state_hash: [0u8; 32],
             signer,
             nonce: 0,
             op: NamespaceOp::Root(op),
@@ -1703,6 +1920,65 @@ mod tests {
     }
 
     #[test]
+    fn scope_root_for_moves_on_hash_neutral_membership_change_and_is_none_when_unfolded() {
+        let scope = ScopeId::from([0u8; 32]);
+        let group = ContextGroupId::from([3u8; 32]);
+        let admin = PublicKey::from([1u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+        // A FIXED storage entity root — the data plane never changes in this test,
+        // so any movement in scope_root comes purely from the governance plane.
+        let entities_root = [0x42u8; 32];
+
+        let build = |ns: u64, parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
+            let h = hlc(ns);
+            let id = Op::compute_id(scope, &parents, &admin, &h, &payload);
+            Op {
+                id,
+                scope,
+                parents,
+                author: admin,
+                hlc: h,
+                payload,
+                expected_scope_root: [0u8; 32],
+                signature: [0u8; 64],
+            }
+        };
+
+        // An unfolded scope can't be compared — None, never a false divergence.
+        let reg = ScopeProjections::new();
+        assert_eq!(reg.scope_root_for(&scope, entities_root), None);
+
+        let mut reg = ScopeProjections::new();
+        let admin_op = build(10, vec![], OpPayload::AdminChanged { new_admin: admin });
+        reg.ingest_op(&admin_op);
+        let before = reg
+            .scope_root_for(&scope, entities_root)
+            .expect("scope fed");
+
+        // A membership add is hash-neutral on the entity root but MUST move
+        // scope_root — the whole point of folding governance into the signal.
+        // Chain it under `admin_op` to mirror the real governance DAG shape (the
+        // MemberAdded is a causal child of the prior op, not a sibling at genesis).
+        reg.ingest_op(&build(
+            20,
+            vec![admin_op.id],
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Member,
+            },
+        ));
+        let after = reg
+            .scope_root_for(&scope, entities_root)
+            .expect("scope fed");
+
+        assert_ne!(
+            before, after,
+            "a hash-neutral membership change must move scope_root"
+        );
+    }
+
+    #[test]
     fn registry_records_membership_under_the_namespace_scope() {
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
@@ -1850,7 +2126,6 @@ mod tests {
             version: 1,
             namespace_id,
             parent_op_hashes: Vec::new(),
-            state_hash: [0u8; 32],
             signer,
             nonce: 0,
             op: NamespaceOp::Group {

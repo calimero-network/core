@@ -63,6 +63,10 @@ pub async fn handler(
             upgrade_policy: req.upgrade_policy,
             name: req.name,
             parent_group_id,
+            // Born-Restricted (default, #2771); this legacy path doesn't yet
+            // expose a visibility toggle. Use the namespace create-group REST
+            // path for born-Open.
+            restricted: true,
         })
         .await
         .map_err(parse_api_error);
