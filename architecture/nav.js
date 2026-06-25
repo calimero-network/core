@@ -16,6 +16,8 @@
     { section: 'Protocol Reference' },
     { label: 'Overview', href: 'protocol/index.html', dot: '#a5ff11' },
     { label: '1 · Concepts & Scopes', href: 'protocol/concepts.html', dot: '#a5ff11', sub: true },
+    { label: '3 · Operations & the DAG', href: 'protocol/operations.html', dot: '#a5ff11', sub: true },
+    { label: '4 · Projection & Root Hash', href: 'protocol/projection.html', dot: '#a5ff11', sub: true },
     { section: 'For Builders' },
     { label: 'Getting Started', href: 'getting-started.html', dot: '#10b981' },
     { label: 'Core Concepts', href: 'concepts.html', dot: '#10b981' },
