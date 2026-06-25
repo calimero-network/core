@@ -566,6 +566,47 @@
   </div>
 </div>
 
+<h3>Sync Stats &amp; gov_divergence_detected</h3>
+<div class="cb" style="margin-bottom:16px; border-left:3px solid #10b981; padding-left:14px;">
+  <h4 style="color:#10b981; margin-bottom:8px;"><span class="code">HashComparisonStats</span> &amp; <span class="code">LevelWiseStats</span> — <span class="code">gov_divergence_detected</span> field</h4>
+  <p style="margin-bottom:10px;"><span class="code">HashComparisonStats</span> and <span class="code">LevelWiseStats</span> each gain a boolean field <span class="code">gov_divergence_detected</span>, set to <span class="code">true</span> when the convergence verdict is <span class="code">ScopeVerdict::GovDiverged</span>. This exposes the governance-plane divergence signal to the <span class="code">ProtocolSelector</span> without it needing to re-examine the verdict. Callers inspecting these structs should check this field to detect ACL/governance-plane divergence after a sync session completes.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Both structs gain this field</span><br>
+<span class="kw">pub struct</span> <span class="ty">HashComparisonStats</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// ... existing fields ...</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">gov_divergence_detected</span>: bool,<br>
+}<br><br>
+<span class="kw">pub struct</span> <span class="ty">LevelWiseStats</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// ... existing fields ...</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">gov_divergence_detected</span>: bool,<br>
+}
+  </div>
+</div>
+
+<h3>ProtocolDispatch — <span class="code">pull_namespace_governance</span></h3>
+<div class="cb" style="margin-bottom:16px; border-left:3px solid #8b5cf6; padding-left:14px;">
+  <h4 style="color:#8b5cf6; margin-bottom:8px;"><span class="code">ProtocolDispatch::pull_namespace_governance</span> trait method</h4>
+  <p style="margin-bottom:10px;">A new async method <span class="code">pull_namespace_governance(context_id, peer)</span> is added to the <span class="code">ProtocolDispatch</span> trait. It is best-effort: a no-op if the context has no resolvable namespace. Implementors of <span class="code">ProtocolDispatch</span> must implement this method.</p>
+  <p style="margin-bottom:10px;"><span class="code">SyncManager</span>'s <span class="code">ProtocolDispatch</span> impl resolves the namespace ID for the given context via <span class="code">namespace_sync::resolve_namespace_id</span> and calls <span class="code">sync_namespace_from_peer</span> targeting the specific peer that just reported a diverged <span class="code">scope_root</span>, reusing the existing <span class="code">NamespaceBackfillRequest</span> machinery edge-triggered on the verdict rather than on a non-empty pending buffer.</p>
+  <p style="margin-bottom:10px;">After a successful <span class="code">HashComparison</span> or <span class="code">LevelWise</span> session, if <span class="code">gov_divergence_detected</span> is <span class="code">true</span>, the <span class="code">ProtocolSelector</span> calls <span class="code">pull_namespace_governance</span> and logs a <span class="code">gov_divergence_pull_triggered</span> info marker. Previously the protocol initiator only emitted a warning ("awaiting governance sync") with no corrective action. The pull is self-limiting: once governance converges the verdict is no longer <span class="code">GovDiverged</span> and no further pull is issued. The <span class="code">warn!</span> log in both <span class="code">run_initiator_impl</span> functions changes text from <em>"awaiting governance sync to propagate the rotation"</em> to <em>"pulling governance from the peer to propagate the rotation"</em>.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// New trait method — implementors must provide this</span><br>
+<span class="kw">async fn</span> <span class="field">pull_namespace_governance</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;context_id: <span class="ty">ContextId</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;peer: <span class="ty">PeerId</span>,<br>
+) -&gt; <span class="ty">Result</span>&lt;()&gt;<br><br>
+<span class="comment">// SyncManager impl: resolves namespace, calls sync_namespace_from_peer</span><br>
+<span class="comment">// No-op if context has no resolvable namespace (resolve_namespace_id = None)</span><br><br>
+<span class="comment">// ProtocolSelector: after successful HC or LevelWise session</span><br>
+<span class="comment">// if stats.gov_divergence_detected {</span><br>
+<span class="comment">//     dispatch.pull_namespace_governance(context_id, peer).await;</span><br>
+<span class="comment">//     info!(marker = "gov_divergence_pull_triggered", context_id, peer);</span><br>
+<span class="comment">// }</span>
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> The <span class="code">gov_divergence_pull_triggered</span> info marker indicates an active governance pull was issued due to <span class="code">scope_root</span> divergence. Monitor for pathological per-tick storms where a single <span class="code">context_id</span> dominates the count — this would indicate governance is not converging. The pull is self-limiting once governance converges. The old "awaiting governance sync" warn text no longer appears; it is replaced by "pulling governance from the peer to propagate the rotation".</p>
+</div>
+
 <h3>scope_root Shadow Divergence</h3>
 <div class="cb" style="margin-bottom:16px; border-left:3px solid #06b6d4; padding-left:14px;">
   <h4 style="color:#06b6d4; margin-bottom:8px;"><span class="code">local_scope_root</span> helper &amp; <span class="code">scope_root_shadow_divergence</span> marker</h4>
