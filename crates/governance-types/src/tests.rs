@@ -624,10 +624,15 @@ fn pre_flag_day_namespace_op_version_is_rejected() {
 
 #[test]
 fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
-    // A v7-shaped op still carries the removed `state_hash` field in its borsh bytes.
-    // Decoding it as the v8 struct must NOT silently succeed with a v8-looking op:
-    // either borsh refuses the misaligned/trailing bytes, or it decodes a struct
-    // whose `version` (7) fails the v8 check — never a spurious Ok.
+    // A v7-shaped op still carries the removed `state_hash` field in its borsh bytes,
+    // between `parent_op_hashes` and `signer`. borsh is a flat format with no field
+    // names, so decoding these bytes as the v8 struct will (most likely) SUCCEED —
+    // consuming the 32 `state_hash` bytes as the start of `signer` and shifting the
+    // rest into a garbage `signer`/`nonce`/`op`. That successful-but-garbage decode
+    // IS a misparse; the only thing that saves us is that `version` is the FIRST
+    // byte, read intact as the old value, so `verify_signature` rejects on the
+    // version check. This test pins exactly that: the old version survives in byte 0,
+    // and the decoded op is rejected with `SchemaVersion` rather than verifying.
     #[derive(::borsh::BorshSerialize)]
     struct V7SignedGroupOp {
         version: u8,
@@ -651,11 +656,34 @@ fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
         signature: [0u8; 64],
     };
     let bytes = ::borsh::to_vec(&v7).expect("encode v7");
+    // Deterministic: byte 0 is the version, untouched by the layout shift.
+    assert_eq!(
+        bytes[0],
+        SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
+        "v7 bytes must begin with the old schema version"
+    );
     match ::borsh::from_slice::<SignedGroupOp>(&bytes) {
-        Ok(op) => assert!(
-            op.verify_signature().is_err(),
-            "a v7-encoded op decoded to a SignedGroupOp must still fail verify_signature"
-        ),
-        Err(_) => { /* borsh-level rejection of the old layout is also acceptable */ }
+        Ok(op) => {
+            // The decode misparsed the shifted bytes, but the version survived — make
+            // that dependency explicit so a future refactor that checks the signature
+            // before the version can't let this test pass while a real misparse slips
+            // through.
+            assert_eq!(
+                op.version,
+                SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
+                "decoded version must be the old schema version (byte 0)"
+            );
+            assert!(
+                matches!(
+                    op.verify_signature(),
+                    Err(GovernanceError::SchemaVersion { .. })
+                ),
+                "a v7-decoded op must be rejected on the version check, got {:?}",
+                op.verify_signature()
+            );
+        }
+        // If borsh instead rejects the misaligned/trailing bytes outright, that's also
+        // a clean rejection of the old layout.
+        Err(_) => {}
     }
 }
