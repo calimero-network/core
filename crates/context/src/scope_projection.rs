@@ -24,9 +24,8 @@ use calimero_governance_store::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
 };
-use calimero_governance_types::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_op::{Op, OpPayload, ScopeId};
-use calimero_op_adapter::{payload_from_group_op, payload_from_root_op, set_writers_payload};
+use calimero_op_adapter::set_writers_payload;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
@@ -197,63 +196,11 @@ pub fn load_rotation_log_direct(
     })
 }
 
-/// Convert a namespace governance op into the unified [`Op`] graph node it
-/// occupies — **always** a node, never `None`: membership ops carry their
-/// payload, and every other op (non-membership Root op, encrypted/undecryptable
-/// Group op, key transport) folds to [`OpPayload::Noop`]. The node MUST still
-/// exist so an ancestry walk can traverse *through* it; dropping it would
-/// truncate the walk and orphan every membership op behind it.
-///
-/// Governance ops are keyed under the **namespace** scope, not per-group. The
-/// live system keeps ONE governance DAG per namespace and a data write cites
-/// namespace-wide `governance_dag_heads`, so membership has to resolve over the
-/// whole namespace ancestry (a per-group log truncates the walk at the first
-/// cross-scope node — that was the bug). Membership for a specific group is read
-/// out of the folded view's `groups[group]`; the per-scope-DAG split is a
-/// post-cutover concern.
-///
-/// `id`/`hlc`/`parents` are the governance **delta's own** id, hlc, and parents
-/// (its `parent_op_hashes`) so the projection mirrors the governance DAG and the
-/// cut maps onto it (see [`build_op`]). `decrypted_group_op` is the cleartext
-/// `GroupOp` for a `NamespaceOp::Group` (via
-/// `calimero_governance_store::decrypt_group_op`), or `None` when it couldn't be
-/// decrypted — in which case the node is still recorded as `Noop`.
-#[must_use]
-pub fn op_from_namespace_op(
-    signed: &SignedNamespaceOp,
-    decrypted_group_op: Option<&GroupOp>,
-    id: [u8; 32],
-    hlc: HybridTimestamp,
-    parents: &[[u8; 32]],
-) -> Op {
-    let payload = match &signed.op {
-        // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF, not a
-        // direct membership: live's apply requires `check_path == Inherited` and
-        // writes NO persistent `GroupMember` row, re-deriving the membership from
-        // the anchor each time (so it is revoked when the anchor's membership is
-        // removed, and restored on rejoin). Folding it as a direct `MemberAdded`
-        // would make it permanent and survive anchor removal (the over-grant). Fold
-        // it as a `Noop` graph node; the inheritance walk in
-        // `AclView::is_member_at_cut` derives the membership from the foldable
-        // anchor membership + visibility + cap (default cap via base fact), so it
-        // tracks the anchor both ways.
-        NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => OpPayload::Noop,
-        NamespaceOp::Root(root) => {
-            payload_from_root_op(root, signed.signer).unwrap_or(OpPayload::Noop)
-        }
-        NamespaceOp::Group { group_id, .. } => decrypted_group_op
-            .and_then(|g| payload_from_group_op(ContextGroupId::from(*group_id), g))
-            .unwrap_or(OpPayload::Noop),
-    };
-    build_op(
-        id,
-        ScopeId::from(signed.namespace_id),
-        signed.signer,
-        hlc,
-        parents,
-        payload,
-    )
-}
+// `op_from_namespace_op` now lives in `calimero-governance-store` (so the
+// governance apply can build the decoded op and write it to the unified op-store
+// atomically with the gov-DAG put). Re-exported here unchanged so the projection
+// callers/tests in this crate keep using `crate::scope_projection::op_from_namespace_op`.
+pub use calimero_governance_store::unified_op_decode::op_from_namespace_op;
 
 /// In-memory registry of unified-op [`ScopeState`] projections, keyed by
 /// [`ScopeId`].
@@ -1729,6 +1676,7 @@ mod tests {
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
     };
+    use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_op::OpPayload;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_storage::entities::OpMask;

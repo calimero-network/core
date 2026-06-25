@@ -154,21 +154,12 @@ impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
     }
 }
 
-/// Build a [`CausalDelta`] from a [`SignedNamespaceOp`] for insertion into the
-/// namespace governance DAG.
-pub fn signed_namespace_op_to_delta(
-    op: &SignedNamespaceOp,
-) -> Result<CausalDelta<SignedNamespaceOp>, eyre::Error> {
-    let delta_id = op
-        .content_hash()
-        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
-    Ok(make_delta(
-        op,
-        op.parent_op_hashes.clone(),
-        op.state_hash,
-        delta_id,
-    ))
-}
+// `signed_namespace_op_to_delta` now lives in `calimero-governance-store`
+// alongside `op_from_namespace_op` (the governance apply uses both to build the
+// decoded unified op it writes atomically with the gov-DAG put). Re-exported here
+// unchanged so the existing callers in this crate keep using
+// `crate::governance_dag::signed_namespace_op_to_delta`.
+pub use calimero_governance_store::unified_op_decode::signed_namespace_op_to_delta;
 
 fn make_delta<T>(
     op: &T,
