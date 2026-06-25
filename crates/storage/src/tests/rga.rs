@@ -1175,8 +1175,17 @@ fn test_rga_real_interleave_merge_converges() {
     use crate::entities::Metadata;
     use crate::index::Index;
     use crate::interface::{ApplyContext, Interface};
+    use crate::logical_clock::{HybridTimestamp, Timestamp, NTP64};
     use crate::merge::register_crdt_merge;
     use crate::store::MainStorage;
+
+    // Non-zero HLC at physical tick `tick`, distinct from the root sentinel.
+    // Used to PIN each replica's insert timestamp so the merged order is a pure
+    // function of the chosen ticks, not of wall-clock spacing.
+    fn ts_at(tick: u64) -> HybridTimestamp {
+        let id = *HybridTimestamp::zero().get_id();
+        HybridTimestamp::new(Timestamp::new(NTP64(tick << 32), id))
+    }
 
     #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
     struct RgaDoc {
@@ -1224,35 +1233,55 @@ fn test_rga_real_interleave_merge_converges() {
         env::set_executor_id(executor);
     };
 
-    // Genesis: shared base "ab" (identical CharIds on every replica).
+    // Genesis: shared base "ab" (identical CharIds on every replica). Pin the
+    // base at a LOW tick so the concurrent inserts below — which we pin at
+    // strictly-higher ticks — sort BEFORE 'b' under `Reverse(CharId)` and land
+    // in the a|b gap (with the real HLC, X/Y minted later-than-base wall-clock
+    // timestamps and got this for free; with pinned ticks the base must be
+    // pinned lower too, or the inserts would sort after the higher-CharId 'b').
     fresh_node([9; 32]);
     let mut g = Root::<RgaDoc, S>::new(|| RgaDoc {
         content: ReplicatedGrowableArray::new_with_field_name("content"),
     });
-    g.content.insert_str(0, "ab").unwrap();
+    g.content
+        .insert_str_at_timestamp(0, ts_at(1), "ab")
+        .unwrap();
     let g_data = borsh::to_vec(&*g).unwrap();
     drop(g);
     let base_actions = capture(g_data);
     let base_hash = root_hash();
 
-    // Replica X: insert "XX" at the a|b gap (position 1).
+    // X and Y insert concurrently at the same a|b gap. The merged ORDER (which
+    // run's block sorts first) is decided by `Reverse(CharId)`: the run with the
+    // strictly-HIGHER CharId comes first. CharId is `(HybridTimestamp, seq)`,
+    // ordered by the timestamp first, so we PIN each run's timestamp explicitly
+    // (`insert_str_at_timestamp`) rather than the node-local HLC — otherwise the
+    // order would depend on which replica's wall clock happened to tick later,
+    // making the assertion non-deterministic. Both are strictly above the base
+    // tick (so they land in the a|b gap, not after 'b'); with `y_ts > x_ts`,
+    // Y's CharIds are strictly higher and Y's block sorts FIRST → "aYYXXb".
+    let x_ts = ts_at(10);
+    let y_ts = ts_at(11);
+
+    // Replica X: insert "XX" at the a|b gap (position 1) at the lower timestamp.
     fresh_node([1; 32]);
     import(base_actions.clone());
     reset_delta_context();
     set_current_heads(vec![base_hash]);
     let mut x = Root::<RgaDoc, S>::fetch().unwrap();
-    x.content.insert_str(1, "XX").unwrap();
+    x.content.insert_str_at_timestamp(1, x_ts, "XX").unwrap();
     let x_data = borsh::to_vec(&*x).unwrap();
     drop(x);
     let x_delta = capture(x_data);
 
-    // Replica Y: insert "YY" at the same a|b gap (position 1), concurrently.
+    // Replica Y: insert "YY" at the same a|b gap (position 1), concurrently, at
+    // the strictly-higher timestamp.
     fresh_node([2; 32]);
     import(base_actions.clone());
     reset_delta_context();
     set_current_heads(vec![base_hash]);
     let mut y = Root::<RgaDoc, S>::fetch().unwrap();
-    y.content.insert_str(1, "YY").unwrap();
+    y.content.insert_str_at_timestamp(1, y_ts, "YY").unwrap();
     let y_data = borsh::to_vec(&*y).unwrap();
     drop(y);
     let y_delta = capture(y_data);
@@ -1287,10 +1316,15 @@ fn test_rga_real_interleave_merge_converges() {
         hex::encode(yx_hash),
     );
 
-    // Each run stays a contiguous block between the base anchors; the
-    // higher-CharId run sorts first (`Reverse(CharId)`).
-    assert!(
-        xy_text == "aXXYYb" || xy_text == "aYYXXb",
-        "RGA interleave must keep each insert a contiguous block between a and b, got {xy_text:?}"
+    // Each run stays a contiguous block between the base anchors, and the order
+    // is DETERMINISTIC: siblings sort by `Reverse(CharId)`, so the run with the
+    // higher CharId comes first. We pinned `y_ts > x_ts`, so Y's CharIds are
+    // strictly higher and Y's block sorts before X's → exactly "aYYXXb". (The
+    // previous `"aXXYYb" || "aYYXXb"` had a dead branch: with fixed timestamps
+    // only one order is reachable.)
+    assert_eq!(
+        xy_text, "aYYXXb",
+        "Y (higher CharId, y_ts > x_ts) must sort before X under Reverse(CharId), \
+         each run a contiguous block between a and b; got {xy_text:?}"
     );
 }
