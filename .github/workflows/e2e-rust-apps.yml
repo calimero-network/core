@@ -480,7 +480,7 @@ jobs:
           fi
           echo "no unified_projection_divergence markers — projection agrees with the live decision"
 
-      - name: Report unified op-store completeness (C3 Stage 0, observe-only)
+      - name: Assert unified op-store completeness (C3 Stage 4, HARD gate)
         if: always()
         run: |
           # The C3 completeness gate logs `op_store_incomplete` whenever the unified
@@ -489,19 +489,19 @@ jobs:
           # mystery 60s sync timeout (how the read-flip failed three times) into a
           # cheap, specific signal naming the missing op count per namespace.
           #
-          # OBSERVE-ONLY for now: the op-store is KNOWN incomplete until C3 closes the
-          # structural write gaps (local-authoring A4/A5/B1, genesis G1/G2). This step
-          # reports the markers so each stage can watch the count fall to zero; it does
-          # NOT fail the job. It becomes a HARD gate at C3 Stage 4, when the read flips
-          # onto the op-store and zero markers is the precondition.
+          # HARD gate from C3 Stage 4: the read now flips onto the op-store
+          # (`ops_for_namespace`), so a gov-DAG op the op-store lacks is a correctness
+          # bug, not a known transitional gap. Stages 1-3 closed every apply-path write
+          # gap; any marker here means a path was missed and MUST be fixed before merge.
           if grep -rl "op_store_incomplete" docker-logs/ 2>/dev/null | grep -q .; then
               count=$(grep -rho "op_store_incomplete" docker-logs/ | wc -l | tr -d ' ')
-              echo "::notice::op-store incomplete in ${{ matrix.workflow }} — $count marker(s) (expected during C3; observe-only)"
+              echo "::error::op-store incomplete in ${{ matrix.workflow }} — $count marker(s); a governance apply path is not writing the op-store (read-flip is unsafe)"
               echo "sample (missing_count per namespace):"
               # Match `missing_count=N` anywhere on an op_store_incomplete line — robust
               # to field ordering. Tolerates the line not carrying the field at all.
               grep -rho 'op_store_incomplete.*' docker-logs/ | grep -oE 'missing_count=[0-9]+' | sort | uniq -c | head -10
               grep -rn "op_store_incomplete" docker-logs/ | head -10
+              exit 1
           elif grep -rl "op_store_gate_unavailable" docker-logs/ 2>/dev/null | grep -q .; then
               # No gap markers, but the gate couldn't load the op-store somewhere — do
               # NOT claim a clean mirror, that would be a false "verified" line.

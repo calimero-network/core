@@ -532,6 +532,7 @@ impl ContextManager {
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
         let ack_router = Arc::clone(context_client.ack_router());
+
         Self {
             datastore,
             node_client,

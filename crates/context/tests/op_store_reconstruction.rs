@@ -276,16 +276,26 @@ fn persist_namespace_head_ops_lands_locally_authored_op_in_the_op_store() {
         .advance_dag_head(delta_id, &[], 0)
         .unwrap();
 
-    assert!(
+    // `store_signed_operation` now writes the decoded op to the unified op-store
+    // ATOMICALLY with the gov-DAG put (the op-store can never lag the gov-DAG), so
+    // the op is already present here — the local-author gap this test guarded is
+    // closed at the source. The author held the group key, so the atomic write
+    // already decoded the real MemberAdded (not a Noop).
+    assert_eq!(
         load_scope_ops(&store, &ScopeId::from(ns_bytes))
             .unwrap()
-            .is_empty(),
-        "precondition: the locally-authored op is absent from the op-store"
+            .iter()
+            .map(|op| op.id)
+            .collect::<Vec<_>>(),
+        vec![delta_id],
+        "store_signed_operation must persist the op atomically with the gov-DAG write"
     );
 
+    // `persist_namespace_head_ops` remains idempotent over the now-already-present
+    // op (the redundant per-site re-persist is kept as belt-and-suspenders).
     ScopeProjections::persist_namespace_head_ops(&store, ns_bytes);
 
-    // The op is now in the op-store AND decodes to the real membership: a fresh fold
+    // The op is in the op-store AND decodes to the real membership: a fresh fold
     // of the op-store sees `member` (proves the payload landed, not just the id).
     let store_ops = load_scope_ops(&store, &ScopeId::from(ns_bytes)).unwrap();
     assert_eq!(

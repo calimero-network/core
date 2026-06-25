@@ -90,6 +90,83 @@ impl<'a> NamespaceOpLogService<'a> {
 
         let mut handle = self.store.handle();
         handle.put(&key, &value)?;
+
+        // ATOMIC unified op-store write: persist the DECODED `Op` on the SAME
+        // `handle` as the gov-DAG put above, so the op-store can never lag the
+        // gov-DAG (the read-flip blocker). The op-store is keyed by the op's
+        // **namespace** scope ‖ op id, mirroring `unified_op_store::persist_op`
+        // in `calimero-context`; that apply-time dual-write (and the per-site
+        // re-persists) stay as a redundant-but-idempotent belt-and-suspenders.
+        //
+        // For an encrypted group op, decrypt best-effort (the key may not have
+        // arrived yet); on failure fold as `Noop` (pass `None`), exactly like the
+        // dual-write — the late-key case is recovered by `repersist_namespace_ops`.
+        if let Err(err) = self.put_unified_op(&mut handle, op, delta_id) {
+            // Never fail the gov-DAG write on a decode/op-store hiccup. The op-store
+            // is a redundant projection backing here; a miss is recoverable by the
+            // existing backfill/repersist paths. Logged, not propagated.
+            tracing::warn!(
+                %err,
+                namespace_id = %hex::encode(self.namespace_id),
+                delta_id = %hex::encode(delta_id),
+                "unified op-store: atomic op-store write failed; gov-DAG write kept"
+            );
+        }
+        Ok(())
+    }
+
+    /// Build the decoded unified [`Op`] for `signed` and `put` it onto the
+    /// caller's `handle` (the SAME handle that just wrote the gov-DAG op), so the
+    /// op-store entry is atomic with the gov-DAG entry. `delta_id` is the op's
+    /// already-computed content hash (the gov-DAG key), reused to avoid re-hashing.
+    fn put_unified_op(
+        &self,
+        handle: &mut calimero_store::Handle<Store>,
+        signed: &SignedNamespaceOp,
+        delta_id: [u8; 32],
+    ) -> EyreResult<()> {
+        // Re-derive the op's id/hlc/parents exactly as the projection backfill
+        // does, so the persisted op id is byte-identical to the dual-write's.
+        let delta = crate::unified_op_decode::signed_namespace_op_to_delta(signed)?;
+
+        // Decrypt an encrypted group op so its membership change folds; a failure
+        // (no key for this group yet) leaves it a `Noop` node — still persisted so
+        // an ancestry walk can pass through it (the late-key case is repersisted
+        // once the key arrives).
+        let decrypted = match &signed.op {
+            NamespaceOp::Group {
+                group_id,
+                key_id,
+                encrypted,
+                ..
+            } => crate::decrypt_group_op(
+                self.store,
+                self.namespace_id,
+                calimero_context_config::types::ContextGroupId::from(*group_id),
+                key_id,
+                encrypted,
+            )
+            .ok()
+            .flatten(),
+            NamespaceOp::Root(_) => None,
+        };
+
+        let unified_op = crate::unified_op_decode::op_from_namespace_op(
+            signed,
+            decrypted.as_ref(),
+            delta.id,
+            delta.hlc,
+            &delta.parents,
+        );
+
+        let scope = calimero_op::ScopeId::from(self.namespace_id);
+        let key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), unified_op.id);
+        let bytes = borsh::to_vec(&unified_op).map_err(|e| eyre::eyre!("borsh op: {e}"))?;
+        let value =
+            calimero_store::types::ScopeUnifiedOp::from(calimero_store::slice::Slice::from(bytes));
+        handle.put(&key, &value)?;
+        // Sanity: the op-store and the gov-DAG must key the same op identity.
+        debug_assert_eq!(unified_op.id, delta_id, "unified op id != gov-DAG delta id");
         Ok(())
     }
 

@@ -783,15 +783,19 @@ fn refresh_projection_for_cut(
         .read_scope_projections()
         .namespace_to_refresh(datastore, group, heads);
     if let Some(namespace_id) = needs_backfill {
-        // The projection folds the governance DAG (`ops_for_namespace`). The read-flip
-        // onto the unified op-store is being re-approached via C3 (make the op-store
-        // authoritative by construction); see the C3 plan + `ops_for_namespace`.
+        // C3 Stage 4 read-flip: the projection now folds the unified op-store
+        // (`ops_for_namespace` loads it, falling back to the gov-DAG only for a cold
+        // scope). Safe by construction — Stages 1-3 made every apply path write the
+        // op-store; the gate below keeps proving it.
         if let Some(ops) = ScopeProjections::ops_for_namespace(datastore, namespace_id) {
-            // C3 Stage 0 completeness gate (observe-only): the `ops` here are the
-            // gov-DAG fold, so cross-check that the op-store has them all and log
-            // `op_store_incomplete` for any it's missing — the deterministic signal
-            // that a governance apply path isn't dual-writing the op-store.
-            ScopeProjections::check_op_store_completeness(datastore, namespace_id, &ops);
+            // Completeness gate: `ops` is now the op-store, so the gate's gov-DAG
+            // reference must be an explicit `collect_namespace_ops` walk (comparing the
+            // op-store to itself would be vacuous). Logs `op_store_incomplete` for any
+            // gov-DAG op the op-store lacks.
+            if let Some(dag_ops) = ScopeProjections::collect_namespace_ops(datastore, namespace_id)
+            {
+                ScopeProjections::check_op_store_completeness(datastore, namespace_id, &dag_ops);
+            }
             node_state
                 .write_scope_projections()
                 .apply_backfill(namespace_id, ops);
