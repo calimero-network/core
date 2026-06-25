@@ -11,12 +11,43 @@
 //! does NOT call `require_namespace_admin`, because genesis is precisely what
 //! establishes that authority — there is no prior admin to check against.
 //!
-//! Anti-hijack: a `NamespaceCreated` is applied only when the namespace has no
-//! established founder yet — i.e. its root meta is absent, or its authority
-//! field `admin_identity` is still the placeholder sentinel
-//! (`crate::PLACEHOLDER_ADMIN_IDENTITY`). A second `NamespaceCreated` on an
-//! already-established namespace (real `admin_identity`) is a NO-OP, so a forged
-//! second genesis cannot overwrite an existing admin and apply stays idempotent.
+//! # Apply order (and WHY)
+//!
+//! The handler branches FIRST on whether the namespace is already established —
+//! i.e. its root meta exists with `admin_identity != placeholder`
+//! (`crate::PLACEHOLDER_ADMIN_IDENTITY`). The established check is the load-bearing
+//! pivot, NOT the structural (parents / signer) checks:
+//!
+//!   1. Load the root meta; `established = meta.admin_identity != placeholder`.
+//!
+//!   2. **If established ⇒ ALWAYS `Ok(())`, NEVER `Err`.** Any `NamespaceCreated`
+//!      arriving on an established namespace is harmless and MUST be a no-op:
+//!        * `admin_identity == founder` — idempotent re-arrival (e.g. a
+//!          duplicate/late genesis via sync backfill). Ensure the founder's Admin
+//!          member row + default caps (absence-gated), and (#602) repair a diverged
+//!          `owner_identity` back to the founder. Other meta fields are preserved.
+//!        * `admin_identity != founder` — established by someone else: pure no-op,
+//!          touch nothing (anti-hijack).
+//!      WHY no `Err` here: a parented or late `NamespaceCreated` (e.g. a duplicate
+//!      replayed via DAG sync) used to return `Err(NotGenesis)`, which the
+//!      `apply_signed_op` caller can treat as fatal and STALL DAG processing
+//!      (#591). On an established namespace nothing can be hijacked, so there is
+//!      no reason to error — we no-op and let the DAG advance.
+//!
+//!   3. **If NOT established (admin == placeholder) ⇒ this op is trying to FOUND
+//!      the namespace, so enforce the genesis invariants, THEN establish:**
+//!        * (#596) no-parents FIRST — `if !op.parent_op_hashes.is_empty()` →
+//!          `NotGenesis`. Structural: reject regardless of signer so a parented
+//!          founding op never leaks/pins the declared founder.
+//!        * then `if op.signer != founder` → `SignerNotFounder`.
+//!        * then establish: write meta `admin == owner == founder`, the founder's
+//!          Admin member row, and the default caps.
+//!
+//! The structural rejections (parents / signer) are therefore ONLY load-bearing
+//! while the namespace is NOT yet established — they gate FOUNDING, stopping a
+//! parented or signer-mismatched op from forging the genesis admin. Once a real
+//! admin exists they are irrelevant, and erroring on them would only risk
+//! stalling the DAG.
 
 use super::context::NamespaceApplyCtx;
 use crate::{
@@ -38,76 +69,17 @@ pub(crate) fn apply(
     let namespace_id = ctx.namespace_id();
     let ns_gid = ContextGroupId::from(namespace_id);
 
-    // ---- Self-authorization binding: signer MUST equal the declared founder. ----
-    // Genesis is the one authority-bearing root op that SKIPS
-    // `require_namespace_admin` (there is no prior admin to check against), so
-    // the only thing tying the established admin to a real signing key is this
-    // check. The invariant holds because the genesis is signed with the
-    // namespace key == the founder's key at creation. Without it a non-founder
-    // could sign `NamespaceCreated { founder: <someone-else> }` with their own
-    // key and, on a namespace with no prior genesis, pin a forged/wrong admin.
-    // Enforced BEFORE the anti-hijack/established gate so a mismatched op is
-    // rejected outright (logged as rejected via `ApplyError`, never applied),
-    // never silently treated as a no-op.
+    // ---- Load the root meta and decide established-ness FIRST. ----
+    // The established check (NOT the structural parents/signer checks) is the
+    // load-bearing pivot of this handler. It keys SOLELY on `admin_identity`,
+    // the authority field:
     //
-    // SECURITY: RESIDUAL (#2474 reviewer batch 3): this check only blocks MISMATCHED
-    // forgeries (signer signs a genesis naming a DIFFERENT founder). It does
-    // NOT block a SELF-CONSISTENT forged genesis — an attacker who signs
-    // `NamespaceCreated { founder: <self> }` on a BARE namespace passes this
-    // check (signer == founder == attacker) and becomes that namespace's admin.
-    // Nothing here binds `namespace_id` to the legitimate founder, because today
-    // `namespace_id` is RANDOM and unrelated to any key. The anti-hijack gate
-    // below only protects an ALREADY-established namespace; it cannot tell a
-    // legitimate first genesis from a forged first genesis on a bare one.
-    // The tracked long-term fix is to make the namespace id a root-of-trust by
-    // deriving it as `namespace_id = H(founder ‖ …)`, so a self-consistent
-    // forged genesis would target a different (attacker-derived) namespace id
-    // and could never collide with the legitimate one. See the #2474
-    // root-of-trust follow-up.
-    if op.signer != founder {
-        bail!(ApplyError::NamespaceCreatedRejected(
-            NamespaceCreatedRejection::SignerNotFounder {
-                signer: format!("{}", op.signer),
-                founder: format!("{founder}"),
-            }
-        ));
-    }
-
-    // ---- TRUE-genesis gate: the op MUST be the DAG root (no parents). ----
-    // `NamespaceCreated` is by definition the FIRST op in the namespace DAG.
-    // A brand-new namespace has no persisted head, so `read_head_record`
-    // (namespace/dag.rs) returns an EMPTY `parent_hashes`, and the signer
-    // (`sign_apply_and_publish`) signs the genesis with
-    // `parent_op_hashes == []`. Any `NamespaceCreated` carrying parents was
-    // therefore minted against an EXISTING DAG head — i.e. injected late onto a
-    // namespace that already has history — and must never be allowed to
-    // establish/re-found the founder. Rejecting on non-empty parents enforces
-    // the reviewer's intent ("only the true first op can establish the
-    // founder") without relying on `op.nonce`, which is informational here: DAG
-    // sequencing comes from `read_head_record().next_nonce`, not `op.nonce`.
-    //
-    // CAVEAT for the tracked startup-repair re-emit follow-up: if a future
-    // repair path re-emits a genesis on an ALREADY-rooted namespace, it must
-    // either emit at the genesis position (with NO parents — i.e. against an
-    // empty head) so it passes this gate, or be routed through a distinct,
-    // explicitly-authorized repair op. Do NOT relax this gate to admit a
-    // parented `NamespaceCreated`, or the anti-hijack guarantee collapses.
-    if !op.parent_op_hashes.is_empty() {
-        bail!(ApplyError::NamespaceCreatedRejected(
-            NamespaceCreatedRejection::NotGenesis {
-                parent_count: op.parent_op_hashes.len(),
-            }
-        ));
-    }
-
-    // ---- Anti-hijack / idempotency gate. ----
-    // Genesis may only ESTABLISH a founder; it may never overwrite one. The
-    // gate keys SOLELY on `admin_identity`, the authority field:
-    //
-    //   * `admin_identity == placeholder` ⇒ no real admin yet ⇒ genesis may
-    //     proceed (establish/repair);
-    //   * `admin_identity != placeholder` ⇒ a real admin already exists ⇒
-    //     genesis is a NO-OP (anti-hijack).
+    //   * `admin_identity == placeholder` ⇒ no real admin yet ⇒ this op is
+    //     trying to FOUND the namespace ⇒ enforce genesis invariants, then
+    //     establish (step 3 below);
+    //   * `admin_identity != placeholder` ⇒ a real admin already exists ⇒ this
+    //     op can hijack nothing ⇒ it is ALWAYS a no-op `Ok(())`, NEVER `Err`
+    //     (step 2 below).
     //
     // `admin_identity` is THE authority field. This crate's own code paths
     // always write it together with `owner_identity`: the bootstrap KeyDelivery
@@ -117,64 +89,69 @@ pub(crate) fn apply(
     // between two non-atomic `put`s) or an external/legacy writer can leave the
     // two diverged, and the test
     // `namespace_created_genesis_proceeds_when_only_admin_is_placeholder`
-    // deliberately constructs exactly such a state. That divergence is harmless
-    // here precisely because the gate keys on `admin_identity` as the SOLE
-    // authority field: "is this namespace established?" is answered correctly
-    // regardless of what `owner_identity` holds. Keying on `admin_identity` ONLY
-    // also
-    // fixes a correctness bug in the earlier OR-of-both form: an OR gate could
-    // declare a namespace "established" while `admin_identity` was still the
-    // placeholder (e.g. a partial write that set only `owner_identity`),
-    // wedging the namespace with no real admin forever and blocking the
-    // repairing genesis. Gating on the authority field means genesis proceeds
-    // exactly when there is no real admin, writing the real one. The sentinel
-    // itself is shared with the seed via `crate::PLACEHOLDER_ADMIN_IDENTITY` so
-    // the two cannot drift.
+    // deliberately constructs exactly such a state. Keying the established check
+    // on `admin_identity` ONLY answers "is this namespace established?"
+    // correctly regardless of what `owner_identity` holds, and fixes a
+    // correctness bug in an earlier OR-of-both form (an OR gate could declare a
+    // namespace "established" while `admin_identity` was still the placeholder,
+    // wedging it with no real admin forever and blocking the repairing genesis).
+    // The sentinel is shared with the seed via `crate::PLACEHOLDER_ADMIN_IDENTITY`
+    // so the two cannot drift.
     let placeholder = placeholder_admin_identity();
     let existing = MetaRepository::new(store).load(&ns_gid)?;
+
     if let Some(meta) = &existing {
         let established = meta.admin_identity != placeholder;
         if established {
-            // The namespace already has an established founder. Genesis may
-            // never OVERWRITE one, so we return early without re-writing the
-            // root meta. There are two sub-cases:
-            //
-            //  (1) `meta.admin_identity == founder` — the SAME founder is
-            //      re-arriving (idempotent genesis, or some path wrote a
-            //      non-placeholder root `admin_identity` for the founder before
-            //      genesis applied). The meta is already correct, but the
-            //      founder's explicit Admin member row may NOT have been written
-            //      (the path that set `admin_identity` need not have created the
-            //      member row). Ensure it here with an idempotent upsert so the
-            //      founder is always enumerable as Admin, regardless of which
-            //      write landed first. This mirrors the establish branch below.
-            //
-            //  (2) `meta.admin_identity != founder` — the namespace was
-            //      established by SOMEONE ELSE. This MUST stay a pure no-op: we
-            //      must NOT touch membership, or a forged second genesis would
-            //      grant its declared founder an Admin member row on a namespace
-            //      they do not own. That is the anti-hijack guarantee, so the
-            //      member-row upsert is gated strictly on admin == founder.
+            // ---- (2) ESTABLISHED ⇒ ALWAYS Ok(()), NEVER Err. ----
+            // Any `NamespaceCreated` arriving here (parented or not, late via
+            // sync, duplicate, or forged) is harmless: a real admin already
+            // exists and genesis may never OVERWRITE one. Returning `Err` (as the
+            // old order did on parented ops via `NotGenesis`) can make the
+            // `apply_signed_op` caller treat the op as fatal and STALL DAG
+            // processing (#591). So we no-op and let the DAG advance. The
+            // structural parents/signer checks are deliberately NOT consulted on
+            // this path — they only gate FOUNDING (step 3).
             if meta.admin_identity == founder {
-                // Reachable ONLY for a PARENTLESS op: the no-parents gate above
-                // (`!op.parent_op_hashes.is_empty()` → `NotGenesis`) has already
-                // rejected any parented `NamespaceCreated` before control reaches
-                // here, so this same-founder idempotent re-arrival is always a
-                // true-genesis-position op (e.g. the founder's own genesis coming
-                // back via sync backfill, or a path that wrote a non-placeholder
-                // root `admin_identity` for the founder before genesis applied).
+                // (2a) SAME founder re-arriving — idempotent genesis (e.g. the
+                // founder's own genesis coming back via sync backfill, or a path
+                // that wrote a non-placeholder root `admin_identity` for the
+                // founder before genesis applied). The meta's `admin_identity` is
+                // already correct, but several pieces of state may be missing or
+                // diverged and must be repaired idempotently:
+                //
+                //   * the founder's explicit Admin member row may never have been
+                //     written (the path that set `admin_identity` need not have
+                //     created it) — ensure it with an idempotent upsert so the
+                //     founder is always enumerable as Admin;
+                //   * the default caps row may be absent — seed it absence-gated;
+                //   * (#602) `owner_identity` may have DIVERGED from the founder
+                //     (a partial write or legacy writer set admin but not owner).
+                //     Repair it by writing back updated meta with
+                //     `owner_identity = founder` while PRESERVING every other
+                //     field. Only write when it actually differs, to avoid a
+                //     pointless `put` on the common already-correct path.
+                if meta.owner_identity != founder {
+                    let mut repaired = meta.clone();
+                    repaired.owner_identity = founder;
+                    MetaRepository::new(store).save(&ns_gid, &repaired)?;
+                    tracing::debug!(
+                        namespace_id = %hex::encode(namespace_id),
+                        %founder,
+                        prior_owner = %meta.owner_identity,
+                        "NamespaceCreated: same-founder re-arrival repaired diverged \
+                         owner_identity to the founder (#602)"
+                    );
+                }
                 MembershipRepository::new(store).add_member(
                     &ns_gid,
                     &founder,
                     GroupMemberRole::Admin,
                 )?;
-                // Also seed the Open-join default caps on this idempotent
-                // same-founder path, mirroring the establish branch below. The
-                // path that set `admin_identity` need not have written the caps
-                // row, so a same-founder re-arrival must guarantee BOTH the
-                // Admin member row AND the default caps. Absence-gated for the
-                // same no-clobber reason documented at the establish branch: a
-                // later `DefaultCapabilitiesSet` must never be overwritten.
+                // Seed the Open-join default caps, mirroring the establish branch
+                // below. Absence-gated for the same no-clobber reason documented
+                // there: a later `DefaultCapabilitiesSet` must never be
+                // overwritten.
                 let caps = CapabilitiesRepository::new(store);
                 if caps.default_capabilities(&ns_gid)?.is_none() {
                     caps.set_default_capabilities(
@@ -190,6 +167,10 @@ pub(crate) fn apply(
                 );
                 return Ok(());
             }
+            // (2b) established by SOMEONE ELSE — pure no-op, touch nothing. We
+            // must NOT write membership/caps/meta, or a forged second genesis
+            // would grant its declared founder state on a namespace they do not
+            // own. That is the anti-hijack guarantee.
             tracing::debug!(
                 namespace_id = %hex::encode(namespace_id),
                 established_admin = %meta.admin_identity,
@@ -200,6 +181,61 @@ pub(crate) fn apply(
             );
             return Ok(());
         }
+    }
+
+    // ---- (3) NOT established ⇒ this op is trying to FOUND the namespace. ----
+    // Enforce the genesis invariants, THEN establish. These structural checks
+    // are load-bearing ONLY here, while no real admin exists: they stop a
+    // parented or signer-mismatched op from forging the genesis admin.
+
+    // ---- (3a) TRUE-genesis gate: the op MUST be the DAG root (no parents). ----
+    // Checked FIRST, BEFORE the signer check (#596): a brand-new namespace has
+    // no persisted head, so `read_head_record` (namespace/dag.rs) returns an
+    // EMPTY `parent_hashes`, and the signer (`sign_apply_and_publish`) signs the
+    // genesis with `parent_op_hashes == []`. A `NamespaceCreated` carrying
+    // parents on a not-yet-established namespace was therefore minted against an
+    // EXISTING DAG head and must be REJECTED regardless of signer — checking
+    // parents first means we never even consult/leak the declared founder for a
+    // structurally-invalid founding op. DAG sequencing comes from
+    // `read_head_record().next_nonce`, not the informational `op.nonce`.
+    if !op.parent_op_hashes.is_empty() {
+        bail!(ApplyError::NamespaceCreatedRejected(
+            NamespaceCreatedRejection::NotGenesis {
+                parent_count: op.parent_op_hashes.len(),
+            }
+        ));
+    }
+
+    // ---- (3b) Self-authorization binding: signer MUST equal the founder. ----
+    // Genesis is the one authority-bearing root op that SKIPS
+    // `require_namespace_admin` (there is no prior admin to check against), so
+    // the only thing tying the established admin to a real signing key is this
+    // check. The invariant holds because the genesis is signed with the
+    // namespace key == the founder's key at creation. Without it a non-founder
+    // could sign `NamespaceCreated { founder: <someone-else> }` with their own
+    // key and, on a namespace with no prior genesis, pin a forged/wrong admin.
+    //
+    // SECURITY: RESIDUAL (#2474 reviewer batch 3): this check only blocks MISMATCHED
+    // forgeries (signer signs a genesis naming a DIFFERENT founder). It does
+    // NOT block a SELF-CONSISTENT forged genesis — an attacker who signs
+    // `NamespaceCreated { founder: <self> }` on a BARE namespace passes this
+    // check (signer == founder == attacker) and becomes that namespace's admin.
+    // Nothing here binds `namespace_id` to the legitimate founder, because today
+    // `namespace_id` is RANDOM and unrelated to any key. The established gate
+    // above only protects an ALREADY-established namespace; it cannot tell a
+    // legitimate first genesis from a forged first genesis on a bare one.
+    // The tracked long-term fix is to make the namespace id a root-of-trust by
+    // deriving it as `namespace_id = H(founder ‖ …)`, so a self-consistent
+    // forged genesis would target a different (attacker-derived) namespace id
+    // and could never collide with the legitimate one. See the #2474
+    // root-of-trust follow-up.
+    if op.signer != founder {
+        bail!(ApplyError::NamespaceCreatedRejected(
+            NamespaceCreatedRejection::SignerNotFounder {
+                signer: format!("{}", op.signer),
+                founder: format!("{founder}"),
+            }
+        ));
     }
 
     // ---- Establish the founder as admin == owner on the root meta. ----

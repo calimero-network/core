@@ -1955,6 +1955,144 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
 }
 
 #[test]
+fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
+    // #591: a PARENTED `NamespaceCreated` arriving on an ALREADY-ESTABLISHED
+    // namespace (e.g. a duplicate/late genesis replayed via DAG sync) must be a
+    // NO-OP that returns `Ok(())`, NOT `Err(NotGenesis)`. The old apply order
+    // ran the no-parents gate BEFORE the established check, so it returned
+    // `Err` here, which the `apply_signed_op` caller can treat as fatal and
+    // STALL DAG processing. On an established namespace nothing can be
+    // hijacked, so the structural parents check must not even be consulted.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xC4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Establish the namespace via a clean parentless genesis.
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 1, genesis).unwrap();
+    gov.apply_signed_op(&signed_genesis)
+        .expect("parentless genesis establishes the namespace");
+    let meta_before = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(
+        meta_before.admin_identity, founder,
+        "precondition: established"
+    );
+
+    // A PARENTED `NamespaceCreated` (same founder) now arrives late on the
+    // established namespace. It must be a NO-OP, returning Ok — not Err.
+    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed_parented = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![[0x22u8; 32]],
+        [0u8; 32],
+        2,
+        parented,
+    )
+    .unwrap();
+    let res = gov.apply_signed_op(&signed_parented);
+    assert!(
+        res.is_ok(),
+        "#591: a parented NamespaceCreated on an established namespace must be a \
+         no-op (Ok), never Err(NotGenesis) — erroring stalls DAG processing"
+    );
+
+    // The established admin is untouched.
+    let meta_after = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(
+        meta_after.admin_identity, founder,
+        "the established admin is unchanged by the late parented no-op"
+    );
+}
+
+#[test]
+fn namespace_created_same_founder_repairs_diverged_owner_identity() {
+    // #602: if a path established the root meta with `admin_identity == founder`
+    // but a DIVERGED `owner_identity` (a partial write or legacy writer that set
+    // admin but not owner), an idempotent same-founder `NamespaceCreated`
+    // re-arrival must REPAIR `owner_identity` back to the founder while
+    // preserving every other meta field.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+    let stray_owner = PrivateKey::random(&mut rng).public_key();
+
+    let store = test_store();
+    let namespace_id = [0xC5u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Pre-establish meta: admin == founder (established), but owner DIVERGED to
+    // a stray non-founder key. Use `sample_meta_with_admin` so other fields
+    // (app_key, target_application_id, upgrade_policy, created_at, auto_join)
+    // carry distinctive non-default values we can assert are preserved.
+    let mut diverged = sample_meta_with_admin(founder);
+    diverged.owner_identity = stray_owner;
+    MetaRepository::new(&store)
+        .save(&ns_gid, &diverged)
+        .unwrap();
+
+    // Same-founder genesis re-arrives (parentless idempotent re-arrival).
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+        .expect("founder signs idempotent genesis");
+    gov.apply_signed_op(&signed)
+        .expect("idempotent same-founder re-arrival applies as a no-op-with-repair");
+
+    let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(meta.admin_identity, founder, "admin stays the founder");
+    assert_eq!(
+        meta.owner_identity, founder,
+        "#602: same-founder re-arrival repairs the diverged owner_identity to the founder"
+    );
+    // All other fields are preserved from the pre-established meta.
+    assert_eq!(
+        meta.app_key, diverged.app_key,
+        "app_key preserved across the owner repair"
+    );
+    assert_eq!(
+        meta.target_application_id, diverged.target_application_id,
+        "target_application_id preserved across the owner repair"
+    );
+    assert_eq!(
+        meta.upgrade_policy, diverged.upgrade_policy,
+        "upgrade_policy preserved across the owner repair"
+    );
+    assert_eq!(
+        meta.created_at, diverged.created_at,
+        "created_at preserved across the owner repair"
+    );
+    assert_eq!(
+        meta.auto_join, diverged.auto_join,
+        "auto_join preserved across the owner repair"
+    );
+
+    // The founder's Admin member row is also ensured on this path.
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "same-founder re-arrival ensures the founder's Admin member row"
+    );
+}
+
+#[test]
 fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
     // #2931 reviewer B1: pins the HEAD-ATOMICITY contract that lets
     // `handlers/create_group.rs` roll back a failed root-genesis WITHOUT
