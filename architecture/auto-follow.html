@@ -744,6 +744,72 @@ subsequently rejected.
   the <code>#2474</code> regression guard).</li>
 </ul>
 </div>
+<div class="card gc"><h2>State-Hash Staleness Checks Removed</h2>
+
+<p>
+As of this change, the <code>state_hash</code> field has been removed from the governance op
+wire format entirely. The warn-and-apply staleness check that previously existed in
+<code>apply_local_signed_group_op_at_cut</code> and <code>apply_group_op_inner</code> has been
+deleted along with all supporting infrastructure. The <strong>per-signer nonce window is now the
+sole anti-replay and deduplication gate</strong> on the apply path.
+</p>
+
+<h3>What Was Removed</h3>
+<ul>
+  <li><strong>Staleness check blocks</strong> in <code>apply_local_signed_group_op_at_cut</code>
+  and <code>NamespaceGovernance::apply_group_op_inner</code> — the code that recomputed the
+  group or namespace state hash and emitted a <code>tracing::warn!</code> on mismatch is gone.
+  No warning of the form <code>local group op state_hash mismatch</code> will ever appear; any
+  monitoring or alerting on that string can be retired.</li>
+  <li><code>NamespaceGovernance::state_hash_for_op()</code> — computed the appropriate hash
+  domain for a namespace op at sign time.</li>
+  <li><code>root_op_commits_to_namespace_state()</code> — a module-level whitelist of
+  <code>RootOp</code> variants whose correctness previously depended on namespace state.</li>
+  <li><code>pre_apply_state_hash</code> capture in <code>GroupGovernancePublisher</code> and
+  the <code>state_hash</code> parameter threading through <code>publish_post_gate</code>,
+  <code>sign_and_publish_post_gate</code>, and <code>sign_and_publish_without_apply</code>.</li>
+  <li><code>GroupHandle::compute_state_hash()</code> — a public thin wrapper over
+  <code>MetaRepository::compute_state_hash</code> that had no remaining callers.</li>
+</ul>
+
+<h3>Wire and Serialization Impact</h3>
+<p>
+The synthesized <code>SignedGroupOp</code> inside <code>decrypt_and_apply_group_op</code> no
+longer copies <code>ns_op.state_hash</code> (the field is gone from the struct). The DAG delta
+helpers <code>signed_op_to_delta</code> and <code>signed_namespace_op_to_delta</code> now pass
+<code>[0u8; 32]</code> as <code>expected_root_hash</code> because governance ops no longer carry
+a meaningful root claim.
+</p>
+
+<h3>Deleted Tests</h3>
+<p>
+The following unit tests and their shared <code>setup_state_hash_test_fixture</code> helper were
+deleted because they pinned behaviour that no longer exists:
+</p>
+<ul>
+  <li><code>namespace_group_op_zero_state_hash_bypasses_check</code></li>
+  <li><code>namespace_group_op_with_current_state_hash_applies</code></li>
+  <li><code>namespace_group_op_with_stale_state_hash_applies_with_warning</code></li>
+  <li><code>group_op_with_stale_hash_and_absent_meta_applies</code></li>
+  <li><code>namespace_root_op_with_current_state_hash_applies</code></li>
+  <li><code>namespace_root_op_with_stale_state_hash_applies_with_warning</code></li>
+  <li><code>state_hash_allows_sequential_ops</code></li>
+  <li><code>state_hash_zero_skips_validation</code></li>
+</ul>
+
+<h3>Operator Notes</h3>
+<ul>
+  <li>The <strong>absent-meta bypass</strong> documented in the <em>Re-drive Buffered Ops</em>
+  section (skip the staleness check when the subgroup <code>GroupMeta</code> row does not yet
+  exist) is also gone — there is no check left to bypass. The absent-meta case is now
+  unremarkable.</li>
+  <li>Any tooling or client library that <strong>populated <code>state_hash</code></strong>
+  when constructing a <code>SignedGroupOp</code> or <code>SignedNamespaceOp</code> must be
+  updated to omit the field. Passing a non-zero value is a wire error on the new schema.</li>
+  <li>The nonce-window dedup path is unchanged. A replayed op is still detected and returns
+  <code>Ok(())</code> early, as before.</li>
+</ul>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
