@@ -12,11 +12,11 @@
 //! establishes that authority — there is no prior admin to check against.
 //!
 //! Anti-hijack: a `NamespaceCreated` is applied only when the namespace has no
-//! established founder yet — i.e. its root meta is absent, or BOTH
-//! `admin_identity` AND `owner_identity` are still the placeholder sentinel
+//! established founder yet — i.e. its root meta is absent, or its authority
+//! field `admin_identity` is still the placeholder sentinel
 //! (`crate::PLACEHOLDER_ADMIN_IDENTITY`). A second `NamespaceCreated` on an
-//! already-established namespace is a NO-OP, so a forged second genesis cannot
-//! overwrite an existing admin and apply stays idempotent.
+//! already-established namespace (real `admin_identity`) is a NO-OP, so a forged
+//! second genesis cannot overwrite an existing admin and apply stays idempotent.
 
 use super::context::NamespaceApplyCtx;
 use crate::{
@@ -50,7 +50,7 @@ pub(crate) fn apply(
     // rejected outright (logged as rejected via `ApplyError`, never applied),
     // never silently treated as a no-op.
     //
-    // RESIDUAL (#2474 reviewer batch 3): this check only blocks MISMATCHED
+    // SECURITY: RESIDUAL (#2474 reviewer batch 3): this check only blocks MISMATCHED
     // forgeries (signer signs a genesis naming a DIFFERENT founder). It does
     // NOT block a SELF-CONSISTENT forged genesis — an attacker who signs
     // `NamespaceCreated { founder: <self> }` on a BARE namespace passes this
@@ -74,22 +74,32 @@ pub(crate) fn apply(
     }
 
     // ---- Anti-hijack / idempotency gate. ----
-    // Genesis may only ESTABLISH a founder; it may never overwrite one. A
-    // namespace is treated as "not yet established" (genesis may overwrite it)
-    // ONLY when BOTH `admin_identity` AND `owner_identity` are the placeholder
-    // sentinel. The bootstrap KeyDelivery seed
-    // (`seed_bootstrap_admin_if_absent`) writes BOTH as the placeholder, so
-    // this is consistent with the seed; requiring both (rather than just
-    // `admin_identity`) hardens the gate against a hypothetical future partial
-    // write that sets one identity but not the other — if EITHER is already a
-    // real identity, the namespace is considered established and genesis is a
-    // no-op. This is what makes the seed/genesis ordering converge regardless
-    // of which lands first. The sentinel itself is shared with the seed via
-    // `crate::PLACEHOLDER_ADMIN_IDENTITY` so the two cannot drift.
+    // Genesis may only ESTABLISH a founder; it may never overwrite one. The
+    // gate keys SOLELY on `admin_identity`, the authority field:
+    //
+    //   * `admin_identity == placeholder` ⇒ no real admin yet ⇒ genesis may
+    //     proceed (establish/repair);
+    //   * `admin_identity != placeholder` ⇒ a real admin already exists ⇒
+    //     genesis is a NO-OP (anti-hijack).
+    //
+    // `admin_identity` is THE authority field and is always written in lockstep
+    // with `owner_identity`: the bootstrap KeyDelivery seed
+    // (`seed_bootstrap_admin_if_absent`) writes BOTH as the placeholder, and
+    // the establish branch below writes BOTH as the founder. Because the two
+    // never diverge, the authority field alone is the correct "is this
+    // namespace established?" signal. Keying on `admin_identity` ONLY also
+    // fixes a correctness bug in the earlier OR-of-both form: an OR gate could
+    // declare a namespace "established" while `admin_identity` was still the
+    // placeholder (e.g. a partial write that set only `owner_identity`),
+    // wedging the namespace with no real admin forever and blocking the
+    // repairing genesis. Gating on the authority field means genesis proceeds
+    // exactly when there is no real admin, writing the real one. The sentinel
+    // itself is shared with the seed via `crate::PLACEHOLDER_ADMIN_IDENTITY` so
+    // the two cannot drift.
     let placeholder = placeholder_admin_identity();
     let existing = MetaRepository::new(store).load(&ns_gid)?;
     if let Some(meta) = &existing {
-        let established = meta.admin_identity != placeholder || meta.owner_identity != placeholder;
+        let established = meta.admin_identity != placeholder;
         if established {
             // The namespace already has an established founder. Genesis may
             // never OVERWRITE one, so we return early without re-writing the
@@ -117,6 +127,20 @@ pub(crate) fn apply(
                     &founder,
                     GroupMemberRole::Admin,
                 )?;
+                // Also seed the Open-join default caps on this idempotent
+                // same-founder path, mirroring the establish branch below. The
+                // path that set `admin_identity` need not have written the caps
+                // row, so a same-founder re-arrival must guarantee BOTH the
+                // Admin member row AND the default caps. Absence-gated for the
+                // same no-clobber reason documented at the establish branch: a
+                // later `DefaultCapabilitiesSet` must never be overwritten.
+                let caps = CapabilitiesRepository::new(store);
+                if caps.default_capabilities(&ns_gid)?.is_none() {
+                    caps.set_default_capabilities(
+                        &ns_gid,
+                        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+                    )?;
+                }
                 tracing::debug!(
                     namespace_id = %hex::encode(namespace_id),
                     %founder,

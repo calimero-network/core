@@ -1625,6 +1625,65 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
 }
 
 #[test]
+fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
+    // #2474 reviewer batch 4-5, item #1: the anti-hijack gate keys SOLELY on
+    // `admin_identity`. This pins the fix for the earlier OR-of-both gate, which
+    // would have treated a meta with `admin_identity == placeholder` but
+    // `owner_identity != placeholder` as "established" and wedged the namespace
+    // with no real admin forever. The authority-field-only gate must instead let
+    // genesis PROCEED on such a partial-write state and write the real founder
+    // as admin (repair), since `admin_identity == placeholder` means no real
+    // admin exists yet.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+    let stray_owner_sk = PrivateKey::random(&mut rng);
+    let stray_owner = stray_owner_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xA4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Construct a partial-write state: admin_identity is still the placeholder
+    // sentinel (no real admin), but owner_identity is a real (non-placeholder)
+    // key. The OR-of-both gate would have called this "established" and refused
+    // genesis; the authority-field-only gate must not.
+    let mut partial = sample_meta_with_admin(founder);
+    partial.admin_identity = PublicKey::from([0u8; 32]);
+    partial.owner_identity = stray_owner;
+    MetaRepository::new(&store).save(&ns_gid, &partial).unwrap();
+
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], [0u8; 32], 0, genesis)
+        .expect("founder signs NamespaceCreated genesis");
+    gov.apply_signed_op(&signed)
+        .expect("genesis proceeds when admin_identity is still the placeholder");
+
+    let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(
+        meta.admin_identity, founder,
+        "gate keys on admin_identity only: genesis repairs the placeholder admin to the founder"
+    );
+    assert_eq!(
+        meta.owner_identity, founder,
+        "genesis establishes the founder as owner too"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &founder)
+            .unwrap(),
+        "founder is admin after the repairing genesis"
+    );
+}
+
+#[test]
 fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
     // #2474 reviewer batch 2, item #4: when the bootstrap seed runs FIRST for
     // the FOUNDER's own identity, it writes the founder as a non-authoritative
@@ -1706,6 +1765,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
     // different established admin must stay a pure no-op (covered by the
     // anti-hijack case in `namespace_created_genesis_on_bare_store_and_anti_hijack`).
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -1755,6 +1815,16 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
             .is_admin(&ns_gid, &founder)
             .unwrap(),
         "founder is admin after the idempotent genesis"
+    );
+    // #2474 reviewer batch 4-5, item #2: the same-founder early-return path must
+    // also seed the Open-join default caps, not just the Admin member row. The
+    // pre-established meta wrote no caps row, so genesis is responsible for it.
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&ns_gid)
+            .unwrap(),
+        Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+        "#2474 item 2: same-founder re-arrival seeds default CAN_JOIN_OPEN_SUBGROUPS caps"
     );
 }
 
