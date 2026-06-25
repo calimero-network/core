@@ -341,9 +341,6 @@ impl<'a> GroupHandle<'a> {
     pub fn delete_meta(&self) -> EyreResult<()> {
         MetaRepository::new(self.store).delete(&self.group_id)
     }
-    pub fn compute_state_hash(&self) -> EyreResult<[u8; 32]> {
-        MetaRepository::new(self.store).compute_state_hash(&self.group_id)
-    }
 
     // --- Members ---
     pub fn add_member(&self, identity: &PublicKey, role: GroupMemberRole) -> EyreResult<()> {

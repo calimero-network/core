@@ -1527,9 +1527,9 @@ impl<'a> NamespaceGovernance<'a> {
         root: &RootOp,
     ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
         // C5.S3b removed the op-level state_hash staleness telemetry that used to
-        // run here for `root_op_commits_to_namespace_state` variants. `scope_root`
-        // is the convergence signal now; signature + the nonce window (applied by
-        // the caller) remain the safety gates.
+        // run here for state-committing root variants. `scope_root` is the
+        // convergence signal now; signature + the nonce window (applied by the
+        // caller) remain the safety gates.
 
         // Per-variant logic lives in `ops/namespace/<variant>.rs` (#2481). The
         // op's causal cut + the at-cut authorizer ride along so the gates can

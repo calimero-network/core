@@ -1329,21 +1329,17 @@ fn dag_heads_are_capped_at_max() {
 }
 
 #[test]
-fn state_hash_mismatch_does_not_reject_concurrent_ops() {
-    // Cutover C5.S3a: a group op's signed `state_hash` is staleness TELEMETRY,
-    // not an apply gate. Two admins concurrently sign INDEPENDENT ops against the
-    // same genesis state; whichever lands second carries a now-stale `state_hash`.
-    // The old behaviour hard-`bail!`ed on that mismatch, which stranded a
-    // legitimate concurrent sibling and broke multi-node convergence (the whole
-    // reason `apply_group_op_inner` already warns-not-bails). Now the local path
-    // matches: the mismatch only warns and the op applies, so both nodes converge
-    // regardless of apply order. `scope_root` + CRDT merge are the convergence
-    // mechanism; signature + nonce-window remain the real safety gates.
+fn concurrent_independent_member_adds_converge() {
+    // Two admins concurrently apply INDEPENDENT ops (each adds a different member)
+    // against the same genesis state. Both nodes must converge to the same member
+    // set regardless of apply order — the CRDT convergence property the cutover
+    // relies on (no op-level staleness gate rejects a legitimate concurrent
+    // sibling). Signature + the per-signer nonce window are the only apply gates.
     //
-    // Independent ADDS (not the old admin-removes-admin scenario) deliberately
-    // avoid an authorization-order confound: under the live-fallback authorizer a
-    // removed admin's later op would fail on *authorization*, not state_hash, which
-    // would mask the gate-removal this test pins down.
+    // Independent ADDS (not an admin-removes-admin scenario) deliberately avoid an
+    // authorization-order confound: under the live-fallback authorizer a removed
+    // admin's later op would fail on *authorization*, masking the convergence
+    // property this test pins down.
     let mut rng = OsRng;
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1370,18 +1366,18 @@ fn state_hash_mismatch_does_not_reject_concurrent_ops() {
             .unwrap();
     }
 
-    let state_hash_b = MetaRepository::new(&node_b)
+    let meta_hash_b = MetaRepository::new(&node_b)
         .compute_state_hash(&gid)
         .unwrap();
-    let state_hash_c = MetaRepository::new(&node_c)
+    let meta_hash_c = MetaRepository::new(&node_c)
         .compute_state_hash(&gid)
         .unwrap();
     assert_eq!(
-        state_hash_b, state_hash_c,
-        "nodes start with identical state hash"
+        meta_hash_b, meta_hash_c,
+        "nodes start with identical group-meta hash"
     );
 
-    // A adds D; C adds E — independent, non-conflicting, both signed against the
+    // A adds D; C adds E — independent, non-conflicting, both authored against the
     // SAME genesis state (concurrent).
     let op_a = SignedGroupOp::sign(
         &admin_a_sk,
@@ -1408,24 +1404,23 @@ fn state_hash_mismatch_does_not_reject_concurrent_ops() {
     )
     .unwrap();
 
-    // Node B: op_a first, then op_c (op_c's state_hash is now stale).
+    // Node B applies op_a then op_c; node C applies them in the opposite order.
     assert!(
         apply_local_signed_group_op(&node_b, &op_a).is_ok(),
         "op_a applies on node_b"
     );
     assert!(
         apply_local_signed_group_op(&node_b, &op_c).is_ok(),
-        "op_c applies on node_b despite a stale state_hash (telemetry, not a gate)"
+        "concurrent op_c also applies on node_b (no staleness gate)"
     );
 
-    // Node C: op_c first, then op_a (op_a's state_hash is now stale).
     assert!(
         apply_local_signed_group_op(&node_c, &op_c).is_ok(),
         "op_c applies on node_c"
     );
     assert!(
         apply_local_signed_group_op(&node_c, &op_a).is_ok(),
-        "op_a applies on node_c despite a stale state_hash"
+        "concurrent op_a also applies on node_c"
     );
 
     // Both nodes converge to {A, C admins + D, E members}, regardless of order.
@@ -1450,7 +1445,7 @@ fn state_hash_mismatch_does_not_reject_concurrent_ops() {
     }
 
     // `compute_state_hash` sorts members by pubkey, so the converged hashes match
-    // — order-independent convergence, the property the old reject actively broke.
+    // — order-independent convergence.
     let final_b = MetaRepository::new(&node_b)
         .compute_state_hash(&gid)
         .unwrap();
@@ -1462,10 +1457,9 @@ fn state_hash_mismatch_does_not_reject_concurrent_ops() {
         "nodes converge to identical state regardless of apply order"
     );
 
-    // Replay safety is unaffected by dropping the state_hash gate: the per-signer
-    // NONCE WINDOW (not state_hash) is the anti-replay guard, and it is unchanged.
-    // Re-applying op_a (admin_a, nonce 1) is a no-op — the nonce is already in the
-    // window — so a DAG replay of a seen op cannot double-apply its mutation.
+    // The per-signer NONCE WINDOW is the anti-replay guard. Re-applying op_a
+    // (admin_a, nonce 1) is a no-op — the nonce is already in the window — so a DAG
+    // replay of a seen op cannot double-apply its mutation.
     let members_before_replay = MembershipRepository::new(&node_b)
         .list(&gid, 0, usize::MAX)
         .unwrap()
@@ -1653,95 +1647,6 @@ fn cascade_removal_deterministic_across_nodes() {
 // member_joined_context_op_propagates test removed:
 // MemberJoinedContext governance op was removed — context membership
 // is now derived from group membership + visibility.
-
-#[test]
-fn state_hash_allows_sequential_ops() {
-    let mut rng = OsRng;
-    let gid = sample_group_id();
-    let gid_bytes = gid.to_bytes();
-    let store = empty_store();
-
-    let admin_sk = PrivateKey::random(&mut rng);
-    let admin_pk = admin_sk.public_key();
-    MetaRepository::new(&store)
-        .save(&gid, &sample_meta(admin_pk))
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
-        .unwrap();
-
-    let member1 = PrivateKey::random(&mut rng).public_key();
-    let member2 = PrivateKey::random(&mut rng).public_key();
-
-    // Op1: add member1, signed against initial state
-    let state1 = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    let op1 = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        vec![[0u8; 32]],
-        1,
-        GroupOp::MemberAdded {
-            member: member1,
-            role: GroupMemberRole::Member,
-        },
-    )
-    .unwrap();
-    apply_local_signed_group_op(&store, &op1).unwrap();
-
-    // Op2: add member2, signed against state AFTER op1
-    let state2 = MetaRepository::new(&store)
-        .compute_state_hash(&gid)
-        .unwrap();
-    assert_ne!(
-        state1, state2,
-        "state hash should change after adding member1"
-    );
-    let op2 = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        vec![op1.content_hash().unwrap()],
-        2,
-        GroupOp::MemberAdded {
-            member: member2,
-            role: GroupMemberRole::Member,
-        },
-    )
-    .unwrap();
-    apply_local_signed_group_op(&store, &op2).unwrap();
-
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&gid, &member1)
-            .unwrap()
-    );
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&gid, &member2)
-            .unwrap()
-    );
-}
-
-#[test]
-fn state_hash_zero_skips_validation() {
-    let mut rng = OsRng;
-    let gid = sample_group_id();
-    let gid_bytes = gid.to_bytes();
-    let store = empty_store();
-
-    let admin_sk = PrivateKey::random(&mut rng);
-    let admin_pk = admin_sk.public_key();
-    MetaRepository::new(&store)
-        .save(&gid, &sample_meta(admin_pk))
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
-        .unwrap();
-
-    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![[0u8; 32]], 1, GroupOp::Noop).unwrap();
-    assert!(apply_local_signed_group_op(&store, &op).is_ok());
-}
 
 #[test]
 fn group_member_with_keys_persists_and_retrieves() {
