@@ -1111,24 +1111,6 @@ impl ScopeProjections {
         );
     }
 
-    /// Persist a locally-authored namespace's governance ops to the unified op-store
-    /// (cutover C3 Stage 1, by-construction): a locally-authored op writes the gov-DAG
-    /// (`advance_dag_head`) but NOT the op-store, because the dual-write only fires on
-    /// the receive handler. Called right after authoring.
-    ///
-    /// This persists the WHOLE gov-DAG fold, not just the current heads. A heads-only
-    /// persist would be racy: the caller authors, then awaits the publish round-trip,
-    /// and the actor can apply a concurrent peer op during that await — advancing the
-    /// head so the just-authored op is no longer a head and a heads-only persist skips
-    /// it. The full walk via [`repersist_namespace_ops`](Self::repersist_namespace_ops)
-    /// captures the authored op wherever it landed in the DAG, reuses
-    /// `collect_namespace_ops`'s read-error logging, and is bounded by `MAX_BACKFILL_OPS`
-    /// (local authoring is infrequent, and re-persisting an unchanged op is idempotent).
-    /// Best-effort; never affects authoring.
-    pub fn persist_namespace_head_ops(store: &Store, namespace_id: [u8; 32]) {
-        Self::repersist_namespace_ops(store, namespace_id);
-    }
-
     /// Observe-only completeness gate (cutover C3 Stage 0): warn when the unified
     /// op-store is MISSING governance ops the gov-DAG has for `namespace_id`.
     ///

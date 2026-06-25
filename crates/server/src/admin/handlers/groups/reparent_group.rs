@@ -98,11 +98,6 @@ pub async fn handler(
     {
         Ok(report) => {
             report.observe("reparent_group", "GroupReparented");
-            // C3 Stage 2: mirror the locally-authored GroupReparented into the op-store.
-            calimero_context::scope_projection::ScopeProjections::persist_namespace_head_ops(
-                &state.store,
-                namespace_id.to_bytes(),
-            );
             ApiResponse {
                 payload: ReparentGroupApiResponse {
                     reparented: !was_already_there,

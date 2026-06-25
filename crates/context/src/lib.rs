@@ -731,7 +731,7 @@ impl ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let _report = crate::sign_apply_and_publish_group_op(
+                let _report = calimero_governance_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -746,55 +746,6 @@ impl ContextManager {
             .into_actor(self),
         )
     }
-}
-
-/// Author a group governance op (the B1 local-authoring path) and mirror it into
-/// the unified op-store — C3 Stage 3.
-///
-/// `calimero_governance_store::sign_apply_and_publish` applies the op to the local
-/// group plane and publishes the encrypted `NamespaceOp::Group` to the namespace
-/// gov-DAG (`publish_post_gate` → `store_operation`), but never writes the op-store:
-/// the dual-write only fires on the receive handler, so the AUTHOR's own op-store
-/// was missing every group op it authored. That's the structural gap behind the
-/// read-flip's "governance cut not locally known" timeouts.
-///
-/// After publishing, the encrypted op is the namespace gov-DAG head and the author
-/// holds the group key, so `persist_namespace_head_ops` decrypts it and lands the
-/// real decoded op. Best-effort: a resolve/persist failure never fails authoring.
-pub(crate) async fn sign_apply_and_publish_group_op(
-    store: &calimero_store::Store,
-    node_client: &calimero_node_primitives::client::NodeClient,
-    ack_router: &calimero_context_client::local_governance::AckRouter,
-    group_id: &calimero_context_config::types::ContextGroupId,
-    signer_sk: &calimero_primitives::identity::PrivateKey,
-    op: calimero_context_client::local_governance::GroupOp,
-) -> eyre::Result<Option<calimero_governance_store::governance_broadcast::DeliveryReport>> {
-    let report = calimero_governance_store::sign_apply_and_publish(
-        store,
-        node_client,
-        ack_router,
-        group_id,
-        signer_sk,
-        op,
-    )
-    .await?;
-    match calimero_governance_store::NamespaceRepository::new(store).resolve(group_id) {
-        Ok(namespace_id) => {
-            crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
-                store,
-                namespace_id.to_bytes(),
-            );
-        }
-        // This is the single chokepoint for all group-op authoring, so a systematic
-        // resolve failure would leave the op-store incomplete for every authored op
-        // with no signal otherwise — warn so the divergence is observable.
-        Err(err) => tracing::warn!(
-            %err,
-            ?group_id,
-            "C3: could not resolve namespace to mirror the authored group op into the op-store"
-        ),
-    }
-    Ok(report)
 }
 
 impl ContextManager {
