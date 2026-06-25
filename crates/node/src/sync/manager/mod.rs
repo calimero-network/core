@@ -1549,51 +1549,66 @@ impl SyncManager {
             // backend runs (HashComparison / LevelWise / Snapshot / DeltaSync), the
             // entity plane may have converged while governance still differs —
             // governance lives outside the storage Merkle, so no entity walk reaches
-            // it. Recompute the verdict against the peer's handshake scope_root using
-            // the POST-sync local root (entities may have merged); on `GovDiverged`,
-            // pull governance. This replaces the per-protocol hooks that only fired
-            // for HC / LevelWise, so a snapshot/delta sync converges its governance
-            // plane too. Gated on `peer_scope_root` so the no-divergence path stays
-            // store-free; runs only on a successful sync (a failure retries next
-            // tick, re-checking then).
+            // it. This replaces the per-protocol hooks that only fired for HC /
+            // LevelWise, so a snapshot/delta sync converges its governance plane too.
+            //
+            // The decision is a DIRECT scope_root inequality, not a
+            // GovDiverged-vs-DataDiverged sub-classification. The manager only holds
+            // the peer's HANDSHAKE entity root — the peer may have advanced during the
+            // sync — so an entity-root compare here could misclassify a real
+            // governance divergence as "data" and SKIP the pull, which is the
+            // dangerous direction: a permanent governance stall. A governance pull is
+            // idempotent and returns 0 ops when governance is already in sync, so
+            // pulling whenever the authoritative scope_root still differs over-pulls
+            // at worst during a still-converging data plane — harmless and
+            // self-limiting (once scope_roots agree the pull stops). Runs only on a
+            // successful sync; gated on `peer_scope_root` so the no-divergence path
+            // stays store-free.
             if exec_result.is_ok() {
                 if let Some(peer_scope_root) = peer_scope_root {
-                    let local_root = self
-                        .context_client
-                        .get_context(&context_id)
-                        .ok()
-                        .flatten()
-                        .map_or(*context.root_hash, |c| *c.root_hash);
-                    let local_scope_root = {
-                        let store = self.context_client.datastore_handle().into_inner();
-                        super::helpers::local_scope_root(&store, &context_id, local_root)
+                    // Re-read the POST-sync local root (entities may have merged). On a
+                    // store fault, SKIP rather than fold a verdict against a stale
+                    // pre-sync root — the next tick re-checks against fresh state.
+                    let local_root = match self.context_client.get_context(&context_id) {
+                        Ok(Some(ctx)) => Some(*ctx.root_hash),
+                        Ok(None) => {
+                            warn!(%context_id, "post-sync gov check: context vanished; skipping");
+                            None
+                        }
+                        Err(err) => {
+                            warn!(%context_id, %err, "post-sync gov check: get_context failed; skipping");
+                            None
+                        }
                     };
-                    let verdict = super::helpers::scope_verdict(
-                        local_scope_root,
-                        Some(peer_scope_root),
-                        local_root,
-                        *peer_root_hash,
-                    );
-                    if let super::helpers::ScopeVerdict::GovDiverged(local_sr, peer_sr) = verdict {
-                        info!(
-                            marker = "gov_divergence_pull_triggered",
-                            %context_id,
-                            %chosen_peer,
-                            local_scope_root = %hex::encode(&local_sr[..8]),
-                            peer_scope_root = %hex::encode(&peer_sr[..8]),
-                            "entities converged but scope_root differs post-sync — pulling \
-                             governance from peer"
-                        );
-                        let ops_pulled = self
-                            .pull_namespace_governance(context_id, chosen_peer)
-                            .await;
-                        debug!(
-                            marker = "gov_divergence_pull_complete",
-                            %context_id,
-                            %chosen_peer,
-                            ops_pulled,
-                            "post-sync governance pull issued; convergence verified next session"
-                        );
+                    if let Some(local_root) = local_root {
+                        let local_scope_root = {
+                            let store = self.context_client.datastore_handle().into_inner();
+                            super::helpers::local_scope_root(&store, &context_id, local_root)
+                        };
+                        // `None` (cold / incomplete fold) abstains — same as the
+                        // verdict's cold-fallback: never pull on an unresolved scope.
+                        if let Some(local_sr) = local_scope_root {
+                            if local_sr != peer_scope_root {
+                                info!(
+                                    marker = "gov_divergence_pull_triggered",
+                                    %context_id,
+                                    %chosen_peer,
+                                    local_scope_root = %hex::encode(&local_sr[..8]),
+                                    peer_scope_root = %hex::encode(&peer_scope_root[..8]),
+                                    "scope_root still differs post-sync — pulling governance from peer"
+                                );
+                                let ops_pulled = self
+                                    .pull_namespace_governance(context_id, chosen_peer)
+                                    .await;
+                                debug!(
+                                    marker = "gov_divergence_pull_complete",
+                                    %context_id,
+                                    %chosen_peer,
+                                    ops_pulled,
+                                    "post-sync governance pull issued; convergence verified next session"
+                                );
+                            }
+                        }
                     }
                 }
             }
