@@ -586,7 +586,7 @@ async fn create_context(
     // worst case is a single context associated with a since-removed member.
     {
         let sk = PrivateKey::from(*identity_secret);
-        let report = crate::sign_apply_and_publish_group_op(
+        let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
             &node_client,
             &ack_router,
@@ -609,7 +609,7 @@ async fn create_context(
 
     if let Some(ref name_str) = name {
         let sk = PrivateKey::from(*identity_secret);
-        let report = crate::sign_apply_and_publish_group_op(
+        let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
             &node_client,
             &ack_router,

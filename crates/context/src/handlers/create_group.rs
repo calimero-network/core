@@ -254,13 +254,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     {
                         Ok(report) => {
                             report.observe("create_group", "GroupCreated");
-                            // C3 Stage 1: the local author wrote GroupCreated to the
-                            // gov-DAG; land it in the unified op-store too so the
-                            // op-store stays a complete mirror (by construction).
-                            crate::scope_projection::ScopeProjections::persist_namespace_head_ops(
-                                &datastore,
-                                namespace_id.to_bytes(),
-                            );
                         }
                         Err(e) => {
                             tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");
