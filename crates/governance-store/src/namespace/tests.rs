@@ -1267,12 +1267,21 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         },
     )
     .unwrap();
+    // FIDELITY: these are NON-genesis ops applied AFTER the genesis applied
+    // above, so the DAG head is non-empty. Sign each against the current head's
+    // `parent_hashes` / `next_nonce` (as the production signer does), rather than
+    // empty parents.
+    let head = gov.read_head_record().expect("read head after genesis");
+    assert!(
+        !head.parent_hashes.is_empty(),
+        "DAG head must be non-empty after the genesis applied"
+    );
     let policy_ns_op = SignedNamespaceOp::sign(
         &founder_sk,
         namespace_id,
-        vec![],
+        head.parent_hashes.clone(),
         [0u8; 32],
-        1,
+        head.next_nonce,
         NamespaceOp::Group {
             group_id: namespace_id,
             key_id,
@@ -1301,12 +1310,15 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         },
     )
     .unwrap();
+    // Re-read the head: the policy op above advanced it, so the join op chains
+    // off the new head (non-genesis fidelity).
+    let head = gov.read_head_record().expect("read head after policy op");
     let join_ns_op = SignedNamespaceOp::sign(
         &founder_sk,
         namespace_id,
-        vec![],
+        head.parent_hashes.clone(),
         [0u8; 32],
-        2,
+        head.next_nonce,
         NamespaceOp::Group {
             group_id: namespace_id,
             key_id,
@@ -1446,14 +1458,33 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     );
 
     // ---- Step 3: the owner's first authority-bearing root op now APPLIES. ----
+    // FIDELITY: this `GroupCreated` is a NON-genesis op, so it must be signed
+    // against the CURRENT DAG head — which is non-empty now that the genesis
+    // applied (the genesis delta is the sole head). Signing it with `vec![]`
+    // parents would be unrealistic (it would look like a second genesis). Read
+    // the real head and sign with its `parent_hashes` / `next_nonce`, exactly as
+    // the production signer (`sign_apply_and_publish`) does.
+    let head = gov.read_head_record().expect("read DAG head after genesis");
+    assert!(
+        !head.parent_hashes.is_empty(),
+        "the DAG head must be non-empty after the genesis applied (the genesis delta \
+         is the current head)"
+    );
     let subgroup_id = [0xC5u8; 32];
     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
         group_id: subgroup_id,
         parent_id: namespace_id,
         restricted: true,
     });
-    let signed = SignedNamespaceOp::sign(&owner_sk, namespace_id, vec![], [0u8; 32], 1, create_op)
-        .expect("owner signs GroupCreated");
+    let signed = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id,
+        head.parent_hashes.clone(),
+        [0u8; 32],
+        head.next_nonce,
+        create_op,
+    )
+    .expect("owner signs GroupCreated");
 
     gov.apply_signed_op(&signed).expect(
         "#2474 GREEN: owner-signed GroupCreated APPLIES once genesis establishes the admin",
@@ -1944,13 +1975,16 @@ fn namespace_created_genesis_signer_must_equal_founder() {
 
 #[test]
 fn namespace_created_with_parents_is_rejected_as_non_genesis() {
-    // #2474 batch-7: `NamespaceCreated` is the DAG ROOT — its defining invariant
-    // is that it has NO parents. A brand-new namespace has an empty head, so the
-    // real genesis (`handlers/create_group.rs` via `sign_apply_and_publish`) is
-    // signed with `parent_op_hashes == []`. A `NamespaceCreated` carrying
-    // parents was therefore minted against an EXISTING DAG head — injected late
-    // onto a namespace with history — and must be REJECTED even when
-    // signer == founder, so it can never establish/re-found the founder.
+    // #2474 batch-8 / #591: `NamespaceCreated` is the DAG ROOT — its defining
+    // invariant is that it has NO parents. A brand-new namespace has an empty
+    // head, so the real genesis (`handlers/create_group.rs` via
+    // `sign_apply_and_publish`) is signed with `parent_op_hashes == []`. A
+    // `NamespaceCreated` carrying parents was therefore minted against an
+    // EXISTING DAG head — injected late onto a namespace with history. It is
+    // structurally NOT the genesis, so it must NOT establish/re-found the founder
+    // even when signer == founder. But for liveness-consistency with #591 it is a
+    // harmless logged NO-OP (`Ok(())`), NOT an `Err`: erroring here could stall
+    // DAG processing. The op simply touches nothing — no meta, no Admin row.
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -1986,21 +2020,24 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
 
     let res = gov.apply_signed_op(&signed);
     assert!(
-        res.is_err(),
-        "a NamespaceCreated carrying parents must be rejected (not the DAG root), \
-         even with signer == founder"
+        res.is_ok(),
+        "a NamespaceCreated carrying parents on a not-yet-established namespace \
+         must be a harmless no-op (Ok), never Err — erroring stalls DAG processing \
+         (#591). Got: {res:?}"
     );
 
-    // No meta written — the parented op established no founder.
+    // No meta written — the parented op established no founder (it is structurally
+    // not the genesis, so it does NOT establish authority despite returning Ok).
     assert!(
         MetaRepository::new(&store).load(&ns_gid).unwrap().is_none(),
-        "rejected non-genesis NamespaceCreated must leave the namespace with no root meta"
+        "a parented (non-genesis) NamespaceCreated must leave the namespace with no \
+         root meta — it is a no-op, not an establish"
     );
     assert!(
         !MembershipRepository::new(&store)
             .is_admin(&ns_gid, &founder)
             .unwrap(),
-        "no Admin row may be written for a rejected non-genesis NamespaceCreated"
+        "no Admin row may be written for a parented (non-genesis) NamespaceCreated"
     );
 
     // Sanity: the REAL genesis path (no parents, same founder) still applies.

@@ -312,16 +312,35 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             // store; there is no no-peers case to special-case (a
                             // namespace created offline / on a single node still gets
                             // `Ok` because apply succeeds and the publish is swallowed).
-                            // The assert pins that contract so a future change that
-                            // started surfacing publish errors trips loudly in test/dev
-                            // instead of silently rolling back a perfectly-good genesis.
-                            debug_assert!(
-                                !calimero_network_primitives::client::is_no_peers_subscribed_error(
-                                    &e
-                                ),
-                                "sign_apply_and_publish is apply-first/publish-best-effort; \
-                                 Err must mean a local apply failure, not no-peers"
-                            );
+                            //
+                            // RELEASE-SAFE CONTRACT GUARD (#2474 reviewer batch 8):
+                            // formerly a `debug_assert!` pinned the above contract — but a
+                            // debug_assert is a NO-OP in release. If the apply-first/
+                            // publish-best-effort contract ever DRIFTS and a no-peers error
+                            // starts surfacing as `Err` in a release build, the rollback
+                            // below would WRONGLY fire on a genesis that DID apply locally
+                            // (apply-first means a no-peers error implies the local apply
+                            // already succeeded), destroying a perfectly-good root. So we
+                            // guard at runtime in every build profile: if the `Err` is a
+                            // no-peers error, treat it as SUCCESS — skip the rollback and
+                            // do NOT return `Err`, because the local apply is known-good.
+                            if calimero_network_primitives::client::is_no_peers_subscribed_error(&e)
+                            {
+                                warn!(
+                                    ?group_id,
+                                    "no-peers surfaced as Err from apply-first publish \
+                                     (contract drift); genesis was applied locally — NOT \
+                                     rolling back"
+                                );
+                                info!(
+                                    ?group_id,
+                                    ?parent_group_id,
+                                    %admin_identity,
+                                    "group created (genesis applied locally; publish degraded \
+                                     to no-peers)"
+                                );
+                                return Ok(CreateGroupResponse { group_id });
+                            }
 
                             // FATAL for namespace-ROOT creation (#2474): the genesis op
                             // is what makes the founder authoritative on the DAG. A LOCAL
@@ -333,10 +352,13 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             // apply failure MUST fail the create.
                             //
                             // ROLLBACK (#2474 reviewer batch 3): the local root rows were
-                            // already written above (the `GroupMetaValue`, the founder
-                            // Admin member row, the default caps, the group encryption
-                            // key, the auto-stored signing key, and the optional name
-                            // metadata seed). Leaving them behind on a genesis-apply
+                            // already written (the `GroupMetaValue`, the founder Admin
+                            // member row, the default caps, the group encryption key, and
+                            // the optional name metadata — all written above in this async
+                            // block; PLUS the auto-stored signing key, which is written
+                            // PRE-ASYNC in `handle()` via `SigningKeysRepository::store_key`
+                            // before this future is spawned). Leaving them behind on a
+                            // genesis-apply
                             // failure would strand an orphaned root: the top-of-handler
                             // "group already exists" guard would then make every retry
                             // with the same group id fail PERMANENTLY (unrecoverable
@@ -372,9 +394,11 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             // NEEDS NO ROLLBACK (#2931 reviewer B1). One might fear that
                             // a failed genesis leaves the `NamespaceGovHead` advanced —
                             // so a retry re-signs the genesis with a non-empty
-                            // `parent_op_hashes` and trips the new no-parents
-                            // `NotGenesis` gate, wedging the `group_id` forever. It
-                            // cannot: the apply is HEAD-ATOMIC by ordering, not by
+                            // `parent_op_hashes`, which the no-parents genesis check now
+                            // treats as a non-genesis NO-OP (#591): the retry would then
+                            // NEVER establish the founder, silently wedging the
+                            // `group_id`. It cannot happen: the apply is HEAD-ATOMIC by
+                            // ordering, not by
                             // transaction. In `NamespaceGovernance::apply_signed_op`
                             // (governance-store) the op-kind apply runs FIRST
                             // (`apply_root_op(op, root)?`, which dispatches the
@@ -412,6 +436,13 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             {
                                 warn!(?re, ?group_id, "rollback: failed to delete group key");
                             }
+                            // Delete the signing key stored PRE-ASYNC in `handle()`
+                            // via `SigningKeysRepository::store_key(&group_id,
+                            // &admin_identity, sk)`. Both store and delete key the
+                            // row by `GroupSigningKey::new(group_id, public_key)`, so
+                            // `delete_key(&group_id, &admin_identity)` here targets the
+                            // EXACT same row that was stored for this namespace root —
+                            // it removes the right key, not a different identity's.
                             if let Err(re) = SigningKeysRepository::new(&datastore)
                                 .delete_key(&group_id, &admin_identity)
                             {

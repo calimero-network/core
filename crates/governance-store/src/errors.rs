@@ -368,23 +368,17 @@ pub enum NamespaceCreatedRejection {
     /// the genesis MUST be signed with the namespace key == the founder's key
     /// at creation. Without it a non-founder could sign a `NamespaceCreated`
     /// declaring an arbitrary `founder` and pin a forged admin on a namespace
-    /// that has no prior genesis.
+    /// that has no prior genesis. This is the ONLY way `NamespaceCreated` apply
+    /// returns `Err` today.
+    ///
+    /// Note (#2474 batch-8 / #591): a parented `NamespaceCreated` (one that is
+    /// NOT the DAG root) is no longer an `Err`. On an established namespace it
+    /// was always a no-op; on a not-yet-established namespace it is likewise a
+    /// harmless logged no-op that simply does NOT establish the founder (a
+    /// parented op is structurally not the genesis). Erroring on it could stall
+    /// DAG processing, so the former `NotGenesis` rejection variant was removed.
     #[error("genesis signer {signer} does not match declared founder {founder}")]
     SignerNotFounder { signer: String, founder: String },
-
-    /// The op carries a non-empty parent set, so it is NOT the DAG root.
-    /// `NamespaceCreated` is the GENESIS op — the first op in the namespace
-    /// DAG, signed with an empty `parent_op_hashes` (a brand-new namespace has
-    /// no head, so `read_head_record` returns empty parents; see
-    /// `namespace/dag.rs`). Only the true parentless first op may establish the
-    /// founder; a `NamespaceCreated` injected LATE onto an existing DAG (which
-    /// necessarily references prior heads as parents) is rejected here so it can
-    /// never be used to hijack or re-found an in-flight namespace.
-    #[error(
-        "NamespaceCreated is not the DAG root: it carries {parent_count} parent op-hash(es); \
-         the genesis op must have no parents"
-    )]
-    NotGenesis { parent_count: usize },
 }
 
 /// Reasons `RootOp::GroupDeleted` apply can be rejected.

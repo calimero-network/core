@@ -44,18 +44,24 @@
 //!
 //!   3. **If NOT established (admin == placeholder) ⇒ this op is trying to FOUND
 //!      the namespace, so enforce the genesis invariants, THEN establish:**
-//!        * (#596) no-parents FIRST — `if !op.parent_op_hashes.is_empty()` →
-//!          `NotGenesis`. Structural: reject regardless of signer so a parented
-//!          founding op never leaks/pins the declared founder.
-//!        * then `if op.signer != founder` → `SignerNotFounder`.
+//!        * (#596) no-parents FIRST — `if !op.parent_op_hashes.is_empty()` it is
+//!          structurally NOT the genesis, so it does NOT establish the founder.
+//!          But it is a logged `Ok(())` NO-OP, never an `Err` (#591
+//!          liveness-consistency: erroring could stall DAG processing). Checked
+//!          before the signer check so a parented founding op never leaks/pins
+//!          the declared founder.
+//!        * then `if op.signer != founder` → `SignerNotFounder` (this is the ONE
+//!          and only `Err` this handler returns).
 //!        * then establish: write meta `admin == owner == founder`, the founder's
 //!          Admin member row, and the default caps.
 //!
-//! The structural rejections (parents / signer) are therefore ONLY load-bearing
-//! while the namespace is NOT yet established — they gate FOUNDING, stopping a
-//! parented or signer-mismatched op from forging the genesis admin. Once a real
-//! admin exists they are irrelevant, and erroring on them would only risk
-//! stalling the DAG.
+//! NET INVARIANT: a `NamespaceCreated` only ESTABLISHES the founder when
+//! (NOT established AND parentless AND signer == founder). In EVERY other case it
+//! is a harmless no-op `Ok(())` — never an `Err` — EXCEPT the signer-mismatched
+//! parentless founding attempt, which is `SignerNotFounder`. The structural
+//! no-parents check is therefore load-bearing only while the namespace is NOT yet
+//! established (it gates FOUNDING, stopping a parented op from forging the genesis
+//! admin); once a real admin exists it is irrelevant.
 
 use super::context::NamespaceApplyCtx;
 use crate::{
@@ -67,6 +73,7 @@ use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
+use tracing::warn;
 
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
@@ -237,22 +244,36 @@ pub(crate) fn apply(
     // are load-bearing ONLY here, while no real admin exists: they stop a
     // parented or signer-mismatched op from forging the genesis admin.
 
-    // ---- (3a) TRUE-genesis gate: the op MUST be the DAG root (no parents). ----
+    // ---- (3a) TRUE-genesis gate: a genesis MUST be the DAG root (no parents). ----
     // Checked FIRST, BEFORE the signer check (#596): a brand-new namespace has
     // no persisted head, so `read_head_record` (namespace/dag.rs) returns an
     // EMPTY `parent_hashes`, and the signer (`sign_apply_and_publish`) signs the
     // genesis with `parent_op_hashes == []`. A `NamespaceCreated` carrying
     // parents on a not-yet-established namespace was therefore minted against an
-    // EXISTING DAG head and must be REJECTED regardless of signer — checking
-    // parents first means we never even consult/leak the declared founder for a
-    // structurally-invalid founding op. DAG sequencing comes from
+    // EXISTING DAG head — it is structurally NOT the genesis, so it MUST NOT
+    // establish the founder (checking parents first means we never even
+    // consult/leak the declared founder for a structurally-invalid founding op).
+    //
+    // HOWEVER it is also NOT an `Err`: for liveness-consistency with the #591
+    // decision (this handler never returns `Err` on an established namespace, to
+    // avoid stalling DAG processing), a parented `NamespaceCreated` on a
+    // NOT-yet-established namespace is likewise a harmless logged no-op `Ok(())`.
+    // It still does NOT establish the founder (a parented op is structurally not
+    // the genesis) — it just doesn't hard-error, so the DAG can advance. The net
+    // invariant is that a `NamespaceCreated` ESTABLISHES only when (not-established
+    // AND parentless AND signer == founder); in every other case it is a harmless
+    // no-op, never an `Err`. DAG sequencing comes from
     // `read_head_record().next_nonce`, not the informational `op.nonce`.
     if !op.parent_op_hashes.is_empty() {
-        bail!(ApplyError::NamespaceCreatedRejected(
-            NamespaceCreatedRejection::NotGenesis {
-                parent_count: op.parent_op_hashes.len(),
-            }
-        ));
+        warn!(
+            namespace_id = %hex::encode(namespace_id),
+            %founder,
+            parent_count = op.parent_op_hashes.len(),
+            "NamespaceCreated: parented op on a not-yet-established namespace is not \
+             genesis-shaped; no-op (does NOT establish the founder, never Err — #591 \
+             liveness consistency)"
+        );
+        return Ok(());
     }
 
     // ---- (3b) Self-authorization binding: signer MUST equal the founder. ----
@@ -288,8 +309,21 @@ pub(crate) fn apply(
     }
 
     // ---- Establish the founder as admin == owner on the root meta. ----
-    // Preserve any application bindings a placeholder seed may have set; only
-    // the founding identity is authoritative here.
+    // Only the founding identity is authoritative here; we carry forward every
+    // OTHER meta field from `existing` (target_application_id / app_key /
+    // upgrade_policy / migration / created_at / auto_join) rather than reset it.
+    //
+    // What this preserve actually covers:
+    //   * ORIGINATOR case — the creating node may have written real
+    //     `app_key` / `target_application_id` (and friends) into the root meta
+    //     BEFORE this genesis op applied (e.g. the create_group handler's local
+    //     meta write). Carrying them forward keeps those real bindings intact.
+    //   * REPLICA case — a placeholder bootstrap seed
+    //     (`seed_bootstrap_admin_if_absent`) ALWAYS writes ZEROS for these app
+    //     fields, so on a replica this preserve is a no-op: the zeros are simply
+    //     carried forward and SELF-HEAL on the first `ContextRegistered` op,
+    //     exactly per the seed contract. (It is NOT preserving meaningful app
+    //     bindings a seed set — the seed never sets any.)
     let meta = calimero_store::key::GroupMetaValue {
         admin_identity: founder,
         owner_identity: founder,
