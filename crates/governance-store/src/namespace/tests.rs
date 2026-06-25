@@ -1338,6 +1338,128 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
 }
 
 #[test]
+#[ignore = "RED reproduction for #2474 — expected to FAIL until the namespace-genesis \
+            founder fix lands (Option A: RootOp::NamespaceCreated, or Option B: \
+            owner_identity carried in the KeyDelivery envelope). Remove #[ignore] \
+            and invert the assertion when GREEN."]
+fn replica_seeded_from_non_owner_rejects_true_owner_ops() {
+    // #2474 REPRODUCTION (production-confirmed 2026-06-25).
+    //
+    // `seed_bootstrap_admin_if_absent` seeds a bootstrapping replica's namespace
+    // founding admin/owner from the *KeyDelivery signer* (trust-on-first-use).
+    // The signer need only HOLD the group key — i.e. be ANY current member — so
+    // in a normal multi-member namespace the key-deliverer is frequently a
+    // NON-OWNER member. When that happens the replica pins the WRONG founding
+    // admin and then REJECTS every authority-checked root op signed by the TRUE
+    // owner. The FIRST such op — the owner's `RootOp::GroupCreated` creating a
+    // subgroup under the namespace root — fails the `execute_group_created`
+    // authority check (`GroupCreatedRejection::Unauthorized`), and the namespace
+    // DAG backfill wedges permanently at that op. It does NOT self-heal: the
+    // `meta_existed`/`if_absent` guard turns a later correct KeyDelivery into a
+    // no-op.
+    //
+    // This test reproduces that wedge end-to-end against the SAME apply path the
+    // backfill uses (`NamespaceGovernance::apply_signed_op`):
+    //  1. true owner = OWNER; key-deliverer = a DIFFERENT non-owner member.
+    //  2. seed the replica via `seed_bootstrap_admin_if_absent(ns, &NON_OWNER)`
+    //     (mirrors a KeyDelivery minted by the non-owner).
+    //  3. drive an OWNER-signed `RootOp::GroupCreated` (subgroup under the root).
+    //
+    // RED state (today): step 3 is REJECTED with the not-admin /
+    // lacks-CAN_CREATE_SUBGROUP error. The asserts below pin that rejection.
+    // GREEN (after the fix): the owner is the authoritative founding admin, so
+    // step 3 APPLIES — at which point this test must be updated to assert
+    // success (invert the asserts, drop `#[ignore]`).
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    // The TRUE owner/founder of the namespace (in production: the node whose
+    // keypair created the namespace root in `handlers/create_group.rs`).
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner = owner_sk.public_key();
+
+    // A DIFFERENT, non-owner member of the namespace. In a real multi-member
+    // namespace this is whoever happened to deliver the group key to the
+    // bootstrapping replica — it is NOT the owner, but it holds the key so it
+    // can (and routinely does) mint the KeyDelivery the replica TOFU-trusts.
+    let non_owner_sk = PrivateKey::random(&mut rng);
+    let non_owner = non_owner_sk.public_key();
+    assert_ne!(
+        owner, non_owner,
+        "the key-deliverer must be a different identity than the true owner"
+    );
+
+    let namespace_id = [0xC4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // ---- Replica bootstrap: the ONLY thing that establishes root meta + the
+    // founding admin on this replica is the KeyDelivery TOFU seed, and it seeds
+    // from the NON-OWNER deliverer (the #2474 bug condition). ----
+    gov.seed_bootstrap_admin_if_absent(namespace_id, &non_owner)
+        .expect("bootstrap seed from the (non-owner) KeyDelivery signer");
+
+    // Confirm the replica pinned the WRONG founding admin: it believes the
+    // non-owner is the admin, and does NOT recognise the true owner.
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &non_owner)
+            .unwrap(),
+        "seed pinned the non-owner deliverer as the namespace admin (the bug)"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &owner)
+            .unwrap(),
+        "the TRUE owner is NOT recognised as admin on the wrongly-seeded replica"
+    );
+
+    // ---- The first authority-bearing root op the backfill would replay: the
+    // owner's own `GroupCreated` nesting a subgroup directly under the namespace
+    // root. Signed by the TRUE owner, applied through the backfill apply path. ----
+    let subgroup_id = [0xC5u8; 32];
+    let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+        group_id: subgroup_id,
+        parent_id: namespace_id,
+        restricted: true,
+    });
+    let signed = SignedNamespaceOp::sign(&owner_sk, namespace_id, vec![], [0u8; 32], 1, create_op)
+        .expect("owner signs GroupCreated");
+
+    let result = gov.apply_signed_op(&signed);
+
+    // RED assertion: the owner's op is REJECTED because the replica was seeded
+    // with the non-owner as admin. This is the permanent backfill wedge.
+    let err = result.expect_err(
+        "#2474: owner-signed GroupCreated is REJECTED on a replica seeded from a \
+         non-owner KeyDelivery signer (the wedge). When the genesis-founder fix \
+         lands this op APPLIES and this expect_err must be inverted.",
+    );
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("is neither an admin of namespace") && msg.contains("CAN_CREATE_SUBGROUP"),
+        "expected the GroupCreated not-admin / lacks-CAN_CREATE_SUBGROUP rejection, \
+         got: {msg}"
+    );
+
+    // And the wedge is permanent for the subgroup: its meta never gets written.
+    assert!(
+        MetaRepository::new(&store)
+            .load(&ContextGroupId::from(subgroup_id))
+            .unwrap()
+            .is_none(),
+        "the subgroup must not have been created — the backfill is wedged at this op"
+    );
+}
+
+#[test]
 fn replica_op_log_dedup_survives_head_pruning() {
     use calimero_context_client::local_governance::{
         NamespaceOp, SignedGroupOp, SignedNamespaceOp, SIGNED_GROUP_OP_SCHEMA_VERSION,
