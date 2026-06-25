@@ -97,7 +97,6 @@ fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery
         version: 1,
         namespace_id: ns_bytes,
         parent_op_hashes: Vec::new(),
-        state_hash: [0u8; 32],
         signer: admin,
         nonce: 1,
         op: NamespaceOp::Group {
@@ -186,7 +185,6 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
             version: 1,
             namespace_id: ns_bytes,
             parent_op_hashes: Vec::new(),
-            state_hash: [0u8; 32],
             signer: admin,
             nonce: u64::from(id),
             op: NamespaceOp::Group {
@@ -258,7 +256,6 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
         version: 1,
         namespace_id: ns_bytes,
         parent_op_hashes: Vec::new(),
-        state_hash: [0u8; 32],
         signer: admin,
         nonce: 1,
         op: NamespaceOp::Group {

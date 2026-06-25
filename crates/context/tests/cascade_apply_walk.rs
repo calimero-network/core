@@ -119,7 +119,6 @@ fn cascade_target_application_set_updates_all_matching_descendants_and_skips_sib
         &admin_sk,
         r.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeTargetApplicationSet {
             from_app_key: APP_KEY_1,

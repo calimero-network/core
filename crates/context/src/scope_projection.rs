@@ -1678,7 +1678,6 @@ mod tests {
             version: 1,
             namespace_id,
             parent_op_hashes: Vec::new(),
-            state_hash: [0u8; 32],
             signer,
             nonce: 0,
             op: NamespaceOp::Root(op),
@@ -2127,7 +2126,6 @@ mod tests {
             version: 1,
             namespace_id,
             parent_op_hashes: Vec::new(),
-            state_hash: [0u8; 32],
             signer,
             nonce: 0,
             op: NamespaceOp::Group {

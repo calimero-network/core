@@ -101,7 +101,6 @@ fn fold_subgroup_structure(
         version: 1,
         namespace_id: namespace,
         parent_op_hashes: Vec::new(),
-        state_hash: [0u8; 32],
         signer: admin,
         nonce: 0,
         op: NamespaceOp::Root(RootOp::GroupCreated {
@@ -140,7 +139,6 @@ fn ns_group_envelope(
         version: 1,
         namespace_id: namespace,
         parent_op_hashes: Vec::new(),
-        state_hash: [0u8; 32],
         signer,
         nonce: 0,
         op: NamespaceOp::Group {
@@ -206,7 +204,6 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         &joiner_sk,
         ns.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
@@ -224,7 +221,6 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         &joiner_sk,
         ns.to_bytes(),
         vec![],
-        [0u8; 32],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
@@ -361,7 +357,6 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         &joiner_sk,
         ns.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
@@ -382,7 +377,6 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         &joiner_sk,
         ns.to_bytes(),
         vec![],
-        [0u8; 32],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
@@ -429,7 +423,6 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         &joiner_sk,
         ns.to_bytes(),
         vec![],
-        [0u8; 32],
         3,
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
@@ -510,7 +503,6 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         &joiner_sk,
         ns.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
@@ -523,7 +515,6 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         &joiner_sk,
         ns.to_bytes(),
         vec![],
-        [0u8; 32],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,

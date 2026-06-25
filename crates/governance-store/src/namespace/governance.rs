@@ -152,77 +152,6 @@ impl<'a> NamespaceGovernance<'a> {
             .collect_skeleton_delta_ids_for_group(group_id)
     }
 
-    /// Convergence claim baked into `SignedNamespaceOp.state_hash` at sign time.
-    ///
-    /// `Group` commits to the wrapped group's current meta+member set — the
-    /// same input the receiver recomputes in `apply_group_op_inner` to detect
-    /// a stale signer (mirrors `apply_local_signed_group_op` in the group-op
-    /// path).
-    ///
-    /// `Root` commits to the namespace's own meta+member set, but only for
-    /// variants whose correctness depends on it — see
-    /// `root_op_commits_to_namespace_state`. Additive/idempotent variants
-    /// (`KeyDelivery`) and subgroup-scoped mutations
-    /// (`GroupCreated`/`GroupReparented`/`GroupDeleted`) pass the zero
-    /// bypass to avoid coarse over-rejection on unrelated concurrent
-    /// activity.
-    ///
-    /// Pre-bootstrap groups/namespaces have no meta row to hash, so we fall
-    /// through to the documented zero-value bypass that the receiver also
-    /// recognizes.
-    ///
-    /// # Zero-hash bypass extends to gated variants too
-    ///
-    /// The receiver checks `op.state_hash != [0u8; 32]` before recomputing,
-    /// which means a gated variant (e.g. `AdminChanged`, `PolicyUpdated`)
-    /// signed with `state_hash == [0u8; 32]` skips the staleness check.
-    /// This is deliberate: pre-fix on-disk ops (signed before this change
-    /// landed) carry the zero hash, and rejecting them on replay would
-    /// break a node's ability to apply its own backfilled history. Net
-    /// effect: post-fix peers sign and verify; pre-fix ops bypass — same
-    /// semantics as the existing v1/v2 deployment. The bypass closes once
-    /// every signer has rolled forward and stopped emitting zero hashes;
-    /// no schema bump needed.
-    ///
-    /// **Known limitation:** there is no runtime enforcement that a
-    /// signer post-upgrade cannot emit `[0u8; 32]` to skip the check.
-    /// Defending against that case is not the purpose of this guard —
-    /// signature verification and the per-op authorization checks
-    /// (`require_namespace_admin`, capability checks, membership
-    /// recompute on the receiver) remain in force regardless of the
-    /// hash value. The staleness guard is a convergence aid for
-    /// concurrent-signer races between *honest* signers, not a
-    /// defence against adversarial signers — those are caught at the
-    /// authorization layer.
-    ///
-    /// # TOCTOU window between sign and apply
-    ///
-    /// Callers compute this hash, then sign, then apply locally and
-    /// publish. Between the compute call and the local apply, another
-    /// op could land — but every governance signer in the codebase
-    /// runs through the same actor mailbox (the `NodeManager` actor for
-    /// node-issued ops, or a single per-namespace driver for receiver
-    /// paths), which serializes applies for a given namespace.
-    /// `read_head_record` + this hash compute + local apply therefore
-    /// run atomically with respect to other governance applies on the
-    /// same node. The window only matters for divergence *across* nodes,
-    /// which is exactly what the staleness check on the receive side is
-    /// for.
-    fn state_hash_for_op(&self, op: &NamespaceOp) -> EyreResult<[u8; 32]> {
-        let target_gid = match op {
-            NamespaceOp::Group { group_id, .. } => ContextGroupId::from(*group_id),
-            NamespaceOp::Root(root) if root_op_commits_to_namespace_state(root) => {
-                ContextGroupId::from(self.namespace_id)
-            }
-            NamespaceOp::Root(_) => return Ok([0u8; 32]),
-        };
-        let repo = MetaRepository::new(self.store);
-        if repo.load(&target_gid)?.is_none() {
-            return Ok([0u8; 32]);
-        }
-        repo.compute_state_hash(&target_gid)
-    }
-
     pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
         op.verify_signature()
             .map_err(|e| eyre::eyre!("signed namespace op: {e}"))?;
@@ -557,12 +486,10 @@ impl<'a> NamespaceGovernance<'a> {
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
         let op_timeout = timeout_for_namespace_op(&op);
-        let state_hash = self.state_hash_for_op(&op)?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
             head.parent_hashes,
-            state_hash,
             head.next_nonce,
             op,
         )?;
@@ -657,14 +584,6 @@ impl<'a> NamespaceGovernance<'a> {
         assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
             .map_err(|e| eyre::eyre!(e))?;
 
-        // No-local-apply path: nothing has mutated state on this node yet,
-        // so the current `state_hash_for_op` value IS the pre-apply view
-        // every receiver will compare against. Capture it here (rather
-        // than inside `publish_post_gate`) so the call shape stays uniform
-        // with the apply-first path below, which must capture before its
-        // local mutation runs.
-        let state_hash = self.state_hash_for_op(&op)?;
-
         // Quorum / no-local-apply path: a publish that never reaches a
         // quorum is a genuine failure — nothing was applied locally to
         // fall back on. `best_effort = false` keeps the hard error.
@@ -673,7 +592,6 @@ impl<'a> NamespaceGovernance<'a> {
             ack_router,
             signer_sk,
             op,
-            state_hash,
             topic,
             mesh,
             known,
@@ -691,14 +609,6 @@ impl<'a> NamespaceGovernance<'a> {
     /// passes `best_effort = true`: it has no gate of its own (the local
     /// apply is unconditional), so a publish failure here is non-fatal and
     /// the op propagates via sync rather than diverging on a retry.
-    ///
-    /// `state_hash` MUST be the receiver-equivalent pre-apply hash —
-    /// i.e. computed BEFORE the caller ran
-    /// `sign_apply_local_group_op_borsh`. The apply-first path computes
-    /// the hash inside its own scope (where the pre-apply state is still
-    /// visible) and passes it in here. Recomputing inside this function
-    /// would shift the hash forward and every member-mutating op would
-    /// permanently bail on the receiver's staleness check.
     // Gossip-publish entry on the namespace governance path: transport handles,
     // the op, and ack/gate sizing are orthogonal with no cohesive grouping.
     #[allow(clippy::too_many_arguments, reason = "orthogonal broadcast-path args")]
@@ -708,7 +618,6 @@ impl<'a> NamespaceGovernance<'a> {
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
-        state_hash: [u8; 32],
         mesh: usize,
         known: usize,
         best_effort: bool,
@@ -719,7 +628,6 @@ impl<'a> NamespaceGovernance<'a> {
             ack_router,
             signer_sk,
             op,
-            state_hash,
             topic,
             mesh,
             known,
@@ -733,10 +641,6 @@ impl<'a> NamespaceGovernance<'a> {
     /// [`sign_and_publish_post_gate`]. Takes the caller's `mesh` snapshot
     /// to feed the metric; the subscriber count is re-sampled at publish
     /// time (see below) so transient peer departures don't skew `min_acks`.
-    ///
-    /// `state_hash` must be the pre-apply hash captured by the caller
-    /// before any local mutation. See `sign_and_publish_post_gate`'s doc
-    /// for the constraint and why we no longer recompute here.
     ///
     /// `best_effort` selects the failure mode of the publish:
     /// * `false` (quorum / no-local-apply path) — a publish that gathers
@@ -753,7 +657,6 @@ impl<'a> NamespaceGovernance<'a> {
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
-        state_hash: [u8; 32],
         topic: TopicHash,
         mesh: usize,
         known_at_gate: usize,
@@ -768,7 +671,6 @@ impl<'a> NamespaceGovernance<'a> {
             signer_sk,
             self.namespace_id,
             head.parent_hashes,
-            state_hash,
             head.next_nonce,
             op,
         )?;
@@ -1366,21 +1268,6 @@ impl<'a> NamespaceGovernance<'a> {
 
     /// Decrypt an encrypted group op and apply it via
     /// [`apply_group_op_inner`](Self::apply_group_op_inner).
-    ///
-    /// # Hash-domain invariant
-    ///
-    /// `ns_op.state_hash` is propagated unchanged into the synthesized
-    /// `SignedGroupOp.state_hash`. This is correct because callers
-    /// always invoke this for `NamespaceOp::Group { encrypted, .. }`,
-    /// and `NamespaceGovernance::state_hash_for_op` computes the hash
-    /// over the *subgroup* (not the namespace root) for that variant —
-    /// the same domain `apply_group_op_inner`'s staleness guard then
-    /// recomputes locally. A future refactor that calls this for a
-    /// `NamespaceOp::Root` variant would silently pass the wrong
-    /// domain in, so the precondition is documented here rather than
-    /// type-enforced (the param type is the wrapping `SignedNamespaceOp`
-    /// regardless of variant, and pulling the variant info upstream
-    /// would ripple through every receive path).
     fn decrypt_and_apply_group_op(
         &self,
         ns_op: &SignedNamespaceOp,
@@ -1394,7 +1281,6 @@ impl<'a> NamespaceGovernance<'a> {
             version: calimero_context_client::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,
             group_id: group_id.to_bytes(),
             parent_op_hashes: ns_op.parent_op_hashes.clone(),
-            state_hash: ns_op.state_hash,
             signer: ns_op.signer,
             nonce: ns_op.nonce,
             op: inner_op,
@@ -1413,25 +1299,17 @@ impl<'a> NamespaceGovernance<'a> {
         let nonce = signed_group_op.nonce;
         let op = &signed_group_op.op;
 
-        // Nonce dedup MUST run before the staleness check below.
-        //
-        // `retry_encrypted_ops_for_group` (fires on every KeyDelivery) reads
-        // back the entire op log for the group and re-feeds each entry
-        // through `decrypt_and_apply_group_op` → `apply_group_op_inner`.
-        // Already-applied ops therefore arrive here a second (or third…)
-        // time with their original `state_hash` — which was the group state
-        // *before* this op landed, i.e. inevitably different from the
-        // current state once the op has been applied. Running the staleness
-        // check first would `bail!` on every such replay; running the nonce
-        // dedup first cleanly short-circuits them to `Ok(None)`.
-        // Windowed dedup: a nonce is a duplicate iff it's at or below the
-        // contiguous floor OR already in the above-floor set. This is what
-        // fixes #2516 — two concurrent same-signer ops are DAG siblings with
-        // consecutive nonces, so they can arrive in either order. The old
-        // `nonce <= last` guard advanced a single high-water mark on the
-        // first to land and then dropped the lower-nonce sibling forever; the
-        // window holds the higher one in `above` and still applies the lower
-        // one when it arrives.
+        // Windowed nonce dedup (the anti-replay gate; C5.S3b removed the op-level
+        // state_hash staleness check that used to follow it).
+        // `retry_encrypted_ops_for_group` (fires on every KeyDelivery) reads back
+        // the entire op log for the group and re-feeds each entry through
+        // `decrypt_and_apply_group_op` → `apply_group_op_inner`, so already-applied
+        // ops arrive again; the window short-circuits them to `Ok(None)`.
+        // A nonce is a duplicate iff it's at or below the contiguous floor OR
+        // already in the above-floor set. This is what fixes #2516 — two concurrent
+        // same-signer ops are DAG siblings with consecutive nonces and can arrive in
+        // either order; the window holds the higher one in `above` and still applies
+        // the lower one when it arrives.
         let mut nonce_window = load_nonce_window(self.store, group_id, signer)?;
         if nonce_window.contains(nonce) {
             tracing::debug!(
@@ -1441,48 +1319,6 @@ impl<'a> NamespaceGovernance<'a> {
                 "ignoring namespace group op with already-processed nonce"
             );
             return Ok(None);
-        }
-
-        // Staleness telemetry. `state_hash_for_op` commits to the wrapped
-        // group's pre-apply meta+member set; on receive we recompute and
-        // surface a structured warning when they disagree. We do NOT
-        // `bail!` on mismatch — that would reject legitimate concurrent
-        // ops in the multi-node case where peers A and B simultaneously
-        // sign against their (then-current) view and the second to land
-        // on peer C has already drifted. The local group-op equivalent
-        // (`apply_local_signed_group_op` in `group_store/mod.rs`) hard-
-        // bails because group state is per-subgroup and concurrent same-
-        // subgroup ops are rare; namespace-wrapped ops are shipped through
-        // the shared root DAG and concurrent contention is the norm —
-        // rejecting here breaks multi-node convergence in the
-        // scaffolding-e2e / group-3node suites. The PR caveat on #2500
-        // documents this trade-off: state_hash verification stays as a
-        // divergence signal, not an apply gate. Anchor-sync reconcile is
-        // the recovery path for genuinely diverged peers.
-        if signed_group_op.state_hash != [0u8; 32] {
-            // Mirror the root-op bypass (apply_signed_op): if the subgroup
-            // meta row hasn't been written yet — e.g. an encrypted
-            // ContextRegistered buffered before its GroupCreated lands and now
-            // re-driven — there is no state to hash. `compute_state_hash`
-            // would raise GroupNotFoundForHash and strand the op forever
-            // (#2848). Treat absent meta as a bypass; authorization and
-            // signature verification remain in force, and GroupCreated's apply
-            // re-drives this op once the meta exists.
-            let repo = MetaRepository::new(self.store);
-            if repo.load(group_id)?.is_some() {
-                let current = repo.compute_state_hash(group_id)?;
-                if signed_group_op.state_hash != current {
-                    tracing::warn!(
-                        group_id = %hex::encode(group_id.to_bytes()),
-                        expected = %hex::encode(signed_group_op.state_hash),
-                        actual = %hex::encode(current),
-                        nonce,
-                        signer = %signer,
-                        "namespace group op state_hash mismatch (signed against stale state; \
-                         applying anyway — see PR #2500 caveat)"
-                    );
-                }
-            }
         }
 
         if let GroupOp::ContextRegistered {
@@ -1690,48 +1526,10 @@ impl<'a> NamespaceGovernance<'a> {
         op: &SignedNamespaceOp,
         root: &RootOp,
     ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
-        // Staleness telemetry for root ops whose correctness depends on
-        // the namespace's own meta+member set (`root_op_commits_to_
-        // namespace_state` whitelist). Same shape as the group-op branch
-        // in `apply_group_op_inner` — warn on mismatch, apply anyway.
-        // Hard-rejection would over-reject the namespace path because
-        // concurrent root ops (e.g. simultaneous joins or policy updates
-        // from different admins) are the common case. The PR #2500
-        // caveat documents this trade-off; anchor-sync reconcile remains
-        // the recovery path for genuinely diverged peers.
-        //
-        // `GroupCreated` / `GroupReparented` / `GroupDeleted` are NOT
-        // gated by `root_op_commits_to_namespace_state` and skip this
-        // check entirely. Their authoritative state lives on the
-        // affected subgroup, not the namespace root.
-        if root_op_commits_to_namespace_state(root) && op.state_hash != [0u8; 32] {
-            let ns_gid = ContextGroupId::from(self.namespace_id);
-            let repo = MetaRepository::new(self.store);
-            // Mirror the sign-side bypass: if the namespace meta row
-            // hasn't been seeded yet (cold-start, bootstrap, joiner
-            // catching up via backfill), there is no state to hash. The
-            // sign side falls through to `[0u8; 32]` for the same case,
-            // but a non-zero claim can still reach a node whose meta is
-            // not yet present (e.g. a peer that signed after their
-            // bootstrap finished but the joiner receives the op before
-            // applying the namespace genesis ops). Treat as a bypass —
-            // there is no honest claim we can refute. Authorization
-            // and signature verification remain in force.
-            if let Some(_meta) = repo.load(&ns_gid)? {
-                let current = repo.compute_state_hash(&ns_gid)?;
-                if op.state_hash != current {
-                    tracing::warn!(
-                        namespace_id = %hex::encode(self.namespace_id),
-                        expected = %hex::encode(op.state_hash),
-                        actual = %hex::encode(current),
-                        nonce = op.nonce,
-                        signer = %op.signer,
-                        "namespace root op state_hash mismatch (signed against stale state; \
-                         applying anyway — see PR #2500 caveat)"
-                    );
-                }
-            }
-        }
+        // C5.S3b removed the op-level state_hash staleness telemetry that used to
+        // run here for state-committing root variants. `scope_root` is the
+        // convergence signal now; signature + the nonce window (applied by the
+        // caller) remain the safety gates.
 
         // Per-variant logic lives in `ops/namespace/<variant>.rs` (#2481). The
         // op's causal cut + the at-cut authorizer ride along so the gates can
@@ -1745,30 +1543,6 @@ impl<'a> NamespaceGovernance<'a> {
         super::super::ops::namespace::dispatch_root_op(&mut ctx, op, root)?;
         Ok(ctx.take_events())
     }
-}
-
-/// Whether a root op's correctness depends on the namespace's current
-/// meta+member set, and therefore should carry a non-zero `state_hash`
-/// committing to it.
-///
-/// Included: variants that mutate or read namespace authorization state —
-/// `AdminChanged` (admin identity), `PolicyUpdated` (policy bytes are
-/// authoritative state), `MemberJoined`/`MemberJoinedOpen` (member set).
-///
-/// Excluded: `KeyDelivery` (additive, idempotent — a stale delivery is
-/// still a valid delivery), and `GroupCreated`/`GroupReparented`/
-/// `GroupDeleted` (their authoritative state is on the affected subgroup,
-/// not on the namespace root). Gating those would over-reject on unrelated
-/// concurrent namespace activity.
-fn root_op_commits_to_namespace_state(op: &RootOp) -> bool {
-    matches!(
-        op,
-        RootOp::AdminChanged { .. }
-            | RootOp::PolicyUpdated { .. }
-            | RootOp::MemberJoined { .. }
-            | RootOp::MemberJoinedAt { .. }
-            | RootOp::MemberJoinedOpen { .. }
-    )
 }
 
 /// Apply a signed namespace op with the LIVE apply-auth gates (no causal cut).

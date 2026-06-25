@@ -441,7 +441,6 @@ mod tests {
             &sk,
             [0u8; 32],
             Vec::new(),
-            [0u8; 32],
             0,
             super::super::NamespaceOp::Root(super::super::RootOp::AdminChanged {
                 new_admin: sk.public_key(),

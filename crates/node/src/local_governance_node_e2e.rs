@@ -312,7 +312,6 @@ async fn apply_signed_group_op_via_context_client() {
         &admin_sk,
         gid_bytes,
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: new_member,
@@ -584,7 +583,6 @@ fn provision_tee_owner_with_sk(
         &owner_sk,
         gid.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
@@ -1371,7 +1369,6 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
         &owner_sk,
         ns_gid.to_bytes(),
         vec![],
-        pre_hash,
         next_owner_nonce,
         GroupOp::MemberRemoved {
             member: tee_pk,
@@ -1935,7 +1932,6 @@ async fn restricted_ctx_redriven_after_group_created() {
     // DOES hold the subgroup meta and so signs a non-zero hash; this stand-in
     // reproduces that exact condition. (Any non-zero value reaches the meta load
     // before any hash comparison, so the precise bytes don't matter.)
-    let nonzero_state_hash = [0x11u8; 32];
 
     // ---- Subscribe to op-events BEFORE driving anything ----------------------
     // Process-global broadcast; `#[serial]` keeps cross-test events out, but we
@@ -1956,7 +1952,6 @@ async fn restricted_ctx_redriven_after_group_created() {
         &owner_sk,
         namespace_id,
         vec![],
-        nonzero_state_hash,
         1,
         NamespaceOp::Group {
             group_id: sub_gid.to_bytes(),
@@ -1996,7 +1991,6 @@ async fn restricted_ctx_redriven_after_group_created() {
         &owner_sk,
         namespace_id,
         vec![],
-        [0u8; 32],
         2,
         NamespaceOp::Root(RootOp::KeyDelivery {
             group_id: sub_gid.to_bytes(),
@@ -2034,7 +2028,6 @@ async fn restricted_ctx_redriven_after_group_created() {
         &owner_sk,
         namespace_id,
         vec![],
-        [0u8; 32],
         3,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sub_gid.to_bytes(),
@@ -2167,7 +2160,6 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
     // ---- The Open subgroup (NOT yet created on the receiver) ------------------
     let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
     let context_id = calimero_primitives::context::ContextId::from([0xC9u8; 32]);
-    let nonzero_state_hash = [0x22u8; 32];
 
     let mut events = calimero_governance_store::op_events::subscribe();
 
@@ -2188,7 +2180,6 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
         &owner_sk,
         namespace_id,
         vec![],
-        nonzero_state_hash,
         1,
         NamespaceOp::Group {
             group_id: sub_gid.to_bytes(),
@@ -2238,7 +2229,6 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
         &owner_sk,
         namespace_id,
         vec![],
-        [0u8; 32],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sub_gid.to_bytes(),
@@ -2504,7 +2494,6 @@ async fn tee_matrix_restricted_late_join() {
     };
     let key_id = GroupKeyring::key_id_for(&subgroup_key);
     let context_id = calimero_primitives::context::ContextId::from([0xCAu8; 32]);
-    let nonzero_state_hash = [0x22u8; 32];
 
     // The TEE node whose membership the late join must end with. In the
     // late-join ordering the TEE row in the subgroup pre-exists the key (a
@@ -2519,7 +2508,6 @@ async fn tee_matrix_restricted_late_join() {
         &owner_sk,
         namespace_id,
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sub_gid.to_bytes(),
@@ -2557,7 +2545,6 @@ async fn tee_matrix_restricted_late_join() {
         &owner_sk,
         namespace_id,
         vec![],
-        nonzero_state_hash,
         2,
         NamespaceOp::Group {
             group_id: sub_gid.to_bytes(),
@@ -2587,7 +2574,6 @@ async fn tee_matrix_restricted_late_join() {
         &owner_sk,
         namespace_id,
         vec![],
-        [0u8; 32],
         3,
         NamespaceOp::Root(RootOp::KeyDelivery {
             group_id: sub_gid.to_bytes(),

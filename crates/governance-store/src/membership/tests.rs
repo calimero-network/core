@@ -163,7 +163,6 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
         &signer_sk,
         gid.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
@@ -2049,7 +2048,6 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
         &signer_sk,
         gid.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberJoinedViaTeeAttestation {
             member: tee_node,

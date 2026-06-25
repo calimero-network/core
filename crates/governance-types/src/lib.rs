@@ -88,7 +88,13 @@ pub use wire::{
 /// the out-of-order apply window that existed between the two v6 ops.
 /// Variant ordinal is appended after the v6 variants; v6 ordinals are
 /// preserved.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 7;
+///
+/// v8 (cutover C5.S3b): dropped the vestigial `state_hash` field from the
+/// signable/​signed op. It stopped being an apply gate in C5.S3a (`scope_root`
+/// is the authoritative convergence signal now), so it was pure dead weight in
+/// the signed bytes. Removing it changes every op's content hash (the op id),
+/// hence the version bump and the flag-day re-bootstrap.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 8;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
@@ -647,17 +653,6 @@ pub struct SignableNamespaceOp {
     pub version: u8,
     pub namespace_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
-    /// Convergence claim about the group-meta state at sign-time.
-    ///
-    /// **Zero-value bypass**: `[0u8; 32]` disables the staleness
-    /// check on apply (used by genesis ops where there is no prior
-    /// state to claim against). Non-zero values are verified against
-    /// the receiver's locally-computed state hash and trigger a
-    /// rejection (group ops) or divergence warning (namespace ops)
-    /// on mismatch. Callers that aren't genesis MUST pass a real
-    /// hash — leaving `state_hash` zeroed for a mid-DAG op silently
-    /// bypasses convergence detection.
-    pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
     pub op: NamespaceOp,
@@ -669,17 +664,6 @@ pub struct SignedNamespaceOp {
     pub version: u8,
     pub namespace_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
-    /// Convergence claim about the group-meta state at sign-time.
-    ///
-    /// **Zero-value bypass**: `[0u8; 32]` disables the staleness
-    /// check on apply (used by genesis ops where there is no prior
-    /// state to claim against). Non-zero values are verified against
-    /// the receiver's locally-computed state hash and trigger a
-    /// rejection (group ops) or divergence warning (namespace ops)
-    /// on mismatch. Callers that aren't genesis MUST pass a real
-    /// hash — leaving `state_hash` zeroed for a mid-DAG op silently
-    /// bypasses convergence detection.
-    pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
     pub op: NamespaceOp,
@@ -687,7 +671,12 @@ pub struct SignedNamespaceOp {
 }
 
 /// Wire/schema version for [`SignedNamespaceOp`].
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 1;
+///
+/// v2 (cutover C5.S3b): dropped the vestigial `state_hash` field. It stopped
+/// being an apply gate in C5.S3a (`scope_root` is the convergence signal now);
+/// removing it from the signable/​signed structs changes every op id, hence the
+/// version bump and the flag-day re-bootstrap.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 2;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";
@@ -718,7 +707,6 @@ impl SignedNamespaceOp {
         sk: &PrivateKey,
         namespace_id: [u8; 32],
         parent_op_hashes: Vec<[u8; 32]>,
-        state_hash: [u8; 32],
         nonce: u64,
         op: NamespaceOp,
     ) -> Result<Self, GovernanceError> {
@@ -727,7 +715,6 @@ impl SignedNamespaceOp {
             version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION,
             namespace_id,
             parent_op_hashes,
-            state_hash,
             signer,
             nonce,
             op,
@@ -738,7 +725,6 @@ impl SignedNamespaceOp {
             version: signable.version,
             namespace_id: signable.namespace_id,
             parent_op_hashes: signable.parent_op_hashes,
-            state_hash: signable.state_hash,
             signer: signable.signer,
             nonce: signable.nonce,
             op: signable.op,
@@ -778,7 +764,6 @@ impl SignedNamespaceOp {
             version: self.version,
             namespace_id: self.namespace_id,
             parent_op_hashes: self.parent_op_hashes.clone(),
-            state_hash: self.state_hash,
             signer: self.signer,
             nonce: self.nonce,
             op: self.op.clone(),
@@ -834,17 +819,6 @@ pub struct SignableGroupOp {
     pub version: u8,
     pub group_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
-    /// Convergence claim about the group-meta state at sign-time.
-    ///
-    /// **Zero-value bypass**: `[0u8; 32]` disables the staleness
-    /// check on apply (used by genesis ops where there is no prior
-    /// state to claim against). Non-zero values are verified against
-    /// the receiver's locally-computed state hash and trigger a
-    /// rejection (group ops) or divergence warning (namespace ops)
-    /// on mismatch. Callers that aren't genesis MUST pass a real
-    /// hash — leaving `state_hash` zeroed for a mid-DAG op silently
-    /// bypasses convergence detection.
-    pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
     pub op: GroupOp,
@@ -860,17 +834,6 @@ pub struct SignedGroupOp {
     pub version: u8,
     pub group_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
-    /// Convergence claim about the group-meta state at sign-time.
-    ///
-    /// **Zero-value bypass**: `[0u8; 32]` disables the staleness
-    /// check on apply (used by genesis ops where there is no prior
-    /// state to claim against). Non-zero values are verified against
-    /// the receiver's locally-computed state hash and trigger a
-    /// rejection (group ops) or divergence warning (namespace ops)
-    /// on mismatch. Callers that aren't genesis MUST pass a real
-    /// hash — leaving `state_hash` zeroed for a mid-DAG op silently
-    /// bypasses convergence detection.
-    pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
     pub op: GroupOp,
@@ -912,7 +875,6 @@ impl SignedGroupOp {
         sk: &PrivateKey,
         group_id: [u8; 32],
         parent_op_hashes: Vec<[u8; 32]>,
-        state_hash: [u8; 32],
         nonce: u64,
         op: GroupOp,
     ) -> Result<Self, GovernanceError> {
@@ -921,7 +883,6 @@ impl SignedGroupOp {
             version: SIGNED_GROUP_OP_SCHEMA_VERSION,
             group_id,
             parent_op_hashes,
-            state_hash,
             signer,
             nonce,
             op,
@@ -932,7 +893,6 @@ impl SignedGroupOp {
             version: signable.version,
             group_id: signable.group_id,
             parent_op_hashes: signable.parent_op_hashes,
-            state_hash: signable.state_hash,
             signer: signable.signer,
             nonce: signable.nonce,
             op: signable.op,
@@ -970,7 +930,6 @@ impl SignedGroupOp {
             version: self.version,
             group_id: self.group_id,
             parent_op_hashes: self.parent_op_hashes.clone(),
-            state_hash: self.state_hash,
             signer: self.signer,
             nonce: self.nonce,
             op: self.op.clone(),

@@ -120,6 +120,8 @@ pub fn signed_namespace_op_to_delta(
         op.parent_op_hashes.clone(),
         op.clone(),
         HybridTimestamp::default(),
-        op.state_hash,
+        // C5.S3b removed the op-level state_hash; the unified op-store delta has no
+        // meaningful `expected_root_hash` to carry from a governance op.
+        [0u8; 32],
     ))
 }
