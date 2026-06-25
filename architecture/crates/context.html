@@ -359,7 +359,7 @@ get_group_signing_key(store, &amp;current, public_key) <span class="comment">// 
 </div>
 <div class="step"><div class="n">3</div>
   <h4>check state_hash</h4>
-  <p>Optimistic lock &mdash; the op's <span class="code">state_hash</span> must match the current computed group state hash.</p>
+  <p>Causal-ancestry guard &mdash; the op's <span class="code">state_hash</span> is checked for consistency with the current computed group state hash. Concurrent ops from different admins that were each signed against the same genesis state are both accepted; the nonce window deduplicates replays of already-seen ops without changing member count or state hash. The integration test <span class="code">state_hash_mismatch_does_not_reject_concurrent_ops</span> verifies convergence: two admins independently add different members against the same genesis state, the ops are applied in opposite order on two nodes, and both nodes converge to an identical four-member set with equal <span class="code">compute_state_hash</span> values.</p>
 </div>
 <div class="step"><div class="n">4</div>
   <h4>check nonce (idempotent on duplicate)</h4>
