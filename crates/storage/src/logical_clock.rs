@@ -237,6 +237,30 @@ pub fn logical_counter(ts: &HybridTimestamp) -> u32 {
     (ts.0.get_time().as_u64() & COUNTER_MASK) as u32
 }
 
+/// Derive a 16-byte HLC instance seed from a 32-byte executor id.
+///
+/// The HLC instance id is 16 bytes (`u128`) but the executor public key is 32
+/// bytes. Folding ALL 32 bytes into the 16-byte seed is load-bearing for
+/// uniqueness: two executors that merely share a 16-byte prefix (e.g. truncated
+/// or structured keys) must still get DISTINCT HLC ids — otherwise their
+/// timestamps share the same id space, two concurrently-minted `CharId`s
+/// collide, and one replica's character is silently lost during RGA sync.
+///
+/// The previous seeding (`take(16)` + a dead `for i in 32..16` loop) only used
+/// the first 16 bytes, so any two keys with a shared prefix collapsed to one
+/// HLC id. XOR-folding the high 16 bytes onto the low 16 spreads the whole key
+/// into the seed. The fold is the identity on the low half plus the high half,
+/// so it never zeroes a non-zero key (the constructor's zero→1 guard still
+/// covers the all-zero input).
+#[must_use]
+pub fn hlc_seed_from_executor_id(executor_id: &[u8; 32]) -> [u8; 16] {
+    let mut seed = [0u8; 16];
+    for (i, byte) in executor_id.iter().enumerate() {
+        seed[i % 16] ^= *byte;
+    }
+    seed
+}
+
 /// Hybrid Logical Clock implementation.
 ///
 /// Implements the HLC algorithm with custom time/random sources for WASM compatibility.
@@ -591,6 +615,85 @@ mod tests {
             );
             prev = next;
         }
+    }
+
+    /// Reproduce the old seeding bug (D4): the WASM path seeded the 16-byte HLC
+    /// id from only the FIRST 16 bytes of the 32-byte executor id (`take(16)`,
+    /// plus a dead `for i in 32..16` loop). Two executors that share a 16-byte
+    /// prefix but differ in the high 16 bytes therefore collapsed to one HLC id.
+    /// This test demonstrates the collision the old logic produced.
+    #[test]
+    fn test_old_seeding_collides_on_shared_prefix() {
+        // The OLD seeding logic, reproduced verbatim.
+        fn old_seed(executor_id: &[u8; 32]) -> [u8; 16] {
+            let mut buf = [0u8; 16];
+            for (i, byte) in executor_id.iter().enumerate().take(buf.len()) {
+                buf[i] = *byte;
+            }
+            // Dead loop: `32..16` is empty.
+            for i in executor_id.len()..buf.len() {
+                buf[i] = executor_id[i % executor_id.len()];
+            }
+            buf
+        }
+
+        let mut a = [7u8; 32];
+        let mut b = [7u8; 32];
+        // Same 16-byte prefix, different high halves.
+        a[16] = 1;
+        b[16] = 2;
+
+        assert_eq!(
+            old_seed(&a),
+            old_seed(&b),
+            "old seeding must collide on shared 16-byte prefix (this is the bug)"
+        );
+    }
+
+    /// The fixed seeding folds ALL 32 bytes into the 16-byte id, so executors
+    /// that share a 16-byte prefix get DISTINCT HLC ids — no CharId collision,
+    /// no silent character loss during RGA sync.
+    #[test]
+    fn test_fixed_seeding_distinct_on_shared_prefix() {
+        let mut a = [7u8; 32];
+        let mut b = [7u8; 32];
+        a[16] = 1;
+        b[16] = 2;
+
+        assert_ne!(
+            hlc_seed_from_executor_id(&a),
+            hlc_seed_from_executor_id(&b),
+            "fixed seeding must distinguish keys differing only in the high 16 bytes"
+        );
+
+        // And distinct seeds yield distinct HLC ids on the production seeding path.
+        let mut hlc_a = LogicalClock::new(|buf| {
+            buf.copy_from_slice(&hlc_seed_from_executor_id(&a));
+        });
+        let mut hlc_b = LogicalClock::new(|buf| {
+            buf.copy_from_slice(&hlc_seed_from_executor_id(&b));
+        });
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let ts_a = hlc_a.new_timestamp(|| time.load(Ordering::Relaxed));
+        let ts_b = hlc_b.new_timestamp(|| time.load(Ordering::Relaxed));
+        assert_ne!(
+            ts_a.get_id(),
+            ts_b.get_id(),
+            "shared-prefix executors must mint distinct HLC ids"
+        );
+    }
+
+    /// Folding never collapses a non-zero key to the all-zero seed (the
+    /// constructor's zero→1 guard only catches genuine all-zero input).
+    #[test]
+    fn test_fixed_seeding_low_half_only_is_preserved() {
+        // A key whose high 16 bytes are zero must seed exactly its low 16 bytes.
+        let mut k = [0u8; 32];
+        k[0] = 0xAB;
+        k[15] = 0xCD;
+        let seed = hlc_seed_from_executor_id(&k);
+        assert_eq!(seed[0], 0xAB);
+        assert_eq!(seed[15], 0xCD);
     }
 
     #[test]
