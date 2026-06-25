@@ -1286,6 +1286,25 @@ pub fn apply_local_signed_group_op_at_cut(
         .map_err(|e| eyre::eyre!("signed group op: {e}"))?;
     let group_id = ContextGroupId::from(op.group_id);
 
+    // Anti-replay / dedup runs FIRST: a replayed op whose nonce is already in the
+    // window returns here without mutating, so it must short-circuit BEFORE the
+    // state_hash telemetry below — otherwise a pure replay would emit a misleading
+    // "applying anyway" warn even though nothing is applied. Mirrors the ordering
+    // the namespace path (`apply_group_op_inner`) already documents.
+    let mut nonce_window = load_nonce_window(store, &group_id, &op.signer)?;
+    if nonce_window.contains(op.nonce) {
+        tracing::debug!(
+            nonce = op.nonce,
+            floor = nonce_window.floor(),
+            signer = %op.signer,
+            "ignoring op with already-processed nonce"
+        );
+        return Ok(());
+    }
+
+    // C5.S3b: remove this entire block once `state_hash` is dropped from the wire
+    // format (the flag-day op-id change). Until then it stays as staleness
+    // telemetry only.
     let zero_hash = [0u8; 32];
     if op.state_hash != zero_hash {
         // Staleness telemetry, NOT an apply gate (cutover C5.S3a). This is the
@@ -1299,7 +1318,8 @@ pub fn apply_local_signed_group_op_at_cut(
         // concurrency, so we recompute and WARN on disagreement but apply anyway —
         // matching the namespace-wrapped path (`apply_group_op_inner`), whose own
         // comment already documents this trade-off (PR #2500 caveat). Signature
-        // and nonce-window checks remain the real safety/anti-replay gates.
+        // and the nonce window (checked above) remain the real safety/anti-replay
+        // gates.
         //
         // Absent-meta bypass: if the subgroup meta row hasn't been written yet —
         // e.g. a group op buffered/replayed before its GroupCreated lands — there
@@ -1312,6 +1332,10 @@ pub fn apply_local_signed_group_op_at_cut(
             if op.state_hash != current_state_hash {
                 tracing::warn!(
                     group_id = %hex::encode(group_id.to_bytes()),
+                    // Log the variant so operators can tell an expected concurrent
+                    // MemberAdded apart from a stale-hash op on a sensitive variant
+                    // (e.g. MemberRemoved) when diagnosing real divergence.
+                    op = ?op.op,
                     expected = %hex::encode(op.state_hash),
                     actual = %hex::encode(current_state_hash),
                     nonce = op.nonce,
@@ -1321,17 +1345,6 @@ pub fn apply_local_signed_group_op_at_cut(
                 );
             }
         }
-    }
-
-    let mut nonce_window = load_nonce_window(store, &group_id, &op.signer)?;
-    if nonce_window.contains(op.nonce) {
-        tracing::debug!(
-            nonce = op.nonce,
-            floor = nonce_window.floor(),
-            signer = %op.signer,
-            "ignoring op with already-processed nonce"
-        );
-        return Ok(());
     }
 
     let (handled, _divergence, pending_events) = apply_group_op_mutations(

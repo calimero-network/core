@@ -1540,6 +1540,10 @@ fn state_hash_mismatch_does_not_reject_concurrent_ops() {
     // NONCE WINDOW (not state_hash) is the anti-replay guard, and it is unchanged.
     // Re-applying op_a (admin_a, nonce 1) is a no-op — the nonce is already in the
     // window — so a DAG replay of a seen op cannot double-apply its mutation.
+    let members_before_replay = MembershipRepository::new(&node_b)
+        .list(&gid, 0, usize::MAX)
+        .unwrap()
+        .len();
     assert!(
         apply_local_signed_group_op(&node_b, &op_a).is_ok(),
         "replaying op_a is accepted (deduped, not errored)"
@@ -1550,6 +1554,18 @@ fn state_hash_mismatch_does_not_reject_concurrent_ops() {
     assert_eq!(
         final_b, after_replay_b,
         "replaying a seen op is a no-op — nonce window dedups it, state is unchanged"
+    );
+    // Pin the actual member set, not just its hash: the dedup must return before
+    // `apply_group_op_mutations`, so no duplicate member row escapes (a future
+    // regression where the dedup fires but a side-effect still mutates would slip
+    // past a hash-only check if the side-effect were hash-neutral).
+    let members_after_replay = MembershipRepository::new(&node_b)
+        .list(&gid, 0, usize::MAX)
+        .unwrap()
+        .len();
+    assert_eq!(
+        members_before_replay, members_after_replay,
+        "replay must not add a duplicate member row"
     );
 }
 
