@@ -453,6 +453,34 @@ GET    /admin-api/peers
 <p>After <span class="code">sign_apply_and_publish_namespace_op</span> successfully authors a <span class="code">GroupReparented</span> op in the <span class="code">reparent_group</span> admin handler, <span class="code">ScopeProjections::persist_namespace_head_ops</span> is now called to persist the op into the unified op-store. This mirrors the same behaviour introduced for <span class="code">GroupCreated</span> in <span class="code">create_group_in_namespace</span>, ensuring that all structural group hierarchy changes are durably recorded and visible to op-store consumers immediately after the operation succeeds.</p>
 </div>
 
+<div class="card" style="border-color:#06b6d4;margin-top:18px;">
+<h3>Wire-Fixture Round-Trip Canary Tests</h3>
+<p>Golden JSON files under <span class="code">crates/server/primitives/fixtures/wire/</span> capture the canonical on-wire shape of six HTTP request/response DTOs:</p>
+<ul style="margin-top:8px;line-height:1.8;">
+  <li><span class="code">CreateContextRequest</span> / <span class="code">CreateContextResponseData</span></li>
+  <li><span class="code">ReparentGroupApiRequest</span> / <span class="code">ReparentGroupApiResponse</span></li>
+  <li><span class="code">ExecutionRequest</span> / <span class="code">ExecutionResponse</span> (JSON-RPC)</li>
+</ul>
+<p style="margin-top:10px;">A Rust integration test (<span class="code">wire_fixtures.rs</span>) deserializes each fixture into its Rust type and re-serializes it. Any field rename, removal, or type change causes a diff and fails the test. Run <span class="code">UPDATE_FIXTURES=1 cargo test -p calimero-server-primitives --test wire_fixtures</span> to regenerate the golden files; do this whenever an HTTP DTO field changes, then update the matching SDK type accordingly.</p>
+</div>
+
+<div class="card" style="border-color:#06b6d4;margin-top:18px;">
+<h3>Route-Manifest Guard (<span class="code">endpoints.json</span>)</h3>
+<p>A committed <span class="code">endpoints.json</span> file enumerates all <strong>72 admin HTTP routes</strong>. A Rust integration test (<span class="code">route_manifest.rs</span>) parses <span class="code">.route("...", ...)</span> calls from <span class="code">admin/service.rs</span> and asserts they match the manifest exactly — adding a new route without updating the manifest causes a test failure.</p>
+<p style="margin-top:10px;">Run <span class="code">UPDATE_MANIFEST=1 cargo test -p calimero-server --test route_manifest</span> to regenerate <span class="code">endpoints.json</span> after adding or removing routes.</p>
+</div>
+
+<div class="card" style="border-color:#06b6d4;margin-top:18px;">
+<h3>Endpoint Coverage Enforcement (<span class="code">check-endpoint-coverage.sh</span>)</h3>
+<p>The <span class="code">check-endpoint-coverage.sh</span> script diffs <span class="code">endpoints.json</span> manifest routes against concrete paths recorded by the mero-js e2e run (<span class="code">:param</span> and <span class="code">*glob</span> pattern matching). Known gaps are tracked in <span class="code">coverage-baseline.json</span>:</p>
+<ul style="margin-top:8px;line-height:1.8;">
+  <li>Routes present in the baseline are accepted as known gaps and reported as a burndown backlog.</li>
+  <li>Any newly uncovered route <strong>not</strong> in the baseline <strong>fails the build</strong>.</li>
+  <li>The baseline currently contains only <span class="code">/admin-api/</span> (the root catch-all), meaning 71 of 72 admin routes must be exercised by e2e tests.</li>
+</ul>
+<p style="margin-top:10px;">New endpoints without e2e coverage must either be added to <span class="code">coverage-baseline.json</span> with a documented reason, or have a mero-js e2e test added.</p>
+</div>
+
 <div class="card gd" style="border-color:#f59e0b;">
 <h3>Fleet-Join Cold-Start: NoPeersSubscribedToTopic is Non-Fatal</h3>
 <p>When a node joins a fleet namespace and no peers are yet subscribed to the gossipsub topic (empty mesh at cold start), <span class="code">publish_on_namespace_now</span> returns a <span class="code">NoPeersSubscribedToTopic</span> error. This is now treated as a non-fatal expected condition:</p>
