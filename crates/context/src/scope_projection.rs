@@ -284,6 +284,12 @@ pub struct ScopeProjections {
     /// Op ids already retained per scope — gives `ingest_op` O(1) dedup of a
     /// replayed delta instead of an O(n) scan of the log.
     seen: HashMap<ScopeId, HashSet<[u8; 32]>>,
+    /// Index in `logs` of each op id currently folded as `Noop`, per scope. The
+    /// late-decrypt upgrade (a non-`Noop` payload re-ingested for a `Noop`-folded id)
+    /// uses it to replace the entry in O(1) instead of scanning the whole log, and the
+    /// common no-upgrade re-ingest skips the scan entirely (id not present here).
+    /// Entries are removed once upgraded, so it only ever holds still-undecrypted ops.
+    noop_log_pos: HashMap<ScopeId, HashMap<[u8; 32], usize>>,
     /// Namespaces already replayed from persisted state, so `backfill_namespace`
     /// walks each governance DAG at most once (the live feed maintains it after).
     backfilled: HashSet<[u8; 32]>,
@@ -305,7 +311,17 @@ impl ScopeProjections {
         self.states.entry(op.scope).or_default().apply(op);
         // O(1) dedup: `insert` is true only for a not-yet-seen id.
         if self.seen.entry(op.scope).or_default().insert(op.id) {
-            self.logs.entry(op.scope).or_default().push(op.clone());
+            let log = self.logs.entry(op.scope).or_default();
+            if matches!(op.payload, OpPayload::Noop) {
+                // Remember where this still-undecrypted op sits so a later decrypted
+                // re-ingest can upgrade it in O(1) (see below).
+                let _ = self
+                    .noop_log_pos
+                    .entry(op.scope)
+                    .or_default()
+                    .insert(op.id, log.len());
+            }
+            log.push(op.clone());
         } else if !matches!(op.payload, OpPayload::Noop) {
             // Already seen, but `op.id` is the SIGNED op's content hash, not the decoded
             // payload's — so an encrypted op first folded as `Noop` (applied before its
@@ -314,13 +330,16 @@ impl ScopeProjections {
             // stale `Noop` left here drops the late-decrypted membership even after the
             // op-store is corrected. Upgrade the log entry in place when a non-`Noop`
             // payload arrives for a previously-`Noop` id; never downgrade (decryption
-            // only adds info).
-            if let Some(log) = self.logs.get_mut(&op.scope) {
-                if let Some(existing) = log
-                    .iter_mut()
-                    .find(|e| e.id == op.id && matches!(e.payload, OpPayload::Noop))
-                {
-                    *existing = op.clone();
+            // only adds info). Only ids currently folded as `Noop` are candidates, so the
+            // common re-ingest (already a real payload) is an O(1) miss, and an actual
+            // upgrade is an O(1) indexed replace — no log scan either way.
+            if let Some(idx) = self
+                .noop_log_pos
+                .get_mut(&op.scope)
+                .and_then(|m| m.remove(&op.id))
+            {
+                if let Some(entry) = self.logs.get_mut(&op.scope).and_then(|l| l.get_mut(idx)) {
+                    *entry = op.clone();
                 }
             }
         }

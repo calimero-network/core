@@ -1417,13 +1417,21 @@ impl SyncManager {
                         // MAINTAINED projection (`ingest_op` upgrades the stale `Noop`
                         // op-log entries in place). BEFORE the drain, whose membership
                         // re-checks must see the corrected ops, not the stale `Noop`.
+                        //
+                        // The in-process re-ingest reads the gov-DAG fold
+                        // (`collect_namespace_ops`), NOT the op-store read-back: the
+                        // re-persist is best-effort, so a partial `persist_op` failure
+                        // must not leave the maintained projection with fewer ops than
+                        // the gov-DAG (the exact gap the flip closes). We have the
+                        // freshly-decrypted fold in hand here; the op-store mirror is
+                        // for the cold-start read path.
                         let store = self.context_client.datastore_handle().into_inner();
                         calimero_context::scope_projection::ScopeProjections::repersist_namespace_ops(
                             &store,
                             namespace_id,
                         );
                         let refreshed =
-                            calimero_context::scope_projection::ScopeProjections::ops_for_namespace(
+                            calimero_context::scope_projection::ScopeProjections::collect_namespace_ops(
                                 &store,
                                 namespace_id,
                             );
