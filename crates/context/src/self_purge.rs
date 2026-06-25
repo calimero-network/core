@@ -2837,7 +2837,6 @@ mod tests {
             &owner_sk,
             namespace_id,
             vec![],
-            [0u8; 32],
             1,
             NamespaceOp::Group {
                 group_id: sub_gid.to_bytes(),

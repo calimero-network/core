@@ -258,7 +258,6 @@ mod tests {
             signer_sk,
             ns_gid.to_bytes(),
             vec![],
-            [0u8; 32],
             nonce,
             GroupOp::MemberJoinedViaTeeAttestation {
                 member,
@@ -289,7 +288,6 @@ mod tests {
             &signer_sk,
             ns_gid.to_bytes(),
             vec![],
-            [0u8; 32],
             1,
             GroupOp::MemberJoinedViaTeeAttestation {
                 member: tee_pk,

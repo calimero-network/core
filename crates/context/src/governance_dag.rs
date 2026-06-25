@@ -50,7 +50,9 @@ pub fn signed_op_to_delta(op: &SignedGroupOp) -> Result<CausalDelta<SignedGroupO
     Ok(make_delta(
         op,
         op.parent_op_hashes.clone(),
-        op.state_hash,
+        // C5.S3b removed the op-level state_hash; the DAG delta carries no
+        // meaningful `expected_root_hash` from a governance op.
+        [0u8; 32],
         delta_id,
     ))
 }

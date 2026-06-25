@@ -102,24 +102,10 @@ impl<'a> GroupGovernancePublisher<'a> {
             .await;
         let known = self.node_client.known_subscribers(&topic);
 
-        // Capture the pre-apply state hash BEFORE the local mutation
-        // runs. The receiver's staleness check in
-        // `apply_group_op_inner` recomputes the subgroup's state hash
-        // against its own pre-apply view; if we sampled here AFTER the
-        // local apply, the value we sign would reflect the post-apply
-        // view and every member-mutating op would fail the receiver's
-        // check (#2134 high-severity finding). Mirrors the sign-side
-        // bypass on `state_hash_for_op`: a not-yet-bootstrapped group
-        // has no meta row, so the zero value is the documented signal.
-        let pre_apply_state_hash = {
-            let repo = MetaRepository::new(self.store);
-            if repo.load(&self.group_id)?.is_none() {
-                [0u8; 32]
-            } else {
-                repo.compute_state_hash(&self.group_id)?
-            }
-        };
-
+        // C5.S3b: the op-level pre-apply state_hash capture was removed with the
+        // field (`scope_root` is the convergence signal now). The `MemberRemoved` /
+        // `MemberLeft` `expected_group_state_hash` claims above are a SEPARATE
+        // post-apply convergence mechanism and are unaffected.
         let _output =
             sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op.clone())?;
 
@@ -291,7 +277,6 @@ impl<'a> GroupGovernancePublisher<'a> {
                 ack_router,
                 &namespace_sk,
                 namespace_op,
-                pre_apply_state_hash,
                 mesh,
                 known,
                 true,

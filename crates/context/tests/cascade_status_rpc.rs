@@ -88,7 +88,6 @@ fn collect_cascade_status_returns_entries_for_all_three_groups() {
         &admin_sk,
         r.to_bytes(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeUpgrade {
             from_app_key: APP_KEY_1,

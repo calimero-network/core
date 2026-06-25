@@ -20,7 +20,6 @@ fn sign_and_verify_round_trip() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member,
@@ -43,7 +42,6 @@ fn wrong_key_fails() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member,
@@ -68,7 +66,6 @@ fn tampered_op_fails() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member,
@@ -91,7 +88,6 @@ fn replay_distinct_content_hash() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member,
@@ -104,7 +100,6 @@ fn replay_distinct_content_hash() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         2,
         GroupOp::MemberAdded {
             member,
@@ -130,7 +125,6 @@ fn signable_bytes_deterministic() {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION,
         group_id: [1u8; 32],
         parent_op_hashes: vec![],
-        state_hash: [0u8; 32],
         signer: pk,
         nonce: 42,
         op: GroupOp::Noop,
@@ -159,7 +153,6 @@ fn namespace_op_sign_verify_root() {
         &sk,
         sample_namespace_id(),
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
@@ -187,7 +180,6 @@ fn namespace_op_sign_verify_group() {
         &sk,
         sample_namespace_id(),
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Group {
             group_id: sample_group_id(),
@@ -211,7 +203,6 @@ fn namespace_op_tampered_fails() {
         &sk,
         sample_namespace_id(),
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::AdminChanged {
             new_admin: sk.public_key(),
@@ -232,7 +223,6 @@ fn namespace_op_content_hash_distinct() {
         &sk,
         sample_namespace_id(),
         vec![],
-        [0u8; 32],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
@@ -246,7 +236,6 @@ fn namespace_op_content_hash_distinct() {
         &sk,
         sample_namespace_id(),
         vec![],
-        [0u8; 32],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
@@ -272,7 +261,6 @@ fn namespace_signable_bytes_deterministic() {
         version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION,
         namespace_id: sample_namespace_id(),
         parent_op_hashes: vec![],
-        state_hash: [0u8; 32],
         signer: pk,
         nonce: 42,
         op: NamespaceOp::Root(RootOp::GroupCreated {
@@ -305,7 +293,6 @@ fn cascade_target_application_set_sign_verify() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeTargetApplicationSet {
             from_app_key: [9u8; 32],
@@ -332,7 +319,6 @@ fn cascade_group_migration_set_sign_verify() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeGroupMigrationSet {
             from_app_key: [9u8; 32],
@@ -363,7 +349,6 @@ fn cascade_target_distinct_from_single_group_target() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::TargetApplicationSet {
             app_key: new_app_key,
@@ -376,7 +361,6 @@ fn cascade_target_distinct_from_single_group_target() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeTargetApplicationSet {
             from_app_key: [9u8; 32],
@@ -413,7 +397,6 @@ fn cascade_target_from_app_key_changes_hash() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeTargetApplicationSet {
             from_app_key: [9u8; 32],
@@ -427,7 +410,6 @@ fn cascade_target_from_app_key_changes_hash() {
         &sk,
         sample_group_id(),
         vec![],
-        [0u8; 32],
         1,
         GroupOp::CascadeTargetApplicationSet {
             from_app_key: [8u8; 32], // only this differs

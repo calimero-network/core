@@ -132,7 +132,6 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         &admin_sk,
         root.to_bytes(),
         vec![[0u8; 32]],
-        [0u8; 32],
         1,
         GroupOp::CascadeTargetApplicationSet {
             from_app_key: APP_KEY_1,
@@ -151,7 +150,6 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         &admin_sk,
         root.to_bytes(),
         vec![op_a_hash],
-        [0u8; 32],
         2,
         GroupOp::CascadeTargetApplicationSet {
             from_app_key: APP_KEY_1,
