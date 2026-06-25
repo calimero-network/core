@@ -1564,7 +1564,13 @@ impl SyncManager {
             // self-limiting (once scope_roots agree the pull stops). Runs only on a
             // successful sync; gated on `peer_scope_root` so the no-divergence path
             // stays store-free.
-            if exec_result.is_ok() {
+            //
+            // `Ok(Some(_))` not `is_ok()`: a data backend must have actually RUN.
+            // `execute` returns `Ok(None)` for the `SyncProtocol::None` selection
+            // (entities already in sync) — which the pre-sync `GovDiverged` check
+            // above already handled — so running the post-sync block on `Ok(None)`
+            // would just repeat a store read + fold on every converged tick.
+            if matches!(exec_result, Ok(Some(_))) {
                 if let Some(peer_scope_root) = peer_scope_root {
                     // Re-read the POST-sync local root (entities may have merged). On a
                     // store fault, SKIP rather than fold a verdict against a stale
