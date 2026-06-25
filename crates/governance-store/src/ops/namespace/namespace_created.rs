@@ -156,6 +156,13 @@ pub(crate) fn apply(
             //      they do not own. That is the anti-hijack guarantee, so the
             //      member-row upsert is gated strictly on admin == founder.
             if meta.admin_identity == founder {
+                // Reachable ONLY for a PARENTLESS op: the no-parents gate above
+                // (`!op.parent_op_hashes.is_empty()` → `NotGenesis`) has already
+                // rejected any parented `NamespaceCreated` before control reaches
+                // here, so this same-founder idempotent re-arrival is always a
+                // true-genesis-position op (e.g. the founder's own genesis coming
+                // back via sync backfill, or a path that wrote a non-placeholder
+                // root `admin_identity` for the founder before genesis applied).
                 MembershipRepository::new(store).add_member(
                     &ns_gid,
                     &founder,

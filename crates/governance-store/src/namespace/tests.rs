@@ -1899,7 +1899,12 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
     let founder = founder_sk.public_key();
 
     let store = test_store();
-    let namespace_id = [0xD9u8; 32];
+    // Distinct from the `[0xD9u8; 32]` used by
+    // `namespace_created_genesis_upgrades_seeded_member_founder_to_admin`. Each
+    // test uses a fresh `test_store()` so the shared id was never a live bug,
+    // but a unique id removes the latent collision and keeps the two tests
+    // independent under any future shared-store refactor.
+    let namespace_id = [0xDAu8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id);
 
@@ -1946,6 +1951,117 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
             .is_admin(&ns_gid, &founder)
             .unwrap(),
         "parentless genesis establishes the founder as Admin"
+    );
+}
+
+#[test]
+fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
+    // #2931 reviewer B1: pins the HEAD-ATOMICITY contract that lets
+    // `handlers/create_group.rs` roll back a failed root-genesis WITHOUT
+    // touching the `NamespaceGovHead`.
+    //
+    // The concern: if `apply_signed_op` advanced the DAG head while applying
+    // the genesis and a later step failed, the head would stay advanced; a
+    // retry would then re-sign the genesis with a non-empty `parent_op_hashes`
+    // and trip the no-parents `NotGenesis` gate, wedging the namespace forever.
+    //
+    // It cannot happen because the apply is head-atomic BY ORDERING: in
+    // `apply_signed_op` the op-kind apply (`apply_root_op` → the
+    // `NamespaceCreated` handler) runs FIRST and only on its success does the
+    // function reach `advance_dag_head` + `store_operation`. A failing genesis
+    // `?`-propagates before the head is ever written. This test drives a
+    // genuine genesis APPLY failure (signer != declared founder, a parentless
+    // op so it is the would-be DAG root) and asserts the head is left exactly
+    // as it was pre-genesis (empty heads, next_nonce == 1), so a retry re-signs
+    // a clean parentless genesis that passes the gate.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let attacker_sk = PrivateKey::random(&mut rng);
+    let real_founder_sk = PrivateKey::random(&mut rng);
+    let real_founder = real_founder_sk.public_key();
+
+    let store = test_store();
+    let namespace_id = [0xDBu8; 32];
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Pre-genesis head is empty / absent: no heads, next_nonce starts at 1.
+    let before = gov.read_head_record().unwrap();
+    assert!(
+        before.parent_hashes.is_empty(),
+        "fresh namespace must have an empty DAG head before genesis"
+    );
+    assert_eq!(
+        before.next_nonce, 1,
+        "fresh namespace next_nonce must be 1 before genesis"
+    );
+
+    // A PARENTLESS NamespaceCreated (the would-be DAG root) whose apply FAILS:
+    // signer (attacker) != declared founder (real_founder) trips the
+    // SignerNotFounder gate inside the genesis handler — a real apply error
+    // raised AFTER `apply_root_op` is entered but BEFORE `advance_dag_head`.
+    let bad_genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
+        founder: real_founder,
+    });
+    let signed_bad = SignedNamespaceOp::sign(
+        &attacker_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        bad_genesis,
+    )
+    .unwrap();
+
+    let res = gov.apply_signed_op(&signed_bad);
+    assert!(
+        res.is_err(),
+        "a genesis whose signer != declared founder must fail to apply"
+    );
+
+    // THE KEY ASSERTION: the failed genesis did NOT advance the head.
+    let after = gov.read_head_record().unwrap();
+    assert!(
+        after.parent_hashes.is_empty(),
+        "a failed genesis apply must NOT advance the namespace DAG head \
+         (head-atomicity, #2931); leaving it advanced would wedge every retry"
+    );
+    assert_eq!(
+        after.next_nonce, 1,
+        "a failed genesis apply must leave next_nonce at the pre-genesis value"
+    );
+
+    // A clean, parentless retry by the REAL founder now applies — proving the
+    // namespace is not wedged after the failed attempt.
+    let good_genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
+        founder: real_founder,
+    });
+    let signed_good = SignedNamespaceOp::sign(
+        &real_founder_sk,
+        namespace_id,
+        vec![], // empty parents — read from the still-empty head on retry
+        [0u8; 32],
+        1,
+        good_genesis,
+    )
+    .unwrap();
+    gov.apply_signed_op(&signed_good)
+        .expect("clean parentless genesis applies after a prior failed attempt");
+
+    // Genesis succeeded: head is now advanced exactly once.
+    let final_head = gov.read_head_record().unwrap();
+    assert_eq!(
+        final_head.parent_hashes.len(),
+        1,
+        "successful genesis advances the head to a single root entry"
+    );
+    assert_eq!(
+        final_head.next_nonce, 2,
+        "successful genesis bumps next_nonce to 2"
     );
 }
 

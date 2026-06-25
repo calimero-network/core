@@ -367,6 +367,29 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             // cost is a harmless dangling identity row if the caller
                             // never retries; that grants nobody anything and is the
                             // correct trade against a non-deterministic founder.
+                            //
+                            // NAMESPACE DAG HEAD IS DELIBERATELY NOT ROLLED BACK, AND
+                            // NEEDS NO ROLLBACK (#2931 reviewer B1). One might fear that
+                            // a failed genesis leaves the `NamespaceGovHead` advanced —
+                            // so a retry re-signs the genesis with a non-empty
+                            // `parent_op_hashes` and trips the new no-parents
+                            // `NotGenesis` gate, wedging the `group_id` forever. It
+                            // cannot: the apply is HEAD-ATOMIC by ordering, not by
+                            // transaction. In `NamespaceGovernance::apply_signed_op`
+                            // (governance-store) the op-kind apply runs FIRST
+                            // (`apply_root_op(op, root)?`, which dispatches the
+                            // `NamespaceCreated` genesis), and ONLY on its success does
+                            // the function reach `advance_dag_head` + `store_operation`.
+                            // A genesis that fails `?`-propagates out of `apply_root_op`
+                            // before `advance_dag_head` is ever called, and
+                            // `sign_apply_and_publish` only READS the head
+                            // (`read_head_record`) to sign against — it never writes it.
+                            // So an `Err` here means the head was NEVER advanced: it is
+                            // still the empty/absent pre-genesis head, and a retry
+                            // re-signs a clean parentless genesis that passes the gate.
+                            // There is therefore nothing to undo. (See the
+                            // `genesis_apply_failure_leaves_namespace_head_unadvanced`
+                            // test in governance-store for the pinned assertion.)
                             if let Err(re) = MetaRepository::new(&datastore).delete(&group_id) {
                                 warn!(?re, ?group_id, "rollback: failed to delete root meta");
                             }
