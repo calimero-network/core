@@ -1401,7 +1401,21 @@ fn dag_heads_are_capped_at_max() {
 }
 
 #[test]
-fn state_hash_prevents_concurrent_op_divergence() {
+fn state_hash_mismatch_does_not_reject_concurrent_ops() {
+    // Cutover C5.S3a: a group op's signed `state_hash` is staleness TELEMETRY,
+    // not an apply gate. Two admins concurrently sign INDEPENDENT ops against the
+    // same genesis state; whichever lands second carries a now-stale `state_hash`.
+    // The old behaviour hard-`bail!`ed on that mismatch, which stranded a
+    // legitimate concurrent sibling and broke multi-node convergence (the whole
+    // reason `apply_group_op_inner` already warns-not-bails). Now the local path
+    // matches: the mismatch only warns and the op applies, so both nodes converge
+    // regardless of apply order. `scope_root` + CRDT merge are the convergence
+    // mechanism; signature + nonce-window remain the real safety gates.
+    //
+    // Independent ADDS (not the old admin-removes-admin scenario) deliberately
+    // avoid an authorization-order confound: under the live-fallback authorizer a
+    // removed admin's later op would fail on *authorization*, not state_hash, which
+    // would mask the gate-removal this test pins down.
     let mut rng = OsRng;
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
@@ -1414,19 +1428,11 @@ fn state_hash_prevents_concurrent_op_divergence() {
     let admin_c_sk = PrivateKey::random(&mut rng);
     let admin_c_pk = admin_c_sk.public_key();
     let new_member_d = PrivateKey::random(&mut rng).public_key();
-
-    // Test exercises admin-removing-admin semantics under concurrent state.
-    // The owner-immunity gate (`CannotRemoveOwner`) would block op_c if
-    // admin_a were the owner — assign owner to a separate "founder" identity
-    // so neither admin_a nor admin_c is owner-protected.
-    let founder_pk = PrivateKey::random(&mut rng).public_key();
-    let mut meta = sample_meta(admin_a_pk);
-    meta.owner_identity = founder_pk;
+    let new_member_e = PrivateKey::random(&mut rng).public_key();
 
     for store in [&node_b, &node_c] {
-        MetaRepository::new(store).save(&gid, &meta).unwrap();
-        MembershipRepository::new(store)
-            .add_member(&gid, &founder_pk, GroupMemberRole::Admin)
+        MetaRepository::new(store)
+            .save(&gid, &sample_meta(admin_a_pk))
             .unwrap();
         MembershipRepository::new(store)
             .add_member(&gid, &admin_a_pk, GroupMemberRole::Admin)
@@ -1447,7 +1453,8 @@ fn state_hash_prevents_concurrent_op_divergence() {
         "nodes start with identical state hash"
     );
 
-    // A signs: add member D (against current state)
+    // A adds D; C adds E — independent, non-conflicting, both signed against the
+    // SAME genesis state (concurrent).
     let op_a = SignedGroupOp::sign(
         &admin_a_sk,
         gid_bytes,
@@ -1460,60 +1467,71 @@ fn state_hash_prevents_concurrent_op_divergence() {
         },
     )
     .unwrap();
-
-    // C signs: remove A (against the SAME state — concurrent)
     let op_c = SignedGroupOp::sign(
         &admin_c_sk,
         gid_bytes,
         vec![[0u8; 32]],
         state_hash_c,
         1,
-        dummy_member_removed(admin_a_pk),
+        GroupOp::MemberAdded {
+            member: new_member_e,
+            role: GroupMemberRole::Member,
+        },
     )
     .unwrap();
 
-    // Node B receives op_a first, then op_c
-    let result_a_on_b = apply_local_signed_group_op(&node_b, &op_a);
-    assert!(result_a_on_b.is_ok(), "op_a should succeed on node_b");
-
-    let result_c_on_b = apply_local_signed_group_op(&node_b, &op_c);
+    // Node B: op_a first, then op_c (op_c's state_hash is now stale).
     assert!(
-        result_c_on_b.is_err(),
-        "op_c should FAIL on node_b (state changed after op_a)"
-    );
-
-    // Node C receives op_c first, then op_a
-    let result_c_on_c = apply_local_signed_group_op(&node_c, &op_c);
-    assert!(result_c_on_c.is_ok(), "op_c should succeed on node_c");
-
-    let result_a_on_c = apply_local_signed_group_op(&node_c, &op_a);
-    assert!(
-        result_a_on_c.is_err(),
-        "op_a should FAIL on node_c (state changed after op_c)"
-    );
-
-    // Node B: A is still admin, D was added, C's removal of A was rejected
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&node_b)
-            .is_member(&gid, &admin_a_pk)
-            .unwrap()
+        apply_local_signed_group_op(&node_b, &op_a).is_ok(),
+        "op_a applies on node_b"
     );
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&node_b)
-            .is_member(&gid, &new_member_d)
-            .unwrap()
+        apply_local_signed_group_op(&node_b, &op_c).is_ok(),
+        "op_c applies on node_b despite a stale state_hash (telemetry, not a gate)"
     );
 
-    // Node C: A was removed by C, D was NOT added
+    // Node C: op_c first, then op_a (op_a's state_hash is now stale).
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&node_c)
-            .is_member(&gid, &admin_a_pk)
-            .unwrap()
+        apply_local_signed_group_op(&node_c, &op_c).is_ok(),
+        "op_c applies on node_c"
     );
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&node_c)
-            .is_member(&gid, &new_member_d)
-            .unwrap()
+        apply_local_signed_group_op(&node_c, &op_a).is_ok(),
+        "op_a applies on node_c despite a stale state_hash"
+    );
+
+    // Both nodes converge to {A, C admins + D, E members}, regardless of order.
+    for (label, store) in [("node_b", &node_b), ("node_c", &node_c)] {
+        let m = calimero_context::group_store::MembershipRepository::new(store);
+        assert!(
+            m.is_member(&gid, &admin_a_pk).unwrap(),
+            "{label}: A present"
+        );
+        assert!(
+            m.is_member(&gid, &admin_c_pk).unwrap(),
+            "{label}: C present"
+        );
+        assert!(
+            m.is_member(&gid, &new_member_d).unwrap(),
+            "{label}: D added"
+        );
+        assert!(
+            m.is_member(&gid, &new_member_e).unwrap(),
+            "{label}: E added"
+        );
+    }
+
+    // `compute_state_hash` sorts members by pubkey, so the converged hashes match
+    // — order-independent convergence, the property the old reject actively broke.
+    let final_b = MetaRepository::new(&node_b)
+        .compute_state_hash(&gid)
+        .unwrap();
+    let final_c = MetaRepository::new(&node_c)
+        .compute_state_hash(&gid)
+        .unwrap();
+    assert_eq!(
+        final_b, final_c,
+        "nodes converge to identical state regardless of apply order"
     );
 }
 

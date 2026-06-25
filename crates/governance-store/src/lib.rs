@@ -1288,28 +1288,36 @@ pub fn apply_local_signed_group_op_at_cut(
 
     let zero_hash = [0u8; 32];
     if op.state_hash != zero_hash {
-        // Mirror the namespace receive-side bypass (apply_group_op_inner): if
-        // the subgroup meta row hasn't been written yet — e.g. a group op
-        // buffered/replayed before its GroupCreated lands — there is no state
-        // to hash. `compute_state_hash` would raise GroupNotFoundForHash and
-        // strand the op forever (#2848). Treat absent meta as a bypass;
-        // signature and nonce checks remain in force.
+        // Staleness telemetry, NOT an apply gate (cutover C5.S3a). This is the
+        // `DeltaApplier::apply` body for the group governance DAG, so concurrent
+        // same-subgroup ops from different nodes routinely land here: A and B each
+        // sign against their then-current view and the second to reach C has
+        // already drifted. `bail!`-ing on that mismatch rejects a legitimate
+        // concurrent sibling the DAG would otherwise merge, forcing recovery onto
+        // anchor-sync reconcile — a multi-node convergence hazard. `scope_root` is
+        // now the authoritative convergence signal and CRDT merge handles the
+        // concurrency, so we recompute and WARN on disagreement but apply anyway —
+        // matching the namespace-wrapped path (`apply_group_op_inner`), whose own
+        // comment already documents this trade-off (PR #2500 caveat). Signature
+        // and nonce-window checks remain the real safety/anti-replay gates.
+        //
+        // Absent-meta bypass: if the subgroup meta row hasn't been written yet —
+        // e.g. a group op buffered/replayed before its GroupCreated lands — there
+        // is no state to hash. `compute_state_hash` would raise
+        // GroupNotFoundForHash and strand the op forever (#2848). Treat absent meta
+        // as a bypass; GroupCreated's apply re-drives this op once meta exists.
         let repo = MetaRepository::new(store);
         if repo.load(&group_id)?.is_some() {
             let current_state_hash = repo.compute_state_hash(&group_id)?;
             if op.state_hash != current_state_hash {
-                tracing::debug!(
+                tracing::warn!(
                     group_id = %hex::encode(group_id.to_bytes()),
                     expected = %hex::encode(op.state_hash),
                     actual = %hex::encode(current_state_hash),
                     nonce = op.nonce,
                     signer = %op.signer,
-                    "rejecting op: state_hash mismatch (signed against stale state)"
-                );
-                bail!(
-                    "state_hash mismatch: op was signed against {}, current state is {}",
-                    hex::encode(op.state_hash),
-                    hex::encode(current_state_hash)
+                    "local group op state_hash mismatch (signed against stale state; \
+                     applying anyway — see PR #2500 caveat)"
                 );
             }
         }
