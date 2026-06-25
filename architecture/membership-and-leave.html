@@ -730,18 +730,17 @@ After a governance op is successfully applied by the live gate, the handler runs
 effect on whether an op is accepted or rejected.
 </p>
 
-<h3>Concurrent-op convergence test — <code>state_hash_mismatch_does_not_reject_concurrent_ops</code></h3>
+<h3>Concurrent-op convergence test — <code>concurrent_independent_member_adds_converge</code></h3>
 <p>
-The integration test <code>state_hash_mismatch_does_not_reject_concurrent_ops</code> (replacing
-the old <code>state_hash_prevents_concurrent_op_divergence</code>) pins the convergence
-semantics for concurrent ops authored against the same genesis state. Two admins independently
-add different members (D and E) against the same genesis state; the ops are applied in opposite
-orders on two nodes. The test asserts: (1) both ops succeed on both nodes, (2) both nodes
-converge to the identical four-member set, (3) <code>compute_state_hash</code> produces equal
-values on both nodes, and (4) replaying a seen op is a no-op — the nonce window dedups it, the
-member count does not change, and the state hash is unchanged. The old test asserted that the
-second concurrent op <em>must</em> fail; that hard-reject behavior is no longer correct and the
-old test has been removed.
+The integration test <code>concurrent_independent_member_adds_converge</code> pins the CRDT
+convergence semantics for concurrent ops authored against the same genesis state. Two admins
+independently add different members (D and E) against the same genesis state; the ops are applied
+in opposite orders on two nodes. The test asserts: (1) both ops succeed on both nodes, (2) both
+nodes converge to the identical four-member set, and (3) replaying a seen op is a no-op — the
+per-signer nonce window dedups it and the member count does not change. The only apply gate is the
+per-signer nonce window; there is no state-hash staleness check. The old test
+(<code>state_hash_prevents_concurrent_op_divergence</code>) asserted that the second concurrent op
+<em>must</em> fail; that hard-reject behavior no longer exists and the old test has been removed.
 </p>
 
 <h3>Where this can break</h3>
@@ -760,6 +759,14 @@ Two classes of change would silently re-introduce the divergence described above
   against, including later <code>MemberRemoved</code> ops. The forward-only contract is
   documented on the public projection at-cut methods; the
   <code>prefix_walk_forward_only_*</code> regression tests pin the boundary.</li>
+  <li><b>Reintroducing a state-hash staleness gate.</b> Governance ops no longer carry a
+  meaningful root-hash claim (<code>state_hash</code> has been removed from the synthesized
+  <code>SignedGroupOp</code> in <code>decrypt_and_apply_group_op</code>, and
+  <code>signed_op_to_delta</code> / <code>signed_namespace_op_to_delta</code> now pass
+  <code>[0u8; 32]</code> as <code>expected_root_hash</code>). Any new code that gates apply on a
+  non-zero root-hash match would incorrectly reject concurrent ops and break the CRDT convergence
+  property pinned by <code>concurrent_independent_member_adds_converge</code>. The per-signer
+  nonce window is the sole apply gate for replay deduplication.</li>
 </ul>
 
 <h3>Scope</h3>
