@@ -620,20 +620,18 @@ async fn run_initiator_impl<T: SyncTransport>(
     if !stats.root_hash_verified {
         // Entities agree but scope_root differs ⇒ pure ACL/governance divergence
         // (the case the entity root hides); distinct marker, parity with HC.
-        if verdict == super::helpers::ScopeVerdict::GovDiverged {
-            if let (Some(local_scope_root), Some(peer_scope_root)) =
-                (local_scope_root, peer_scope_root)
-            {
-                warn!(
-                    marker = "scope_root_governance_divergence",
-                    %context_id,
-                    entity_root = %hex::encode(&local_root_hash[..8]),
-                    local_scope_root = %hex::encode(&local_scope_root[..8]),
-                    peer_scope_root = %hex::encode(&peer_scope_root[..8]),
-                    "entity roots agree but scope_root differs — ACL/membership divergence; \
-                     awaiting governance sync to propagate the rotation"
-                );
-            }
+        if let super::helpers::ScopeVerdict::GovDiverged(local_scope_root, peer_scope_root) =
+            verdict
+        {
+            warn!(
+                marker = "scope_root_governance_divergence",
+                %context_id,
+                entity_root = %hex::encode(&local_root_hash[..8]),
+                local_scope_root = %hex::encode(&local_scope_root[..8]),
+                peer_scope_root = %hex::encode(&peer_scope_root[..8]),
+                "entity roots agree but scope_root differs — ACL/membership divergence; \
+                 awaiting governance sync to propagate the rotation"
+            );
         } else {
             warn!(
                 %context_id,

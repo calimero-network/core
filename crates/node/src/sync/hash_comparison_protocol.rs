@@ -726,19 +726,16 @@ async fn run_initiator_impl<T: SyncTransport>(
     // propagates via the ordinary governance sync tick, and the next HC session
     // re-reads an agreeing `scope_root` once it lands. Distinct marker so a
     // governance-plane divergence is legible apart from a data-plane one.
-    if verdict == super::helpers::ScopeVerdict::GovDiverged {
-        if let (Some(local_scope_root), Some(peer_scope_root)) = (local_scope_root, peer_scope_root)
-        {
-            warn!(
-                marker = "scope_root_governance_divergence",
-                %context_id,
-                entity_root = %hex::encode(&local_root_hash[..8]),
-                local_scope_root = %hex::encode(&local_scope_root[..8]),
-                peer_scope_root = %hex::encode(&peer_scope_root[..8]),
-                "entity roots agree but scope_root differs — ACL/membership divergence; \
-                 awaiting governance sync to propagate the rotation"
-            );
-        }
+    if let super::helpers::ScopeVerdict::GovDiverged(local_scope_root, peer_scope_root) = verdict {
+        warn!(
+            marker = "scope_root_governance_divergence",
+            %context_id,
+            entity_root = %hex::encode(&local_root_hash[..8]),
+            local_scope_root = %hex::encode(&local_scope_root[..8]),
+            peer_scope_root = %hex::encode(&peer_scope_root[..8]),
+            "entity roots agree but scope_root differs — ACL/membership divergence; \
+             awaiting governance sync to propagate the rotation"
+        );
     }
 
     // core#2716: re-anchor the context's persisted `root_hash` to the

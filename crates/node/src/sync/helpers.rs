@@ -81,8 +81,10 @@ pub(crate) enum ScopeVerdict {
     /// can't be folded) the bare entity roots matched.
     Converged,
     /// Entity roots agree but `scope_root` differs ⇒ pure ACL/governance divergence
-    /// (the hash-neutral case the entity root hides; awaits governance sync).
-    GovDiverged,
+    /// (the hash-neutral case the entity root hides; awaits governance sync). Carries
+    /// the two resolved scope roots `(local, peer)` so callers log them without
+    /// re-destructuring the `Option`s the verdict already proved were `Some`.
+    GovDiverged([u8; 32], [u8; 32]),
     /// Entity roots differ ⇒ the data plane needs reconciliation.
     DataDiverged,
 }
@@ -110,8 +112,15 @@ pub(crate) fn scope_verdict(
 ) -> ScopeVerdict {
     match (local_scope_root, peer_scope_root) {
         (Some(local), Some(peer)) if local == peer => ScopeVerdict::Converged,
-        (Some(_), Some(_)) if local_entity_root == peer_entity_root => ScopeVerdict::GovDiverged,
+        (Some(local), Some(peer)) if local_entity_root == peer_entity_root => {
+            ScopeVerdict::GovDiverged(local, peer)
+        }
         (Some(_), Some(_)) => ScopeVerdict::DataDiverged,
+        // Asymmetric `None` (exactly one side has a cold projection / non-group
+        // context) intentionally falls back to the bare entity-root compare rather
+        // than reporting GovDiverged: we can't fold a scope_root we don't have, so
+        // treating the mismatch as governance divergence would raise a false alarm
+        // on a partially-warmed node. This is the pre-C1 check — don't "fix" it.
         _ if local_entity_root == peer_entity_root => ScopeVerdict::Converged,
         _ => ScopeVerdict::DataDiverged,
     }
@@ -1429,9 +1438,10 @@ mod empty_chain_placement_tests {
     #[test]
     fn scope_verdict_scope_differs_entities_agree_is_gov_diverged() {
         // scope_root is authoritative: entities matching doesn't mean converged.
+        // The verdict carries the resolved roots so callers log without re-unwrapping.
         assert_eq!(
             scope_verdict(Some(A), Some(B), E1, E1),
-            ScopeVerdict::GovDiverged
+            ScopeVerdict::GovDiverged(A, B)
         );
         assert!(!scope_verdict(Some(A), Some(B), E1, E1).converged());
     }
