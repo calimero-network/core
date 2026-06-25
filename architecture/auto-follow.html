@@ -317,6 +317,19 @@ to retrieve the candidate's <em>actual</em> role at the anchor group, falling ba
   <li><b>Observability.</b> Every auto-join emits a structured <code>info!</code> log line
   with <code>group_id</code> and <code>context_id</code>. Failures emit <code>warn!</code> with
   the underlying error. No new metrics — the log stream is enough for postmortems.</li>
+  <li><b><code>state_hash</code> mismatch warnings.</b> In
+  <code>apply_local_signed_group_op_at_cut</code>, a mismatch between the op's signed
+  <code>state_hash</code> and the recomputed current hash previously caused a hard error that
+  dropped the op. It now emits a structured <code>tracing::warn!</code> (including op variant,
+  expected/actual hashes, nonce, and signer) and <em>proceeds to apply the op</em>. A
+  <code>local group op state_hash mismatch</code> warning is therefore expected under concurrent
+  multi-node governance activity and does not indicate a rejected op; it is staleness telemetry
+  only. The absent-meta bypass (skip hash check when the subgroup meta row does not yet exist,
+  #2848) is preserved unchanged. Additionally, the per-signer nonce-window load and containment
+  check (<code>load_nonce_window</code>) now runs <em>before</em> the <code>state_hash</code>
+  comparison block, so a replayed op returns <code>Ok(())</code> early without ever reaching the
+  hash logic and cannot emit a misleading mismatch warning for an op that is actually being
+  discarded.</li>
   <li><b>Membership-path authorization.</b> The <code>member_joined_open::apply</code> gate
   now evaluates membership-path authorization against the causal-cut projection state via
   <code>NamespaceApplyCtx::projection_membership_path</code>, which returns

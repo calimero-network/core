@@ -730,6 +730,20 @@ After a governance op is successfully applied by the live gate, the handler runs
 effect on whether an op is accepted or rejected.
 </p>
 
+<h3>Concurrent-op convergence test — <code>state_hash_mismatch_does_not_reject_concurrent_ops</code></h3>
+<p>
+The integration test <code>state_hash_mismatch_does_not_reject_concurrent_ops</code> (replacing
+the old <code>state_hash_prevents_concurrent_op_divergence</code>) pins the convergence
+semantics for concurrent ops authored against the same genesis state. Two admins independently
+add different members (D and E) against the same genesis state; the ops are applied in opposite
+orders on two nodes. The test asserts: (1) both ops succeed on both nodes, (2) both nodes
+converge to the identical four-member set, (3) <code>compute_state_hash</code> produces equal
+values on both nodes, and (4) replaying a seen op is a no-op — the nonce window dedups it, the
+member count does not change, and the state hash is unchanged. The old test asserted that the
+second concurrent op <em>must</em> fail; that hard-reject behavior is no longer correct and the
+old test has been removed.
+</p>
+
 <h3>Where this can break</h3>
 <p>
 Two classes of change would silently re-introduce the divergence described above:
