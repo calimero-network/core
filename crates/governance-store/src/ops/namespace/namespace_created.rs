@@ -21,11 +21,19 @@
 //!   1. Load the root meta; `established = meta.admin_identity != placeholder`.
 //!
 //!   2. **If established ⇒ ALWAYS `Ok(())`, NEVER `Err`.** Any `NamespaceCreated`
-//!      arriving on an established namespace is harmless and MUST be a no-op:
-//!        * `admin_identity == founder` — idempotent re-arrival (e.g. a
-//!          duplicate/late genesis via sync backfill). Ensure the founder's Admin
-//!          member row + default caps (absence-gated), and (#602) repair a diverged
-//!          `owner_identity` back to the founder. Other meta fields are preserved.
+//!      arriving on an established namespace is harmless and MUST be a no-op.
+//!      Repair/ensure work runs ONLY for a genesis-shaped (parentless) op; a
+//!      parented `NamespaceCreated` on an established namespace is structurally
+//!      not a genesis and is a harmless pure no-op (it touches NOTHING — no
+//!      member row, caps, or meta):
+//!        * `admin_identity == founder` AND `op.parent_op_hashes.is_empty()` —
+//!          idempotent genesis-shaped re-arrival (e.g. a duplicate/late genesis
+//!          via sync backfill). Ensure the founder's Admin member row (written
+//!          FIRST, the authority-bearing row) + default caps (absence-gated), and
+//!          (#602) repair a diverged `owner_identity` back to the founder. Other
+//!          meta fields are preserved.
+//!        * `admin_identity == founder` but the op HAS parents — pure no-op (not
+//!          genesis-shaped; do not act on it).
 //!        * `admin_identity != founder` — established by someone else: pure no-op,
 //!          touch nothing (anti-hijack).
 //!      WHY no `Err` here: a parented or late `NamespaceCreated` (e.g. a duplicate
@@ -113,12 +121,36 @@ pub(crate) fn apply(
             // structural parents/signer checks are deliberately NOT consulted on
             // this path — they only gate FOUNDING (step 3).
             if meta.admin_identity == founder {
-                // (2a) SAME founder re-arriving — idempotent genesis (e.g. the
-                // founder's own genesis coming back via sync backfill, or a path
-                // that wrote a non-placeholder root `admin_identity` for the
-                // founder before genesis applied). The meta's `admin_identity` is
-                // already correct, but several pieces of state may be missing or
-                // diverged and must be repaired idempotently:
+                // (2a) SAME founder re-arriving on an established namespace.
+                //
+                // We only perform repair/ensure work for a GENESIS-SHAPED op —
+                // i.e. one with NO parents (`op.parent_op_hashes.is_empty()`). A
+                // genesis is structurally the DAG root; a `NamespaceCreated`
+                // carrying parents is NOT a genesis even when it names the
+                // established founder (it was minted against an existing DAG
+                // head). Acting on such a parented op would let a structurally
+                // non-genesis op mutate authority-bearing state (the Admin member
+                // row / caps / owner meta) on an already-established namespace, so
+                // we treat it as a pure no-op. This stays consistent with the
+                // #591 fix: established namespaces NEVER return `Err` (no DAG
+                // stall), we simply do not act on a non-genesis-shaped op.
+                if !op.parent_op_hashes.is_empty() {
+                    tracing::debug!(
+                        namespace_id = %hex::encode(namespace_id),
+                        %founder,
+                        parent_count = op.parent_op_hashes.len(),
+                        "NamespaceCreated: same-founder PARENTED op on an established \
+                         namespace is not genesis-shaped; no-op (no repair)"
+                    );
+                    return Ok(());
+                }
+
+                // Genesis-shaped same-founder re-arrival (e.g. the founder's own
+                // genesis coming back via sync backfill, or a path that wrote a
+                // non-placeholder root `admin_identity` for the founder before
+                // genesis applied). The meta's `admin_identity` is already
+                // correct, but several pieces of state may be missing or diverged
+                // and must be repaired idempotently:
                 //
                 //   * the founder's explicit Admin member row may never have been
                 //     written (the path that set `admin_identity` need not have
@@ -131,6 +163,16 @@ pub(crate) fn apply(
                 //     `owner_identity = founder` while PRESERVING every other
                 //     field. Only write when it actually differs, to avoid a
                 //     pointless `put` on the common already-correct path.
+                //
+                // Ordering: write the Admin member row BEFORE the owner_identity
+                // meta-save. The member row is the authority-bearing row; with a
+                // non-atomic store, if a write fails midway, losing the (#602)
+                // owner repair is less harmful than losing the Admin row.
+                MembershipRepository::new(store).add_member(
+                    &ns_gid,
+                    &founder,
+                    GroupMemberRole::Admin,
+                )?;
                 if meta.owner_identity != founder {
                     let mut repaired = meta.clone();
                     repaired.owner_identity = founder;
@@ -143,11 +185,6 @@ pub(crate) fn apply(
                          owner_identity to the founder (#602)"
                     );
                 }
-                MembershipRepository::new(store).add_member(
-                    &ns_gid,
-                    &founder,
-                    GroupMemberRole::Admin,
-                )?;
                 // Seed the Open-join default caps, mirroring the establish branch
                 // below. Absence-gated for the same no-clobber reason documented
                 // there: a later `DefaultCapabilitiesSet` must never be
@@ -163,7 +200,7 @@ pub(crate) fn apply(
                     namespace_id = %hex::encode(namespace_id),
                     %founder,
                     "NamespaceCreated: founder already established; ensured Admin member row \
-                     (idempotent re-arrival)"
+                     (genesis-shaped idempotent re-arrival)"
                 );
                 return Ok(());
             }

@@ -560,6 +560,13 @@ pub enum RootOp {
     /// meta (an established founder). A forged second genesis cannot overwrite
     /// an existing admin; apply is idempotent.
     ///
+    /// **Trust note (#2932):** this is the self-authorizing namespace genesis;
+    /// founder authenticity on a BARE (not-yet-established) replica is
+    /// trust-on-first-sync — the anti-hijack guarantee only protects an
+    /// already-established namespace, not the first genesis on a bare one. See
+    /// the SECURITY residual in `governance-store`'s `namespace_created.rs` and
+    /// the #2932 root-of-trust follow-up.
+    ///
     /// **Wire note:** appended at the END of `RootOp` so existing borsh
     /// discriminants do not renumber. It is still a borsh schema addition;
     /// consumers pinning this crate (e.g. mero-tee) must reset/coordinate a

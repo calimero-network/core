@@ -2017,6 +2017,97 @@ fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
 }
 
 #[test]
+fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
+    // Reviewer refinement: on an ESTABLISHED namespace whose `admin_identity`
+    // equals the op's founder, repair/ensure work (Admin member row, default
+    // caps, #602 owner_identity repair) must run ONLY for a GENESIS-SHAPED
+    // (parentless) op. A PARENTED `NamespaceCreated` is structurally not a
+    // genesis even when it names the established founder, so it must be a PURE
+    // no-op that mutates NOTHING — not the member row, not caps, not owner meta.
+    // (It still returns Ok, per #591, so the DAG does not stall.)
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let mut rng = OsRng;
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+    let stray_owner = PrivateKey::random(&mut rng).public_key();
+
+    let store = test_store();
+    let namespace_id = [0xC6u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Pre-establish meta DIRECTLY (not via genesis): admin == founder
+    // (established) but owner DIVERGED, and crucially NO Admin member row and
+    // NO default caps row exist. Under the old code a same-founder re-arrival
+    // would repair all three; here the op is PARENTED, so none of it must fire.
+    let mut diverged = sample_meta_with_admin(founder);
+    diverged.owner_identity = stray_owner;
+    MetaRepository::new(&store)
+        .save(&ns_gid, &diverged)
+        .unwrap();
+    // Sanity: no explicit member row / no caps row yet. We probe the EXPLICIT
+    // row with `role_of` (not `is_admin`, which also matches `meta.admin_identity`
+    // and would be true here regardless of the row).
+    assert!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap()
+            .is_none(),
+        "precondition: founder has no explicit Admin member row"
+    );
+    assert!(
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&ns_gid)
+            .unwrap()
+            .is_none(),
+        "precondition: no default caps row"
+    );
+
+    // PARENTED same-founder `NamespaceCreated` arrives on the established ns.
+    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let signed_parented = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id,
+        vec![[0x33u8; 32]],
+        [0u8; 32],
+        2,
+        parented,
+    )
+    .unwrap();
+    gov.apply_signed_op(&signed_parented)
+        .expect("parented same-founder op on an established namespace is a no-op (Ok), per #591");
+
+    // Nothing was mutated: owner stays DIVERGED, no member row, no caps row.
+    let meta_after = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+    assert_eq!(
+        meta_after.admin_identity, founder,
+        "admin unchanged by the parented no-op"
+    );
+    assert_eq!(
+        meta_after.owner_identity, stray_owner,
+        "parented op must NOT run the #602 owner_identity repair (not genesis-shaped)"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap()
+            .is_none(),
+        "parented op must NOT ensure the Admin member row (not genesis-shaped)"
+    );
+    assert!(
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&ns_gid)
+            .unwrap()
+            .is_none(),
+        "parented op must NOT seed default caps (not genesis-shaped)"
+    );
+}
+
+#[test]
 fn namespace_created_same_founder_repairs_diverged_owner_identity() {
     // #602: if a path established the root meta with `admin_identity == founder`
     // but a DIVERGED `owner_identity` (a partial write or legacy writer that set
