@@ -319,21 +319,12 @@
 </div>
 
 <div class="cb" style="margin-bottom:18px; border-left:3px solid #06b6d4; padding-left:14px;">
-  <h4 style="color:#06b6d4; margin-bottom:8px;">Op-Store Mirror on Namespace Join (<span class="code">await_namespace_ready</span>)</h4>
-  <p style="margin-bottom:10px;">After <span class="code">sign_and_publish_without_apply</span> successfully publishes the <span class="code">MemberJoinedAt</span> op during <span class="code">await_namespace_ready</span> (Stage 2 of the join flow), <span class="code">ScopeProjections::persist_namespace_head_ops</span> is now called to write the op into the unified op-store. Previously this path wrote to the gov-DAG via <span class="code">publish_post_gate</span> → <span class="code">store_operation</span> but skipped the op-store entirely, because the receive-handler dual-write does not cover locally-authored publishes.</p>
-  <div class="typedef" style="margin-top:12px;">
-<span class="comment">// Called in await_namespace_ready after successful quorum publish</span><br>
-<span class="kw">pub(crate) fn</span> <span class="field">persist_namespace_head_ops</span>(<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&amp;self,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;namespace_id: <span class="ty">NamespaceId</span>,<br>
-) -&gt; <span class="ty">Result</span>&lt;()&gt;
-  </div>
-  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> After this change, <span class="code">MemberJoinedAt</span> ops authored locally during namespace join are persisted to the op-store immediately after Stage 2 completes. No new log markers are emitted; the existing join-flow trace spans cover this path.</p>
 </div>
 
 <div class="cb" style="margin-bottom:18px; border-left:3px solid #06b6d4; padding-left:14px;">
-  <h4 style="color:#06b6d4; margin-bottom:8px;">Op-Store Refresh on Late Key Delivery (<span class="code">recover_missing_group_keys</span>)</h4>
-  <p style="margin-bottom:10px;"><span class="code">SyncManager::recover_missing_group_keys</span> is the single runtime chokepoint for direct group-key delivery. Immediately after a successful key delivery and the existing drain/reconcile steps, <span class="code">ScopeProjections::repersist_namespace_ops</span> is now called for the affected <span class="code">namespace_id</span>. This ensures that any <span class="code">MemberAdded</span> ops that were frozen as <span class="code">Noop</span> in the op-store (because their group key had not yet arrived at apply time) are re-decrypted and written into the op-store immediately when the key lands — without waiting for the next projection rebuild cycle.</p>
+  <h4 style="color:#06b6d4; margin-bottom:8px;">Op-Store Refresh on Late Key Delivery (<span class="code">recover_missing_group_keys</span>) — sole persist trigger</h4>
+  <p style="margin-bottom:10px;"><span class="code">SyncManager::recover_missing_group_keys</span> is the single runtime chokepoint for direct group-key delivery. Immediately after a successful key delivery and the existing drain/reconcile steps, <span class="code">ScopeProjections::repersist_namespace_ops</span> is called for the affected <span class="code">namespace_id</span>. This ensures that any <span class="code">MemberAdded</span> ops that were frozen as <span class="code">Noop</span> in the op-store (because their group key had not yet arrived at apply time) are re-decrypted and written into the op-store immediately when the key lands — without waiting for the next projection rebuild cycle.</p>
+  <p style="margin-bottom:10px;"><span class="code">ScopeProjections::persist_namespace_head_ops</span> — a thin alias that previously documented a per-site 'C3 Stage 1/2/3' persist pattern — has been <strong>deleted</strong>. All direct call sites (<span class="code">create_group</span>, <span class="code">delete_group</span>, <span class="code">join_context</span>, <span class="code">join_subgroup_inheritance</span>, <span class="code">remove_group_members</span>, <span class="code">join_namespace</span>, <span class="code">reparent_group</span>, <span class="code">create_group_in_namespace</span>) have been removed. <span class="code">repersist_namespace_ops</span> called from <span class="code">recover_missing_group_keys</span> is now the sole trigger for op-store persistence of governance ops.</p>
   <p style="margin-bottom:10px;">Because all late-arriving keys flow through <span class="code">recover_missing_group_keys</span>, no other call site needs to trigger <span class="code">repersist_namespace_ops</span> for the key-delivery case. The call is placed after drain/reconcile so the projection is already updated before the op-store is refreshed.</p>
   <div class="typedef" style="margin-top:12px;">
 <span class="comment">// Called in SyncManager after each successful key delivery</span><br>

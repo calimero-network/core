@@ -1800,6 +1800,101 @@ consistent op-store state. The two call sites share the same underlying fold, th
 handling, and the same <code>MAX_BACKFILL_OPS</code> bound.
 </p>
 </div>
+<div class="card gc"><h2>Atomic op-store write — removal of per-site dual-write scaffolding</h2>
+<p>
+<strong>Status: shipped.</strong> <code>store_signed_operation</code> now persists every
+governance op atomically at apply time, making all per-site op-store write calls redundant. This
+section documents what was removed and why, and supersedes the
+<em>Deferred op-store read-flip</em> and
+<em><code>persist_namespace_head_ops</code></em> sections above where they describe the old
+per-site scaffolding.
+</p>
+
+<h3>What was removed</h3>
+<ul>
+  <li><strong>Receive-handler dual-write.</strong> The <code>persist_op</code> call inside
+  <code>apply_signed_namespace_op</code> that was labelled <em>C2.1b dual-write</em> has been
+  deleted. The <code>ingest_op</code> fold into the live projection is deliberately kept; only
+  the now-redundant durable-store write is gone.</li>
+  <li><strong><code>sign_apply_and_publish_group_op</code> wrapper.</strong> The crate-private
+  function in <code>lib.rs</code> that wrapped
+  <code>calimero_governance_store::sign_apply_and_publish</code> and appended a
+  <code>persist_namespace_head_ops</code> call is deleted entirely. All ~19 call sites
+  (<code>add_group_members</code>, <code>admit_tee_node</code>, <code>create_context</code>,
+  <code>delete_context</code>, <code>detach_context_from_group</code>, <code>join_context</code>,
+  <code>leave_group</code>, <code>leave_namespace</code>, <code>set_member_auto_follow</code>,
+  <code>set_member_capabilities</code>, <code>set_subgroup_visibility</code>,
+  <code>set_tee_admission_policy</code>, <code>update_member_role</code>,
+  <code>upgrade_group</code>, <code>dispatch_cascade</code>, and others) now call
+  <code>calimero_governance_store::sign_apply_and_publish</code> directly.</li>
+  <li><strong><code>ScopeProjections::persist_namespace_head_ops</code>.</strong> The thin alias
+  for <code>repersist_namespace_ops</code> that documented the <em>C3 Stage 1/2/3</em> per-site
+  persist pattern is deleted from <code>scope_projections.rs</code>. All call sites are also
+  removed: <code>create_group</code>, <code>delete_group</code>, <code>join_context</code>,
+  <code>join_subgroup_inheritance</code>, <code>remove_group_members</code>,
+  <code>join_namespace</code> (node crate), <code>reparent_group</code> (admin API), and
+  <code>create_group_in_namespace</code> (admin API).</li>
+</ul>
+
+<h3>Why the per-site scaffolding was safe to delete</h3>
+<p>
+<code>store_signed_operation</code> is called on every apply path — both local authoring and
+peer-receive — and now writes the op into the unified op-store as part of the same atomic
+commit. Because the persist is guaranteed at the apply chokepoint, no handler needs to issue a
+separate post-publish persist call. The two problems the scaffolding addressed are resolved at
+source:
+</p>
+<ul>
+  <li><strong>Local-author gap.</strong> A locally authored op is written by
+  <code>store_signed_operation</code> at apply time, before the handler returns. There is no
+  window in which the op could be absent from the op-store after a successful publish.</li>
+  <li><strong>Late-decrypted membership.</strong> <code>repersist_namespace_ops</code> (called by
+  the key-delivery path) still overwrites stale <code>Noop</code> entries with their
+  now-decryptable payloads. The atomic write path records the best payload available at apply
+  time; the key-delivery re-persist corrects any entry frozen as <code>Noop</code> before the
+  group key arrived. Both paths remain in place; only the redundant per-site calls are removed.</li>
+</ul>
+
+<h3>Race that the old heads-only walk would have introduced</h3>
+<p>
+The deleted <code>persist_namespace_head_ops</code> performed a full
+<code>collect_namespace_ops</code>-backed fold after publish to avoid a heads-only-walk race
+(a concurrent peer op advancing the head past the just-authored op before the walk ran). The
+atomic write in <code>store_signed_operation</code> sidesteps this entirely: the authored op is
+written at apply time under its content-addressed op id, so its presence in the op-store is
+independent of where the DAG head points afterward.
+</p>
+
+<h3>Surviving use of <code>repersist_namespace_ops</code></h3>
+<p>
+<code>repersist_namespace_ops</code> itself is <strong>not</strong> deleted. It continues to
+serve the key-delivery path: when a group key arrives late, the key-delivery handler calls
+<code>repersist_namespace_ops</code> to re-walk the namespace via
+<code>collect_namespace_ops</code> and overwrite any op-store entries that were frozen as
+<code>Noop</code> at apply time because the key was absent. This is the only remaining call site.
+</p>
+
+<h3>Updated test — <code>locally_authored_op_lands_in_the_op_store_atomically</code></h3>
+<p>
+The test previously named
+<code>persist_namespace_head_ops_lands_locally_authored_op_in_the_op_store</code> is renamed
+<code>locally_authored_op_lands_in_the_op_store_atomically</code>. Its structure is updated to
+reflect the atomic-write path:
+</p>
+<ol>
+  <li>An encrypted <code>MemberAdded</code> op is passed through <code>store_signed_operation</code>
+  (the atomic path).</li>
+  <li>The test asserts the op appears in the op-store <em>immediately after</em> that call, with
+  no intervening <code>persist_namespace_head_ops</code> call required.</li>
+  <li>The test then calls <code>repersist_namespace_ops</code> and asserts the op-store state is
+  unchanged — confirming idempotency over an already-present entry.</li>
+</ol>
+<p>
+The test runs without <code>#[ignore]</code> in CI and is the readiness gate confirming that the
+atomic-write path is sufficient and that the per-site scaffolding carried no load that
+<code>store_signed_operation</code> does not now cover.
+</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
