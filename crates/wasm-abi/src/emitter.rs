@@ -18,6 +18,8 @@ pub struct AbiEmitter {
     methods: Vec<Method>,
     events: Vec<Event>,
     state_type: Option<String>,
+    /// Errors collected during visitation (visitor methods cannot return Result)
+    normalize_errors: Vec<String>,
 }
 
 impl<'ast> AbiEmitter {
@@ -29,6 +31,20 @@ impl<'ast> AbiEmitter {
             methods: Vec::new(),
             events: Vec::new(),
             state_type: None,
+            normalize_errors: Vec::new(),
+        }
+    }
+
+    /// Normalize a type, recording any error for later propagation instead of panicking.
+    /// Returns a placeholder `string` type on failure so visitation can continue
+    /// and accumulate all errors in one pass.
+    fn normalize_or_record(&mut self, ty: &Type, context: &str) -> TypeRef {
+        match normalize_type(ty, true, self) {
+            Ok(t) => t,
+            Err(e) => {
+                self.normalize_errors.push(format!("{context}: {e}"));
+                TypeRef::string()
+            }
         }
     }
 
@@ -175,7 +191,8 @@ impl<'ast> AbiEmitter {
                 if variant.fields.len() == 1 {
                     // Single field variant
                     if let syn::Fields::Unnamed(fields) = &variant.fields {
-                        let field_type = normalize_type(&fields.unnamed[0].ty, true, self).unwrap();
+                        let ctx = format!("event `{event_name}`");
+                        let field_type = self.normalize_or_record(&fields.unnamed[0].ty, &ctx);
                         let field_type = post_process_type_ref(field_type, self);
                         Some(field_type)
                     } else if let syn::Fields::Named(fields) = &variant.fields {
@@ -183,7 +200,8 @@ impl<'ast> AbiEmitter {
                         let mut record_fields = Vec::new();
                         for field in &fields.named {
                             let field_name = field.ident.as_ref().unwrap().to_string();
-                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let ctx = format!("field `{field_name}` in event `{event_name}`");
+                            let field_type = self.normalize_or_record(&field.ty, &ctx);
                             let field_type = post_process_type_ref(field_type, self);
                             record_fields.push(Field {
                                 name: field_name,
@@ -207,7 +225,8 @@ impl<'ast> AbiEmitter {
                         // Tuple variant with multiple fields
                         for (i, field) in fields.unnamed.iter().enumerate() {
                             let field_name = format!("field_{i}");
-                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let ctx = format!("field `{field_name}` in event `{event_name}`");
+                            let field_type = self.normalize_or_record(&field.ty, &ctx);
                             let field_type = post_process_type_ref(field_type, self);
                             record_fields.push(Field {
                                 name: field_name,
@@ -219,7 +238,8 @@ impl<'ast> AbiEmitter {
                         // Struct variant with multiple fields
                         for field in &fields.named {
                             let field_name = field.ident.as_ref().unwrap().to_string();
-                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let ctx = format!("field `{field_name}` in event `{event_name}`");
+                            let field_type = self.normalize_or_record(&field.ty, &ctx);
                             let field_type = post_process_type_ref(field_type, self);
                             record_fields.push(Field {
                                 name: field_name,
@@ -390,7 +410,7 @@ impl<'ast> Visit<'ast> for AbiEmitter {
         // Check if this is a newtype pattern
         if is_newtype_pattern(item_struct) {
             if let Some(target_type) = extract_newtype_target(item_struct) {
-                let target_type_ref = normalize_type(target_type, true, self).unwrap();
+                let target_type_ref = self.normalize_or_record(target_type, &format!("newtype `{struct_name}`"));
                 let target_type_ref = post_process_type_ref(target_type_ref, self);
 
                 // Add as an alias type definition
@@ -414,9 +434,7 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                     .as_ref()
                     .map_or_else(|| "unnamed".to_owned(), ToString::to_string);
 
-                let field_type = normalize_type(&field.ty, true, self).unwrap_or_else(|e| {
-                    panic!("ABI emit: failed to normalize type for field `{field_name}`: {e:?}");
-                });
+                let field_type = self.normalize_or_record(&field.ty, &format!("field `{field_name}` in `{struct_name}`"));
                 let field_type = post_process_type_ref(field_type, self);
 
                 // Check if it's Option<T> to set nullable
@@ -453,7 +471,8 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                 if variant.fields.len() == 1 {
                     // Single field variant
                     if let syn::Fields::Unnamed(fields) = &variant.fields {
-                        let field_type = normalize_type(&fields.unnamed[0].ty, true, self).unwrap();
+                        let ctx = format!("variant `{enum_name}::{variant_name}`");
+                        let field_type = self.normalize_or_record(&fields.unnamed[0].ty, &ctx);
                         let field_type = post_process_type_ref(field_type, self);
                         Some(field_type)
                     } else if let syn::Fields::Named(fields) = &variant.fields {
@@ -461,7 +480,8 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         let mut record_fields = Vec::new();
                         for field in &fields.named {
                             let field_name = field.ident.as_ref().unwrap().to_string();
-                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let ctx = format!("field `{field_name}` in variant `{enum_name}::{variant_name}`");
+                            let field_type = self.normalize_or_record(&field.ty, &ctx);
                             let field_type = post_process_type_ref(field_type, self);
                             record_fields.push(Field {
                                 name: field_name,
@@ -486,7 +506,8 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         // Tuple variant with multiple fields
                         for (i, field) in fields.unnamed.iter().enumerate() {
                             let field_name = format!("field_{i}");
-                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let ctx = format!("field `{field_name}` in variant `{enum_name}::{variant_name}`");
+                            let field_type = self.normalize_or_record(&field.ty, &ctx);
                             let field_type = post_process_type_ref(field_type, self);
                             record_fields.push(Field {
                                 name: field_name,
@@ -498,7 +519,8 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         // Struct variant with multiple fields
                         for field in &fields.named {
                             let field_name = field.ident.as_ref().unwrap().to_string();
-                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let ctx = format!("field `{field_name}` in variant `{enum_name}::{variant_name}`");
+                            let field_type = self.normalize_or_record(&field.ty, &ctx);
                             let field_type = post_process_type_ref(field_type, self);
                             record_fields.push(Field {
                                 name: field_name,
@@ -541,7 +563,7 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         if let syn::FnArg::Typed(pat_type) = param {
                             if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
                                 let param_name = pat_ident.ident.to_string();
-                                let param_type = normalize_type(&pat_type.ty, true, self).unwrap();
+                                let param_type = self.normalize_or_record(&pat_type.ty, &format!("param `{param_name}` in `{method_name}`"));
                                 let param_type = post_process_type_ref(param_type, self);
 
                                 // Check if it's Option<T> to set nullable
@@ -567,7 +589,7 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         // Init methods should always return void
                         (Some(TypeRef::Scalar(ScalarType::Unit)), None)
                     } else if let syn::ReturnType::Type(_, ty) = &method.sig.output {
-                        let return_type = normalize_type(ty, true, self).unwrap();
+                        let return_type = self.normalize_or_record(ty, &format!("return type of `{method_name}`"));
                         let return_type = post_process_type_ref(return_type, self);
 
                         // Check if it's Option<T> to set nullable
@@ -825,6 +847,10 @@ pub fn emit_manifest_from_crate(
     // Remove any internal types that shouldn't be exposed
     drop(manifest.types.remove("AbiStateExposed"));
     drop(manifest.types.remove("Event"));
+
+    if !emitter.normalize_errors.is_empty() {
+        return Err(emitter.normalize_errors.join("\n").into());
+    }
 
     Ok(manifest)
 }
