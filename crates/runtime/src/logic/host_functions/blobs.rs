@@ -232,10 +232,7 @@ impl VMHostFunctions<'_> {
         // Validate guest memory bounds BEFORE removing the handle to avoid
         // orphaning the handle if the bounds check fails.
         // We need to drop the reference before calling with_logic_mut.
-        {
-            let _bounds_check = self.read_guest_memory_slice_mut(&guest_blob_id_ptr)?;
-            // Reference is dropped at end of this block
-        }
+        self.check_guest_memory_bounds(&guest_blob_id_ptr)?;
 
         let handle = self.with_logic_mut(|logic| {
             logic
@@ -259,10 +256,8 @@ impl VMHostFunctions<'_> {
             BlobHandle::Read(read_handle) => *read_handle.blob_id.as_ref(),
         };
 
-        // Now get the slice again and write the blob_id to it
-        let guest_blob_id_out_buf: &mut [u8] =
-            self.read_guest_memory_slice_mut(&guest_blob_id_ptr)?;
-        guest_blob_id_out_buf.copy_from_slice(&final_blob_id);
+        // Now write the blob_id into the guest buffer.
+        self.write_guest_memory_slice(&guest_blob_id_ptr, &final_blob_id)?;
 
         Ok(1)
     }
@@ -541,8 +536,7 @@ impl VMHostFunctions<'_> {
         if bytes_read > 0 {
             // Copy data from the local output buffer to destination buffer located in guest
             // memory. This can fail with InvalidMemoryAccess if bounds check fails.
-            self.read_guest_memory_slice_mut(&dest_data)?
-                .copy_from_slice(&output_buffer);
+            self.write_guest_memory_slice(&dest_data, &output_buffer)?;
         }
 
         // Only update position AFTER successfully writing to guest memory.

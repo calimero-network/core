@@ -563,37 +563,25 @@ impl VMHostFunctions<'_> {
         Ok(unsafe { &memory.data_unchecked()[ptr..end] })
     }
 
-    /// Reads a MUTABLE slice of guest memory.
-    /// This should only be used when the host needs to WRITE into a buffer
-    /// provided by the guest.
+    /// Validates that the guest memory region described by the mutable buffer
+    /// `slice` lies entirely within the bounds of guest memory.
+    ///
+    /// This performs the same bounds check that a write would, without copying
+    /// any data. It is useful when the caller needs to verify that a guest
+    /// buffer is writable before performing side effects, but does not yet have
+    /// the data to write.
     ///
     /// # Arguments
     ///
-    /// * `slice` - A `sys::Buffer` descriptor pointing to the buffer location and length in guest memory.
-    ///
-    /// # Returns
-    ///
-    /// * Mutable slice of the guest memory contents.
+    /// * `slice` - A `sys::BufferMut` descriptor pointing to the buffer location and length in guest memory.
     ///
     /// # Errors
     ///
     /// Returns `VMLogicError::HostError(HostError::InvalidMemoryAccess)` if the requested
     /// memory region (ptr + len) exceeds the bounds of guest memory.
-    #[expect(
-        clippy::mut_from_ref,
-        reason = "We are not modifying the self explicitly, only the underlying slice of the guest memory.\
-        Meantime we are required to have an immutable reference to self, hence the exception"
-    )]
-    fn read_guest_memory_slice_mut(&self, slice: &sys::BufferMut<'_>) -> VMLogicResult<&mut [u8]> {
+    fn check_guest_memory_bounds(&self, slice: &sys::BufferMut<'_>) -> VMLogicResult<()> {
         let ptr = slice.ptr().value().as_usize();
         let len = slice.len() as usize;
-
-        trace!(
-            target: "runtime::memory",
-            ptr,
-            len,
-            "read_guest_memory_slice_mut"
-        );
 
         let memory = self.borrow_memory();
         let memory_size = memory.data_size() as usize;
@@ -604,8 +592,66 @@ impl VMHostFunctions<'_> {
             return Err(HostError::InvalidMemoryAccess.into());
         }
 
-        // SAFETY: We have verified that ptr..ptr+len is within the memory bounds
-        Ok(unsafe { &mut memory.data_unchecked_mut()[ptr..end] })
+        Ok(())
+    }
+
+    /// Copies `data` into the guest memory region described by the mutable
+    /// buffer `slice` (a copy-out into guest memory).
+    ///
+    /// This should be used when the host needs to WRITE into a buffer provided
+    /// by the guest. It relies on [`wasmer::MemoryView::write`] to perform a
+    /// safe copy into guest memory. This deliberately avoids materializing a
+    /// `&mut [u8]` that aliases guest memory from a shared `&self`: doing so
+    /// would create a mutable reference overlapping the immutable views handed
+    /// out by [`Self::read_guest_memory_slice`], which is undefined behaviour.
+    ///
+    /// # Arguments
+    ///
+    /// * `slice` - A `sys::BufferMut` descriptor pointing to the buffer location and length in guest memory.
+    /// * `data` - The bytes to copy into the guest buffer. Must not be longer than the buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VMLogicError::HostError(HostError::InvalidMemoryAccess)` if `data` is
+    /// longer than the buffer, if the requested memory region (ptr + len) exceeds the
+    /// bounds of guest memory, or if the underlying write fails.
+    fn write_guest_memory_slice(
+        &self,
+        slice: &sys::BufferMut<'_>,
+        data: &[u8],
+    ) -> VMLogicResult<()> {
+        let ptr = slice.ptr().value().as_usize();
+        let len = slice.len() as usize;
+
+        trace!(
+            target: "runtime::memory",
+            ptr,
+            len,
+            data_len = data.len(),
+            "write_guest_memory_slice"
+        );
+
+        // The data must fit within the guest-provided buffer.
+        if data.len() > len {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        let memory = self.borrow_memory();
+        let memory_size = memory.data_size() as usize;
+
+        // Check for potential overflow and bounds
+        let end = ptr.checked_add(len).ok_or(HostError::InvalidMemoryAccess)?;
+        if end > memory_size {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        // Safe copy-out: `MemoryView::write` copies the bytes into guest memory
+        // without exposing an aliasing mutable reference.
+        memory
+            .write(ptr as u64, data)
+            .map_err(|_| HostError::InvalidMemoryAccess)?;
+
+        Ok(())
     }
 
     /// Reads an immutable UTF-8 string slice from guest memory.
@@ -1128,10 +1174,10 @@ mod tests {
         ));
     }
 
-    /// Tests that `read_guest_memory_slice_mut` returns an error when the requested memory region
+    /// Tests that `check_guest_memory_bounds` returns an error when the requested memory region
     /// exceeds the bounds of guest memory.
     #[test]
-    fn test_read_guest_memory_slice_mut_out_of_bounds() {
+    fn test_check_guest_memory_bounds_out_of_bounds() {
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
@@ -1157,7 +1203,7 @@ mod tests {
                 .unwrap()
         };
 
-        let err = host.read_guest_memory_slice_mut(&buffer).unwrap_err();
+        let err = host.check_guest_memory_bounds(&buffer).unwrap_err();
         assert!(matches!(
             err,
             VMLogicError::HostError(HostError::InvalidMemoryAccess)
@@ -1179,7 +1225,7 @@ mod tests {
         };
 
         let err_beyond = host
-            .read_guest_memory_slice_mut(&buffer_beyond)
+            .check_guest_memory_bounds(&buffer_beyond)
             .unwrap_err();
         assert!(matches!(
             err_beyond,
