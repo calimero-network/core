@@ -4,69 +4,39 @@ description: Orientation for developers hacking on the Calimero Core Rust worksp
 sidebar:
   label: Overview
   order: 1
-  badge:
-    text: Draft
-    variant: caution
 ---
 
-import { Card, CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard, Steps, Aside } from '@astrojs/starlight/components';
 
-This track is for **people working on Calimero Core itself** — the node daemon,
-the runtime, the sync engine, the SDK, and the surrounding tooling. If you want
-to _build an app_ on Calimero, or _operate a node_, those are separate tracks.
-If you want to _reimplement the protocol_ from first principles, read the
-[Protocol Reference](/protocol/overview/) instead — it describes the wire and
-state model independent of this codebase.
+Calimero Core is a Rust workspace of ~30 crates plus example apps and tools.
+This track orients you in the codebase and the development workflow.
 
-## What the repo is
+## Start here
 
-Calimero Core is a **Rust monorepo** — a single Cargo workspace
-(`resolver = "2"`) holding roughly **three dozen library and binary crates**
-under `crates/`, plus example WASM applications under `apps/` and developer
-utilities under `tools/`.
+<Steps>
 
-The shape, at a glance:
+1. Read the **[architecture orientation](/contribute/architecture/)** — the actor model and the crate map.
+2. Skim the **[Protocol Reference](/protocol/overview/)** for the model the code implements.
+3. Set up your **[development workflow](/contribute/development/)** — build, test, the PR conventions.
 
-- **`crates/`** — the core libraries and the two binaries (`merod`, the node
-  daemon; `meroctl`, the CLI). This is where almost all the work happens.
-- **`apps/`** — example and test applications compiled to
-  `wasm32-unknown-unknown` (e.g. `kv-store`), including a large suite of
-  migration scenarios. Most are excluded from workspace versioning.
-- **`tools/`** — standalone operator/developer CLIs (`calimero-abi`,
-  `mero-sign`, `merodb`) for ABI inspection, bundle signing, and database
-  debugging.
+</Steps>
 
-The system runs as a set of **Actix actors** over a **WASM runtime** (Wasmer),
-a **libp2p** P2P stack, and a **RocksDB**-backed storage layer. The next page
-walks that architecture crate by crate.
-
-<Aside type="note">
-  This track documents the codebase as it exists today. Some crates are
-  mid-migration (notably the unified causal-log work under `op` / `op-adapter` /
-  `projection` / `authz`); those are flagged where they appear.
-</Aside>
-
-## Where to go next
+## Orientation
 
 <CardGrid>
-  <LinkCard
-    title="Architecture"
-    href="/contribute/architecture/"
-    description="The actor model (NodeManager / ContextManager / NetworkManager) and the crate map grouped by layer."
-  />
-  <LinkCard
-    title="Development workflow"
-    href="/contribute/development/"
-    description="Build, run, and test commands; the commit & PR conventions; the Rust style rules; and where design docs live."
-  />
-  <LinkCard
-    title="Protocol Reference"
-    href="/protocol/overview/"
-    description="The implementation-independent model: the signed-op DAG, the deterministic fold, and how divergence is detected and healed."
-  />
-  <LinkCard
-    title="Source on GitHub"
-    href="https://github.com/calimero-network/core"
-    description="Issues, pull requests, and the full workspace."
-  />
+  <LinkCard title="Architecture &amp; crate map" href="/contribute/architecture/" description="Actors, layers, and what each crate does." />
+  <LinkCard title="Protocol Reference" href="/protocol/overview/" description="The model the codebase implements." />
+</CardGrid>
+
+## Working on core
+
+<CardGrid>
+  <LinkCard title="Development workflow" href="/contribute/development/" description="Build, test, lint, commit and PR conventions." />
+  <LinkCard title="Writing documentation" href="/contribute/docs/" description="How this docs site is structured and contributed to." />
+</CardGrid>
+
+## Reference
+
+<CardGrid>
+  <LinkCard title="Decision records (ADRs)" href="/contribute/adrs/" description="Why the key design choices were made." />
 </CardGrid>

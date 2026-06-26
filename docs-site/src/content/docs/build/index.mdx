@@ -4,75 +4,58 @@ description: Write a Calimero application — a sandboxed WASM module that is a 
 sidebar:
   label: Overview
   order: 1
-  badge:
-    text: Draft
-    variant: caution
 ---
 
-import { CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard, Steps, Aside } from '@astrojs/starlight/components';
 
-This is the **Build** track — for developers writing Calimero applications. If
-you want the deep model of how nodes replicate, authorize, and converge state,
-read the [Protocol Reference](/protocol/overview/) instead.
-
-## What a Calimero app is
-
-A Calimero application is a single **WebAssembly module**. You write it in Rust
-against the [`calimero-sdk`](https://github.com/calimero-network/core/tree/master/crates/sdk)
-and [`calimero-storage`](https://github.com/calimero-network/core/tree/master/crates/storage)
-crates, compile it to `wasm32-unknown-unknown`, and install it on a node.
-
-The module is best understood as a **shared state machine**:
-
-- It defines a single **state** struct (`#[app::state]`) built out of CRDT
-  collections — types whose concurrent edits merge deterministically.
-- It exposes **methods** (`#[app::logic]`) that read and mutate that state.
-- Many nodes run the *same* module over the *same* logical state. Each node
-  folds the operations it has seen into a materialized copy. Because every
-  collection merges order-independently, any two nodes that have seen the same
-  operations compute the same state.
-
-You never write networking, signing, or merge code. You write state + methods;
-the runtime replicates the rest.
-
-<Aside type="note" title="Mental model">
-  Your app is the deterministic fold. The node is everything around it —
-  identity, gossip, encryption, conflict detection. Keep your logic
-  deterministic and built on CRDT collections, and convergence is automatic.
-</Aside>
+A Calimero **application** is a sandboxed WASM module that defines a shared,
+replicated state machine — its data types and the methods that mutate them. You
+write it in Rust against the SDK; the node handles replication, conflict-free
+merging, and sync.
 
 ## Start here
 
+<Steps>
+
+1. **[Quickstart](/build/quickstart/)** — install a node, install an app, call a method (15 min).
+2. **[Build your first app](/build/tutorial/)** — scaffold → state → methods → build → run, end to end.
+3. **Pick a [how-to guide](/build/guides/)** for the task in front of you.
+4. Keep the **Reference** open as you go.
+
+</Steps>
+
+## Get started
+
 <CardGrid>
-  <LinkCard
-    title="Quickstart"
-    href="/build/quickstart/"
-    description="Scaffold and build an app, install it on a node, create a context, and call a method."
-  />
-  <LinkCard
-    title="SDK macros"
-    href="/build/sdk-macros/"
-    description="Reference for the #[app::*] macros — state, logic, init, view, event, private, migrate, xcall."
-  />
-  <LinkCard
-    title="Collections"
-    href="/build/collections/"
-    description="The CRDT collection types — maps, sets, vectors, counters, registers, and the access-controlled ones."
-  />
-  <LinkCard
-    title="Protocol Reference"
-    href="/protocol/overview/"
-    description="How replication, authorization, and convergence actually work under the hood."
-  />
+  <LinkCard title="Quickstart" href="/build/quickstart/" description="Zero to a running app in 15 minutes." />
+  <LinkCard title="Build your first app" href="/build/tutorial/" description="The full guided walkthrough." />
 </CardGrid>
 
-## Where the truth lives
+## How-to guides
 
-Everything in this track is grounded in the code you ship against:
+<CardGrid>
+  <LinkCard title="All guides" href="/build/guides/" description="Task-focused recipes." />
+  <LinkCard title="Example apps" href="/build/examples/" description="Annotated walkthroughs of real apps." />
+  <LinkCard title="Testing your app" href="/build/testing/" description="The in-process TestHost harness." />
+</CardGrid>
 
-| Topic | Source of truth |
-|-------|-----------------|
-| App macros | `crates/sdk/macros/src/` |
-| Environment / host calls | `crates/sdk/src/env.rs`, `crates/runtime/HOST_FUNCTIONS.md` |
-| Collection types | `crates/storage/src/collections/` |
-| Working examples | `apps/` (e.g. `kv-store`, `collaborative-editor`, `blobs`) |
+## Reference
+
+<CardGrid>
+  <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The app macros, with examples." />
+  <LinkCard title="Collections" href="/build/collections/" description="The CRDT collection types and when to use each." />
+</CardGrid>
+
+## Deep dives
+
+<CardGrid>
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Custom Mergeable, private storage, xcall, migrations." />
+  <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="Public / User / Frozen / Shared, and the enforcement model." />
+  <LinkCard title="Storage performance & big-O" href="/build/storage-complexity/" description="How writes really cost, derived from the implementation." />
+  <LinkCard title="Gotchas & sharp edges" href="/build/gotchas/" description="The non-obvious things that bite." />
+</CardGrid>
+
+<Aside type="tip">
+Want the model underneath the SDK — scopes, operations, CRDT convergence? See
+the [Protocol Reference](/protocol/overview/).
+</Aside>
