@@ -277,7 +277,13 @@ A migration body runs under storage <strong>merge mode</strong>, and the SDK rem
 </ul>
 <p>
 So a migration that only <strong>carries fields and adds new ones with <code>::new()</code></strong>
-cannot trigger a determinism bug.
+cannot trigger a determinism bug. When two registers arrive with equal timestamps <em>and</em> equal
+node ids (both zeroed in merge mode), <code>LwwRegister::merge</code> adds a third tie-break level:
+it borsh-serializes both values and keeps whichever byte slice compares higher lexicographically,
+making merge commutative even under zero stamps. This means <code>merge(A, B)</code> and
+<code>merge(B, A)</code> always agree on the same value. Note that <code>merge</code>,
+<code>would_update</code>, and the <code>Mergeable</code> blanket impl for <code>LwwRegister&lt;T&gt;</code>
+now require <code>T: Clone + borsh::BorshSerialize</code>.
 </p>
 
 <h3>What you must still avoid (app-level)</h3>
