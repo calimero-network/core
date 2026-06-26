@@ -127,6 +127,62 @@
 <p>This chapter stops at "an outcome exists." <strong>Chapter 8</strong> picks it up: how the outcome is signed, persisted atomically, and broadcast to the context's members.</p></div>
 </div>
 
+<div class="card ga" id="spec">
+<h2>Specification</h2>
+<p>The exact host ABI. All host functions live in the WASM <code>env</code> namespace. Pointers and lengths are <code>u64</code> offsets into the guest's linear memory; all integers are little-endian.</p>
+
+<h3>Calling convention</h3>
+<ul>
+<li>A buffer is passed as a 16-byte descriptor <code>{ ptr: u64, len: u64 }</code> at a guest memory offset — the host reads <code>len</code> bytes from <code>ptr</code>.</li>
+<li>Larger results are staged in host <strong>registers</strong> addressed by a <code>u64</code> id. <code>register_len(id)</code> returns the length or <code>u64::MAX</code> if absent; <code>read_register(id, dest_ptr)</code> copies it into guest memory and returns <code>1</code> on success, <code>0</code> on a size mismatch.</li>
+<li>A return value is written by the guest as a <code>ValueReturn</code> tagged union — a 1-byte tag (<code>0</code>=Ok, <code>1</code>=Err) then, at offset 8, a 16-byte buffer descriptor.</li>
+</ul>
+
+<h3>Host functions (the <code>env</code> namespace)</h3>
+<table class="spec-tbl">
+<tr><th>Family</th><th>Signature</th></tr>
+<tr><td>Input</td><td class="wrap"><code>context_id(reg: u64)</code>, <code>executor_id(reg: u64)</code>, <code>input(reg: u64)</code>, <code>xcall_origin(reg: u64) -&gt; u32</code></td></tr>
+<tr><td>Registers</td><td class="wrap"><code>register_len(id: u64) -&gt; u64</code>, <code>read_register(id: u64, dest: u64) -&gt; u32</code></td></tr>
+<tr><td>Replicated state</td><td class="wrap"><code>storage_read(key: u64, reg: u64) -&gt; u32</code>, <code>storage_write(key: u64, val: u64, reg: u64) -&gt; u32</code>, <code>storage_remove(key: u64, reg: u64) -&gt; u32</code></td></tr>
+<tr><td>Private state</td><td class="wrap"><code>private_storage_read / write / remove(…)</code> — same shapes, node-local</td></tr>
+<tr><td>Ordered index</td><td class="wrap"><code>storage_index_set / remove / remove_prefix / scan / last(…)</code> — node-local</td></tr>
+<tr><td>Output</td><td class="wrap"><code>value_return(ptr: u64)</code>, <code>log_utf8(ptr: u64)</code>, <code>emit(ptr: u64)</code>, <code>emit_with_handler(ptr, handler)</code></td></tr>
+<tr><td>Commit</td><td class="wrap"><code>commit(root_hash: u64, artifact: u64)</code></td></tr>
+<tr><td>Crypto</td><td class="wrap"><code>ed25519_verify(sig: u64, pk: u64, msg: u64) -&gt; u32</code></td></tr>
+<tr><td>Host-provided</td><td class="wrap"><code>time_now(dest: u64)</code>, <code>random_bytes(dest: u64)</code></td></tr>
+<tr><td>Cross-context</td><td class="wrap"><code>xcall(ptr: u64)</code></td></tr>
+<tr><td>Blobs</td><td class="wrap"><code>blob_create() -&gt; u64</code>, <code>blob_write / read / open / close(…)</code>, <code>blob_announce_to_context(…)</code></td></tr>
+<tr><td>Panic</td><td class="wrap"><code>panic(loc: u64)</code>, <code>panic_utf8(msg: u64, loc: u64)</code></td></tr>
+</table>
+<p class="page-subtitle" style="margin-top:0">A storage read/write/remove returns <code>1</code> on hit and <code>0</code> on miss. The index scan result is encoded as <code>u32</code> count, then for each pair <code>u32</code> key-len ‖ key ‖ <code>u32</code> value-len ‖ value.</p>
+
+<h3>Resource limits (defaults)</h3>
+<table class="spec-tbl">
+<tr><th>Limit</th><th>Default</th><th>Limit</th><th>Default</th></tr>
+<tr><td>memory pages</td><td>1024 (64&nbsp;MiB)</td><td>stack size</td><td>200&nbsp;KiB</td></tr>
+<tr><td>registers</td><td>100</td><td>register capacity</td><td>1&nbsp;GiB total</td></tr>
+<tr><td>max register</td><td>100&nbsp;MiB</td><td>logs</td><td>1024 × 16&nbsp;KiB</td></tr>
+<tr><td>events</td><td>100 × 16&nbsp;KiB</td><td>xcalls</td><td>100 × 16&nbsp;KiB</td></tr>
+<tr><td>storage key</td><td>1&nbsp;MiB</td><td>storage value</td><td>10&nbsp;MiB</td></tr>
+<tr><td>blob handles</td><td>100</td><td>blob chunk</td><td>10&nbsp;MiB</td></tr>
+<tr><td>method name</td><td>256 B</td><td>module size</td><td>20&nbsp;MiB</td></tr>
+</table>
+<p>Exceeding any limit traps the execution; because nothing has committed, the trap leaves state unchanged.</p>
+
+<h3>Outcome</h3>
+<div class="typedef" aria-label="Outcome">
+<span class="kw">struct</span> <span class="ty">Outcome</span> {<br>
+&nbsp;&nbsp;<span class="field">returns</span>: <span class="ty">Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, FunctionCallError&gt;</span>,<br>
+&nbsp;&nbsp;<span class="field">logs</span>: <span class="ty">Vec&lt;String&gt;</span>,<br>
+&nbsp;&nbsp;<span class="field">events</span>: <span class="ty">Vec&lt;Event&gt;</span>,<span style="color:var(--text-dim)">&nbsp;// { kind: String, data: Vec&lt;u8&gt;, handler: Option&lt;String&gt; }</span><br>
+&nbsp;&nbsp;<span class="field">xcalls</span>: <span class="ty">Vec&lt;XCall&gt;</span>,<span style="color:var(--text-dim)">&nbsp;// { context_id: [u8;32], function: String, params: Vec&lt;u8&gt; }</span><br>
+&nbsp;&nbsp;<span class="field">root_hash</span>: <span class="ty">Option&lt;[u8; 32]&gt;</span>,<br>
+&nbsp;&nbsp;<span class="field">artifact</span>: <span class="ty">Vec&lt;u8&gt;</span>,<br>
+&nbsp;&nbsp;<span class="field">migration_witness</span>: <span class="ty">Option&lt;Vec&lt;u8&gt;&gt;</span>,<br>
+}
+</div>
+</div>
+
 <div class="card gc">
 <h2>Where this leads</h2>
 <p>We now know where data operations originate. The other planes — access control, membership, admin — don't come from WASM; they come from <strong>governance</strong>, which is <strong>Chapter 6</strong>.</p>

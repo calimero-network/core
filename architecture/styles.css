@@ -814,3 +814,11 @@ html.light .typedef { background: #f0f3f6; border-color: #d0d7de; color: #24292f
   .seq-step { opacity: 1; }
   .diagram-container.animating .seq-step { animation: none; }
 }
+
+/* ── SHARED SPEC TABLE (protocol reference specification sections) ── */
+.spec-tbl { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: .85rem; }
+.spec-tbl th, .spec-tbl td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.spec-tbl th { color: var(--text-bright); font-weight: 600; }
+.spec-tbl td { color: var(--text-dim); }
+.spec-tbl code { font-size: .82rem; white-space: nowrap; }
+.spec-tbl td.wrap code { white-space: normal; }

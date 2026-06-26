@@ -102,6 +102,62 @@
 <p>Root operations that must be readable by everyone in a namespace (a join announcement, a key delivery envelope) travel in clear at the payload layer but are still inside the encrypted transport.</p>
 </div>
 
+<div class="card ga" id="spec">
+<h2>Specification</h2>
+<p>Every message is Borsh. Recall the encoding: an enum is a single-byte variant index then its fields in order; a <code>Vec&lt;u8&gt;</code> is a <code>u32</code> little-endian length then the bytes; an <code>Option</code> is a 1-byte present/absent flag.</p>
+
+<h3>Stream envelope</h3>
+<p>Point-to-point messages are wrapped in a <code>StreamMessage</code> with a rolling nonce:</p>
+<table class="spec-tbl">
+<tr><th>Variant</th><th>Fields</th></tr>
+<tr><td><code>Init</code></td><td class="wrap"><code>context_id: ContextId</code>, <code>party_id: PublicKey</code>, <code>payload: InitPayload</code>, <code>next_nonce: Nonce</code></td></tr>
+<tr><td><code>Message</code></td><td class="wrap"><code>sequence_id: u64</code>, <code>payload: MessagePayload</code>, <code>next_nonce: Nonce</code></td></tr>
+<tr><td><code>OpaqueError</code></td><td>— (failure without leaking state)</td></tr>
+<tr><td><code>NotMaterialized</code></td><td>— (member, but hasn't joined this context yet)</td></tr>
+</table>
+
+<h3>Stream requests (<code>InitPayload</code>) and responses (<code>MessagePayload</code>)</h3>
+<table class="spec-tbl">
+<tr><th>Request</th><th>Response</th><th>Purpose</th></tr>
+<tr><td><code>DagHeadsRequest</code></td><td><code>DagHeadsResponse { dag_heads: Vec&lt;[u8;32]&gt;, root_hash: Hash, scope_root: Option&lt;Hash&gt; }</code></td><td>sync handshake</td></tr>
+<tr><td><code>DeltaRequest { delta_id }</code></td><td><code>DeltaResponse { delta, author_id, governance_position_blob?, delta_signature?: [u8;64] }</code></td><td>fetch one op</td></tr>
+<tr><td><code>TreeNodeRequest { node_id, max_depth?: u8 }</code></td><td><code>TreeNodeResponse { nodes: Vec&lt;TreeNode&gt;, not_found }</code></td><td>tree-diff sync</td></tr>
+<tr><td><code>LevelWiseRequest { level: u32, parent_ids? }</code></td><td><code>LevelWiseResponse { level, nodes, has_more_levels, deleted_children }</code></td><td>level-wise sync</td></tr>
+<tr><td><code>SnapshotStreamRequest { boundary_root_hash, page_limit: u16, byte_limit: u32, resume_cursor? }</code></td><td><code>SnapshotPage { payload (lz4), uncompressed_len, cursor?, total_records }</code></td><td>full transfer</td></tr>
+<tr><td><code>GroupKeyRequest { group_id, requester_public_key }</code></td><td><code>GroupKeyResponse { key_envelope_bytes, responder_identity }</code></td><td>key recovery</td></tr>
+</table>
+
+<h3>Gossip broadcasts (<code>BroadcastMessage</code>)</h3>
+<p>The data-plane broadcast carries the operation and everything a peer needs to verify, decrypt, and authorize it:</p>
+<div class="typedef" aria-label="StateDelta">
+<span class="kw">StateDelta</span> {<br>
+&nbsp;&nbsp;<span class="field">context_id</span>: <span class="ty">ContextId</span>, <span class="field">author_id</span>: <span class="ty">PublicKey</span>,<br>
+&nbsp;&nbsp;<span class="field">delta_id</span>: <span class="ty">[u8;32]</span>, <span class="field">parent_ids</span>: <span class="ty">Vec&lt;[u8;32]&gt;</span>, <span class="field">hlc</span>: <span class="ty">HybridTimestamp</span>,<br>
+&nbsp;&nbsp;<span class="field">root_hash</span>: <span class="ty">Hash</span>,<br>
+&nbsp;&nbsp;<span class="field">artifact</span>: <span class="ty">bytes</span>,<span style="color:var(--text-dim)">&nbsp;// ENCRYPTED under the scope key</span><br>
+&nbsp;&nbsp;<span class="field">nonce</span>: <span class="ty">Nonce</span>, <span class="field">events</span>: <span class="ty">Option&lt;bytes&gt;</span>,<span style="color:var(--text-dim)">&nbsp;// events also encrypted</span><br>
+&nbsp;&nbsp;<span class="field">governance_position</span>: <span class="ty">Option&lt;GovernanceParentEdge&gt;</span>,<span style="color:var(--text-dim)">&nbsp;// the authorization cut</span><br>
+&nbsp;&nbsp;<span class="field">key_id</span>: <span class="ty">[u8;32]</span>,<span style="color:var(--text-dim)">&nbsp;// = SHA-256(scope_key)</span><br>
+&nbsp;&nbsp;<span class="field">delta_signature</span>: <span class="ty">Option&lt;[u8;64]&gt;</span>, <span class="field">producing_app_key</span>: <span class="ty">Option&lt;[u8;32]&gt;</span>,<br>
+}
+</div>
+<table class="spec-tbl">
+<tr><th>Other broadcast</th><th>Fields</th></tr>
+<tr><td><code>HashHeartbeat</code></td><td class="wrap"><code>context_id</code>, <code>root_hash: Hash</code>, <code>dag_heads: Vec&lt;[u8;32]&gt;</code></td></tr>
+<tr><td><code>NamespaceGovernanceDelta</code></td><td class="wrap"><code>namespace_id</code>, <code>delta_id</code>, <code>parent_ids</code>, <code>payload: Vec&lt;u8&gt;</code> (signed gov op)</td></tr>
+<tr><td><code>NamespaceStateHeartbeat</code></td><td class="wrap"><code>namespace_id</code>, <code>dag_heads: Vec&lt;[u8;32]&gt;</code></td></tr>
+</table>
+
+<h3>Wire limits</h3>
+<table class="spec-tbl">
+<tr><th>Constant</th><th>Value</th><th>Constant</th><th>Value</th></tr>
+<tr><td>tree request depth</td><td>16</td><td>DAG heads / msg</td><td>100</td></tr>
+<tr><td>signed gov op payload</td><td>64&nbsp;KiB</td><td>snapshot page (default)</td><td>256&nbsp;KiB</td></tr>
+<tr><td>entities / page</td><td>1000</td><td>decompressed page cap</td><td>8&nbsp;MiB</td></tr>
+</table>
+<p class="page-subtitle" style="margin-top:0">Signatures are fixed <code>[u8;64]</code> (Ed25519); hashes and ids are <code>[u8;32]</code>; a <code>Nonce</code> is the crypto-layer nonce, distinct from the raw <code>[u8;32]</code> nonces used by node-discovery messages.</p>
+</div>
+
 <div class="card gc">
 <h2>Where this leads</h2>
 <p>We can now move operations between nodes. The next three chapters trace the round trip end to end: <strong>Chapter 8</strong> creates and broadcasts an operation, <strong>Chapter 9</strong> receives and applies one, and <strong>Chapter 10</strong> reconciles whatever the eager channel missed.</p>

@@ -105,6 +105,52 @@
 <p>The pull is idempotent: against an already-agreeing peer it returns nothing, so running it whenever roots still differ is safe and self-limiting. It is what ensures the <em>whole</em> scope — data and governance together — actually converges, not just the half that the state-transfer protocols touch.</p>
 </div>
 
+<div class="card ga" id="spec">
+<h2>Specification</h2>
+
+<h3>The handshake</h3>
+<p>The initiator opens a stream and sends an <code>Init</code> carrying a <code>DagHeadsRequest</code>; the peer replies with:</p>
+<div class="typedef" aria-label="DagHeadsResponse">
+<span class="kw">DagHeadsResponse</span> {<br>
+&nbsp;&nbsp;<span class="field">dag_heads</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,<br>
+&nbsp;&nbsp;<span class="field">root_hash</span>: <span class="ty">Hash</span>,<span style="color:var(--text-dim)">&nbsp;// storage Merkle (entity) root</span><br>
+&nbsp;&nbsp;<span class="field">scope_root</span>: <span class="ty">Option&lt;Hash&gt;</span>,<span style="color:var(--text-dim)">&nbsp;// None when the scope can't be folded (cold / non-group)</span><br>
+}
+</div>
+
+<h3>The verdict</h3>
+<p>From the local and peer (scope_root, entity_root) pairs, the node computes one verdict. This is the exact decision:</p>
+<div class="typedef" aria-label="scope_verdict">
+<span class="kw">match</span> (local_scope_root, peer_scope_root):<br>
+&nbsp;&nbsp;(Some l, Some p) <span class="kw">if</span> l == p&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <span class="ty">Converged</span><br>
+&nbsp;&nbsp;(Some l, Some p) <span class="kw">if</span> entity_roots ==&nbsp;&rarr; <span class="ty">GovDiverged</span>(l, p)<br>
+&nbsp;&nbsp;(Some _, Some _)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <span class="ty">DataDiverged</span><br>
+&nbsp;&nbsp;_ <span class="kw">if</span> entity_roots ==&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <span class="ty">Converged</span><span style="color:var(--text-dim)">&nbsp;&nbsp;// asymmetric None ⇒ fall back to entity root</span><br>
+&nbsp;&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <span class="ty">DataDiverged</span>
+</div>
+<ul>
+<li><strong>Converged</strong> — nothing to do.</li>
+<li><strong>GovDiverged(local, peer)</strong> — entities agree, governance differs: pull governance operations.</li>
+<li><strong>DataDiverged</strong> — entities differ: run a state-transfer protocol.</li>
+</ul>
+
+<h3>State-transfer protocols</h3>
+<p>When data diverges, the node selects by tree shape and how much differs: <strong>tree comparison</strong> (<code>TreeNodeRequest</code> walking only differing subtrees, request depth clamped to 16), <strong>level-wise</strong> (breadth-first when differences are widespread), or <strong>snapshot</strong> (a fresh or far-behind node bootstraps with full, compressed pages). Pushed entities pass an authorization gate — the host drops any leaf whose author is no longer a member, and per-operation signatures are still verified on apply — so sync can never introduce an unauthorized write.</p>
+
+<h3>Post-sync governance reconciliation</h3>
+<p>After a data transfer completes, the node <strong>re-reads</strong> its (now possibly merged) root, recomputes <code>scope_root</code>, and if it still differs from the peer's it pulls governance. The pull is idempotent — it returns zero operations against an already-agreeing peer — so pulling whenever the root still differs is safe and self-limiting.</p>
+
+<h3>Triggers &amp; timing (defaults)</h3>
+<table class="spec-tbl">
+<tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+<tr><td>sync frequency</td><td>10 s</td><td>periodic check interval</td></tr>
+<tr><td>min interval</td><td>5 s</td><td>minimum gap between syncs of one scope</td></tr>
+<tr><td>session timeout</td><td>30 s</td><td>per-step / session budget</td></tr>
+<tr><td>wedge grace</td><td>~60 s</td><td>watchdog that unsticks a stalled session</td></tr>
+</table>
+<p>Beyond the periodic tick, a session also starts on a fresh <strong>join</strong>, on a <strong>heartbeat</strong> whose root doesn't match, and as the governance follow-up above.</p>
+</div>
+
 <div class="card gc">
 <h2>The operation's life, complete</h2>
 <p>That closes the loop the landing page opened. An operation is born in an execution (Chapter 8), broadcast over gossip (Chapter 7), received and folded by peers (Chapter 9) — and anything that channel missed is found and repaired here by comparing one 32-byte hash and transferring exactly what differs. No consensus, no quorum, no agreed order: just a signed operation DAG that folds to a state and a root, with divergence <strong>detected, not prevented</strong>.</p>

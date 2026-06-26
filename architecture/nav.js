@@ -25,6 +25,7 @@
     { label: '8 · The Write Path', href: 'protocol/write-path.html', dot: '#a5ff11', sub: true },
     { label: '9 · The Receive Path', href: 'protocol/receive-path.html', dot: '#a5ff11', sub: true },
     { label: '10 · Sync & Convergence', href: 'protocol/sync.html', dot: '#a5ff11', sub: true },
+    { label: 'Appendix · Storage Schema', href: 'protocol/storage.html', dot: '#06b6d4', sub: true },
     { section: 'For Builders' },
     { label: 'Getting Started', href: 'getting-started.html', dot: '#10b981' },
     { label: 'Core Concepts', href: 'concepts.html', dot: '#10b981' },
