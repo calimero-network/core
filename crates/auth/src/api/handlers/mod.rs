@@ -22,9 +22,11 @@ struct AuthUiStaticFiles;
 
 /// Re-export authentication flow handlers
 pub use auth::{
-    callback_handler, challenge_handler, login_handler, mock_token_handler, refresh_token_handler,
+    callback_handler, challenge_handler, login_handler, refresh_token_handler,
     revoke_token_handler, token_handler, validate_handler,
 };
+#[cfg(debug_assertions)]
+pub use auth::mock_token_handler;
 /// Re-export client key management handlers
 pub use client_keys::{delete_client_handler, list_clients_handler};
 /// Re-export key management handlers
