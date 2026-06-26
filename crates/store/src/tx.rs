@@ -78,13 +78,12 @@ impl<'a> Transaction<'a> {
     #[expect(clippy::use_self, reason = "Needed in order to specify a lifetime")]
     pub fn merge(&mut self, other: &Transaction<'a>) {
         for (entry, op) in other.iter() {
-            drop(self.cols.entry(entry.column).or_default().insert(
-                match op {
-                    Operation::Put { value } => value.clone(),
-                    Operation::Delete => unreachable!(),
-                },
-                op.clone(),
-            ));
+            drop(
+                self.cols
+                    .entry(entry.column)
+                    .or_default()
+                    .insert(Slice::from(entry.key().to_owned()), op.clone()),
+            );
         }
     }
 
