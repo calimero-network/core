@@ -8,6 +8,13 @@
   --sl-font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
 }
 
+/* Compact density: bake in the ~80% browser-zoom feel the team preferred.
+ * Starlight sizes fonts, spacing, sidebar and content width in rem, so scaling
+ * the root shrinks everything together (just like zoom). Nudge to taste:
+ * 80% ≈ 12.8px, 87.5% = 14px. */
+:root { font-size: 81.25%; } /* 13px base */
+@media (max-width: 50rem) { :root { font-size: 87.5%; } } /* a touch larger on phones */
+
 /* ---- Dark theme (default) ---- */
 :root[data-theme='dark'] {
   --sl-color-accent-low: #1a2e0b;
