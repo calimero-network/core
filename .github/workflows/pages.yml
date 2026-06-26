@@ -1,9 +1,10 @@
-name: Deploy Architecture Site
+name: Deploy Architecture Site (legacy — manual rollback only)
 
+# Demoted to manual-only: the Starlight site (docs-site.yml) is now the
+# published documentation. Keep this workflow as an emergency rollback — run it
+# via "Run workflow" to republish the legacy architecture/ site at the Pages
+# root.
 on:
-  push:
-    branches: [master]
-    paths: ['architecture/**']
   workflow_dispatch:
 
 permissions:

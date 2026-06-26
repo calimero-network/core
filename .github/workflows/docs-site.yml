@@ -1,14 +1,17 @@
 name: Deploy Docs Site (Starlight)
 
-# Builds the new Astro Starlight documentation site (docs-site/) and deploys it
-# to GitHub Pages. MANUAL ONLY for now (workflow_dispatch): a repo has a single
-# Pages site, currently owned by `pages.yml` (the legacy architecture/ folder).
-# Running this performs the migration cutover — it publishes the Starlight site
-# at the Pages root and preserves the legacy hand-built site under
-# /architecture-legacy/ so nothing is lost. To fully cut over later, retire
-# pages.yml and switch this `on:` to `push` on docs-site/** ; to roll back,
-# re-run pages.yml.
+# Builds the Astro Starlight documentation site (docs-site/) and deploys it to
+# GitHub Pages — this is now the PUBLISHED docs (it replaced the legacy
+# architecture/ site). It publishes Starlight at the Pages root and preserves
+# the old hand-built site under /architecture-legacy/ so nothing is lost.
+# Rollback: run the (now manual-only) `pages.yml` to republish architecture/.
 on:
+  push:
+    branches: [master]
+    paths:
+      - 'docs-site/**'
+      - 'architecture/**'
+      - '.github/workflows/docs-site.yml'
   workflow_dispatch:
 
 permissions:
