@@ -23,7 +23,7 @@ polished product. Grouped by theme; check items off as they land. See
 - [ ] 14. Tune the on-page table of contents (depth + scroll-spy) for long pages.
 - [ ] 15. Surface the ⌘K search hint in the header.
 - [ ] 16. Ensure breadcrumbs reflect track › page.
-- [ ] 17. Group the Protocol sidebar into Core / Subsystems / Appendix.
+- [x] 17. Group the Protocol sidebar into Core / Subsystems / Appendix.
 - [ ] 18. Add "See also / related pages" blocks at the foot of each page.
 - [ ] 19. Make the role chooser on the landing more prominent than the cards.
 - [x] 20. Add a Glossary page and link key terms to it.

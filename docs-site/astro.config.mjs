@@ -30,26 +30,140 @@ export default defineConfig({
           href: 'https://github.com/calimero-network/core',
         },
       ],
+      // Explicit, grouped + sequenced navigation (not autogenerate): each track
+      // separates "learn in order" from "look up", so the sidebar has a shape
+      // instead of being one flat list. URLs are unchanged (grouping only).
       sidebar: [
-        {
-          label: 'Start here',
-          items: [{ label: 'Overview', slug: 'index' }],
-        },
+        { label: 'Home', link: '/' },
         {
           label: 'Build',
-          autogenerate: { directory: 'build' },
+          items: [
+            { label: 'Overview', slug: 'build' },
+            {
+              label: 'Get started',
+              items: ['build/quickstart', 'build/tutorial'],
+            },
+            {
+              label: 'How-to guides',
+              items: [
+                'build/guides',
+                'build/guides/collections',
+                'build/guides/events',
+                'build/guides/cross-context',
+                'build/guides/blobs',
+                'build/guides/access-control',
+                'build/examples',
+                'build/testing',
+              ],
+            },
+            {
+              label: 'Reference',
+              items: ['build/sdk-macros', 'build/collections'],
+            },
+            {
+              label: 'Deep dives',
+              collapsed: true,
+              items: [
+                'build/permissioned-storage',
+                'build/advanced-sdk',
+                'build/storage-complexity',
+                'build/gotchas',
+              ],
+            },
+          ],
         },
         {
           label: 'Operate',
-          autogenerate: { directory: 'operate' },
+          items: [
+            { label: 'Overview', slug: 'operate' },
+            { label: 'Get started', items: ['operate/install'] },
+            {
+              label: 'Guides',
+              items: [
+                'operate/deployment',
+                'operate/networking',
+                'operate/security',
+                'operate/observability',
+                'operate/troubleshooting',
+                'operate/runbooks',
+              ],
+            },
+            {
+              label: 'Reference',
+              items: [
+                'operate/merod',
+                'operate/meroctl',
+                'operate/config',
+                'operate/admin-api',
+                'operate/auth',
+              ],
+            },
+          ],
         },
         {
           label: 'Protocol Reference',
-          autogenerate: { directory: 'protocol' },
+          items: [
+            { label: 'Overview', slug: 'protocol/overview' },
+            {
+              label: 'The core model',
+              items: [
+                'protocol/concepts',
+                'protocol/identities',
+                'protocol/operations',
+                'protocol/projection',
+              ],
+            },
+            {
+              label: 'The planes',
+              items: ['protocol/execution', 'protocol/governance'],
+            },
+            {
+              label: 'Moving & reconciling',
+              items: [
+                'protocol/networking',
+                'protocol/write-path',
+                'protocol/receive-path',
+                'protocol/sync',
+              ],
+            },
+            {
+              label: 'Subsystems',
+              items: [
+                'protocol/blobs',
+                'protocol/tee-attestation',
+                'protocol/xcall',
+                'protocol/upgrades',
+              ],
+            },
+            {
+              label: 'Deep dives',
+              collapsed: true,
+              items: [
+                'protocol/key-rotation',
+                'protocol/divergence-recovery',
+                'protocol/governance-edge-cases',
+                'protocol/capability-inheritance',
+                'protocol/crdt-internals',
+                'protocol/encryption',
+              ],
+            },
+            {
+              label: 'Reference',
+              items: ['protocol/glossary', 'protocol/storage'],
+            },
+          ],
         },
         {
           label: 'Contribute',
-          autogenerate: { directory: 'contribute' },
+          items: [
+            { label: 'Overview', slug: 'contribute' },
+            { label: 'Orientation', items: ['contribute/architecture'] },
+            {
+              label: 'Working on core',
+              items: ['contribute/development', 'contribute/docs'],
+            },
+            { label: 'Reference', items: ['contribute/adrs'] },
+          ],
         },
       ],
     }),
