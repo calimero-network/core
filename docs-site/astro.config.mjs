@@ -155,6 +155,7 @@ export default defineConfig({
                 'protocol/concepts',
                 'protocol/governance',
                 'protocol/capability-inheritance',
+                'protocol/applications',
               ],
             },
             {

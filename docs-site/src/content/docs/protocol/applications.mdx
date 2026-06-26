@@ -1,0 +1,173 @@
+---
+title: Applications, Bundles & Services
+description: The unit of code a context runs — what an application is, how a bundle distributes it, and how named services let one application carry many WASM modules.
+sidebar:
+  label: Applications & services
+---
+
+A **context** is a shared, replicated state machine. The code it runs is an
+**application**. This page explains that code-side model top-down: what an
+application *is*, how a **bundle** packages and distributes one, how **services**
+let a single application carry several WASM modules, and how a context picks the
+exact bytecode it executes.
+
+Throughout, the running example is a notes app, `notes-app`, that ships two
+modules: an `api` service that handles user requests and a `worker` service that
+runs background compaction.
+
+## What an application is
+
+An application is the unit of executable code a context targets: content-addressed
+WASM bytecode plus its embedded ABI. It is identified by an **application id** — a
+32-byte hash, shown base58 — and stored on a node as an `ApplicationMeta` record
+(`crates/store/src/types/application.rs`). The in-memory view handed to callers is
+`Application` (`crates/primitives/src/application.rs`):
+
+```rust
+pub struct Application {
+    pub id: ApplicationId,        // 32-byte hash, base58
+    pub blob: ApplicationBlob,    // { bytecode: BlobId, compiled: BlobId }
+    pub size: u64,
+    pub source: ApplicationSource,
+    pub metadata: Vec<u8>,
+    pub signer_id: String,        // did:key of the update authority (bundles)
+    pub package: String,          // package id from the manifest
+    pub version: String,
+    pub services: BTreeMap<String, ApplicationBlob>, // named modules
+}
+```
+
+`ApplicationBlob` is a pair of content-addressed blob ids: `bytecode` (the WASM) and
+`compiled` (an optional ahead-of-time-compiled cache; the all-zero blob id when
+absent). Because blobs are content-addressed, the same bytes always resolve to the
+same blob — see [Blobs](/protocol/blobs/).
+
+How the **application id** is derived depends on how the application entered the node:
+
+| Install kind | Application id is | Stability |
+| --- | --- | --- |
+| Raw `.wasm` | `hash_borsh(bytecode, size, source, metadata)` | tied to the exact bytes — any change is a new id |
+| Signed/dev bundle | `hash_borsh(package, signer_id)` | **version-stable** — same `package` + signer keeps one id across releases |
+
+Both are computed at install time in
+`crates/node/primitives/src/client/application/install.rs`. The raw-`.wasm` id folds
+in the bytecode blob id (already a content hash) together with size/source/metadata;
+`package` and `version` are *not* part of it, and default to `"unknown"` / `"0.0.0"`.
+The bundle id deliberately leaves out the bytecode: a new version of the same package
+from the same signer produces the **same** application id and overwrites the stored
+row in place. That version-stability is what lets an [upgrade](/protocol/upgrades/)
+move a context to new code without changing the id its members agree on.
+
+The stored `ApplicationMeta` carries the same shape with the package fields and a
+`services: Vec<ServiceMeta>` list. The `services` field was added after the initial
+schema, so `ApplicationMeta`'s Borsh decoder treats an old row that ends right after
+`signer_id` as having no services — older records keep deserializing without a
+migration.
+
+## A bundle is how an application is distributed
+
+An application is published as an **`.mpk` bundle** (Mero Package Kit): a
+gzip-compressed tar of a `manifest.json`, the WASM / ABI / migration artifacts it
+references, and an optional Ed25519 signature. Installing a bundle is what *produces*
+an application — the manifest's `package` and `signerId` fix the application id, and
+the artifacts become the stored bytecode and service blobs.
+
+The manifest format, the signing payload (RFC 8785 canonicalization + SHA-256), and
+the install trust split (signature required from a registry, optional for a local dev
+path) are documented in full under
+[Application Upgrades & Migration → Bundles, signing & install](/protocol/upgrades/).
+This page does not repeat that detail; it picks up at what the bundle *contains*.
+
+## Services: one application, many modules
+
+A bundle is usually a single WASM module: the manifest's top-level `wasm` (plus an
+optional `abi`). It can instead declare a `services` array of named modules, each a
+`{name, wasm, abi?}` record. The rule is in
+`crates/node/primitives/src/bundle/mod.rs`:
+
+> If `services` is present and non-empty, it takes priority over `wasm` / `abi`.
+
+So `notes-app`'s manifest carries:
+
+```text
+services: [
+  { name: "api",    wasm: { path: "api.wasm",    hash, size } },
+  { name: "worker", wasm: { path: "worker.wasm", hash, size } },
+]
+```
+
+On install the node ignores the top-level `wasm`/`abi`, adds one blob per service,
+and records them in `ApplicationMeta.services` (as `ServiceMeta { name, bytecode,
+compiled }`) — surfaced on `Application` as the `services` map keyed by name. A
+single-service bundle leaves `services` empty and uses the top-level `blob` instead.
+
+### Resolving which blob to run
+
+One application, many modules — so something has to pick the module. That is
+`Application::resolve_service_blob(service_name)`
+(`crates/primitives/src/application.rs`); the stored side mirrors it as
+`ApplicationMeta::resolve_service`. The rule:
+
+| `service_name` | `services` map | Resolved blob |
+| --- | --- | --- |
+| `None` | empty | the default `blob` (single-service app) |
+| `None` | exactly one entry | that one service's blob |
+| `None` | two or more entries | `None` — ambiguous, a name is required |
+| `Some("api")` | contains `api` | the `api` service's blob |
+| `Some("api")` | no such entry | `None` — service not found |
+
+```rust
+pub fn resolve_service_blob(&self, service_name: Option<&str>) -> Option<ApplicationBlob> {
+    match service_name {
+        None if self.services.is_empty() => Some(self.blob),       // single-service default
+        None if self.services.len() == 1 => /* the only service */,
+        None => None,                                              // multi-service needs a name
+        Some(name) => self.services.get(name).copied(),
+    }
+}
+```
+
+The practical consequence: a single-service application is always runnable with no
+name, but for `notes-app` a context **must** declare whether it is the `api` or the
+`worker` — `None` does not resolve.
+
+## How a context runs one
+
+A context binds to exactly one application and one service. Both live on its stored
+`ContextMeta` (`crates/store/src/types/context.rs`):
+
+```rust
+pub struct ContextMeta {
+    pub application: key::ApplicationMeta, // keyed by application id
+    pub root_hash: Hash,
+    pub dag_heads: Vec<[u8; 32]>,
+    pub service_name: Option<Box<str>>,    // which service this context runs
+}
+```
+
+`service_name` is chosen when the context is created (`meroctl context create
+<app_id> --service <name>`) and never changes for the life of the context. At
+execution time the node:
+
+1. looks up the application row for `ContextMeta.application` and takes its bytecode
+   blob;
+2. passes that blob together with the context's `service_name` to module loading
+   (`get_module` → `get_module_for_blob` →
+   `application_bytes_from_blob(blob, service_name)`), which, for a bundle blob,
+   extracts and compiles the selected service's WASM;
+3. runs the resolved module against the context's state.
+
+What actually *runs* once the blob is resolved — the host ABI boundary, the storage
+layers, the determinism contract — is [Application Execution](/protocol/execution/).
+
+An [upgrade](/protocol/upgrades/) swaps the executed **bytecode** while the
+**application id stays stable** (that is exactly the version-stable bundle id from the
+table above). The context keeps targeting the same application id and the same
+service name; only the blob behind it advances, version by version.
+
+## Where this leads
+
+An application's bundle id is anchored on its `signerId` — the `did:key` that holds
+update authority. That signing key is one of three distinct key roles in Calimero.
+
+→ [Identities & Keys](/protocol/identities/)
