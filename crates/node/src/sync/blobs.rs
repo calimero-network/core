@@ -139,6 +139,12 @@ impl SyncManager {
         if received_blob_id != blob_id {
             // Discard the incorrectly-hashed blob before propagating the error
             // so we don't persist corrupt data.
+            warn!(
+                %blob_id,
+                %received_blob_id,
+                advertised_size = size,
+                "blob hash mismatch after receive; deleting stored blob",
+            );
             if let Err(err) = self.node_client.delete_blob(received_blob_id).await {
                 warn!(%received_blob_id, %err, "failed to delete mismatched blob");
             }
