@@ -1,0 +1,111 @@
+---
+title: Security & threat model
+description: The trust assumptions, attacker capabilities, and concrete guarantees behind a Calimero context — what each layer protects, and what it deliberately does not.
+sidebar:
+  label: 'Security & threat model'
+  order: 95
+---
+
+This page states, plainly, what Calimero protects against and what it does not. The protocol has no consensus and no quorum: security rests on **signatures** (who authored an operation), **membership** (who is allowed to write), and **encryption keys** (who is allowed to read). Get those three right and the rest of the model follows.
+
+It cross-links [Encryption & Confidentiality](/protocol/encryption/) (the byte-level map of what is encrypted), [Governance](/protocol/governance/) (how membership and roles change), [Key Rotation](/protocol/key-rotation/) (how group keys turn over on removal), and the operator-facing [Security](/operate/security/) guide.
+
+## Trust assumptions
+
+Calimero's trust model is deliberately small and explicit:
+
+- **No quorum, no consensus, no agreed order.** There is no voting, no leader, no M-of-N threshold. State is a signed operation DAG that every node folds independently to the same result. Divergence is *detected* (by comparing a 32-byte root hash) and repaired by sync, not *prevented* by agreement.
+- **Members of a scope are mutually trusted to write default data.** Membership *is* the write boundary for ordinary (non-restricted) data. Any member can write — and delete — any non-restricted entity in the scope. This matches a shared key-value store: the people who hold the key are trusted not to wipe it. Data that needs a narrower writer set must be a **restricted object** with an explicit per-object ACL (see [Governance](/protocol/governance/)).
+- **The scope key gates read access.** Confidentiality is enforced by encryption: only a holder of the group/scope key can decrypt the data plane. Removing a member does not retroactively erase what they already read; it stops them from reading *future* state (see [Forward secrecy](#forward-secrecy-on-removal)).
+- **For TEE fleet nodes, hardware attestation is the trust anchor.** A read-only replica admits itself by proving — against Intel DCAP — that it runs an approved measurement inside genuine TDX hardware, in place of a human invitation. See [TEE Attestation](/protocol/tee-attestation/).
+
+The default-write rule is enforced in `crates/authz/src/lib.rs`. A scope member implicitly holds `WRITE | DELETE` (named `DEFAULT_MEMBER_MASK`) on any entity that has no explicit ACL — but **not** `ADMIN`, so a plain member cannot rotate an object's writer set and lock others out:
+
+```text
+// crates/authz/src/lib.rs
+const DEFAULT_MEMBER_MASK: OpMask = OpMask::WRITE.union(OpMask::DELETE);
+
+fn may(author, entity, required) -> bool {
+    if let Some(writers) = acl.get(entity) {
+        // Restricted object: explicit ACL is authoritative.
+        return writers.get(author).is_some_and(|held| held.contains(required));
+    }
+    // Non-restricted: default-write = membership.
+    is_scope_member(author) && DEFAULT_MEMBER_MASK.contains(required)
+}
+```
+
+The design consequence is stated in the code itself: *"any member can write and delete any non-restricted entity in the scope — a single compromised member can wipe default data."* That is intentional, not a gap. If you need a tighter writer set, make the data a restricted object.
+
+## Identity & signatures
+
+Every operation carries an Ed25519 signature by its author over the operation's content-addressed `id` (`crates/op/src/lib.rs`). Two rules make this load-bearing:
+
+1. **The signature is verified at the network edge, before the fold.** A peer verifies the signature against the claimed `author` *before* trusting an operation. The fold and the authorization check operate on content alone and perform no signature check — so an operation that reaches the projection has already been proven authentic. The code is explicit: *"Callers MUST verify this signature against `author` before trusting an operation; the fold path assumes pre-verified ops."*
+2. **The signature is not folded into state.** It authenticates the operation in transit; it is not part of the content hash, so it cannot perturb convergence. Each node verifies independently — there is no shared "the network agrees this is signed" step.
+
+Snapshot transfers carry the same guarantee at a finer grain: each entity record on the wire ships with enough information to re-verify its writer signature, and the receiver rejects any tampered or unsigned entity record before storing it (`crates/node/primitives/src/sync/snapshot.rs`).
+
+The upshot: **an attacker cannot forge an operation as another identity.** Authorship is cryptographic, not advisory.
+
+## Authorization at the causal cut
+
+Authorization is evaluated at the operation's **causal cut** — the governance state the author referenced when they wrote it — not at the receiver's "now". Because the verdict is computed from the at-cut membership and ACL, it is identical on every node regardless of receive order. This is *forward-only* authority: revoking a member stops them from authoring new operations, but does not invalidate operations they authored while still a member. There is no rewriting of history and no retroactive authorization. See [Governance](/protocol/governance/) and the receive path for how the cut is resolved.
+
+## Confidentiality
+
+Confidentiality is selective and enforced by payload-layer encryption *before* data is gossiped, so even a peer subscribed to the topic cannot read group-private data without the key. The full byte-level map lives in [Encryption & Confidentiality](/protocol/encryption/); the summary:
+
+| Data | Encrypted? | Key |
+| --- | --- | --- |
+| State-delta `artifact` (the CRDT actions) | **Yes** | Group/scope key (AES-256-GCM, `SharedKey::from_sk`) |
+| State-delta `events` (execution events) | **No** | Plaintext `serde_json`, shipped alongside the artifact |
+| Delta envelope: `root_hash`, `parent_ids`, `hlc`, `author_id`, `key_id`, `governance_position` | **No** | Cleartext routing/causality metadata |
+| Governance **Group** ops (`EncryptedGroupOp.ciphertext`) | **Yes** | Group key (`from_sk`); `group_id` / `key_id` / `signer` stay cleartext as routing tags |
+| Governance **Root** ops (`GroupCreated`, `MemberJoined`, `KeyDelivery`, …) | **No** | Cleartext by design, visible to all namespace members |
+| Key delivery (`KeyEnvelope.ciphertext`) | **Yes** | ECDH `SharedKey::new(sender_sk, recipient_pk)` over the 32-byte group key |
+
+All payload-layer encryption goes through one type, `calimero_crypto::SharedKey`: AES-256-GCM, 12-byte nonce, empty AAD. The symmetric variant (`from_sk`) moves *data* under a key the whole group already shares; the ECDH variant (`new`) moves *the key itself* to one recipient. A delta is tagged on the wire by `key_id = SHA-256(group_key)` (`crates/governance-store/src/group_keys.rs`) so receivers pick the right key without it ever appearing in cleartext.
+
+The pattern: **bulk group-private payloads are encrypted under the group key; the metadata that makes routing, causal ordering, and authorization work is cleartext.** Confidentiality protects *what changed*, not *that something changed, by whom, and in what shape*.
+
+## Forward secrecy on removal
+
+Read access is revoked by **rotating the group key**. When a member is removed, the remaining members generate a fresh group key and re-wrap it — once per *remaining* member — using ECDH-derived key envelopes. The removed member receives no envelope and is cryptographically locked out of all future state: any delta encrypted under the new `key_id` is undecryptable to them. This gives forward secrecy with respect to *future* writes.
+
+Two caveats follow directly from this design and are worth stating loudly:
+
+- **Rotation is forward-only.** It does not un-share data the removed member already decrypted while a member. Anything they read or copied before removal is theirs forever.
+- **Past ciphertext under the old key remains decryptable to anyone who held the old key.** Rotation changes the *next* key; it does not re-encrypt history.
+
+Mechanics and the rotation-log bookkeeping are in [Key Rotation](/protocol/key-rotation/).
+
+## What is NOT protected
+
+Stating the non-guarantees is as important as the guarantees:
+
+- **Execution `events` are plaintext.** They ride alongside the encrypted artifact on the gossip topic. Do not put secrets in events — treat them as public to any topic subscriber.
+- **Envelope metadata is observable on the topic.** The gossip topic for a context is its `context_id`, and messages are *signed but not encrypted*. Any subscriber — even one holding no group key — can read `author_id`, `parent_ids`, `hlc`, `root_hash`, and `key_id`, and from those reconstruct the DAG shape, write cadence, active participants, and convergence state. Confidentiality hides payloads, not traffic analysis.
+- **A compromised member can write and delete default data.** Membership is the write boundary for non-restricted entities (`DEFAULT_MEMBER_MASK = WRITE | DELETE`). A single compromised member key can corrupt or wipe any default entity in the scope. Narrow this only by making sensitive data restricted objects with explicit ACLs.
+- **Blobs are not encrypted** at rest or at the application layer; only the transport protects them in flight. `BlobId = SHA-256(plaintext)`.
+- **At-rest store *keys* are plaintext** even when the optional `EncryptedDatabase` wrapper is enabled (so range scans still work); only values are encrypted, and only if the wrapper is on.
+
+## What an attacker in position X can and can't do
+
+| Position | Can do | Can't do |
+| --- | --- | --- |
+| **Topic observer** (subscribed, holds no group key) | Read all envelope metadata: `context_id`, `author_id`, `parent_ids`, `hlc`, `root_hash`, `key_id`, `signer`; read plaintext `events`; perform traffic analysis (who is active, write cadence, DAG shape) | Decrypt the state-delta `artifact` or encrypted governance ops; forge a signed op; write to state; learn restricted-object contents |
+| **Malicious member** (holds the group key, valid identity) | Read all group data; write and delete any *non-restricted* entity (`DEFAULT_MEMBER_MASK`); author validly-signed ops; write to restricted objects they are an ACL writer on | Forge ops as another identity; write to restricted objects they are not listed on; grant themselves `ADMIN` on a default entity; perform admin-only governance without the capability bit |
+| **Removed member** (held the key until removal) | Decrypt past ciphertext encrypted under the *old* key; retain anything already read | Decrypt any state written under the *new* key after rotation; author ops accepted at a cut after their removal (authorization fails at the cut) |
+| **Non-member** (no key, not in the scope) | See only what is observable on the gossip topic (same as a topic observer) | Read any encrypted payload; write anything (no valid membership at any cut); be admitted without an invitation or — for TEE replicas — a valid attestation matching the admission policy |
+
+## TEE attestation as a trust anchor
+
+For hardware-attested fleet nodes, the trust substitution replaces "an admin vouches for this identity" with "Intel's DCAP chain vouches that this identity runs measurement X inside genuine TDX hardware." Admins pre-declare which measurements they trust (an **admission policy**); any node matching it joins unattended as a `ReadOnlyTee` member — it can decrypt and serve the namespace's data but can never write. The `report_data` binding ties each quote to a fresh nonce and the node's public key, so a captured quote cannot be replayed for a different identity. Full mechanics in [TEE Attestation](/protocol/tee-attestation/).
+
+## See also
+
+- [Encryption & Confidentiality](/protocol/encryption/) — the complete byte-level map of what is encrypted and with which key.
+- [Governance](/protocol/governance/) — membership, roles, restricted objects, and how authorization changes over time.
+- [Key Rotation](/protocol/key-rotation/) — how group keys turn over and how forward secrecy is realized.
+- [Security (operate)](/operate/security/) — operator-facing hardening, KMS, and at-rest encryption.

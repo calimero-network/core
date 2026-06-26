@@ -1,0 +1,191 @@
+---
+title: Migrating app state (ship v2)
+description: The app-developer how-to for evolving your #[app::state] schema across a context with a deterministic migration.
+sidebar:
+  label: Migrating app state
+  order: 8.5
+---
+
+import { Steps, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+When you ship a new version of your app whose **state shape changes**, the bytes
+already stored in every context can no longer be read as the new layout. The
+upgrade carries a **migration**: a deterministic transform that reshapes each
+context's existing state into the new schema, and runs identically on every node so
+all replicas converge.
+
+This is the build-side how-to. For how the protocol identifies versions, fences
+mid-upgrade writes, and cascades the upgrade across a group, see
+[Application upgrades &amp; migration](/protocol/upgrades/).
+
+<Aside type="note" title="When you need a migration">
+  Only when the **serialized shape** changes — adding/removing/renaming a field,
+  changing a field's type, or struct↔enum reshapes. Adding a new method, a new event
+  variant, or a pure bugfix that does not touch the layout needs only a version bump,
+  not a migration body.
+</Aside>
+
+## Write the migration
+
+<Steps>
+
+1. **Bump the schema version.** Set the new version on your state struct:
+
+   ```rust
+   #[app::state(version = 2, emits = for<'a> Event<'a>)]
+   pub struct AppStateV2 { /* ... */ }
+   ```
+
+2. **Author the transform.** Two ways — pick the derive for routine field changes,
+   or hand-write for anything that needs logic.
+
+   **Derive (`#[derive(app::Migrate)]`).** Declare the old type with `from =`, and
+   annotate only the fields that change. Unannotated fields **carry** 1:1.
+
+   ```rust
+   #[app::state(version = 2, emits = for<'a> Event<'a>)]
+   #[derive(app::Migrate)]
+   #[migrate(
+       from = AppStateV1,
+       emit = Event::Migrated { from_version: SCHEMA_VERSION_V1, to_version: SCHEMA_VERSION_V2 }
+   )]
+   pub struct AppStateV2 {
+       items: UnorderedMap<String, LwwRegister<String>>,   // carried (no attribute)
+       #[migrate(new = LwwRegister::new("added in v2".to_owned()))]
+       notes: LwwRegister<String>,                          // seed a new field
+   }
+   ```
+
+   The field strategies:
+
+   | Strategy | Field attribute | Result |
+   |----------|-----------------|--------|
+   | Carry (default) | *(none)* | `field: old.field` |
+   | New field | `#[migrate(new = expr)]` | `field: expr` |
+   | Rename | `#[migrate(from = old_name)]` | `field: old.old_name` |
+   | Convert | `#[migrate(with = expr)]` | `field: (expr)(old.field)` |
+   | Rename + convert | `#[migrate(from = old, with = expr)]` | `field: (expr)(old.old)` |
+
+   A rename, from `apps/migrations/migration-suite-v4-rename-field`:
+
+   ```rust
+   #[migrate(from = description)]
+   details: LwwRegister<String>,
+   ```
+
+   **Hand-written (`#[app::migrate]`).** For anything with logic — denormalizing,
+   splitting a field, populating a new collection — read the old bytes with
+   `read_raw()`, deserialize into a `...V1` struct, and build the new state.
+   `read_raw()` returns the raw root-state bytes (`None` if no state exists) with the
+   storage layer's 32-byte element-id suffix already stripped, so it deserializes
+   straight into your old struct. From `apps/migrations/scenario-crdt-native-v2`:
+
+   ```rust
+   #[app::migrate]
+   pub fn migrate_v1_to_v2() -> ScenarioCrdtNativeV2 {
+       let old_bytes = read_raw().unwrap_or_else(|| {
+           panic!("Migration failed: no existing state. Create a V1 context first.");
+       });
+       let old_state: ScenarioCrdtNativeV1 =
+           BorshDeserialize::deserialize(&mut &old_bytes[..])
+               .unwrap_or_else(|e| panic!("Migration failed: V1 deserialization error {e:?}"));
+
+       app::emit!(Event::Migrated {
+           from_version: SCHEMA_VERSION_V1,
+           to_version: SCHEMA_VERSION_V2,
+       });
+
+       // Denormalize v1 keys into a new tags vector — sorted for cross-node determinism.
+       let mut keys: Vec<String> =
+           old_state.items.entries().unwrap().map(|(k, _v)| k).collect();
+       keys.sort();
+       let mut tags: Vector<LwwRegister<String>> = Vector::new();
+       for k in keys {
+           tags.push(k.into()).unwrap();
+       }
+
+       ScenarioCrdtNativeV2 { items: old_state.items, title: old_state.title, tags }
+   }
+   ```
+
+3. **Guard it with a `#[app::migration_check]`.** This pre-commit predicate gets the
+   deserialized `old` and `new` state and returns `bool`; `false` aborts the
+   migration before it commits. Three built-in predicates cover the common
+   invariants:
+
+   | Predicate | Checks |
+   |-----------|--------|
+   | `entity_count_parity(old, new, delta)` | `\|old.count() - new.count()\| <= delta` — catches silent drops/dupes |
+   | `no_orphaned_refs(refs, keys)` | every id in `refs` exists in `keys` — catches dangling references |
+   | `conservation(old_total, new_total)` | `old_total == new_total` — catches off-by-one / drift |
+
+   From `apps/migrations/scenario-migration-check-pass-v2`:
+
+   ```rust
+   #[app::migration_check]
+   pub fn check(old: ScenarioMigrationCheckPassV1, new: ScenarioMigrationCheckPassV2) -> bool {
+       let old_keys: Vec<String> = old.items.entries().unwrap().map(|(k, _v)| k).collect();
+       let new_keys: Vec<String> = new.items.entries().unwrap().map(|(k, _v)| k).collect();
+       entity_count_parity(&old_keys, &new_keys, 0)
+   }
+   ```
+
+   A check can take an optional third `witness` parameter if your `#[app::migrate]`
+   returns `(NewState, Witness)` and you want to assert against data the transform
+   captured.
+
+</Steps>
+
+## The determinism rules
+
+A migration must be a **pure function of the old state**. It is replayed
+independently on every node, and they must all produce byte-identical new state or
+the context will diverge.
+
+- **No clock, no randomness, no external input.** `env::time_now()`, random sources,
+  or anything node-specific will diverge. Derive every new value from the old state
+  alone.
+- **Sort before you iterate into ordered structures.** Map iteration order is not
+  guaranteed; if you fold map entries into a `Vector` or any positional structure,
+  `sort()` the keys first (as the example above does) so every node builds the same
+  order.
+- **Use the deterministic CRDT mutators.** `Counter::increment` and `Rga::insert`
+  read the live executor id / HLC and **panic** when replayed in a migration. Use
+  their explicit siblings instead:
+
+  ```rust
+  counter.increment_for(&executor_id)?;            // not increment()
+  rga.insert_str_at_timestamp(pos, ts, text)?;      // not insert()
+  ```
+
+<Aside type="caution" title="Migrations run in merge mode">
+  The runtime executes your migrate in merge mode and reassigns deterministic
+  collection ids afterward, so newly created collections get the same ids on every
+  node. That is also why the non-deterministic mutators panic here rather than
+  silently diverging — treat the panic as the SDK catching a non-convergent
+  migration for you.
+</Aside>
+
+## Deploy across a group
+
+A migration is shipped as part of an application version, then rolled out to every
+context running it. The version is fenced so a mid-upgrade context will not accept
+stale-schema writes, and each node runs the same migrate locally as it adopts the new
+version — converging without re-syncing the whole state. The operator steps and the
+cascade mechanics live in:
+
+- [Operate](/operate/) — installing and rolling out an application version.
+- [Application upgrades &amp; migration](/protocol/upgrades/) — version identity, the
+  wire fence, and how the upgrade cascades across a group.
+
+The scenarios under `apps/migrations/` are runnable end-to-end fixtures (add field,
+remove field, rename, change type, struct→enum, CRDT-native, migration-check
+pass/fail, and more) — the closest thing to a test suite for your own migration.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The #[app::*] attribute macros, including state, migrate, and migration_check." />
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Custom Mergeable, deterministic ids, and the merge registry behind migrations." />
+  <LinkCard title="Application upgrades" href="/protocol/upgrades/" description="The protocol view: version identity, fencing, and group cascade." />
+</CardGrid>

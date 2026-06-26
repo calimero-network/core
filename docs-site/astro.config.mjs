@@ -62,7 +62,13 @@ export default defineConfig({
             },
             {
               label: 'Reference',
-              items: ['build/sdk-macros', 'build/collections'],
+              items: [
+                'build/sdk-macros',
+                'build/host-functions',
+                'build/collections',
+                'build/state-modeling',
+                'build/error-handling',
+              ],
             },
             {
               label: 'Deep dives',
@@ -70,6 +76,7 @@ export default defineConfig({
               items: [
                 'build/permissioned-storage',
                 'build/advanced-sdk',
+                'build/migrations',
                 'build/storage-complexity',
                 'build/gotchas',
               ],
@@ -115,6 +122,7 @@ export default defineConfig({
                 'protocol/identities',
                 'protocol/operations',
                 'protocol/projection',
+                'protocol/hlc',
               ],
             },
             {
@@ -128,6 +136,7 @@ export default defineConfig({
                 'protocol/write-path',
                 'protocol/receive-path',
                 'protocol/sync',
+                'protocol/sync-internals',
               ],
             },
             {
@@ -153,7 +162,12 @@ export default defineConfig({
             },
             {
               label: 'Reference',
-              items: ['protocol/glossary', 'protocol/storage'],
+              items: [
+                'protocol/security-model',
+                'protocol/limits',
+                'protocol/glossary',
+                'protocol/storage',
+              ],
             },
           ],
         },
@@ -161,10 +175,13 @@ export default defineConfig({
           label: 'Contribute',
           items: [
             { label: 'Overview', slug: 'contribute' },
-            { label: 'Orientation', items: ['contribute/architecture'] },
+            {
+              label: 'Orientation',
+              items: ['contribute/architecture', 'contribute/crate-guide'],
+            },
             {
               label: 'Working on core',
-              items: ['contribute/development', 'contribute/docs'],
+              items: ['contribute/development', 'contribute/testing', 'contribute/docs'],
             },
             { label: 'Reference', items: ['contribute/adrs'] },
           ],

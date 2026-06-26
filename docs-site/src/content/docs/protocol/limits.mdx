@@ -1,0 +1,107 @@
+---
+title: Limits, capabilities & roles
+description: The hard constants — execution resource limits, wire-protocol caps, the capability bitmask, the four member roles, and the data-plane operation mask.
+sidebar:
+  label: 'Limits & capabilities'
+  order: 96
+---
+
+This is a reference page of the fixed numbers and bitsets a Calimero context enforces: how big a value can be, how large a signed governance op may grow, what each role is allowed to do, and which bits make up a capability or an operation mask. Every figure here is sourced from a named constant in the codebase — when the code and this page disagree, the code wins.
+
+Cross-links: [Build gotchas](/build/gotchas/) (the limits you hit in practice), [Governance](/protocol/governance/) (how roles and capabilities are assigned), and [Capability inheritance](/protocol/capability-inheritance/) (how capability bits flow through subgroups).
+
+## Execution limits (`VMLimits`)
+
+These bound a single WASM execution. Defaults live in `crates/runtime/src/logic.rs` (`VMLimits::default`); a node may override them, but these are what ship.
+
+| Limit (`VMLimits` field) | Default | Notes |
+| --- | --- | --- |
+| `max_memory_pages` | 1024 pages = **64 MiB** | One WASM page is 64 KiB; `1024 × 64 KiB`. |
+| `max_stack_size` | **200 KiB** | Guest call stack. |
+| `max_registers` | **100** | Number of host-call registers. |
+| `max_register_size` | **100 MiB** | Per-register data cap (constrained `< u64::MAX`). |
+| `max_registers_capacity` | **1 GiB** | Total across all registers. |
+| `max_logs` | **1024** | Log-line count per execution. |
+| `max_log_size` | **16 KiB** | Per line; an over-long line *traps* (`LogLengthOverflow`), it is not truncated. |
+| `max_events` | **100** | Emitted events per execution. |
+| `max_event_kind_size` | **100 bytes** | Event "kind" string. |
+| `max_event_data_size` | **16 KiB** | Event data payload. |
+| `max_xcalls` | **100** | Cross-context calls per execution. |
+| `max_xcall_function_size` | **100 bytes** | Cross-context call function name. |
+| `max_xcall_params_size` | **16 KiB** | Cross-context call params. |
+| `max_storage_key_size` | **1 MiB** | Per storage key (`NonZeroU64`). |
+| `max_storage_value_size` | **10 MiB** | Per storage value (`NonZeroU64`). |
+| `max_blob_handles` | **100** | Concurrent open blob handles. |
+| `max_blob_chunk_size` | **10 MiB** | Per read/write chunk against a blob. |
+| `max_method_name_length` | **256 bytes** | Entrypoint method name. |
+| `max_module_size` | **20 MiB** | WASM module size before compilation (anti-DoS). |
+
+## Wire limits
+
+Caps on what crosses the network — RPC requests, signed governance ops, sync snapshot transfers, and DAG-head sets. Snapshot constants are in `crates/node/primitives/src/sync/snapshot.rs`; the governance DAG-head cap is in `crates/context/config/src/types.rs`; request-validation caps are in `crates/server/primitives/src/validation.rs`.
+
+| Limit | Value | Constant / source |
+| --- | --- | --- |
+| RPC call args (`args_json`) | **10 MiB** (`10 × 1024 × 1024`) | `MAX_ARGS_JSON_SIZE` (`validation.rs`) |
+| Signed governance-op payload | **64 KiB** (`64 × 1024`) | `MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES` (`snapshot.rs`) |
+| Group/member/context metadata | **64 KiB** | `MAX_METADATA_SIZE` (`validation.rs`) |
+| TEE quote (base64) | **64 KiB** | `MAX_QUOTE_B64_LENGTH` (`validation.rs`) |
+| Governance DAG heads | **32** | `MAX_GOVERNANCE_DAG_HEADS` (`context/config/types.rs`) |
+| Sync DAG heads (per snapshot) | **100** | `MAX_DAG_HEADS` (`snapshot.rs`) |
+| Snapshot page size — default | **256 KiB** (`256 × 1024`) | `DEFAULT_SNAPSHOT_PAGE_SIZE` |
+| Snapshot page size — max | **4 MiB** (`4 × 1024 × 1024`) | `MAX_SNAPSHOT_PAGE_SIZE` |
+| Entities per snapshot page | **1000** | `MAX_ENTITIES_PER_PAGE` |
+| Entity data size (per record) | **1 MiB** | `MAX_ENTITY_DATA_SIZE` |
+| Total pages per snapshot | **10 000** | `MAX_SNAPSHOT_PAGES` (≈2.5 GB at 256 KiB/page) |
+| Compressed page payload | **8 MiB** | `MAX_COMPRESSED_PAYLOAD_SIZE` |
+
+:::note
+There are two distinct DAG-head caps and they are not the same number. **32** bounds the *governance* DAG (`MAX_GOVERNANCE_DAG_HEADS`); **100** bounds the *sync snapshot* head set (`MAX_DAG_HEADS` in `snapshot.rs`). The governance store internally also triggers head compaction at **64** heads (its own `MAX_DAG_HEADS`), which is a compaction threshold, not a wire cap.
+:::
+
+## Capability bitmask (`MemberCapabilities`)
+
+A member's capabilities are a `u32` bitset (`crates/context/config/src/lib.rs`, also exported via `crates/primitives/src/context.rs`). These gate governance actions beyond the implicit default-write that membership already grants. Capabilities flow through open subgroups — see [Capability inheritance](/protocol/capability-inheritance/).
+
+| Bit | Constant | Grants |
+| --- | --- | --- |
+| `1 << 0` | `CAN_CREATE_CONTEXT` | Create a context within the group. |
+| `1 << 1` | `CAN_INVITE_MEMBERS` | Issue invitations to the group. |
+| `1 << 2` | `CAN_JOIN_OPEN_SUBGROUPS` | Be inherited as a member of `Open` subgroups beneath this group. Granted to non-admins by default; admins revoke it as a deny-list. |
+| `1 << 3` | `MANAGE_MEMBERS` | Add/remove members and manage their roles. |
+| `1 << 4` | `MANAGE_APPLICATION` | Manage the group's application (e.g. upgrades). |
+| `1 << 5` | `CAN_CREATE_SUBGROUP` | Create a subgroup directly under the namespace root (the "any member can start a channel" knob). |
+| `1 << 6` | `CAN_DELETE_SUBGROUP` | Cascade-delete a subgroup and its subtree. A delegation knob, not a default. |
+| `1 << 7` | `CAN_MANAGE_VISIBILITY` | Flip a subgroup's `Open` ↔ `Restricted` visibility without full admin. |
+| `1 << 8` | `CAN_MANAGE_METADATA` | Set group/member/context metadata (`*MetadataSet` ops) without full admin. A member may always set *their own* member metadata regardless. |
+
+## The four roles (`GroupMemberRole`)
+
+A member's role (`crates/primitives/src/context.rs`) is the coarse classification; capability bits refine what a non-admin can additionally do.
+
+| Role | Read | Write default data | Governance | Notes |
+| --- | --- | --- | --- | --- |
+| `Admin` | Yes | Yes | Yes — holds management capabilities implicitly (add/remove members, roles, metadata, visibility). | Removal is guarded so a group is never left without another admin. |
+| `Member` | Yes | Yes (`DEFAULT_MEMBER_MASK` on non-restricted entities) | Only what their capability bits grant. | The ordinary participant; the write boundary for default data. |
+| `ReadOnly` | Yes | No | No | Holds the group key to decrypt and read, but cannot author write ops. |
+| `ReadOnlyTee` | Yes | No | No | A TEE-attested fleet read replica admitted by hardware attestation, not invitation. Removal cascades an in-band self-purge. See [TEE Attestation](/protocol/tee-attestation/). |
+
+## Data-plane operation mask (`OpMask`)
+
+Separate from governance capabilities, the data plane authorizes individual writes through a 3-bit `OpMask` (`crates/storage/src/entities.rs`). It answers "may this author perform this kind of operation on this entity?"
+
+| Bit | Constant | Meaning |
+| --- | --- | --- |
+| `0b001` | `OpMask::WRITE` | Create/update (upsert) an entity. |
+| `0b010` | `OpMask::DELETE` | Delete an entity. |
+| `0b100` | `OpMask::ADMIN` | Change an entity's writer set (rotate its ACL / ownership). |
+| `0b000` | `OpMask::NONE` | No rights. |
+| `0b111` | `OpMask::FULL` | `WRITE` + `DELETE` + `ADMIN`. |
+
+Membership implicitly grants `WRITE | DELETE` (`DEFAULT_MEMBER_MASK`) on any non-restricted entity — but **not** `ADMIN`, so a plain member can write and delete default data yet cannot lock others out by rotating an object's writer set. Restricted objects override this with an explicit per-object ACL. The full authorization story is in [Governance](/protocol/governance/) and the [Security & threat model](/protocol/security-model/).
+
+## See also
+
+- [Build gotchas](/build/gotchas/) — the limits and edge cases you actually trip over when building.
+- [Governance](/protocol/governance/) — how roles and capabilities are assigned and checked.
+- [Capability inheritance](/protocol/capability-inheritance/) — how capability bits flow through open subgroups.

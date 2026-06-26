@@ -1,0 +1,161 @@
+---
+title: Environment & host functions
+description: The env::* host functions the Calimero SDK exposes to your app — identity, output, logging, events, crypto, time, xcall, blobs, and private storage.
+sidebar:
+  label: Host functions
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Everything your app can ask the node to do at runtime goes through a host
+function. The SDK wraps each one as a plain Rust function under
+`calimero_sdk::env`, defined in `crates/sdk/src/env.rs`. On `wasm32` these call
+into the host across the WASM boundary; off-`wasm32` (the in-process test
+harness) they route to a native mock.
+
+This page is the app-author reference: *what can my app call, and what does it
+do*. For the wire-level ABI (registers, buffer descriptors, return-code
+conventions) see [`execution`](/protocol/execution/) and the runtime's
+`crates/runtime/HOST_FUNCTIONS.md`.
+
+<Aside type="note">
+  Bring the functions into scope with `use calimero_sdk::env;` and call them as
+  `env::executor_id()`, `env::log(..)`, and so on. Most apps reach for only a
+  handful — identity, logging, events, and time. State lives in CRDT
+  collections, not in raw `env::storage_*` calls; see
+  [`collections`](/build/collections/).
+</Aside>
+
+## Context & identity
+
+Who is running, in which context, and on whose behalf.
+
+| Function | What it does | Gotcha |
+|----------|--------------|--------|
+| `env::context_id() -> [u8; 32]` | The 32-byte ID of the context this execution runs in. | Same for every member of the context. Not an identity — don't use it to authorize a caller. |
+| `env::executor_id() -> [u8; 32]` | The 32-byte public key of the identity executing this call. | This is "who is calling" within the context. Use it as the actor for per-user logic. |
+| `env::xcall_origin() -> Option<[u8; 32]>` | The context that dispatched the current cross-context call, or `None` for a direct/RPC call. | Set by the node from the calling context — it cannot be forged. Return-`None` lets a method reject direct calls and require xcall-only invocation. |
+| `env::input() -> Option<Vec<u8>>` | The raw, undecoded input bytes for this call (typically JSON-encoded arguments). | `#[app::logic]` already decodes method arguments for you. You only need `input()` for custom entry points or raw payloads. |
+
+## Output
+
+How a method's return value (or error) leaves the WASM module.
+
+| Function | What it does | Gotcha |
+|----------|--------------|--------|
+| `env::value_return(result: &Result<T, E>)` | Sets the final return value — the `Ok` or `Err` variant the caller receives. | **Macro-driven.** You don't call this; the `#[app::logic]` codegen serializes your method's return value to JSON and calls it. |
+| `env::commit(root_hash: &[u8; 32], artifact: &[u8])` | Commits the execution's state root and CRDT artifact for persistence and sync. | **Macro-driven.** Emitted by the generated method wrapper. Called exactly once per mutating call; never call it yourself. |
+
+<Aside type="note">
+  `value_return` and `commit` are listed here so the model is complete, but
+  they're part of the generated method boundary. Returning a value (or an
+  `Err`) from your method is how you drive them — see
+  [`error-handling`](/build/error-handling/).
+</Aside>
+
+## Logging
+
+| Function | What it does | Gotcha |
+|----------|--------------|--------|
+| `env::log(message: &str)` | Appends a UTF-8 line to the execution log, surfaced in the node logs and the execution outcome. | Logs are bounded (`max_logs`, `max_log_size`). Prefer the `app::log!("..", x)` macro for formatting. Logging is a side effect, not state — it does not sync. |
+
+## Events
+
+Structured notifications for off-chain consumers (WebSocket subscribers, the
+admin API). An event type implements `AppEvent`; in practice you derive it with
+`#[app::event]`.
+
+| Function | What it does | Gotcha |
+|----------|--------------|--------|
+| `env::emit(event: &T)` | Emits an event with a `kind` and serialized `data`. | Bounded by `max_events` / `max_event_data_size`. Events are observational — they don't mutate state and aren't replayed during sync. |
+| `env::emit_with_handler(event: &T, handler: &str)` | Emits an event and names a handler method to run after it is processed. | Handlers may run **in parallel** and out of order — they must be commutative, idempotent, and side-effect-free (CRDT-only). See the SDK `event` module notes. |
+
+<Aside type="tip">
+  Use `app::emit!(MyEvent { .. })` rather than calling `env::emit` directly —
+  the macro wires up `kind`/`data` for you. See
+  [`sdk-macros`](/build/sdk-macros/).
+</Aside>
+
+## Crypto
+
+| Function | What it does | Gotcha |
+|----------|--------------|--------|
+| `env::ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8]) -> bool` | Verifies an Ed25519 signature over `message` for `public_key`. | Returns `true`/`false`; it does not bail on an invalid signature — check the bool. Has no native mock: it panics under `TestHost`. |
+
+## Time & randomness
+
+<Aside type="caution">
+  **Both of these are non-deterministic. Never use them in state-mutating
+  logic.** Calimero replicates an app by replaying CRDT deltas across nodes; a
+  value that differs per node or per call makes replicas diverge. Treat
+  `time_now` and `random_bytes` as inputs you stamp into a value *once* (e.g. a
+  client-supplied timestamp or a generated ID passed in as an argument), not as
+  something to branch state on.
+</Aside>
+
+| Function | What it does | Gotcha |
+|----------|--------------|--------|
+| `env::time_now() -> u64` | The current Unix timestamp in **nanoseconds**. | Wall-clock; differs node-to-node. Non-deterministic — see the caution above. |
+| `env::random_bytes(buf: &mut [u8])` | Fills `buf` with random bytes from the host. | Non-deterministic in production. Under the test harness it is a deterministic, **non-cryptographic** PRNG — don't rely on it for security in tests. |
+
+## Cross-context calls
+
+| Function | What it does | Gotcha |
+|----------|--------------|--------|
+| `env::xcall(context_id: &[u8; 32], function: &str, params: &[u8])` | Queues a call to `function` in another context, run locally **after** the current execution finishes. | Fire-and-queue: it returns no value to the caller and is not executed inline. Has no native mock (panics under `TestHost`). Prefer the typed `#[app::xcall]` surface. |
+
+See [`xcall`](/protocol/xcall/) for the dispatch and namespace model, and
+[`advanced-sdk`](/build/advanced-sdk/) for the typed wrapper.
+
+## Blobs
+
+Streaming large binary objects. You write through a handle, finalize to get a
+content-addressed 32-byte ID, then anyone can open that ID for reading.
+
+| Function | What it does | Gotcha |
+|----------|--------------|--------|
+| `env::blob_create() -> u64` | Opens a new write handle; returns a file descriptor. | The descriptor is only valid for this execution. |
+| `env::blob_write(fd: u64, data: &[u8]) -> u64` | Appends `data` to the write handle; returns bytes written. | Stream in chunks for large payloads rather than one huge buffer. |
+| `env::blob_close(fd: u64) -> [u8; 32]` | Finalizes a write handle and returns the blob's 32-byte ID (or, for a read handle, returns its ID and cleans up). | Panics if finalization fails. The ID is content-addressed — identical bytes yield the same ID. |
+| `env::blob_open(blob_id: &[u8; 32]) -> u64` | Opens an existing blob for reading; returns a file descriptor. | Returns `0` if the blob is not found — check before reading. |
+| `env::blob_read(fd: u64, buffer: &mut [u8]) -> u64` | Reads into `buffer`; returns bytes read. | Returns `0` at end of blob — loop until it does. |
+| `env::blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]) -> bool` | Announces a blob to a context for network discovery. | A context may only announce blobs **to itself** — passing any other `target_context_id` returns `false` without announcing. |
+
+See [`blobs`](/protocol/blobs/) for replication and discovery.
+
+## Private storage
+
+Node-local key/value storage that is **NOT synchronized** across the network —
+for secrets, node-specific configuration, or anything that must not leave the
+node.
+
+<Aside type="caution">
+  Private storage is per-node and is never replicated. Two members of the same
+  context will read different values (or `None`). Never make synchronized state
+  depend on a private read — that diverges replicas. The backend is also
+  *optional* and may be absent at runtime.
+</Aside>
+
+| Function | What it does | Gotcha |
+|----------|--------------|--------|
+| `env::private_storage_read(key: &[u8]) -> Option<Vec<u8>>` | Reads a node-local value. | `None` means either "no such key" *or* "private storage unavailable on this node" — the two are indistinguishable. |
+| `env::private_storage_write(key: &[u8], value: &[u8]) -> bool` | Writes a node-local value. | Returns `true` on success, `false` if private storage is unavailable (a no-op). This bool is success/failure — unlike synchronized `storage_write`, whose bool means "a previous value was evicted". |
+| `env::private_storage_remove(key: &[u8]) -> bool` | Removes a node-local value. | `true` if the key existed and was removed, `false` if absent or unavailable. |
+
+See [`permissioned-storage`](/build/permissioned-storage/) for the
+synchronized-vs-local storage model.
+
+<Aside type="caution">
+  A few host functions exist for completeness but do nothing useful today —
+  e.g. HTTP `fetch` is wired but **blocked** (always reports failure), and the
+  cross-context / blob / signature helpers have no in-process mock and panic
+  under `TestHost`. Don't build app logic on blocked functions.
+</Aside>
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Execution & ABI" href="/protocol/execution/" description="The wire-level contract behind every env::* call — registers, buffers, return codes." />
+  <LinkCard title="Error handling" href="/build/error-handling/" description="How returning Ok/Err drives value_return and reaches the caller." />
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Typed wrappers over xcall, events, and the lower-level surface." />
+</CardGrid>

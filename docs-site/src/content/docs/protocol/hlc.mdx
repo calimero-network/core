@@ -1,0 +1,121 @@
+---
+title: The Hybrid Logical Clock
+description: The hybrid logical clock that stamps every operation and resolves last-writer-wins ordering without synchronized clocks.
+sidebar:
+  label: Hybrid Logical Clock
+---
+
+Every operation Calimero produces carries a timestamp, and last-writer-wins (LWW) state resolves conflicts by comparing those timestamps. But there is no global clock in a peer-to-peer network: machine clocks drift, and two nodes can mint events at "the same" wall-clock instant. A plain physical timestamp would let a node that is a few seconds slow overwrite an event that genuinely happened later, or tie two events with no deterministic winner.
+
+The Hybrid Logical Clock (HLC) is the fix. It is a single 64-bit value that *looks* like wall-clock time but is *nudged forward* whenever a higher clock is observed, so it stays **causally monotonic**: if operation `B` causally follows operation `A`, then `B`'s timestamp is strictly greater than `A`'s — on every node, regardless of clock skew. Pairing the clock with a per-instance `ID` makes every timestamp globally unique with no coordination.
+
+The implementation lives in `crates/storage/src/logical_clock.rs`. It is modelled on the [`uhlc`](https://github.com/atolab/uhlc-rs) crate (as used in Eclipse Zenoh), but with pluggable time and randomness sources so the same clock runs inside the deterministic WASM guest, which has no access to the system clock or RNG.
+
+## What an HLC buys you
+
+A pure logical (Lamport) clock orders causally-related events correctly but drifts arbitrarily far from real time. A pure physical clock tracks real time but cannot guarantee monotonicity under skew. The HLC combines them:
+
+- **Physical time** (from the host clock) gives wall-clock semantics — timestamps are close to real time, useful for TTLs and debugging.
+- **A logical counter** (carried in the low bits) guarantees happens-before ordering even when the physical clock stalls or goes backwards.
+
+The result is immune to clock skew without ever needing the nodes to agree on a clock.
+
+## The NTP64 format
+
+The time component is a 64-bit NTP64 value (RFC-5909): the high 32 bits are seconds, the low 32 bits are a fraction of a second. Calimero reserves the **low 16 bits** of that 64-bit word as the HLC logical counter (`COUNTER_BITS = 16` in `logical_clock.rs:222`).
+
+```text
+ 63                       32 31                        0
+┌──────────────────────────┬──────────────────────────┐
+│     Seconds (32 bits)    │    Fraction (32 bits)    │
+└──────────────────────────┴──────────────────────────┘
+                                      └─ low 16 bits = logical counter
+ └──────────────── physical time (PHYSICAL_MASK) ──────┘
+```
+
+Two masks keep every embed/extract site in agreement:
+
+- `COUNTER_MASK = (1 << 16) - 1` selects the counter bits.
+- `PHYSICAL_MASK = !COUNTER_MASK` selects the physical-time bits.
+
+Physical time is always *quantized* to `PHYSICAL_MASK` (counter bits zero) before storage, so a finished timestamp is just `physical_time | counter` — the OR can never collide. `physical_time_secs` and `logical_counter` (`logical_clock.rs:230` and `:236`) read the two halves back out.
+
+The full timestamp is a pair:
+
+```text
+Timestamp = (time: NTP64, id: ID)
+```
+
+The `HybridTimestamp` wrapper around it is what travels on the wire; its Borsh form is the raw `u64` time followed by the `u128` id (`logical_clock.rs:181`), and a zero id deserializes to the default id `1` so a never-set field stays valid rather than failing.
+
+## The instance ID
+
+Each clock instance gets a random `ID` — a `u128` generated from 16 random bytes at construction (`logical_clock.rs:256`). Because the id is 128 bits of randomness, two independent nodes minting an event at the exact same NTP64 instant still produce different timestamps; no registry or coordinator is needed for global uniqueness. The id is a `NonZeroU128` (zero is remapped to `1` so the value is always valid), and the clock guarantees it never changes for the life of the instance.
+
+## Issuing a timestamp: `new_timestamp`
+
+`new_timestamp` (`logical_clock.rs:294`) reads the host clock, converts nanoseconds into NTP64, quantizes to `PHYSICAL_MASK`, then applies the HLC rule:
+
+```text
+physical = quantize(now_ntp64)
+if physical > last_time:
+    last_time = physical          # clock advanced: fresh tick, counter resets to 0
+    counter   = 0
+else:
+    set_after(last_time, counter)  # clock stalled: bump the counter past the last event
+
+time = last_time | counter
+return Timestamp(time, id)
+```
+
+`set_after` advances the counter by one. If the 16-bit counter would overflow, it **carries** one tick into physical time (`last_time += 1 << COUNTER_BITS`) and resets the counter to zero (`logical_clock.rs:276`). This is what keeps a stalled physical clock that issues more than 65 536 events still strictly monotonic, instead of wrapping the counter back to zero and inverting the order. The test `test_counter_carry_preserves_monotonicity` exercises 70 000 successive events on a frozen clock and asserts every one is strictly greater than the last.
+
+## Receiving a remote timestamp: `update`
+
+When a node observes a remote operation it calls `update` (`logical_clock.rs:336`) to fold the remote timestamp into its own clock so that the *next* locally issued timestamp sorts strictly after everything seen so far. The full HLC receive rule advances to the greatest physical time among three sources — the local clock, the remote timestamp, and the local wall clock — and then advances the counter past every event seen at that tick:
+
+```text
+new_phys = max(last_time, remote_phys, now_phys)
+
+if new_phys == last_time and new_phys == remote_phys:
+    set_after(new_phys, max(counter, remote_counter))  # tie on both sides
+elif new_phys == last_time:
+    set_after(new_phys, counter)                       # local already at max tick
+elif new_phys == remote_phys:
+    set_after(new_phys, remote_counter)                # remote tick is the max
+else:
+    last_time = new_phys; counter = 0                  # wall clock strictly ahead
+```
+
+Reading the remote counter on the equal-tick cases is essential: if a peer issues many events on one stalled tick and we observe its latest, our next timestamp must outrank that remote event even though our own counter is low (`test_update_preserves_cross_node_causality`).
+
+## Anti-drift protection
+
+`update` rejects a remote timestamp whose *physical* time is more than **5 seconds** ahead of the local wall clock (`DRIFT_TOLERANCE_SECS = 5`, `logical_clock.rs:360`). This bounds the damage a node with a badly skewed or malicious clock can do: it cannot drag every other node's clock arbitrarily far into the future. The comparison deliberately uses physical time only — the remote counter bits are logical ordering, not clock drift, and including them would inflate the comparison at the tick boundary. A rejected update returns `Err(())` and leaves the local clock untouched (`test_update_rejects_far_future`).
+
+:::caution[Normative]
+- A timestamp MUST be quantized to `PHYSICAL_MASK` before the counter is OR-ed in; the counter occupies exactly the low `COUNTER_BITS` (16) bits.
+- `new_timestamp` MUST produce strictly increasing timestamps for one instance, carrying into physical time on counter overflow.
+- `update` MUST advance the local clock so the next issued timestamp strictly follows both the previous local event and the observed remote event.
+- `update` MUST reject a remote timestamp whose physical time exceeds the local wall clock by more than `DRIFT_TOLERANCE_SECS` (5 s) and leave the clock unchanged.
+- The instance `ID` MUST be non-zero and MUST NOT change for the life of the clock.
+:::
+
+## Ordering: `(time, id)` lexicographic
+
+`Timestamp` derives `Ord` over its fields in declaration order — `time` first, then `id` — so comparison is lexicographic:
+
+```text
+a < b  ⇔  a.time < b.time
+            OR (a.time == b.time AND a.id < b.id)
+```
+
+The `time` component carries causality (it is causally monotonic by construction); the `id` component is the final, deterministic tiebreak that makes the order total and identical on every node. Two events that genuinely raced — same physical tick, same counter, different nodes — resolve by id, and they resolve the *same way everywhere*.
+
+This is exactly the order a [`LwwRegister`](/protocol/crdt-internals/) uses to decide which write wins: the register keeps the value whose stamp is greatest, and "greatest" is this `(time, id)` comparison. The same clock value is the leading term of the projection's fold stamp `(hlc, generation, op_id)` (see [Projection & convergence](/protocol/projection/)): when two operations carry different HLCs the HLC alone decides, and only when the HLC ties — as governance operations do, since they are authored with a zero HLC — does ordering fall through to `generation` and then `op_id`.
+
+## Cross-references
+
+- [Operations](/protocol/operations/) — where the `hlc` field sits in the signed operation envelope.
+- [Projection & convergence](/protocol/projection/) — the `(hlc, generation, op_id)` fold stamp built on this clock.
+- [CRDT internals](/protocol/crdt-internals/) — `LwwRegister` and the other conflict-free types that compare HLC stamps.
