@@ -1,5 +1,7 @@
 # Code → Docs gap audit
 
+**Status:** §0 (contradictions) ✅ fixed · §1 (P1 subsystems) ✅ documented · §2 (P2) ⏳ open · §3 (P3) ⏳ open.
+
 Findings from a six-subsystem code audit (runtime/SDK/ABI, storage, sync,
 governance/context, networking, server/auth/config). Each was grep-verified
 against `src/content/docs/`. Ordered by priority. `file:line` anchors included.
