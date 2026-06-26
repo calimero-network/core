@@ -3,6 +3,566 @@ use super::*;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use rand::rngs::OsRng;
 
+// ---------------------------------------------------------------------------
+// Borsh discriminant golden tests
+//
+// Each test below embeds a fully frozen byte vector that encodes one
+// variant of `GroupOp` or `RootOp` (wrapped in `NamespaceOp::Root`).
+// The bytes are decoded with the CURRENT enum — never re-encoded here.
+//
+// A same-binary encode → decode round-trip CANNOT catch a mid-enum
+// insertion: both the encoder and decoder use the shifted ordinal, so
+// they silently agree on the wrong variant. Decoding FROZEN bytes is the
+// only test that catches a renumber: the discriminant byte stays fixed in
+// the source, but the enum shifts under it, so the decoder sees an
+// unexpected variant or fails.
+//
+// Construction: all-zero fixed data was used for every field
+// (PublicKey = [0u8;32], IDs = [0u8;32], integers = 0, Options = None,
+// collections = empty). Borsh reads these without ed25519 or range
+// validation — the frozen bytes are stable across builds.
+// ---------------------------------------------------------------------------
+
+// ---- GroupOp golden bytes ----
+//
+// Byte layout for GroupOp: bytes[0] = variant discriminant (u8 ordinal),
+// remainder = field payload, all fields zeroed / empty.
+
+/// GroupOp ordinal 0 — Noop (no fields; full encoding = discriminant only)
+const GOLDEN_GROUP_OP_NOOP: &[u8] = &[0];
+
+/// GroupOp ordinal 1 — MemberAdded { member: [0;32], role: Member(1) }
+const GOLDEN_GROUP_OP_MEMBER_ADDED: &[u8] = &[
+    1, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // member PublicKey [0u8;32]
+    1, // role = Member (ordinal 1)
+];
+
+/// GroupOp ordinal 2 — MemberRemoved { member: [0;32], hash: [0;32], hashes: [] }
+const GOLDEN_GROUP_OP_MEMBER_REMOVED: &[u8] = &[
+    2, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // member
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // expected_group_state_hash
+    0, 0, 0, 0, // expected_context_state_hashes (vec len = 0)
+];
+
+/// GroupOp ordinal 3 — MemberLeft (same shape as MemberRemoved)
+const GOLDEN_GROUP_OP_MEMBER_LEFT: &[u8] = &[
+    3, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // member
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // expected_group_state_hash
+    0, 0, 0, 0, // expected_context_state_hashes (vec len = 0)
+];
+
+/// GroupOp ordinal 4 — MemberRoleSet { member: [0;32], role: Admin(0) }
+const GOLDEN_GROUP_OP_MEMBER_ROLE_SET: &[u8] = &[
+    4, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // member
+    0, // role = Admin (ordinal 0)
+];
+
+/// GroupOp ordinal 5 — MemberCapabilitySet { member: [0;32], capabilities: 0 }
+const GOLDEN_GROUP_OP_MEMBER_CAPABILITY_SET: &[u8] = &[
+    5, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // member
+    0, 0, 0, 0, // capabilities u32 = 0
+];
+
+/// GroupOp ordinal 6 — DefaultCapabilitiesSet { capabilities: 0 }
+const GOLDEN_GROUP_OP_DEFAULT_CAPABILITIES_SET: &[u8] = &[
+    6,    // discriminant
+    0, 0, 0, 0, // capabilities u32 = 0
+];
+
+/// GroupOp ordinal 7 — UpgradePolicySet { policy: LazyOnAccess(1) }
+const GOLDEN_GROUP_OP_UPGRADE_POLICY_SET: &[u8] = &[
+    7, // discriminant
+    1, // UpgradePolicy::LazyOnAccess (ordinal 1, the Default)
+];
+
+/// GroupOp ordinal 8 — TargetApplicationSet { app_key: [0;32], target: [0;32] }
+const GOLDEN_GROUP_OP_TARGET_APPLICATION_SET: &[u8] = &[
+    8, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // app_key [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // target_application_id [0u8;32]
+];
+
+/// GroupOp ordinal 9 — ContextRegistered (all empty/zero fields)
+const GOLDEN_GROUP_OP_CONTEXT_REGISTERED: &[u8] = &[
+    9, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // context_id
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // application_id
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // blob_id
+    0, 0, 0, 0, // source String (len = 0)
+    0,    // service_name = None
+];
+
+/// GroupOp ordinal 10 — ContextDetached { context_id: [0;32] }
+const GOLDEN_GROUP_OP_CONTEXT_DETACHED: &[u8] = &[
+    10, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // context_id
+];
+
+/// GroupOp ordinal 11 — SubgroupVisibilitySet { mode: 0 }
+const GOLDEN_GROUP_OP_SUBGROUP_VISIBILITY_SET: &[u8] = &[
+    11, // discriminant
+    0,  // mode = 0
+];
+
+/// GroupOp ordinal 12 — GroupMetadataSet { name: None, data: {} }
+const GOLDEN_GROUP_OP_GROUP_METADATA_SET: &[u8] = &[
+    12,   // discriminant
+    0,    // name = None
+    0, 0, 0, 0, // data BTreeMap len = 0
+];
+
+/// GroupOp ordinal 13 — MemberMetadataSet { member: [0;32], name: None, data: {} }
+const GOLDEN_GROUP_OP_MEMBER_METADATA_SET: &[u8] = &[
+    13, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // member
+    0,    // name = None
+    0, 0, 0, 0, // data len = 0
+];
+
+/// GroupOp ordinal 14 — ContextMetadataSet { context_id: [0;32], name: None, data: {} }
+const GOLDEN_GROUP_OP_CONTEXT_METADATA_SET: &[u8] = &[
+    14, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // context_id
+    0,    // name = None
+    0, 0, 0, 0, // data len = 0
+];
+
+/// GroupOp ordinal 15 — GroupDelete (no fields; full encoding = discriminant only)
+const GOLDEN_GROUP_OP_GROUP_DELETE: &[u8] = &[15];
+
+/// GroupOp ordinal 16 — GroupMigrationSet { migration: None }
+const GOLDEN_GROUP_OP_GROUP_MIGRATION_SET: &[u8] = &[
+    16, // discriminant
+    0,  // migration = None
+];
+
+/// GroupOp ordinal 17 — ContextCapabilityGranted { context_id: [0;32], member: [0;32], capability: 0 }
+const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_GRANTED: &[u8] = &[
+    17, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // context_id
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // member
+    0, // capability
+];
+
+/// GroupOp ordinal 18 — ContextCapabilityRevoked (same shape as Granted)
+const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED: &[u8] = &[
+    18, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // context_id
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // member
+    0, // capability
+];
+
+/// GroupOp ordinal 19 — TeeAdmissionPolicySet (6 empty Vec<String> + accept_mock=false)
+const GOLDEN_GROUP_OP_TEE_ADMISSION_POLICY_SET: &[u8] = &[
+    19,   // discriminant
+    0, 0, 0, 0, // allowed_mrtd vec len = 0
+    0, 0, 0, 0, // allowed_rtmr0 vec len = 0
+    0, 0, 0, 0, // allowed_rtmr1 vec len = 0
+    0, 0, 0, 0, // allowed_rtmr2 vec len = 0
+    0, 0, 0, 0, // allowed_rtmr3 vec len = 0
+    0, 0, 0, 0, // allowed_tcb_statuses vec len = 0
+    0,    // accept_mock = false
+];
+
+/// GroupOp ordinal 20 — MemberJoinedViaTeeAttestation (all empty/zero)
+const GOLDEN_GROUP_OP_MEMBER_JOINED_VIA_TEE: &[u8] = &[
+    20, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // member
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // quote_hash
+    0, 0, 0, 0, // mrtd String len = 0
+    0, 0, 0, 0, // rtmr0 String len = 0
+    0, 0, 0, 0, // rtmr1 String len = 0
+    0, 0, 0, 0, // rtmr2 String len = 0
+    0, 0, 0, 0, // rtmr3 String len = 0
+    0, 0, 0, 0, // tcb_status String len = 0
+    1,    // role = Member (ordinal 1)
+];
+
+/// GroupOp ordinal 21 — MemberSetAutoFollow { target: [0;32], auto_follow_contexts: false, auto_follow_subgroups: false }
+const GOLDEN_GROUP_OP_MEMBER_SET_AUTO_FOLLOW: &[u8] = &[
+    21, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // target
+    0, // auto_follow_contexts = false
+    0, // auto_follow_subgroups = false
+];
+
+/// GroupOp ordinal 22 — TransferOwnership { new_owner: [0;32] }
+const GOLDEN_GROUP_OP_TRANSFER_OWNERSHIP: &[u8] = &[
+    22, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // new_owner
+];
+
+/// GroupOp ordinal 23 — CascadeTargetApplicationSet { from_app_key: [0;32], app_key: [0;32], target: [0;32] }
+const GOLDEN_GROUP_OP_CASCADE_TARGET_APPLICATION_SET: &[u8] = &[
+    23, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // from_app_key
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // app_key
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // target_application_id
+];
+
+/// GroupOp ordinal 24 — CascadeGroupMigrationSet { from_app_key: [0;32], migration: None }
+const GOLDEN_GROUP_OP_CASCADE_GROUP_MIGRATION_SET: &[u8] = &[
+    24, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // from_app_key
+    0, // migration = None
+];
+
+/// GroupOp ordinal 25 — CascadeUpgrade (all zero; HybridTimestamp::zero() is 24 bytes)
+const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
+    25, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // from_app_key
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // app_key
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // target_application_id
+    0, // migration = None
+    // HybridTimestamp::zero() = 24 bytes (verified by existing cascade_upgrade_back_compat test)
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+#[test]
+fn group_op_discriminants_are_golden() {
+    // Decode each frozen byte vector and verify the correct variant is returned.
+    // A mid-enum insertion shifts ordinals so the wrong variant is decoded (or
+    // decoding fails) — the assert catches both cases.
+    macro_rules! check_group_op {
+        ($golden:expr, $pat:pat, $discriminant:expr) => {{
+            assert_eq!(
+                $golden[0], $discriminant,
+                "GroupOp variant discriminant must stay at ordinal {}; \
+                 a leading-byte change means a variant was inserted mid-enum",
+                $discriminant
+            );
+            let decoded: GroupOp =
+                borsh::from_slice($golden).expect("frozen GroupOp bytes must decode cleanly");
+            assert!(
+                matches!(decoded, $pat),
+                "frozen bytes with discriminant {} decoded as {:?} — \
+                 a variant was inserted before this one, shifting its ordinal",
+                $discriminant,
+                decoded
+            );
+        }};
+    }
+
+    check_group_op!(GOLDEN_GROUP_OP_NOOP, GroupOp::Noop, 0);
+    check_group_op!(GOLDEN_GROUP_OP_MEMBER_ADDED, GroupOp::MemberAdded { .. }, 1);
+    check_group_op!(GOLDEN_GROUP_OP_MEMBER_REMOVED, GroupOp::MemberRemoved { .. }, 2);
+    check_group_op!(GOLDEN_GROUP_OP_MEMBER_LEFT, GroupOp::MemberLeft { .. }, 3);
+    check_group_op!(GOLDEN_GROUP_OP_MEMBER_ROLE_SET, GroupOp::MemberRoleSet { .. }, 4);
+    check_group_op!(
+        GOLDEN_GROUP_OP_MEMBER_CAPABILITY_SET,
+        GroupOp::MemberCapabilitySet { .. },
+        5
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_DEFAULT_CAPABILITIES_SET,
+        GroupOp::DefaultCapabilitiesSet { .. },
+        6
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_UPGRADE_POLICY_SET,
+        GroupOp::UpgradePolicySet { .. },
+        7
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_TARGET_APPLICATION_SET,
+        GroupOp::TargetApplicationSet { .. },
+        8
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_CONTEXT_REGISTERED,
+        GroupOp::ContextRegistered { .. },
+        9
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_CONTEXT_DETACHED,
+        GroupOp::ContextDetached { .. },
+        10
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_SUBGROUP_VISIBILITY_SET,
+        GroupOp::SubgroupVisibilitySet { .. },
+        11
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_GROUP_METADATA_SET,
+        GroupOp::GroupMetadataSet { .. },
+        12
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_MEMBER_METADATA_SET,
+        GroupOp::MemberMetadataSet { .. },
+        13
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_CONTEXT_METADATA_SET,
+        GroupOp::ContextMetadataSet { .. },
+        14
+    );
+    check_group_op!(GOLDEN_GROUP_OP_GROUP_DELETE, GroupOp::GroupDelete, 15);
+    check_group_op!(
+        GOLDEN_GROUP_OP_GROUP_MIGRATION_SET,
+        GroupOp::GroupMigrationSet { .. },
+        16
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_GRANTED,
+        GroupOp::ContextCapabilityGranted { .. },
+        17
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED,
+        GroupOp::ContextCapabilityRevoked { .. },
+        18
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_TEE_ADMISSION_POLICY_SET,
+        GroupOp::TeeAdmissionPolicySet { .. },
+        19
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_MEMBER_JOINED_VIA_TEE,
+        GroupOp::MemberJoinedViaTeeAttestation { .. },
+        20
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_MEMBER_SET_AUTO_FOLLOW,
+        GroupOp::MemberSetAutoFollow { .. },
+        21
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_TRANSFER_OWNERSHIP,
+        GroupOp::TransferOwnership { .. },
+        22
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_CASCADE_TARGET_APPLICATION_SET,
+        GroupOp::CascadeTargetApplicationSet { .. },
+        23
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_CASCADE_GROUP_MIGRATION_SET,
+        GroupOp::CascadeGroupMigrationSet { .. },
+        24
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_CASCADE_UPGRADE,
+        GroupOp::CascadeUpgrade { .. },
+        25
+    );
+}
+
+// ---- RootOp golden bytes ----
+//
+// RootOp is always wrapped in NamespaceOp::Root for Borsh serialization,
+// so bytes[0] = NamespaceOp discriminant (0 = Root) and bytes[1] = RootOp
+// discriminant. All field bytes are zero / empty for determinism.
+
+/// NamespaceOp::Root(RootOp::GroupCreated) — RootOp ordinal 0
+const GOLDEN_ROOT_OP_GROUP_CREATED: &[u8] = &[
+    0, // NamespaceOp::Root discriminant
+    0, // RootOp::GroupCreated discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // group_id
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // parent_id
+    0, // restricted = false
+];
+
+/// NamespaceOp::Root(RootOp::GroupReparented) — RootOp ordinal 1
+const GOLDEN_ROOT_OP_GROUP_REPARENTED: &[u8] = &[
+    0, // NamespaceOp::Root
+    1, // RootOp::GroupReparented discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // child_group_id
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // new_parent_id
+];
+
+/// NamespaceOp::Root(RootOp::GroupDeleted) — RootOp ordinal 2
+const GOLDEN_ROOT_OP_GROUP_DELETED: &[u8] = &[
+    0, // NamespaceOp::Root
+    2, // RootOp::GroupDeleted discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // root_group_id
+    0, 0, 0, 0, // cascade_group_ids vec len = 0
+    0, 0, 0, 0, // cascade_context_ids vec len = 0
+];
+
+/// NamespaceOp::Root(RootOp::AdminChanged) — RootOp ordinal 3
+const GOLDEN_ROOT_OP_ADMIN_CHANGED: &[u8] = &[
+    0, // NamespaceOp::Root
+    3, // RootOp::AdminChanged discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // new_admin PublicKey [0u8;32]
+];
+
+/// NamespaceOp::Root(RootOp::PolicyUpdated) — RootOp ordinal 4
+const GOLDEN_ROOT_OP_POLICY_UPDATED: &[u8] = &[
+    0,    // NamespaceOp::Root
+    4,    // RootOp::PolicyUpdated discriminant
+    0, 0, 0, 0, // policy_bytes vec len = 0
+];
+
+/// NamespaceOp::Root(RootOp::MemberJoined) — RootOp ordinal 5
+///
+/// Encoding: member (32 bytes) + SignedGroupOpenInvitation with a minimal
+/// GroupInvitationFromAdmin (inviter_identity[0;32] + group_id[0;32] +
+/// expiration_timestamp 0 (u64) + secret_salt[0;32] + invited_role 1 (u8))
+/// + inviter_signature "" + application_id None + app_key None.
+const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
+    0, // NamespaceOp::Root
+    5, // RootOp::MemberJoined discriminant
+    // member PublicKey [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // signed_invitation.invitation.inviter_identity [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // signed_invitation.invitation.group_id [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // signed_invitation.invitation.expiration_timestamp u64 = 0:
+    0, 0, 0, 0, 0, 0, 0, 0,
+    // signed_invitation.invitation.secret_salt [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // signed_invitation.invitation.invited_role u8 = 1:
+    1,    // signed_invitation.inviter_signature String len = 0:
+    0, 0, 0, 0, // signed_invitation.application_id = None:
+    0,    // signed_invitation.app_key = None:
+    0,
+];
+
+/// NamespaceOp::Root(RootOp::KeyDelivery) — RootOp ordinal 6
+const GOLDEN_ROOT_OP_KEY_DELIVERY: &[u8] = &[
+    0, // NamespaceOp::Root
+    6, // RootOp::KeyDelivery discriminant
+    // group_id [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // envelope.recipient [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // envelope.ephemeral_pk [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // envelope.nonce [0u8;12]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // envelope.ciphertext vec len = 0:
+    0, 0, 0, 0,
+];
+
+/// NamespaceOp::Root(RootOp::MemberJoinedOpen) — RootOp ordinal 7
+const GOLDEN_ROOT_OP_MEMBER_JOINED_OPEN: &[u8] = &[
+    0, // NamespaceOp::Root
+    7, // RootOp::MemberJoinedOpen discriminant
+    // member [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // group_id [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,
+];
+
+/// NamespaceOp::Root(RootOp::MemberJoinedAt) — RootOp ordinal 8
+///
+/// Same inner payload as MemberJoined plus joined_at u64 = 0 at the end.
+const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
+    0, // NamespaceOp::Root
+    8, // RootOp::MemberJoinedAt discriminant
+    // member [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // signed_invitation (same encoding as MemberJoined):
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // inviter_identity
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // group_id
+    0, 0, 0, 0, 0, 0, 0, 0, // expiration_timestamp
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,    // secret_salt
+    1,    // invited_role = 1
+    0, 0, 0, 0, // inviter_signature len = 0
+    0,    // application_id = None
+    0,    // app_key = None
+    0, 0, 0, 0, 0, 0, 0, 0, // joined_at u64 = 0
+];
+
+/// NamespaceOp::Root(RootOp::NamespaceCreated) — RootOp ordinal 9
+const GOLDEN_ROOT_OP_NAMESPACE_CREATED: &[u8] = &[
+    0, // NamespaceOp::Root
+    9, // RootOp::NamespaceCreated discriminant
+    // founder [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,
+];
+
+#[test]
+fn root_op_discriminants_are_golden() {
+    // bytes[0] = NamespaceOp::Root discriminant (always 0).
+    // bytes[1] = RootOp variant discriminant (pinned here).
+    macro_rules! check_root_op {
+        ($golden:expr, $pat:pat, $root_discriminant:expr) => {{
+            assert_eq!(
+                $golden[0], 0u8,
+                "NamespaceOp::Root must keep discriminant 0 (frozen bytes assume it)"
+            );
+            assert_eq!(
+                $golden[1], $root_discriminant,
+                "RootOp variant discriminant must stay at ordinal {}; \
+                 a changed leading byte means a variant was inserted mid-enum",
+                $root_discriminant
+            );
+            let decoded: NamespaceOp =
+                borsh::from_slice($golden).expect("frozen RootOp bytes must decode cleanly");
+            assert!(
+                matches!(decoded, NamespaceOp::Root($pat)),
+                "frozen bytes with RootOp discriminant {} decoded as {:?} — \
+                 a variant was inserted before this one, shifting its ordinal",
+                $root_discriminant,
+                decoded
+            );
+        }};
+    }
+
+    check_root_op!(GOLDEN_ROOT_OP_GROUP_CREATED, RootOp::GroupCreated { .. }, 0);
+    check_root_op!(GOLDEN_ROOT_OP_GROUP_REPARENTED, RootOp::GroupReparented { .. }, 1);
+    check_root_op!(GOLDEN_ROOT_OP_GROUP_DELETED, RootOp::GroupDeleted { .. }, 2);
+    check_root_op!(GOLDEN_ROOT_OP_ADMIN_CHANGED, RootOp::AdminChanged { .. }, 3);
+    check_root_op!(GOLDEN_ROOT_OP_POLICY_UPDATED, RootOp::PolicyUpdated { .. }, 4);
+    check_root_op!(GOLDEN_ROOT_OP_MEMBER_JOINED, RootOp::MemberJoined { .. }, 5);
+    check_root_op!(GOLDEN_ROOT_OP_KEY_DELIVERY, RootOp::KeyDelivery { .. }, 6);
+    check_root_op!(GOLDEN_ROOT_OP_MEMBER_JOINED_OPEN, RootOp::MemberJoinedOpen { .. }, 7);
+    check_root_op!(GOLDEN_ROOT_OP_MEMBER_JOINED_AT, RootOp::MemberJoinedAt { .. }, 8);
+    check_root_op!(GOLDEN_ROOT_OP_NAMESPACE_CREATED, RootOp::NamespaceCreated { .. }, 9);
+}
+
 fn sample_group_id() -> [u8; 32] {
     let mut g = [0u8; 32];
     g[0] = 7;
