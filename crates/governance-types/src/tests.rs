@@ -45,7 +45,7 @@ const GOLDEN_GROUP_OP_MEMBER_REMOVED: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // member
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // expected_group_state_hash
+    0, // expected_group_state_hash
     0, 0, 0, 0, // expected_context_state_hashes (vec len = 0)
 ];
 
@@ -55,7 +55,7 @@ const GOLDEN_GROUP_OP_MEMBER_LEFT: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // member
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // expected_group_state_hash
+    0, // expected_group_state_hash
     0, 0, 0, 0, // expected_context_state_hashes (vec len = 0)
 ];
 
@@ -71,13 +71,13 @@ const GOLDEN_GROUP_OP_MEMBER_ROLE_SET: &[u8] = &[
 const GOLDEN_GROUP_OP_MEMBER_CAPABILITY_SET: &[u8] = &[
     5, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // member
+    0, // member
     0, 0, 0, 0, // capabilities u32 = 0
 ];
 
 /// GroupOp ordinal 6 — DefaultCapabilitiesSet { capabilities: 0 }
 const GOLDEN_GROUP_OP_DEFAULT_CAPABILITIES_SET: &[u8] = &[
-    6,    // discriminant
+    6, // discriminant
     0, 0, 0, 0, // capabilities u32 = 0
 ];
 
@@ -104,9 +104,9 @@ const GOLDEN_GROUP_OP_CONTEXT_REGISTERED: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // application_id
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // blob_id
+    0, // blob_id
     0, 0, 0, 0, // source String (len = 0)
-    0,    // service_name = None
+    0, // service_name = None
 ];
 
 /// GroupOp ordinal 10 — ContextDetached { context_id: [0;32] }
@@ -124,8 +124,8 @@ const GOLDEN_GROUP_OP_SUBGROUP_VISIBILITY_SET: &[u8] = &[
 
 /// GroupOp ordinal 12 — GroupMetadataSet { name: None, data: {} }
 const GOLDEN_GROUP_OP_GROUP_METADATA_SET: &[u8] = &[
-    12,   // discriminant
-    0,    // name = None
+    12, // discriminant
+    0,  // name = None
     0, 0, 0, 0, // data BTreeMap len = 0
 ];
 
@@ -133,8 +133,8 @@ const GOLDEN_GROUP_OP_GROUP_METADATA_SET: &[u8] = &[
 const GOLDEN_GROUP_OP_MEMBER_METADATA_SET: &[u8] = &[
     13, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // member
-    0,    // name = None
+    0, // member
+    0, // name = None
     0, 0, 0, 0, // data len = 0
 ];
 
@@ -142,8 +142,8 @@ const GOLDEN_GROUP_OP_MEMBER_METADATA_SET: &[u8] = &[
 const GOLDEN_GROUP_OP_CONTEXT_METADATA_SET: &[u8] = &[
     14, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // context_id
-    0,    // name = None
+    0, // context_id
+    0, // name = None
     0, 0, 0, 0, // data len = 0
 ];
 
@@ -178,14 +178,14 @@ const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED: &[u8] = &[
 
 /// GroupOp ordinal 19 — TeeAdmissionPolicySet (6 empty Vec<String> + accept_mock=false)
 const GOLDEN_GROUP_OP_TEE_ADMISSION_POLICY_SET: &[u8] = &[
-    19,   // discriminant
+    19, // discriminant
     0, 0, 0, 0, // allowed_mrtd vec len = 0
     0, 0, 0, 0, // allowed_rtmr0 vec len = 0
     0, 0, 0, 0, // allowed_rtmr1 vec len = 0
     0, 0, 0, 0, // allowed_rtmr2 vec len = 0
     0, 0, 0, 0, // allowed_rtmr3 vec len = 0
     0, 0, 0, 0, // allowed_tcb_statuses vec len = 0
-    0,    // accept_mock = false
+    0, // accept_mock = false
 ];
 
 /// GroupOp ordinal 20 — MemberJoinedViaTeeAttestation (all empty/zero)
@@ -194,14 +194,14 @@ const GOLDEN_GROUP_OP_MEMBER_JOINED_VIA_TEE: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // member
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // quote_hash
+    0, // quote_hash
     0, 0, 0, 0, // mrtd String len = 0
     0, 0, 0, 0, // rtmr0 String len = 0
     0, 0, 0, 0, // rtmr1 String len = 0
     0, 0, 0, 0, // rtmr2 String len = 0
     0, 0, 0, 0, // rtmr3 String len = 0
     0, 0, 0, 0, // tcb_status String len = 0
-    1,    // role = Member (ordinal 1)
+    1, // role = Member (ordinal 1)
 ];
 
 /// GroupOp ordinal 21 — MemberSetAutoFollow { target: [0;32], auto_follow_contexts: false, auto_follow_subgroups: false }
@@ -244,7 +244,9 @@ const GOLDEN_GROUP_OP_CASCADE_GROUP_MIGRATION_SET: &[u8] = &[
 /// Verified by `hlc_zero_golden_bytes_are_self_consistent` below; kept as a
 /// named constant so both the CascadeUpgrade golden vector and the verifier
 /// test reference the same source of truth.
-const GOLDEN_HLC_ZERO: &[u8] = &[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const GOLDEN_HLC_ZERO: &[u8] = &[
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
 
 #[test]
 fn hlc_zero_golden_bytes_are_self_consistent() {
@@ -308,9 +310,17 @@ fn group_op_discriminants_are_golden() {
 
     check_group_op!(GOLDEN_GROUP_OP_NOOP, GroupOp::Noop, 0);
     check_group_op!(GOLDEN_GROUP_OP_MEMBER_ADDED, GroupOp::MemberAdded { .. }, 1);
-    check_group_op!(GOLDEN_GROUP_OP_MEMBER_REMOVED, GroupOp::MemberRemoved { .. }, 2);
+    check_group_op!(
+        GOLDEN_GROUP_OP_MEMBER_REMOVED,
+        GroupOp::MemberRemoved { .. },
+        2
+    );
     check_group_op!(GOLDEN_GROUP_OP_MEMBER_LEFT, GroupOp::MemberLeft { .. }, 3);
-    check_group_op!(GOLDEN_GROUP_OP_MEMBER_ROLE_SET, GroupOp::MemberRoleSet { .. }, 4);
+    check_group_op!(
+        GOLDEN_GROUP_OP_MEMBER_ROLE_SET,
+        GroupOp::MemberRoleSet { .. },
+        4
+    );
     check_group_op!(
         GOLDEN_GROUP_OP_MEMBER_CAPABILITY_SET,
         GroupOp::MemberCapabilitySet { .. },
@@ -453,7 +463,7 @@ const GOLDEN_ROOT_OP_GROUP_DELETED: &[u8] = &[
     0, // NamespaceOp::Root
     2, // RootOp::GroupDeleted discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // root_group_id
+    0, // root_group_id
     0, 0, 0, 0, // cascade_group_ids vec len = 0
     0, 0, 0, 0, // cascade_context_ids vec len = 0
 ];
@@ -468,8 +478,8 @@ const GOLDEN_ROOT_OP_ADMIN_CHANGED: &[u8] = &[
 
 /// NamespaceOp::Root(RootOp::PolicyUpdated) — RootOp ordinal 4
 const GOLDEN_ROOT_OP_POLICY_UPDATED: &[u8] = &[
-    0,    // NamespaceOp::Root
-    4,    // RootOp::PolicyUpdated discriminant
+    0, // NamespaceOp::Root
+    4, // RootOp::PolicyUpdated discriminant
     0, 0, 0, 0, // policy_bytes vec len = 0
 ];
 
@@ -488,14 +498,13 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // signed_invitation.invitation.group_id [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // signed_invitation.invitation.expiration_timestamp u64 = 0:
-    0, 0, 0, 0, 0, 0, 0, 0,
-    // signed_invitation.invitation.secret_salt [0u8;32]:
+    0, // signed_invitation.invitation.expiration_timestamp u64 = 0:
+    0, 0, 0, 0, 0, 0, 0, 0, // signed_invitation.invitation.secret_salt [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // signed_invitation.invitation.invited_role u8 = 1:
-    1,    // signed_invitation.inviter_signature String len = 0:
+    0, // signed_invitation.invitation.invited_role u8 = 1:
+    1, // signed_invitation.inviter_signature String len = 0:
     0, 0, 0, 0, // signed_invitation.application_id = None:
-    0,    // signed_invitation.app_key = None:
+    0, // signed_invitation.app_key = None:
     0,
 ];
 
@@ -509,9 +518,8 @@ const GOLDEN_ROOT_OP_KEY_DELIVERY: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // envelope.ephemeral_pk [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // envelope.nonce [0u8;12]:
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    // envelope.ciphertext vec len = 0:
+    0, // envelope.nonce [0u8;12]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // envelope.ciphertext vec len = 0:
     0, 0, 0, 0,
 ];
 
@@ -522,8 +530,7 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_OPEN: &[u8] = &[
     // member [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // group_id [0u8;32]:
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 /// NamespaceOp::Root(RootOp::MemberJoinedAt) — RootOp ordinal 8
@@ -538,14 +545,14 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // inviter_identity
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // group_id
+    0, // group_id
     0, 0, 0, 0, 0, 0, 0, 0, // expiration_timestamp
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,    // secret_salt
-    1,    // invited_role = 1
+    0, // secret_salt
+    1, // invited_role = 1
     0, 0, 0, 0, // inviter_signature len = 0
-    0,    // application_id = None
-    0,    // app_key = None
+    0, // application_id = None
+    0, // app_key = None
     0, 0, 0, 0, 0, 0, 0, 0, // joined_at u64 = 0
 ];
 
@@ -554,8 +561,7 @@ const GOLDEN_ROOT_OP_NAMESPACE_CREATED: &[u8] = &[
     0, // NamespaceOp::Root
     9, // RootOp::NamespaceCreated discriminant
     // founder [0u8;32]:
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 #[test]
@@ -597,15 +603,35 @@ fn root_op_discriminants_are_golden() {
     }
 
     check_root_op!(GOLDEN_ROOT_OP_GROUP_CREATED, RootOp::GroupCreated { .. }, 0);
-    check_root_op!(GOLDEN_ROOT_OP_GROUP_REPARENTED, RootOp::GroupReparented { .. }, 1);
+    check_root_op!(
+        GOLDEN_ROOT_OP_GROUP_REPARENTED,
+        RootOp::GroupReparented { .. },
+        1
+    );
     check_root_op!(GOLDEN_ROOT_OP_GROUP_DELETED, RootOp::GroupDeleted { .. }, 2);
     check_root_op!(GOLDEN_ROOT_OP_ADMIN_CHANGED, RootOp::AdminChanged { .. }, 3);
-    check_root_op!(GOLDEN_ROOT_OP_POLICY_UPDATED, RootOp::PolicyUpdated { .. }, 4);
+    check_root_op!(
+        GOLDEN_ROOT_OP_POLICY_UPDATED,
+        RootOp::PolicyUpdated { .. },
+        4
+    );
     check_root_op!(GOLDEN_ROOT_OP_MEMBER_JOINED, RootOp::MemberJoined { .. }, 5);
     check_root_op!(GOLDEN_ROOT_OP_KEY_DELIVERY, RootOp::KeyDelivery { .. }, 6);
-    check_root_op!(GOLDEN_ROOT_OP_MEMBER_JOINED_OPEN, RootOp::MemberJoinedOpen { .. }, 7);
-    check_root_op!(GOLDEN_ROOT_OP_MEMBER_JOINED_AT, RootOp::MemberJoinedAt { .. }, 8);
-    check_root_op!(GOLDEN_ROOT_OP_NAMESPACE_CREATED, RootOp::NamespaceCreated { .. }, 9);
+    check_root_op!(
+        GOLDEN_ROOT_OP_MEMBER_JOINED_OPEN,
+        RootOp::MemberJoinedOpen { .. },
+        7
+    );
+    check_root_op!(
+        GOLDEN_ROOT_OP_MEMBER_JOINED_AT,
+        RootOp::MemberJoinedAt { .. },
+        8
+    );
+    check_root_op!(
+        GOLDEN_ROOT_OP_NAMESPACE_CREATED,
+        RootOp::NamespaceCreated { .. },
+        9
+    );
 
     assert!(
         failures.is_empty(),
