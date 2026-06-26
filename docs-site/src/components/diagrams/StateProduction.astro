@@ -1,0 +1,81 @@
+---
+/**
+ * StateProduction — how the materialized state is produced. Two lanes (local
+ * execution + receiving a peer's ops) both fold through apply_action onto the
+ * SAME entity tree and root_hash; state is a deterministic projection.
+ * Authored as raw SVG so hyphenated attrs pass through untouched.
+ */
+import Figure from '../Figure.astro';
+---
+<Figure id="d-state-production">
+<svg width="100%" viewBox="0 0 760 410" role="img" aria-label="State is produced identically by local execution or by folding a peer's ops" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="sp-a" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="410" rx="10" fill="#0d1117"/>
+
+  <!-- lane labels -->
+  <text x="20" y="48" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">Local execute</text>
+  <text x="20" y="278" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">Receive — peer ops</text>
+
+  <!-- top lane: local execute -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="20" y="58" width="150" height="62" rx="9" fill="#10151c" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="95" y="84" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">WASM method</text>
+    <text x="95" y="102" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">emits Actions (Put/Delete)</text>
+    <line x1="170" y1="89" x2="194" y2="89" stroke="#8b949e" stroke-width="1.4" marker-end="url(#sp-a)"/>
+  </g>
+  <g class="seq-step" style="--step-i:1">
+    <rect x="196" y="58" width="150" height="62" rx="9" fill="#10210f" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="271" y="84" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">apply_action</text>
+    <text x="271" y="102" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">writes entities</text>
+    <line x1="346" y1="89" x2="370" y2="89" stroke="#8b949e" stroke-width="1.4" marker-end="url(#sp-a)"/>
+  </g>
+  <g class="seq-step" style="--step-i:2">
+    <rect x="372" y="58" width="156" height="62" rx="9" fill="#13160f" stroke="#84cc16" stroke-width="1.4"/>
+    <text x="450" y="84" text-anchor="middle" fill="#84cc16" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">recompute Merkle</text>
+    <text x="450" y="102" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">hashes up ancestor chain</text>
+    <!-- converge arrow (top) -->
+    <line x1="528" y1="89" x2="556" y2="175" stroke="#8b949e" stroke-width="1.4" marker-end="url(#sp-a)"/>
+  </g>
+
+  <!-- bottom lane: receive -->
+  <g class="seq-step" style="--step-i:3">
+    <rect x="20" y="288" width="150" height="62" rx="9" fill="#231708" stroke="#f0883e" stroke-width="1.4"/>
+    <text x="95" y="314" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">peer delta</text>
+    <text x="95" y="332" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">fold ops</text>
+    <line x1="170" y1="319" x2="194" y2="319" stroke="#8b949e" stroke-width="1.4" marker-end="url(#sp-a)"/>
+  </g>
+  <g class="seq-step" style="--step-i:4">
+    <rect x="196" y="288" width="150" height="62" rx="9" fill="#10210f" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="271" y="314" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">apply_action</text>
+    <text x="271" y="332" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">writes entities</text>
+    <!-- converge arrow (bottom) -->
+    <line x1="346" y1="319" x2="556" y2="225" stroke="#8b949e" stroke-width="1.4" marker-end="url(#sp-a)"/>
+  </g>
+
+  <!-- shared note on the arrows -->
+  <text x="455" y="250" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">same entities · same root_hash</text>
+
+  <!-- converged state box -->
+  <g class="seq-step" style="--step-i:5">
+    <rect x="556" y="150" width="188" height="100" rx="11" fill="#10201f" stroke="#39d0d8" stroke-width="1.8"/>
+    <text x="650" y="180" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">materialized state</text>
+    <text x="650" y="198" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">(entity tree)</text>
+    <line x1="576" y1="212" x2="724" y2="212" stroke="#1d3038" stroke-width="1"/>
+    <text x="650" y="234" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">+ root_hash</text>
+    <!-- down to outputs -->
+    <line x1="650" y1="250" x2="650" y2="288" stroke="#8b949e" stroke-width="1.4" marker-end="url(#sp-a)"/>
+  </g>
+
+  <!-- local-lane outputs -->
+  <g class="seq-step" style="--step-i:6">
+    <rect x="556" y="290" width="188" height="84" rx="9" fill="#161b22" stroke="#8b949e" stroke-width="1.2"/>
+    <text x="650" y="310" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">then →</text>
+    <text x="572" y="328" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9">commit → State CF</text>
+    <text x="572" y="346" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">append op → DAG</text>
+    <text x="572" y="364" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">broadcast delta</text>
+  </g>
+
+  <!-- caption -->
+  <text x="380" y="400" text-anchor="middle" fill="#6b7280" font-family="ui-sans-serif, system-ui" font-size="10.5">State is a deterministic projection — produced identically by local execution or by folding a peer's ops.</text>
+</svg>
+</Figure>

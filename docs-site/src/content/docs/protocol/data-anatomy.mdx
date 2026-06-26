@@ -1,0 +1,143 @@
+---
+title: Anatomy of state — DAG, tree & storage
+description: A visual tour of how Calimero actually lays out, stores, produces, and merges data — from the operation DAG to the Merkle tree to the on-disk column families.
+sidebar:
+  label: Anatomy of state
+---
+
+import MerkleTreeMemory from '../../../components/diagrams/MerkleTreeMemory.astro';
+import TreeMerge from '../../../components/diagrams/TreeMerge.astro';
+import EntityStorage from '../../../components/diagrams/EntityStorage.astro';
+import StateProduction from '../../../components/diagrams/StateProduction.astro';
+import DagVsState from '../../../components/diagrams/DagVsState.astro';
+import StoreLayout from '../../../components/diagrams/StoreLayout.astro';
+
+This page answers, with diagrams, the six "what does it actually look like"
+questions: the **DAG vs the state**, how the **CRDT data is stored**, what the
+**Merkle tree** looks like, how it **merges**, how state is **produced**, and how
+**governance** is stored next to it.
+
+We use one running example throughout — a tiny chat app:
+
+```rust
+#[app::state]
+struct Chat {
+    msgs: UnorderedMap<String, Message>, // message_id -> message
+}
+```
+
+## 1. The DAG vs the state
+
+Two structures hold everything, and keeping them straight is the whole mental
+model. The **operation DAG** is the signed, append-only history. The **state** is
+the materialized fold of that history — an entity tree with a `root_hash`.
+
+<DagVsState />
+
+- The **DAG** is the source of truth and the authority: every change is a signed,
+  content-addressed operation pointing at its causal parents. You keep it.
+- The **state** is a *cache* of the DAG — derived, queryable, and rebuildable from
+  scratch by replaying ops. Two nodes that have seen the same ops compute the
+  same state and the same `root_hash`.
+
+That is why divergence can be *detected* (compare `root_hash`) and *healed* (ship
+the missing ops) rather than prevented — the DAG is the ground truth, the state
+just follows from it. See [Operations](/protocol/operations/) and
+[Projection](/protocol/projection/) for the two halves in depth.
+
+## 2. How the CRDT data is stored
+
+There is no "map" object on disk. Every value is its own **entity** with a
+content-derived id, and a collection is just a parent entity whose children are
+those per-value entities.
+
+<EntityStorage />
+
+- A **map entry** id is `SHA-256(parent_id ‖ "__calimero_entry__" ‖ key)`; a
+  **nested collection** id is `SHA-256(parent_id ‖ "__calimero_collection__" ‖
+  field_name)`. The two domain separators mean a key `"X"` and a sub-collection
+  named `"X"` never collide.
+- Because ids are derived from content, **every node computes the same id for the
+  same key** — no coordination, no auto-increment.
+- Entities persist in the RocksDB **`State`** column family, keyed
+  `context_id ‖ entity_id`. Nested collections (a `Vector` inside a map value,
+  say) recurse the exact same way.
+- **Private data** (`#[app::private]`) lives in a separate **`PrivateState`**
+  column — node-local, never synced, and outside the Merkle root entirely. See
+  [Access-controlled storage](/build/permissioned-storage/) for the typed wrappers.
+
+## 3. The Merkle tree in memory
+
+Those entities form a tree, and each carries two hashes: its **`own_hash`** (over
+its own value) and its **`full_hash`** (its own hash rolled up with its children's).
+
+<MerkleTreeMemory />
+
+The roll-up is the one formula to remember:
+
+```text
+full_hash(node) = SHA-256( own_hash ‖ each child.full_hash, sorted by (created_at, id) )
+```
+
+The tree's root `full_hash` **is** the storage `root_hash` that goes on the wire.
+Because each node only references its direct children's hashes, **editing one leaf
+re-hashes only its ancestor chain** — `O(depth)`, not the whole tree. (See
+[Storage performance](/build/storage-complexity/) for the cost in full, and
+[CRDT internals](/protocol/crdt-internals/) for the value-level hashing.)
+
+## 4. How the tree merges
+
+When a peer's version of an entity arrives, the trees are reconciled **per
+entity, by id** — never as opaque blobs.
+
+<TreeMerge />
+
+- For a given entity, the winner is **last-writer-wins by HLC**, with the
+  **content hash** as a deterministic tiebreak when timestamps are equal.
+- Children are an **add-wins union**; removals are **tombstones** (so a delete and
+  a concurrent re-add resolve deterministically rather than racing).
+- Every step is commutative and order-independent, so the merge is a pure
+  function of the *set* of entities seen — **every node lands on the same tree and
+  the same root hash**, regardless of arrival order.
+
+## 5. How the state is produced
+
+The same materialized tree is produced two ways, and they must agree:
+
+<StateProduction />
+
+- **Local execution:** a WASM method runs, emits storage **actions**
+  (`Put`/`Delete`), `apply_action` writes the entities and walks the Merkle hashes
+  up to a new `root_hash`, then the node commits to the `State` column, appends the
+  op to the DAG, and broadcasts the delta. (See [The write path](/protocol/write-path/).)
+- **Receiving:** a peer's delta folds through the *same* `apply_action`, producing
+  the *same* entities and the *same* `root_hash`. (See [The receive & apply path](/protocol/receive-path/).)
+
+"State in memory," then, is exactly this entity tree materialized from the `State`
+column — there is no separate in-RAM representation to keep in sync.
+
+## 6. Governance vs state in the store
+
+Governance (who is a member, what they can do) and application state (the chat
+messages) live **side by side but never mixed** — different column families,
+different keys, different merge rules.
+
+<StoreLayout />
+
+- **`State`** holds the app's CRDT entity tree (this whole page so far).
+- **`Group`** holds governance as prefix-partitioned records (`GroupMeta 0x20`,
+  `GroupMember 0x21`, `MemberCapability 0x26`, `GroupOpLog 0x30`, …) — its own
+  signed op log, not a CRDT tree.
+- **`Meta`** holds the per-context `root_hash`, `dag_heads`, and bound application;
+  **`UnifiedOp`/`Delta`** hold the op DAG; **`PrivateState`** and **`SortedIndex`**
+  are node-local and never sync.
+- Both the state root and the governance state fold into the single **`scope_root`**
+  a peer compares during sync — so a node detects "we disagree on the data" and
+  "we disagree on membership" through the same hash check. See
+  [Governance](/protocol/governance/) and the [Storage schema](/protocol/storage/).
+
+## Next steps
+
+- [Projection & the root hash](/protocol/projection/) — the fold, formally.
+- [CRDT internals](/protocol/crdt-internals/) — the per-value merge algorithms.
+- [Storage schema](/protocol/storage/) — the exact on-disk key/value layouts.

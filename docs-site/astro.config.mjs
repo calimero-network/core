@@ -123,6 +123,7 @@ export default defineConfig({
                 'protocol/operations',
                 'protocol/projection',
                 'protocol/hlc',
+                'protocol/data-anatomy',
               ],
             },
             {

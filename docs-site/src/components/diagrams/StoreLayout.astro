@@ -1,0 +1,86 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-store-layout">
+<svg viewBox="0 0 760 500" role="img" aria-label="RocksDB column families: replicated state and governance versus node-local stores" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="sl-fold" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#84cc16"/></marker>
+  </defs>
+  <rect x="0" y="0" width="760" height="500" rx="10" fill="#0f0f16"/>
+
+  <!-- REPLICATED group -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="20" y="50" width="720" height="244" rx="12" fill="#0c1310" stroke="#214a2a" stroke-width="1.3"/>
+    <text x="40" y="42" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700">Replicated &#8212; synced across every member</text>
+
+    <!-- Meta -->
+    <rect x="40" y="64" width="680" height="44" rx="9" fill="#10201f" stroke="#39d0d8" stroke-width="1.3"/>
+    <text x="58" y="84" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">Meta</text>
+    <text x="58" y="99" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">ContextMeta &#183; root_hash &#183; dag_heads &#183; application</text>
+  </g>
+
+  <!-- UnifiedOp / Delta — the DAG -->
+  <g class="seq-step" style="--step-i:1">
+    <rect x="40" y="116" width="680" height="44" rx="9" fill="#10210f" stroke="#3fb950" stroke-width="1.3"/>
+    <text x="58" y="136" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">UnifiedOp / Delta</text>
+    <text x="58" y="151" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">the operation DAG &#8212; signed, content-addressed, append-only</text>
+  </g>
+
+  <!-- State (app data) -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="40" y="170" width="332" height="110" rx="9" fill="#10151c" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="58" y="192" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700">State</text>
+    <text x="58" y="208" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">application data</text>
+    <text x="58" y="232" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">app CRDT entity tree</text>
+    <text x="58" y="250" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">keyed by entity id</text>
+    <text x="58" y="268" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="9">merge: per-slot LWW</text>
+  </g>
+
+  <!-- Group (governance) -->
+  <g class="seq-step" style="--step-i:3">
+    <rect x="388" y="170" width="332" height="110" rx="9" fill="#1a1430" stroke="#8b5cf6" stroke-width="1.4"/>
+    <text x="406" y="192" fill="#8b5cf6" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700">Group</text>
+    <text x="406" y="208" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">governance records &#8212; prefix-partitioned</text>
+    <text x="406" y="230" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">GroupMeta</text>
+    <text x="700" y="230" text-anchor="end" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">0x20</text>
+    <text x="406" y="246" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">GroupMember</text>
+    <text x="700" y="246" text-anchor="end" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">0x21</text>
+    <text x="406" y="262" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">MemberCapability</text>
+    <text x="700" y="262" text-anchor="end" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">0x26</text>
+    <text x="406" y="278" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">GroupOpLog</text>
+    <text x="700" y="278" text-anchor="end" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">0x30</text>
+  </g>
+
+  <!-- separation emphasis + fold into scope_root -->
+  <g class="seq-step" style="--step-i:4">
+    <line x1="380" y1="174" x2="380" y2="276" stroke="#444c56" stroke-width="1.2" stroke-dasharray="4 3"/>
+    <text x="380" y="306" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">separate column families &#183; distinct keys &amp; merge rules</text>
+
+    <line x1="206" y1="280" x2="332" y2="324" stroke="#84cc16" stroke-width="1.8" marker-end="url(#sl-fold)"/>
+    <line x1="554" y1="280" x2="428" y2="324" stroke="#84cc16" stroke-width="1.8" marker-end="url(#sl-fold)"/>
+    <text x="250" y="312" text-anchor="middle" fill="#84cc16" font-family="'JetBrains Mono', monospace" font-size="8.5">fold</text>
+    <text x="510" y="312" text-anchor="middle" fill="#84cc16" font-family="'JetBrains Mono', monospace" font-size="8.5">fold</text>
+
+    <rect x="290" y="326" width="180" height="46" rx="10" fill="#13160f" stroke="#84cc16" stroke-width="1.5"/>
+    <text x="380" y="347" text-anchor="middle" fill="#d9f99d" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">scope_root</text>
+    <text x="380" y="363" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">one hash over both</text>
+  </g>
+
+  <!-- NODE-LOCAL group -->
+  <g class="seq-step" style="--step-i:5">
+    <rect x="20" y="396" width="720" height="72" rx="12" fill="#101216" stroke="#30363d" stroke-width="1.2"/>
+    <text x="40" y="390" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">Node-local &#8212; never synced, never leaves this node</text>
+
+    <rect x="40" y="410" width="332" height="44" rx="9" fill="#161b22" stroke="#444c56" stroke-width="1.3"/>
+    <text x="58" y="430" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">PrivateState</text>
+    <text x="58" y="445" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="9.5">per-node private values</text>
+
+    <rect x="388" y="410" width="332" height="44" rx="9" fill="#161b22" stroke="#444c56" stroke-width="1.3"/>
+    <text x="406" y="430" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">SortedIndex</text>
+    <text x="406" y="445" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="9.5">local ordered index</text>
+  </g>
+
+  <!-- caption -->
+  <text x="380" y="488" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">Governance and state sit side by side but never mix: distinct column families, distinct merge rules, both folded into the scope root.</text>
+</svg>
+</Figure>

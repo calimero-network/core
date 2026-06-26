@@ -7,6 +7,7 @@ sidebar:
 
 import Figure from '../../../components/Figure.astro';
 import ScopeTree from '../../../components/diagrams/ScopeTree.astro';
+import ScopeHierarchy from '../../../components/diagrams/ScopeHierarchy.astro';
 
 ## The nouns
 
@@ -44,6 +45,14 @@ So what you informally call "a context" is really a small **tree of scopes**: th
 <ScopeTree />
 
 _Each box is an independent scope: its own op-log, key, members, and scope root. The edges form the scope tree._
+
+### Concretely: an org
+
+Make it real. An org — call it **Acme** — is one **namespace** (its root governance scope). Inside it sit **groups** like _Engineering_ and _Sales_; a group can hold **subgroups** that are either **Open** (members of the parent flow in automatically) or **Restricted** (admission is explicit); and the leaves are **contexts** — the running apps whose CRDT state actually replicates.
+
+<ScopeHierarchy />
+
+Membership and keys flow **downward**. A member at one scope is automatically a member of its **Open** children — provided they hold the open-join capability — so they receive those scopes' keys and replicate their data without a separate invite. A **Restricted** subgroup is a wall: you are in only if explicitly admitted. (Namespaces, groups, subgroups, and contexts are all scopes; a namespace is simply the **root group** — a group with no parent. A context attaches to a group, and its governance membership _is_ that group's membership.)
 
 ## Why the concept exists
 

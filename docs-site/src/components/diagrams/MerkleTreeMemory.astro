@@ -1,0 +1,100 @@
+---
+/**
+ * MerkleTreeMemory — how the stored entity tree looks in memory.
+ *
+ * Every stored value is an entity carrying an EntityIndex { own_hash,
+ * full_hash, children: [ChildInfo] }. `own_hash` hashes the entity's own
+ * value; the `merkle_hash` a parent records for a child is that child's
+ * `full_hash`. A parent's `full_hash` rolls up its own_hash with the
+ * full_hash of every child, sorted by (created_at, id). The tree is rooted
+ * at Id::root(). Hashes are shown as short hex (illustrative values).
+ *
+ * Hand-authored structural SVG (raw SVG with hyphenated attrs is first-class
+ * in an Astro component); pages reference <MerkleTreeMemory /> directly.
+ */
+---
+<div class="merkle-mem">
+<svg viewBox="0 0 760 440" role="img" aria-label="Merkle entity tree in memory" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="mm-head" markerWidth="8" markerHeight="8" refX="5.5" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#6b7280"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="760" height="440" rx="12" fill="#0d1117"/>
+
+  <text x="20" y="26" fill="#f0f6fc" font-family="ui-sans-serif, system-ui" font-size="13" font-weight="600">The Merkle tree in memory — every entity carries its own_hash and full_hash</text>
+
+  <!-- edges: root -> mids -->
+  <line x1="380" y1="88" x2="205" y2="150" stroke="#6b7280" stroke-width="1.2" marker-end="url(#mm-head)"/>
+  <line x1="380" y1="88" x2="555" y2="150" stroke="#6b7280" stroke-width="1.2" marker-end="url(#mm-head)"/>
+  <!-- edges: mid-left -> leaves -->
+  <line x1="205" y1="210" x2="120" y2="272" stroke="#6b7280" stroke-width="1.2" marker-end="url(#mm-head)"/>
+  <line x1="205" y1="210" x2="290" y2="272" stroke="#6b7280" stroke-width="1.2" marker-end="url(#mm-head)"/>
+  <!-- edges: mid-right -> leaves -->
+  <line x1="555" y1="210" x2="470" y2="272" stroke="#6b7280" stroke-width="1.2" marker-end="url(#mm-head)"/>
+  <line x1="555" y1="210" x2="640" y2="272" stroke="#6b7280" stroke-width="1.2" marker-end="url(#mm-head)"/>
+
+  <!-- root (green) -->
+  <g>
+    <rect x="295" y="28" width="170" height="60" rx="9" fill="#10210f" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="380" y="46" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="11.5" font-weight="700">Id::root()</text>
+    <text x="307" y="64" fill="#c9d1d9" font-family="ui-monospace, monospace" font-size="9.5">own  e1d0…7a</text>
+    <text x="307" y="80" fill="#3fb950" font-family="ui-monospace, monospace" font-size="9.5">full a3f1…9c</text>
+  </g>
+
+  <!-- mid-left (blue) -->
+  <g>
+    <rect x="120" y="150" width="170" height="60" rx="9" fill="#10151c" stroke="#58a6ff" stroke-width="1.5"/>
+    <text x="205" y="168" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="11.5" font-weight="700">4b2c…01</text>
+    <text x="132" y="186" fill="#c9d1d9" font-family="ui-monospace, monospace" font-size="9.5">own  9f3a…22</text>
+    <text x="132" y="202" fill="#58a6ff" font-family="ui-monospace, monospace" font-size="9.5">full c810…d4</text>
+  </g>
+  <!-- mid-right (blue) -->
+  <g>
+    <rect x="470" y="150" width="170" height="60" rx="9" fill="#10151c" stroke="#58a6ff" stroke-width="1.5"/>
+    <text x="555" y="168" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="11.5" font-weight="700">7e90…aa</text>
+    <text x="482" y="186" fill="#c9d1d9" font-family="ui-monospace, monospace" font-size="9.5">own  1c44…0e</text>
+    <text x="482" y="202" fill="#58a6ff" font-family="ui-monospace, monospace" font-size="9.5">full b6f2…58</text>
+  </g>
+
+  <!-- leaves (cyan) -->
+  <g>
+    <rect x="45" y="272" width="150" height="60" rx="9" fill="#10201f" stroke="#39d0d8" stroke-width="1.4"/>
+    <text x="120" y="290" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="11" font-weight="700">aa10…3f</text>
+    <text x="57" y="308" fill="#c9d1d9" font-family="ui-monospace, monospace" font-size="9.5">own  5d2e…77</text>
+    <text x="57" y="324" fill="#39d0d8" font-family="ui-monospace, monospace" font-size="9.5">full 8c01…b9</text>
+  </g>
+  <g>
+    <rect x="215" y="272" width="150" height="60" rx="9" fill="#10201f" stroke="#39d0d8" stroke-width="1.4"/>
+    <text x="290" y="290" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="11" font-weight="700">bb21…4c</text>
+    <text x="227" y="308" fill="#c9d1d9" font-family="ui-monospace, monospace" font-size="9.5">own  2f9d…10</text>
+    <text x="227" y="324" fill="#39d0d8" font-family="ui-monospace, monospace" font-size="9.5">full 74e3…6a</text>
+  </g>
+  <g>
+    <rect x="395" y="272" width="150" height="60" rx="9" fill="#10201f" stroke="#39d0d8" stroke-width="1.4"/>
+    <text x="470" y="290" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="11" font-weight="700">cc32…5d</text>
+    <text x="407" y="308" fill="#c9d1d9" font-family="ui-monospace, monospace" font-size="9.5">own  0a8b…c3</text>
+    <text x="407" y="324" fill="#39d0d8" font-family="ui-monospace, monospace" font-size="9.5">full e520…1f</text>
+  </g>
+  <g>
+    <rect x="565" y="272" width="150" height="60" rx="9" fill="#10201f" stroke="#39d0d8" stroke-width="1.4"/>
+    <text x="640" y="290" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="11" font-weight="700">dd43…6e</text>
+    <text x="577" y="308" fill="#c9d1d9" font-family="ui-monospace, monospace" font-size="9.5">own  61f4…88</text>
+    <text x="577" y="324" fill="#39d0d8" font-family="ui-monospace, monospace" font-size="9.5">full 90ab…2d</text>
+  </g>
+
+  <!-- formula callout (violet) -->
+  <g>
+    <rect x="90" y="352" width="580" height="54" rx="9" fill="#1a1430" stroke="#8b5cf6" stroke-width="1.4"/>
+    <text x="380" y="375" text-anchor="middle" fill="#d2c4ff" font-family="ui-monospace, monospace" font-size="11">full_hash = SHA256( own_hash ‖ sorted child full_hashes )</text>
+    <text x="380" y="394" text-anchor="middle" fill="#8b949e" font-family="ui-monospace, monospace" font-size="10">children sorted by (created_at, id)   ·   leaf own_hash = SHA256(value)</text>
+  </g>
+
+  <text x="380" y="426" text-anchor="middle" fill="#6b7280" font-family="ui-sans-serif, system-ui" font-size="10.5">Editing one leaf re-hashes only its ancestor chain — O(depth), not O(tree).</text>
+</svg>
+</div>
+
+<style>
+  .merkle-mem { margin: 1.5rem 0; }
+  .merkle-mem svg { width: 100%; height: auto; border-radius: 12px; }
+</style>
