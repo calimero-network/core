@@ -224,8 +224,12 @@ impl<T: Clone + borsh::BorshSerialize> LwwRegister<T> {
         // Both stamp fields are equal (including the merge-mode zero-zero case).
         // Fall back to lexicographic comparison of borsh-serialized bytes so
         // the merge is commutative even when values differ.
-        let bytes_b = borsh::to_vec(val_b).unwrap_or_default();
-        let bytes_a = borsh::to_vec(val_a).unwrap_or_default();
+        // This branch is only reachable in the degenerate zero-stamp scenario
+        // (merge mode with divergent values); the allocation cost is acceptable.
+        let bytes_b = borsh::to_vec(val_b)
+            .expect("BorshSerialize is guaranteed by the trait bound; serialization must not fail");
+        let bytes_a = borsh::to_vec(val_a)
+            .expect("BorshSerialize is guaranteed by the trait bound; serialization must not fail");
         bytes_b > bytes_a
     }
 }
