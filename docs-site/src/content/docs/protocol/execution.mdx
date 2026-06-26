@@ -11,7 +11,7 @@ import AbiBoundary from '../../../components/diagrams/AbiBoundary.astro';
 
 ## What an execution is
 
-An **application** is a WASM module that defines a state machine: data types and the methods that mutate them. An **execution** is one method call. It reads the context's current state, runs deterministic guest code, and produces a set of state changes plus a fresh root hash. Those state changes are the data-plane operations from Chapters 3–4.
+An **application** is a WASM module that defines a state machine: data types and the methods that mutate them. An **execution** is one method call. It reads the context's current state, runs deterministic guest code, and produces a set of state changes plus a fresh root hash. Those state changes are the data-plane [operations](/protocol/operations/) that fold into the [projection](/protocol/projection/).
 
 Crucially, execution is **sandboxed and self-contained**: the guest cannot touch the network, the clock, or the disk directly. It can only call back into the host through a fixed set of functions — the ABI. Everything the guest does is therefore observable, bounded, and reproducible.
 
@@ -85,12 +85,12 @@ Every node that applies the same operation must reach the same state, so executi
 
 A successful `commit` yields an **outcome**: the return value, any logs and events, the cross-context calls to dispatch, the new state **root hash**, and an **artifact** describing the committed state changes.
 
-That artifact is the bridge back to the core: its committed writes are packaged as **data-plane operations** (`Put` / `Delete`) in the context scope — each stamped with the executor's identity, the scope's current heads as parents, and a hybrid timestamp. From there they are exactly the operations of Chapters 3–4: appended to the DAG, folded into the root, and ready to broadcast.
+That artifact is the bridge back to the core: its committed writes are packaged as **data-plane operations** (`Put` / `Delete`) in the context scope — each stamped with the executor's identity, the scope's current heads as parents, and a hybrid timestamp. From there they are exactly the same [operations](/protocol/operations/): appended to the DAG, folded into the [root](/protocol/projection/), and ready to broadcast.
 
 :::note[Handoff]
 **Execution ends where the write path begins.**
 
-This chapter stops at "an outcome exists." **Chapter 8** picks it up: how the outcome is signed, persisted atomically, and broadcast to the context's members.
+This chapter stops at "an outcome exists." **The [write path](/protocol/write-path/)** picks it up: how the outcome is signed, persisted atomically, and broadcast to the context's members.
 :::
 
 ## Specification
@@ -152,4 +152,4 @@ struct Outcome {
 
 ## Where this leads
 
-We now know where data operations originate. The other planes — access control, membership, admin — don't come from WASM; they come from **governance**, which is **Chapter 6**.
+We now know where data operations originate. **[The Write Path](/protocol/write-path/)** follows one out of the runtime: how an outcome becomes a signed, durably persisted, broadcast operation.

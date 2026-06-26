@@ -28,7 +28,7 @@ struct Op {
 }
 ```
 
-The rest of this chapter is just: _how the id is formed_, _what the payload can say_, and _how parents turn a pile of operations into an ordered DAG._
+The rest of this page is just: _how the id is formed_, _what the payload can say_, and _how parents turn a pile of operations into an ordered DAG._
 
 ## The id is the content
 
@@ -50,21 +50,21 @@ Two details carry weight:
 - **Parents are sorted** (ascending, by their raw 32-byte value) before hashing, so the _set_ of parents determines the id — the order an author happened to list them in cannot.
 - The parent list is **length-prefixed** with a little-endian `u64` count, so the boundary between "parents" and "author" is unambiguous and two different field layouts can never collide into the same preimage.
 
-The signature is excluded from the preimage and is an Ed25519 signature over the resulting `id`. Exact byte layout and the reimplementer's checklist are in the [specification](#specification) at the foot of this chapter.
+The signature is excluded from the preimage and is an Ed25519 signature over the resulting `id`. Exact byte layout and the reimplementer's checklist are in the [specification](#specification) at the foot of this page.
 
 ## Signature & trust boundary
 
 The author signs the `id` with their member key. The signature is deliberately **not folded back into** the id (a hash can't include a signature of itself), so the id stays purely a function of content while the signature proves who authored that content.
 
 :::caution[Callers must verify the signature before trusting an operation.]
-The fold and the authorization layer (Chapters 4 and 6) assume _already-verified_ operations — they reason about content alone and perform no signature check. Feeding an unverified operation into the fold bypasses authentication entirely. Verification happens once, at the network edge (Chapter 9).
+The [fold](/protocol/projection/) and the [authorization layer](/protocol/governance/) assume _already-verified_ operations — they reason about content alone and perform no signature check. Feeding an unverified operation into the fold bypasses authentication entirely. Verification happens once, at the [network edge](/protocol/networking/).
 :::
 
 `expected_scope_root` is the author's prediction of the root after this operation applies. It is an **assertion, not an input**: it is not signed and never grants authority. Peers recompute their own scope root and compare; a tampered value can at worst flag a divergence the recompute would have caught anyway. **Security never depends on this field.**
 
 ## One envelope, four planes
 
-The `payload` is a single enum spanning four planes of change. Folding them into one envelope — one DAG, one ordering, one convergence signal — is the whole point of the unified model (Chapter 1).
+The `payload` is a single enum spanning four planes of change. Folding them into one envelope — one DAG, one ordering, one convergence signal — is the whole point of the [unified model](/protocol/overview/).
 
 - **Data** (`state`)
   - `Put { entity, value }`
@@ -79,7 +79,7 @@ The `payload` is a single enum spanning four planes of change. Folding them into
   - `SubgroupCreated / Reparented / Deleted`
   - capability grants, visibility
 
-A fifth, trivial variant — `Noop` — carries no change. It exists only so the DAG can have a node that merges several heads without asserting anything (Chapter 10 uses it to consolidate tips).
+A fifth, trivial variant — `Noop` — carries no change. It exists only so the DAG can have a node that merges several heads without asserting anything (the [sync engine](/protocol/sync/) uses it to consolidate tips).
 
 ## The causal DAG
 
@@ -91,7 +91,7 @@ The rules that govern this graph are short:
 
 - **Genesis is the zero hash** (`∅`), and it is always considered applied — every scope's history roots there.
 - **Heads** are the current tips: operations no later operation references yet. A new operation takes the current heads as its parents.
-- **Concurrency** is simply two operations where neither is an ancestor of the other (B and C above). The fold resolves them deterministically — Chapter 4.
+- **Concurrency** is simply two operations where neither is an ancestor of the other (B and C above). The fold resolves them deterministically — that is the [projection](/protocol/projection/).
 - An operation can only be **applied once all its parents are applied**. One whose parents haven't arrived (P) is held in a **pending** buffer until they do.
 
 ## Appending and applying
@@ -123,7 +123,7 @@ In words:
 
 1. **Receive the operation and look at its parents.** If every parent is already applied, the operation is ready. If any parent is missing, store it in the pending buffer keyed by the missing parents and stop — it will be revisited.
 
-2. **Apply a ready operation by folding it into the projection.** This is the deterministic step from Chapter 4. Applying never has side effects on consensus — it only updates materialized state and advances the heads.
+2. **Apply a ready operation by folding it into the projection.** This is the deterministic step the [projection](/protocol/projection/) defines. Applying never has side effects on consensus — it only updates materialized state and advances the heads.
 
 3. **Cascade.** Applying an operation can unblock pending children whose last missing parent just arrived. Scan the buffer, apply any now-ready operations, and repeat until nothing new becomes ready. This is how a backfilled history snaps into place in one pass.
 
@@ -186,8 +186,8 @@ The `hlc` is a hybrid logical clock: a wall-clock-ish value that is also nudged 
 - **Node id** — a `u128` unique per clock instance, making every timestamp globally unique without coordination and giving a final deterministic tiebreak.
 - **Anti-drift** — a timestamp more than a few seconds ahead of local time is rejected, bounding the damage a skewed peer can do.
 
-Comparison is lexicographic over _(timestamp, node id)_. Governance operations are authored with a **zero** hlc, which is why their ordering falls to the _generation_ component of the fold stamp in Chapter 4 rather than to wall-clock time.
+Comparison is lexicographic over _(timestamp, node id)_. Governance operations are authored with a **zero** hlc, which is why their ordering falls to the _generation_ component of the [fold stamp](/protocol/projection/) rather than to wall-clock time.
 
 ## Where this leads
 
-We now have a content-addressed, signed operation and a DAG that orders operations causally and buffers what it can't yet apply. The one thing we deferred is the actual _apply_ — how folding the DAG produces readable state and the single hash that tells two nodes whether they agree. That is **Chapter 4**.
+We now have a content-addressed, signed operation and a DAG that orders operations causally and buffers what it can't yet apply. The one thing we deferred is the actual _apply_ — how folding the DAG produces readable state and the single hash that tells two nodes whether they agree. That is the next page, **[State, Projection & the Root Hash](/protocol/projection/)**.

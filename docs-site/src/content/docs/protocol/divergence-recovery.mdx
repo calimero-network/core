@@ -215,3 +215,7 @@ Pulling the threads together, recovery is **eventual** and **order-independent**
 - Concurrent writer-set rotations MUST resolve by causal-first last-writer-wins, then HLC, then signer-pubkey bytes (ADR 0001). A write MUST be authorised against `writers_at(entity, author's causal parents)`, not the current writer set.
 - Recovery MUST require no quorum and no agreed delivery order, and MUST NOT discard a validly-signed write to force agreement.
 :::
+
+## Where this leads
+
+That completes the convergence loop — detection, the layered repair paths, and the guarantees that make it always converge. Next, [**Blob Transport**](/protocol/blobs/) and the chapters that follow cover the subsystems built on the loop.

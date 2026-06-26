@@ -9,17 +9,52 @@ import SeqDiagram from '../../../components/SeqDiagram.astro';
 import Figure from '../../../components/Figure.astro';
 import FoldPipeline from '../../../components/diagrams/FoldPipeline.astro';
 
-## From DAG to state: the fold
+## What projection is
 
-A scope's DAG is the source of truth, but you don't query a DAG — you query **state**. The **projection** is the deterministic function that replays a scope's operations into materialized state plus a single summary hash, the **scope root**.
+You never query the DAG directly. You query **state** — the current value of every entity, who may write it, who belongs to the scope. **Projection** is the act of replaying the operation log to compute that state, plus a single hash that fingerprints it.
+
+A bank balance is the projection of its transaction history. The balance isn't a fact you trust on its own — it's recomputed from the list of deposits and withdrawals, and anyone holding the same transactions arrives at the same balance. A Calimero scope works the same way: the DAG of operations is the ledger, the state is what you get by folding that ledger down, and the **scope root** is a 32-byte fingerprint of the result.
 
 <FoldPipeline />
 
-The fold has one essential property: it is **order-independent**. Replay the same set of operations in any order — the order they were authored, gossiped, or backfilled — and you get the identical state and the identical scope root. That is what makes "detect divergence, don't prevent it" work: two nodes never have to agree on an order, only on a set.
+Everything below unpacks three claims:
 
-## Last-writer-wins, per slot
+- the fold is **order-independent** — replay the same operations in any order and you land on the same state and the same root;
+- the root is a **total fingerprint** — it covers data _and_ authorization, so no change can move state without moving the root;
+- comparing two roots is therefore enough to tell whether two nodes **agree**.
 
-Order-independence comes from how each piece of state is resolved. The projection treats every addressable piece of state — an entity, an object's writer set, a member's role — as a **slot**. Each slot remembers the **stamp** of the operation that last wrote it, and a write only takes effect if it carries a higher stamp.
+## A worked example: three ops to one root
+
+Start concrete. Take three data-plane operations in one scope. Each entity id is derived from its key, so it is identical on every node (hashes are abbreviated and illustrative):
+
+```text
+op1:  Put    entity=0x9a…m1  value="hi"   hlc=1750.000100:#0
+op2:  Put    entity=0xb3…m2  value="yo"   hlc=1750.000120:#0
+op3:  Delete entity=0x9a…m1               hlc=1750.000150:#0
+```
+
+**Step 1 — fold the ops into slots.** The projection treats each entity as a **slot** and keeps, per slot, the _stamp_ of the last operation to write it. `op1` and `op3` both touch slot `0x9a…m1`; `op3`'s stamp (`…150`) outranks `op1`'s (`…100`), so the delete wins. A late-arriving `op1` can't resurrect the entity — its lower stamp loses.
+
+| Slot | Resolved value | Why |
+| --- | --- | --- |
+| `0x9a…m1` | *absent* | `op3` Delete stamp `…150` > `op1` Put stamp `…100` |
+| `0xb3…m2` | `"yo"` | only one writer |
+
+**Step 2 — hash the resolved state.** Only `m2` survives, so the data hash is taken over that one live entity, in ascending-id order. The two authorization planes are empty here, so each hashes to the empty-input digest:
+
+```text
+entities_hash = SHA-256( 0xb3…m2 ‖ u64_le(2) ‖ "yo" )       = 0x1f44…ab
+acl_hash      = SHA-256( <no objects> )                      = 0xe3b0…55   (empty plane)
+groups_root   = SHA-256( <no governance> )                   = 0xe3b0…55   (empty plane)
+
+scope_root = SHA-256( entities_hash ‖ acl_hash ‖ groups_root ) = 0x8d27…f0
+```
+
+**Why two nodes get the same hash.** A node that received `op3, op1, op2` and a node that received `op1, op2, op3` walk different paths, yet they resolve the same slots to the same bytes — because each slot keeps only its highest-stamped write, and a stamp doesn't depend on arrival order. Same set of ops ⇒ same slots ⇒ same `scope_root = 0x8d27…f0`. The two nodes are converged, and neither ever had to agree on an order.
+
+## The fold, formally
+
+The example's "highest stamp wins" rule is the whole engine. Formally, the projection is **last-writer-wins per slot**: every addressable piece of state — an entity, an object's writer set, a member's role — is a slot, and applying an operation overwrites a slot only if it carries a higher stamp.
 
 ```text
 // applying one operation — pure, deterministic, order-independent
@@ -33,15 +68,17 @@ fn apply(op):
 
 The stamp is a triple, compared left to right:
 
-- **`hlc`** — the hybrid logical clock. It advances with wall-clock time but is nudged forward whenever a higher clock is observed, so it stays _causally monotonic_: an operation that causally follows another always carries a higher (or equal) hlc.
-- **`generation`** — the operation's depth in the DAG (its longest path from genesis). This breaks ties where hlc alone can't. Governance operations in particular are authored with hlc = 0, so _generation is what orders them_ — a later structural change always sits deeper in the DAG than the state it supersedes.
+- **`hlc`** — the hybrid logical clock. It tracks wall-clock time but is nudged forward whenever a higher clock is observed, so it stays _causally monotonic_: an operation that causally follows another always carries a higher (or equal) hlc.
+- **`generation`** — the operation's causal depth in the DAG (`1 + max(parent generation)`, `0` at a root). This breaks ties where hlc alone can't. Governance operations are authored with hlc = 0, so _generation is what orders them_ — a later structural change always sits deeper in the DAG than the state it supersedes.
 - **`id`** — the content hash, a final deterministic tiebreaker so two genuinely concurrent writes still resolve the same way on every node.
 
-A `Delete` records a stamp just like a write, so a stale re-add that arrives later cannot resurrect a deleted entity — its lower stamp loses.
+A `Delete` records a stamp exactly like a write — which is why the stale re-add in the example above could never win.
 
-## What the projection holds
+This is also where **order-independence** comes from: because a slot only ever remembers the single highest stamp it has seen, the order operations arrive in can't change the outcome. Replay the same set in any order — authored, gossiped, or backfilled — and every slot lands on the same value.
 
-The fold maintains one set of slots per plane. This is the complete materialized state of a scope:
+### What the projection holds
+
+The fold maintains one set of slots per plane. Together they are the complete materialized state of a scope:
 
 | Plane | Slots | Resolved value |
 | --- | --- | --- |
@@ -52,32 +89,40 @@ The fold maintains one set of slots per plane. This is the complete materialized
 | Structure | `subgroups` | the subgroup tree: parent links and visibility |
 | Capability | `default_caps`, `member_caps` | default and per-member capability grants |
 
-The data plane is the application's state; the other planes are what Chapter 6 calls governance. They all fold the same way — that's the unification.
+The data plane is the application's state; the other planes are the [governance](/protocol/governance/) planes. They all fold the same way — that is the unification.
 
-## The scope root
+### The scope root
 
-The whole projection collapses to **one 32-byte hash**. It is the concatenation of three plane hashes, each computed over its slots in sorted, deterministic order:
+The whole projection collapses to **one 32-byte hash**: the concatenation of three plane hashes, each taken over its slots in sorted, deterministic order.
 
 ```text
-scope_root = H( entities_hash ‖ acl_hash ‖ governance_hash )
+scope_root = SHA-256( entities_root ‖ acl_hash ‖ groups_root )
 
-// each is a hash over its slots in sorted key order
-entities_hash  = H( for each entity: id ‖ len(value) ‖ value )
-acl_hash       = H( for each object: id ‖ writer ‖ capability_mask )
-governance_hash = H( memberships ‖ admin ‖ policy ‖ subgroups ‖ caps )
+// each component is a hash over its plane's slots in sorted key order
+entities_root = the data-plane root (on the wire, the storage Merkle root — see below)
+acl_hash      = H( for each object:  id ‖ writer ‖ capability_mask )
+groups_root   = H( memberships ‖ admin ‖ policy ‖ subgroups ‖ caps )
 ```
 
-Because every node sorts the same way and hashes the same bytes, equal operation sets give equal scope roots — and **unequal state gives unequal roots**. That second half is the subtle, important part:
+Because every node sorts the same way and hashes the same bytes, equal operation sets give equal roots. The exact byte layout — and the subtlety behind `entities_root` — is in the [specification](#specification) below.
+
+## Why it matters: detecting divergence
+
+Order-independence plus a total fingerprint is what turns "are these two nodes in sync?" into a single comparison.
+
+### The root covers authorization, not just data
+
+Equal sets give equal roots — and **unequal state gives unequal roots**, including state with no _data_ effect at all.
 
 :::note[Key property]
 **A change with no data effect still moves the scope root.**
 
-Rotate an object's writers, or remove a member, and the _data_ entities may be byte-for-byte identical — yet because `acl_hash` and `governance_hash` are folded into the root, the scope root changes. This closes the gap that would otherwise let a silent access-control or membership split-brain hide behind matching application data. Convergence is checked on the whole scope, not just its data.
+Rotate an object's writers, or remove a member, and the _data_ entities may be byte-for-byte identical — yet because `acl_hash` and `groups_root` are folded into the root, the scope root changes. Returning to the worked example: add a fourth op that only rotates a writer set, and the data slots stay identical while `acl_hash` (and so `scope_root`) moves. This closes the gap that would otherwise let a silent access-control or membership split-brain hide behind matching application data. Convergence is checked on the whole scope, not just its data.
 :::
 
-## Convergence is a hash comparison
+### Convergence is a hash comparison
 
-With an order-independent fold and a single root, checking whether two nodes agree is trivial: **compare scope roots.** No agreement on ordering, no quorum, no coordination — just two hashes.
+With an order-independent fold and a single total root, checking whether two nodes agree is trivial: **compare scope roots.** No agreement on ordering, no quorum, no coordination — just two hashes.
 
 <SeqDiagram
   id="d-converge"
@@ -95,47 +140,18 @@ With an order-independent fold and a single root, checking whether two nodes agr
   ]}
 />
 
-Equal roots mean the nodes hold the same state and are done. Unequal roots mean one is missing operations the other has — which is exactly the signal the sync engine acts on in Chapter 10.
-
-## A concrete fold: three ops to one root
-
-Take three data-plane ops in one scope. The entity ids are derived from their keys, so they are the same on every node (hashes abbreviated and illustrative):
-
-```text
-op1:  Put    entity=0x9a…m1  value="hi"   hlc=1750.000100:#0
-op2:  Put    entity=0xb3…m2  value="yo"   hlc=1750.000120:#0
-op3:  Delete entity=0x9a…m1               hlc=1750.000150:#0
-```
-
-Folding these — in *any* order — gives one materialized state. `op3` carries a higher stamp than `op1` on slot `0x9a…m1`, so the delete wins and `m1` is absent; a late-arriving `op1` cannot resurrect it (lower stamp loses):
-
-| Slot | Resolved value | Why |
-| --- | --- | --- |
-| `0x9a…m1` | *absent* | `op3` Delete stamp `…150` > `op1` Put stamp `…100` |
-| `0xb3…m2` | `"yo"` | only one writer |
-
-Only `m2` survives, so `entities_hash` is computed over that single live entity, in ascending-id order:
-
-```text
-entities_hash = SHA-256( 0xb3…m2 ‖ u64_le(2) ‖ "yo" )      = 0x1f44…ab
-acl_hash      = SHA-256( <no objects> )                     = 0xe3b0…55   (empty plane)
-groups_root   = SHA-256( <no governance> )                  = 0xe3b0…55   (empty plane)
-
-scope_root = SHA-256( entities_hash ‖ acl_hash ‖ groups_root ) = 0x8d27…f0
-```
-
-A node that applied `op3, op1, op2` and a node that applied `op1, op2, op3` walk different paths but resolve the same slots to the same bytes, so both land on `scope_root = 0x8d27…f0` — equal sets, equal root, converged. Add a fourth op that only rotates an object's writers and the *data* slots above are byte-identical, yet `acl_hash` moves and the `scope_root` changes with it — the property the [Key property](#the-scope-root) note above relies on.
+Equal roots mean the nodes hold the same state and are done. Unequal roots mean one is missing operations the other has — which is exactly the signal the [sync engine](/protocol/sync/) acts on.
 
 ## Reading the past: authorization at a cut
 
-The fold above produces the _current_ state. But authorization (Chapter 6) often needs the state **as it was at a particular point in history** — specifically, the membership and access-control state an operation's author had observed when they wrote it.
+The fold above produces the _current_ state. But [authorization](/protocol/governance/) often needs the state **as it was at a particular point in history** — specifically, the membership and access-control state an operation's author had observed when they wrote it.
 
 The projection answers this by folding only the **causal cut**: the operation's parents and everything those parents transitively descend from, and nothing later. This yields an access-control view "as of" that point.
 
 :::note[Why it matters]
 **Forward-only authorization.**
 
-A write authored _before_ a member was revoked is judged against the access-control state that existed _before_ the revocation — so it stays valid regardless of the order in which a peer happens to receive the write and the revocation. Authority is evaluated at the author's cut, never at the receiver's present. Chapter 6 builds the full membership and capability rules on top of this primitive.
+A write authored _before_ a member was revoked is judged against the access-control state that existed _before_ the revocation — so it stays valid regardless of the order in which a peer happens to receive the write and the revocation. Authority is evaluated at the author's cut, never at the receiver's present. [Governance](/protocol/governance/) builds the full membership and capability rules on top of this primitive.
 :::
 
 ## Specification
@@ -143,7 +159,7 @@ A write authored _before_ a member was revoked is judged against the access-cont
 The exact composition of the scope root. Every node must hash identical bytes in identical order, so the rules below are normative for interop. All integers are **little-endian**; every map is iterated in **ascending key order** (the determinism source).
 
 ```text
-scope_root = SHA-256( entities_root ‖ acl_hash ‖ governance_hash )  // three 32-byte inputs
+scope_root = SHA-256( entities_root ‖ acl_hash ‖ groups_root )  // three 32-byte inputs
 ```
 
 :::note[Important]
@@ -171,7 +187,9 @@ for (writer, mask) in writers:
   h.update( [mask.bits()] )  // 1 byte bitflag
 ```
 
-### governance_hash (membership + admin + policy + structure + caps)
+### groups_root (membership + admin + policy + structure + caps)
+
+The third component. The implementation names the function that computes it `governance_hash`, because it spans the scope's admin, policy, and subgroups in addition to group memberships and capabilities — all of it folded in below.
 
 ```text
 // 1) groups — ascending; empty groups are skipped entirely
@@ -206,4 +224,6 @@ Note the empty-group skip and the live-subgroup filter: materialized state must 
 
 ## Where this leads
 
-Chapters 3 and 4 are the core: a signed operation, a causally-ordered DAG, an order-independent fold to state, and a single scope root that makes convergence a hash comparison. Everything else is this machinery applied to a purpose — **Chapter 5** shows where data operations come from (running a WASM application), and **Chapter 6** shows how the governance planes encode membership and authority.
+A signed operation, a causally-ordered DAG, an order-independent fold to state, and a single scope root that makes convergence a hash comparison — that is the core of the protocol. Everything else applies this machinery to a purpose.
+
+Next is **[Anatomy of State](/protocol/data-anatomy/)** — a visual tour of how the DAG, the Merkle tree, and the on-disk column families actually lay this state out. After that, [Execution](/protocol/execution/) shows where data operations come from (a running WASM application), and [Governance](/protocol/governance/) shows how the authorization planes encode membership and authority.

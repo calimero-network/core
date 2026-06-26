@@ -39,9 +39,9 @@ The landing page promised to follow one operation from birth to convergence. Thi
 
 1. **Request and lock.** — A request (HTTP/RPC) names a context and a method. The node takes an execution lock on that context so concurrent writes don't interleave. Read-only calls take a shared lock and skip everything below — they produce no operation.
 
-2. **Execute.** — The WASM application runs the method against current state (Chapter 5). It produces an **outcome**: a new root hash and an artifact of committed writes, plus events and any queued cross-calls. If it traps, the lock releases and nothing is written.
+2. **Execute.** — The WASM application runs the method against current state ([execution](/protocol/execution/)). It produces an **outcome**: a new root hash and an artifact of committed writes, plus events and any queued cross-calls. If it traps, the lock releases and nothing is written.
 
-3. **Build the operation.** — The committed writes become data-plane operations in the context scope. Each takes the scope's **current heads as parents**, a fresh **hybrid timestamp**, the executor's **member identity** as author, and a content-addressed **id** (Chapter 3).
+3. **Build the operation.** — The committed writes become data-plane operations in the context scope. Each takes the scope's **current heads as parents**, a fresh **hybrid timestamp**, the executor's **member identity** as author, and a content-addressed **id**, all as defined by the [operations](/protocol/operations/) model.
 
 4. **Sign.** — The author signs the id with their member key. The signature binds authorship to content so a peer can verify it before trusting the operation — and so the operation can't be relabelled in flight.
 
@@ -82,12 +82,12 @@ After step 4 the writer's own state already shows `"hi"` and its head has advanc
 
 ## What gets committed before the broadcast
 
-The ordering is deliberate: **persist, then broadcast**. By the time a single byte leaves the node, the operation is already durable locally and the author's own state already reflects it. If the network is down, or no peer is listening, nothing is lost — the operation sits in the local DAG and will be served to peers later through the sync channel (Chapter 10). Convergence never depends on a broadcast being received; it only depends on the operation eventually being _available_.
+The ordering is deliberate: **persist, then broadcast**. By the time a single byte leaves the node, the operation is already durable locally and the author's own state already reflects it. If the network is down, or no peer is listening, nothing is lost — the operation sits in the local DAG and will be served to peers later through the [sync channel](/protocol/sync/). Convergence never depends on a broadcast being received; it only depends on the operation eventually being _available_.
 
 ## Governance writes take the same path
 
-A membership change, a capability grant, or an admin action is built and broadcast exactly like a data write — the only differences are that the payload is a governance variant (Chapter 6) and the topic is the governance scope's (`group/` or `ns/`) rather than the context's. One write path serves all four planes, because they are all just operations.
+A membership change, a capability grant, or an admin action is built and broadcast exactly like a data write — the only differences are that the payload is a [governance](/protocol/governance/) variant and the topic is the governance scope's (`group/` or `ns/`) rather than the context's. One write path serves all four planes, because they are all just operations.
 
 ## Where this leads
 
-The operation is now in flight. **Chapter 9** is the right half of its life: what a receiving node does to verify, decrypt, order, and apply it.
+The operation is now in flight. **[The Receive & Apply Path](/protocol/receive-path/)** is the right half of its life: what a receiving node does to verify, decrypt, order, and apply it.

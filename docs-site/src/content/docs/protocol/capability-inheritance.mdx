@@ -298,3 +298,7 @@ No membership op is ever written on either subgroup for these three. Resolving e
 - A `Restricted` subgroup is a **wall**: membership needs a direct admission, and the subgroup is hidden from non-members.
 - The walk stops at the first non-`Open` boundary; the live `check_path` and the projection's `is_member_at_cut` implement the identical walk so live and at-cut answers agree.
 - Capabilities resolve per group as **override-or-default**; `CAN_JOIN_OPEN_SUBGROUPS` is a default-on, admin-revocable deny-list bit; admins bypass the bitmask entirely.
+
+## Where this leads
+
+That completes the governance picture — who is a member, how membership flows down the tree, and how capabilities resolve. Next, **[Identities & Keys](/protocol/identities/)**: how members are identified and how their data is kept confidential.

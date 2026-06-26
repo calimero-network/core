@@ -21,7 +21,7 @@ Everything on the wire travels one of two ways, and the choice is about _eager v
 - **Gossip (eager broadcast)** — A node publishes to a **topic**; every subscriber receives it through the gossipsub mesh. This is how fresh operations propagate the instant they're created — fire it once, the mesh fans it out. Best-effort: a node that was offline simply misses it.
 - **Streams (pull, point-to-point)** — A node opens a direct, length-delimited stream to one peer and asks for something specific — missing operations, a snapshot, a blob, a key. This is how a node _catches up_ on anything gossip didn't deliver. Reliable and targeted.
 
-Gossip keeps everyone roughly current; streams make them exactly current. Chapter 10 is essentially "the stream channel, driven by the scope-root comparison."
+Gossip keeps everyone roughly current; streams make them exactly current. [Sync & convergence](/protocol/sync/) is essentially "the stream channel, driven by the scope-root comparison."
 
 ## Topics follow the scope tree
 
@@ -77,13 +77,13 @@ All messages are **Borsh**-encoded (compact, deterministic binary). They fall in
 | Gossip | `Heartbeat` | current DAG heads + root, published periodically for divergence detection. |
 | Stream | `DeltaRequest / Response` | fetch a specific operation by id. |
 | Stream | `DagHeadsRequest / Response` | exchange heads + roots during a sync handshake. |
-| Stream | `TreeNode / LevelWise` | compare state trees to locate exactly what differs (Chapter 10). |
+| Stream | `TreeNode / LevelWise` | compare state trees to locate exactly what differs ([sync](/protocol/sync/)). |
 | Stream | `Snapshot*` | transfer a full materialized scope when incremental sync isn't enough. |
 | Stream | `KeyRequest / Response` | recover a scope key wrapped to the requester. |
 
 ## Three layers of encryption
 
-Confidentiality is defense-in-depth, and the three layers map exactly onto Chapter 2's three keys:
+Confidentiality is defense-in-depth, and the three layers map exactly onto [the three keys](/protocol/identities/):
 
 - **Transport** — Noise/TLS encrypts every connection, authenticated by the peers' _transport_ identities.
 - **Payload** — an operation's sensitive content is encrypted under its _scope_ key, so even a subscribed non-member on the topic sees only ciphertext.
@@ -190,4 +190,4 @@ struct carries an `error` string and no invitation. The response echoes the
 
 ## Where this leads
 
-We can now move operations between nodes. The next three chapters trace the round trip end to end: **Chapter 8** creates and broadcasts an operation, **Chapter 9** receives and applies one, and **Chapter 10** reconciles whatever the eager channel missed.
+We can now move operations between nodes — but gossip is best-effort, so some never arrive. Next, [**Sync & Convergence**](/protocol/sync/) is the reliable channel that finds whatever the eager broadcast missed and repairs it by comparing scope roots.

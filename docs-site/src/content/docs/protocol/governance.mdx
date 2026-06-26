@@ -9,19 +9,19 @@ import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 ## Governance is just operations
 
-There is no separate governance engine, no consensus round, and **no quorum**. The access-control, membership, and admin planes from Chapter 3 are governance — they are operations in a governance scope, folded by the same last-writer-wins projection, summarized by the same scope root. A membership change converges exactly the way a data write does.
+There is no separate governance engine, no consensus round, and **no quorum**. The access-control, membership, and admin planes of [the operation model](/protocol/operations/) are governance — they are operations in a governance scope, folded by the same last-writer-wins projection, summarized by the same scope root. A membership change converges exactly the way a data write does.
 
 What this chapter adds is _meaning_: what those governance operations say, the structure they maintain, and how the system decides whether an author was allowed to write one.
 
 ## The hierarchy
 
-Governance scopes form a tree (the scope tree from Chapter 1):
+Governance scopes form a tree (the scope tree from [Concepts & Scopes](/protocol/concepts/)):
 
 - A **namespace** is the root governance scope — a group with no parent. It anchors identity, admin, and policy for everything beneath it.
 - **Subgroups** nest under it, each its own scope with its own key and members.
 - **Contexts** (the running applications) attach to a group; a context's members are the group's members.
 
-A subgroup is either **Open** or **Restricted**. In an Open subgroup, a parent member who holds the "join open subgroups" capability is a member by _inheritance_ — no explicit operation needed. A Restricted subgroup is closed: membership requires a direct, deliberate admission. Because membership only ever narrows as you descend, pointing an operation "up" the tree never leaks visibility — the property Chapter 1 relied on.
+A subgroup is either **Open** or **Restricted**. In an Open subgroup, a parent member who holds the "join open subgroups" capability is a member by _inheritance_ — no explicit operation needed. A Restricted subgroup is closed: membership requires a direct, deliberate admission. Because membership only ever narrows as you descend, pointing an operation "up" the tree never leaks visibility — the property [Concepts & Scopes](/protocol/concepts/) relied on.
 
 ## The founder
 
@@ -188,7 +188,7 @@ The **owner** is not a role but a stored identity with exclusive rights — tran
 
 ## Authorization: judged at the author's cut
 
-The decision "was this author allowed to write this operation?" reuses the primitive from Chapter 4: the projection resolves membership and capabilities at the operation's **causal cut** — the governance state the author had observed — not at the receiver's present.
+The decision "was this author allowed to write this operation?" reuses the primitive from [Projection](/protocol/projection/): the projection resolves membership and capabilities at the operation's **causal cut** — the governance state the author had observed — not at the receiver's present.
 
 :::note[The rule]
 **Forward-only authority.**
@@ -273,4 +273,4 @@ The owner is stored alongside admin in the group metadata (`owner_identity` vs `
 
 ## Where this leads
 
-We now have the full meaning of all four planes and the rules that govern who may write them. Everything so far has been _local_ — operations, folds, authority — assuming the operations are simply present. **Chapter 7** turns to how they actually move between nodes: the network and the wire protocol.
+We now have the full meaning of all four planes and the rules that govern who may write them. Next, **[Capability & Membership Inheritance](/protocol/capability-inheritance/)** follows membership down the scope tree — how an Open subgroup inherits its parent's members with no operation written, where the Restricted wall stops that flow, and how capabilities resolve per member.

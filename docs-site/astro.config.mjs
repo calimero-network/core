@@ -130,60 +130,70 @@ export default defineConfig({
         {
           label: 'Protocol Reference',
           items: [
+            // Ordered top-to-bottom by "what you most need to know first",
+            // each part one level deeper than the last (see overview).
             { label: 'Overview', slug: 'protocol/overview' },
             {
-              label: 'The core model',
+              label: 'The replication loop',
               items: [
-                'protocol/concepts',
-                'protocol/identities',
+                'protocol/execution',
+                'protocol/write-path',
+                'protocol/receive-path',
+              ],
+            },
+            {
+              label: 'What gets replicated',
+              items: [
                 'protocol/operations',
                 'protocol/projection',
-                'protocol/hlc',
                 'protocol/data-anatomy',
               ],
             },
             {
-              label: 'The planes',
-              items: ['protocol/execution', 'protocol/governance'],
+              label: 'How it is organized',
+              items: [
+                'protocol/concepts',
+                'protocol/governance',
+                'protocol/capability-inheritance',
+              ],
             },
             {
-              label: 'Moving & reconciling',
+              label: 'Confidentiality & identity',
+              items: [
+                'protocol/identities',
+                'protocol/encryption',
+                'protocol/key-rotation',
+                'protocol/security-model',
+              ],
+            },
+            {
+              label: 'Staying in sync',
               items: [
                 'protocol/networking',
-                'protocol/write-path',
-                'protocol/receive-path',
                 'protocol/sync',
                 'protocol/sync-internals',
+                'protocol/divergence-recovery',
               ],
             },
             {
               label: 'Subsystems',
               items: [
                 'protocol/blobs',
-                'protocol/tee-attestation',
                 'protocol/xcall',
+                'protocol/tee-attestation',
                 'protocol/upgrades',
               ],
             },
             {
-              label: 'Deep dives',
+              label: 'Deep internals & reference',
               collapsed: true,
               items: [
-                'protocol/key-rotation',
-                'protocol/divergence-recovery',
-                'protocol/governance-edge-cases',
-                'protocol/capability-inheritance',
                 'protocol/crdt-internals',
-                'protocol/encryption',
-              ],
-            },
-            {
-              label: 'Reference',
-              items: [
-                'protocol/security-model',
-                'protocol/limits',
-                'protocol/glossary',
+                'protocol/hlc',
                 'protocol/storage',
+                'protocol/limits',
+                'protocol/governance-edge-cases',
+                'protocol/glossary',
               ],
             },
           ],

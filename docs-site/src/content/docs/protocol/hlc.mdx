@@ -141,3 +141,4 @@ This is exactly the order a [`LwwRegister`](/protocol/crdt-internals/) uses to d
 - [Operations](/protocol/operations/) — where the `hlc` field sits in the signed operation envelope.
 - [Projection & convergence](/protocol/projection/) — the `(hlc, generation, op_id)` fold stamp built on this clock.
 - [CRDT internals](/protocol/crdt-internals/) — `LwwRegister` and the other conflict-free types that compare HLC stamps.
+- [Storage Schema](/protocol/storage/) — how a `HybridTimestamp` is encoded at rest (the Borsh `u64` time followed by the `u128` id).

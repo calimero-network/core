@@ -21,7 +21,7 @@ An xcall is **fire-and-forget**:
 Because there is no return channel and execution is local to the node, xcall is a one-directional signal — useful for keeping a second context in sync, not for request/response.
 
 <Aside type="note">
-xcall is strictly **node-local**. It dispatches against contexts that already live on this node; it never reaches a context on a remote peer. Cross-node consistency is the job of replication and sync, not xcall — see [Application Execution](/protocol/execution/) and the sync chapter for how state crosses nodes.
+xcall is strictly **node-local**. It dispatches against contexts that already live on this node; it never reaches a context on a remote peer. Cross-node consistency is the job of replication and sync, not xcall — see [Application Execution](/protocol/execution/) and [Sync](/protocol/sync/) for how state crosses nodes.
 </Aside>
 
 ## The guest API

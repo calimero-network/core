@@ -1,6 +1,6 @@
 ---
 title: Sync & Convergence
-description: Chapter 10 — detecting divergence and repairing it.
+description: Detecting divergence and repairing it.
 sidebar:
   order: 11
 ---
@@ -11,7 +11,7 @@ import Verdict from '../../../components/diagrams/Verdict.astro';
 
 ## Why sync exists
 
-Gossip is best-effort. A node that was offline, partitioned, or simply not yet subscribed will miss broadcasts — so two nodes can hold different operation sets and, therefore, different scope roots. Sync is the reliable channel that closes that gap. Its whole job is built on one fact established back in Chapter 4: **two nodes agree if and only if their scope roots are equal.** So sync is just "compare roots; if they differ, find and transfer what's missing."
+Gossip is best-effort. A node that was offline, partitioned, or simply not yet subscribed will miss broadcasts — so two nodes can hold different operation sets and, therefore, different scope roots. Sync is the reliable channel that closes that gap. Its whole job is built on one fact established by [state projection](/protocol/projection/): **two nodes agree if and only if their scope roots are equal.** So sync is just "compare roots; if they differ, find and transfer what's missing."
 
 ## What triggers it
 
@@ -19,7 +19,7 @@ A node starts a sync session for a scope when any of these fire:
 
 - **Periodically** — a steady background tick, so nothing drifts indefinitely.
 - **On join** — a freshly joined member pulls the history it just gained access to.
-- **On heartbeat mismatch** — the periodic `Heartbeat` (Chapter 7) advertises a peer's heads and root; a root that doesn't match ours is a direct signal to reconcile.
+- **On heartbeat mismatch** — the periodic `Heartbeat` ([networking](/protocol/networking/)) advertises a peer's heads and root; a root that doesn't match ours is a direct signal to reconcile.
 - **After a data sync** — a follow-up check that governance also agrees (below).
 
 ## The handshake and the verdict
@@ -28,7 +28,7 @@ A session opens a stream to a peer and the two exchange their **heads and roots*
 
 <Verdict />
 
-The two-step test matters: comparing the _full_ scope root first catches divergence the data alone would hide (the hash-neutral case from Chapter 4 — an access-control or membership split with identical data). Only if the data plane also differs do we reach for the heavier state-transfer protocols.
+The two-step test matters: comparing the _full_ scope root first catches divergence the data alone would hide (the hash-neutral case from [state projection](/protocol/projection/) — an access-control or membership split with identical data). Only if the data plane also differs do we reach for the heavier state-transfer protocols.
 
 ## Choosing how to transfer
 
@@ -46,7 +46,7 @@ Compare the trees breadth-first, level by level. A better fit when differences a
 
 Transfer the whole materialized scope. The fallback when a node is so far behind that incremental comparison isn't worth it — a new joiner, or one long offline.
 
-Transferred entities are merged through the same conflict-free fold as everything else (Chapter 4), and the receiver re-checks its root afterward. The merge is authorized at the cut, so sync can never smuggle in a write the author wasn't entitled to make.
+Transferred entities are merged through the same conflict-free fold as everything else ([state projection](/protocol/projection/)), and the receiver re-checks its root afterward. The merge is authorized at the cut, so sync can never smuggle in a write the author wasn't entitled to make.
 
 ## A session, end to end
 
@@ -171,6 +171,6 @@ What counts as a failure is deliberately narrow: the benign outcomes **`NoPeersA
 
 ## The operation's life, complete
 
-That closes the loop the landing page opened. An operation is born in an execution (Chapter 8), broadcast over gossip (Chapter 7), received and folded by peers (Chapter 9) — and anything that channel missed is found and repaired here by comparing one 32-byte hash and transferring exactly what differs. No consensus, no quorum, no agreed order: just a signed operation DAG that folds to a state and a root, with divergence **detected, not prevented**.
+That closes the loop the landing page opened. An operation is born on [the write path](/protocol/write-path/), broadcast over gossip ([networking](/protocol/networking/)), received and folded by peers ([the receive path](/protocol/receive-path/)) — and anything that channel missed is found and repaired here by comparing one 32-byte hash and transferring exactly what differs. No consensus, no quorum, no agreed order: just a signed operation DAG that folds to a state and a root, with divergence **detected, not prevented**.
 
-From here the reference branches into appendices — the storage schema, the crate map, metrics, and migrations — but the protocol itself is the ten chapters you have just read.
+This page covered why sync exists and the shape of a session. Next, [**Sync Internals**](/protocol/sync-internals/) is the wire-level companion — every message a session sends, the verdict logic, and the hash-comparison, level-wise, and snapshot transfer protocols, message by message.

@@ -231,6 +231,10 @@ An explicit `context sync` request normally carries a specific context (and opti
 
 A successful *data* sync does not by itself prove the governance planes agree, because data and governance converge independently. After any data transfer completes, the manager re-reads its now-merged root, recomputes `scope_root`, and — if it still differs from the peer's — pulls governance operations from that peer. This check is **centralised in the manager** (`handle_dag_sync`, `crates/node/src/sync/manager/mod.rs` around `:1574`) so it covers *every* data backend — Snapshot and DAG-heads delta as well as HashComparison and LevelWise — not just the protocols that compute the verdict. The transfer protocols themselves stay pure data steps. The pull is idempotent: against an already-agreeing peer it returns zero operations, so pulling whenever the root still differs is safe and self-limiting. The manager also short-circuits the *pre*-sync `GovDiverged` case (entities already equal, scope roots differ) directly into a governance pull without running a data transfer at all (`mod.rs:1460`).
 
+## Where this leads
+
+Next, [**Divergence & Recovery**](/protocol/divergence-recovery/) traces how detected divergence is actually repaired across the harder partition scenarios these messages serve — anchor reconcile, parent-pull, the absorb buffer, and concurrent writer-set rotation.
+
 ## Cross-references
 
 - [Sync & Convergence](/protocol/sync/) — the high-level chapter: triggers, timing, and the verdict in prose.

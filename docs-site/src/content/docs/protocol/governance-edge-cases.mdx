@@ -10,7 +10,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 The [Governance](/protocol/governance/) chapter established the model: membership and authority are operations, folded by the same last-writer-wins projection, authorized at the author's causal cut, with **no quorum**. This chapter is the deep-dive into the corners — the guards that keep the scope tree well-formed, the rules that make a removal and a self-leave genuinely different operations, and the mechanics that let two members author governance ops at the same instant and still converge.
 
-Everything here is grounded in `crates/governance-store` (the apply handlers and guards), `crates/governance-types` (the op variants), and `crates/projection` (the at-cut fold). Nothing here repeats the basics — if a term is unfamiliar, the previous chapter defines it.
+Everything here is grounded in `crates/governance-store` (the apply handlers and guards), `crates/governance-types` (the op variants), and `crates/projection` (the at-cut fold). Nothing here repeats the basics — if a term is unfamiliar, the [Governance](/protocol/governance/) chapter defines it.
 
 ## Last-admin protection
 
@@ -197,4 +197,4 @@ There is one inherited-membership nuance: a member who inherits into an Open sub
 
 ## Where this leaves the model
 
-The previous chapter gave governance its meaning; this one walked its corners. The throughline is that none of these edge cases needs a coordinator: a last-admin guard resolved at the cut, an owner field folded into the hash, a generation tiebreak over siblings, a nonce window tolerant of reordering, a re-enumerated cascade payload, and a derived deny-list all converge for the same reason the rest of the protocol does — every node folds the same operations and reaches the same verdict. For how these ops move between nodes, see [Networking](/protocol/networking/) and [Sync](/protocol/sync/); for the at-cut authorization primitive itself, see [Projection](/protocol/projection/) and the [Receive Path](/protocol/receive-path/).
+The [Governance](/protocol/governance/) chapter gave governance its meaning; this one walked its corners. The throughline is that none of these edge cases needs a coordinator: a last-admin guard resolved at the cut, an owner field folded into the hash, a generation tiebreak over siblings, a nonce window tolerant of reordering, a re-enumerated cascade payload, and a derived deny-list all converge for the same reason the rest of the protocol does — every node folds the same operations and reaches the same verdict. For how these ops move between nodes, see [Networking](/protocol/networking/) and [Sync](/protocol/sync/); for the at-cut authorization primitive itself, see [Projection](/protocol/projection/) and the [Receive Path](/protocol/receive-path/). For precise definitions of the vocabulary used throughout, see the [Glossary](/protocol/glossary/).

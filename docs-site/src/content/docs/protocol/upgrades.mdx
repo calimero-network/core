@@ -577,6 +577,8 @@ deltas replay verbatim.
 
 ## Related
 
+- [CRDTs — How They Work](/protocol/crdt-internals/) — the per-type merge machinery
+  the convergence rule depends on, including why a migration must be deterministic.
 - [State & projection](/protocol/projection/) — how the root and child entries are
   Merkle-folded, which is what the convergence rule preserves.
 - [SDK macros](/build/sdk-macros/) — the `#[app::state]`, `#[app::migrate]`,

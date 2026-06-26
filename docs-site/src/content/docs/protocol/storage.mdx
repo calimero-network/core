@@ -1,5 +1,5 @@
 ---
-title: Storage Schema (Appendix)
+title: Storage Schema
 description: The on-disk format — column families, key byte-layouts, and value encodings.
 sidebar:
   order: 90
@@ -7,7 +7,7 @@ sidebar:
 
 ## Scope
 
-This appendix specifies the local persistence layer. A node stores everything in a key-value store (RocksDB) partitioned into **column families**. Two encodings are used for values: **Identity** (raw bytes, no framing) and **Borsh** (the same compact binary encoding used on the wire). Reimplementations are free to choose any backend — what matters for interop is the logical content, not the column layout; this appendix documents the reference layout because it makes the data model concrete.
+This page specifies the local persistence layer. A node stores everything in a key-value store (RocksDB) partitioned into **column families**. Two encodings are used for values: **Identity** (raw bytes, no framing) and **Borsh** (the same compact binary encoding used on the wire). Reimplementations are free to choose any backend — what matters for interop is the logical content, not the column layout; this page documents the reference layout because it makes the data model concrete.
 
 ## Column families
 
@@ -40,7 +40,7 @@ Keys are fixed-size concatenations of 32-byte ids. The leading id is the partiti
 | `ContextDagDelta` | Delta | `context_id(32) ‖ delta_id(32)` | 64 |
 | `ScopeUnifiedOp` | UnifiedOp | `scope(32) ‖ op_id(32)` | 64 |
 
-The unified op store is the key one for the target model: keyed `scope ‖ op_id`, so all operations of a scope are a contiguous range, and the value is simply the Borsh-encoded `Op` from Chapter 3, stored verbatim (Identity codec).
+The unified op store is the key one for the target model: keyed `scope ‖ op_id`, so all operations of a scope are a contiguous range, and the value is simply the Borsh-encoded `Op` from [Operations](/protocol/operations/), stored verbatim (Identity codec).
 
 ## Key value structures
 
@@ -82,7 +82,7 @@ All governance record types share one column, distinguished by a 1-byte prefix f
 | `0x3A` | GroupKeyEntry | `0x3A ‖ group_id(32) ‖ key_id(32)` |
 | `0x3C` | NonceWindow | `0x3C ‖ group_id(32) ‖ signer(32)` |
 
-Note the `GroupOpLog` sequence is **big-endian** so keys sort in numeric order; id-based keys use the raw 32 bytes. The `key_id` in `GroupKeyEntry` is `SHA-256(scope_key)`, matching the `key_id` a `StateDelta` advertises on the wire (Chapter 7).
+Note the `GroupOpLog` sequence is **big-endian** so keys sort in numeric order; id-based keys use the raw 32 bytes. The `key_id` in `GroupKeyEntry` is `SHA-256(scope_key)`, matching the `key_id` a `StateDelta` advertises on the wire (see [Encryption](/protocol/encryption/)).
 
 ## Node-local migration & recovery markers
 
@@ -115,6 +115,6 @@ So an operation reads its own uncommitted writes, while the persisted store stay
 
 The same all-or-nothing primitive is exposed directly as `StoreBatch` (`crates/store/src/batch.rs:9-77`) for callers that must move several keys together (for example, cascade-delta records plus their context's `dag_heads`): `put`/`delete` stage into a `Transaction`, `commit()` is one `Store::apply`, and a serialization error surfaces at stage time — before anything is written.
 
-## Back to the protocol
+## See also
 
-That is the on-disk shape of everything the ten chapters describe. Return to the [Protocol Reference](/protocol/overview/), or revisit [Operations](/protocol/operations/) (whose `Op` is what the unified store holds) and [Projection](/protocol/projection/) (whose root hash is the `root_hash` in `ContextMeta`).
+That is the on-disk shape of everything the rest of the reference describes. Continue to [Limits, capabilities & roles](/protocol/limits/) for the fixed constants the store enforces, or revisit [Operations](/protocol/operations/) (whose `Op` is what the unified store holds) and [Projection](/protocol/projection/) (whose root hash is the `root_hash` in `ContextMeta`).

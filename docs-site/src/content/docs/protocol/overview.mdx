@@ -70,19 +70,32 @@ what differs) are the substance of this reference.
 
 ## How this reference is organized
 
-The chapters follow the operation's life, then branch into the subsystems built
-on top:
+Read it **top to bottom**. Each part answers the next question you'd naturally
+ask, and each goes one level deeper than the last — so you can stop wherever
+your need does.
 
-- **The core** — _Concepts & Scopes_, _Identities & Keys_, _Operations & the
-  Causal DAG_, and _State, Projection & the Root Hash_. Read these first; the
-  rest assume them.
-- **The planes in motion** — _Application Execution_ (where data operations come
-  from) and _Governance_ (the membership/admin planes).
-- **Moving and reconciling** — _Networking_, _The Write Path_, _The Receive &
-  Apply Path_, and _Sync & Convergence_.
-- **Subsystems** — _Blob Transport_, _TEE Attestation_, _Cross-Context Calls_,
-  and _Application Upgrades & Migration_.
-- **Appendix** — the on-disk _Storage Schema_.
+1. **The replication loop** — the heart. An app runs locally and produces a
+   change, that change broadcasts as a signed _state delta_, and peers verify and
+   apply it **without re-running the app**. _Application Execution_, _The Write
+   Path_, _The Receive & Apply Path_.
+2. **What gets replicated** — what's actually inside a delta: the _Operations &
+   the Causal DAG_ (the history) and the _State, Projection & the Root Hash_ it
+   folds to, with a visual _Anatomy of State_.
+3. **How it is organized** — how data is sharded and access-controlled into a
+   tree of scopes: _Concepts & Scopes_ (namespaces, groups, contexts),
+   _Governance_, and _Capability & Membership Inheritance_.
+4. **Confidentiality & identity** — who can read and write: _Identities & Keys_,
+   _Encryption_, _Key Rotation_, and the _Security & Threat Model_.
+5. **Staying in sync** — how nodes that drift apart converge again: _Networking_,
+   _Sync & Convergence_, _Sync Internals_, and _Divergence & Recovery_.
+6. **Subsystems** — features built on the loop: _Blob Transport_, _Cross-Context
+   Calls_, _TEE Attestation_, and _Application Upgrades_.
+7. **Deep internals & reference** — exact rules to look up: _CRDT Internals_, the
+   _Hybrid Logical Clock_, the on-disk _Storage Schema_, _Limits_, governance
+   _edge cases_, and the _Glossary_.
+
+The first three parts are the model; the rest is detail you reach for when you
+need it.
 
 ## Status, versioning & conformance
 

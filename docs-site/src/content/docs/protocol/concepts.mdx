@@ -1,6 +1,6 @@
 ---
 title: Concepts & Scopes
-description: The vocabulary every later chapter depends on.
+description: The scope model the rest of the reference builds on.
 sidebar:
   order: 2
 ---
@@ -15,8 +15,8 @@ Five words carry the whole model. Get these straight and the rest of the referen
 
 - **Node** — A single peer process. It holds keys, runs applications, stores state, and talks to other nodes over a peer-to-peer network. One machine can run one node.
 - **Application** — A WASM module that defines the rules of a shared state machine — its data types and the methods that mutate them. Apps are sandboxed and deterministic.
-- **Identity** — An Ed25519 key. Two layers exist (covered in Chapter 2): a _transport_ identity that names a node on the network, and a _member_ identity that authors and authorizes operations.
-- **Operation** — The atomic, signed unit of change. Every mutation — to data, access, membership, or admin state — is an operation in a causal DAG. Chapter 3 dissects it.
+- **Identity** — An Ed25519 key. Two layers exist (covered in [Identities & Keys](/protocol/identities/)): a _transport_ identity that names a node on the network, and a _member_ identity that authors and authorizes operations.
+- **Operation** — The atomic, signed unit of change. Every mutation — to data, access, membership, or admin state — is an operation in a causal DAG. The [operation chapter](/protocol/operations/) dissects it.
 - **Scope** — The unit of "stuff that replicates and converges together." This is the load-bearing abstraction, and the rest of this page is about it.
 
 ## What a scope is
@@ -27,7 +27,7 @@ A **scope** is a self-contained **replication, encryption, and convergence domai
 | --- | --- |
 | An op-log (its own DAG) | The causally-ordered set of signed operations that belong to this scope, and only this scope. |
 | A key | Operations in the scope are encrypted under the scope's key. Only members hold the key, so only members can read the operations. |
-| A membership set | Who may author and read operations here. Membership is itself maintained by operations (Chapter 6). |
+| A membership set | Who may author and read operations here. Membership is itself maintained by operations (see [Governance](/protocol/governance/)). |
 | A scope root | One 32-byte hash summarising the scope's entire state. Convergence is always checked **per scope** by comparing scope roots. |
 
 A scope is named by a stable 32-byte `ScopeId`. Everything in the protocol — operations, encryption, sync, convergence — is parameterised by scope.
@@ -66,12 +66,8 @@ An operation's **parents** are normally other operations _in the same scope_. Bu
 
 This is safe because membership is nested: a subgroup's members are always a subset of its ancestor's members, so pointing "up" the tree never reveals anything a reader couldn't already see. That cross-scope parent link is what causally ties a child scope to the governance that authorises it — for example, a context write can pin the exact membership state it was authored under.
 
-That single mechanism is the foundation of **authorization at the causal cut** ("forward-only" authorization): a write authored before a member was revoked stays valid regardless of the order in which a peer receives the two operations. Chapter 6 builds the full rule on top of this; for now, just hold the shape: _one parent set, one causal model, spanning data and governance._
+That single mechanism is the foundation of **authorization at the causal cut** ("forward-only" authorization): a write authored before a member was revoked stays valid regardless of the order in which a peer receives the two operations. [Governance](/protocol/governance/) builds the full rule on top of this; for now, just hold the shape: _one parent set, one causal model, spanning data and governance._
 
 ## Where this leads
 
-With _scope_ in hand, the rest of the reference is short:
-
-- **Chapter 3** defines the operation that lives in a scope, and how its DAG is ordered.
-- **Chapter 4** defines the fold from a scope's DAG to its state and its scope root.
-- **Chapters 6–10** are all variations on "operations move between scopes, and scopes converge."
+With _scope_ in hand, the rest of the reference falls into place. The [operation that lives in a scope](/protocol/operations/) and the [fold from its DAG to state and a scope root](/protocol/projection/) are the machinery the following chapters build on. Next comes **[Governance](/protocol/governance/)** — membership and authority, encoded as operations like everything else — and from there the reference is variations on one idea: operations move between scopes, and scopes converge.

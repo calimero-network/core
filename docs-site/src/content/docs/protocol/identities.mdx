@@ -20,16 +20,20 @@ Every node has an Ed25519 keypair used only by the network layer. Its public key
 
 ## Member identity — authoring operations
 
-Authority lives in the **member identity**: an Ed25519 keypair held **per namespace**, generated on first use and persisted. It is the `author` on every operation and the key that signs an operation's `id` (Chapter 3). Membership, roles, and capabilities (Chapter 6) are all expressed in terms of member public keys.
+Authority lives in the **member identity**: an Ed25519 keypair held **per namespace**, generated on first use and persisted. It is the `author` on every operation and the key that signs an operation's `id` (see [Operations & the DAG](/protocol/operations/)). Membership, roles, and capabilities (defined in [Governance](/protocol/governance/)) are all expressed in terms of member public keys.
 
 Because identity is per namespace, the same node participating in two namespaces presents two unrelated member keys — identity isolation across application instances, independent of the single transport identity underneath.
 
 ## Scope key — reading a scope
 
-A scope's operations are encrypted at rest and on the wire under a **symmetric scope key** (Chapter 1: every scope owns a key). Holding the key is what lets a member _read_ a scope; lacking it, a node sees only opaque ciphertext.
+A scope's operations are encrypted at rest and on the wire under a **symmetric scope key** (every [scope owns a key](/protocol/concepts/)). Holding the key is what lets a member _read_ a scope; lacking it, a node sees only opaque ciphertext.
 
-Scope keys are never sent in the clear. They are delivered **wrapped** to a specific member's public key using an ECDH exchange between that member key and the sender's — the `KeyDelivery` step in Chapter 6's join flow. Removing a member rotates the scope key and re-wraps the fresh one to everyone who remains, which is how forward secrecy is enforced.
+Scope keys are never sent in the clear. They are delivered **wrapped** to a specific member's public key using an ECDH exchange between that member key and the sender's — the `KeyDelivery` step in [Governance](/protocol/governance/)'s join flow. Removing a member rotates the scope key and re-wraps the fresh one to everyone who remains, which is how forward secrecy is enforced.
 
 ## How they compose
 
-Put together, a single received operation touches all three: it arrives over a connection authenticated by **transport** identities, its ciphertext is decrypted with the **scope** key, and its authorship is verified against the author's **member** key before anything trusts it. Chapters 7 and 9 show that sequence on the wire.
+Put together, a single received operation touches all three: it arrives over a connection authenticated by **transport** identities, its ciphertext is decrypted with the **scope** key, and its authorship is verified against the author's **member** key before anything trusts it. The [Receive & Apply Path](/protocol/receive-path/) and [Sync](/protocol/sync/) show that sequence on the wire.
+
+---
+
+Next: **[Encryption](/protocol/encryption/)** — which key encrypts what, and what an observer can still see.
