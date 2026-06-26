@@ -2268,13 +2268,15 @@ impl SyncManager {
                                     continue;
                                 }
                             };
-                            if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
-                                context_id,
-                                storage_delta.id,
-                                author,
-                                pos.as_ref(),
-                                sig_for_head,
-                            ) {
+                            if let Err(err) =
+                                calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+                                    context_id,
+                                    storage_delta.id,
+                                    author,
+                                    pos.as_ref(),
+                                    sig_for_head,
+                                )
+                            {
                                 warn!(
                                     %context_id,
                                     %author,
