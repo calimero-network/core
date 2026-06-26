@@ -2250,32 +2250,40 @@ impl SyncManager {
                             // membership check because that check keys off
                             // `author`; we have to establish the authorship
                             // claim is genuine before asking whether the
-                            // claimed author is authorized. `None` is
-                            // tolerated only for legacy rows authored
-                            // before envelope signing landed and for
-                            // snapshot checkpoints / genesis rows that
-                            // have no author signature to record; every
-                            // freshly-authored delta (every output of
-                            // `internal_execute`) carries `Some(_)` and
-                            // MUST verify.
-                            if let Some(ref sig) = response_delta_signature {
-                                if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
-                                    context_id,
-                                    storage_delta.id,
-                                    author,
-                                    pos.as_ref(),
-                                    sig,
-                                ) {
+                            // claimed author is authorized. `None` is treated
+                            // as a verification failure: a missing signature
+                            // cannot prove authorship and is indistinguishable
+                            // from a stripped signature. Genesis deltas are
+                            // carved out above via the author sentinel, so no
+                            // legitimate non-genesis delta arrives without one.
+                            let sig_for_head = match response_delta_signature {
+                                Some(ref s) => s,
+                                None => {
                                     warn!(
                                         %context_id,
                                         %author,
                                         head_id = ?head_id,
-                                        %err,
-                                        "DAG-catchup: rejecting delta — envelope signature \
-                                         verification failed"
+                                        "DAG-catchup: rejecting delta — missing envelope signature"
                                     );
                                     continue;
                                 }
+                            };
+                            if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+                                context_id,
+                                storage_delta.id,
+                                author,
+                                pos.as_ref(),
+                                sig_for_head,
+                            ) {
+                                warn!(
+                                    %context_id,
+                                    %author,
+                                    head_id = ?head_id,
+                                    %err,
+                                    "DAG-catchup: rejecting delta — envelope signature \
+                                     verification failed"
+                                );
+                                continue;
                             }
 
                             // Group/membership authorization — including the
