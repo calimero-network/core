@@ -159,20 +159,29 @@ impl<T> LwwRegister<T> {
     }
 }
 
-impl<T: Clone> LwwRegister<T> {
+impl<T: Clone + borsh::BorshSerialize> LwwRegister<T> {
     /// Merge with another register (CRDT merge operation)
     ///
     /// # Merge Rules
     ///
     /// 1. If `other.timestamp > self.timestamp` → take other's value
     /// 2. If timestamps equal → use node_id for tie-breaking (higher wins)
-    /// 3. Otherwise → keep current value
+    /// 3. If timestamps and node_id are equal → use serialized value bytes for
+    ///    tie-breaking (handles merge-mode zero-stamps where both fields are
+    ///    `[0;32]` / zero but values differ — without this, merge is
+    ///    non-commutative and replicas permanently diverge)
+    /// 4. Otherwise → keep current value
     ///
     /// This ensures deterministic, conflict-free merging across all nodes.
     pub fn merge(&mut self, other: &Self) {
-        // LWW rule with deterministic tie-breaking
-        let should_update = other.timestamp > self.timestamp
-            || (other.timestamp == self.timestamp && other.node_id > self.node_id);
+        let should_update = Self::other_wins(
+            other.timestamp,
+            other.node_id,
+            &other.value,
+            self.timestamp,
+            self.node_id,
+            &self.value,
+        );
 
         if should_update {
             self.value = other.value.clone();
@@ -186,8 +195,38 @@ impl<T: Clone> LwwRegister<T> {
     /// Useful for detecting conflicts before applying merge.
     #[must_use]
     pub fn would_update(&self, other: &Self) -> bool {
-        other.timestamp > self.timestamp
-            || (other.timestamp == self.timestamp && other.node_id > self.node_id)
+        Self::other_wins(
+            other.timestamp,
+            other.node_id,
+            &other.value,
+            self.timestamp,
+            self.node_id,
+            &self.value,
+        )
+    }
+
+    /// Deterministic comparison: returns true when the (ts_b, id_b, val_b)
+    /// tuple should win over (ts_a, id_a, val_a).
+    fn other_wins(
+        ts_b: HybridTimestamp,
+        id_b: [u8; 32],
+        val_b: &T,
+        ts_a: HybridTimestamp,
+        id_a: [u8; 32],
+        val_a: &T,
+    ) -> bool {
+        if ts_b != ts_a {
+            return ts_b > ts_a;
+        }
+        if id_b != id_a {
+            return id_b > id_a;
+        }
+        // Both stamp fields are equal (including the merge-mode zero-zero case).
+        // Fall back to lexicographic comparison of borsh-serialized bytes so
+        // the merge is commutative even when values differ.
+        let bytes_b = borsh::to_vec(val_b).unwrap_or_default();
+        let bytes_a = borsh::to_vec(val_a).unwrap_or_default();
+        bytes_b > bytes_a
     }
 }
 
@@ -387,6 +426,36 @@ mod merge_mode_tests {
 
         assert_eq!(total.timestamp(), HybridTimestamp::zero());
         assert_eq!(total.node_id(), [0; 32]);
+    }
+
+    /// Two merge-mode registers with different values must converge to the same
+    /// winner regardless of which side calls merge first (commutativity check).
+    #[test]
+    fn merge_mode_equal_stamps_different_values_converge() {
+        env::reset_for_testing();
+
+        // Simulate two nodes that ran the same migrate body but ended up with
+        // different values (e.g. due to a bug upstream).  Both have zero stamps.
+        let a: LwwRegister<u64> = env::with_merge_mode(|| LwwRegister::new(1_u64));
+        let b: LwwRegister<u64> = env::with_merge_mode(|| LwwRegister::new(2_u64));
+
+        assert_eq!(a.timestamp(), HybridTimestamp::zero());
+        assert_eq!(b.timestamp(), HybridTimestamp::zero());
+        assert_eq!(a.node_id(), [0; 32]);
+        assert_eq!(b.node_id(), [0; 32]);
+
+        // merge(A, B) and merge(B, A) must produce the same winner.
+        let mut ab = a.clone();
+        ab.merge(&b);
+
+        let mut ba = b.clone();
+        ba.merge(&a);
+
+        assert_eq!(
+            ab.get(),
+            ba.get(),
+            "merge(A,B) and merge(B,A) must converge to the same value"
+        );
     }
 
     /// `set()` on a carried-over register inside a migrate body must zero its
