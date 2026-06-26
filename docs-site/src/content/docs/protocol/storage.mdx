@@ -1,0 +1,92 @@
+---
+title: Storage Schema (Appendix)
+description: The on-disk format — column families, key byte-layouts, and value encodings.
+sidebar:
+  order: 12
+  badge:
+    text: Draft
+    variant: caution
+---
+
+## Scope
+
+This appendix specifies the local persistence layer. A node stores everything in a key-value store (RocksDB) partitioned into **column families**. Two encodings are used for values: **Identity** (raw bytes, no framing) and **Borsh** (the same compact binary encoding used on the wire). Reimplementations are free to choose any backend — what matters for interop is the logical content, not the column layout; this appendix documents the reference layout because it makes the data model concrete.
+
+## Column families
+
+Some columns replicate (their content syncs between nodes); others are strictly node-local and never leave the machine.
+
+| Column | Scope | Holds |
+| --- | --- | --- |
+| `Meta` | replicated | per-context metadata (root hash, DAG heads, application) |
+| `Config` | replicated | per-context revision counters |
+| `Identity` | replicated | context member keypairs |
+| `State` | replicated | shared application state (the data plane) |
+| `Delta` | replicated | causal deltas (legacy per-context DAG) |
+| `UnifiedOp` | replicated | the unified op-store — one DAG per scope |
+| `Group` | replicated | all governance records (prefix-partitioned, below) |
+| `Blobs` / `Application` | replicated | content-addressed binaries and WASM bundles |
+| `Alias` / `Generic` | replicated | name→id mappings; uncategorized |
+| `PrivateState` | node-local | per-node private state (never synced) |
+| `SortedIndex` | node-local | derived ordering index for sorted collections |
+| `ContextLocal`, `AbsorbBuffer`, … | node-local | leave markers, straggler buffers, migration/blob breadcrumbs |
+
+## Key byte-layouts
+
+Keys are fixed-size concatenations of 32-byte ids. The leading id is the partition prefix, so a range scan over it returns everything for one context or scope.
+
+| Key | Column | Layout | Bytes |
+| --- | --- | --- | --- |
+| `ContextMeta` | Meta | `context_id(32)` | 32 |
+| `ContextState` | State | `context_id(32) ‖ state_key(32)` | 64 |
+| `ContextPrivateState` | PrivateState | `context_id(32) ‖ state_key(32)` | 64 |
+| `ContextDagDelta` | Delta | `context_id(32) ‖ delta_id(32)` | 64 |
+| `ScopeUnifiedOp` | UnifiedOp | `scope(32) ‖ op_id(32)` | 64 |
+
+The unified op store is the key one for the target model: keyed `scope ‖ op_id`, so all operations of a scope are a contiguous range, and the value is simply the Borsh-encoded `Op` from Chapter 3, stored verbatim (Identity codec).
+
+## Key value structures
+
+The two structures a reimplementation most needs. Both are Borsh.
+
+```rust
+struct ContextMeta { // Meta column
+  application: [u8; 32],
+  root_hash: [u8; 32], // storage Merkle root = entity root
+  dag_heads: Vec<[u8; 32]>,
+  service_name: Option<str>,
+}
+```
+
+```rust
+struct ContextDagDelta { // Delta column (legacy data DAG)
+  delta_id: [u8; 32], parents: Vec<[u8; 32]>,
+  actions: Vec<u8>, hlc: HybridTimestamp, applied: bool,
+  expected_root_hash: [u8; 32],
+  events: Option<Vec<u8>>, author_id: Option<PublicKey>,
+  governance_position_blob: Option<Vec<u8>>,
+  delta_signature: Option<[u8; 64]>,
+}
+```
+
+## The Group column prefix scheme
+
+All governance record types share one column, distinguished by a 1-byte prefix followed by the relevant ids. A representative selection:
+
+| Prefix | Record | Key layout |
+| --- | --- | --- |
+| `0x20` | GroupMeta | `0x20 ‖ group_id(32)` |
+| `0x21` | GroupMember | `0x21 ‖ group_id(32) ‖ identity(32)` |
+| `0x26` | MemberCapability | `0x26 ‖ group_id(32) ‖ identity(32)` |
+| `0x30` | GroupOpLog | `0x30 ‖ group_id(32) ‖ sequence(8, big-endian)` |
+| `0x34` | GroupParentRef | `0x34 ‖ child_id(32)` → parent |
+| `0x36` | NamespaceIdentity | `0x36 ‖ namespace_id(32)` → keypair |
+| `0x38` | NamespaceGovOp | `0x38 ‖ namespace_id(32) ‖ delta_id(32)` |
+| `0x3A` | GroupKeyEntry | `0x3A ‖ group_id(32) ‖ key_id(32)` |
+| `0x3C` | NonceWindow | `0x3C ‖ group_id(32) ‖ signer(32)` |
+
+Note the `GroupOpLog` sequence is **big-endian** so keys sort in numeric order; id-based keys use the raw 32 bytes. The `key_id` in `GroupKeyEntry` is `SHA-256(scope_key)`, matching the `key_id` a `StateDelta` advertises on the wire (Chapter 7).
+
+## Back to the protocol
+
+That is the on-disk shape of everything the ten chapters describe. Return to the [Protocol Reference](/protocol/overview/), or revisit [Operations](/protocol/operations/) (whose `Op` is what the unified store holds) and [Projection](/protocol/projection/) (whose root hash is the `root_hash` in `ContextMeta`).

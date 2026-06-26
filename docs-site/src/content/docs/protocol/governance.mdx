@@ -1,0 +1,187 @@
+---
+title: Governance
+description: Membership and authority, encoded as operations like everything else.
+sidebar:
+  order: 7
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+## Governance is just operations
+
+There is no separate governance engine, no consensus round, and **no quorum**. The access-control, membership, and admin planes from Chapter 3 are governance — they are operations in a governance scope, folded by the same last-writer-wins projection, summarized by the same scope root. A membership change converges exactly the way a data write does.
+
+What this chapter adds is _meaning_: what those governance operations say, the structure they maintain, and how the system decides whether an author was allowed to write one.
+
+## The hierarchy
+
+Governance scopes form a tree (the scope tree from Chapter 1):
+
+- A **namespace** is the root governance scope — a group with no parent. It anchors identity, admin, and policy for everything beneath it.
+- **Subgroups** nest under it, each its own scope with its own key and members.
+- **Contexts** (the running applications) attach to a group; a context's members are the group's members.
+
+A subgroup is either **Open** or **Restricted**. In an Open subgroup, a parent member who holds the "join open subgroups" capability is a member by _inheritance_ — no explicit operation needed. A Restricted subgroup is closed: membership requires a direct, deliberate admission. Because membership only ever narrows as you descend, pointing an operation "up" the tree never leaks visibility — the property Chapter 1 relied on.
+
+## The founder
+
+A scope tree has to start somewhere, and that start can't appeal to a prior admin — there isn't one yet. So a namespace begins with a single **genesis operation** that names its **founder**. It is **self-authorizing**: its only checks are that it is signed by the founder it names and that it has no parents (it is genuinely the first operation). From it, the founder is recorded as admin and owner, and every node that later replays the DAG derives the same founder — authority is established by a replayable operation, not by out-of-band trust.
+
+## Membership: joining
+
+Joining is a two-part dance, because a new member needs two things: a row in the membership state, and the **scope key** to actually read the scope's encrypted operations. The key is delivered privately, wrapped to the joiner's public key (ECDH), by existing members who already hold it.
+
+<SeqDiagram
+  id="d-join"
+  title="Joining a scope"
+  lanes={[
+    { label: 'Joiner', color: '#58a6ff' },
+    { label: 'Existing member', color: '#3fb950' },
+    { label: 'Governance scope', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 1, to: 0, label: 'invitation (out of band)', dashed: true },
+    { from: 0, to: 2, label: 'publish MemberJoined (public)' },
+    { from: 2, to: 1, label: 'member observes the join' },
+    { from: 1, to: 0, label: 'KeyDelivery: scope key wrapped to joiner (ECDH)', color: '#a5ff11' },
+    { from: 0, to: 0, label: 'unwrap key → can now decrypt scope ops' },
+    { from: 1, to: 2, label: 'MemberAdded { member, role }' },
+    { type: 'divider', label: 'joiner now folds the scope like any member' },
+  ]}
+/>
+
+The membership operation is public on the governance scope; the key delivery is a private, wrapped envelope. Once the joiner unwraps the key, every prior and future operation in the scope becomes readable, and they fold the scope just like anyone else.
+
+## Membership: leaving and removal
+
+There are two ways a member stops being a member, and the difference is entirely about the **scope key**.
+
+| Path | Description |
+| --- | --- |
+| **Leave (self-initiated)** | A member removes themselves. No key rotation happens — the leaver already holds the key and could have copied it, so rotating would be theater. Leaving is just a membership operation that drops their own row. |
+| **Removal (admin-initiated)** | An admin removes someone else. Here the key **is** rotated: a fresh scope key is generated and delivered, wrapped, to every _remaining_ member — so the removed member can read nothing authored after their removal. This is forward secrecy. |
+
+<SeqDiagram
+  id="d-remove"
+  title="Admin removal with key rotation"
+  lanes={[
+    { label: 'Admin', color: '#f0883e' },
+    { label: 'Governance scope', color: '#a5ff11' },
+    { label: 'Remaining members', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'MemberRemoved { member }', color: '#a5ff11' },
+    { from: 0, to: 0, label: 'generate fresh scope key' },
+    { from: 0, to: 2, label: 'KeyDelivery: new key wrapped to each remaining member' },
+    { type: 'divider', label: 'removed member cannot read anything authored after this point' },
+  ]}
+/>
+
+Two invariants guard both paths: the scope's **owner** cannot be removed involuntarily and cannot self-leave without first transferring ownership, and a removal that would leave a group with no admin is rejected — the tree can never be orphaned.
+
+## Roles, capabilities, and the owner
+
+Authority is layered. A member has a **role** for coarse rights, and fine-grained **capabilities** for specific actions; the **owner** is a distinguished identity sitting above roles.
+
+| Role | Can do |
+| --- | --- |
+| `Admin` | All governance operations: manage members, set policy and capabilities, manage subgroups. |
+| `Member` | Read and write context state. Governance actions only with the matching capability. |
+| `ReadOnly` | Read state; writes are rejected, locally and on peers. |
+| `ReadOnlyTee` | A read-only fleet node admitted by hardware attestation; evicted with a self-purge signal. |
+
+**Capabilities** are individual grants a non-admin can hold — for example: create contexts, invite members, join open subgroups, manage members, manage the application, or create/delete/configure subgroups. Admins pass every capability check implicitly; defaults can be set per group and overridden per member.
+
+The **owner** is not a role but a stored identity with exclusive rights — transfer ownership, delete the group or namespace — and the removal immunity noted above. Every other admin is a regular admin.
+
+## Authorization: judged at the author's cut
+
+The decision "was this author allowed to write this operation?" reuses the primitive from Chapter 4: the projection resolves membership and capabilities at the operation's **causal cut** — the governance state the author had observed — not at the receiver's present.
+
+:::note[The rule]
+**Forward-only authority.**
+
+An operation is authorized against the membership and access-control state that existed at its parents. So a write authored while you were still a member stays valid even if a peer applies your removal first; and a governance action you took as admin stands even if you were later demoted. Every node reaches the same verdict because every node folds the same cut — authority converges for free, with no coordination.
+:::
+
+The same mechanism covers data writes: an entity's **writer set** (the access-control plane) is resolved at the cut, and a write is accepted only if its author was an authorized writer at that point.
+
+## Specification
+
+### Capability bits
+
+Capabilities are a `u32` bitmask. Each grant is a fixed bit position:
+
+| Bit | Value | Capability |
+| --- | --- | --- |
+| 0 | `0x0001` | `CAN_CREATE_CONTEXT` |
+| 1 | `0x0002` | `CAN_INVITE_MEMBERS` |
+| 2 | `0x0004` | `CAN_JOIN_OPEN_SUBGROUPS` |
+| 3 | `0x0008` | `MANAGE_MEMBERS` |
+| 4 | `0x0010` | `MANAGE_APPLICATION` |
+| 5 | `0x0020` | `CAN_CREATE_SUBGROUP` |
+| 6 | `0x0040` | `CAN_DELETE_SUBGROUP` |
+| 7 | `0x0080` | `CAN_MANAGE_VISIBILITY` |
+| 8 | `0x0100` | `CAN_MANAGE_METADATA` |
+
+Roles are a distinct enum: `Admin`, `Member`, `ReadOnly`, `ReadOnlyTee`. Admins pass every capability check implicitly.
+
+### The signed governance op
+
+Governance operations travel as a signed envelope. The group-scoped form:
+
+```rust
+struct SignedGroupOp {
+  version: u8,  // current schema version = 8
+  group_id: [u8; 32],
+  parent_op_hashes: Vec<[u8; 32]>,  // DAG parents
+  signer: PublicKey,
+  nonce: u64,  // per-signer monotonic, starts at 1
+  op: GroupOp,
+  signature: [u8; 64],
+}
+```
+
+The content hash (and the bytes the signature covers) are **domain-separated**:
+
+```text
+op_id = SHA-256( DOMAIN ‖ borsh(signable) )  // signable = all fields except signature
+signature = Ed25519_sign( signer_secret, DOMAIN ‖ borsh(signable) )
+
+// group ops     DOMAIN = b"calimero.group.v1"
+// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 2)
+```
+
+### Replay protection
+
+Each _(group, signer)_ tracks a **nonce window**: a contiguous applied `floor` plus a sparse set of out-of-order applied nonces above it. A nonce is a duplicate if `nonce ≤ floor` or it is already in the set. This is checked _before_ apply, and tolerates concurrent siblings (same author, different parents) arriving out of order without false-flagging them. Nonces start at `1`; `0` is never issued.
+
+### Key delivery: the wrapped envelope
+
+A scope key is delivered wrapped per recipient:
+
+```rust
+struct KeyEnvelope {
+  recipient: PublicKey,
+  ephemeral_pk: PublicKey,  // sender's ephemeral key for this envelope
+  nonce: [u8; 12],  // AES-GCM nonce
+  ciphertext: Vec<u8>,  // AES-256-GCM(scope_key)
+}
+```
+
+- **Shared secret** — X25519-style ECDH on the Curve25519 form of the two identities (sender ephemeral × recipient): the 32-byte compressed point _is_ the AES-256 key (no separate KDF).
+- **AEAD** — AES-256-GCM, 12-byte nonce, empty additional data, GCM tag appended inline.
+- **Rotation** — a removal carries a `KeyRotation { new_key_id = SHA-256(new_key), envelopes }` with one envelope per _remaining_ member; the removed member gets none.
+
+A scope key is identified on the wire by `key_id = SHA-256(scope_key)`, so a receiver can look up which delivered key decrypts a given operation.
+
+### Owner vs admin
+
+The owner is stored alongside admin in the group metadata (`owner_identity` vs `admin_identity`). A group may have several admins but exactly one owner. Only the owner may sign `TransferOwnership` or delete the group/namespace, and the owner is immune to involuntary removal. Ownership is itself folded into the governance hash, so an op signed before vs after a transfer resolves against different state.
+
+## Where this leads
+
+We now have the full meaning of all four planes and the rules that govern who may write them. Everything so far has been _local_ — operations, folds, authority — assuming the operations are simply present. **Chapter 7** turns to how they actually move between nodes: the network and the wire protocol.

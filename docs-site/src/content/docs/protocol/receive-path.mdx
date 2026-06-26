@@ -1,0 +1,68 @@
+---
+title: The Receive & Apply Path
+description: Verifying, ordering, and applying an operation from a peer.
+sidebar:
+  order: 10
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps } from '@astrojs/starlight/components';
+
+## The right half of the operation's life
+
+An operation arrives — from a gossip broadcast or a sync stream; the path is identical. The receiver must establish three things before the operation can change any state: that it is **authentic**, that its author was **authorized**, and that it is **causally ready**. Only then does it fold. Two of the steps can pause the operation in a buffer rather than reject it — that resilience is the interesting part.
+
+<SeqDiagram
+  id="d-recv"
+  title="The receive and apply path"
+  lanes={[
+    { label: 'Network', color: '#8b5cf6' },
+    { label: 'Verify / Auth', color: '#f0883e' },
+    { label: 'Scope DAG', color: '#a5ff11' },
+    { label: 'Projection', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'op arrives (gossip or stream)' },
+    { from: 1, to: 1, label: 'verify signature — drop if bad', color: '#f0883e' },
+    { from: 1, to: 1, label: 'authorize at causal cut — drop if denied', color: '#f0883e' },
+    { from: 1, to: 1, label: 'decrypt — or buffer until key arrives' },
+    { from: 1, to: 2, label: 'add(op)' },
+    { from: 2, to: 2, label: 'parents ready? else hold in pending' },
+    { from: 2, to: 3, label: 'fold into state; advance heads', color: '#a5ff11' },
+    { from: 2, to: 2, label: 'cascade buffered children / keyed ops' },
+    { from: 3, to: 0, label: 'run event handlers; notify clients', dashed: true },
+  ]}
+/>
+
+## Step by step
+
+<Steps>
+
+1. **Verify the signature.** — Check the operation's signature against its `author` key. This is the trust boundary from Chapter 3: an operation that fails verification is dropped here and never reaches the fold. Everything downstream may assume authenticity.
+
+2. **Authorize at the author's cut.** — Resolve the author's membership and writer rights at the operation's causal cut — the governance state they referenced — and check they were allowed to write it (Chapters 4 and 6). Because the verdict is computed at the cut, it is the same on every node regardless of receive order: forward-only authority.
+
+3. **Decrypt — or buffer for the key.** — Decrypt the payload with the scope key. A node that is a member but hasn't yet received the key (the join race from Chapter 6) holds the operation in a **key-pending** buffer and drains it the moment the wrapped key arrives.
+
+4. **Insert into the DAG — or buffer for parents.** — If all parents are applied, the operation is ready. If a parent hasn't arrived (gossip delivered a child before its parent), it waits in the **pending** buffer keyed by the missing parent — the same buffer-and-cascade from Chapter 3.
+
+5. **Fold and cascade.** — Apply the operation into the projection (Chapter 4), advancing state and heads, then re-check both buffers: a just-applied operation may be the missing parent of a pending child, or the key that unlocks a queued operation. Cascade until nothing new is ready.
+
+6. **Run event handlers.** — If the operation carried application events, dispatch their handlers and notify subscribed clients. This is a local side effect of applying — it never feeds back into consensus.
+
+</Steps>
+
+## Why buffering, not rejection
+
+A best-effort gossip mesh delivers operations out of order and sometimes before their prerequisites. The receive path is built to **tolerate** that rather than fight it. A missing parent or an undelivered key is a _"not yet,"_ not a _"no"_ — the operation is parked and revisited automatically. This is what lets a backfilled or reordered history snap into a correct state in a single cascade, and it is why convergence doesn't require any particular delivery order.
+
+:::note[Reject only on authenticity or authority.]
+The two things a node will _not_ wait on are a bad signature and an unauthorized author — those are permanent verdicts, identical on every node, so the operation is dropped outright. Everything else is a timing problem that resolves itself.
+:::
+
+## Where this leads
+
+Verified, authorized, ordered, applied: the operation has lived its full life on a receiving node, and if both peers hold the same set, their scope roots now match. But gossip is best-effort — a node that was offline never saw the broadcast at all. **Chapter 10** closes that gap: detecting and repairing divergence.

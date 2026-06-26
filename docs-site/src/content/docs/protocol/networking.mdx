@@ -1,0 +1,125 @@
+---
+title: Networking & the Wire Protocol
+description: How operations actually move between nodes.
+sidebar:
+  order: 8
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import Figure from '../../../components/Figure.astro';
+import Libp2pStack from '../../../components/diagrams/Libp2pStack.astro';
+
+## The transport stack
+
+Calimero is built on **libp2p**. Nodes connect over TCP (with Noise/TLS) or QUIC, multiplex streams with Yamux, and run a set of behaviours for discovery, gossip, and direct exchange. The application logic sits on top and never touches sockets directly — it speaks in terms of topics and streams.
+
+<Libp2pStack />
+
+## Two channels: gossip and streams
+
+Everything on the wire travels one of two ways, and the choice is about _eager vs. on-demand_:
+
+- **Gossip (eager broadcast)** — A node publishes to a **topic**; every subscriber receives it through the gossipsub mesh. This is how fresh operations propagate the instant they're created — fire it once, the mesh fans it out. Best-effort: a node that was offline simply misses it.
+- **Streams (pull, point-to-point)** — A node opens a direct, length-delimited stream to one peer and asks for something specific — missing operations, a snapshot, a blob, a key. This is how a node _catches up_ on anything gossip didn't deliver. Reliable and targeted.
+
+Gossip keeps everyone roughly current; streams make them exactly current. Chapter 10 is essentially "the stream channel, driven by the scope-root comparison."
+
+## Topics follow the scope tree
+
+Subscriptions map directly onto scopes, so a node only hears about what it belongs to:
+
+- `context/<id>` — a context's data operations and heartbeats.
+- `group/<id>` — a group's governance operations.
+- `ns/<id>` — a namespace's root governance operations and heartbeats.
+
+Gossip's mesh is **membership-biased**: peers known to be members are preferred when forming the mesh, while unknown peers are never penalized — so a healthy cluster stays well-connected without excluding newcomers during cold start.
+
+## The message catalog
+
+All messages are **Borsh**-encoded (compact, deterministic binary). They fall into the two channels:
+
+| Channel | Message | Carries |
+| --- | --- | --- |
+| Gossip | `StateDelta` | a context's data operation(s): author, parents, hlc, encrypted artifact, new root, signature. |
+| Gossip | `GovernanceDelta` | a governance operation (root op in clear, group op encrypted). |
+| Gossip | `Heartbeat` | current DAG heads + root, published periodically for divergence detection. |
+| Stream | `DeltaRequest / Response` | fetch a specific operation by id. |
+| Stream | `DagHeadsRequest / Response` | exchange heads + roots during a sync handshake. |
+| Stream | `TreeNode / LevelWise` | compare state trees to locate exactly what differs (Chapter 10). |
+| Stream | `Snapshot*` | transfer a full materialized scope when incremental sync isn't enough. |
+| Stream | `KeyRequest / Response` | recover a scope key wrapped to the requester. |
+
+## Three layers of encryption
+
+Confidentiality is defense-in-depth, and the three layers map exactly onto Chapter 2's three keys:
+
+- **Transport** — Noise/TLS encrypts every connection, authenticated by the peers' _transport_ identities.
+- **Payload** — an operation's sensitive content is encrypted under its _scope_ key, so even a subscribed non-member on the topic sees only ciphertext.
+- **Key wrapping** — scope keys themselves move ECDH-wrapped to a recipient's _member_ key, never in the clear.
+
+Root operations that must be readable by everyone in a namespace (a join announcement, a key delivery envelope) travel in clear at the payload layer but are still inside the encrypted transport.
+
+## Specification
+
+Every message is Borsh. Recall the encoding: an enum is a single-byte variant index then its fields in order; a `Vec<u8>` is a `u32` little-endian length then the bytes; an `Option` is a 1-byte present/absent flag.
+
+### Stream envelope
+
+Point-to-point messages are wrapped in a `StreamMessage` with a rolling nonce:
+
+| Variant | Fields |
+| --- | --- |
+| `Init` | `context_id: ContextId`, `party_id: PublicKey`, `payload: InitPayload`, `next_nonce: Nonce` |
+| `Message` | `sequence_id: u64`, `payload: MessagePayload`, `next_nonce: Nonce` |
+| `OpaqueError` | — (failure without leaking state) |
+| `NotMaterialized` | — (member, but hasn't joined this context yet) |
+
+### Stream requests (`InitPayload`) and responses (`MessagePayload`)
+
+| Request | Response | Purpose |
+| --- | --- | --- |
+| `DagHeadsRequest` | `DagHeadsResponse { dag_heads: Vec<[u8;32]>, root_hash: Hash, scope_root: Option<Hash> }` | sync handshake |
+| `DeltaRequest { delta_id }` | `DeltaResponse { delta, author_id, governance_position_blob?, delta_signature?: [u8;64] }` | fetch one op |
+| `TreeNodeRequest { node_id, max_depth?: u8 }` | `TreeNodeResponse { nodes: Vec<TreeNode>, not_found }` | tree-diff sync |
+| `LevelWiseRequest { level: u32, parent_ids? }` | `LevelWiseResponse { level, nodes, has_more_levels, deleted_children }` | level-wise sync |
+| `SnapshotStreamRequest { boundary_root_hash, page_limit: u16, byte_limit: u32, resume_cursor? }` | `SnapshotPage { payload (lz4), uncompressed_len, cursor?, total_records }` | full transfer |
+| `GroupKeyRequest { group_id, requester_public_key }` | `GroupKeyResponse { key_envelope_bytes, responder_identity }` | key recovery |
+
+### Gossip broadcasts (`BroadcastMessage`)
+
+The data-plane broadcast carries the operation and everything a peer needs to verify, decrypt, and authorize it:
+
+```rust
+StateDelta {
+  context_id: ContextId, author_id: PublicKey,
+  delta_id: [u8;32], parent_ids: Vec<[u8;32]>, hlc: HybridTimestamp,
+  root_hash: Hash,
+  artifact: bytes, // ENCRYPTED under the scope key
+  nonce: Nonce, events: Option<bytes>, // events also encrypted
+  governance_position: Option<GovernanceParentEdge>, // the authorization cut
+  key_id: [u8;32], // = SHA-256(scope_key)
+  delta_signature: Option<[u8;64]>, producing_app_key: Option<[u8;32]>,
+}
+```
+
+| Other broadcast | Fields |
+| --- | --- |
+| `HashHeartbeat` | `context_id`, `root_hash: Hash`, `dag_heads: Vec<[u8;32]>` |
+| `NamespaceGovernanceDelta` | `namespace_id`, `delta_id`, `parent_ids`, `payload: Vec<u8>` (signed gov op) |
+| `NamespaceStateHeartbeat` | `namespace_id`, `dag_heads: Vec<[u8;32]>` |
+
+### Wire limits
+
+| Constant | Value | Constant | Value |
+| --- | --- | --- | --- |
+| tree request depth | 16 | DAG heads / msg | 100 |
+| signed gov op payload | 64 KiB | snapshot page (default) | 256 KiB |
+| entities / page | 1000 | decompressed page cap | 8 MiB |
+
+Signatures are fixed `[u8;64]` (Ed25519); hashes and ids are `[u8;32]`; a `Nonce` is the crypto-layer nonce, distinct from the raw `[u8;32]` nonces used by node-discovery messages.
+
+## Where this leads
+
+We can now move operations between nodes. The next three chapters trace the round trip end to end: **Chapter 8** creates and broadcasts an operation, **Chapter 9** receives and applies one, and **Chapter 10** reconciles whatever the eager channel missed.

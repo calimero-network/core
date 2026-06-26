@@ -6,6 +6,8 @@ import starlight from '@astrojs/starlight';
 // diagram (the bespoke engine as an Astro island). Content authored in MDX.
 export default defineConfig({
   site: 'https://calimero-network.github.io',
+  // GitHub project Pages serve under /<repo>/. Change if a custom domain is used.
+  base: '/core',
   integrations: [
     starlight({
       title: 'Calimero Core',

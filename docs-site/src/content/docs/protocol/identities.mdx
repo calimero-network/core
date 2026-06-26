@@ -1,0 +1,38 @@
+---
+title: Identities & Keys
+description: The three kinds of key, and what each one is for.
+sidebar:
+  order: 3
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import Figure from '../../../components/Figure.astro';
+import KeyLayers from '../../../components/diagrams/KeyLayers.astro';
+
+## Three keys, three jobs
+
+It is easy to conflate "who a node is on the network" with "who authored an operation" — they are different keys with different lifetimes. Calimero uses three distinct kinds of key, and keeping them separate makes the rest of the protocol clear.
+
+<KeyLayers />
+
+## Transport identity — naming a node
+
+Every node has an Ed25519 keypair used only by the network layer. Its public key is the node's **peer id**: the address other nodes dial, the identity the encrypted transport authenticates. It says nothing about _authority_ — it answers "which box am I talking to," not "who wrote this." A node can serve many namespaces over one transport identity.
+
+## Member identity — authoring operations
+
+Authority lives in the **member identity**: an Ed25519 keypair held **per namespace**, generated on first use and persisted. It is the `author` on every operation and the key that signs an operation's `id` (Chapter 3). Membership, roles, and capabilities (Chapter 6) are all expressed in terms of member public keys.
+
+Because identity is per namespace, the same node participating in two namespaces presents two unrelated member keys — identity isolation across application instances, independent of the single transport identity underneath.
+
+## Scope key — reading a scope
+
+A scope's operations are encrypted at rest and on the wire under a **symmetric scope key** (Chapter 1: every scope owns a key). Holding the key is what lets a member _read_ a scope; lacking it, a node sees only opaque ciphertext.
+
+Scope keys are never sent in the clear. They are delivered **wrapped** to a specific member's public key using an ECDH exchange between that member key and the sender's — the `KeyDelivery` step in Chapter 6's join flow. Removing a member rotates the scope key and re-wraps the fresh one to everyone who remains, which is how forward secrecy is enforced.
+
+## How they compose
+
+Put together, a single received operation touches all three: it arrives over a connection authenticated by **transport** identities, its ciphertext is decrypted with the **scope** key, and its authorship is verified against the author's **member** key before anything trusts it. Chapters 7 and 9 show that sequence on the wire.

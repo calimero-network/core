@@ -1,0 +1,196 @@
+---
+title: Operations & the Causal DAG
+description: The atomic unit of change, and how a scope orders it.
+sidebar:
+  order: 4
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import Figure from '../../../components/Figure.astro';
+import { Steps } from '@astrojs/starlight/components';
+import CausalDag from '../../../components/diagrams/CausalDag.astro';
+
+## The operation envelope
+
+Every change in a scope — a data write, an access-control change, a membership change, an admin action — is one **operation**. It is a small, signed, self-describing envelope. There is only one kind of envelope; the `payload` says which plane the change belongs to.
+
+```rust
+// the operation envelope (calimero-op)
+struct Op {
+  id: Hash,                  // content address — H(everything below except signature)
+  scope: ScopeId,            // which replication/convergence domain this belongs to
+  parents: Vec<Hash>,        // causal predecessors (the DAG edges)
+  author: PublicKey,         // member identity that wrote it
+  hlc: HybridTimestamp,      // causally-monotonic clock at author time
+  payload: OpPayload,        // the change itself, across four planes
+  expected_scope_root: Hash, // author's predicted root — an assertion, never trusted
+  signature: Sig,            // Ed25519 by `author` over `id`
+}
+```
+
+The rest of this chapter is just: _how the id is formed_, _what the payload can say_, and _how parents turn a pile of operations into an ordered DAG._
+
+## The id is the content
+
+An operation's `id` is not assigned — it is **derived** by hashing the operation's contents. Same contents, same id, on every node. This is what makes operations safe to gossip, deduplicate, and reference by hash.
+
+```text
+// content address — deterministic on every node
+id = SHA-256(
+  scope  ‖
+  u64_le(count(parents)) ‖ sorted(parents)  // sorted ascending ⇒ order can't change the id
+  author ‖
+  borsh(hlc) ‖
+  borsh(payload)
+)
+```
+
+Two details carry weight:
+
+- **Parents are sorted** (ascending, by their raw 32-byte value) before hashing, so the _set_ of parents determines the id — the order an author happened to list them in cannot.
+- The parent list is **length-prefixed** with a little-endian `u64` count, so the boundary between "parents" and "author" is unambiguous and two different field layouts can never collide into the same preimage.
+
+The signature is excluded from the preimage and is an Ed25519 signature over the resulting `id`. Exact byte layout and the reimplementer's checklist are in the [specification](#specification) at the foot of this chapter.
+
+## Signature & trust boundary
+
+The author signs the `id` with their member key. The signature is deliberately **not folded back into** the id (a hash can't include a signature of itself), so the id stays purely a function of content while the signature proves who authored that content.
+
+:::caution[Callers must verify the signature before trusting an operation.]
+The fold and the authorization layer (Chapters 4 and 6) assume _already-verified_ operations — they reason about content alone and perform no signature check. Feeding an unverified operation into the fold bypasses authentication entirely. Verification happens once, at the network edge (Chapter 9).
+:::
+
+`expected_scope_root` is the author's prediction of the root after this operation applies. It is an **assertion, not an input**: it is not signed and never grants authority. Peers recompute their own scope root and compare; a tampered value can at worst flag a divergence the recompute would have caught anyway. **Security never depends on this field.**
+
+## One envelope, four planes
+
+The `payload` is a single enum spanning four planes of change. Folding them into one envelope — one DAG, one ordering, one convergence signal — is the whole point of the unified model (Chapter 1).
+
+- **Data** (`state`)
+  - `Put { entity, value }`
+  - `Delete { entity }`
+- **Access control** (`acl`)
+  - `SetWriters { object, writers }` — who may write an entity, with what capability mask
+- **Membership** (`who`)
+  - `MemberAdded { group, member, role }`
+  - `MemberRemoved { group, member }`
+- **Admin & structure** (`gov`)
+  - `AdminChanged`, `PolicyUpdated`
+  - `SubgroupCreated / Reparented / Deleted`
+  - capability grants, visibility
+
+A fifth, trivial variant — `Noop` — carries no change. It exists only so the DAG can have a node that merges several heads without asserting anything (Chapter 10 uses it to consolidate tips).
+
+## The causal DAG
+
+A scope's operations form a **directed acyclic graph**. Each operation's `parents` are the operations its author had already seen — its causal predecessors. The DAG is what lets independent authors write concurrently and still converge.
+
+<CausalDag />
+
+The rules that govern this graph are short:
+
+- **Genesis is the zero hash** (`∅`), and it is always considered applied — every scope's history roots there.
+- **Heads** are the current tips: operations no later operation references yet. A new operation takes the current heads as its parents.
+- **Concurrency** is simply two operations where neither is an ancestor of the other (B and C above). The fold resolves them deterministically — Chapter 4.
+- An operation can only be **applied once all its parents are applied**. One whose parents haven't arrived (P) is held in a **pending** buffer until they do.
+
+## Appending and applying
+
+Adding an operation to the local DAG is the same procedure whether it was authored here or received from a peer. It is a buffer-and-cascade loop, never recursion or blocking:
+
+<SeqDiagram
+  id="d-apply"
+  title="Appending and applying an operation"
+  lanes={[
+    { label: 'Source', color: '#f0883e' },
+    { label: 'Scope DAG', color: '#a5ff11' },
+    { label: 'Projection', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'add(op)' },
+    { from: 1, to: 1, label: 'all parents applied?' },
+    { from: 1, to: 1, label: 'no → hold in pending buffer', color: '#f0883e' },
+    { from: 1, to: 2, label: 'yes → apply(op): fold into state', color: '#a5ff11' },
+    { from: 1, to: 1, label: 'scan pending for now-ready children' },
+    { from: 1, to: 2, label: 'apply(child) … cascade until none ready' },
+    { from: 1, to: 0, label: 'heads advanced', dashed: true },
+  ]}
+/>
+
+In words:
+
+<Steps>
+
+1. **Receive the operation and look at its parents.** If every parent is already applied, the operation is ready. If any parent is missing, store it in the pending buffer keyed by the missing parents and stop — it will be revisited.
+
+2. **Apply a ready operation by folding it into the projection.** This is the deterministic step from Chapter 4. Applying never has side effects on consensus — it only updates materialized state and advances the heads.
+
+3. **Cascade.** Applying an operation can unblock pending children whose last missing parent just arrived. Scan the buffer, apply any now-ready operations, and repeat until nothing new becomes ready. This is how a backfilled history snaps into place in one pass.
+
+</Steps>
+
+## Specification
+
+The exact wire-level details a second implementation must match byte-for-byte to compute identical operation ids. All multi-byte integers are **little-endian**; composite fields use **Borsh** encoding.
+
+### Id preimage byte layout
+
+| Field | Bytes | Encoding |
+| --- | --- | --- |
+| `scope` | 32 | raw `ScopeId` |
+| parent count | 8 | `u64` little-endian |
+| `parents` | 32 × n | each a 32-byte hash, **sorted ascending** |
+| `author` | 32 | raw Ed25519 public key |
+| `hlc` | borsh | hybrid timestamp (below) |
+| `payload` | borsh | enum: 1-byte variant tag, then fields in order |
+
+```text
+// id = SHA-256 over the concatenation, in this exact order
+sorted = sort_ascending(parents)
+h = Sha256()
+h.update( scope )               // 32 bytes
+h.update( u64_le(len(sorted)) ) // 8 bytes
+for p in sorted: h.update( p )  // 32 bytes each
+h.update( author )              // 32 bytes
+h.update( borsh(hlc) )
+h.update( borsh(payload) )
+id = h.finalize()               // 32 bytes
+signature = Ed25519_sign( member_secret, id )
+```
+
+_Borsh reminder for reimplementers: a `Vec<u8>` is a `u32` little-endian length followed by the bytes; a `BTreeMap` is a `u32` length followed by entries in **ascending key order**; an enum is a single-byte variant index then its fields._
+
+### Payload variants
+
+| Plane | Variant | Fields |
+| --- | --- | --- |
+| Data | `Put` | `entity: Id`, `value: Vec<u8>` |
+| Data | `Delete` | `entity: Id` |
+| Access | `SetWriters` | `object: Id`, `writers: BTreeMap<PublicKey, OpMask>` (mask is a 1-byte bitflag) |
+| Membership | `MemberAdded` | `group: ContextGroupId`, `member: PublicKey`, `role: GroupMemberRole` |
+| Membership | `MemberRemoved` | `group: ContextGroupId`, `member: PublicKey` |
+| Admin / structure | `AdminChanged` | `new_admin: PublicKey` |
+| Admin / structure | `PolicyUpdated` | `policy_bytes: Vec<u8>` |
+| Admin / structure | `SubgroupCreated` | `child: ScopeId`, `parent: ScopeId`, `restricted: bool`, `admin: PublicKey` |
+| Admin / structure | `SubgroupReparented` / `SubgroupDeleted` | `child, new_parent` / `scope` |
+| Admin / structure | `SubgroupVisibilitySet` | `scope: ScopeId`, `restricted: bool` |
+| Capability | `DefaultCapabilitiesSet` | `group: ContextGroupId`, `capabilities: u32` |
+| Capability | `MemberCapabilitySet` | `group, member, capabilities: u32` |
+| Graph | `Noop` | — (folds to nothing) |
+
+### The hybrid logical clock
+
+The `hlc` is a hybrid logical clock: a wall-clock-ish value that is also nudged forward on observation, so it stays causally monotonic without depending on synchronized clocks.
+
+- **Timestamp** — a 64-bit NTP64 value (RFC-5909): high 32 bits seconds, low 32 bits fraction, with the _low 16 bits_ serving as a logical counter that increments when two events share a physical instant.
+- **Node id** — a `u128` unique per clock instance, making every timestamp globally unique without coordination and giving a final deterministic tiebreak.
+- **Anti-drift** — a timestamp more than a few seconds ahead of local time is rejected, bounding the damage a skewed peer can do.
+
+Comparison is lexicographic over _(timestamp, node id)_. Governance operations are authored with a **zero** hlc, which is why their ordering falls to the _generation_ component of the fold stamp in Chapter 4 rather than to wall-clock time.
+
+## Where this leads
+
+We now have a content-addressed, signed operation and a DAG that orders operations causally and buffers what it can't yet apply. The one thing we deferred is the actual _apply_ — how folding the DAG produces readable state and the single hash that tells two nodes whether they agree. That is **Chapter 4**.
