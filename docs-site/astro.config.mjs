@@ -36,6 +36,10 @@ export default defineConfig({
       sidebar: [
         { label: 'Home', link: '/' },
         {
+          label: 'Start here',
+          items: ['using-the-docs', 'journeys', 'topics'],
+        },
+        {
           label: 'Build',
           items: [
             { label: 'Overview', slug: 'build' },
