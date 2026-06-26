@@ -26,7 +26,7 @@ use crate::ws::ServiceState;
 /// serialization failures become `InternalError`s.
 pub(crate) async fn handle(
     state: &ServiceState,
-    caller: PublicKey,
+    caller: Option<PublicKey>,
     request: ExecutionRequest,
 ) -> ResponseBody {
     let validation_errors = request.validate();
@@ -57,7 +57,7 @@ pub(crate) async fn handle(
 
     info!("Received execution request");
 
-    match execute_request(&state.ctx_client, &caller, request).await {
+    match execute_request(&state.ctx_client, caller.as_ref(), request).await {
         Ok(response) => match serde_json::to_value(response) {
             Ok(value) => {
                 info!("Request completed successfully");

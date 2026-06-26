@@ -14,11 +14,11 @@ impl Request for ExecutionRequest {
     async fn handle(
         self,
         state: Arc<ServiceState>,
-        auth_key: AuthenticatedKey,
+        auth_key: Option<AuthenticatedKey>,
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
 
-        execute_request(&state.ctx_client, &auth_key.0, self)
+        execute_request(&state.ctx_client, auth_key.as_ref().map(|k| &k.0), self)
             .await
             .map_err(|err| {
                 error!(%context_id, %err, "Failed to execute request");

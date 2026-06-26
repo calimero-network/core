@@ -90,13 +90,14 @@ pub(crate) struct ConnectionStateInner {
     subscriptions: HashSet<ContextId>,
     last_pong: AtomicU64, // Timestamp of last received pong (or connection start)
     /// The verified public key of the authenticated client that opened this
-    /// connection. Set once at upgrade time; immutable for the life of the
-    /// connection.
-    pub(crate) caller: calimero_primitives::identity::PublicKey,
+    /// connection, or `None` when the auth method does not provide a
+    /// cryptographic key (e.g. embedded username/password auth). Set once at
+    /// upgrade time; immutable for the life of the connection.
+    pub(crate) caller: Option<calimero_primitives::identity::PublicKey>,
 }
 
 impl ConnectionStateInner {
-    fn new(caller: calimero_primitives::identity::PublicKey) -> Self {
+    fn new(caller: Option<calimero_primitives::identity::PublicKey>) -> Self {
         Self {
             subscriptions: HashSet::default(),
             last_pong: AtomicU64::new(unix_timestamp()),
@@ -168,7 +169,7 @@ async fn ws_handler(
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     Extension(state): Extension<Arc<ServiceState>>,
-    Extension(auth_key): Extension<AuthenticatedKey>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -198,14 +199,15 @@ async fn ws_handler(
             .into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, auth_key.0))
+    let caller = auth_key.map(|ext| ext.0 .0);
+    ws.on_upgrade(move |socket| handle_socket(socket, state, caller))
         .into_response()
 }
 
 async fn handle_socket(
     socket: WebSocket,
     state: Arc<ServiceState>,
-    caller: calimero_primitives::identity::PublicKey,
+    caller: Option<calimero_primitives::identity::PublicKey>,
 ) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
 
@@ -751,14 +753,9 @@ mod tests {
             config: WsConfig::new(true),
         });
 
-        // Inject a dummy AuthenticatedKey so ws_handler can extract it without
-        // a real auth guard in unit tests.
-        use calimero_primitives::identity::PublicKey as Pk;
-        let test_caller = Pk::from([0u8; 32]);
         let app = Router::new()
             .route("/ws", get(ws_handler))
-            .layer(Extension(Arc::clone(&state)))
-            .layer(Extension(crate::auth::AuthenticatedKey(test_caller)));
+            .layer(Extension(Arc::clone(&state)));
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

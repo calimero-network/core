@@ -78,7 +78,7 @@ pub(crate) fn service(
 
 async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
-    Extension(auth_key): Extension<AuthenticatedKey>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
     Json(request): Json<PrimitiveRequest<serde_json::Value>>,
 ) -> Json<PrimitiveResponse> {
     // One correlation id per inbound request. Carried on a span so every log
@@ -98,14 +98,14 @@ async fn handle_request(
         method = field::Empty,
     );
 
-    handle_request_inner(state, auth_key, request)
+    handle_request_inner(state, auth_key.map(|ext| ext.0), request)
         .instrument(span)
         .await
 }
 
 async fn handle_request_inner(
     state: Arc<ServiceState>,
-    auth_key: AuthenticatedKey,
+    auth_key: Option<AuthenticatedKey>,
     request: PrimitiveRequest<serde_json::Value>,
 ) -> Json<PrimitiveResponse> {
     let body = match serde_json::from_value::<RequestPayload>(request.payload.clone()) {
@@ -182,7 +182,7 @@ pub(crate) trait Request {
     async fn handle(
         self,
         state: Arc<ServiceState>,
-        auth_key: AuthenticatedKey,
+        auth_key: Option<AuthenticatedKey>,
     ) -> Result<Self::Response, RpcError<Self::Error>>;
 }
 

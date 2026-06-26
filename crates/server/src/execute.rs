@@ -12,37 +12,47 @@ use calimero_context_client::client::ContextClient;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{ExecutionError, ExecutionRequest, ExecutionResponse};
 use futures_util::StreamExt;
-use tracing::info;
+use tracing::{error, info};
 
 /// Execute a context method call against the runtime.
 ///
-/// `caller` is the public key extracted from the verified auth token. The call
-/// is rejected unless `caller` is a known member of `request.context_id`,
-/// preventing any token holder from mutating contexts they do not belong to.
+/// `caller` is the public key extracted from the verified auth token, or `None`
+/// when the auth method does not provide a cryptographic key (e.g. embedded
+/// username/password auth). When `Some`, the call is rejected unless `caller`
+/// is a known member of `request.context_id`. When `None`, the auth layer has
+/// already validated the token and the caller is implicitly the node owner with
+/// full access — the membership check is skipped.
 ///
 /// After the membership check passes, the executor identity is auto-resolved:
 /// each node owns exactly one identity per context (the namespace identity),
 /// so callers never specify it.
 pub(crate) async fn execute_request(
     ctx_client: &ContextClient,
-    caller: &PublicKey,
+    caller: Option<&PublicKey>,
     request: ExecutionRequest,
 ) -> Result<ExecutionResponse, ExecutionError> {
     // Verify the caller is a member of the target context before doing
     // anything else. This prevents a valid token from being used to execute
     // against contexts the caller has no membership in.
-    let is_member = ctx_client
-        .has_member(&request.context_id, caller)
-        .map_err(|err| {
-            ExecutionError::FunctionCallError(format!(
-                "Failed to verify caller membership: {err}"
-            ))
-        })?;
+    //
+    // When `caller` is `None` the auth layer used a non-key auth method (e.g.
+    // username/password embedded auth). The token was still verified; the caller
+    // is the node owner and implicitly authorized for all contexts.
+    if let Some(caller) = caller {
+        let is_member = ctx_client
+            .has_member(&request.context_id, caller)
+            .map_err(|err| {
+                error!(%err, "Membership lookup failed during execute");
+                ExecutionError::FunctionCallError(
+                    "Internal error during membership verification".to_owned(),
+                )
+            })?;
 
-    if !is_member {
-        return Err(ExecutionError::FunctionCallError(
-            "Caller is not a member of this context".to_owned(),
-        ));
+        if !is_member {
+            return Err(ExecutionError::FunctionCallError(
+                "Caller is not a member of this context".to_owned(),
+            ));
+        }
     }
     let args =
         serde_json::to_vec(&request.args_json).map_err(|err| ExecutionError::SerdeError {

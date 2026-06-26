@@ -15,7 +15,7 @@ impl Request for SyncStatusRequest {
     async fn handle(
         self,
         state: Arc<ServiceState>,
-        _auth_key: AuthenticatedKey,
+        _auth_key: Option<AuthenticatedKey>,
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
 
