@@ -11,6 +11,7 @@
 //! (see `service_mounts`), and individual messages are not re-authenticated, so
 //! `execute` here runs with the same authority as the connection's subscriptions.
 
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::ExecutionRequest;
 use calimero_server_primitives::validation::Validate;
 use calimero_server_primitives::ws::{ResponseBody, ResponseBodyError, ServerResponseError};
@@ -23,7 +24,11 @@ use crate::ws::ServiceState;
 /// back over the socket. Mirrors the JSON-RPC handler's mapping: validation
 /// failures become `ParseError`s, handler failures become `HandlerError`s, and
 /// serialization failures become `InternalError`s.
-pub(crate) async fn handle(state: &ServiceState, request: ExecutionRequest) -> ResponseBody {
+pub(crate) async fn handle(
+    state: &ServiceState,
+    caller: PublicKey,
+    request: ExecutionRequest,
+) -> ResponseBody {
     let validation_errors = request.validate();
     if !validation_errors.is_empty() {
         let message = match validation_errors.as_slice() {
@@ -52,7 +57,7 @@ pub(crate) async fn handle(state: &ServiceState, request: ExecutionRequest) -> R
 
     info!("Received execution request");
 
-    match execute_request(&state.ctx_client, request).await {
+    match execute_request(&state.ctx_client, &caller, request).await {
         Ok(response) => match serde_json::to_value(response) {
             Ok(value) => {
                 info!("Request completed successfully");

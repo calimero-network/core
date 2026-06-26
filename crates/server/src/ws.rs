@@ -89,13 +89,18 @@ impl WsConfig {
 pub(crate) struct ConnectionStateInner {
     subscriptions: HashSet<ContextId>,
     last_pong: AtomicU64, // Timestamp of last received pong (or connection start)
+    /// The verified public key of the authenticated client that opened this
+    /// connection. Set once at upgrade time; immutable for the life of the
+    /// connection.
+    pub(crate) caller: calimero_primitives::identity::PublicKey,
 }
 
-impl Default for ConnectionStateInner {
-    fn default() -> Self {
+impl ConnectionStateInner {
+    fn new(caller: calimero_primitives::identity::PublicKey) -> Self {
         Self {
             subscriptions: HashSet::default(),
             last_pong: AtomicU64::new(unix_timestamp()),
+            caller,
         }
     }
 }
@@ -163,6 +168,7 @@ async fn ws_handler(
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     Extension(state): Extension<Arc<ServiceState>>,
+    Extension(auth_key): Extension<AuthenticatedKey>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -192,11 +198,15 @@ async fn ws_handler(
             .into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, auth_key.0))
         .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
+async fn handle_socket(
+    socket: WebSocket,
+    state: Arc<ServiceState>,
+    caller: calimero_primitives::identity::PublicKey,
+) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
 
     // Generate a globally unique connection ID. A UUID (vs a per-process
@@ -205,7 +215,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     let connection_id = Uuid::new_v4();
     let connection_state = ConnectionState {
         commands: commands_sender.clone(),
-        inner: Arc::default(),
+        inner: Arc::new(RwLock::new(ConnectionStateInner::new(caller))),
     };
 
     {
@@ -526,7 +536,10 @@ async fn handle_text_message(
                     .handle(Arc::clone(&state), connection_state.clone())
                     .await
                     .to_res_body(),
-                RequestPayload::Execute(request) => execute::handle(&state, request).await,
+                RequestPayload::Execute(request) => {
+                    let caller = connection_state.inner.read().await.caller.clone();
+                    execute::handle(&state, caller, request).await
+                }
             },
             Err(err) => {
                 error!(%err, "Failed to deserialize RequestPayload");
@@ -627,6 +640,7 @@ macro_rules! mount_method {
 
 pub(crate) use mount_method;
 
+use crate::auth::AuthenticatedKey;
 use crate::config::ServerConfig;
 
 /// WebSocket command channel buffer size
@@ -737,9 +751,14 @@ mod tests {
             config: WsConfig::new(true),
         });
 
+        // Inject a dummy AuthenticatedKey so ws_handler can extract it without
+        // a real auth guard in unit tests.
+        use calimero_primitives::identity::PublicKey as Pk;
+        let test_caller = Pk::from([0u8; 32]);
         let app = Router::new()
             .route("/ws", get(ws_handler))
-            .layer(Extension(Arc::clone(&state)));
+            .layer(Extension(Arc::clone(&state)))
+            .layer(Extension(crate::auth::AuthenticatedKey(test_caller)));
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

@@ -4,6 +4,7 @@ use calimero_server_primitives::jsonrpc::{ExecutionError, ExecutionRequest, Exec
 use tracing::error;
 
 use super::{Request, RpcError, ServiceState};
+use crate::auth::AuthenticatedKey;
 use crate::execute::execute_request;
 
 impl Request for ExecutionRequest {
@@ -13,10 +14,11 @@ impl Request for ExecutionRequest {
     async fn handle(
         self,
         state: Arc<ServiceState>,
+        auth_key: AuthenticatedKey,
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
 
-        execute_request(&state.ctx_client, self)
+        execute_request(&state.ctx_client, &auth_key.0, self)
             .await
             .map_err(|err| {
                 error!(%context_id, %err, "Failed to execute request");
