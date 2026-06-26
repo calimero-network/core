@@ -1,0 +1,167 @@
+---
+title: Hardening & Security
+description: Lock down a merod node — auth modes, keeping the admin API private, TLS termination, key storage, and the mock-TEE warning.
+sidebar:
+  order: 12
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+This page collects the security-relevant decisions for running a `merod` node:
+how authentication is enforced, what must never face the public internet, where
+the node's keys live, and which development-only switches are unsafe in
+production. Configuration keys and CLI flags referenced here are documented in
+full on the [config reference](/operate/config/) and the
+[merod reference](/operate/merod/); the edge/TLS setup is covered end-to-end on
+the [deployment guide](/operate/deployment/).
+
+## Authentication modes
+
+The HTTP server (admin API, JSON-RPC, WebSocket, SSE) is gated by a single
+`server.auth_mode` setting. There are two modes, and the default is `proxy`.
+
+| Mode | What it means | Where auth is enforced |
+| --- | --- | --- |
+| `proxy` (default) | The node does **not** authenticate requests itself. It expects an external authenticating proxy in front of it. | At your reverse proxy / auth proxy. |
+| `embedded` | The node runs the bundled auth service (`mero-auth`) in-process and validates JWTs itself. | Inside the node (see [Auth service & providers](/operate/auth/)). |
+
+:::caution
+`proxy` is the default, and on its own it enforces **nothing**. A node started
+with `auth_mode = "proxy"` and a server bind reachable off-host exposes
+unauthenticated node administration. In `proxy` mode you are responsible for
+putting an authenticating proxy in front of the server bind; in `embedded` mode
+the node validates tokens but you still terminate TLS at the edge.
+:::
+
+You can set the mode at init (`merod init --auth-mode embedded`), in
+`config.toml` (`server.auth_mode`), or override it for a single run
+(`merod run --auth-mode embedded`).
+
+## Keep the admin API off public interfaces
+
+The local HTTP server is separate from the peer-to-peer swarm and they have very
+different exposure defaults:
+
+| Listener | Config | `merod init` default | Intended exposure |
+| --- | --- | --- | --- |
+| HTTP server (admin / JSON-RPC / WS / SSE) | `server.listen` | loopback only — `127.0.0.1:2528` and `[::1]:2528` | Private. Reach it through a proxy. |
+| libp2p swarm (peer traffic) | `swarm.listen` | all interfaces — `0.0.0.0:2428` and `[::]:2428` | Public. Peers dial it directly. |
+
+`merod init --server-host` defaults to `127.0.0.1,::1`, so the admin surface is
+not reachable off-host until you deliberately widen it. The swarm host defaults
+to `0.0.0.0,::` because peers must reach it.
+
+:::caution[Do not widen the server bind to reach the admin API remotely]
+Binding `server.listen` to `0.0.0.0` to "make the dashboard reachable" publishes
+the admin API, JSON-RPC, and the auth endpoints directly. Keep the server on
+loopback and reach it through a reverse proxy that terminates TLS and (in
+`proxy` mode) enforces authentication. See
+[Put the server behind a reverse proxy](/operate/deployment/#put-the-server-behind-a-reverse-proxy).
+:::
+
+## TLS termination
+
+The node's HTTP server speaks **plain HTTP and has no built-in TLS**. For any
+access beyond loopback, terminate TLS at a reverse proxy (nginx, Caddy, Traefik,
+…) and forward to the loopback bind. That proxy is also where you enforce
+authentication when running the default `proxy` mode. The
+[deployment guide](/operate/deployment/#put-the-server-behind-a-reverse-proxy)
+has a working nginx sketch, including the WebSocket/SSE upgrade and buffering
+settings those streaming endpoints need.
+
+The libp2p swarm is encrypted independently (TLS / Noise over TCP, and QUIC),
+so swarm traffic does not need a TLS proxy — see [Networking](/operate/networking/).
+
+## Key & identity storage
+
+Everything a node needs to prove who it is and to read its encrypted state lives
+under the node home directory (`<home>/<node-name>`). Treat that directory as
+secret material.
+
+| What | Where | Notes |
+| --- | --- | --- |
+| Node transport identity (private key) | `config.toml` → `[identity] keypair` | Base58-encoded libp2p keypair. This is the node's **private key**, stored in plaintext in the config file. The matching `peer_id` is public. |
+| Application & group state | `<home>/data` (RocksDB) | The `datastore.path` directory. Can be encrypted at rest (see below). |
+| Blobs | `<home>/blobs` | The `blobstore.path` directory. |
+| Embedded-auth store (JWT signing secret, root/client keys) | `<home>/auth` (RocksDB) | Present when `auth_mode = "embedded"` with persistent storage; the auth service's JWT secret is generated and held here. |
+
+The node's protocol-level identities (the per-group signing identities used for
+governance) are derived material managed by the node and stored in the
+datastore; see [Identities](/protocol/identities/) for the protocol model.
+
+:::note[Storage encryption]
+The datastore supports encryption at rest. When an encryption key is available
+the node logs `Storage encryption enabled` at startup and opens the store
+encrypted. Encryption protects state at rest; it does not protect the
+`[identity] keypair` in `config.toml`, which is always plaintext.
+:::
+
+:::caution[Back up and protect the home directory]
+Backing up `config.toml` alone is enough to clone the node's transport identity,
+and losing it loses the identity. Back up the whole home directory, restrict its
+permissions to the service user, and store backups encrypted. Treat
+`config.toml` and the `auth` store as you would any private key file.
+:::
+
+## The `--mock-tee` switch
+
+`merod run --mock-tee` (env `MEROD_MOCK_TEE=true`) makes the node **produce and
+accept mock TEE attestation quotes** instead of real TDX attestation. It exists
+for development and testing only.
+
+The node has a built-in guard: `--mock-tee` is **refused at startup** when the
+config has a real KMS attestation configured (a `tee.kms.phala` block with
+attestation enabled and not accepting mock), with an error like:
+
+```text
+--mock-tee refused: a real KMS/attestation is configured. Mock TEE is dev/test
+only and cannot coexist with real attestation.
+```
+
+When mock is allowed, the node logs a loud `MOCK TEE ENABLED — INSECURE,
+DEV/TEST ONLY` warning, and warns again if a Phala KMS provider is configured at
+all (likely a misconfiguration).
+
+:::caution[Mock TEE is insecure]
+`--mock-tee` bypasses real attestation guarantees entirely. Never set it (or the
+`MEROD_MOCK_TEE` environment variable) on a production node. The related
+config-level switches `specialized_node.accept_mock_tee` and
+`tee.kms.phala.attestation.accept_mock` carry the same warning — they exist for
+testing and must stay `false` in production.
+:::
+
+## Do / don't checklist
+
+<Steps>
+
+1. **Do** keep `server.listen` on loopback (`127.0.0.1` / `::1`) and reach the
+   admin API through a TLS-terminating reverse proxy.
+
+2. **Do** put an authenticating proxy in front of the node in the default
+   `proxy` mode — or switch to `auth_mode = "embedded"` so the node validates
+   tokens itself.
+
+3. **Do** terminate TLS at the edge; the node's HTTP server has no built-in TLS.
+
+4. **Do** back up the whole node home directory, restrict its permissions to the
+   service user, and store backups encrypted. `config.toml` holds the node's
+   private key.
+
+5. **Do** enable datastore encryption at rest for sensitive deployments.
+
+6. **Don't** bind `server.listen` to `0.0.0.0` to expose the admin API or
+   dashboard remotely.
+
+7. **Don't** run `--mock-tee` / `MEROD_MOCK_TEE`, `accept_mock_tee`, or
+   `attestation.accept_mock` outside development.
+
+8. **Don't** enable the auth service's mock-token endpoint in production (see
+   [Auth service & providers](/operate/auth/#mock-token-endpoint)).
+
+9. **Don't** commit `config.toml` or the `auth` store to version control or share
+   them — they contain private key material.
+
+</Steps>

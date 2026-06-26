@@ -1,0 +1,196 @@
+---
+title: Networking & Discovery
+description: The libp2p swarm transport, how peers find each other, and NAT traversal — with the config keys that drive each.
+sidebar:
+  order: 11
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Aside, Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+A Calimero node is a libp2p peer. This page is the operator's view of how nodes
+connect: the swarm transport and ports, the discovery mechanisms that find
+peers, and the NAT-traversal pieces that make a node reachable from behind a
+router. Every knob maps to a key in the
+[configuration reference](/operate/config/); the on-the-wire protocol details
+live in [Networking & the wire protocol](/protocol/networking/).
+
+<Aside type="caution" title="Draft">
+Calimero is pre-1.0. Defaults and key names below are grounded in the network
+config structs and swarm behaviour, but can change between releases. Confirm
+against your generated `config.toml`.
+</Aside>
+
+## The swarm transport
+
+The swarm is the peer-to-peer listener — separate from the local
+[HTTP server](/operate/admin-api/). It binds on **port `2428`** by default, over
+two transports:
+
+- **TCP** — with TLS / Noise encryption and yamux stream multiplexing.
+- **QUIC** (`quic-v1`, over UDP) — encrypted, multiplexed transport on the same
+  port number.
+
+`merod init` seeds `[swarm] listen` with all four combinations — TCP and QUIC,
+on IPv4 (`0.0.0.0`) and IPv6 (`::`):
+
+```toml
+[swarm]
+listen = [
+    "/ip4/0.0.0.0/tcp/2428",
+    "/ip4/0.0.0.0/udp/2428/quic-v1",
+    "/ip6/::/tcp/2428",
+    "/ip6/::/udp/2428/quic-v1",
+]
+```
+
+<Aside type="caution" title="Publish both TCP and UDP">
+Because the swarm uses TCP and QUIC, a firewall or container that forwards only
+`2428/tcp` disables inbound QUIC. Open and publish **both** `2428/tcp` and
+`2428/udp` for the full transport set — see
+[Production deployment](/operate/deployment/#run-merod-as-a-service).
+</Aside>
+
+The swarm also runs `identify` (peers exchange their observed addresses and
+supported protocols) and `ping` (liveness) on every connection. These are always
+on and have no operator config.
+
+## How peers discover each other
+
+A node has to learn *which* peers exist and *how* to dial them. Four mechanisms
+run in parallel, each suited to a different deployment.
+
+### Bootstrap nodes
+
+A static list of known peers to dial on startup — the entry point into a
+network. `merod init --boot-network` seeds the list (`calimero-dev` by default,
+or `ipfs`), and `--boot-nodes <ADDR>` adds explicit multiaddrs. Each bootstrap
+multiaddr must end in a peer ID (`/p2p/...`).
+
+```toml
+[bootstrap]
+nodes = [
+    "/ip4/63.181.86.34/udp/4001/quic-v1/p2p/12D3KooW...",
+]
+```
+
+### mDNS (LAN)
+
+Local-network discovery via multicast DNS — nodes on the **same LAN** find each
+other automatically with no bootstrap list. Enabled by default
+(`[discovery] mdns = true`); does nothing across routed networks or the public
+internet, so leave it on for local clusters and ignore it for hosted ones.
+
+```toml
+[discovery]
+mdns = true
+```
+
+### Rendezvous
+
+A rendezvous server is a meeting point: nodes register under a **namespace** and
+discover others registered there. This works across NATs and the internet where
+mDNS cannot. Nodes act as rendezvous **clients**, registering in the configured
+namespace and periodically querying for peers.
+
+```toml
+[discovery.rendezvous]
+namespace = "/calimero/devnet/global"
+discovery_rpm = 0.5            # query throttle floor (~1 query / 120s / peer)
+registrations_limit = 3
+
+[discovery.rendezvous.discovery_interval]
+secs = 15
+nanos = 0
+```
+
+### DHT (Kademlia)
+
+The node runs a Kademlia DHT (protocol `/calimero/kad/1.0.0`) and bootstraps it
+from the configured boot nodes. It backs peer-routing — finding the addresses of
+a known peer ID by walking the DHT — and grows the routing table as the node
+meets peers. There are no dedicated `[discovery]` keys for the DHT; it is seeded
+by `[bootstrap] nodes` and driven by the swarm.
+
+## NAT traversal
+
+A node behind a home/cloud NAT is not directly dialable. Three cooperating
+libp2p behaviours make it reachable.
+
+| Behaviour | Role |
+| --- | --- |
+| **AutoNAT** | Probes external peers to learn whether the node is publicly reachable and to confirm its observed external address. |
+| **Relay (client)** | Reserves a slot on a relay so other peers can reach this node *through* the relay when a direct dial fails. |
+| **DCUTR** | Direct Connection Upgrade Through Relay — once peers meet over a relay, they attempt a coordinated **hole punch** to upgrade to a direct connection. |
+
+The relevant keys:
+
+```toml
+[discovery]
+advertise_address = false       # whether to advertise external addresses
+external_address = []           # operator-supplied static external multiaddrs
+
+[discovery.relay]
+registrations_limit = 3         # max relay reservations to hold
+
+[discovery.autonat]
+max_candidates = 5              # max address candidates probed per round
+
+[discovery.autonat.probe_interval]
+secs = 10
+nanos = 0
+```
+
+<Aside type="note">
+For a node on a **known static IP** (a hosted server), you can skip AutoNAT
+discovery: set `advertise_address = true` and list the node's reachable
+multiaddr(s) in `external_address`. Those addresses are seeded directly into the
+swarm's confirmed external-address set at startup — the deterministic
+alternative to probing. Both IPv4 and IPv6 are supported.
+</Aside>
+
+<Aside type="caution" title="advertise_address gates external_address">
+`external_address` is only advertised to peers when `advertise_address = true`.
+Setting the address list without the flag has no effect. The same pairing
+applies to the `merod init --external-address` / `--advertise-address` flags.
+</Aside>
+
+## Which discovery for which deployment
+
+| Deployment | Bootstrap | mDNS | Rendezvous | NAT traversal |
+| --- | --- | --- | --- | --- |
+| **Single LAN / dev cluster** | optional | **yes** — primary | not needed | not needed |
+| **Hosted, static public IP** | yes | off (no effect) | optional | `advertise_address` + `external_address`; relay/DCUTR not needed |
+| **Behind NAT (home / cloud egress-only)** | yes | off | **yes** | **relay + DCUTR + AutoNAT** |
+| **Joining an existing public network** | **yes** (its boot nodes) | off | yes (its namespace) | relay + DCUTR + AutoNAT |
+
+<Aside type="tip">
+Confirm a node is actually connected with `meroctl --node <name> peers` — it
+returns the live connected-peer count. A node that discovers no peers on a LAN
+usually has `mdns` disabled or a firewall blocking multicast; one that finds none
+across the internet usually has no usable bootstrap nodes or an unreachable
+swarm port.
+</Aside>
+
+## Related
+
+<CardGrid>
+  <LinkCard
+    title="Configuration reference"
+    href="/operate/config/"
+    description="Every [swarm], [bootstrap], and [discovery] key with types and defaults." />
+  <LinkCard
+    title="Wire protocol"
+    href="/protocol/networking/"
+    description="The libp2p stack and how operations move between nodes on the wire." />
+  <LinkCard
+    title="Production deployment"
+    href="/operate/deployment/"
+    description="Publishing the swarm port and keeping the server private." />
+  <LinkCard
+    title="merod reference"
+    href="/operate/merod/"
+    description="The init flags that seed swarm, bootstrap, and discovery config." />
+</CardGrid>

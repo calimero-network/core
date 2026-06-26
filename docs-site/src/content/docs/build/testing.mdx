@@ -1,0 +1,282 @@
+---
+title: Testing your app
+description: Write fast, deterministic in-process unit tests for Calimero app logic with the TestHost harness — no node required.
+sidebar:
+  order: 6
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Steps, Aside, LinkCard } from '@astrojs/starlight/components';
+
+A Calimero app is ordinary Rust that the runtime compiles to WASM. That means
+you can test its logic the same way you test any Rust crate: with `#[cfg(test)]`
+modules and `cargo test`. The SDK ships an in-process harness, `TestHost`, that
+stands in for the node — it gives your `#[app::state]` type a clean in-memory
+store, captures events and logs, and lets you drive `call` / `view` methods and
+assert on what comes back.
+
+## Why test in-process
+
+Spinning up a node, installing a context, and poking it over an API works, but
+it is slow and awkward for the inner loop. `TestHost` runs your state type as
+plain Rust on the host architecture:
+
+- **Fast** — millisecond-level tests, no `wasm32` build and no containers.
+- **Deterministic** — state lives in a mock store reset at the top of every
+  test; the harness reports fixed well-known executor / context ids and a
+  seeded PRNG, so runs are reproducible.
+- **No node needed** — no `merod`, no networking, no context setup. It is a unit
+  test, so it slots straight into `cargo test` and CI.
+
+Use it for the bulk of your logic coverage, then reach for a real node only for
+the things the harness deliberately does not model (see
+[Limitations](#limitations)).
+
+## Setup
+
+`TestHost` lives in `calimero_sdk::testing` and drives CRDT state through a
+native mock store. That mock is gated behind the `testing` feature of
+`calimero-storage`, so you enable it as a **dev-dependency** — it never ships in
+your `cdylib`.
+
+<Steps>
+
+1. Add the feature-gated dev-dependency to your app's `Cargo.toml`:
+
+   ```toml
+   [dev-dependencies]
+   # Enables the native mock host so `TestHost` can drive CRDT state under `cargo test`.
+   calimero-storage = { workspace = true, features = ["testing"] }
+   ```
+
+2. Add a test module at the bottom of `src/lib.rs` and import the harness:
+
+   ```rust
+   #[cfg(test)]
+   mod tests {
+       use calimero_sdk::testing::TestHost;
+
+       use super::*;
+
+       // tests go here
+   }
+   ```
+
+3. Run them:
+
+   ```sh
+   cargo test -p your-app-name
+   ```
+
+</Steps>
+
+<Aside type="note">
+  Your app's normal `[dependencies]` (`calimero-sdk`, `calimero-storage`) stay
+  as they are. Only the test build pulls in `calimero-storage`'s `testing`
+  feature, so production WASM artifacts are unaffected.
+</Aside>
+
+## Writing a test
+
+The pattern is always the same:
+
+<Steps>
+
+1. **Construct** a host with `TestHost::new`, passing your `#[app::init]`
+   constructor. The builder runs against a freshly-reset store, exactly like the
+   real init path.
+
+2. **Drive** the state: `call(|s| ...)` runs a `&mut self` method and commits the
+   result; `view(|s| ...)` runs a `&self` method without committing. Each returns
+   whatever the closure returns (typically the method's `app::Result`).
+
+3. **Assert** on the returned value, on follow-up `view`s of the state, and on
+   captured `events()` / `logs()`.
+
+</Steps>
+
+Here is a real, trimmed test from the `kv-store` example app:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn set_get_len_remove() {
+        let mut app = TestHost::new(KvStore::init);
+
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), Some("v".to_owned()));
+        assert_eq!(app.view(|s| s.len()).unwrap(), 1);
+
+        assert_eq!(app.call(|s| s.remove("k")).unwrap(), Some("v".to_owned()));
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), None);
+        assert_eq!(app.view(|s| s.len()).unwrap(), 0);
+    }
+
+    #[test]
+    fn set_emits_event() {
+        let mut app = TestHost::new(KvStore::init);
+
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+        assert_eq!(app.events().len(), 1);
+    }
+}
+```
+
+### State isolation
+
+All mock state — storage, events, logs, identity — lives in thread-locals that
+`TestHost::new` resets on construction. Construct a fresh `TestHost` at the top
+of each `#[test]`. Only one may be live per thread at a time; `new` **panics** if
+another is still alive rather than silently resetting it out from under you, so
+let each one drop (go out of scope) before building the next.
+
+### Identity-dependent paths
+
+Until you say otherwise, the harness reports fixed well-known executor / context
+ids that satisfy owner checks. The relevant methods:
+
+| Method | What it does |
+|--------|--------------|
+| `set_executor(id)` | Override the executor id reported to app logic for later `call` / `view`. |
+| `set_context(id)` | Override the context id reported to app logic. |
+| `call_as(id, \|s\| ...)` | Run one mutation as `id`, driving **both** the SDK identity and CRDT authorship, then restore. |
+| `executor_id()` / `context_id()` | Read the current identities. |
+
+<Aside type="caution">
+  An access-control test that asserts a **rejection** must set a non-owner
+  identity explicitly — the default identity satisfies owner checks, so a
+  "should be denied" test will otherwise pass for the wrong reason.
+</Aside>
+
+### Inspecting events and logs
+
+Events emitted via `app::emit!` and lines from `app::log!` are captured, not
+dispatched. Read them with `events()` / `logs()`, or drain-and-clear with
+`take_events()` / `take_logs()`. A captured event exposes its `kind`, raw `data`
+bytes, and — if emitted with a handler — the `handler` name:
+
+```rust
+#[test]
+fn set_emits_event_with_handler() {
+    let mut app = TestHost::new(KvStore::init);
+
+    app.call(|s| s.set("k".into(), "v".into())).unwrap();
+
+    let events = app.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].handler.as_deref(), Some("insert_handler"));
+}
+```
+
+## Limitations
+
+The harness covers normal `call` / `view` / event / log / identity flows. It is
+**not** a node, and it does not model everything one does. The most important
+gap to internalize:
+
+<Aside type="caution">
+  **The harness captures events but does not auto-dispatch their handlers.**
+  Emitting an event records it in `events()`; it does **not** invoke the
+  callback the way a real node's event loop would. To exercise a handler's
+  bookkeeping, call the handler method directly.
+</Aside>
+
+This is exactly how the `kv-store-with-handlers` example tests it — emit-and-assert
+is one test, invoke-the-handler is another:
+
+```rust
+#[test]
+fn handler_records_invocation() {
+    let mut app = TestHost::new(KvStore::init);
+
+    // The harness captures events but does not auto-dispatch their
+    // handlers, so we invoke the handler method directly to exercise
+    // its bookkeeping in isolation.
+    app.call(|s| s.insert_handler("k", "v")).unwrap();
+
+    assert_eq!(app.view(|s| s.get_handler_execution_count()).unwrap(), 1);
+    assert!(app
+        .logs()
+        .iter()
+        .any(|line| line.contains("insert_handler")));
+}
+```
+
+Other host operations have no in-process equivalent and **panic** if invoked
+under the harness — test these on a real node instead:
+
+- **Cross-context calls** (`env::xcall`).
+- **Networked blob announce / fetch.**
+- **`env::ed25519_verify`.**
+
+`#[app::migrate]` and `read_raw` **are** supported — `TestHost::migrate` runs a
+migration in-process, and helpers like `assert_migrate_converges` /
+`assert_absorb_replay_converges` assert a migration lands on the same Merkle root
+across nodes.
+
+## Convergence testing
+
+If your app uses CRDTs (most do), `calimero-storage`'s `testing` feature also
+exposes `converge_app`, a multi-replica property harness. It drives N in-memory
+replicas under their own executor identities, applies your ops in per-replica
+randomized order, gossips the resulting deltas in randomized order, and asserts
+every replica ends on the **same Merkle root hash** — a one-liner "prove my state
+converges". Put these in `tests/converge.rs`:
+
+```rust
+use kv_store::KvStore;
+
+use calimero_storage::testing::converge_app;
+
+#[test]
+fn distinct_keys_all_survive() {
+    converge_app(KvStore::init)
+        .replicas(3)
+        .ops(|s| { let _ = s.set("a".into(), "1".into()); })
+        .ops(|s| { let _ = s.set("b".into(), "2".into()); })
+        .ops(|s| { let _ = s.set("c".into(), "3".into()); })
+        .invariant("all three keys present", |s| s.len().unwrap_or(0) == 3)
+        .assert_all_replicas_equal();
+}
+```
+
+<Aside type="note">
+  `converge_app` models concurrent edits and delta gossip on **one** machine, so
+  it catches identity / value divergence but not local iteration-order
+  divergence between two separately-synced nodes. For that, fall back to a real
+  multi-node run.
+</Aside>
+
+## In-process vs end-to-end
+
+`TestHost` proves your **logic** is correct in isolation. It does not prove your
+app works when a real node compiles it to WASM, installs it into a context,
+routes events through the node's loop, dispatches cross-context calls, and
+synchronizes state across peers over the network. Those are end-to-end concerns:
+
+- Build your app and walk through installing and calling it on a node in the
+  [tutorial](/build/tutorial/).
+- Run and operate a real node — installing contexts, calling methods, observing
+  sync — under [Operate](/operate/).
+
+Use both: in-process tests for tight, exhaustive logic coverage; a real node for
+the integration surface the harness deliberately leaves out.
+
+<LinkCard
+  title="Tutorial: build and run an app"
+  description="Compile, install, and call a Calimero app on a real node end to end."
+  href="/build/tutorial/"
+/>
+
+<LinkCard
+  title="SDK Macros"
+  description="The #[app::*] macros that define the state, methods, events, and migrations you test."
+  href="/build/sdk-macros/"
+/>

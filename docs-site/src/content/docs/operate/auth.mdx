@@ -1,0 +1,197 @@
+---
+title: Auth Service & Providers
+description: How merod authenticates requests — proxy vs embedded auth, the JWT model, the available providers, and the mock-token dev endpoint.
+sidebar:
+  order: 13
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+A `merod` node's HTTP server (admin API, JSON-RPC, WebSocket, SSE) can be
+protected either by an external proxy or by a bundled authentication service,
+`mero-auth`. This page describes the two modes, the JWT model the auth service
+uses, the providers it ships, and the local-development mock-token endpoint. For
+where auth fits into hardening a deployment, see
+[Hardening & Security](/operate/security/); for the `auth_mode` config key and
+init flags, see the [config reference](/operate/config/) and
+[merod reference](/operate/merod/).
+
+## Embedded vs proxy auth
+
+The `server.auth_mode` setting picks how requests are authenticated.
+
+<Tabs>
+<TabItem label="proxy (default)">
+
+The node does not authenticate requests itself. It expects an external,
+authenticating proxy in front of it that decides who gets through. This is the
+default. With no proxy in place, the server is effectively unauthenticated, so
+the loopback bind (see [Hardening](/operate/security/#keep-the-admin-api-off-public-interfaces))
+matters.
+
+</TabItem>
+<TabItem label="embedded">
+
+The node builds the `mero-auth` service in-process and serves its routes
+alongside the node's own endpoints. The node issues and validates JWTs itself —
+no external auth proxy is required for authentication (you still terminate TLS at
+the edge). Enable it with `merod init --auth-mode embedded`, by setting
+`server.auth_mode = "embedded"`, or per run with `merod run --auth-mode embedded`.
+
+In embedded mode the auth store path (`auth_storage_path`, default `auth`) is
+resolved relative to the node home, so the auth database lives under
+`<home>/<node>/auth`.
+
+</TabItem>
+</Tabs>
+
+:::caution
+`merod run --auth-mode embedded` requires an embedded-auth configuration to be
+present; the node validates this at startup. If `auth_mode = "embedded"` is set
+without embedded-auth config, startup fails asking you to either provide the
+configuration or switch back to `proxy`.
+:::
+
+## The JWT model
+
+The auth service issues JSON Web Tokens. The relevant details, grounded in the
+token manager:
+
+- **Algorithm:** HS256 (symmetric). Tokens are signed with a secret that the
+  service generates and stores in its own storage backend — there is no external
+  key file to manage.
+- **Two token types:** a short-lived **access token** and a longer-lived
+  **refresh token**.
+- **Default lifetimes:** access token `3600` seconds (1 hour), refresh token 30
+  days. Configurable via `jwt.access_token_expiry` / `jwt.refresh_token_expiry`.
+- **Issuer:** `jwt.issuer` (the shipped example config uses `calimero-auth`).
+
+Access-token claims:
+
+| Claim | Meaning |
+| --- | --- |
+| `sub` | Subject — the key ID the token was issued for. |
+| `iss` | Issuer (`jwt.issuer`). |
+| `aud` | Audience — the client ID. |
+| `exp` / `iat` | Expiry and issued-at, as Unix timestamps. |
+| `jti` | Unique token ID. |
+| `permissions` | The permission strings granted to the token. |
+| `node_url` | Optional node URL the token is scoped to. |
+
+:::note
+Because the signing secret is symmetric (HS256) and held by the auth service,
+token validation happens inside the same service that issues them. Protect the
+auth storage directory the same way you protect other key material — see
+[Key & identity storage](/operate/security/#key--identity-storage).
+:::
+
+## Providers
+
+The auth service loads providers from a registry and enables them per the
+`[providers]` map in its configuration. Today the registry ships a single auth
+provider:
+
+| Provider | ID | Enable with | Status |
+| --- | --- | --- | --- |
+| Username / password | `user_password` | `[providers] user_password = true` | Available, enabled in the shipped example config. |
+
+The `user_password` provider validates a `{ username, password }` credential and
+has tunable bounds via `[user_password]` (`min_password_length` default `8`,
+`max_password_length` default `128`).
+
+:::caution[No OIDC or wallet provider ships today]
+The provider registry currently contains only `user_password`. The auth routing
+includes challenge/callback handlers (a challenge-response shape), but no OIDC,
+wallet, or external-IdP provider is registered in this codebase. Do not assume
+one exists; if you need federated login you would add and register a new
+provider in `mero-auth`.
+:::
+
+## Mock-token endpoint
+
+For CI and local development, the auth service can expose a **mock-token
+endpoint** at `POST /auth/mock-token` that mints valid JWTs **without any
+authentication flow**. It is part of the `[development]` config and is **disabled
+by default**.
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `enable_mock_auth` | `false` | Enable the mock endpoint. Returns `404` when off. |
+| `mock_auth_require_header` | `true` | Require an `Authorization` header on the mock endpoint. |
+| `mock_auth_header_value` | unset | Specific header value the endpoint requires (e.g. `Bearer test-auth-token`). |
+
+A minimal dev configuration:
+
+```toml
+[development]
+enable_mock_auth = true
+mock_auth_require_header = true
+mock_auth_header_value = "Bearer test-auth-token"
+```
+
+Requesting a token:
+
+```sh
+curl -X POST http://localhost:3001/auth/mock-token \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer test-auth-token" \
+  -d '{ "client_name": "ci-test-client", "permissions": ["admin"] }'
+```
+
+The response carries `access_token` and `refresh_token`, plus warning headers
+(`X-Mock-Token: true`, `X-Warning: Mock token - for testing only`) and a key ID
+prefixed with `mock_` so mock tokens are traceable. The tokens are real,
+fully-valid JWTs that pass all normal validation — which is exactly why the
+endpoint must never be enabled in production.
+
+:::caution[Mock auth bypasses authentication]
+`enable_mock_auth = true` lets anyone who can reach the endpoint (and supply the
+optional header) mint admin tokens. Enable it only in CI/dev environments, keep
+it off in production, and pair it with `mock_auth_require_header` plus a secret
+header value if you must expose it. This is the auth-service analogue of the
+node's [`--mock-tee`](/operate/security/#the---mock-tee-switch) dev switch.
+:::
+
+## Getting an embedded-auth node ready
+
+<Steps>
+
+1. Initialize (or reconfigure) the node for embedded auth:
+
+   ```sh
+   merod --node node1 init --auth-mode embedded
+   ```
+
+2. Confirm `server.auth_mode = "embedded"` in `config.toml` and that an
+   embedded-auth section is present.
+
+3. Run the node. The auth store is created under `<home>/node1/auth`:
+
+   ```sh
+   merod --node node1 run
+   ```
+
+4. Authenticate against the auth endpoints to obtain a JWT, then send it as a
+   bearer token to the admin API. The flow and endpoints are covered in the
+   [admin API reference](/operate/admin-api/#authentication).
+
+</Steps>
+
+## Out of scope here
+
+The `mero-auth` crate carries more surface than node operators normally touch.
+The following exist in the crate but are beyond this operate page; consult the
+auth service directly if you need them:
+
+- **Root-key and client-key management** endpoints (creating, listing, and
+  deleting keys, and per-key permission management).
+- **CORS and security-header configuration** (`[cors]`, `[security.headers]`,
+  CSP) — relevant when serving the auth UI cross-origin.
+- **Challenge / callback** routes, which back a challenge-response flow that no
+  shipped provider currently drives.
+- **Standalone operation:** `mero-auth` can also run as its own service (default
+  listen `127.0.0.1:3001`) rather than embedded in the node; that deployment
+  shape is not covered here.

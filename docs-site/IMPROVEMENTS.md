@@ -59,7 +59,7 @@ polished product. Grouped by theme; check items off as they land. See
 ## F · Build track content
 - [ ] 43. Expand the quickstart into a full tutorial with expected output.
 - [x] 44. Add a "first app from scratch" tutorial (scaffold → state → method → test).
-- [ ] 45. Document the TestHost testing harness with examples.
+- [x] 45. Document the TestHost testing harness with examples.
 - [x] 46. How-to: model data with the right CRDT collection.
 - [x] 47. How-to: emit & handle events.
 - [x] 48. How-to: cross-context calls (link `/protocol/xcall/`).
@@ -71,14 +71,14 @@ polished product. Grouped by theme; check items off as they land. See
 ## G · Operate track content
 - [ ] 53. Full admin-API reference with request/response schemas (OpenAPI).
 - [ ] 54. Generate the merod/meroctl CLI reference from `--help`.
-- [ ] 55. Production deployment guide (systemd/Docker/k8s).
-- [ ] 56. Networking/NAT/relay/bootstrap setup guide.
+- [x] 55. Production deployment guide (systemd/Docker/k8s).
+- [x] 56. Networking/NAT/relay/bootstrap setup guide.
 - [ ] 57. Metrics dashboard guide (Prometheus/Grafana examples).
 - [ ] 58. Expand the backup/restore runbook with concrete commands.
-- [ ] 59. Security hardening guide (auth modes, key management).
+- [x] 59. Security hardening guide (auth modes, key management).
 - [ ] 60. Capacity & performance tuning guide.
 - [ ] 61. Multi-node cluster tutorial.
-- [ ] 62. Document the auth service / JWT providers.
+- [x] 62. Document the auth service / JWT providers.
 
 ## H · Protocol track content
 - [x] 63. Identity & key-rotation chapter.
