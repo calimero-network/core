@@ -16,6 +16,22 @@ export default defineConfig({
       logo: { src: './src/assets/logo.svg', alt: 'Calimero Core' },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/theme.css'],
+      // Vivid, high-contrast code highlighting with a code surface lifted off
+      // the page background (theme-reactive via our gray vars) so blocks stand
+      // out instead of blending into #0d1117.
+      expressiveCode: {
+        themes: ['github-dark', 'github-light'],
+        styleOverrides: {
+          borderRadius: '0.5rem',
+          borderColor: 'var(--sl-color-gray-6)',
+          codeBackground: 'var(--sl-color-gray-7)',
+          codeFontFamily: 'var(--sl-font-mono)',
+          frames: {
+            editorTabBarBackground: 'var(--sl-color-gray-6)',
+            terminalTitlebarBackground: 'var(--sl-color-gray-6)',
+          },
+        },
+      },
       lastUpdated: true,
       editLink: {
         baseUrl: 'https://github.com/calimero-network/core/edit/master/docs-site/',

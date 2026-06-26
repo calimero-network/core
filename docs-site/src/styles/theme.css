@@ -15,6 +15,21 @@
 :root { font-size: 81.25%; } /* 13px base */
 @media (max-width: 50rem) { :root { font-size: 87.5%; } } /* a touch larger on phones */
 
+/* Layout: give the main content column more room and the right-hand table of
+ * contents less. Starlight reserves `sidebar-width + (leftover)/2` for the TOC,
+ * so widening the content column both enlarges the main text/diagrams AND
+ * shrinks the TOC reserve. This also offsets the rem shrink from the scaling
+ * above. Content goes wider still on large monitors. */
+:root {
+  --sl-content-width: 54rem;
+  --sl-sidebar-width: 18rem;
+}
+@media (min-width: 86em) {
+  :root { --sl-content-width: 66rem; }
+}
+/* Structural diagrams and media never overflow the (now wider) column. */
+.sl-markdown-content :is(svg, img, .archmap) { max-width: 100%; height: auto; }
+
 /* ---- Dark theme (default) ---- */
 :root[data-theme='dark'] {
   --sl-color-accent-low: #1a2e0b;
