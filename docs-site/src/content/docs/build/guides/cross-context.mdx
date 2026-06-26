@@ -1,0 +1,92 @@
+---
+title: Call another context
+description: Dispatch a cross-context call, gate the entry point, and verify the caller's origin.
+sidebar:
+  order: 4
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+**Task:** have a method in one context invoke a method in another context.
+
+A cross-context call (`xcall`) is one-way and asynchronous: you queue a call to a
+target context's method, and the node delivers it. The model — and why origin is
+trustworthy — is in the [cross-context reference](/protocol/xcall/). This guide
+is the three moving parts from `apps/xcall-example`.
+
+## 1. Dispatch the call
+
+`env::xcall(context_id, function, params)` queues a call. Encode arguments as the
+JSON the target method expects:
+
+```rust
+use calimero_sdk::{app, ContextId};
+
+fn xcall_to(&mut self, target_context: ContextId, method: &str) -> app::Result<()> {
+    let current_context = ContextId::from(calimero_sdk::env::context_id());
+
+    #[derive(calimero_sdk::serde::Serialize)]
+    #[serde(crate = "calimero_sdk::serde")]
+    struct Params {
+        from_context: ContextId,
+    }
+
+    let params = calimero_sdk::serde_json::to_vec(&Params {
+        from_context: current_context,
+    })?;
+
+    calimero_sdk::env::xcall(target_context.as_ref(), method, &params);
+    Ok(())
+}
+```
+
+## 2. Gate the entry point
+
+A method is only reachable by `xcall` if you mark it `#[app::xcall]`. The node
+refuses to dispatch a cross-context call to any method without this attribute —
+so undecorated methods stay private to direct callers.
+
+## 3. Verify the origin
+
+`env::xcall_origin()` returns the calling context id — set by the node, so it
+**cannot be forged**. It is `None` for a direct (non-xcall) call. Use it to
+reject direct calls and to confirm the caller is who the payload claims:
+
+```rust
+#[app::xcall]
+pub fn pong(&mut self, from_context: ContextId) -> app::Result<()> {
+    let origin = calimero_sdk::env::xcall_origin().map(ContextId::from);
+
+    let Some(origin) = origin else {
+        app::bail!("pong is xcall-only: no cross-context origin (direct call rejected)");
+    };
+    if origin != from_context {
+        app::bail!(
+            "xcall provenance mismatch: node-set origin {} != claimed from_context {}",
+            origin,
+            from_context
+        );
+    }
+
+    self.counter.increment()?;
+    Ok(())
+}
+```
+
+<Aside type="caution" title="Don't trust the payload alone">
+  `from_context` here is self-reported by the caller. The trustworthy value is
+  `env::xcall_origin()`; comparing the two is what makes the call authentic.
+</Aside>
+
+## Exercise it
+
+```sh
+# from the source context, ping the target's `pong` entry point
+meroctl --node node1 call ping \
+  --context <source-context-id> --args '{"target_context": "<target-context-id>"}'
+```
+
+The two contexts must run the same application and share a namespace.

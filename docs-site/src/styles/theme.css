@@ -46,6 +46,9 @@
 .sl-markdown-content h2 { margin-top: 2.3rem; }
 .sl-markdown-content table { font-size: 0.9rem; }
 
+/* Wide spec/reference tables scroll instead of overflowing on small screens. */
+.sl-markdown-content table { display: block; overflow-x: auto; max-width: 100%; }
+
 /* Light theme: keep surfaces and the diagram Replay control legible. */
 :root[data-theme='light'] {
   --sl-color-bg-sidebar: #f6f8fa;

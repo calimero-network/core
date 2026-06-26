@@ -1,0 +1,29 @@
+---
+title: How-to Guides
+description: Task-focused recipes for common Calimero app jobs — pick the guide that matches what you need to do.
+sidebar:
+  order: 1
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+Short, task-focused recipes. Each guide solves **one** concrete job with a
+minimal snippet taken from a real example app, and assumes you already have an
+app skeleton building — if you don't, start with the
+[Quickstart](/build/quickstart/).
+
+| I want to… | Guide |
+| --- | --- |
+| Pick the right CRDT collection and read/write it | [Model your data](/build/guides/collections/) |
+| Notify clients (or other methods) that something changed | [Emit and handle events](/build/guides/events/) |
+| Invoke a method on another context | [Call another context](/build/guides/cross-context/) |
+| Store a large binary and share it with peers | [Store and share a blob](/build/guides/blobs/) |
+| Restrict who can write to a piece of state | [Access-controlled storage](/build/guides/access-control/) |
+
+<CardGrid>
+  <LinkCard title="Browse the example apps" href="/build/examples/" description="Every snippet here is lifted from a runnable app under apps/." />
+  <LinkCard title="Collection reference" href="/build/collections/" description="The full list of CRDT collections and their merge semantics." />
+</CardGrid>

@@ -1,0 +1,82 @@
+---
+title: Store and share a blob
+description: Write bytes to a blob, get its id, and announce it so peers in the context can fetch it.
+sidebar:
+  order: 5
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+**Task:** store a large binary (a file, an image) and make it available to other
+nodes in the context.
+
+Blobs live outside CRDT state: you store the bytes once, get back a content
+`BlobId`, keep that small id in your state, and announce the blob so peers can
+fetch it. The replication model is in the
+[blobs reference](/protocol/blobs/).
+
+## The blob flow
+
+The SDK exposes a file-descriptor-style API in `calimero_sdk::env`:
+
+| Step | Function | Returns |
+| --- | --- | --- |
+| Open a new blob for writing | `blob_create()` | fd (`u64`) |
+| Append bytes | `blob_write(fd, &data)` | bytes written |
+| Finish writing | `blob_close(fd)` | `BlobId` (`[u8; 32]`) |
+| Open an existing blob | `blob_open(&blob_id)` | fd |
+| Read bytes | `blob_read(fd, &mut buf)` | bytes read |
+
+Write path: `blob_create` → `blob_write`… → `blob_close` (the returned id is the
+content hash). Read path: `blob_open` → `blob_read`… → `blob_close`.
+
+## Announce so peers can fetch
+
+Storing a blob keeps it local. `env::blob_announce_to_context(&blob_id,
+&context_id)` advertises it to the rest of the context so other nodes can
+discover and download it. This is `apps/blobs`:
+
+```rust
+use calimero_sdk::{app, env, BlobId};
+
+pub fn upload_file(&mut self, name: String, blob_id: BlobId, size: u64) -> app::Result<String> {
+    let current_context = env::context_id();
+
+    if env::blob_announce_to_context(blob_id.as_ref(), &current_context) {
+        app::log!("Announced blob {} to network", blob_id);
+    } else {
+        app::log!("Warning: Failed to announce blob {}", blob_id);
+    }
+
+    // keep the small id + metadata in CRDT state; the bytes stay in the blob store
+    let file_id = format!("file_{}", self.file_counter.value()?);
+    self.file_counter.increment()?;
+    self.files.insert(file_id.clone(), /* FileRecord { blob_id, name, size, .. } */ )?;
+    Ok(file_id)
+}
+```
+
+<Aside type="note" title="Who writes the bytes">
+  In `apps/blobs` the bytes are uploaded by a blob client and the method receives
+  the resulting `BlobId`; the contract's job is to record the id and announce it.
+  Use the `blob_create`/`blob_write`/`blob_close` calls above when you produce the
+  bytes inside the app itself.
+</Aside>
+
+<Aside type="caution" title="Announce only to your own context">
+  `blob_announce_to_context` is intended for the **current** context
+  (`env::context_id()`); the runtime guards against announcing into a context you
+  aren't part of.
+</Aside>
+
+## Exercise it
+
+```sh
+# the BlobId comes back base58-encoded; store the metadata via your method
+meroctl --node node1 call upload_file \
+  --context <context-id> \
+  --args '{"name": "notes.txt", "blob_id": "<base58-blob-id>", "size": 12}'
+```

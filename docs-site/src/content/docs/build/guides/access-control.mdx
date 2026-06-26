@@ -1,0 +1,141 @@
+---
+title: Access-controlled storage
+description: Restrict who can write a piece of state with the Shared, User, and Frozen wrappers.
+sidebar:
+  order: 6
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Task:** keep a piece of state but limit who is allowed to change it.
+
+By default any context member can write any field. Wrapping a field in one of
+three collections from `calimero_storage::collections` adds an authorization rule
+that is enforced when edits merge across nodes:
+
+| Wrapper | Who can write | Read |
+| --- | --- | --- |
+| `SharedStorage<T>` | only members of the writer set | anyone |
+| `UserStorage<T>` | each user writes only their own slot | anyone |
+| `FrozenStorage<T>` | write-once, then immutable | anyone |
+
+<Aside type="caution" title="Merge is the real boundary">
+  Each wrapper checks permission locally so bad writes fail fast, but the
+  authoritative enforcement is at **merge time** on peer nodes: a forged delta
+  from an unauthorized writer is rejected when peers verify it. The local check is
+  a convenience, not the security boundary.
+</Aside>
+
+## SharedStorage — a writer set
+
+A group-writable value. Only public keys in the writer set may `insert`; a
+current writer can `rotate_writers` to change the set. This is
+`apps/kv-store-with-shared-storage`:
+
+```rust
+use std::collections::BTreeSet;
+use calimero_sdk::{app, PublicKey};
+use calimero_storage::collections::{LwwRegister, SharedStorage};
+
+#[app::state]
+pub struct KvStore {
+    shared_value: SharedStorage<LwwRegister<String>>,
+}
+
+#[app::logic]
+impl KvStore {
+    #[app::init]
+    pub fn init() -> KvStore {
+        // seed the writer set with whoever installed the app
+        let initializer: PublicKey = calimero_sdk::env::executor_id().into();
+        let mut writers = BTreeSet::new();
+        writers.insert(initializer);
+        // second arg `frozen`: once true, the writer set can never rotate
+        KvStore { shared_value: SharedStorage::new(writers, false) }
+    }
+
+    pub fn set_shared(&mut self, value: String) -> app::Result<()> {
+        self.shared_value.insert(LwwRegister::new(value))?; // rejected if caller isn't a writer
+        Ok(())
+    }
+
+    pub fn rotate_writers(&mut self, new_writers: Vec<PublicKey>) -> app::Result<()> {
+        self.shared_value.rotate_writers(new_writers.into_iter().collect())?;
+        Ok(())
+    }
+}
+```
+
+## UserStorage — per-user slots
+
+Internally a map keyed by `PublicKey`. `insert` always writes the **current
+executor's** slot, so users can't overwrite each other. Reads can target any
+user. This is `apps/kv-store-with-user-and-frozen-storage`:
+
+```rust
+use calimero_sdk::{app, PublicKey};
+use calimero_storage::collections::{LwwRegister, UserStorage};
+
+#[app::state]
+pub struct KvStore {
+    user_items: UserStorage<LwwRegister<String>>,
+}
+
+#[app::logic]
+impl KvStore {
+    pub fn set_user(&mut self, value: String) -> app::Result<()> {
+        self.user_items.insert(value.into())?; // writes the caller's own slot
+        Ok(())
+    }
+
+    pub fn get_user(&self) -> app::Result<Option<String>> {
+        Ok(self.user_items.get()?.map(|v| v.get().clone()))
+    }
+
+    // read another user's slot by their public key
+    pub fn get_user_for(&self, user_key: PublicKey) -> app::Result<Option<String>> {
+        Ok(self.user_items.get_for_user(&user_key)?.map(|v| v.get().clone()))
+    }
+}
+```
+
+## FrozenStorage — write-once
+
+Content-addressed and immutable: `insert` returns the value's hash and is
+idempotent (the same value inserts once); there is no remove or overwrite. Read
+back by that hash. Same example app:
+
+```rust
+use calimero_sdk::app;
+use calimero_storage::collections::FrozenStorage;
+
+#[app::state]
+pub struct KvStore {
+    frozen_items: FrozenStorage<String>,
+}
+
+#[app::logic]
+impl KvStore {
+    pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
+        let hash = self.frozen_items.insert(value)?; // [u8; 32] content hash
+        Ok(hex::encode(hash))
+    }
+
+    pub fn get_frozen(&self, hash_hex: String) -> app::Result<Option<String>> {
+        let mut hash = [0u8; 32];
+        hex::decode_to_slice(hash_hex, &mut hash[..])?;
+        Ok(self.frozen_items.get(&hash)?)
+    }
+}
+```
+
+## Exercise it
+
+```sh
+# allowed only if the caller is in the writer set
+meroctl --node node1 call set_shared \
+  --context <context-id> --args '{"value": "agreed"}'
+```

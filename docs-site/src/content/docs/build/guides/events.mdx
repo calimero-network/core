@@ -1,0 +1,105 @@
+---
+title: Emit and handle events
+description: Declare an event, emit it from a method, and run an in-app handler when it fires.
+sidebar:
+  order: 3
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Task:** announce that something changed so clients (and optionally other
+methods of your app) can react.
+
+## Declare an event
+
+An event type is an enum marked `#[app::event]`. Wire it into your state with the
+`emits` argument so the macro knows which events the app produces:
+
+```rust
+#[app::state(emits = for<'a> Event<'a>)]
+pub struct KvStore {
+    items: UnorderedMap<String, LwwRegister<String>>,
+    handler_counter: Counter,
+}
+
+#[app::event]
+pub enum Event<'a> {
+    Inserted { key: &'a str, value: &'a str },
+    Updated { key: &'a str, value: &'a str },
+    Removed { key: &'a str },
+    Cleared,
+}
+```
+
+## Emit it
+
+Call `app::emit!` with a variant. Clients subscribed to the context receive it:
+
+```rust
+app::emit!(Event::Updated { key: &key, value: &value });
+```
+
+## Run a handler when it fires
+
+To also invoke one of your own methods when the event is emitted, use the tuple
+form `(event, "handler_name")`. The handler is a regular method named by that
+string; its parameters match the event variant's fields. This pattern is
+`apps/kv-store-with-handlers`:
+
+```rust
+#[app::logic]
+impl KvStore {
+    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+        if self.items.contains(&key)? {
+            app::emit!((
+                Event::Updated { key: &key, value: &value },
+                "update_handler"
+            ));
+        } else {
+            app::emit!((
+                Event::Inserted { key: &key, value: &value },
+                "insert_handler"
+            ));
+        }
+        self.items.insert(key, value.into())?;
+        Ok(())
+    }
+
+    // handler: name matches the string above; params match the variant fields
+    pub fn update_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
+        app::log!("Handler 'update_handler' called: key={key}, value={value}");
+        self.handler_counter.increment()?;
+        Ok(())
+    }
+
+    pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
+        app::log!("Handler 'insert_handler' called: key={key}, value={value}");
+        self.handler_counter.increment()?;
+        Ok(())
+    }
+}
+```
+
+<Aside type="note" title="Handlers can mutate state">
+  A handler is just another method, so it can write state — here it bumps a
+  `Counter`. Use the plain one-argument `emit!` when you only want to notify
+  clients, and the tuple form when you also want in-app logic to run.
+</Aside>
+
+## Exercise it
+
+```sh
+meroctl --node node1 call set \
+  --context <context-id> --args '{"key": "hello", "value": "world"}'
+```
+
+The matching handler runs as part of the same call, and the emitted event is
+published on the node's event stream for subscribed clients.
+
+:::caution
+Events are consumed by clients over the node's API rather than by `meroctl`
+itself; check your node's API docs for the exact subscription endpoint.
+:::

@@ -1,0 +1,89 @@
+---
+title: Model your data
+description: Choose a CRDT collection for a field of your app state and read and write it.
+sidebar:
+  order: 2
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Task:** store a piece of your app's data in a field of `#[app::state]`, and
+read and write it from a method.
+
+Every field of your state is a CRDT from `calimero_storage::collections`. Pick
+the one whose merge behaviour matches the data — that single choice decides how
+concurrent edits on different nodes converge.
+
+## Pick a collection
+
+| You have… | Use | Import |
+| --- | --- | --- |
+| A keyed map of values | `UnorderedMap<K, V>` | `calimero_storage::collections::UnorderedMap` |
+| A growable list | `Vector<V>` | `calimero_storage::collections::Vector` |
+| A map you iterate in key order / by range | `SortedMap<K, V>` | `calimero_storage::collections::SortedMap` |
+| A count many nodes bump | `Counter` (grow-only) / `PNCounter` (also decrements) | `calimero_storage::collections::Counter` |
+| A single value, last-writer-wins | `LwwRegister<T>` | `calimero_storage::collections::LwwRegister` |
+
+<Aside type="tip" title="Wrap plain values in LwwRegister">
+  A bare `String` or `u64` isn't itself a CRDT. To store a single overwritable
+  value — including as the *value type* of a map — wrap it in `LwwRegister<T>`
+  so concurrent overwrites resolve deterministically.
+</Aside>
+
+See [Collections](/build/collections/) for the full list and the exact merge
+rule of each.
+
+## Read and write it
+
+This is `apps/kv-store` — an `UnorderedMap` whose values are `LwwRegister<String>`:
+
+```rust
+use calimero_sdk::app;
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
+
+#[app::state]
+pub struct KvStore {
+    items: UnorderedMap<String, LwwRegister<String>>,
+}
+
+#[app::logic]
+impl KvStore {
+    #[app::init]
+    pub fn init() -> KvStore {
+        KvStore { items: UnorderedMap::new() }
+    }
+
+    // write: `value.into()` builds the LwwRegister<String>
+    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+        self.items.insert(key, value.into())?;
+        Ok(())
+    }
+
+    // read: `get` returns a read-only ValueRef; clone out the inner value
+    #[app::view]
+    pub fn get(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.items.get(&key)?.map(|v| v.get().clone()))
+    }
+}
+```
+
+Key things the snippet shows:
+
+- Construct fields with `::new()` inside `#[app::init]`.
+- Every accessor returns a `Result` — collection reads and writes can fail, so
+  use `?`.
+- `get` hands back a read-only reference; `.get().clone()` pulls the value out of
+  the `LwwRegister`. To mutate in place, use `get_mut`.
+
+## Exercise it
+
+```sh
+meroctl --node node1 call set \
+  --context <context-id> --args '{"key": "hello", "value": "world"}'
+
+meroctl --node node1 call get \
+  --context <context-id> --args '{"key": "hello"}'
+```

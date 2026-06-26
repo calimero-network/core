@@ -26,7 +26,7 @@ polished product. Grouped by theme; check items off as they land. See
 - [ ] 17. Group the Protocol sidebar into Core / Subsystems / Appendix.
 - [ ] 18. Add "See also / related pages" blocks at the foot of each page.
 - [ ] 19. Make the role chooser on the landing more prominent than the cards.
-- [ ] 20. Add a Glossary page and link key terms to it.
+- [x] 20. Add a Glossary page and link key terms to it.
 
 ## C · Diagrams & interactivity
 - [ ] 21. Add play/pause/scrub controls to animated sequence diagrams.
@@ -44,7 +44,7 @@ polished product. Grouped by theme; check items off as they land. See
 - [ ] 31. Add filename/title headers to code blocks.
 - [ ] 32. Add line highlighting/focus to long code samples.
 - [ ] 33. Add per-heading anchor "copy link" affordance.
-- [ ] 34. Make all spec tables horizontally scrollable on mobile.
+- [x] 34. Make all spec tables horizontally scrollable on mobile.
 - [ ] 35. Add a per-chapter "Normative requirements" index.
 - [ ] 36. Standardize struct vs pseudocode fences across chapters.
 
@@ -58,13 +58,13 @@ polished product. Grouped by theme; check items off as they land. See
 
 ## F · Build track content
 - [ ] 43. Expand the quickstart into a full tutorial with expected output.
-- [ ] 44. Add a "first app from scratch" tutorial (scaffold → state → method → test).
+- [x] 44. Add a "first app from scratch" tutorial (scaffold → state → method → test).
 - [ ] 45. Document the TestHost testing harness with examples.
-- [ ] 46. How-to: model data with the right CRDT collection.
-- [ ] 47. How-to: emit & handle events.
-- [ ] 48. How-to: cross-context calls (link `/protocol/xcall/`).
-- [ ] 49. How-to: blobs (upload/announce/fetch).
-- [ ] 50. Document access-controlled storage (Shared/User/Frozen) with examples.
+- [x] 46. How-to: model data with the right CRDT collection.
+- [x] 47. How-to: emit & handle events.
+- [x] 48. How-to: cross-context calls (link `/protocol/xcall/`).
+- [x] 49. How-to: blobs (upload/announce/fetch).
+- [x] 50. Document access-controlled storage (Shared/User/Frozen) with examples.
 - [ ] 51. Generate an SDK API reference from rustdoc.
 - [ ] 52. How-to: ship v2 (migrations) with troubleshooting.
 
