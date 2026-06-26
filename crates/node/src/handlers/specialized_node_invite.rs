@@ -175,7 +175,7 @@ pub async fn handle_verification_request(
 
             let verification_result = if is_mock {
                 warn!("Verifying MOCK attestation - NOT FOR PRODUCTION USE");
-                match verify_mock_attestation(&quote_bytes, &nonce, None) {
+                match verify_mock_attestation(&quote_bytes, &nonce, &[0u8; 32]) {
                     Ok(result) => result,
                     Err(err) => {
                         error!(error = %err, "Failed to verify mock TEE attestation");
@@ -187,7 +187,7 @@ pub async fn handle_verification_request(
                     }
                 }
             } else {
-                match verify_attestation(&quote_bytes, &nonce, None).await {
+                match verify_attestation(&quote_bytes, &nonce, &[0u8; 32]).await {
                     Ok(result) => result,
                     Err(err) => {
                         error!(error = %err, "Failed to verify TEE attestation");
@@ -204,7 +204,7 @@ pub async fn handle_verification_request(
                 warn!(
                     quote_verified = verification_result.quote_verified,
                     nonce_verified = verification_result.nonce_verified,
-                    app_hash_verified = ?verification_result.application_hash_verified,
+                    app_hash_verified = verification_result.application_hash_verified,
                     is_mock = is_mock,
                     "TEE attestation verification failed"
                 );
