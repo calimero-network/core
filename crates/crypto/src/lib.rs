@@ -1,8 +1,8 @@
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use ed25519_dalek::{SecretKey, SigningKey};
+use ed25519_dalek::SigningKey;
 use ring::aead;
 use thiserror::Error;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 pub const NONCE_LEN: usize = 12;
 
@@ -17,20 +17,17 @@ pub enum SharedKeyError {
     InvalidPublicKey,
 }
 
+// Clone is intentional: callers store SharedKey in EncryptionState (which
+// derives Clone) and return it by value from trait methods. Each clone owns
+// its bytes and is zeroized independently on drop via Zeroizing<_>.
 #[derive(Clone)]
 pub struct SharedKey {
-    key: SecretKey,
+    key: Zeroizing<[u8; 32]>,
 }
 
 impl std::fmt::Debug for SharedKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SharedKey").field("key", &"[redacted]").finish()
-    }
-}
-
-impl Drop for SharedKey {
-    fn drop(&mut self) {
-        self.key.zeroize();
+        write!(f, "SharedKey([redacted])")
     }
 }
 
@@ -47,21 +44,25 @@ impl SharedKey {
             .ok_or(SharedKeyError::InvalidPublicKey)?;
 
         Ok(Self {
-            key: (SigningKey::from_bytes(sk).to_scalar() * decompressed)
-                .compress()
-                .to_bytes(),
+            key: Zeroizing::new(
+                (SigningKey::from_bytes(sk).to_scalar() * decompressed)
+                    .compress()
+                    .to_bytes(),
+            ),
         })
     }
 
     #[must_use]
     pub fn from_sk(sk: &PrivateKey) -> Self {
-        Self { key: **sk }
+        Self {
+            key: Zeroizing::new(**sk),
+        }
     }
 
     #[must_use]
     pub fn encrypt(&self, payload: Vec<u8>, nonce: Nonce) -> Option<Vec<u8>> {
         let encryption_key =
-            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &self.key).ok()?);
+            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &*self.key).ok()?);
 
         let mut cipher_text = payload;
         encryption_key
@@ -78,7 +79,7 @@ impl SharedKey {
     #[must_use]
     pub fn decrypt(&self, cipher_text: Vec<u8>, nonce: Nonce) -> Option<Vec<u8>> {
         let decryption_key =
-            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &self.key).ok()?);
+            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &*self.key).ok()?);
 
         let mut payload = cipher_text;
         let decrypted_len = decryption_key
