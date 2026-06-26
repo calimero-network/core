@@ -512,7 +512,7 @@ pub async fn get_session_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(SseResponse {
                     body: ResponseBody::Error(ResponseBodyError::ServerError(
-                        ServerResponseError::InternalError { err: Some(err) },
+                        ServerResponseError::InternalError { err: None },
                     )),
                 }),
             )

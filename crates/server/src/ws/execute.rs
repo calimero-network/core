@@ -71,9 +71,8 @@ pub(crate) async fn handle(state: &ServiceState, request: ExecutionRequest) -> R
 }
 
 fn internal_error(err: serde_json::Error) -> ResponseBody {
+    error!(%err, "Internal server error");
     ResponseBody::Error(ResponseBodyError::ServerError(
-        ServerResponseError::InternalError {
-            err: Some(err.into()),
-        },
+        ServerResponseError::InternalError { err: None },
     ))
 }
