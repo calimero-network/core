@@ -148,8 +148,8 @@ names against a live `/metrics` scrape before wiring alerts.
 A node and its peers converge on a shared **root hash** per context; group and
 namespace **heartbeats** periodically exchange those roots (and DAG heads) so
 that divergence is detected without a full sync. See
-[Sync &amp; Convergence](/core/protocol/sync/) and
-[Governance](/core/protocol/governance/) for the protocol detail.
+[Sync &amp; Convergence](/protocol/sync/) and
+[Governance](/protocol/governance/) for the protocol detail.
 
 <Tabs>
 <TabItem label="Healthy">
@@ -170,7 +170,7 @@ that divergence is detected without a full sync. See
 
 - Heartbeats report a root-hash / `scope_root` mismatch against the signed
   canonical expected; the node's reconciler kicks in (see
-  [Troubleshooting](/core/operate/troubleshooting/)).
+  [Troubleshooting](/operate/troubleshooting/)).
 - `sync_protocol_selections_total{protocol="Snapshot"}` starts rising —
   growing snapshot selection means growing state divergence across the cluster.
 - `sync_failures_total` climbs and `sync_duration_seconds` p99 stretches out.

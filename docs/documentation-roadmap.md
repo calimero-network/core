@@ -298,3 +298,40 @@ coverage-gap matrix vs the codebase; best-in-class benchmark). Key exemplars
 referenced: Diátaxis (mode separation), Stripe (three-pane reference, single-page
 deep links), libp2p/IPFS (Concepts vs Spec), Matrix/Noise (normative spec style),
 Tailscale/Linear/Vercel (visual restraint), Astro Starlight (tooling).
+
+---
+
+## Execution status (as built in `docs-site/`)
+
+- **Phase 0 — Platform** ✅ Astro Starlight with the Calimero dark theme; the
+  bespoke animated-SVG diagram engine mounted as an island.
+- **Phase 1 — Protocol track** ✅ All 10 core chapters + storage appendix ported
+  to MDX; structural SVGs are `.astro` diagram components, sequences are islands.
+- **Phase 2 — Build / Operate / Contribute** ✅ Four-track IA; SDK, CLI
+  (merod/meroctl), config, and admin-API references grounded in code.
+- **Phase 3 — Spec hardening** ✅ Added Blob Transport, TEE Attestation,
+  Cross-Context Calls, Application Upgrades; RFC 2119 Normative callouts; schema
+  version pins; conformance statement.
+- **Phase 4 — Accuracy & depth** ✅ Verified the flagged cautions against source
+  (fixed real flag/endpoint/macro errors); added observability, troubleshooting,
+  runbooks, and example walkthroughs; completed the light theme.
+- **Phase 5 — Sustain** ◑ Docs CI (`docs-ci.yml`: build + internal-link check on
+  every docs PR), a zero-dependency link checker (`npm run check`), and a
+  contributor guide (`/contribute/docs/`). Remaining below.
+
+### Sustain decisions
+
+- **Versioning — deferred to 1.0.** Starlight has no native versioning and the
+  protocol is pre-1.0 (breaking freely). Pinning schema versions in the spec
+  text is sufficient for now; adopt Git-branch snapshots or a plugin when the
+  first stable wire version ships.
+- **Generated references — incremental.** The CLI / admin-API / config tables are
+  currently hand-curated and verified. The durable fix is to generate them from
+  the sources of truth (clap `--help`, the axum route table / an OpenAPI export,
+  and rustdoc) so they can't drift; this is the main outstanding sustain task.
+- **Legacy cutover.** `docs-site.yml` (manual) publishes the Starlight site and
+  preserves the old `architecture/` site under `/architecture-legacy/`. Cutover:
+  (1) merge; (2) run the workflow to verify the live deploy; (3) retire
+  `pages.yml` and switch `docs-site.yml` to deploy on push; (4) eventually delete
+  `architecture/` once nothing links to it (and retarget the doc-update bot, or
+  repoint it to regenerate the *generated* reference pages only).

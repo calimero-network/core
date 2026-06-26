@@ -24,7 +24,7 @@ so its home directory is `data/node1/`, holding `config.toml`, the RocksDB
 Calimero is pre-1.0. These runbooks use commands and on-disk layout that exist
 today; flags and behaviour can change between releases. Test each procedure on a
 non-production node first, and confirm command names against
-[the merod](/core/operate/merod/) and [meroctl](/core/operate/meroctl/)
+[the merod](/operate/merod/) and [meroctl](/operate/meroctl/)
 references for your build.
 </Aside>
 
@@ -32,7 +32,7 @@ references for your build.
 
 Replacing the `merod` binary in place. Because a node that runs an **older**
 binary safely buffers newer-schema deltas in its absorb buffer (see
-[stale-schema deltas](/core/operate/troubleshooting/#stale-schema-deltas-absorbed)),
+[stale-schema deltas](/operate/troubleshooting/#stale-schema-deltas-absorbed)),
 a rolling upgrade across a fleet is tolerated — but each node still needs a
 clean stop/replace/restart.
 
@@ -154,7 +154,7 @@ gentlest to most forceful.
 <Steps>
 
 1. **Confirm divergence, don't guess.** Check the sync counters
-   ([Observability](/core/operate/observability/)) and logs for the context
+   ([Observability](/operate/observability/)) and logs for the context
    before acting. Transient lag after a partition is normal and self-heals.
 
 2. **Force a targeted sync.** This is the first, non-destructive lever:
@@ -255,10 +255,10 @@ The full key-rotation lifecycle (generating the new key, registering it,
 retiring the old one, and the per-group encryption-key handling that runs on
 eviction / self-purge for TEE fleet nodes) is broader than a single command and
 deployment-specific. Treat `signing-key register` as the registration step only,
-and consult [Governance](/core/protocol/governance/) and
-[Identities](/core/protocol/identities/) for the rotation model before rotating
+and consult [Governance](/protocol/governance/) and
+[Identities](/protocol/identities/) for the rotation model before rotating
 production keys.
 </Aside>
 
-<LinkCard title="Membership & governance" href="/core/protocol/governance/"
+<LinkCard title="Membership & governance" href="/protocol/governance/"
   description="How joins, leaves, roles, and key registration are recorded." />

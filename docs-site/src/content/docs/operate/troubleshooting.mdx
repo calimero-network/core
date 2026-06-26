@@ -26,7 +26,7 @@ protocol chapter that explains the underlying mechanism.
 | `governance_pending_queue_depth` grows without draining | Deltas buffered awaiting the governance op that authorises their author | Ensure the governance DAG syncs; check `governance_drain_outcomes_total`. See [context won't sync](#context-wont-sync). |
 | Application or state references a blob that won't load | The blob hasn't been fetched from any peer holding it | Confirm a peer has the blob; retry the operation. See [blob fetch fails](#blob-fetch-fails). |
 | `sync_buffer_drops_total` increments | Incoming deltas outpace apply during a snapshot transfer | Re-sync to backfill dropped deltas; investigate apply/storage latency. |
-| `sync_verification_failures_total` non-zero | Post-snapshot state-hash mismatch — corruption or non-determinism | Treat as urgent; see the [recovery runbook](/core/operate/runbooks/). |
+| `sync_verification_failures_total` non-zero | Post-snapshot state-hash mismatch — corruption or non-determinism | Treat as urgent; see the [recovery runbook](/operate/runbooks/). |
 
 ---
 
@@ -59,7 +59,7 @@ go/no-go. `meroctl --node node1 network status` dumps the full swarm picture
 (listen/external addresses, relay, rendezvous, AutoNAT, DCUtR).
 </Aside>
 
-<LinkCard title="Networking & the Wire Protocol" href="/core/protocol/networking/"
+<LinkCard title="Networking & the Wire Protocol" href="/protocol/networking/"
   description="Swarm, discovery, NAT traversal, and the stream protocol." />
 
 ---
@@ -108,13 +108,13 @@ A persistent `scope_root` mismatch that the reconciler cannot close on its own
 (e.g. `sync_verification_failures_total` incrementing, or
 `sync_protocol_selections_total{protocol="Snapshot"}` climbing without
 resolution) indicates real divergence, not transient lag. Follow the
-[recover-a-context runbook](/core/operate/runbooks/) to force a clean resync.
+[recover-a-context runbook](/operate/runbooks/) to force a clean resync.
 </Aside>
 
 <CardGrid>
-<LinkCard title="Sync & Convergence" href="/core/protocol/sync/"
+<LinkCard title="Sync & Convergence" href="/protocol/sync/"
   description="Protocol selection, reconciliation, and root-hash convergence." />
-<LinkCard title="Governance" href="/core/protocol/governance/"
+<LinkCard title="Governance" href="/protocol/governance/"
   description="The governance DAG, heartbeats, and authorisation." />
 </CardGrid>
 
@@ -148,7 +148,7 @@ behaviour (no benign signal) and keep working for all other cases — so a mixed
 fleet during a rollout is expected to function.
 </Aside>
 
-<LinkCard title="The Receive & Apply Path" href="/core/protocol/receive-path/"
+<LinkCard title="The Receive & Apply Path" href="/protocol/receive-path/"
   description="How materialisation and apply work on the receiving node." />
 
 ---
@@ -173,9 +173,9 @@ read the newer schema.
 
 **Fix: upgrade the node binary.** Until then the context's newer-schema state
 stays buffered rather than lost. See the
-[upgrade runbook](/core/operate/runbooks/).
+[upgrade runbook](/operate/runbooks/).
 
-<LinkCard title="Application Upgrades & Migration" href="/core/protocol/upgrades/"
+<LinkCard title="Application Upgrades & Migration" href="/protocol/upgrades/"
   description="Schema versioning and zero-downtime migration." />
 
 ---
@@ -205,7 +205,7 @@ meroctl --node node1 blob list
 meroctl --node node1 blob get <blob_id>
 ```
 
-<LinkCard title="Blob Transport" href="/core/protocol/blobs/"
+<LinkCard title="Blob Transport" href="/protocol/blobs/"
   description="Content addressing, blob streaming, and the blob cache." />
 
 ---
@@ -213,6 +213,6 @@ meroctl --node node1 blob get <blob_id>
 <Aside type="tip">
 When a symptom is a state-divergence or sync bug rather than a config mistake,
 prefer **instrumentation over guessing**: confirm the diagnosis against the
-`/metrics` counters and `tracing` logs ([Observability](/core/operate/observability/))
+`/metrics` counters and `tracing` logs ([Observability](/operate/observability/))
 before changing anything.
 </Aside>

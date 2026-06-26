@@ -1,0 +1,99 @@
+---
+title: Writing Documentation
+description: How the Calimero docs site is structured, built, and contributed to.
+sidebar:
+  order: 4
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Steps, Aside, LinkCard } from '@astrojs/starlight/components';
+
+The documentation you're reading is an [Astro Starlight](https://starlight.astro.build/)
+site under `docs-site/`. It is intentionally **separate from `architecture/`** —
+the legacy hand-built site and its per-PR auto-update bot only touch
+`architecture/`, so authored content here is never clobbered.
+
+## Run it locally
+
+<Steps>
+
+1. Install and start the dev server:
+
+   ```sh
+   cd docs-site
+   npm install
+   npm run dev          # http://localhost:4321/core/
+   ```
+
+2. Before pushing, build and validate links exactly as CI does:
+
+   ```sh
+   npm run check        # astro build + internal link check
+   ```
+
+</Steps>
+
+A GitHub Action (`docs-ci.yml`) runs `npm run check` on every PR that touches
+`docs-site/**`, so a broken build or a dead internal link fails the PR.
+
+## How content is organized
+
+Pages live in `src/content/docs/` as Markdown/MDX, split by **audience track**,
+and within a track by [Diátaxis](https://diataxis.fr/) mode (tutorial / how-to /
+reference / explanation):
+
+| Track | Directory | For |
+| --- | --- | --- |
+| Build | `build/` | App developers |
+| Operate | `operate/` | Node operators |
+| Protocol | `protocol/` | Reimplementers (concepts + normative spec) |
+| Contribute | `contribute/` | Core developers |
+
+The sidebar is generated from these directories (`astro.config.mjs`), ordered by
+each page's `sidebar.order` frontmatter.
+
+## Conventions
+
+- **Frontmatter** carries `title`, `description`, `sidebar.order`, and a status
+  `sidebar.badge` (`Draft` while content is being verified).
+- **One mode per page.** A tutorial promises an outcome and doesn't branch; a
+  reference is exhaustive and doesn't editorialize. Don't mix them.
+- **Ground claims in code.** CLI flags, endpoints, config keys, macros, and byte
+  layouts must match the source. If you can't confirm something, flag it with a
+  `:::caution` saying exactly what to check rather than guessing.
+- **Normative requirements** (protocol spec) go in a `:::caution[Normative]`
+  callout using RFC 2119 wording (MUST / SHOULD / MAY).
+- **Internal links** are root-absolute without the base, e.g. `/protocol/sync/`
+  (Starlight adds the `/core` base). The link checker enforces this.
+
+## Diagrams
+
+Two kinds, both animated with the bespoke step-cascade engine:
+
+- **Sequence/flow diagrams** are data-driven via the `SeqDiagram` island —
+  author lanes and steps as data, no SVG by hand:
+
+  ```mdx
+  import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+  <SeqDiagram id="d-foo" title="..."
+    lanes={[{ label: 'A', color: '#3fb950' }]}
+    steps={[{ from: 0, to: 0, label: 'do a thing' }]} />
+  ```
+
+- **Structural diagrams** are hand-authored SVG kept in
+  `src/components/diagrams/*.astro` (raw SVG is first-class in Astro components,
+  but breaks inside MDX), and referenced like any component.
+
+<Aside type="tip">
+Don't inline raw `<svg>` directly in an `.mdx` file — its indentation flips MDX
+into markdown-paragraph mode and the build fails. Put it in an `.astro` diagram
+component instead.
+</Aside>
+
+## Where to start
+
+<LinkCard title="Contributor architecture orientation" href="/contribute/architecture/" />
+<LinkCard title="Development workflow" href="/contribute/development/" />
