@@ -1262,8 +1262,8 @@ pub struct TeeVerifyQuoteRequest {
     pub quote_b64: String,
     /// Client-provided nonce that should match report_data[0..32] (64 hex chars = 32 bytes)
     pub nonce: String,
-    /// Optional expected application hash that should match report_data[32..64] (64 hex chars = 32 bytes)
-    pub expected_application_hash: Option<String>,
+    /// Expected application hash that should match report_data[32..64] (64 hex chars = 32 bytes)
+    pub expected_application_hash: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1273,8 +1273,8 @@ pub struct TeeVerifyQuoteResponseData {
     pub quote_verified: bool,
     /// Whether the nonce matches report_data[0..32]
     pub nonce_verified: bool,
-    /// Whether the application hash matches report_data[32..64] (if provided)
-    pub application_hash_verified: Option<bool>,
+    /// Whether the application hash matches report_data[32..64]
+    pub application_hash_verified: bool,
     /// Parsed quote structure
     pub quote: Quote,
 }
@@ -1454,8 +1454,8 @@ impl Validate for TeeVerifyQuoteRequest {
             errors.push(e);
         }
 
-        // Expected application hash must be exactly 64 hex characters (32 bytes) if provided
-        if let Some(e) = validate_optional_hex_string(
+        // Expected application hash must be exactly 64 hex characters (32 bytes)
+        if let Some(e) = validate_hex_string(
             &self.expected_application_hash,
             "expected_application_hash",
             32,
