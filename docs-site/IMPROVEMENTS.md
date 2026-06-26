@@ -7,7 +7,7 @@ polished product. Grouped by theme; check items off as they land. See
 ## A · Visual design & theme
 - [x] 1. Add a Calimero logo in the header + a favicon.
 - [ ] 2. Generate per-page social/OG images for link previews.
-- [x] 3. Add a custom 404 page (splash) with track links.
+- [x] 3. 404 page — use Starlight's themed default (a custom content/`src/pages` 404 collides with Starlight's injected `/404` route and warns).
 - [ ] 4. Lock a modular type scale and apply it consistently.
 - [ ] 5. Replace remaining card-heavy patterns with dividers + whitespace.
 - [ ] 6. Add a subtle, uncluttered hero treatment on the landing.
