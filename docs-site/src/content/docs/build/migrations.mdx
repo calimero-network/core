@@ -167,6 +167,36 @@ the context will diverge.
   migration for you.
 </Aside>
 
+## Authored / identity-gated data migrates per-owner
+
+A whole-root `#[app::migrate]` reshapes the convergent parts of your state, but it
+**does not** convert `AuthoredMap` / `AuthoredVector` entries. Those are signed
+**per-owner**: only the owner's identity can re-stamp and re-sign them, so the root
+migration — which runs unsigned in merge mode on every node — cannot touch them.
+They keep their old schema until each owner upgrades their own entries.
+
+To make that one tap, `#[app::state(version = N)]` auto-generates two extra exports
+whenever your state declares at least one identity-gated collection:
+
+| Export | Kind | What it does |
+|--------|------|--------------|
+| `migrate_my_entries` | signed RPC | Re-writes every entry the **caller owns** that is still below the target schema, routing through the owner-driven convert (re-stamps + re-signs). Returns a `MigrateMyEntriesSummary { converted, remaining }`. |
+| `count_my_pending` | read-only | Tallies the caller's still-stale owned entries without writing — drives the prompt below. |
+
+`SharedStorage` is deliberately **excluded** from this sweep: it is an admin-rotated
+writer-set with a different conversion model, not per-owner signed data.
+
+<Aside type="caution" title="The root migrate does not finish the job">
+  After deploying v2, do not assume every entry is on the new schema. Each owner's
+  `AuthoredMap` / `AuthoredVector` entries stay at the old schema until **they**
+  call `migrate_my_entries`. Surface `count_my_pending` in your app and prompt
+  users with a non-zero count to run the one-tap migrate; re-offer "finish" until
+  the summary's `remaining` reaches `0`.
+</Aside>
+
+<LinkCard title="Permissioned storage" href="/build/permissioned-storage/"
+  description="AuthoredMap / AuthoredVector ownership, SharedStorage, and the identity-gated write model." />
+
 ## Deploy across a group
 
 A migration is shipped as part of an application version, then rolled out to every

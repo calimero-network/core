@@ -24,6 +24,7 @@ protocol chapter that explains the underlying mechanism.
 | Application or state references a blob that won't load | The blob hasn't been fetched from any peer holding it | Confirm a peer has the blob; retry the operation. See [blob fetch fails](#blob-fetch-fails). |
 | `sync_buffer_drops_total` increments | Incoming deltas outpace apply during a snapshot transfer | Re-sync to backfill dropped deltas; investigate apply/storage latency. |
 | `sync_verification_failures_total` non-zero | Post-snapshot state-hash mismatch — corruption or non-determinism | Treat as urgent; see the [recovery runbook](/operate/runbooks/). |
+| Fresh node's snapshot bootstrap retries forever | Bootstrapping against a continuously-written ("hot") peer whose root keeps moving | Bootstrap against a quieter peer/replica, or reduce writes during initial sync. See [bootstrap never completes](#bootstrap-never-completes-against-a-busy-peer). |
 
 ---
 
@@ -204,6 +205,30 @@ meroctl --node node1 blob get <blob_id>
 
 <LinkCard title="Blob Transport" href="/protocol/blobs/"
   description="Content addressing, blob streaming, and the blob cache." />
+
+---
+
+## Bootstrap never completes against a busy peer
+
+**Symptom.** A fresh node bootstrapping a context via **snapshot** against a
+continuously-written ("hot") peer never finishes — it retries the transfer
+indefinitely and the snapshot is repeatedly discarded.
+
+**Cause.** A snapshot is taken against a fixed **boundary root hash**. The
+responder re-validates that `context.root_hash == boundary_root_hash` **twice**:
+once when it accepts the request, and again **after generating each page**. Any
+write that lands on the source peer mid-transfer moves its root hash, so the
+post-generation recheck fails and the responder returns `InvalidBoundary`,
+throwing away the in-flight snapshot. On a peer that is written faster than a full
+snapshot can stream, every attempt races a new write and loses.
+
+**Fix.** Source the bootstrap snapshot from a **quieter** peer or replica, or
+reduce the write rate on the source peer during the initial sync. A read-only /
+TEE replica that does not take local writes makes a stable snapshot source whose
+root hash holds still for the duration of the transfer.
+
+<LinkCard title="Sync & Convergence" href="/protocol/sync/"
+  description="Snapshot bootstrap, boundary validation, and protocol selection." />
 
 ---
 

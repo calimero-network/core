@@ -33,6 +33,39 @@ Subscriptions map directly onto scopes, so a node only hears about what it belon
 
 Gossip's mesh is **membership-biased**: peers known to be members are preferred when forming the mesh, while unknown peers are never penalized — so a healthy cluster stays well-connected without excluding newcomers during cold start.
 
+## Gossipsub mesh tuning and peer scoring
+
+The gossipsub behaviour is configured for Calimero's reality — small, governance-gated clusters — not the large permissionless swarms libp2p's defaults assume. Three deliberate departures from those defaults are worth understanding.
+
+### Mesh sizing for small clusters
+
+The mesh water marks are tuned for clusters of roughly 2–20 peers. libp2p's defaults assume larger swarms, so in (say) a 3-node cluster the default `mesh_n_low=5` is permanently unreachable: every heartbeat logs `Mesh low` and re-runs peer selection for no candidates. Matching the water marks to the expected cluster size keeps the mesh at steady state.
+
+| Parameter | Calimero | libp2p default |
+| --- | --- | --- |
+| `mesh_n_low` | `2` | `5` |
+| `mesh_n` | `4` | `6` |
+| `mesh_n_high` | `8` | `12` |
+| `mesh_outbound_min` | `1` | `2` |
+
+`mesh_outbound_min=1` deliberately drops libp2p's default of `2`. In a large public swarm that default is the standard defence against an inbound-only Sybil cluster monopolising a node's mesh. Calimero topics are admission-gated by signed governance membership — a non-member can subscribe at the transport but their messages are rejected at the governance/cryptographic layer — so the Sybil-via-subscription vector that motivates the default isn't load-bearing here. (libp2p also enforces the invariant `mesh_outbound_min ≤ mesh_n_low / 2`, so with `mesh_n_low=2` the only legal value is `1`.)
+
+`mesh_n_low` is also a coupling point: the governance-broadcast readiness gate reads the same `GOSSIPSUB_MESH_N_LOW` constant as the upper bound on how many subscribers a publish requires (`required = min(GOSSIPSUB_MESH_N_LOW, known_subscribers)`). The two are intentionally driven from one source of truth — a mismatch would either reject healthy publishes or admit them on an unhealthy mesh.
+
+### `flood_publish`: fan out to every subscriber
+
+With `flood_publish=true`, calling `publish()` fans the message out to **every** subscribed peer, not just the grafted mesh peers. For Calimero's small topics this is cheap, and it removes the cold-start window where the mesh hasn't formed yet and a freshly-created delta would simply drop. It is safe only because every topic is governance-gated: bypassing the mesh also bypasses gossipsub's per-peer scoring and prune-backoff on the publish path, but a non-member's forwarded or published messages are rejected at the governance layer before they can influence application state, so scoring-based abuse mitigation isn't load-bearing on this path.
+
+### Cold-start-safe peer scoring
+
+Application-specific peer scoring biases mesh maintenance toward verified members, but it is configured so it can only ever *prefer* a peer, never *exclude* one:
+
+- Only `app_specific_weight` contributes to a peer's score. Every traffic- and behaviour-dependent weight — per-topic delivery, IP-colocation, behaviour penalty, slow-peer — is zeroed, so the score reflects verified-membership knowledge and nothing else.
+- The node only ever pushes **non-negative** app scores: it boosts authenticated namespace/group members and leaves unknown peers at exactly `0`.
+- Every gating threshold is `≤ 0` — gossip `-10`, publish `-50`, graylist `-80`.
+
+An unknown peer therefore sits at score `0`, above all three cutoffs, and is never graylisted for being unverified. Scoring tiers verified members higher for mesh slots without ever penalizing a newcomer during cold start.
+
 ## The message catalog
 
 All messages are **Borsh**-encoded (compact, deterministic binary). They fall into the two channels:

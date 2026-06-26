@@ -93,6 +93,12 @@ discover others registered there. This works across NATs and the internet where
 mDNS cannot. Nodes act as rendezvous **clients**, registering in the configured
 namespace and periodically querying for peers.
 
+Beyond the configured global namespace, a node also registers and discovers
+under a separate key *per overlay it follows*, so discovery returns only the
+peers it actually collaborates with — see
+[Reconnecting after a restart or partition](/operate/networking/#reconnecting-after-a-restart-or-partition)
+below.
+
 ```toml
 [discovery.rendezvous]
 namespace = "/calimero/devnet/global"
@@ -177,6 +183,81 @@ alternative to probing. Both IPv4 and IPv6 are supported.
 Setting the address list without the flag has no effect. The same pairing
 applies to the `merod init --external-address` / `--advertise-address` flags.
 </Aside>
+
+## Reconnecting after a restart or partition
+
+Plain discovery finds peers; three further mechanisms keep a node attached to the
+peers it actually collaborates with and get it reconnected quickly after a
+restart or a network partition.
+
+### Per-overlay, demand-driven rendezvous
+
+Rendezvous is not one global namespace that returns every node on the network. A
+node registers and discovers under **one key per overlay it follows**, derived
+deterministically from the gossipsub topic string:
+
+| Overlay topic | Rendezvous key |
+| --- | --- |
+| `ns/<hex>` | `/calimero/ns/<hex>` |
+| `group/<hex>` | `/calimero/grp/<hex>` |
+| `<context-id>` | `/calimero/ctx/<id>` |
+
+Because the key is derived from the topic, a registering member and a discovering
+peer that hold the same id compute the identical key with no extra coordination,
+and `discover` returns only co-members of that exact namespace, group, or context
+— relevant peers by construction.
+
+This per-overlay discovery is **demand-driven**: each tick, only overlays with
+**zero connected subscribers** are queried (a topic that already has a connected
+co-member can sync through it). The per-tick fan-out is bounded at
+`RENDEZVOUS_DISCOVER_BUDGET = 8` keys, and a rotating cursor advances across ticks
+so a node belonging to many overlays eventually covers every under-connected key
+without flooding the server in one pass. In steady state this cost is ≈0; a burst
+only happens right after a restart or partition.
+
+Global discovery in the configured namespace still runs every tick alongside it —
+that is the bootstrap / namespace-join path, used when a node needs to find the
+members of a namespace it does not belong to yet (and so cannot discover
+per-overlay).
+
+### Persistent peer-address cache
+
+A node keeps a persistent cache of the addresses of the peers it collaborates
+with, so a restart doesn't cost it a full discovery round-trip:
+
+- On every `ConnectionEstablished`, the node caches the address it connected on
+  to a node-local datastore key (`calimero-peercch`). Unlike the in-memory
+  discovery address book — which keeps **direct** addresses only — this cache
+  keeps **both direct and relayed-circuit** addresses, because a
+  `/<relay>/p2p-circuit/p2p/<peer>` address stays re-dialable after a restart as
+  long as the peer re-reserves on the same relay, giving NAT'd co-members a fast
+  path too.
+- On startup, the node loads the still-fresh entries and dials them **in parallel
+  with rendezvous rediscovery** (and ahead of it), so a restarted node reconnects
+  to its collaborators immediately rather than waiting a discovery round-trip.
+  Dials are deduped at the swarm level; a stale cached address that fails is
+  dropped and rendezvous supplies a fresh one. The cache only ever accelerates
+  reconnection — it never blocks it.
+
+Bounds:
+
+| Constant | Value | Meaning |
+| --- | --- | --- |
+| `PEER_CACHE_TTL_SECS` | `24h` | entries past this wall-clock age are dropped |
+| `MAX_PEER_CACHE_ENTRIES` | `4096` | hard cap, least-recently-seen evicted |
+| `MAX_ADDRS_PER_PEER` | `4` | addresses kept per peer, newest-first |
+
+### Liveness ping reaping
+
+The always-on `ping` behaviour probes each connection on a fixed interval
+(~15s, 20s timeout). Three consecutive failures (`MAX_PING_FAILURES = 3`)
+force-close the connection; the counter resets on the first success, so only
+*sustained* failure trips it.
+
+This is the **only active detector** for a silently-dead link — a partition with
+no FIN/RST, where the socket looks open but nothing is getting through. Tearing
+the connection down hands off to the reconnection cascade above, so recovery
+happens promptly instead of waiting on an OS-level timeout that may never come.
 
 ## Which discovery for which deployment
 

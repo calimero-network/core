@@ -79,6 +79,59 @@ There are two ways a member stops being a member, and the difference is entirely
 
 Two invariants guard both paths: the scope's **owner** cannot be removed involuntarily and cannot self-leave without first transferring ownership, and a removal that would leave a group with no admin is rejected — the tree can never be orphaned.
 
+## Auto-follow: turning membership into replication
+
+Membership is a row in governance state; it is not, by itself, replicated data. Auto-follow is the mechanism that closes that gap — it is the answer to "I joined the group but no data synced." A member row carries two **auto-follow flags**, and when they are set the node automatically joins the contexts (and, eventually, subgroups) it is already entitled to, so membership turns into an actual replicating context on disk.
+
+The flags are stored per member, per group:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `contexts` | `true` | Auto-join every context registered in this group. |
+| `subgroups` | `false` | Auto-join subgroups this node is entitled to. |
+
+`contexts` defaults to `true` because joining a group implies wanting the group's data — the user's mental model is "I'm in this namespace, I want its contexts." Opting out is an explicit per-member, per-group set-auto-follow operation flipping `contexts` to `false`. `subgroups` defaults to `false` and is currently inert for ordinary roles (it requires an admission op that does not yet exist); the TEE fleet-join path is the one place that sets both flags, via the replica's own self-signed op after admission.
+
+### Event-driven join
+
+Auto-follow is purely event-driven — there is no startup re-scan. When a `ContextRegistered` op applies in a group, the handler asks one question: is this node a member of that group with `auto_follow.contexts = true` (and has it not opted out — see below)? If so, it emits a `JoinContext` for the new context. That single decision point is what keeps a member's replica set in step with the group as new contexts appear.
+
+### Backfill when the flag flips on
+
+Event-driven join only covers contexts that register _after_ the flag is on. To cover contexts that already exist when `auto_follow.contexts` flips to `true`, flipping the flag synthesizes an `AutoFollowSet` event: the handler enumerates the group's existing contexts and joins any it has not already joined. This backfill is a **single pass** capped at `BACKFILL_LIMIT = 1000` contexts. If a group holds more than that at flip-time, the remainder are picked up event-driven as their `ContextRegistered` ops continue to apply, or by re-flipping the flag.
+
+### The fresh-joiner cascade
+
+The implicit trigger is what makes a brand-new member backfill contexts that existed _before_ it joined. The auto-follow handler does not subscribe to `MemberAdded` at all — it subscribes to `AutoFollowSet`. So when a member is added with `auto_follow.contexts` set (the default), the `MemberAdded` apply site synthesizes an `AutoFollowSet` event for that member. This routes a fresh joiner through the exact same backfill cascade as an explicit flag flip, closing the regression where the UI showed group membership but no data synced. The handler short-circuits as "not for self" on every node except the joiner, so the cascade fires exactly once per membership change.
+
+<SeqDiagram
+  id="d-autofollow"
+  title="A fresh joiner backfills pre-existing contexts"
+  lanes={[
+    { label: 'MemberAdded apply', color: '#f0883e' },
+    { label: 'Op-event channel', color: '#a5ff11' },
+    { label: 'Auto-follow handler', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'member row written with auto_follow.contexts = true' },
+    { from: 0, to: 1, label: 'synthesize AutoFollowSet { member = joiner }', color: '#f0883e' },
+    { from: 1, to: 2, label: 'AutoFollowSet delivered' },
+    { from: 2, to: 2, label: 'self? yes → enumerate existing contexts (≤ 1000)' },
+    { from: 2, to: 2, label: 'emit JoinContext for each not-yet-joined', color: '#58a6ff' },
+    { type: 'divider', label: 'future contexts arrive as ContextRegistered → join event-driven' },
+  ]}
+/>
+
+### Inherited members: the anchor rule
+
+A node need not hold a direct member row in a group to auto-follow it. In an Open subgroup, membership flows down by inheritance from an ancestor that granted `CAN_JOIN_OPEN_SUBGROUPS` (the [capability inheritance](/protocol/capability-inheritance/) model). When a node has no direct row in the group, auto-follow walks up the Open-visibility chain to the **anchor** — the nearest ancestor where the node holds a real direct row — and honours _that_ row's `auto_follow.contexts` flag. This is depth-independent: the anchor is always a genuine direct-row member, so its flag is authoritative.
+
+This rule is what lets a root-admitted `ReadOnlyTee` replicate Open-subgroup contexts. The TEE replica holds only a root row, so for every Open subgroup beneath the root the anchor resolves to the namespace root, and the root row's flag drives replication into subgroups where the replica was never explicitly admitted.
+
+### Opting out of a single context
+
+Auto-follow is a group-level intent, but a node can suppress it for one context. Calling `leave_context` writes a node-local `ContextLeftMarker` for `(member, context)` into a local-only column — it is **never synced to peers**. While that marker is present, auto-follow skips the context even though `auto_follow.contexts` is still `true` at the group level, so a later `ContextRegistered` (or backfill) will not silently rejoin it. The marker is cleared only by an explicit user-initiated join request for that context.
+
 ## Roles, capabilities, and the owner
 
 Authority is layered. A member has a **role** for coarse rights, and fine-grained **capabilities** for specific actions; the **owner** is a distinguished identity sitting above roles.

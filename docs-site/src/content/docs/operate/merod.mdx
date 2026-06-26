@@ -98,6 +98,16 @@ merod --node node1 up --auth-mode embedded
   configured.
 </Aside>
 
+<Aside type="note" title="Startup release check (outbound network call)">
+  On roughly **10% of startups** (sampled at random), `merod` makes a
+  best-effort background call to
+  `https://api.github.com/repos/calimero-network/core/releases/latest` to see
+  whether a newer release exists, printing a notice if so. There is **no opt-out
+  flag**, and any failure is silently ignored, so it never blocks startup.
+  Operators in air-gapped, egress-restricted, or privacy-sensitive environments
+  should be aware of this occasional outbound request to GitHub.
+</Aside>
+
 ## kms
 
 KMS (key management service) operations for TEE-enabled nodes.

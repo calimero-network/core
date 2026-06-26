@@ -33,6 +33,15 @@ your scraper at each node's server `listen` address. Every scrape also emits a
 useful when triaging "scraper reaches the node but the body looks empty".
 </Aside>
 
+<Aside type="caution" title="/metrics is always unauthenticated">
+Unlike the admin API, JSON-RPC, WebSocket, and SSE surfaces, `/metrics` is
+mounted **without** the auth guard. It stays open **even when embedded auth is
+enabled** on the same listener — enabling auth does not protect it. Treat the
+metrics endpoint as public on its listener: bind the server to a private
+interface, or firewall `/metrics` so only your scraper can reach it. Do not
+expose it to the public internet.
+</Aside>
+
 <Aside type="caution">
 Counter families export with a `_total` suffix appended by the exporter, while
 gauges and histograms keep their registered name. The tables below show the

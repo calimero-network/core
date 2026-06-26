@@ -47,6 +47,32 @@ admin API is enabled.
 | GET | `/admin-api/is-authed` | Reports whether the caller is authenticated. |
 | GET | `/admin-api/certificate` | Returns the node's TLS/admin certificate. |
 
+### CORS and browser / Tauri clients
+
+The server applies one CORS layer to every mounted route. It allows `Any`
+origin, `Any` request header, the methods `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`OPTIONS`,
+and sets `allow_private_network(true)` so requests from a public-origin page to
+a loopback node pass the browser's private-network preflight.
+
+Because the response uses `Any` origin, `allow_credentials` is **intentionally
+not set** (the two are incompatible per the CORS spec, so enabling it would be a
+no-op for browsers). Cookie/credentialed auth therefore does not work against
+the default configuration; pass tokens via the `Authorization` header instead.
+
+Cross-origin clients (browser SPAs, Tauri webviews) can only read response
+headers that the server explicitly exposes. The layer exposes exactly three:
+
+| Exposed header | Use |
+| --- | --- |
+| `x-auth-error` | Signals the auth-failure reason. A 401 from an expired-but-refreshable token carries `X-Auth-Error: token_expired`. |
+| `x-auth-user` | The authenticated user/key. |
+| `x-auth-permissions` | The caller's resolved permissions. |
+
+To implement transparent refresh-on-401, read `X-Auth-Error` on a 401: if it is
+`token_expired`, refresh the access token and retry; otherwise treat it as a
+hard auth failure. If these headers are not exposed (e.g. behind a proxy that
+strips them), every access-token expiry surfaces as a hard logout instead.
+
 ## JSON-RPC
 
 A single endpoint accepts JSON-RPC 2.0 requests. The `method` field selects the
@@ -103,6 +129,20 @@ Supported `method` values:
 | --- | --- | --- |
 | GET | `/ws` | WebSocket upgrade. Carries `execute`, `subscribe`, and `unsubscribe` messages over the socket. |
 
+When embedded auth is enabled, the auth guard runs at the HTTP **upgrade**
+request, before the socket is established — an unauthenticated upgrade is
+rejected with a 401 and never becomes a WebSocket. The guard resolves the token
+in this order:
+
+1. An `Authorization: Bearer <jwt>` header. If present, it is validated
+   exclusively — even an invalid token here is rejected rather than retried.
+2. Only if no `Authorization` header is present, a `?token=<jwt>` query
+   parameter. This fallback exists because the browser `WebSocket` and
+   `EventSource` APIs cannot set custom headers.
+
+If the `Authorization` header is present, the `?token=` query parameter is
+ignored entirely.
+
 ## Server-Sent Events
 
 | Method | Path | Purpose |
@@ -110,6 +150,33 @@ Supported `method` values:
 | GET | `/sse` | Open an SSE event stream. |
 | GET | `/sse/session/:session_id` | Fetch/attach to an existing SSE session. |
 | POST | `/sse/subscription` | Manage subscriptions for an SSE session. |
+
+### SSE durability and reconnection
+
+The SSE stream uses a **skip-on-disconnect** delivery model: there is no replay
+buffer. Sessions persist (subscriptions and a monotonic event counter survive a
+reconnect), but any event emitted while a client is disconnected is **lost** and
+never redelivered. Event IDs are sequential, so a gap in the IDs a client
+receives is the signal that events were missed.
+
+On connect the response carries two headers for the client to track its session:
+
+| Response header | Meaning |
+| --- | --- |
+| `X-SSE-Session-ID` | The session ID assigned to (or resumed by) this stream. |
+| `X-SSE-Reconnect` | `true` if this connection resumed an existing session, `false` for a fresh one. |
+
+To reconnect, the client sends the `Last-Event-ID` header. Event IDs have the
+format `{session_id}-{n}`; the server parses the `session_id` prefix to restore
+the session. Sessions expire after **24 hours** of inactivity, after which a
+reconnect attempt starts a fresh session. The stream also advertises a retry
+hint of **3000ms** in its initial event.
+
+<Aside type="caution">
+Because missed events are never replayed, consumers must **reconcile state on
+reconnect** (for example, re-query the relevant context/application state)
+rather than assume the event stream is a complete, gap-free log.
+</Aside>
 
 ## Admin API — Applications
 

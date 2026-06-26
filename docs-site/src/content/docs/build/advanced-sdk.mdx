@@ -393,6 +393,28 @@ the still-committed old root and the produced-but-uncommitted new root, so you c
 assert invariants like entity-count parity. The witness it relies on is transient
 — it rides the `Outcome` side-channel and is not part of committed state.
 
+## Multi-service bundles
+
+A bundle is usually one WASM module — the manifest's top-level `wasm` (+ optional
+`abi`). It can instead carry several named modules in a `services` array, each a
+`{name, wasm, abi?}` record. When `services` is present and non-empty it
+**overrides** the single-service fields: the node ignores top-level `wasm` / `abi`
+and installs one blob per service
+(`crates/node/primitives/src/bundle/mod.rs`).
+
+A multi-service application stores those blobs in a `services` map keyed by name, and
+a context runs exactly one of them. Select it with the `--service` flag on context
+create:
+
+```text
+meroctl context create <app_id> --service <name>
+```
+
+At resolve time a `None` selection is only unambiguous for a single-service app or a
+bundle with exactly one service; a true multi-service bundle (more than one entry)
+requires the service name, otherwise the blob cannot be resolved
+(`Application::resolve_service_blob`, `crates/primitives/src/application.rs`).
+
 ## Miscellaneous power facts
 
 A grab-bag of things that are easy to get wrong:

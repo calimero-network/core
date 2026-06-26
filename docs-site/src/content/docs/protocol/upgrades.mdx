@@ -56,6 +56,96 @@ version X but current runtime is Y"`). This gate applies to signed and
 dev-bundle installs, not to a raw `.wasm` install.
 </Aside>
 
+## Bundles, signing & install
+
+An application ships as an **`.mpk` bundle** (Mero Package Kit): a gzip-compressed
+tar archive whose required entry is `manifest.json`, alongside the WASM / ABI /
+migration artifacts that manifest references. The node reads the manifest straight
+out of the archive in memory — it does not trust a filename or extension for
+content. A blob is treated as a bundle when it contains a `manifest.json` entry
+(`crates/node/primitives/src/client/application/bundle.rs`).
+
+### The manifest
+
+`manifest.json` is camelCase JSON:
+
+| Field | Meaning |
+| --- | --- |
+| `version` | manifest-format version |
+| `package` | application package id — the app id; a human label, **not** a security boundary |
+| `appVersion` | the application's own version string |
+| `signerId` | `did:key` of the signing key, the cryptographic update authority (optional in the type; required for a signed bundle) |
+| `minRuntimeVersion` | floor on the node runtime (see the Aside above) |
+| `metadata` | display info — `name`, `description`, `icon`, `tags`, `license` |
+| `interfaces` | declared `exports` / `uses` intents |
+| `wasm` + `abi` | single-service artifacts, each a `{path, hash, size}` record |
+| `services` | named multi-service modules; overrides `wasm` / `abi` when present and non-empty |
+| `migrations` | migration artifacts |
+| `links` | `frontend` / `github` / `docs` URLs |
+| `signature` | the Ed25519 signature object (below) |
+
+`package` and `appVersion` double as on-disk path components (the bundle extracts to
+`applications/{package}/{appVersion}/extracted`), so both are validated against path
+traversal when the manifest is parsed — a `package`, `appVersion`, or artifact path
+that escapes its directory is rejected
+(`crates/node/primitives/src/client/application/bundle.rs`).
+
+### Signing
+
+A signed bundle carries a `signature` object:
+
+```text
+signature = {
+  algorithm: "ed25519",                // exact, case-sensitive
+  publicKey: <base64url, no padding>,  // 32-byte Ed25519 key
+  signature: <base64url, no padding>,  // 64-byte signature
+  signedAt?: <ISO 8601 timestamp>
+}
+```
+
+The signed payload is **not** the raw archive bytes. It is the SHA-256 of the
+canonical manifest:
+
+```text
+payload = SHA-256( JCS(manifest without `signature` and without any `_`-prefixed field) )
+```
+
+The manifest is canonicalized with RFC 8785 (JCS) — lexicographically ordered keys —
+after dropping the `signature` field and **every** underscore-prefixed field
+(transient markers such as `_binary` / `_overwrite` are excluded so they cannot be
+smuggled into the signed view). The SHA-256 of those canonical bytes is the Ed25519
+signing payload (`crates/node/primitives/src/bundle/signature.rs`).
+
+Verification (`verify_manifest_signature`) is strict:
+
+- `algorithm` must equal `"ed25519"` exactly — `"ED25519"` / `"Ed25519"` are rejected.
+- The signature must verify against `publicKey` over that SHA-256 payload.
+- `signerId` must equal the value **derived from** `publicKey`:
+  `did:key:z{base58btc(0xed01 ‖ pubkey)}` — multibase base58btc of the multicodec
+  `0xed01` (ed25519-pub) tag concatenated with the 32-byte key. A `signerId` the
+  public key does not derive to is a mismatch error.
+
+Signing itself is done out of band by the dedicated **`mero-sign`** CLI (a separate
+workspace tool under `tools/mero-sign`), not by the node or `meroctl` — the node only
+*verifies*. `mero-sign` sets `signerId` from the key, canonicalizes, signs the
+payload, and writes the `signature` object back into the manifest.
+
+### Install trust split
+
+Where a bundle comes from decides whether a signature is mandatory:
+
+| Path | Source | Signature |
+| --- | --- | --- |
+| `install-application` | registry / URL / stored `.mpk` blob | **required** — install bails on a missing or invalid signature (`install_verified_bundle`) |
+| `install-dev-application` | a local filesystem path | **optional** — verified if present; admitted as an unsigned dev build if absent (`install_dev_bundle`) |
+
+An unsigned dev bundle is given the synthetic signer `"dev:unsigned"` and a zero
+bundle hash, so it never collides with a real `did:key` update authority
+(`extract_manifest_allow_unsigned`,
+`crates/node/primitives/src/client/application/bundle.rs`). A signature that **is**
+present is verified on either path — an invalid one is always rejected. Either way the
+`minRuntimeVersion` floor documented above is still enforced.
+
 ## What a migration is
 
 A migration is needed only when **old serialized state can no longer be read as the
