@@ -2,6 +2,7 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use ed25519_dalek::{SecretKey, SigningKey};
 use ring::aead;
 use thiserror::Error;
+use zeroize::Zeroize;
 
 pub const NONCE_LEN: usize = 12;
 
@@ -16,9 +17,21 @@ pub enum SharedKeyError {
     InvalidPublicKey,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone)]
 pub struct SharedKey {
     key: SecretKey,
+}
+
+impl std::fmt::Debug for SharedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedKey").field("key", &"[redacted]").finish()
+    }
+}
+
+impl Drop for SharedKey {
+    fn drop(&mut self) {
+        self.key.zeroize();
+    }
 }
 
 impl SharedKey {
