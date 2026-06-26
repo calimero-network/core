@@ -388,9 +388,14 @@ impl<'a> NamespaceRepository<'a> {
         )?);
 
         let mut dfs_preorder: Vec<ContextGroupId> = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(*root);
         let mut stack = vec![*root];
         while let Some(g) = stack.pop() {
             for child in self.list_children(&g)? {
+                if !visited.insert(child) {
+                    continue;
+                }
                 dfs_preorder.push(child);
                 stack.push(child);
                 contexts.extend(super::super::enumerate_group_contexts(
