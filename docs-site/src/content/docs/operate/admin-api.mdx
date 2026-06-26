@@ -10,7 +10,8 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
-The node's HTTP server (default bind `/ip4/127.0.0.1/tcp/2528`) exposes four
+The node's HTTP server (default bind `/ip4/127.0.0.1/tcp/2528` and
+`/ip6/::1/tcp/2528`) exposes four
 surfaces: a REST-style **admin API**, a **JSON-RPC** endpoint for app
 execution, a **WebSocket** stream, and a **Server-Sent Events** stream. Every
 path below is taken directly from the axum routers in the server crate.

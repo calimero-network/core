@@ -1,0 +1,218 @@
+---
+title: Troubleshooting
+description: Problem-cause-fix guide for the common merod failure modes — peer connectivity, sync divergence, undelivered keys, stale-schema deltas, and blob fetch.
+sidebar:
+  order: 8
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+This page maps the failure modes operators actually hit back to their cause in
+the protocol, and to the metric or log that confirms the diagnosis. Start with
+the table, then read the section for your symptom. Each section links the
+protocol chapter that explains the underlying mechanism.
+
+## Problem → cause → fix
+
+| Symptom | Likely cause | First fix |
+| --- | --- | --- |
+| Peers never connect; `meroctl peers` returns 0 | NAT / firewall blocks the swarm port; no reachable bootstrap nodes | Open the swarm port, set `[discovery] external_address`, or seed `[bootstrap] nodes`. See [peers won't connect](#peers-wont-connect). |
+| Context stuck behind; root hash differs from peers | Divergence after a partition or missed gossip; governance not yet applied | Let the reconciler run, or force a sync (`context sync`). See [context won't sync](#context-wont-sync). |
+| Sync logs show `NotMaterialized` for a peer | That peer is a valid member but hasn't materialised the context locally yet | Benign — no action. See [NotMaterialized](#key-not-delivered--notmaterialized). |
+| Deltas pile up but never apply | A peer is sending entities under a **newer schema** than this binary can read | Upgrade the node binary; absorbed deltas drain after upgrade. See [stale-schema deltas](#stale-schema-deltas-absorbed). |
+| `governance_pending_queue_depth` grows without draining | Deltas buffered awaiting the governance op that authorises their author | Ensure the governance DAG syncs; check `governance_drain_outcomes_total`. See [context won't sync](#context-wont-sync). |
+| Application or state references a blob that won't load | The blob hasn't been fetched from any peer holding it | Confirm a peer has the blob; retry the operation. See [blob fetch fails](#blob-fetch-fails). |
+| `sync_buffer_drops_total` increments | Incoming deltas outpace apply during a snapshot transfer | Re-sync to backfill dropped deltas; investigate apply/storage latency. |
+| `sync_verification_failures_total` non-zero | Post-snapshot state-hash mismatch — corruption or non-determinism | Treat as urgent; see the [recovery runbook](/core/operate/runbooks/). |
+
+---
+
+## Peers won't connect
+
+A node enters the network through its **libp2p swarm** listener (default port
+`2428`, TCP + QUIC) and a set of bootstrap / discovery mechanisms. Connectivity
+fails when none of those can reach a peer.
+
+Checklist:
+
+1. **Swarm port reachable.** The swarm `listen` addresses
+   (`[swarm] listen`) must be reachable by peers. Behind NAT, inbound dials to a
+   private address fail. Confirm with `meroctl network status` (listen /
+   external addresses, relay reservations, AutoNAT result).
+2. **External address advertised.** For static-IP / hosted nodes, set
+   `[discovery] advertise_address = true` and list the public multiaddr in
+   `[discovery] external_address` rather than relying on AutoNAT discovery.
+3. **Bootstrap / discovery present.** A fresh node with empty `[bootstrap]
+   nodes` and no mDNS peers on the LAN has nobody to dial. Seed bootstrap nodes
+   (`merod init --boot-network calimero-dev` or `--boot-nodes <addr>`), or rely
+   on `[discovery] mdns = true` on a shared LAN.
+4. **Relay / hole-punching.** Symmetric NAT may need a relay reservation and
+   DCUtR hole-punching; `network status` shows whether reservations and
+   upgrades succeeded.
+
+<Aside type="tip">
+`meroctl --node node1 peers` returns the connected-peer count — the quickest
+go/no-go. `meroctl --node node1 network status` dumps the full swarm picture
+(listen/external addresses, relay, rendezvous, AutoNAT, DCUtR).
+</Aside>
+
+<LinkCard title="Networking & the Wire Protocol" href="/core/protocol/networking/"
+  description="Swarm, discovery, NAT traversal, and the stream protocol." />
+
+---
+
+## Context won't sync
+
+A context converges when every member agrees on its **root hash**. Group and
+namespace **heartbeats** periodically exchange roots (and DAG heads); a mismatch
+against the signed canonical expected raises a divergence report, and the node's
+**reconciler** drives the context back into agreement.
+
+What happens under the hood:
+
+- **Detection.** A heartbeat (or a signed namespace op) reveals that a
+  context's local root hash differs from the expected `scope_root`. This
+  produces a per-context divergence report.
+- **Reconciliation.** For each divergent context the reconciler picks a sync
+  protocol, pulls the missing operations / deltas from a peer, applies them, and
+  re-checks the post-adoption root hash. Out-of-order deltas whose parents are
+  missing are pulled directly (a parent-pull across mesh peers) rather than
+  waiting for the next heartbeat cycle.
+- **Governance pull.** If the divergence is because this node hasn't yet
+  applied the **governance** that authorises an incoming author, the offending
+  deltas sit in the governance-pending buffer
+  (`governance_pending_queue_depth`) and drain once the governance DAG catches
+  up. A monotonically growing queue depth means the governance side hasn't
+  converged yet.
+
+How to nudge it:
+
+```sh
+# Force a sync for one context...
+meroctl --node node1 context sync --context <context_id>
+
+# ...or for every context the node hosts.
+meroctl --node node1 context sync --all
+```
+
+```sh
+# Re-publish / sync a group's state from local (drives governance convergence).
+meroctl --node node1 group sync <group_id>
+```
+
+<Aside type="caution">
+A persistent `scope_root` mismatch that the reconciler cannot close on its own
+(e.g. `sync_verification_failures_total` incrementing, or
+`sync_protocol_selections_total{protocol="Snapshot"}` climbing without
+resolution) indicates real divergence, not transient lag. Follow the
+[recover-a-context runbook](/core/operate/runbooks/) to force a clean resync.
+</Aside>
+
+<CardGrid>
+<LinkCard title="Sync & Convergence" href="/core/protocol/sync/"
+  description="Protocol selection, reconciliation, and root-hash convergence." />
+<LinkCard title="Governance" href="/core/protocol/governance/"
+  description="The governance DAG, heartbeats, and authorisation." />
+</CardGrid>
+
+---
+
+## Key not delivered / NotMaterialized
+
+During sync, a peer may answer with the typed **`NotMaterialized`** signal. It
+means: *"I am a valid member of this context's group, but I have no local entry
+for it yet"* — for example the peer opted out of auto-follow, or its
+`JoinContext` is still in flight.
+
+This is **benign by design**. The initiator must not count it as a failure, must
+not apply backoff, and simply drops that peer for the round and continues. It
+exists precisely so that namespace-fallback peer selection picking a
+non-following peer does not cascade into long exponential backoff.
+
+What to actually check when state/keys seem undelivered:
+
+1. Confirm the joining node has completed `join-context` / `namespace join` —
+   until then it legitimately has no materialised context.
+2. Confirm at least one peer that **has** materialised the context is connected
+   (`meroctl peers`).
+3. If a node was recently invited, give discovery + the next sync round time to
+   land before assuming a fault.
+
+<Aside type="note">
+`NotMaterialized` is a wire-level enum variant appended to the sync protocol; it
+requires a coordinated network upgrade. Pre-upgrade peers fall back to the older
+behaviour (no benign signal) and keep working for all other cases — so a mixed
+fleet during a rollout is expected to function.
+</Aside>
+
+<LinkCard title="The Receive & Apply Path" href="/core/protocol/receive-path/"
+  description="How materialisation and apply work on the receiving node." />
+
+---
+
+## Stale-schema deltas absorbed
+
+When a node running an **older binary** receives a delta, leaf, or snapshot
+entity encoded under a **newer schema version** it cannot decode, it does not
+drop the data and does not store unreadable bytes. Instead it buffers the raw
+record **verbatim into the absorb buffer** (a dedicated datastore column), keyed
+by context, producing app key, and delta id (so a re-delivery overwrites rather
+than duplicates).
+
+Confirm it from metrics:
+
+- `delta_outcomes_total{outcome="absorbed_leaf_future_schema"}`
+- `delta_outcomes_total{outcome="absorbed_snapshot_entity_future_schema"}`
+
+…incrementing means this node is behind a peer's schema. The buffered records
+are **drained automatically once the node is upgraded** to a binary that can
+read the newer schema.
+
+**Fix: upgrade the node binary.** Until then the context's newer-schema state
+stays buffered rather than lost. See the
+[upgrade runbook](/core/operate/runbooks/).
+
+<LinkCard title="Application Upgrades & Migration" href="/core/protocol/upgrades/"
+  description="Schema versioning and zero-downtime migration." />
+
+---
+
+## Blob fetch fails
+
+Large values are stored as content-addressed **blobs**, fetched on demand from
+peers that hold them. A fetch fails when no connected peer can serve the blob —
+the sync layer logs `blob not found` for the requested `blob_id`.
+
+Checklist:
+
+1. **A holder is reachable.** At least one connected peer must actually have the
+   blob. If the only holder is offline or unreachable, the fetch cannot
+   complete.
+2. **Blob cache pressure.** Heavy eviction
+   (`blob_cache_evictions_*_total` climbing) can mean blobs are evicted before
+   use under memory/age/count caps; inspect `blob_cache_size_bytes` and
+   `blob_cache_entries`.
+3. **Retry after sync.** A blob referenced by freshly-synced state may not have
+   been transferred yet; re-running the operation after the context finishes
+   syncing usually resolves it.
+
+```sh
+# Inspect / fetch a blob directly to confirm availability.
+meroctl --node node1 blob list
+meroctl --node node1 blob get <blob_id>
+```
+
+<LinkCard title="Blob Transport" href="/core/protocol/blobs/"
+  description="Content addressing, blob streaming, and the blob cache." />
+
+---
+
+<Aside type="tip">
+When a symptom is a state-divergence or sync bug rather than a config mistake,
+prefer **instrumentation over guessing**: confirm the diagnosis against the
+`/metrics` counters and `tracing` logs ([Observability](/core/operate/observability/))
+before changing anything.
+</Aside>

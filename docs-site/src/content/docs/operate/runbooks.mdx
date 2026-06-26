@@ -1,0 +1,264 @@
+---
+title: Runbooks
+description: Step-by-step operational procedures — upgrade a node binary, back up and restore the datastore, recover a context from divergence, and leave safely.
+sidebar:
+  order: 9
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Steps, Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
+
+Concrete, ordered procedures for the operations you run on a live deployment.
+They assume a node started as:
+
+```sh
+merod --home data/ --node node1 run
+```
+
+so its home directory is `data/node1/`, holding `config.toml`, the RocksDB
+**datastore** (`data/node1/data/`), and the **blob store** (`data/node1/blobs/`).
+
+<Aside type="caution">
+Calimero is pre-1.0. These runbooks use commands and on-disk layout that exist
+today; flags and behaviour can change between releases. Test each procedure on a
+non-production node first, and confirm command names against
+[the merod](/core/operate/merod/) and [meroctl](/core/operate/meroctl/)
+references for your build.
+</Aside>
+
+## Upgrade a node binary
+
+Replacing the `merod` binary in place. Because a node that runs an **older**
+binary safely buffers newer-schema deltas in its absorb buffer (see
+[stale-schema deltas](/core/operate/troubleshooting/#stale-schema-deltas-absorbed)),
+a rolling upgrade across a fleet is tolerated — but each node still needs a
+clean stop/replace/restart.
+
+<Steps>
+
+1. **Confirm the running build.** Scrape `merod_build_info` (the constant-`1`
+   beacon carries `version` and `peer_id`) so you know what you are replacing:
+
+   ```sh
+   curl -s http://127.0.0.1:2528/metrics | grep merod_build_info
+   ```
+
+2. **Quiesce client traffic.** Stop new JSON-RPC / admin calls against this node
+   at your load balancer or proxy. There is no in-process "drain" command;
+   draining means cutting client traffic upstream and letting in-flight syncs
+   settle.
+
+   <Aside type="caution">
+   `merod` has no documented graceful-drain subcommand. "Drain" here is an
+   operator action (stop sending it work), not a CLI call. Watch
+   `sync_sessions_active` and `governance_pending_queue_depth` settle before
+   stopping.
+   </Aside>
+
+3. **Stop the node.** Send `SIGINT`/`SIGTERM` to the `merod` process (e.g.
+   `Ctrl-C`, `systemctl stop`, or `docker stop`) and wait for it to exit. Do not
+   `kill -9` unless it hangs — an abrupt kill risks leaving RocksDB to recover
+   on next start.
+
+4. **Replace the binary.** Install the new `merod` (and `meroctl`) over the old
+   one. The home directory is untouched.
+
+5. **Restart.** Start the node with the **same** home and node name:
+
+   ```sh
+   merod --home data/ --node node1 run
+   ```
+
+6. **Verify.** Confirm the new version is live and the node re-converges:
+
+   ```sh
+   curl -s http://127.0.0.1:2528/metrics | grep merod_build_info
+   meroctl --node node1 peers
+   ```
+
+   Watch `governance_pending_queue_depth` and any absorbed-delta counters drain
+   toward zero — an upgraded reader can now decode what the old binary buffered.
+
+</Steps>
+
+## Back up & restore the datastore
+
+The datastore (RocksDB) and blob store are plain directories under the node
+home. A consistent backup is a **cold copy** taken while the node is stopped.
+
+<Aside type="caution">
+There is no dedicated `merod` backup/restore subcommand. The procedure below is
+a filesystem-level copy. Copying a **running** RocksDB directory can capture a
+torn, unrecoverable state — always stop the node first (or use a
+filesystem/volume snapshot that is atomic).
+</Aside>
+
+### Back up
+
+<Steps>
+
+1. **Stop the node** (`SIGINT`/`SIGTERM`, wait for clean exit) so RocksDB
+   flushes and releases its lock.
+
+2. **Copy the whole node home.** This captures config, identity keypair,
+   datastore, and blobs together — they must be restored as a set:
+
+   ```sh
+   tar czf node1-backup-$(date +%Y%m%d).tar.gz -C data node1
+   ```
+
+3. **Restart the node** and confirm it is healthy (`meroctl --node node1 peers`).
+
+</Steps>
+
+### Restore
+
+<Steps>
+
+1. **Stop the node** if it is running.
+
+2. **Replace the home directory** with the backed-up copy (keep the original
+   aside until you have verified the restore):
+
+   ```sh
+   mv data/node1 data/node1.broken
+   tar xzf node1-backup-YYYYMMDD.tar.gz -C data
+   ```
+
+3. **Restart** with the same `--home` / `--node`:
+
+   ```sh
+   merod --home data/ --node node1 run
+   ```
+
+4. **Let it re-converge.** A restored node may be behind the live group; the
+   reconciler and sync will catch it up from peers once it reconnects.
+
+</Steps>
+
+<Aside type="note">
+The node's **identity keypair** lives in `config.toml` (`[identity]`). Restoring
+the whole home preserves the `peer_id`, so the node rejoins as itself. Restoring
+only the datastore while regenerating identity would make it a *different* peer.
+</Aside>
+
+## Recover a context from divergence
+
+Use this when a context will not converge on its own — a `scope_root` / root-hash
+mismatch the reconciler keeps reporting, `sync_verification_failures_total`
+incrementing, or snapshot selection climbing without resolution. Escalate from
+gentlest to most forceful.
+
+<Steps>
+
+1. **Confirm divergence, don't guess.** Check the sync counters
+   ([Observability](/core/operate/observability/)) and logs for the context
+   before acting. Transient lag after a partition is normal and self-heals.
+
+2. **Force a targeted sync.** This is the first, non-destructive lever:
+
+   ```sh
+   meroctl --node node1 context sync --context <context_id>
+   ```
+
+3. **Drive governance convergence** if the deltas are buffered awaiting
+   authorisation (growing `governance_pending_queue_depth`). Sync the owning
+   group's state so the governance DAG catches up:
+
+   ```sh
+   meroctl --node node1 group sync <group_id>
+   ```
+
+4. **Sync everything** if multiple contexts drifted (e.g. after a long
+   partition):
+
+   ```sh
+   meroctl --node node1 context sync --all
+   ```
+
+5. **Last resort — force a clean resync from peers.** If the local copy is
+   genuinely corrupt and will not reconcile, opt the node out of the context and
+   re-join so it pulls a fresh snapshot from a healthy peer:
+
+   ```sh
+   meroctl --node node1 context leave-context <context_id>
+   # then rejoin via the owning group / namespace
+   meroctl --node node1 group join-context <context_id>
+   ```
+
+   <Aside type="caution">
+   `leave-context` is a **local** opt-out (no DAG operation) — it drops this
+   node's local copy of the context so a rejoin re-materialises it from peers.
+   Only do this when at least one other member holds the authoritative state, and
+   never on the last/only holder of a context. This does not remove you from the
+   group's membership; it only resets local context state.
+   </Aside>
+
+</Steps>
+
+## Rotate & leave safely
+
+Removing this node (or identity) from a group, namespace, or context in a way
+that the rest of the fleet records correctly.
+
+<Tabs>
+<TabItem label="Leave a group">
+
+Publishes a `MemberLeft` operation to the group DAG, so peers record the
+departure:
+
+```sh
+meroctl --node node1 group leave <group_id>
+```
+
+</TabItem>
+<TabItem label="Leave a namespace">
+
+A namespace is a root group; leaving **cascades through its descendant groups**:
+
+```sh
+meroctl --node node1 namespace leave <namespace_id>
+```
+
+</TabItem>
+<TabItem label="Opt out of a context">
+
+Local-only opt-out (no DAG op) — drop this node's copy of a context without
+leaving the group:
+
+```sh
+meroctl --node node1 context leave-context <context_id>
+```
+
+</TabItem>
+</Tabs>
+
+<Aside type="caution">
+**Leave is durable governance.** `group leave` / `namespace leave` publish a
+signed departure that other members apply — you cannot silently un-leave; you
+rejoin via a fresh invite. Confirm you are leaving the right group/namespace ID
+first.
+</Aside>
+
+### Signing-key rotation
+
+Group signing keys are managed via:
+
+```sh
+meroctl --node node1 group signing-key register <group_id> <hex_signing_key>
+```
+
+<Aside type="caution">
+The full key-rotation lifecycle (generating the new key, registering it,
+retiring the old one, and the per-group encryption-key handling that runs on
+eviction / self-purge for TEE fleet nodes) is broader than a single command and
+deployment-specific. Treat `signing-key register` as the registration step only,
+and consult [Governance](/core/protocol/governance/) and
+[Identities](/core/protocol/identities/) for the rotation model before rotating
+production keys.
+</Aside>
+
+<LinkCard title="Membership & governance" href="/core/protocol/governance/"
+  description="How joins, leaves, roles, and key registration are recorded." />

@@ -27,7 +27,7 @@ These live at the root of the file, outside any section.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `mode` | `"Standard"` \| `"ReadOnly"` | `"Standard"` | Node role. `ReadOnly` disables JSON-RPC execution and is used for observer / TEE nodes. |
+| `mode` | `"standard"` \| `"readonly"` | `"standard"` | Node role. `readonly` disables JSON-RPC execution and is used for observer / TEE nodes. (The values serialize lowercase; the `merod init --mode` flag spells the read-only value `read-only`.) |
 
 ## `[identity]`
 
@@ -51,7 +51,7 @@ libp2p listen addresses for peer-to-peer traffic.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `listen` | array of multiaddr | `["/ip4/0.0.0.0/tcp/2428", "/ip4/0.0.0.0/udp/2428/quic-v1"]` | Addresses the swarm binds for inbound peer connections. TCP and QUIC are both seeded by `merod init`. Default port is `2428`. |
+| `listen` | array of multiaddr | `["/ip4/0.0.0.0/tcp/2428", "/ip4/0.0.0.0/udp/2428/quic-v1", "/ip6/::/tcp/2428", "/ip6/::/udp/2428/quic-v1"]` | Addresses the swarm binds for inbound peer connections. `merod init` seeds TCP and QUIC on both IPv4 (`0.0.0.0`) and IPv6 (`::`). Default port is `2428`. |
 
 ## `[server]`
 
@@ -60,7 +60,7 @@ The local HTTP server: admin API, JSON-RPC, WebSocket, and SSE. Default port is
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `listen` | array of multiaddr | `["/ip4/127.0.0.1/tcp/2528"]` | Addresses the HTTP server binds. |
+| `listen` | array of multiaddr | `["/ip4/127.0.0.1/tcp/2528", "/ip6/::1/tcp/2528"]` | Addresses the HTTP server binds. `merod init` seeds both IPv4 (`127.0.0.1`) and IPv6 (`::1`) loopback. |
 | `auth_mode` | `"proxy"` \| `"embedded"` | `"proxy"` | How auth is enforced. `proxy` expects an external auth proxy in front of the node; `embedded` runs the bundled auth service (see `[server.embedded_auth]`). |
 
 ### `[server.admin]`
@@ -230,7 +230,7 @@ window. Enabled by default; set `enabled = false` to opt out.
 | `enabled` | bool | `true` | Whether periodic DAG compaction runs. |
 | `min_deltas_before_compact` | integer | `10000` | Minimum delta rows a context must hold before it is eligible for compaction. |
 | `retain_recent_count` | integer | `1000` | Number of most-recent deltas retained after a sweep. Must be strictly below `min_deltas_before_compact`. |
-| `check_interval` | duration (seconds) | non-zero default | Interval between compaction sweeps. Serialized in seconds. |
+| `check_interval` | duration (seconds) | `3600` | Interval between compaction sweeps. Serialized as a plain integer count of seconds (e.g. `check_interval = 3600`), not a `{ secs, nanos }` table. Must be non-zero. |
 
 ## `[tee]`
 
@@ -273,7 +273,7 @@ Policy for verifying KMS self-attestation before requesting storage keys.
 A complete, typical single-node config (chainless local self-signer):
 
 ```toml
-mode = "Standard"
+mode = "standard"
 
 [identity]
 peer_id = "12D3KooWQrRJCnybfvLGZ7d4iaqGkGHpjLAB7PG6sFtXrHbkPMFc"
@@ -283,10 +283,12 @@ keypair = "23jhTbrf...redacted...CyLA"
 listen = [
     "/ip4/0.0.0.0/tcp/2428",
     "/ip4/0.0.0.0/udp/2428/quic-v1",
+    "/ip6/::/tcp/2428",
+    "/ip6/::/udp/2428/quic-v1",
 ]
 
 [server]
-listen = ["/ip4/127.0.0.1/tcp/2528"]
+listen = ["/ip4/127.0.0.1/tcp/2528", "/ip6/::1/tcp/2528"]
 auth_mode = "proxy"
 
 [server.admin]

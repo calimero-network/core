@@ -45,7 +45,7 @@ ed25519 identity keypair, writes `config.toml`, and opens the datastore.
 | `--auth-storage-path <PATH>`        | path                     | `auth`             | Embedded-auth storage path (persistent storage only).                   |
 | `--mdns`                            | bool                     | `true`             | Enable mDNS local discovery.                                            |
 | `--advertise-address`               | bool                     | `false`            | Advertise the node's observed address.                                  |
-| `--external-address <MULTIADDR>`    | multiaddr (repeatable)   | —                  | Static external multiaddrs to advertise; requires `--advertise-address`. |
+| `--external-address <MULTIADDR>`    | multiaddr (repeatable)   | —                  | Static external multiaddrs to advertise. Pair with `--advertise-address` for them to be advertised. |
 | `--rendezvous-registrations-limit <N>` | usize                 | `3`                | Max rendezvous registrations.                                           |
 | `--relay-registrations-limit <N>`   | usize                    | `3`                | Max relay registrations.                                                |
 | `--autonat-probe-interval <SECS>`   | u64                      | `10`               | Interval between AutoNAT probes, in seconds.                            |

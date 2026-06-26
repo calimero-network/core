@@ -18,7 +18,7 @@ brought into scope with `use calimero_sdk::app;`.
 
 | Macro | Kind | Applies to | What it does |
 |-------|------|------------|--------------|
-| `#[app::state]` | attribute | struct / enum | Declares the persistent application state. |
+| `#[app::state]` | attribute | struct | Declares the persistent application state. |
 | `#[app::logic]` | attribute | `impl` block | Turns methods into runtime entry points. |
 | `#[app::init]` | attribute | method | Marks the constructor run when the app is first installed in a context. |
 | `#[app::view]` | attribute | `&self` method | Marks a read-only method (shared lock; no mutation). |
@@ -47,15 +47,15 @@ brought into scope with `use calimero_sdk::app;`.
 
 ### `#[app::state]`
 
-Declares the single persistent state struct. State is built from
-[CRDT collections](/build/collections/) so concurrent edits merge
-deterministically. The macro accepts optional parameters:
+Declares the single persistent state struct. It must be a `struct` — applying it
+to an `enum` is a compile error (no `Mergeable` impl can be generated for an
+enum). State is built from [CRDT collections](/build/collections/) so concurrent
+edits merge deterministically. The macro accepts two optional parameters:
 
 - `emits = <EventType>` — the event type this app may emit (use a `for<'a>`
   binder for events that borrow, as below).
 - `version = N` — a schema version, forwarded to `#[derive(app::Migrate)]` for
   migrations.
-- `storage_key` — a custom storage key for the root.
 
 ```rust
 use calimero_sdk::app;

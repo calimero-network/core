@@ -41,6 +41,20 @@
 .sl-markdown-content { line-height: 1.7; }
 .sl-markdown-content a { text-decoration-thickness: 1px; text-underline-offset: 2px; }
 
+/* Calmer heading hierarchy (Linear/Tailscale feel): authority via size, not weight. */
+.sl-markdown-content :is(h1, h2, h3) { letter-spacing: -0.012em; }
+.sl-markdown-content h2 { margin-top: 2.3rem; }
+.sl-markdown-content table { font-size: 0.9rem; }
+
+/* Light theme: keep surfaces and the diagram Replay control legible. */
+:root[data-theme='light'] {
+  --sl-color-bg-sidebar: #f6f8fa;
+  --sl-color-bg-nav: #ffffffee;
+}
+:root[data-theme='light'] .replay-btn {
+  background: #f0f3f6; color: #57606a; border-color: #d0d7de;
+}
+
 /* ---- Animated diagram engine (ported from the bespoke site) ---- */
 .diagram-container { overflow-x: auto; margin: 1.25rem 0; }
 .diagram-container svg { border-radius: 10px; max-height: 75vh; }

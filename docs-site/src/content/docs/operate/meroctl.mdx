@@ -73,7 +73,7 @@ meroctl --node node1 app ls
 | Subcommand (aliases)               | Purpose                                          | Key args                                                       |
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | `list` (`ls`)                      | List all contexts.                                | —                                                            |
-| `create`                           | Create a new context.                             | `--application-id`, `--group-id` (required), `--params`, `--watch <path>`, `--metadata`, `--context-seed`, `--as` (identity alias), `--name` (context alias), `--service`, `--identity-secret`, `--group-name` |
+| `create`                           | Create a new context.                             | `--application-id`/`-a`, `--group-id` (required), `--params`/`-p`, `--watch`/`-w` `<path>`, `--seed`/`-s`, `--as` (identity alias), `--name` (context alias), `--service`, `--identity-secret`, `--group-name`, positional `metadata` (requires `--watch`) |
 | `get <CONTEXT>`                    | Fetch context details: `info`, `client-keys`, or `storage`. | `CONTEXT`, subcommand                                  |
 | `delete` (`del`) `<CONTEXT>`       | Delete a context.                                 | `CONTEXT`, `--requester`                                     |
 | `update`                           | Update the application in a context.              | `--context`/`-c`, `--application-id`/`-a`, `--path`, `--metadata`, `--watch`/`-w`, `--as` (executor) |
@@ -92,12 +92,18 @@ meroctl --node node1 app ls
 | `generate` (`new`)                 | Generate a new identity keypair.                  | —                                                            |
 | `use <IDENTITY>`                   | Set the default identity for a context.           | `IDENTITY`, `--context`, `--force`                          |
 | `alias`                            | Manage identity aliases.                          | subcommand                                                    |
-| `grant`                            | Grant a permission to an identity.                | identity, capability, `--context`, `--as`                   |
-| `revoke`                           | Revoke a permission from an identity.             | identity, capability, `--context`, `--as`                   |
+| `grant`                            | **Removed.** Parses but errors, pointing you to `group members set-caps`. | identity, capability, `--context`, `--as`                   |
+| `revoke`                           | **Removed.** Parses but errors, pointing you to `group members set-caps`. | identity, capability, `--context`, `--as`                   |
+
+<Aside type="note">
+  Per-context capability `grant`/`revoke` have been removed. The commands still
+  parse for compatibility but immediately error, directing you to manage
+  capabilities through the group instead (`group members set-capabilities`).
+</Aside>
 
 ```sh
 meroctl --node node1 context create --application-id <app_id> --group-id <group_id>
-meroctl --node node1 context identity grant bob ManageApplication --context <context_id> --as alice
+meroctl --node node1 group members set-caps <group_id> <identity> --can-create-context
 ```
 
 ---
@@ -191,25 +197,25 @@ meroctl --node node1 blob upload --file /path/to/file
 meroctl --node node1 blob download --blob-id <blob_id> --output /path/to/output
 ```
 
-<Aside type="caution">
-  The blob `upload`/`download`/`info`/`delete` flag names above (`--file`,
-  `--output`, `--blob-id`, `--context-id`) are taken from the command help text.
-  Confirm the exact long-flag spelling with `meroctl blob <subcommand> --help`.
+<Aside type="note">
+  Each blob flag also has a short form: `--file`/`-f`, `--context-id`/`-c`,
+  `--blob-id`/`-b`, `--output`/`-o`.
 </Aside>
 
 ---
 
 ## call
 
-Call a method on a context. The method runs as a mutation by default; pass an
-identity to run a view as that identity.
+Call a method on a context. Whether a call mutates state or runs as a read-only
+view is determined by the method's own declaration (`#[app::view]`), not by a
+CLI flag; the call executes under the context's default identity.
 
 | Arg / flag                | Type / values        | Default     | Purpose                                                         |
 | ------------------------- | -------------------- | ----------- | --------------------------------------------------------------- |
 | `<METHOD>`                | string               | —           | Method to call (omit with `--interactive`).                    |
 | `--context`/`-c <CONTEXT>` | context alias/id    | `default`   | Context to call the method on.                                  |
 | `--args <JSON>`           | JSON                 | `{}`        | JSON arguments to pass to the method.                          |
-| `--as <KEY>` (`--substitute`) | alias list       | —           | Aliases to substitute in the payload (use `{alias}`).          |
+| `--substitute <ALIAS>`    | comma-separated aliases | —        | Aliases to substitute into the payload (reference them as `{alias}`). |
 | `--id <ID>`               | string               | —           | JSON-RPC call id.                                              |
 | `--interactive`/`-i`      | bool                 | `false`     | Open a persistent WebSocket shell and run many calls.          |
 | `--timeout <SECONDS>`     | u64                  | `120`       | Per-call timeout in the interactive shell (`0` disables).      |

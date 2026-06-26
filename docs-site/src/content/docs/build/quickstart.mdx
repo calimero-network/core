@@ -14,12 +14,11 @@ This walks from an empty crate to a method call. The two binaries you use are
 **`merod`** (the node daemon — `init`, `run`) and **`meroctl`** (the operator
 CLI — `app`, `context`, `namespace`, `call`).
 
-<Aside type="caution">
-  Commands are grounded in the in-repo CLI definitions (`crates/merod/src/cli/`,
-  `crates/meroctl/src/cli/`) and the example apps' `build.sh` scripts. The exact
-  context-bootstrap surface (namespaces / groups) is evolving — where a step is
-  not fully verifiable from a single source it is flagged inline. Run
-  `meroctl <command> --help` to confirm flags for your build.
+<Aside type="note">
+  Commands here are grounded in the in-repo CLI definitions
+  (`crates/merod/src/cli/`, `crates/meroctl/src/cli/`) and the example apps'
+  `build.sh` scripts. Calimero is pre-1.0, so flags can still change between
+  releases — run `meroctl <command> --help` to confirm them for your build.
 </Aside>
 
 ## 1. Write and build the app
@@ -146,16 +145,18 @@ configured alias) or `--api <URL>`.
    meroctl --node node1 namespace create --application-id <app-id>
    ```
 
-   :::caution
-   `meroctl context create` also exists and takes `--application-id`, but in the
-   current CLI it additionally requires a `--group-id` (and optionally `--as`,
-   `--name`, `--params`). The namespace/group bootstrap is the part most in
-   flux — confirm the exact flow with `meroctl namespace --help` and
-   `meroctl context create --help` before scripting it.
+   :::note
+   `namespace create` only needs `--application-id` — a namespace is a root
+   group, so this single command bootstraps the group for you. The lower-level
+   `meroctl context create` requires **both** `--application-id` and a
+   `--group-id` (it attaches a context to an existing group), plus optional
+   `--as`, `--name`, and `--params`. Start with `namespace create` unless you
+   already have a group to attach to.
    :::
 
 3. **Call a method** on the context. Mutations and views both go through the
-   top-level `call` command:
+   top-level `call` command — whether a call mutates or is a read-only view is
+   decided by the method's own `#[app::view]` marker, not a CLI flag:
 
    ```sh
    # mutate
@@ -163,11 +164,10 @@ configured alias) or `--api <URL>`.
      --context <context-id> \
      --args '{"key": "hello", "value": "world"}'
 
-   # view (optionally as a specific identity)
+   # view
    meroctl --node node1 call get \
      --context <context-id> \
-     --args '{"key": "hello"}' \
-     --as <identity-public-key>
+     --args '{"key": "hello"}'
    ```
 
    `--args` takes JSON matching the method's parameters. `<context-id>` accepts a
