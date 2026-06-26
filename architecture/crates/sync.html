@@ -566,6 +566,20 @@
   </div>
 </div>
 
+<h3>Scope Verdict &amp; Unified Governance Convergence</h3>
+<div class="cb" style="margin-bottom:16px; border-left:3px solid #f59e0b; padding-left:14px;">
+  <h4 style="color:#f59e0b; margin-bottom:8px;"><span class="code">ScopeVerdict</span> — single governance convergence signal</h4>
+  <p style="margin-bottom:10px;">A <span class="code">ScopeVerdict</span> enum is the single signal used by both the pre-sync entities-agree path and the post-sync check to decide whether a governance pull is needed. It is computed from the local and peer <span class="code">scope_root</span> values and is shared across all sync backends.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="kw">pub enum</span> <span class="ty">ScopeVerdict</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Converged</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// local_scope_root == peer_scope_root (or both None)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">GovDiverged</span>,&nbsp;&nbsp;&nbsp;<span class="comment">// scope roots differ → trigger pull_namespace_governance</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Unknown</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// peer sent scope_root: None (cold/non-group); skip check</span><br>
+}
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Pre-sync path:</strong> when <span class="code">select_protocol</span> returns <span class="code">SyncProtocol::None</span> (entity roots agree) and the peer advertised a <span class="code">scope_root</span>, a <span class="code">ScopeVerdict</span> is computed. A <span class="code">GovDiverged</span> verdict triggers <span class="code">pull_namespace_governance</span> and an early return, bypassing the entity walk entirely. <strong>Post-sync path:</strong> after any data backend returns <span class="code">Ok(Some(_))</span>, the local <span class="code">scope_root</span> is re-read and a new <span class="code">ScopeVerdict</span> is computed. A <span class="code">GovDiverged</span> verdict triggers the same pull. Both paths now share the same verdict type and the same pull helper, eliminating the prior per-backend divergence flags.</p>
+</div>
+
 <h3>Post-Sync Governance Reconciliation (<span class="code">handle_dag_sync</span>)</h3>
 <div class="cb" style="margin-bottom:16px; border-left:3px solid #10b981; padding-left:14px;">
   <h4 style="color:#10b981; margin-bottom:8px;">Governance divergence check moved to <span class="code">handle_dag_sync</span></h4>
