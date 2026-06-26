@@ -1311,8 +1311,8 @@ impl TeeVerifyQuoteResponse {
 
 use crate::validation::{
     helpers::{
-        validate_bytes_size, validate_hex_string, validate_optional_hex_string,
-        validate_optional_string_length, validate_string_length, validate_url,
+        validate_bytes_size, validate_hex_string, validate_optional_string_length,
+        validate_string_length, validate_url,
     },
     Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_PACKAGE_NAME_LENGTH,
     MAX_PATH_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VERSION_LENGTH,
