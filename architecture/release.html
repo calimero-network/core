@@ -157,6 +157,30 @@ op_store_gate_unavailable</pre>
 <h3>Why this catches what static tests miss</h3>
 <p>A renamed or removed parameter in a handler causes the SDK to send the old request shape; the node returns a <code>4xx</code> and the workflow fails on the core developer's PR — before the downstream SDK picks up the change. Schema and ABI checks validate structure; the SDK e2e workflow validates <em>behaviour</em> across a live HTTP boundary.</p>
 </div>
+<div class="card ga"><h2>Pinning the Rust toolchain action to a commit SHA</h2>
+<p>Both <code>wire-contract.yml</code> and <code>sdk-e2e.yml</code> reference the <code>dtolnay/rust-toolchain</code> action using an immutable commit SHA rather than the mutable <code>@stable</code> tag:</p>
+<pre class="code">- uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable</pre>
+<p>The Rust toolchain itself is still resolved as <code>stable</code> at runtime — only the <em>action code</em> is pinned.</p>
+
+<h3>Why a mutable tag is a supply-chain risk</h3>
+<p>A tag such as <code>@stable</code> can be silently force-pushed by the upstream repository at any time. Any commit reachable from that tag would then run in CI with the full permissions of the workflow — without any review or notice. Pinning to a commit SHA ensures that the exact bytes of the action that were reviewed are the bytes that execute.</p>
+
+<h3>Updating the pin</h3>
+<ul>
+<li>When a new <code>dtolnay/rust-toolchain</code> release warrants adoption, look up the commit SHA that the <code>stable</code> tag currently points to in the upstream repository.</li>
+<li>Replace the SHA in both workflow files and update the <code># stable</code> tracking comment if the intended tag changes.</li>
+<li>Open a dedicated PR so the action-code diff is reviewed explicitly before it runs in CI.</li>
+</ul>
+
+<h3>Convention for all third-party actions</h3>
+<p>The same pattern should be applied to any third-party action added to the repository in future:</p>
+<ol>
+<li>Find the SHA of the tag you intend to use.</li>
+<li>Reference the action as <code>owner/action@&lt;SHA&gt; # &lt;tag&gt;</code>.</li>
+<li>Never use a mutable tag or branch reference directly in a <code>uses:</code> line.</li>
+</ol>
+<p><strong>First-party actions</strong> (actions defined inside this repository under <code>.github/actions/</code>) do not require SHA pinning because they are already part of the reviewed commit being tested.</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
