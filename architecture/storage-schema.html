@@ -689,6 +689,76 @@
 </details>
 </div>
 
+<div class="card ga"><h2>LwwRegister Merge: Three-Level Tie-Breaking &amp; BorshSerialize Bound</h2>
+
+<p>The <code>LwwRegister&lt;T&gt;</code> CRDT previously used a two-level comparison to decide which value wins during a merge: first by timestamp, then by <code>node_id</code>. In <em>merge-mode</em>, both fields are intentionally zeroed so that migrated data is not tied to any particular node's clock or identity. This degenerate case meant that two registers carrying different values but identical stamps would resolve non-deterministically — <code>merge(A, B)</code> kept <code>A</code> while <code>merge(B, A)</code> kept <code>B</code>, permanently violating CRDT convergence.</p>
+
+<h3>Updated Merge Ordering (Three Levels)</h3>
+
+<ol>
+  <li><strong>Higher timestamp wins.</strong> Normal wall-clock or HLC comparison. Most merges are resolved here.</li>
+  <li><strong>Higher <code>node_id</code> wins on timestamp tie.</strong> Breaks ties between concurrent writes from different nodes.</li>
+  <li><strong>Higher Borsh-serialized bytes win when both stamp fields are equal.</strong> A private helper <code>other_wins</code> borsh-serializes both values and compares the resulting byte slices lexicographically, producing a deterministic total order regardless of call order. Serialization failure panics via <code>expect</code> rather than silently substituting an empty <code>Vec</code>, which would corrupt ordering.</li>
+</ol>
+
+<p>Together these three levels form a strict total order over all possible register states, guaranteeing that <code>merge(A, B).get() == merge(B, A).get()</code> in every case, including the zero-stamp merge-mode path.</p>
+
+<h3>New <code>BorshSerialize</code> Bound on <code>T</code></h3>
+
+<p>The following items now require <code>T: Clone + borsh::BorshSerialize</code> (previously only <code>T: Clone</code>):</p>
+
+<ul>
+  <li><code>LwwRegister::merge(&amp;mut self, other: &amp;LwwRegister&lt;T&gt;)</code></li>
+  <li><code>LwwRegister::would_update(&amp;self, other: &amp;LwwRegister&lt;T&gt;) -&gt; bool</code></li>
+  <li>The <code>Mergeable</code> blanket impl for <code>LwwRegister&lt;T&gt;</code></li>
+</ul>
+
+<p>Any type stored in a <code>LwwRegister</code> that does not implement <code>BorshSerialize</code> will now produce a compile-time error when these methods are called. Types that only call <code>get</code>, <code>set</code>, or other non-merge methods are unaffected.</p>
+
+<h3>Updated Doc-Comment Contract for <code>merge</code></h3>
+
+<pre class="code">/// Merges `other` into `self`, retaining the value that wins under a
+/// three-level total order:
+///
+/// 1. Higher `timestamp` wins.
+/// 2. On timestamp tie, higher `node_id` wins.
+/// 3. When both `timestamp` and `node_id` are equal (e.g. merge-mode
+///    registers where both fields are zeroed), the value whose
+///    Borsh-serialized bytes compare greater wins.
+///
+/// This ordering is commutative, associative, and idempotent, satisfying
+/// the CRDT convergence guarantee even for merge-mode registers that carry
+/// zero stamps.
+///
+/// # Panics
+/// Panics if Borsh serialization of either value fails during the level-3
+/// tie-break. This indicates a bug in the `BorshSerialize` impl for `T`.
+pub fn merge(&amp;mut self, other: &amp;LwwRegister&lt;T&gt;)</pre>
+
+<h3>Regression Test</h3>
+
+<p>A new test <code>merge_mode_equal_stamps_different_values_converge</code> directly asserts commutativity for the zero-stamp case:</p>
+
+<pre class="code">// Both registers have timestamp = 0, node_id = 0 (merge-mode).
+// Values differ: register_a holds 1, register_b holds 2.
+let mut ab = register_a.clone();
+ab.merge(&amp;register_b);
+
+let mut ba = register_b.clone();
+ba.merge(&amp;register_a);
+
+// CRDT convergence: call order must not affect the outcome.
+assert_eq!(ab.get(), ba.get());</pre>
+
+<h3>Migration Notes</h3>
+
+<ul>
+  <li>If your <code>T</code> does not yet implement <code>BorshSerialize</code>, add <code>#[derive(borsh::BorshSerialize)]</code> or a manual impl before upgrading. The compiler error will point directly to the <code>merge</code> / <code>would_update</code> call site.</li>
+  <li>Existing on-disk data is unaffected. The tie-break only activates at runtime when a merge is performed; no migration of stored bytes is required.</li>
+  <li>Merge-mode registers that were previously diverging will converge to the lexicographically greater serialized value on the next merge call. Ensure both replicas perform a merge after upgrading to reach a consistent state.</li>
+</ul>
+
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
