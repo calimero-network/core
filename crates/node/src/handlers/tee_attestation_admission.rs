@@ -33,9 +33,9 @@ pub async fn handle_tee_attestation_announce(
 
     let verification_result = if is_mock {
         warn!("Verifying MOCK attestation for TEE admission");
-        verify_mock_attestation(&quote_bytes, &nonce, Some(&pk_hash))?
+        verify_mock_attestation(&quote_bytes, &nonce, &pk_hash)?
     } else {
-        verify_attestation(&quote_bytes, &nonce, Some(&pk_hash)).await?
+        verify_attestation(&quote_bytes, &nonce, &pk_hash).await?
     };
 
     if !verification_result.is_valid() {

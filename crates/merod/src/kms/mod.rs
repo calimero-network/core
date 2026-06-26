@@ -666,10 +666,10 @@ async fn verify_kms_attestation_from_release_policy(
         warn!(
             "Accepting mock KMS attestation quote from release policy path - development/testing only"
         );
-        verify_mock_attestation(&quote_bytes, &nonce, Some(&binding))
+        verify_mock_attestation(&quote_bytes, &nonce, &binding)
             .context("KMS mock attestation verification failed")?
     } else {
-        verify_attestation(&quote_bytes, &nonce, Some(&binding))
+        verify_attestation(&quote_bytes, &nonce, &binding)
             .await
             .context("KMS attestation verification failed")?
     };
@@ -1033,10 +1033,10 @@ async fn verify_kms_attestation(
         }
 
         warn!("Accepting mock KMS attestation quote - this is insecure and for development only");
-        verify_mock_attestation(&quote_bytes, &nonce, Some(&policy.binding))
+        verify_mock_attestation(&quote_bytes, &nonce, &policy.binding)
             .context("Failed to verify mock KMS attestation")?
     } else {
-        verify_attestation(&quote_bytes, &nonce, Some(&policy.binding))
+        verify_attestation(&quote_bytes, &nonce, &policy.binding)
             .await
             .context("Failed to verify KMS attestation quote")?
     };
@@ -2457,7 +2457,7 @@ mod tests {
         let binding = [0x22u8; 32];
         let report_data = build_kms_attestation_report_data(&nonce, &binding);
         let quote_bytes = mock_quote_bytes_with_report_data(&report_data);
-        verify_mock_attestation(&quote_bytes, &nonce, Some(&binding))
+        verify_mock_attestation(&quote_bytes, &nonce, &binding)
             .expect("mock verification result should be created")
     }
 

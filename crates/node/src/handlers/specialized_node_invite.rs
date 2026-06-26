@@ -39,6 +39,7 @@ use calimero_tee_attestation::{
     verify_mock_attestation,
 };
 use libp2p::PeerId;
+use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 
 /// Handle a specialized node discovery broadcast (for specialized nodes in read-only mode)
@@ -68,7 +69,10 @@ pub fn handle_specialized_node_discovery(
         "Created identity for specialized node invitation (private key stored in datastore)"
     );
 
-    let report_data = build_report_data(&nonce, None);
+    // Bind the attestation to our public key so the verifier can confirm the
+    // quote was produced for this identity (the app-hash binding is mandatory).
+    let pk_hash: [u8; 32] = Sha256::digest(*our_public_key).into();
+    let report_data = build_report_data(&nonce, Some(&pk_hash));
 
     let attestation_result = generate_attestation(report_data)?;
 
@@ -173,9 +177,12 @@ pub async fn handle_verification_request(
                 );
             }
 
+            // The attestation must be bound to the requester's public key.
+            let pk_hash: [u8; 32] = Sha256::digest(*public_key).into();
+
             let verification_result = if is_mock {
                 warn!("Verifying MOCK attestation - NOT FOR PRODUCTION USE");
-                match verify_mock_attestation(&quote_bytes, &nonce, None) {
+                match verify_mock_attestation(&quote_bytes, &nonce, &pk_hash) {
                     Ok(result) => result,
                     Err(err) => {
                         error!(error = %err, "Failed to verify mock TEE attestation");
@@ -187,7 +194,7 @@ pub async fn handle_verification_request(
                     }
                 }
             } else {
-                match verify_attestation(&quote_bytes, &nonce, None).await {
+                match verify_attestation(&quote_bytes, &nonce, &pk_hash).await {
                     Ok(result) => result,
                     Err(err) => {
                         error!(error = %err, "Failed to verify TEE attestation");

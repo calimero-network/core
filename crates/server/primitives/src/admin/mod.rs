@@ -1262,8 +1262,9 @@ pub struct TeeVerifyQuoteRequest {
     pub quote_b64: String,
     /// Client-provided nonce that should match report_data[0..32] (64 hex chars = 32 bytes)
     pub nonce: String,
-    /// Optional expected application hash that should match report_data[32..64] (64 hex chars = 32 bytes)
-    pub expected_application_hash: Option<String>,
+    /// Expected application hash that must match report_data[32..64] (64 hex chars = 32 bytes).
+    /// Mandatory: the attestation is only valid if it is bound to this hash.
+    pub expected_application_hash: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1273,8 +1274,8 @@ pub struct TeeVerifyQuoteResponseData {
     pub quote_verified: bool,
     /// Whether the nonce matches report_data[0..32]
     pub nonce_verified: bool,
-    /// Whether the application hash matches report_data[32..64] (if provided)
-    pub application_hash_verified: Option<bool>,
+    /// Whether the application hash matches report_data[32..64]
+    pub application_hash_verified: bool,
     /// Parsed quote structure
     pub quote: Quote,
 }
@@ -1311,8 +1312,8 @@ impl TeeVerifyQuoteResponse {
 
 use crate::validation::{
     helpers::{
-        validate_bytes_size, validate_hex_string, validate_optional_hex_string,
-        validate_optional_string_length, validate_string_length, validate_url,
+        validate_bytes_size, validate_hex_string, validate_optional_string_length,
+        validate_string_length, validate_url,
     },
     Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_PACKAGE_NAME_LENGTH,
     MAX_PATH_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VERSION_LENGTH,
@@ -1454,12 +1455,11 @@ impl Validate for TeeVerifyQuoteRequest {
             errors.push(e);
         }
 
-        // Expected application hash must be exactly 64 hex characters (32 bytes) if provided
-        if let Some(e) = validate_optional_hex_string(
-            &self.expected_application_hash,
-            "expected_application_hash",
-            32,
-        ) {
+        // Expected application hash must be exactly 64 hex characters (32 bytes).
+        // It is mandatory: an unbound attestation can never be considered valid.
+        if let Some(e) =
+            validate_hex_string(&self.expected_application_hash, "expected_application_hash", 32)
+        {
             errors.push(e);
         }
 
