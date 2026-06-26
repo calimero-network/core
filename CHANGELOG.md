@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.11.0-rc.8] - 2026-06-26
+
+### Added
+
+- **SDK↔core wire-contract gate** — a CI gate that pins the SDK-to-core wire contract, catching unintended changes to the cross-boundary surface before they ship ([#2895])
+
+### Changed
+
+- **Op-level `state_hash` field removed** (BREAKING, flag-day) — governance ops no longer carry a per-op `state_hash`; the op schema version is bumped. This is a one-shot flag-day change with no mixed-version compatibility window — all nodes in a context must upgrade together ([#2946])
+- **Unified op-store cutover (C2/C3)** — locally-authored governance and group ops are now persisted to, and the context projection is reconstructed from, a single unified op-store rather than the governance-DAG fold. Rolled out as an observe-only completeness gate → read shadow → read-flip with atomic dual-writes, then removal of the now-redundant legacy dual-writes. Internal storage refactor; no public API change ([#2911], [#2912], [#2915], [#2916], [#2918], [#2922], [#2923], [#2924], [#2925], [#2927], [#2933])
+- **Centralised post-sync governance reconciliation (P6)** — governance convergence is unified across all sync backends: a single `scope_root` convergence verdict, a pre-sync divergence check when entities otherwise agree, and a `GovDiverged` verdict that pulls governance during sync ([#2935], [#2936], [#2941], [#2944])
+
+### Fixed
+
+- **Namespace founder derivation** — the namespace founder is now derived from a replayable genesis op instead of inferred from later state, fixing replicas (notably TEE replicas) that could seed the wrong founder admin and reject the owner's governance DAG ([#2931], [#2474])
+- **Governance local-apply resilience** — a `state_hash` mismatch on a local group apply now warns instead of bailing, so a transient divergence no longer aborts the apply ([#2939])
+
 ## [0.11.0-rc.7] - 2026-06-24
 
 ### Removed
@@ -293,7 +310,8 @@ Integrations:
 
 <!-- versions -->
 
-[unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.7...HEAD
+[unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.8...HEAD
+[0.11.0-rc.8]: https://github.com/calimero-network/core/compare/0.11.0-rc.7...0.11.0-rc.8
 [0.11.0-rc.7]: https://github.com/calimero-network/core/compare/0.11.0-rc.6...0.11.0-rc.7
 [0.11.0-rc.6]: https://github.com/calimero-network/core/compare/0.11.0-rc.5...0.11.0-rc.6
 [0.11.0-rc.5]: https://github.com/calimero-network/core/compare/0.11.0-rc.4...0.11.0-rc.5
@@ -317,6 +335,26 @@ Integrations:
 
 <!-- patches -->
 
+[#2946]: https://github.com/calimero-network/core/pull/2946
+[#2944]: https://github.com/calimero-network/core/pull/2944
+[#2941]: https://github.com/calimero-network/core/pull/2941
+[#2939]: https://github.com/calimero-network/core/pull/2939
+[#2936]: https://github.com/calimero-network/core/pull/2936
+[#2935]: https://github.com/calimero-network/core/pull/2935
+[#2933]: https://github.com/calimero-network/core/pull/2933
+[#2931]: https://github.com/calimero-network/core/pull/2931
+[#2927]: https://github.com/calimero-network/core/pull/2927
+[#2925]: https://github.com/calimero-network/core/pull/2925
+[#2924]: https://github.com/calimero-network/core/pull/2924
+[#2923]: https://github.com/calimero-network/core/pull/2923
+[#2922]: https://github.com/calimero-network/core/pull/2922
+[#2918]: https://github.com/calimero-network/core/pull/2918
+[#2916]: https://github.com/calimero-network/core/pull/2916
+[#2915]: https://github.com/calimero-network/core/pull/2915
+[#2912]: https://github.com/calimero-network/core/pull/2912
+[#2911]: https://github.com/calimero-network/core/pull/2911
+[#2895]: https://github.com/calimero-network/core/pull/2895
+[#2474]: https://github.com/calimero-network/core/issues/2474
 [#2809]: https://github.com/calimero-network/core/pull/2809
 [#2805]: https://github.com/calimero-network/core/pull/2805
 [#2801]: https://github.com/calimero-network/core/pull/2801
