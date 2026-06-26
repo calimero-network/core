@@ -303,10 +303,10 @@ pick the same winner regardless of arrival order:
   steps={[
     { from: 0, to: 0, label: 'write alice = vA — stamp HLC t, node A' },
     { from: 1, to: 1, label: 'write alice = vB — same HLC t, node B', color: '#58a6ff' },
-    { from: 0, to: 1, label: 'gossip delta (alice = vA)', color: '#84cc16' },
-    { from: 1, to: 0, label: 'gossip delta (alice = vB)', color: '#84cc16' },
-    { from: 1, to: 1, label: 'lww_pick: equal HLC ⇒ SHA-256(value) tiebreak', color: '#8b5cf6' },
-    { from: 0, to: 0, label: 'lww_pick: same compare ⇒ same winner', color: '#8b5cf6' },
+    { from: 0, to: 1, label: 'gossip delta (alice = vA)', color: '#a5ff11' },
+    { from: 1, to: 0, label: 'gossip delta (alice = vB)', color: '#a5ff11' },
+    { from: 1, to: 1, label: 'lww_pick: equal HLC ⇒ SHA-256(value) tiebreak', color: '#a371f7' },
+    { from: 0, to: 0, label: 'lww_pick: same compare ⇒ same winner', color: '#a371f7' },
     { type: 'divider', label: 'same op set ⇒ identical state' },
   ]}
 />

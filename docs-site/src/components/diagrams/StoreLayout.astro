@@ -4,7 +4,7 @@ import Figure from '../Figure.astro';
 <Figure id="d-store-layout">
 <svg viewBox="0 0 760 500" role="img" aria-label="RocksDB column families: replicated state and governance versus node-local stores" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <marker id="sl-fold" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#84cc16"/></marker>
+    <marker id="sl-fold" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#a5ff11"/></marker>
   </defs>
   <rect x="0" y="0" width="760" height="500" rx="10" fill="#0f0f16"/>
 
@@ -38,8 +38,8 @@ import Figure from '../Figure.astro';
 
   <!-- Group (governance) -->
   <g class="seq-step" style="--step-i:3">
-    <rect x="388" y="170" width="332" height="110" rx="9" fill="#1a1430" stroke="#8b5cf6" stroke-width="1.4"/>
-    <text x="406" y="192" fill="#8b5cf6" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700">Group</text>
+    <rect x="388" y="170" width="332" height="110" rx="9" fill="#1a1430" stroke="#a371f7" stroke-width="1.4"/>
+    <text x="406" y="192" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="11.5" font-weight="700">Group</text>
     <text x="406" y="208" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">governance records &#8212; prefix-partitioned</text>
     <text x="406" y="230" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">GroupMeta</text>
     <text x="700" y="230" text-anchor="end" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">0x20</text>
@@ -56,12 +56,12 @@ import Figure from '../Figure.astro';
     <line x1="380" y1="174" x2="380" y2="276" stroke="#444c56" stroke-width="1.2" stroke-dasharray="4 3"/>
     <text x="380" y="306" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">separate column families &#183; distinct keys &amp; merge rules</text>
 
-    <line x1="206" y1="280" x2="332" y2="324" stroke="#84cc16" stroke-width="1.8" marker-end="url(#sl-fold)"/>
-    <line x1="554" y1="280" x2="428" y2="324" stroke="#84cc16" stroke-width="1.8" marker-end="url(#sl-fold)"/>
-    <text x="250" y="312" text-anchor="middle" fill="#84cc16" font-family="'JetBrains Mono', monospace" font-size="8.5">fold</text>
-    <text x="510" y="312" text-anchor="middle" fill="#84cc16" font-family="'JetBrains Mono', monospace" font-size="8.5">fold</text>
+    <line x1="206" y1="280" x2="332" y2="324" stroke="#a5ff11" stroke-width="1.8" marker-end="url(#sl-fold)"/>
+    <line x1="554" y1="280" x2="428" y2="324" stroke="#a5ff11" stroke-width="1.8" marker-end="url(#sl-fold)"/>
+    <text x="250" y="312" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8.5">fold</text>
+    <text x="510" y="312" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8.5">fold</text>
 
-    <rect x="290" y="326" width="180" height="46" rx="10" fill="#13160f" stroke="#84cc16" stroke-width="1.5"/>
+    <rect x="290" y="326" width="180" height="46" rx="10" fill="#13160f" stroke="#a5ff11" stroke-width="1.5"/>
     <text x="380" y="347" text-anchor="middle" fill="#d9f99d" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">scope_root</text>
     <text x="380" y="363" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">one hash over both</text>
   </g>

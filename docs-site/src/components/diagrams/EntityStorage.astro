@@ -13,7 +13,7 @@ import Figure from '../Figure.astro';
 
   <!-- column headers -->
   <text x="127" y="40" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">1 · Logical</text>
-  <text x="380" y="40" text-anchor="middle" fill="#8b5cf6" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">2 · Entities</text>
+  <text x="380" y="40" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">2 · Entities</text>
   <text x="633" y="40" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">3 · Storage — State CF</text>
 
   <!-- column 1: logical struct (code-ish box) -->
@@ -36,7 +36,7 @@ import Figure from '../Figure.astro';
   <!-- column 2: entity tree -->
   <g class="seq-step" style="--step-i:2">
     <!-- root entity -->
-    <rect x="300" y="60" width="160" height="42" rx="9" fill="#1a1430" stroke="#8b5cf6" stroke-width="1.4"/>
+    <rect x="300" y="60" width="160" height="42" rx="9" fill="#1a1430" stroke="#a371f7" stroke-width="1.4"/>
     <text x="380" y="79" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">root entity</text>
     <text x="380" y="94" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">App</text>
     <line x1="380" y1="102" x2="380" y2="138" stroke="#8b949e" stroke-width="1.3" marker-end="url(#es-a)"/>
@@ -94,8 +94,8 @@ import Figure from '../Figure.astro';
 
   <!-- side note -->
   <g class="seq-step" style="--step-i:7">
-    <rect x="18" y="392" width="724" height="64" rx="10" fill="#231708" stroke="#f59e0b" stroke-width="1.3"/>
-    <text x="34" y="416" fill="#f59e0b" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">Nested collections recurse the same way (collection-id separator).</text>
+    <rect x="18" y="392" width="724" height="64" rx="10" fill="#231708" stroke="#e3b341" stroke-width="1.3"/>
+    <text x="34" y="416" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">Nested collections recurse the same way (collection-id separator).</text>
     <text x="34" y="438" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">#[app::private] → PrivateState CF: node-local, never synced, outside the Merkle root.</text>
   </g>
 

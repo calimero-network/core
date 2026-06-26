@@ -74,12 +74,12 @@ daemon, then point `meroctl` at it.
   lanes={[
     { label: 'Operator', color: '#3fb950' },
     { label: 'merod', color: '#58a6ff' },
-    { label: 'Network', color: '#8b5cf6' },
+    { label: 'Network', color: '#a371f7' },
   ]}
   steps={[
     { from: 0, to: 1, label: 'merod --node node1 init' },
     { from: 1, to: 1, label: 'create home dir + write config.toml' },
-    { from: 1, to: 1, label: 'generate node identity keypair', color: '#84cc16' },
+    { from: 1, to: 1, label: 'generate node identity keypair', color: '#a5ff11' },
     { from: 1, to: 1, label: 'create data + blobs dirs, open datastore' },
     { from: 1, to: 0, label: 'initialized', dashed: true },
     { type: 'divider', label: 'start the daemon' },

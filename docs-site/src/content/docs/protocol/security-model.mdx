@@ -82,11 +82,11 @@ The three checks compose into a single pipeline a received operation must clear 
   title="Trust pipeline on a received operation"
   lanes={[
     { label: 'Network (gossip / sync)', color: '#58a6ff' },
-    { label: 'Verify / Authorize', color: '#8b5cf6' },
+    { label: 'Verify / Authorize', color: '#a371f7' },
     { label: 'State (fold)', color: '#3fb950' },
   ]}
   steps={[
-    { from: 0, to: 1, label: 'deliver op { id, author, signature, hlc, ciphertext }', color: '#8b5cf6' },
+    { from: 0, to: 1, label: 'deliver op { id, author, signature, hlc, ciphertext }', color: '#a371f7' },
     { from: 1, to: 1, label: 'verify Ed25519 signature over op.id against claimed author' },
     { from: 0, to: 1, label: 'bad signature ⇒ DROP (forged authorship, never folded)', color: '#f0883e', dashed: true },
     { from: 1, to: 1, label: 'resolve causal cut → may(author, entity, required)?' },

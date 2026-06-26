@@ -5,7 +5,7 @@ import Figure from '../Figure.astro';
 <svg viewBox="0 0 760 380" role="img" aria-label="The operation DAG versus the materialized state" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <marker id="dvs-up" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker>
-    <marker id="dvs-fold" markerWidth="10" markerHeight="10" refX="7" refY="3.2" orient="auto"><path d="M0,0 L7,3.2 L0,6.4 Z" fill="#84cc16"/></marker>
+    <marker id="dvs-fold" markerWidth="10" markerHeight="10" refX="7" refY="3.2" orient="auto"><path d="M0,0 L7,3.2 L0,6.4 Z" fill="#a5ff11"/></marker>
     <marker id="dvs-tree" markerWidth="8" markerHeight="8" refX="5.5" refY="2.6" orient="auto"><path d="M0,0 L5.5,2.6 L0,5.2 Z" fill="#39d0d8"/></marker>
   </defs>
   <rect x="0" y="0" width="760" height="380" rx="10" fill="#0f0f16"/>
@@ -41,8 +41,8 @@ import Figure from '../Figure.astro';
 
   <!-- CENTER: fold / projection -->
   <g class="seq-step" style="--step-i:1">
-    <line x1="322" y1="150" x2="436" y2="150" stroke="#84cc16" stroke-width="3" marker-end="url(#dvs-fold)"/>
-    <text x="380" y="138" text-anchor="middle" fill="#84cc16" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">fold / projection</text>
+    <line x1="322" y1="150" x2="436" y2="150" stroke="#a5ff11" stroke-width="3" marker-end="url(#dvs-fold)"/>
+    <text x="380" y="138" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">fold / projection</text>
     <text x="380" y="170" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">DAG &#8594; state</text>
   </g>
 

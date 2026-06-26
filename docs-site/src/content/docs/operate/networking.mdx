@@ -129,13 +129,13 @@ libp2p behaviours make it reachable.
   lanes={[
     { label: 'Node A', color: '#39d0d8' },
     { label: 'Relay', color: '#f0883e' },
-    { label: 'Node B', color: '#8b5cf6' },
+    { label: 'Node B', color: '#a371f7' },
   ]}
   steps={[
     { from: 0, to: 0, label: 'AutoNAT: learn reachability + observed address' },
     { from: 0, to: 0, label: "rendezvous: discover Node B's addresses" },
     { from: 0, to: 2, label: 'direct dial' },
-    { from: 2, to: 0, label: 'unreachable — Node B behind NAT', dashed: true, color: '#f59e0b' },
+    { from: 2, to: 0, label: 'unreachable — Node B behind NAT', dashed: true, color: '#e3b341' },
     { type: 'divider', label: 'fall back to relay' },
     { from: 2, to: 1, label: 'Relay client: reserve a slot' },
     { from: 0, to: 1, label: 'dial Node B via relay reservation' },

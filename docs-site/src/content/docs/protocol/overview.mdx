@@ -46,7 +46,7 @@ Astro island**, the thing this spike set out to prove:
   title="The life of an operation"
   lanes={[
     { label: 'Author node', color: '#3fb950' },
-    { label: 'Gossip (scope topic)', color: '#8b5cf6' },
+    { label: 'Gossip (scope topic)', color: '#a371f7' },
     { label: 'Peer node', color: '#58a6ff' },
   ]}
   steps={[
@@ -54,7 +54,7 @@ Astro island**, the thing this spike set out to prove:
     { from: 0, to: 0, label: 'build Op { scope, parents, hlc, payload }' },
     { from: 0, to: 0, label: 'sign id with member key' },
     { from: 0, to: 0, label: 'append to local DAG → fold → scope_root' },
-    { from: 0, to: 1, label: 'broadcast Op (encrypted under scope key)', color: '#84cc16' },
+    { from: 0, to: 1, label: 'broadcast Op (encrypted under scope key)', color: '#a5ff11' },
     { from: 1, to: 2, label: 'deliver Op' },
     { from: 2, to: 2, label: 'verify signature' },
     { from: 2, to: 2, label: 'authorize at the causal cut' },

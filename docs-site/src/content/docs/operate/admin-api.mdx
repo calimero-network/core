@@ -111,13 +111,13 @@ operation; `params` carries its arguments.
     { label: 'Client', color: '#f0883e' },
     { label: 'Server', color: '#58a6ff' },
     { label: 'Context', color: '#3fb950' },
-    { label: 'Network', color: '#8b5cf6' },
+    { label: 'Network', color: '#a371f7' },
   ]}
   steps={[
     { from: 0, to: 1, label: 'POST /jsonrpc { method: "execute", params }' },
     { from: 1, to: 1, label: 'dispatch on method = execute' },
     { from: 1, to: 2, label: 'execute(contextId, method, argsJson)' },
-    { from: 2, to: 2, label: 'run app method → state delta', color: '#84cc16' },
+    { from: 2, to: 2, label: 'run app method → state delta', color: '#a5ff11' },
     { from: 2, to: 3, label: 'broadcast op (state delta) on context topic' },
     { from: 2, to: 1, label: 'outcome { returns }', dashed: true },
     { from: 1, to: 0, label: 'JSON-RPC 2.0 result', dashed: true },

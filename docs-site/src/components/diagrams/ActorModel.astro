@@ -16,8 +16,8 @@
   <rect x="0" y="0" width="760" height="462" rx="12" fill="#0d1117"/>
 
   <!-- Server layer -->
-  <rect x="20" y="18" width="720" height="44" rx="9" fill="#231708" stroke="#f59e0b" stroke-width="1.4"/>
-  <text x="380" y="38" text-anchor="middle" fill="#f59e0b" font-family="ui-sans-serif, system-ui" font-size="13" font-weight="600">Server layer — REST · JSON-RPC · WebSocket · SSE</text>
+  <rect x="20" y="18" width="720" height="44" rx="9" fill="#231708" stroke="#e3b341" stroke-width="1.4"/>
+  <text x="380" y="38" text-anchor="middle" fill="#e3b341" font-family="ui-sans-serif, system-ui" font-size="13" font-weight="600">Server layer — REST · JSON-RPC · WebSocket · SSE</text>
   <text x="380" y="54" text-anchor="middle" fill="#8b949e" font-family="ui-sans-serif, system-ui" font-size="9.5">crates/server — no business logic, delegates through client façades</text>
 
   <!-- Server -> actor façade arrows -->
@@ -48,10 +48,10 @@
   <text x="287" y="201" fill="#5d7da6" font-family="ui-monospace, monospace" font-size="7.5">crates/node · Handler&lt;NodeMessage&gt;</text>
 
   <!-- NetworkManager -->
-  <rect x="530" y="118" width="210" height="92" rx="10" fill="#1a1430" stroke="#8b5cf6" stroke-width="1.4"/>
-  <text x="542" y="142" fill="#8b5cf6" font-family="ui-sans-serif, system-ui" font-size="13" font-weight="700">NetworkManager</text>
-  <rect x="680" y="128" width="48" height="16" rx="4" fill="#1a1430" stroke="#8b5cf6" stroke-width="0.9"/>
-  <text x="704" y="139" text-anchor="middle" fill="#8b5cf6" font-family="ui-monospace, monospace" font-size="8" font-weight="600">actor</text>
+  <rect x="530" y="118" width="210" height="92" rx="10" fill="#1a1430" stroke="#a371f7" stroke-width="1.4"/>
+  <text x="542" y="142" fill="#a371f7" font-family="ui-sans-serif, system-ui" font-size="13" font-weight="700">NetworkManager</text>
+  <rect x="680" y="128" width="48" height="16" rx="4" fill="#1a1430" stroke="#a371f7" stroke-width="0.9"/>
+  <text x="704" y="139" text-anchor="middle" fill="#a371f7" font-family="ui-monospace, monospace" font-size="8" font-weight="600">actor</text>
   <text x="542" y="166" fill="#8b949e" font-family="ui-sans-serif, system-ui" font-size="8.5">owns the libp2p Swarm</text>
   <text x="542" y="181" fill="#8b949e" font-family="ui-sans-serif, system-ui" font-size="8.5">gossipsub · Kademlia · streams</text>
   <text x="542" y="201" fill="#6f5ca6" font-family="ui-monospace, monospace" font-size="7.5">crates/network · Handler&lt;NetworkMessage&gt;</text>
@@ -68,10 +68,10 @@
 
   <!-- Tasks row -->
   <!-- SyncManager -->
-  <rect x="275" y="258" width="210" height="76" rx="10" fill="#231708" stroke="#f59e0b" stroke-width="1.4"/>
-  <text x="287" y="282" fill="#f59e0b" font-family="ui-sans-serif, system-ui" font-size="12" font-weight="700">SyncManager</text>
-  <rect x="403" y="268" width="70" height="16" rx="4" fill="#231708" stroke="#f59e0b" stroke-width="0.9"/>
-  <text x="438" y="279" text-anchor="middle" fill="#f59e0b" font-family="ui-monospace, monospace" font-size="8" font-weight="600">async task</text>
+  <rect x="275" y="258" width="210" height="76" rx="10" fill="#231708" stroke="#e3b341" stroke-width="1.4"/>
+  <text x="287" y="282" fill="#e3b341" font-family="ui-sans-serif, system-ui" font-size="12" font-weight="700">SyncManager</text>
+  <rect x="403" y="268" width="70" height="16" rx="4" fill="#231708" stroke="#e3b341" stroke-width="0.9"/>
+  <text x="438" y="279" text-anchor="middle" fill="#e3b341" font-family="ui-monospace, monospace" font-size="8" font-weight="600">async task</text>
   <text x="287" y="304" fill="#8b949e" font-family="ui-sans-serif, system-ui" font-size="8.5">periodic + on-demand sync cycles</text>
   <text x="287" y="318" fill="#8b949e" font-family="ui-sans-serif, system-ui" font-size="8.5">picks protocol from divergence metrics</text>
   <text x="287" y="330" fill="#a8772b" font-family="ui-monospace, monospace" font-size="7.5">crates/node · tokio task · uses NetworkClient</text>

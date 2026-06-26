@@ -283,13 +283,13 @@ call:
   title="Embedded-auth JWT flow"
   lanes={[
     { label: 'Client', color: '#3fb950' },
-    { label: 'Auth service', color: '#8b5cf6' },
+    { label: 'Auth service', color: '#a371f7' },
     { label: 'Node API', color: '#58a6ff' },
   ]}
   steps={[
     { from: 0, to: 1, label: 'POST /auth/token { username, password }' },
     { from: 1, to: 1, label: 'user_password provider validates credential' },
-    { from: 1, to: 1, label: 'mint HS256 JWT (access + refresh)', color: '#84cc16' },
+    { from: 1, to: 1, label: 'mint HS256 JWT (access + refresh)', color: '#a5ff11' },
     { from: 1, to: 0, label: '{ access_token, refresh_token }', dashed: true },
     { type: 'divider', label: 'authenticated request' },
     { from: 0, to: 2, label: 'GET /admin-api/... Authorization: Bearer <token>' },

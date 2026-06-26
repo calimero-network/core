@@ -89,10 +89,10 @@ deterministic walk — so both editors land on the same text without coordinatio
   steps={[
     { from: 0, to: 0, label: 'insert X at pos 5 — mint CharId (HLC + seq)' },
     { from: 1, to: 1, label: 'insert Y at pos 5 — concurrent, different CharId', color: '#58a6ff' },
-    { from: 0, to: 1, label: 'broadcast char X (immutable)', color: '#84cc16' },
-    { from: 1, to: 0, label: 'broadcast char Y (immutable)', color: '#84cc16' },
-    { from: 1, to: 1, label: 'merge: union of chars, order by left + CharId', color: '#8b5cf6' },
-    { from: 0, to: 0, label: 'merge: same DFS order on every node', color: '#8b5cf6' },
+    { from: 0, to: 1, label: 'broadcast char X (immutable)', color: '#a5ff11' },
+    { from: 1, to: 0, label: 'broadcast char Y (immutable)', color: '#a5ff11' },
+    { from: 1, to: 1, label: 'merge: union of chars, order by left + CharId', color: '#a371f7' },
+    { from: 0, to: 0, label: 'merge: same DFS order on every node', color: '#a371f7' },
     { type: 'divider', label: 'same chars ⇒ identical text' },
   ]}
 />

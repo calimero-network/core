@@ -14,19 +14,19 @@
 <div class="context-in-memory">
 <svg width="100%" viewBox="0 0 760 472" role="img" aria-label="One context scope's memory footprint: its Meta, State and UnifiedOp column-family rows keyed by the context id, with membership inherited from the governing group" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <marker id="cim-up" markerWidth="10" markerHeight="10" refX="5" refY="1" orient="auto"><path d="M1,9 L9,9 L5,1 Z" fill="#8b5cf6"/></marker>
+    <marker id="cim-up" markerWidth="10" markerHeight="10" refX="5" refY="1" orient="auto"><path d="M1,9 L9,9 L5,1 Z" fill="#a371f7"/></marker>
     <marker id="cim-a" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#3fb950"/></marker>
   </defs>
   <rect x="0" y="0" width="760" height="472" rx="10" fill="#0d1117"/>
 
   <!-- governing group (violet): where members + keys live -->
-  <rect x="200" y="12" width="360" height="48" rx="11" fill="#1a1430" stroke="#8b5cf6" stroke-width="1.5"/>
+  <rect x="200" y="12" width="360" height="48" rx="11" fill="#1a1430" stroke="#a371f7" stroke-width="1.5"/>
   <text x="380" y="32" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="12" font-weight="700">Engineering group (governance) &#183; eng 0xe9&#8230;</text>
   <text x="380" y="49" text-anchor="middle" fill="#c8b6ff" font-family="'JetBrains Mono', monospace" font-size="8.5">members &amp; keys come from the group &#8212; not stored per-context</text>
 
   <!-- arrow up: membership inherited -->
-  <line x1="380" y1="86" x2="380" y2="62" stroke="#8b5cf6" stroke-width="1.8" marker-end="url(#cim-up)"/>
-  <text x="392" y="78" fill="#8b5cf6" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">membership inherited</text>
+  <line x1="380" y1="86" x2="380" y2="62" stroke="#a371f7" stroke-width="1.8" marker-end="url(#cim-up)"/>
+  <text x="392" y="78" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">membership inherited</text>
 
   <!-- context scope container -->
   <rect x="12" y="86" width="736" height="350" rx="11" fill="#0c1014" stroke="#30363d" stroke-width="1.3"/>
@@ -34,8 +34,8 @@
   <text x="24" y="126" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">scope_root 0x6e&#8230;   <tspan fill="#6b6b80">— ids &amp; hashes below are illustrative hex</tspan></text>
 
   <!-- ===== Meta panel (amber) ===== -->
-  <rect x="24" y="140" width="226" height="288" rx="9" fill="#231708" stroke="#f59e0b" stroke-width="1.4"/>
-  <text x="137" y="160" text-anchor="middle" fill="#f59e0b" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">Meta CF</text>
+  <rect x="24" y="140" width="226" height="288" rx="9" fill="#231708" stroke="#e3b341" stroke-width="1.4"/>
+  <text x="137" y="160" text-anchor="middle" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">Meta CF</text>
   <rect x="34" y="170" width="206" height="150" rx="7" fill="#1a1206" stroke="#5c4410" stroke-width="1"/>
   <text x="44" y="190" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">ContextMeta @ ctx 0x7a&#8230;</text>
   <text x="44" y="208" fill="#f0c674" font-family="'JetBrains Mono', monospace" font-size="9">&#8594; &#123;</text>
