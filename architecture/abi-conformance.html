@@ -156,6 +156,36 @@ pub struct AbiState {
 <p>Other apps in the repository are free to use only the CRDT types they actually need; they are <em>not</em> required to cover the full variant set.</p>
 </div>
 
+<div class="card gc"><h2>SDK↔core wire-contract CI gate</h2>
+<p>Release <strong>0.11.0-rc.8</strong> introduces a new CI gate that pins the SDK-to-core wire contract, ensuring that any unintended change to the cross-boundary surface is caught before it ships.</p>
+<h3>What the gate checks</h3>
+<p>The gate compares the serialized wire contract — the set of message types, field names, field orderings, and encoding decisions exchanged between the SDK and the core runtime — against a committed golden snapshot. If the computed contract diverges from the snapshot in any way, CI fails with a diff that identifies exactly what changed.</p>
+<ul>
+<li><strong>Message types</strong> — every request and response type that crosses the SDK/core boundary must appear in the snapshot.</li>
+<li><strong>Field names and orderings</strong> — changes that would silently alter on-wire encoding are surfaced as gate failures.</li>
+<li><strong>Encoding decisions</strong> — discriminant values, tag assignments, and length-prefixing choices are all captured.</li>
+</ul>
+<h3>Why this matters</h3>
+<p>The SDK and the core runtime are versioned and distributed independently. A change that looks purely internal to one side can silently break the protocol boundary, and that breakage may not be discovered until after a release is published. The gate makes the boundary <em>explicit and machine-checked</em> on every CI run, so the failure appears at the pull-request stage rather than in a post-release bug report.</p>
+<h3>How to update the snapshot intentionally</h3>
+<p>When a wire-contract change is deliberate — for example, adding a new field to a request message — the snapshot must be regenerated and committed alongside the code change:</p>
+<ol>
+<li>Make the intended change to the wire types in the SDK or core crate.</li>
+<li>Run <code>cargo test -p wire_contract -- --nocapture</code> to regenerate the golden snapshot.</li>
+<li>Review the diff produced by the test to confirm only the intended changes appear.</li>
+<li>Commit the updated snapshot file together with the code change in the same pull request.</li>
+<li>Verify the CI gate passes with the new snapshot in place.</li>
+</ol>
+<p><strong>Never</strong> update the snapshot without a corresponding code change and explicit review of the diff. An unexplained snapshot update is a signal that an unintended wire-contract change has been made.</p>
+<h3>Relationship to the ABI conformance gate</h3>
+<p>The wire-contract gate and the <a href="#crdt-coverage">CRDT coverage gate</a> are complementary but distinct. The CRDT coverage gate ensures every <code>CrdtCollectionType</code> variant is represented in the ABI corpus; the wire-contract gate ensures the <em>protocol boundary</em> between the SDK and the core runtime does not change undetected. Both gates must pass with empty exemption lists in steady state.</p>
+<h3>Changelog entry</h3>
+<p>This gate is recorded in the project CHANGELOG under the <strong>Added</strong> section for <code>0.11.0-rc.8</code>:</p>
+<pre class="code">## [0.11.0-rc.8]
+### Added
+- CI gate that pins the SDK-to-core wire contract; any unintended change
+  to the cross-boundary surface now fails CI before it can ship.</pre>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
