@@ -41,9 +41,12 @@ impl<'a> NamespaceMembershipService<'a> {
         // (not a local clock) so every node reaches the same verdict.
         // Runs after signature verification (so `expiration` is authentic)
         // but before the permission lookup, to reject expired ops cheaply.
-        if let Some(joined_at) = joined_at {
-            let expiration = inv.expiration_timestamp;
-            if expiration != 0 && joined_at > expiration {
+        let expiration = inv.expiration_timestamp;
+        if expiration != 0 {
+            let Some(joined_at) = joined_at else {
+                bail!("invitation expired: joined_at is absent and expiration {expiration} is set");
+            };
+            if joined_at > expiration {
                 bail!("invitation expired: joined_at {joined_at} > expiration {expiration}");
             }
         }
