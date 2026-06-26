@@ -209,6 +209,115 @@ entry as `Public` and strip the per-entry owner, silently dropping the
 authorization. The no-op is the safe choice, not an oversight.
 :::
 
+## `AccessControl`: named roles
+
+From `apps/components-demo`. The wrappers above bind capabilities to **keys** (a
+writer set, an owner, per-key `OpMask`s). `AccessControl` adds a layer of
+indirection on top: capabilities bind to **named roles** (`"editor"`,
+`"moderator"`, …) and accounts are granted membership in those roles — the same
+shape as OpenZeppelin's role-based access control. You grant and revoke
+`"editor"` once; the gate on a method asks "does this account hold `"editor"`?"
+rather than naming keys directly.
+
+There is a single admin tier — the OpenZeppelin `DEFAULT_ADMIN_ROLE`. **Any admin
+may grant or revoke any role**; roles do not have their own per-role admin roles.
+Under the hood `AccessControl` wraps **one** `SharedStorage<UnorderedMap<…>>`
+(itself a `PermissionedStorage<T, WriterSetAcl>`): the admins are exactly that
+storage's writer set, and each grant is an entry
+(`role\0member_hex → LwwRegister<bool>`, `true` = held, `false` = revoked) in its
+writer-set-guarded map. So a non-admin's hand-crafted grant delta is rejected by
+the **merge plane** for the same reason a non-writer's `SharedStorage` write is —
+the registry entries inherit the admin writer set. The fail-fast guards
+(`only_admin()`, `only_role()`) mirror what merge enforces.
+
+### The API
+
+| Call | Signature | Who may call | Effect |
+|------|-----------|--------------|--------|
+| `AccessControl::new(admin)` | `(admin: PublicKey) -> Self` | — | Create with `admin` as the sole initial admin |
+| `AccessControl::new_admin_caller()` | `() -> Self` | — | Same, with the current executor as admin (the `init` case) |
+| `grant(role, who)` | `(&mut self, role: &str, who: PublicKey)` | an admin | Give `who` the role |
+| `revoke(role, who)` | `(&mut self, role: &str, who: &PublicKey)` | an admin | Take the role from `who` |
+| `has_role(role, who)` | `(&self, role: &str, who: &PublicKey) -> Result<bool>` | anyone | Whether `who` currently holds `role` |
+| `only_role(role)` | `(&self, role: &str) -> Result<()>` | — | Fail-fast: the current executor must hold `role` |
+| `only_admin()` | `(&self) -> Result<()>` | — | Fail-fast: the current executor must be an admin |
+| `is_admin(who)` / `admins()` | `(&self, who: &PublicKey) -> bool` / `(&self) -> BTreeSet<PublicKey>` | anyone | Query the admin tier |
+| `grant_admin(who)` / `revoke_admin(who)` | `(&mut self, who: …) -> Result<()>` | an admin | Add / remove an admin — an **authenticated writer-set rotation** (cannot remove the last admin) |
+
+To gate a mutation on a role, call `only_role("editor")?` (fail-fast UX) before
+the write — but the real boundary is that the mutated data lives in its own
+writer-set-guarded wrapper, so the role check has teeth only when the role is
+also projected onto that data (next paragraph). Admin changes go through
+`grant_admin` / `revoke_admin`, which rotate the backing writer set the same
+signed way `Ownable::transfer_ownership` does.
+
+```rust
+use calimero_sdk::{app, env, PublicKey};
+use calimero_storage::collections::{AccessControl, LwwRegister, PermissionedStorage};
+
+#[app::state]
+pub struct Docs {
+    // The installer is the sole initial admin; admins grant/revoke roles.
+    roles: AccessControl,
+    // The role-gated payload lives in its own writer-set-guarded wrapper.
+    body: PermissionedStorage<LwwRegister<String>>,
+}
+
+#[app::logic]
+impl Docs {
+    #[app::init]
+    pub fn init() -> Docs {
+        let me: PublicKey = env::executor_id().into();
+        Docs {
+            roles: AccessControl::new(me),
+            body: PermissionedStorage::new([me].into(), false),
+        }
+    }
+
+    // Admin-only: grant the "editor" role. Fail-fast here, enforced at merge
+    // (a forged grant delta is rejected — the registry inherits the admin set).
+    pub fn grant_editor(&mut self, who: PublicKey) -> app::Result<()> {
+        self.roles.grant("editor", who)?;
+        Ok(())
+    }
+
+    // Role-gated mutation: caller must hold "editor".
+    pub fn edit(&mut self, value: String) -> app::Result<()> {
+        self.roles.only_role("editor")?;       // fail-fast UX
+        self.body.insert(LwwRegister::new(value))?; // merge-enforced write
+        Ok(())
+    }
+}
+```
+
+For the role gate to be load-bearing at merge (not just fail-fast), push the role
+memberships onto the guarded data's capability map with
+`AccessControl::project_onto(&[("editor", OpMask::WRITE)], &mut self.body)` after
+any role change. That hands every `"editor"` the `WRITE` bit on `body`, signed and
+enforced by the merge plane — so a non-editor's forged write is dropped even on a
+patched node. Re-run `project_onto` after each grant/revoke; the registry write and
+the projection are separate signed actions that converge independently.
+
+### When to reach for it
+
+`AccessControl` is the right choice when **the same capability is shared by a set
+of accounts that changes over time, and you want to manage that set by name**.
+Tie it back to the decision matrix:
+
+| You want | Reach for |
+|----------|-----------|
+| One owner, transferable | `Ownable<T>` (a one-key writer set) |
+| A flat group of writers, no naming | `SharedStorage<T>` |
+| Per-key `WRITE` / `DELETE` / `ADMIN` bits | `PermissionedStorage<T, ProtocolAuthorizer>` |
+| Named roles you grant/revoke, each conferring a capability | `AccessControl` (+ `project_onto`) |
+
+The difference from `PermissionedStorage` is the indirection: with bare
+per-key masks you re-grant every account when a policy changes; with
+`AccessControl` you change the `"editor"` membership once and re-project. That
+indirection is worth it when several objects share one role policy, or when
+membership churns; for a single object with a fixed writer set, the plain wrappers
+are simpler.
+
 ## The #1 gotcha
 
 :::caution[An Authorizer only protects data *inside* the wrapper]

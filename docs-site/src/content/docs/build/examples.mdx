@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-import { Aside, LinkCard, CardGrid, Steps } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
 The [`apps/`](https://github.com/calimero-network/core/tree/master/apps)
 directory is the best ground truth for writing a Calimero app: every example is
@@ -30,14 +30,52 @@ the full bodies.
 
 ## Pick by concept
 
-| Example | Teaches | Key concept link |
-|---------|---------|------------------|
-| `kv-store` | A map of last-writer-wins values; events; `entry`/`get_mut` patterns | [Collections](/build/collections/) |
-| `kv-store-with-handlers` | Routing emitted events to handler methods; a CRDT `Counter` | [SDK macros](/build/sdk-macros/) |
-| `collaborative-editor` | Concurrent collaborative text with the RGA CRDT | [Collections](/build/collections/) |
-| `team-metrics-macro` / `team-metrics-custom` | Nested CRDT structs via `#[derive(Mergeable)]` vs. a hand-rolled `merge` | [SDK macros](/build/sdk-macros/) |
-| `blobs` | Storing binary file metadata + announcing blobs to the network | [Blobs](/protocol/blobs/) |
-| `xcall-example` | Calling a method on another context, and the xcall entry-point gate | [Cross-context calls](/protocol/xcall/) |
+Every user-facing example below links to its source crate and to the page that
+documents the concept it teaches. The ones marked **(walkthrough below)** also
+have a full worked section further down this page; the rest are compact entries —
+the source is short enough to read end to end.
+
+### Basics
+
+| Example | Teaches | Documented in |
+|---------|---------|---------------|
+| [`kv-store`](https://github.com/calimero-network/core/tree/master/apps/kv-store) | A map of last-writer-wins values; events; `entry` / `get_mut` patterns **(walkthrough below)** | [Collections](/build/collections/) |
+| [`kv-store-init`](https://github.com/calimero-network/core/tree/master/apps/kv-store-init) | Seeding initial state from an `#[app::init]` constructor | [SDK macros](/build/sdk-macros/) |
+| [`kv-store-with-handlers`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-handlers) | Routing emitted events to handler methods; a CRDT `Counter` **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
+
+### Storage & access control
+
+| Example | Teaches | Documented in |
+|---------|---------|---------------|
+| [`kv-store-with-shared-storage`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-shared-storage) | `SharedStorage`: group-writable state guarded by a rotatable writer set | [Permissioned storage](/build/permissioned-storage/) |
+| [`kv-store-with-user-and-frozen-storage`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-user-and-frozen-storage) | `UserStorage` (per-owner slots) + `FrozenStorage` (write-once, content-addressed) | [Permissioned storage](/build/permissioned-storage/) |
+| [`components-demo`](https://github.com/calimero-network/core/tree/master/apps/components-demo) | The access-control components: `Ownable`, `AccessControl` (named roles, `grant_role` / `has_role`), `PermissionedStorage` | [Permissioned storage](/build/permissioned-storage/) |
+| [`private_data`](https://github.com/calimero-network/core/tree/master/apps/private_data) | `#[app::private]` node-local state that is never synced across the mesh | [Permissioned storage](/build/permissioned-storage/) · [State modeling](/build/state-modeling/) |
+
+### Collections & keys
+
+| Example | Teaches | Documented in |
+|---------|---------|---------------|
+| [`sorted-kv-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-kv-store) | `SortedMap`: a key-ordered map with range / prefix / pagination | [Collections](/build/collections/) |
+| [`sorted-set-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-set-store) | `SortedSet`: an ordered add-wins set with range / prefix / pagination | [Collections](/build/collections/) |
+| [`custom-key-store`](https://github.com/calimero-network/core/tree/master/apps/custom-key-store) | Custom key types via an `AsRef<[u8]>` newtype | [Collections](/build/collections/) |
+
+### CRDTs & advanced state
+
+| Example | Teaches | Documented in |
+|---------|---------|---------------|
+| [`collaborative-editor`](https://github.com/calimero-network/core/tree/master/apps/collaborative-editor) | Concurrent collaborative text with the `Rga` CRDT **(walkthrough below)** | [Collections](/build/collections/) |
+| [`nested-crdt-test`](https://github.com/calimero-network/core/tree/master/apps/nested-crdt-test) | Nesting collections inside collection values (maps of maps, vectors of counters) | [Advanced SDK](/build/advanced-sdk/) |
+| [`team-metrics-macro`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-macro) | Nested CRDT structs via `#[derive(Mergeable)]` **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
+| [`team-metrics-custom`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-custom) | A hand-written `Mergeable` for merge logic the derive can't express **(walkthrough below)** | [Advanced SDK](/build/advanced-sdk/) |
+| [`blobs`](https://github.com/calimero-network/core/tree/master/apps/blobs) | Blob storage: hold file metadata + announce blobs to the context **(walkthrough below)** | [Blobs](/build/guides/blobs/) |
+| [`xcall-example`](https://github.com/calimero-network/core/tree/master/apps/xcall-example) | Cross-context calls + the `#[app::xcall]` entry-point gate **(walkthrough below)** | [Cross-context calls](/build/guides/cross-context/) |
+
+### Migrations
+
+| Example | Teaches | Documented in |
+|---------|---------|---------------|
+| [`migrations`](https://github.com/calimero-network/core/tree/master/apps/migrations) | Schema-versioning scenarios — adding, removing, renaming, and retyping fields across versions | [Migrations](/build/migrations/) |
 
 <Aside type="tip" title="Run the tests first">
   Every app builds and tests natively — no node, no WASM. From the repo root,
@@ -192,9 +230,10 @@ pub struct TeamMetricsApp {
 In `team-metrics-macro`, `#[derive(Mergeable)]` writes the merge for you — it
 just merges each field, which works because every field is itself a CRDT. The
 `team-metrics-custom` app has the identical state but writes
-`impl Mergeable for TeamStats { fn merge(...) }` by hand, for when you need merge
-logic the derive can't express. Reach for the derive unless you have a reason
-not to.
+`impl Mergeable for TeamStats { fn merge(...) }` (and a matching `RekeyTarget`)
+by hand, for when you need merge logic the derive can't express — see
+[Advanced SDK](/build/advanced-sdk/). Reach for the derive unless you have a
+reason not to.
 
 **Key methods** (identical across both):
 
@@ -244,7 +283,7 @@ would have forced every field into its own CRDT wrapper. `blob_id` is the SDK's
 <Aside type="note" title="The app stores metadata, not bytes">
   The file bytes are uploaded and downloaded through the blob client; this app
   only records the `BlobId` and announces it. See
-  [Blobs](/protocol/blobs/) for how the blob store and announcement work.
+  [Blobs](/build/guides/blobs/) for how the blob store and announcement work.
 </Aside>
 
 **Build & run.** `./build.sh` produces `res/blobs.wasm`; install and call per
@@ -285,7 +324,7 @@ entry point — an xcall targeting it is denied by the node before it runs.
   runs `mero-abi embed` to write the ABI (with each method's `xcall_callable`
   flag) into a custom WASM section, so the node can enforce the entry-point gate.
   If you build an xcall app by hand, don't skip that step. See
-  [Cross-context calls](/protocol/xcall/).
+  [Cross-context calls](/build/guides/cross-context/).
 </Aside>
 
 **Build & run.** `./build.sh` produces `res/xcall_example.wasm` with the
@@ -293,27 +332,19 @@ embedded ABI; install it into two contexts, then `ping` one toward the other and
 watch `get_counter()` move on the target. See [Quickstart](/build/quickstart/)
 for the install flow.
 
-## More to explore
+## Test & conformance fixtures
 
-<CardGrid>
-  <LinkCard
-    title="kv-store-with-shared-storage"
-    href="/build/collections/"
-    description="Group-writable state guarded by a rotatable writer set (SharedStorage)."
-  />
-  <LinkCard
-    title="kv-store-with-user-and-frozen-storage"
-    href="/build/collections/"
-    description="Per-user slots (UserStorage) and content-addressed immutable blobs (FrozenStorage)."
-  />
-  <LinkCard
-    title="sorted-kv-store / sorted-set-store"
-    href="/build/collections/"
-    description="Ordered maps and sets with range / prefix / pagination."
-  />
-  <LinkCard
-    title="kv-store-init"
-    href="/build/sdk-macros/"
-    description="Passing init parameters to #[app::init]."
-  />
-</CardGrid>
+A handful of crates under [`apps/`](https://github.com/calimero-network/core/tree/master/apps)
+are **harness and conformance fixtures**, not teaching examples — they exist to
+exercise the node, the sync layer, or the wire formats, and read awkwardly as
+app tutorials. Reach for them only when you are working on the harness or the
+formats they pin down:
+
+| Fixture | Role |
+|---------|------|
+| [`e2e-kv-store`](https://github.com/calimero-network/core/tree/master/apps/e2e-kv-store) | End-to-end node test fixture. |
+| [`sync-test`](https://github.com/calimero-network/core/tree/master/apps/sync-test) | State-sync / convergence harness fixture. |
+| [`scaffolding-e2e`](https://github.com/calimero-network/core/tree/master/apps/scaffolding-e2e) | Fixture for the project-scaffolding end-to-end tests. |
+| [`abi_conformance`](https://github.com/calimero-network/core/tree/master/apps/abi_conformance) | Pins the [app ABI](/build/app-abi/) format. |
+| [`state-schema-conformance`](https://github.com/calimero-network/core/tree/master/apps/state-schema-conformance) | Pins the [state schema](/build/app-abi/) format. |
+| [`migration-harness-example`](https://github.com/calimero-network/core/tree/master/apps/migration-harness-example) | Fixture for the migration harness. |
