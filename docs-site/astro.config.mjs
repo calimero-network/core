@@ -13,7 +13,16 @@ export default defineConfig({
       title: 'Calimero Core',
       description:
         'Build, operate, and reimplement Calimero — a peer-to-peer framework for sandboxed WASM apps over causally-consistent shared state.',
+      logo: { src: './src/assets/logo.svg', alt: 'Calimero Core' },
+      favicon: '/favicon.svg',
       customCss: ['./src/styles/theme.css'],
+      lastUpdated: true,
+      editLink: {
+        baseUrl: 'https://github.com/calimero-network/core/edit/master/docs-site/',
+      },
+      head: [
+        { tag: 'meta', attrs: { name: 'theme-color', content: '#0d1117' } },
+      ],
       social: [
         {
           icon: 'github',
