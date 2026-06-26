@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sync &amp; Convergence — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+<style>
+.chapter-nav { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border); font-size: .88rem; }
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="index.html">Protocol Reference</a><span class="sep">/</span><span>Sync &amp; Convergence</span></div>
+<h1>Sync &amp; <em>Convergence</em></h1>
+<p class="page-subtitle">Chapter 10 — detecting divergence and repairing it.</p>
+
+<div class="card gc">
+<h2>Why sync exists</h2>
+<p>Gossip is best-effort. A node that was offline, partitioned, or simply not yet subscribed will miss broadcasts — so two nodes can hold different operation sets and, therefore, different scope roots. Sync is the reliable channel that closes that gap. Its whole job is built on one fact established back in Chapter 4: <strong>two nodes agree if and only if their scope roots are equal.</strong> So sync is just "compare roots; if they differ, find and transfer what's missing."</p>
+</div>
+
+<div class="card ga">
+<h2>What triggers it</h2>
+<p>A node starts a sync session for a scope when any of these fire:</p>
+<ul>
+<li><strong>Periodically</strong> — a steady background tick, so nothing drifts indefinitely.</li>
+<li><strong>On join</strong> — a freshly joined member pulls the history it just gained access to.</li>
+<li><strong>On heartbeat mismatch</strong> — the periodic <code>Heartbeat</code> (Chapter 7) advertises a peer's heads and root; a root that doesn't match ours is a direct signal to reconcile.</li>
+<li><strong>After a data sync</strong> — a follow-up check that governance also agrees (below).</li>
+</ul>
+</div>
+
+<div class="card gb">
+<h2>The handshake and the verdict</h2>
+<p>A session opens a stream to a peer and the two exchange their <strong>heads and roots</strong>. From the comparison the node reaches one of three verdicts — and the verdict, not a guess, selects what happens next:</p>
+<div class="diagram-tools"><button class="replay-btn" onclick="replay('d-verdict')">&#9654; Replay</button></div>
+<div class="diagram-container" id="d-verdict">
+<svg viewBox="0 0 760 300" role="img" aria-label="The convergence verdict" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="va" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="300" rx="10" fill="#0f0f16"/>
+  <!-- Q1 -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="300" y="22" width="170" height="46" rx="9" fill="#161b22" stroke="#8b949e" stroke-width="1.4"/>
+    <text x="385" y="42" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">scope roots equal?</text>
+    <text x="385" y="58" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">H(entities ‖ acl ‖ gov)</text>
+  </g>
+  <!-- Converged -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="470" y1="45" x2="524" y2="45" stroke="#8b949e" stroke-width="1.3" marker-end="url(#va)"/>
+    <text x="497" y="38" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="8.5">yes</text>
+    <rect x="528" y="22" width="200" height="46" rx="9" fill="#10210f" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="628" y="42" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">Converged</text>
+    <text x="628" y="58" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">nothing to do</text>
+  </g>
+  <!-- Q2 -->
+  <g class="seq-step" style="--step-i:2">
+    <line x1="385" y1="68" x2="385" y2="118" stroke="#8b949e" stroke-width="1.3" marker-end="url(#va)"/>
+    <text x="400" y="94" text-anchor="start" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">no</text>
+    <rect x="300" y="120" width="170" height="46" rx="9" fill="#161b22" stroke="#8b949e" stroke-width="1.4"/>
+    <text x="385" y="140" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">entity roots equal?</text>
+    <text x="385" y="156" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">data plane only</text>
+  </g>
+  <!-- GovDiverged -->
+  <g class="seq-step" style="--step-i:3">
+    <line x1="300" y1="158" x2="222" y2="212" stroke="#8b949e" stroke-width="1.3" marker-end="url(#va)"/>
+    <text x="232" y="190" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">yes</text>
+    <rect x="40" y="214" width="210" height="58" rx="9" fill="#231708" stroke="#f0883e" stroke-width="1.4"/>
+    <text x="145" y="237" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">Governance diverged</text>
+    <text x="145" y="255" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">data agrees; pull governance ops</text>
+  </g>
+  <!-- DataDiverged -->
+  <g class="seq-step" style="--step-i:4">
+    <line x1="470" y1="158" x2="548" y2="212" stroke="#8b949e" stroke-width="1.3" marker-end="url(#va)"/>
+    <text x="538" y="190" text-anchor="middle" fill="#ef4444" font-family="'JetBrains Mono', monospace" font-size="8.5">no</text>
+    <rect x="520" y="214" width="220" height="58" rx="9" fill="#2a1212" stroke="#ef4444" stroke-width="1.4"/>
+    <text x="630" y="237" text-anchor="middle" fill="#ef4444" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">Data diverged</text>
+    <text x="630" y="255" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">locate &amp; transfer missing state</text>
+  </g>
+</svg>
+</div>
+<p>The two-step test matters: comparing the <em>full</em> scope root first catches divergence the data alone would hide (the hash-neutral case from Chapter 4 — an access-control or membership split with identical data). Only if the data plane also differs do we reach for the heavier state-transfer protocols.</p>
+</div>
+
+<div class="card gd">
+<h2>Choosing how to transfer</h2>
+<p>When state must move, the node picks the cheapest protocol that fits the gap:</p>
+<div class="g3">
+<div class="cb"><h4>Tree comparison</h4><p>Walk the two state trees top-down, descending only into subtrees whose hashes differ, until the exact differing entities are found — then exchange just those. Cheap when the difference is small.</p></div>
+<div class="cb"><h4>Level-wise</h4><p>Compare the trees breadth-first, level by level. A better fit when differences are spread widely rather than concentrated.</p></div>
+<div class="cb"><h4>Snapshot</h4><p>Transfer the whole materialized scope. The fallback when a node is so far behind that incremental comparison isn't worth it — a new joiner, or one long offline.</p></div>
+</div>
+<p style="margin-top:10px">Transferred entities are merged through the same conflict-free fold as everything else (Chapter 4), and the receiver re-checks its root afterward. The merge is authorized at the cut, so sync can never smuggle in a write the author wasn't entitled to make.</p>
+</div>
+
+<div class="card ga">
+<h2>A session, end to end</h2>
+<div class="diagram-tools"><button class="replay-btn" onclick="replay('d-sync')">&#9654; Replay</button></div>
+<div class="diagram-container seq animating" id="d-sync"></div>
+</div>
+
+<div class="card gb">
+<h2>Closing the governance gap</h2>
+<p>Data and governance live in different scopes and converge independently, so a successful <em>data</em> sync doesn't by itself guarantee the governance planes agree. After any data transfer completes, the node recomputes the scope root and, if it still differs from the peer's, pulls governance operations too — <strong>post-sync governance reconciliation</strong>.</p>
+<p>The pull is idempotent: against an already-agreeing peer it returns nothing, so running it whenever roots still differ is safe and self-limiting. It is what ensures the <em>whole</em> scope — data and governance together — actually converges, not just the half that the state-transfer protocols touch.</p>
+</div>
+
+<div class="card gc">
+<h2>The operation's life, complete</h2>
+<p>That closes the loop the landing page opened. An operation is born in an execution (Chapter 8), broadcast over gossip (Chapter 7), received and folded by peers (Chapter 9) — and anything that channel missed is found and repaired here by comparing one 32-byte hash and transferring exactly what differs. No consensus, no quorum, no agreed order: just a signed operation DAG that folds to a state and a root, with divergence <strong>detected, not prevented</strong>.</p>
+<p>From here the reference branches into appendices — the storage schema, the crate map, metrics, and migrations — but the protocol itself is the ten chapters you have just read.</p>
+</div>
+
+<div class="chapter-nav">
+<span><a href="receive-path.html">← The Receive &amp; Apply Path</a></span>
+<span><a href="index.html">Protocol Reference home →</a></span>
+</div>
+
+</div>
+</div>
+<script src="../seq-diagram.js"></script>
+<script>
+  window.SEQ_DIAGRAMS = [{
+    id: 'd-sync',
+    title: 'A sync session',
+    lanes: [
+      { label: 'Initiator', color: '#3fb950' },
+      { label: 'Peer', color: '#58a6ff' }
+    ],
+    steps: [
+      { from: 0, to: 1, label: 'open stream' },
+      { from: 0, to: 1, label: 'exchange heads + roots' },
+      { from: 0, to: 0, label: 'verdict: converged / gov / data', color: '#a5ff11' },
+      { from: 0, to: 1, label: 'request what differs (tree / level / snapshot)' },
+      { from: 1, to: 0, label: 'transfer missing operations', dashed: true },
+      { from: 0, to: 0, label: 'fold + re-check root' },
+      { from: 0, to: 1, label: 'roots still differ? pull governance', color: '#f0883e' },
+      { type: 'divider', label: 'scope roots equal ⇒ converged' }
+    ]
+  }];
+</script>
+<script src="../nav.js"></script>
+</body>
+</html>
