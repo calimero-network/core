@@ -1,0 +1,211 @@
+---
+title: Storage Performance & Big-O
+description: How Calimero's collections cost in time and disk reads, and how to pick the right one when modeling your data.
+sidebar:
+  order: 9
+  badge:
+    text: Draft
+    variant: caution
+---
+
+This page is for app builders making data-modeling decisions. It explains what
+each [collection](/build/collections/) actually costs — in CPU and, more
+importantly, in **disk reads** — so you can choose a shape that stays fast as
+your state grows.
+
+Throughout, `n` is the number of entries in the collection you are operating on,
+`k` is the number of results a query returns, and `K` is the number of
+**siblings under one parent** (for a top-level collection, `K` is that
+collection's own entry count).
+
+## How storage actually works (and why it matters for perf)
+
+Calimero state is not an in-memory `HashMap`. It is a content-addressed tree of
+storage entities, and three properties of that tree drive every number below:
+
+1. **Each logical entry is its own storage entity.** A map with `n` keys is `n`
+   separate records on disk, each addressed by a content id. The parent
+   collection stores only the **set of child ids**, not the values.
+
+2. **There is no value index.** Nothing maps a value (or a key's position) to
+   where it lives, beyond the parent's child-id set. So to read every entry, you
+   must do `n` point reads — one round-trip to the backend per entry. Iteration
+   is inherently `O(n)` reads; there is no cheaper path.
+
+3. **Every write re-hashes its siblings.** When you insert or remove an entry,
+   the parent re-sorts and SHA-256s **all `K`** of its children to recompute its
+   Merkle hash (`index.rs`, `calculate_full_hash_for_children`), then walks the
+   ancestor chain to the root doing the same at each level. A write is therefore
+   `O(K log K)` in the size of its parent — **not** `O(1)`.
+
+The upside of property 3 is that reading the current root / scope hash is `O(1)`:
+it is kept current incrementally by every write, so the cost is paid at write
+time, never at read time.
+
+:::caution[Gotcha: writes are not `O(1)`]
+Inserting or removing one entry costs `O(K log K)`, where `K` is the number of
+siblings under the same parent, because the parent rehashes its entire child set
+on every write. A collection with one enormous parent makes every single write
+to it slow. Keep `K` bounded — partition large collections (e.g. shard by key
+prefix or by time bucket) so no single parent holds the whole dataset.
+:::
+
+## Shared primitives
+
+Every collection is built from the same handful of operations. Their costs
+compose into the per-collection table further down.
+
+| Primitive | Cost | Why |
+|---|---|---|
+| Derive an entry id | `O(1)` | one SHA-256 over `parent` + key |
+| Point read (`get` / `contains`) | `O(1)` in `n` | ~3 backend reads + a borsh decode; independent of collection size |
+| Load the child-id set | `O(n)` cold, `O(1)` warm | read the parent's child-id list once, then cache it in memory for the rest of the call |
+| `len` | `O(1)` warm / `O(n)` cold | counts the cached child-id set — it is **never** a stored counter |
+| Iterate all entries | `O(n)` reads | one point read per entry; there is no value index to shortcut it |
+| `insert` / `remove` (any write) | `O(K log K)` + ancestor walk | parent re-sorts and SHA-256s all `K` siblings, then re-hashes each ancestor up to the root |
+| Read root / scope hash | `O(1)` | kept current incrementally by every write |
+
+:::note
+"Warm" vs "cold" refers to whether the child-id set has already been loaded into
+the in-memory cache during the current execution. The **first** access that
+needs it pays one `O(n)`-sized read; subsequent accesses in the same call are
+free. So `len` is effectively `O(1)` once anything has touched the collection,
+but the underlying truth is that it counts ids — it does not read a stored
+length.
+:::
+
+## Per-collection complexity
+
+| Collection | `get` / `contains` | `insert` / `remove` | `len` | Iterate all | Ordered access (range / prefix / page) |
+|---|---|---|---|---|---|
+| `UnorderedMap` / `UnorderedSet` | `O(1)` | `O(K log K)` | `O(1)` warm | `O(n)` reads | **none** — hashed ids have no key order |
+| `SortedMap` / `SortedSet` | `O(1)` | `O(K log K)` + index write | `O(1)` warm | see gotcha below | `range`/`prefix` `O(log n + k)`; `first`/`last` `O(log n)` |
+| `Vector` | `get(i)` is `O(i)` reads | `push` `O(K log K)`; `update(i)` `O(1)` | `O(1)` warm | `O(n)` reads | positional only — see gotcha |
+| `ReplicatedGrowableArray` (RGA) | `get_text` `O(n log n)` | single-char `insert` `O(n log n)`; `insert_str` is bulk | `O(n log n)` | `O(n log n)` | n/a |
+| `Counter` / `PNCounter` | `value()` `O(actors)` reads | `increment` `O(K log K)` | n/a | n/a | n/a |
+| `LwwRegister` | `O(1)` | `O(K log K)` | n/a | n/a | n/a |
+| `Authored*` (map / vector) | same as the underlying collection, plus a per-entry owner-stamp read | | | | |
+
+A few rows deserve their own warnings.
+
+### `Vector`
+
+`Vector` keeps insertion order, but it is backed by the same child-id set as
+every other collection — it is **not** an array you can index into in constant
+time.
+
+- `push` mints a random element id (so it skips the per-key id hash), but it is
+  still a write, so it pays the `O(K log K)` parent rehash like everything else.
+- `update(i)` is `O(1)`: it looks the id up by position in the cached child-id
+  set, then does one point write.
+- `get(i)` is `O(i)` **reads**: it iterates entries from the start and loads
+  each one until it reaches index `i`, discarding the rest.
+
+:::caution[Gotcha: `Vector::get(i)` is `O(index)`, not `O(1)`]
+Reading `vec.get(i)` loads and decodes `i + 1` entries to return one. A loop of
+`for i in 0..len { vec.get(i) }` is therefore `O(n^2)` reads. To read a vector in
+order, **iterate it** (`vec.iter()`, a single `O(n)` pass) instead of indexing
+by position.
+:::
+
+### `SortedMap` / `SortedSet`
+
+`SortedMap` adds a node-local ordered index so range and prefix queries can seek
+instead of scan. But not every read uses it:
+
+- `range`, `prefix`, `first`, `last`, and `page` go through the index:
+  `O(log n + k)` (seeks, then loads only the `k` matches).
+- `entries()`, `keys()`, and `values()` **ignore the index** and sort all
+  entries in memory: `O(n log n)`, after an `O(n)`-read full materialization.
+- `page(offset, limit)` walks and discards `offset` rows before returning
+  `limit` — so deep pagination (`page(100000, 20)`) is `O(offset + limit)`, not
+  `O(limit)`. Prefer a `range` keyed on the last item you saw ("seek
+  pagination") over large offsets.
+
+Use `SortedMap` **only** when you genuinely need key order. It costs an extra
+index write on every insert/remove plus extra disk per key; if you only ever
+point-access by key, use `UnorderedMap`.
+
+### `ReplicatedGrowableArray` (RGA)
+
+Each RGA operation re-materializes the whole document — a depth-first walk plus a
+sort over all visible characters (`O(n log n)`) — to resolve the current text
+order. That cost is per *call*, not per character.
+
+:::caution[Gotcha: single-char `insert` re-materializes the whole document]
+`rga.insert(pos, ch)` rebuilds the entire ordered document (`O(n log n)`) on
+**every** call, so typing `m` characters one at a time is `O(m * n log n)`. To
+add a string, call `insert_str` once: it materializes the order a single time
+and then appends each character. Same applies to reading — call `get_text()`
+once and slice the result rather than calling it in a loop.
+:::
+
+### `Counter`
+
+A counter stores one slot per executor that has touched it. `value()` reads
+**every** slot and sums them, so it is `O(actors)` reads — cheap while a handful
+of nodes write to it, linear in the number of distinct writers over the
+counter's lifetime.
+
+## Merge cost
+
+Sync applies remote changes through the same write path, so the costs above also
+govern reconciliation:
+
+- Merging **one** entry costs the same as inserting it: `O(K log K)`.
+- A full root merge touches up to `N` entries (where `N` is total state size),
+  each paying its parent's sibling rehash — roughly `O(N * K)`. When everything
+  hangs off one parent (`K ≈ N`), that degrades toward `O(N^2)`. This is the
+  same "keep `K` bounded" lesson as for local writes, now applied to whole-state
+  convergence.
+
+### The ordered index and sync
+
+`SortedMap`'s ordered index is **node-local, derived, and not synced**. A remote
+sync writes entries directly, bypassing `insert`, so it never updates the index.
+The next ordered read notices the mismatch (a `full_hash` marker no longer
+matches the entry set) and rebuilds the index **once** — an `O(n)`-reads pass —
+then resumes seeking. Under `PrivateStorage` (which has no ordered backing
+store), ordered reads fall back to an in-memory sort, `O(n log n)` per read, with
+no seek advantage. See [CRDT internals](/protocol/crdt-internals/) for the merge
+model behind this.
+
+## Blobs
+
+Large binary payloads use the [blob store](/protocol/blobs/), which is separate
+from the collection tree:
+
+- Content is split into fixed **1 MiB chunks**.
+- A multi-chunk blob's `BlobId` is `SHA-256` over its **child chunk ids**, not
+  over the raw content.
+- Reading a blob is `O(chunks)` — it streams chunk by chunk.
+
+Blobs are the right home for anything large or opaque (files, media,
+serialized snapshots). Storing big values as collection entries instead forces
+that data through the per-entry read and sibling-rehash machinery above.
+
+## Practical guidance
+
+- **Use the right collection for the access pattern.** Point lookups →
+  `UnorderedMap`. Ordered scans, ranges, or pagination → `SortedMap`. Append-log
+  with in-order reads → `Vector` (iterate, don't index). Collaborative text →
+  `RGA` with `insert_str`. A running total across writers → `Counter`.
+- **Reach for `SortedMap` only when you need order.** It is the `BTreeMap` to
+  `UnorderedMap`'s `HashMap`: more write and disk cost, paid back only if you
+  actually range/prefix/paginate.
+- **Build RGA text with `insert_str`, never a per-character loop.** One bulk call
+  materializes the document order once instead of once per character.
+- **Don't iterate to compute what you can track incrementally.** Iterating to
+  count, sum, or find a max is `O(n)` reads every time. If you need a running
+  aggregate, maintain it as you write (e.g. a `Counter` or a dedicated field)
+  rather than recomputing it on read.
+- **Iterate vectors; never index them in a loop.** `vec.iter()` is one `O(n)`
+  pass; `for i in 0..len { vec.get(i) }` is `O(n^2)` reads.
+- **Watch write cost on large parents.** Because every write rehashes its
+  siblings, a single collection holding tens of thousands of entries makes every
+  write to it slow and every full merge expensive. Partition large datasets
+  (shard by key prefix, time bucket, or owner) so no single parent grows
+  unbounded.
+
+For the merge semantics that sit underneath these costs, see
+[Collections](/build/collections/) and [CRDT internals](/protocol/crdt-internals/).

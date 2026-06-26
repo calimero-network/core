@@ -1,0 +1,104 @@
+---
+title: Gotchas & Sharp Edges
+description: A curated list of concrete, non-obvious facts that bite builders on Calimero — each grounded in the code.
+sidebar:
+  order: 10
+  badge:
+    text: Draft
+    variant: caution
+---
+
+These are the sharp edges that bite — each one a concrete, non-obvious fact grounded
+in the code, not folklore. They are the things you only learn after a replica
+diverges, a write silently vanishes, or a test passes locally and fails in
+production. Skim the whole page once before you build; the values here (limits,
+defaults, merge rules) are the kind you reach for at 2am. Deeper treatments live
+in [Advanced SDK](/build/advanced-sdk/), [Storage Complexity](/build/storage-complexity/),
+[Permissioned Storage](/build/permissioned-storage/), and the
+[encryption protocol](/protocol/encryption/).
+
+## Determinism & execution
+
+:::danger[time_now and random_bytes diverge replicas]
+`time_now` returns real wall-clock time (`SystemTime::now()`) and `random_bytes`
+draws from `rand::thread_rng()` — both are genuinely non-deterministic in
+production. Use either in state-mutating logic and your replicas will compute
+different states and diverge. Treat them as untrusted, display-only inputs.
+:::
+
+- `fetch` is hard-disabled at the host boundary (a compile-time `const BLOCKED: bool = true` gate) — it always fails, so there is no outbound HTTP from app code.
+- There is no gas or fuel metering. Execution is bounded only by `VMLimits` plus the wasm stack; exceeding any limit TRAPS the whole call — there is no partial commit and no refund.
+- A guest panic (or trap) is caught and surfaced as an error; the state delta from that call is never applied — the context `root_hash` is left unchanged, so a panicked write is as if it never ran.
+- `env::commit` may be called at most once per execution; a second call is rejected (the host tracks a `commit_called` flag).
+
+## VMLimits & wire limits
+
+- Default `VMLimits`: 64 MiB linear memory (1024 pages of 64 KiB), 200 KiB stack, storage key 1 MiB, storage value 10 MiB, logs `1024 × 16 KiB`, events `100 × 16 KiB` (event-kind string 100 bytes), xcalls `100 × 16 KiB` (function name 100 bytes), wasm module 20 MiB, method name 256 bytes.
+- Only `max_logs` and `max_log_size` are operator-overridable via config; every other limit is compiled in, so changing it means recompiling the runtime.
+- RPC execution arguments are capped at 10 MB JSON (`MAX_ARGS_JSON_SIZE`); a signed governance-op payload is capped at 64 KiB (`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`).
+- A sync snapshot page is capped at 4 MiB or 1000 entities, whichever comes first; a single entity's data is capped at 1 MiB.
+- Two distinct DAG-head caps exist: governance DAG heads `MAX_GOVERNANCE_DAG_HEADS = 32`, snapshot DAG heads `MAX_DAG_HEADS = 100`.
+
+## Identity
+
+- There are two distinct `PublicKey` types: `calimero_primitives::identity::PublicKey` (wraps a `Hash`) and the SDK prelude's `PublicKey(pub [u8; 32])`. They are not the same type — mind which one a signature expects.
+- Executor identity is per-context and resolved server-side; it is never read from guest memory or supplied by the caller, so app code cannot spoof who it is running as.
+- `context_id`, the executor public key, and `xcall_origin` are three separate 32-byte identifiers on the VM context — do not conflate them (and the author attributed to a stored entity is a fourth, separate concept).
+- `PrivateKey` zeroizes its bytes on drop via a custom `Drop` impl — do not copy the raw bytes out into a `Vec` that outlives it.
+
+## Storage
+
+:::caution[A bare get() is a read-only copy — mutating it is a silent no-op]
+`get()` returns a `ValueRef<V>`: an owned, freshly deserialized, read-only copy.
+Mutating it changes nothing in storage and the write silently vanishes. To
+persist a change use `get_mut()` or `entry().or_default()` (both write back when
+the guard drops). Mutating a plain `get` result does not compile for the safe
+collections — but the mental model is what bites.
+:::
+
+- The `SortedMap` / `SortedSet` ordered index is node-local, derived, and NOT synced. After a remote sync it is stale; the next ordered read notices a validity-marker mismatch and rebuilds the index once.
+- `SortedMap` keys must be encoded big-endian (and offset-binary for signed values) so that their byte order matches their `Ord` order — little-endian keys will iterate in the wrong order.
+- Map keys are bounded `K: AsRef<[u8]>` on every write path — your key type must produce stable bytes.
+- Entity ids are domain-separated SHA-256 hashes, so entity-id (storage) order is unrelated to logical key order — never assume iteration follows key order in an unordered map.
+- Private storage is node-local and NOT synced; anything you write there stays on the node that wrote it and never reaches peers.
+
+## CRDT
+
+- `LWW` tiebreak on an equal timestamp goes to the higher `node_id` — concurrent same-millisecond writes are resolved by node identity, not by who you think wrote last.
+- `Counter::increment` PANICS if called inside a state migration (merge mode), because the per-node delta would be non-deterministic; use `increment_for` with an explicit node id instead.
+- `GCounter` (`Counter<false>`) and `PNCounter` (`Counter<true>`) are distinct types with different serialization — they are not interchangeable across a schema change.
+- `AuthoredMap::merge` is a deliberate no-op: delegating would strip per-entry ownership, so authored entries only converge through their own authored merge path.
+- A missing merge function fails loud with `NoMergeFunctionRegistered` rather than silently falling back to LWW (which would discard one side's CRDT state) — register the merge function.
+- `Vector` is not a positional CRDT; concurrent inserts do not preserve intent. For collaborative text use the RGA (Replicated Growable Array) instead.
+- The wasm ABI forces all map keys to be `String` (validation rejects any other map-key type as `InvalidMapKeyType`) — non-string keys won't cross the ABI boundary.
+
+## Governance you can hit
+
+- The default write policy is membership-based: any member can write or delete any non-restricted key. `DEFAULT_MEMBER_MASK = WRITE | DELETE` — note it is NOT `ADMIN`, so members can mutate data but not change governance.
+- Writes from a `ReadOnly` role are silently dropped, not errored — `ReadOnlyContextStorage` suppresses every write method and returns as if it succeeded.
+- Subgroup visibility defaults to `Restricted` at birth — membership in a new subgroup requires an explicit `add_group_members` call, it is not inherited automatically.
+- The only capability granted by default is `CAN_JOIN_OPEN_SUBGROUPS` (`1 << 2`); every other capability (delete-subgroup, admin, etc.) must be granted explicitly.
+
+## Sync, events, xcall
+
+- Gossip delivery is best-effort, and governance publish is best-effort too — but the local governance DAG advance is durable, so even a dropped broadcast reconciles later when peers sync the DAG. Never treat "I published it" as "everyone received it."
+- An xcall only QUEUES the call. It runs same-node, post-commit, is namespace-bounded (a permission check gates the target namespace), and the target method must be annotated `#[app::xcall]` — there is no synchronous cross-context return value.
+- Event handlers run on receivers after commit, at-least-once, with restart replay (a node that crashes mid-handler re-delivers on restart). Handlers MUST be idempotent — assume every event can fire more than once.
+
+## Blobs
+
+- Blobs are split into 1 MiB chunks (`CHUNK_SIZE = 1 << 20`). For a multi-chunk blob the root `BlobId` is `SHA-256` of the concatenated child chunk ids — it is NOT a hash of the file content, so you cannot derive it by hashing the bytes yourself.
+- Blob availability is announced per-context to the DHT (`announce_blob` takes a `context_id`) — a blob announced in one context is not automatically discoverable in another.
+- Blobs are NOT folded into `scope_root` (the merkle/state root tracks only the data, ACL, membership, admin, and capability planes) and are NOT encrypted at rest.
+
+## Confidentiality
+
+- State-delta `events` ship as plaintext (context id, kind, data, handler are plain serialized JSON). Even where the storage delta itself is encrypted, the broadcast event is separate and observable.
+- Envelope metadata — topic, author, DAG shape, signer — is visible to any subscriber of the topic, regardless of payload encryption. Do not put secrets in event payloads or rely on metadata being private; see the [encryption protocol](/protocol/encryption/) for what is and isn't protected.
+
+## Testing (TestHost)
+
+- In `TestHost`, xcall, `ed25519_verify`, and networked blob announce/fetch ops PANIC if invoked — they have no in-process implementation, so structure tests to avoid them.
+- Event handlers are not auto-dispatched by `TestHost`; emitting an event does not run its handler, so handler logic must be exercised directly.
+- The default `TestHost` identity satisfies owner checks — a test can pass on permissions that would fail in production under a real, non-owner executor.
+- Only one `TestHost` may be live per thread at a time — run host-using tests serially within a thread, not nested.

@@ -1,0 +1,250 @@
+---
+title: CRDTs — How They Work
+description: A contributor's deep-dive into how Calimero actually implements its CRDTs — entity-per-value storage, per-type merge, and deterministic resolution.
+sidebar:
+  order: 21
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This page is the implementation-level companion to [Collections](/build/collections/)
+and [State, Projection & the Root Hash](/protocol/projection/). The former tells you
+*which* collection to reach for; this one explains *how* the merge actually happens in
+the storage layer — and why the design choices are what they are.
+
+## The one big idea
+
+Calimero never asks two nodes to agree on an order of operations. Instead, every piece
+of your state is shaped so that **merge is a pure function** — commutative, idempotent,
+and associative — and then it leans on one structural trick:
+
+> Give the same logical value the **same storage id on every node**, and most
+> "merging" stops being a conflict and becomes a coincidence: both nodes already
+> point at the same entity.
+
+Everything below is a consequence of that. Where genuine concurrency *does* collide on
+one entity, a small set of per-type rules (last-writer-wins, max-per-writer, add-wins
+union, …) resolves it the same way on every replica.
+
+## The storage substrate: one entity per value
+
+The unit of storage is not your app struct — it is the individual **entry**. Each
+logical entry (`Entry<T>`) is its own content-addressed storage entity with its own id,
+its own metadata, and its own sync path. A `Map` with 1,000 keys is 1,000 independent
+entities plus a thin container; it is not one blob.
+
+The ids are **derived, not random**. An entry's id is a domain-separated SHA-256 of its
+parent's id and its key bytes (`crates/storage/src/collections/collections.rs:189`):
+
+```rust
+// compute_id(parent, key) — the same logical key → the same id on every node.
+pub(crate) fn compute_id(parent: Id, key: &[u8]) -> Id {
+    let mut hasher = Sha256::new();
+    hasher.update(parent.as_bytes());
+    hasher.update(b"__calimero_entry__"); // domain separator
+    hasher.update(key);
+    Id::new(hasher.finalize().into())
+}
+```
+
+A nested collection uses the same construction with a different domain separator
+(`__calimero_collection__` ‖ `field_name`), so a map entry keyed `"X"` can never collide
+with a child collection named `X` in the same parent.
+
+The payoff: when node A writes `users["alice"]` and node B writes `users["alice"]`
+concurrently, both writes land on **the same entity id** — there is nothing to "match
+up" at sync time. Convergence is by id. The merge rule only has to settle the *value* of
+that one entity, never reconcile two independently-named things.
+
+<Aside type="note">
+Random ids would force every sync to discover "your alice == my alice" by content
+comparison. Deriving the id from the key sidesteps that entire problem: identity is a
+function of position, computed identically and offline on every node.
+</Aside>
+
+## Blob vs Structured: why container merge is a no-op
+
+Each CRDT type declares a `StorageStrategy` (`crdt_impls.rs`):
+
+- **`Blob`** — the value lives inline as one serialized unit. The leaf CRDTs
+  (`LwwRegister`, `Counter`, `RGA`) are blobs.
+- **`Structured`** — the value decomposes into *separate entities*. The containers
+  (`UnorderedMap`, `SortedMap`, `UnorderedSet`, `SortedSet`, `Vector`) are structured:
+  each entry is its own `Blob` entity with its own derived id.
+
+This split explains a line of code that looks like a bug but isn't. The container-level
+merge for a structured collection literally throws away the existing side and keeps
+incoming (`crates/storage/src/merge.rs`):
+
+```rust
+fn merge_unordered_map(_existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
+    // Entries are separate entities synced on their own paths.
+    // The container holds only structure; real accumulation is per-entry.
+    Ok(incoming.to_vec())
+}
+```
+
+That is correct precisely *because* the container holds no values — only structure. The
+actual keys and values are independent entities that each sync and merge on their own.
+The "map merge" you care about (union of keys, recursive merge of shared values) happens
+**per entry, by id**, not in this function. A structured container is a directory, and
+you do not merge two directories by merging the word "directory" — you merge their
+files.
+
+<Aside type="caution">
+There is a second, in-WASM map merge (`UnorderedMap::merge` in `crdt_impls.rs`) that
+*does* walk entries and recurse into values. It runs only for the rare **root-entity**
+conflict, where the whole app struct is compared as one unit. The hot path — a remote
+delta touching one key — never calls it; that key's entity merges directly.
+</Aside>
+
+## Per-type merge rules
+
+Every leaf type resolves a same-id collision with a fixed, node-independent rule:
+
+| Type | Representation | Merge rule |
+| --- | --- | --- |
+| `LwwRegister<T>` | inline `{ value, ts: HybridTimestamp, node_id }` | newer HLC wins; exact tie → higher `node_id` |
+| `Counter` (G / PN) | two `UnorderedMap<hex(executor), u64>` (positive / negative) | max per executor; value = `Σpos − Σneg` |
+| `UnorderedMap` / `Set` (+ `Sorted` variants) | entries as separate entities | add-wins union; shared keys recurse into the value's own CRDT merge |
+| `Vector<T>` | indexed entries, each `Id::random()` at push | element-wise by index, then append the longer tail |
+| `RGA` (text) | `UnorderedMap<CharId, { content, left }>` | union of immutable chars; delete = tombstone |
+| `Frozen` | `UnorderedMap` keyed by `SHA-256(value)` | first-write-wins (keep existing) |
+| `Shared` / `SharedMember` | LWW per writer | per-writer LWW; rotation-log children union regardless of timestamp |
+
+A little more on each:
+
+**`LwwRegister<T>`** carries its own HLC timestamp and the writing node's id inline.
+Merge keeps whichever side has the greater `(timestamp, node_id)`. It is the right
+wrapper for any plain field — a bare `String` or `u64` is deliberately *not* `Mergeable`,
+because `*self = other` is not commutative and would let two nodes diverge permanently.
+
+**`Counter`** is a state-based counter: each executor owns one entry in a map and only
+ever grows its own count. Merge takes the max per executor — order-independent by
+construction — and the reported value sums the positive map and subtracts the negative
+map (a PN-counter; a G-counter omits the negative side).
+
+**Maps and sets** are add-wins. Merge is a union of keys; when both sides hold the same
+key, the values are merged by *their own* CRDT rule (this is where nesting like
+`Map<String, Counter>` recurses). The `Sorted` variants store and merge identically to
+the unordered ones — ordering is a read-time concern derived from `K: Ord`, not a merge
+concern.
+
+**`Vector`** merges element-wise by index, then appends whichever tail is longer. Note
+the id discipline: appended elements get `Id::random()` so two nodes appending
+concurrently cannot collide on the same entity. This is **not** a positional CRDT —
+concurrent inserts in the middle can interleave awkwardly. For collaborative text, use
+`RGA`.
+
+**`RGA`** stores each character as an immutable node keyed by a `CharId` (HLC + sequence)
+with a pointer to its `left` neighbour. Deletes are tombstones (physically removed once
+resolved); merge is just the union of immutable characters. Read order is a pre-order DFS
+over the `left`-edge tree, and within a sibling group the **highest `CharId` is emitted
+first** — so a later concurrent insert at the same position sorts ahead deterministically
+on every node.
+
+**`Frozen`** is for write-once data (identity keys, genesis state). It is a map keyed by
+`SHA-256(value)`, so the same value always lands on the same key. Merge keeps the
+existing side — first-write-wins. Two nodes that independently write *different* first
+values will each keep their own and not converge; that is by design for immutable data,
+and is exactly why you should not use it for anything that must reconcile.
+
+## The equal-HLC tiebreak
+
+Last-writer-wins needs a winner even when two writes carry the *exact same* HLC. This is
+not exotic: after a writer-set rotation, two distinct writers in a `Shared` set can stamp
+the same HLC nanosecond. The resolution lives in `lww_pick`
+(`crates/storage/src/interface.rs:3358`):
+
+```rust
+// Newer HLC wins; older loses; an exact tie is broken by content hash.
+match incoming_timestamp.cmp(&existing_timestamp) {
+    Ordering::Greater => incoming.to_vec(),
+    Ordering::Less    => existing.to_vec(),
+    Ordering::Equal   => {
+        let inc = Sha256::digest(incoming);
+        let exi = Sha256::digest(existing);
+        if inc >= exi { incoming.to_vec() } else { existing.to_vec() }
+    }
+}
+```
+
+Why a content hash and not the obvious "incoming wins"? Because "incoming wins" is **not
+order-independent**. If node A applies B's write last it keeps B; if B applies A's write
+last it keeps A — and the two replicas are now permanently split-brained on the same DAG
+heads, with neither ever moving. Breaking the tie by `SHA-256(value)` makes the choice a
+property of the *data*, not of arrival order: both nodes compute the same winner, so they
+converge. Equal data is a true no-op.
+
+<Aside type="note">
+The same reasoning drives the rotation-log merge, which is an order-invariant union by
+`delta_id` with a deterministic byte-tiebreak on collision — so two nodes that apply each
+other's logs in opposite orders produce byte-identical results and the same hash.
+</Aside>
+
+## Deterministic merge: `with_merge_mode`
+
+Convergent *values* are not enough. Calimero compares replicas by hashing their state
+into a Merkle root (see [Projection](/protocol/projection/)), so two nodes that computed
+the same merge must produce **byte-identical** entities — same timestamps, same node ids,
+everything.
+
+That is a problem, because an `LwwRegister` normally stamps a fresh HLC and the local
+executor id whenever it is constructed or set. If a merge constructed new registers, each
+node would bake in its own clock and id, and the bytes — hence the hashes — would diverge
+even though the logical value matched.
+
+The fix is a thread-local flag. Merges run inside `env::with_merge_mode(...)`, and while
+it is set, every timestamp-stamping path zeroes itself out instead of reading the clock:
+
+```rust
+// LwwRegister::new / set, inside merge mode:
+if env::in_merge_mode() {
+    Self { value, timestamp: HybridTimestamp::zero(), node_id: [0; 32] }
+} else {
+    Self { value, timestamp: env::hlc_timestamp(), node_id: env::executor_id() }
+}
+```
+
+So any value materialised *as part of* a merge is deterministic across nodes: two
+replicas computing the same merge serialize identical bytes and therefore hash to an
+identical Merkle root. A genuine post-merge write later supersedes it with a real
+timestamp. The flag is re-entrancy-safe — a nested storage op opening its own
+`with_merge_mode` will not clear the outer scope.
+
+## HybridTimestamp, briefly
+
+The ordering currency is a Hybrid Logical Clock. A `HybridTimestamp` is an NTP64 value —
+32 bits of seconds over 32 bits of fraction, with the **low 16 bits reserved as a logical
+counter** — paired with a `u128` instance id:
+
+```text
+┌──────────────────────┬──────────────────────┐
+│   Seconds (32 bits)  │  Fraction (32 bits)  │
+└──────────────────────┴──────────────────────┘
+                                  └─ low 16 bits = logical counter
+```
+
+Ordering is `(time, id)`: physical time first (so timestamps track wall-clock for TTLs
+and debugging), the logical counter breaking same-tick ties (so causality survives clock
+skew), and the unique instance id guaranteeing global uniqueness with no coordination.
+When a node observes a remote timestamp it advances its own clock past it, so a locally
+issued timestamp always sorts strictly after any event it causally follows.
+
+## Summary
+
+| Mechanism | What it buys |
+| --- | --- |
+| Derived entity ids (`SHA-256(parent ‖ sep ‖ key)`) | same logical value → same id on every node; convergence by id, no matching |
+| Entity-per-value (`Structured` containers) | container merge is a no-op; accumulation is per-entry on independent sync paths |
+| Per-type merge rules | each leaf collision resolves identically on every replica (LWW / max / union / FWW) |
+| Content-hash tiebreak (`lww_pick`) | exact-HLC ties resolved by data, not arrival order → no split-brain |
+| `with_merge_mode` timestamp zeroing | merged values are byte-identical across nodes → identical Merkle hashes |
+| HybridTimestamp `(time, id)` | causal ordering immune to clock skew, globally unique without coordination |
+
+For the user-facing view of these types, see [Collections](/build/collections/); for how
+the merged entities fold into one comparable root hash, see
+[Projection](/protocol/projection/).
