@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Steps, Aside, Tabs, TabItem, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 This walks from an empty crate to a method call. The two binaries you use are
 **`merod`** (the node daemon — `init`, `run`) and **`meroctl`** (the operator
@@ -171,6 +172,30 @@ configured alias) or `--api <URL>`.
    context id or an alias you created with `--name`.
 
 </Steps>
+
+These three commands trace one path from a built artifact to a method result —
+install the code, attach a context over shared state, then call into it:
+
+<SeqDiagram id="d-build-quickstart" title="Install, attach, and call"
+  lanes={[
+    { label: 'You (CLI)', color: '#3fb950' },
+    { label: 'Node', color: '#58a6ff' },
+    { label: 'Context', color: '#8b5cf6' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'app install --path my_app.wasm' },
+    { from: 1, to: 0, label: 'application id', dashed: true },
+    { from: 0, to: 1, label: 'namespace create --application-id' },
+    { from: 1, to: 2, label: 'bootstrap root group + attach app' },
+    { from: 1, to: 0, label: 'context id', dashed: true },
+    { type: 'divider', label: 'context is live over shared state' },
+    { from: 0, to: 1, label: 'call set --args {"key","value"}' },
+    { from: 1, to: 2, label: 'run set: mutate state' },
+    { from: 1, to: 0, label: 'result', dashed: true },
+    { from: 0, to: 1, label: 'call get --args {"key"}' },
+    { from: 1, to: 2, label: 'run get: read state' },
+    { from: 1, to: 0, label: '"world"', dashed: true },
+  ]} />
 
 <Aside type="tip" title="Test before you ship">
   The SDK ships a native in-process harness (`calimero_sdk::testing::TestHost`,

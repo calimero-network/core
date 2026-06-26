@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Steps, Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 This tutorial walks one path from nothing to a running key-value app. You will
 write a small Rust crate, build it to WebAssembly, install it on a node, attach
@@ -336,6 +337,28 @@ JSON-RPC response and may gain fields between pre-1.0 releases. The value your
 method returned is always under `result.output`. Without `--output-format json`,
 `meroctl` prints a human-readable table instead.
 :::
+
+Here is what that single `call set` does once it reaches the node — the method
+runs inside the WASM app, touches storage, emits its event, and the committed
+delta is what later flows to peers:
+
+<SeqDiagram id="d-build-tutorial-exec" title="One method, end to end"
+  lanes={[
+    { label: 'Caller', color: '#3fb950' },
+    { label: 'Node', color: '#58a6ff' },
+    { label: 'WASM app', color: '#8b5cf6' },
+    { label: 'Storage', color: '#39d0d8' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'call set --args {"key","value"}' },
+    { from: 1, to: 2, label: 'invoke set(key, value)' },
+    { from: 2, to: 3, label: 'insert into UnorderedMap' },
+    { from: 2, to: 2, label: 'emit Inserted event' },
+    { from: 3, to: 2, label: 'ok', dashed: true },
+    { from: 2, to: 1, label: 'commit state delta', dashed: true },
+    { from: 1, to: 0, label: 'result: null', dashed: true },
+    { type: 'divider', label: 'delta broadcast to peers, replicas converge' },
+  ]} />
 
 ## 7. Next steps
 

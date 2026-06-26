@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 Your [`#[app::state]`](/build/sdk-macros/) is built from the collection types in
 `calimero_storage::collections`. Each is a **CRDT**: concurrent edits on
@@ -72,6 +73,29 @@ merge behavior.
 - **`Counter` family** — increments are tracked per executor and summed on read,
   so concurrent increments on different nodes all count. `GCounter` is
   increment-only; `PNCounter` also decrements.
+
+`ReplicatedGrowableArray` is the one to reach for when two people type into the
+*same* position at once. Each character is an immutable node keyed by a `CharId`
+(HLC + sequence); merge is just the union of those nodes, and read order is a
+deterministic walk — so both editors land on the same text without coordination:
+
+<SeqDiagram
+  id="d-coll-rga"
+  title="Concurrent inserts converge to identical text"
+  lanes={[
+    { label: 'Editor A', color: '#3fb950' },
+    { label: 'Editor B', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'insert X at pos 5 — mint CharId (HLC + seq)' },
+    { from: 1, to: 1, label: 'insert Y at pos 5 — concurrent, different CharId', color: '#58a6ff' },
+    { from: 0, to: 1, label: 'broadcast char X (immutable)', color: '#84cc16' },
+    { from: 1, to: 0, label: 'broadcast char Y (immutable)', color: '#84cc16' },
+    { from: 1, to: 1, label: 'merge: union of chars, order by left + CharId', color: '#8b5cf6' },
+    { from: 0, to: 0, label: 'merge: same DFS order on every node', color: '#8b5cf6' },
+    { type: 'divider', label: 'same chars ⇒ identical text' },
+  ]}
+/>
 
 ## Access-controlled collections
 

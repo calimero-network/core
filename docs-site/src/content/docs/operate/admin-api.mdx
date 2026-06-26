@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 The node's HTTP server (default bind `/ip4/127.0.0.1/tcp/2528` and
 `/ip6/::1/tcp/2528`) exposes four
@@ -50,6 +51,26 @@ admin API is enabled.
 
 A single endpoint accepts JSON-RPC 2.0 requests. The `method` field selects the
 operation; `params` carries its arguments.
+
+<SeqDiagram
+  id="d-op-jsonrpc"
+  title="A JSON-RPC execute request"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'Server', color: '#58a6ff' },
+    { label: 'Context', color: '#3fb950' },
+    { label: 'Network', color: '#8b5cf6' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /jsonrpc { method: "execute", params }' },
+    { from: 1, to: 1, label: 'dispatch on method = execute' },
+    { from: 1, to: 2, label: 'execute(contextId, method, argsJson)' },
+    { from: 2, to: 2, label: 'run app method → state delta', color: '#84cc16' },
+    { from: 2, to: 3, label: 'broadcast op (state delta) on context topic' },
+    { from: 2, to: 1, label: 'outcome { returns }', dashed: true },
+    { from: 1, to: 0, label: 'JSON-RPC 2.0 result', dashed: true },
+  ]}
+/>
 
 | Method | Path | Purpose |
 | --- | --- | --- |

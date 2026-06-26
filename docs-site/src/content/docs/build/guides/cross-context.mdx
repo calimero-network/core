@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Aside, Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
 
 **Task:** have a method in one context invoke a method in another context.
 
@@ -77,6 +78,28 @@ pub fn pong(&mut self, from_context: ContextId) -> app::Result<()> {
   `from_context` here is self-reported by the caller. The trustworthy value is
   `env::xcall_origin()`; comparing the two is what makes the call authentic.
 </Aside>
+
+Putting the three parts together — dispatch queues the call, the node delivers
+it, and the gated entry point verifies the node-set origin before doing any
+work. The call is one-way: nothing returns to the caller.
+
+<SeqDiagram id="d-build-xcall-dispatch" title="Dispatch a cross-context call"
+  lanes={[
+    { label: 'Caller ctx', color: '#3fb950' },
+    { label: 'Runtime', color: '#8b5cf6' },
+    { label: 'Target ctx', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'env::xcall(target, "pong", params)' },
+    { from: 1, to: 1, label: 'queue call (one-way, async)' },
+    { from: 1, to: 2, label: 'dispatch pong(from_context)' },
+    { from: 2, to: 2, label: 'check #[app::xcall] gate' },
+    { from: 2, to: 1, label: 'xcall_origin()', dashed: true },
+    { from: 1, to: 2, label: 'node-set caller ctx id', dashed: true },
+    { from: 2, to: 2, label: 'verify origin == from_context' },
+    { from: 2, to: 2, label: 'counter.increment()' },
+    { type: 'divider', label: 'one-way: no return to caller' },
+  ]} />
 
 ## Exercise it
 

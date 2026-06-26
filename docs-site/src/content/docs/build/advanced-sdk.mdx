@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 This page collects the load-bearing details behind the SDK's convenience
 macros: what `#[derive(Mergeable)]` actually generates, why a value stored in a
@@ -149,6 +150,30 @@ You never call this directly — it is wired up by `#[app::state]`. It matters w
 you are reading a divergence trace and see `NoMergeFunctionRegistered`: that
 points at a module that did not register its root type, not at corrupt data. See
 [`crdt-internals`](/protocol/crdt-internals/) for the full dispatch path.
+
+Concretely, when a sync delta touches the root entity the host can't deserialize
+your state type — so it hands both byte blobs to the module's
+`__calimero_merge_root_state` export, which runs your typed `Mergeable::merge`
+and returns merged bytes:
+
+<SeqDiagram
+  id="d-adv-root-merge"
+  title="Root-state merge routes through WASM during sync"
+  lanes={[
+    { label: 'Peer', color: '#58a6ff' },
+    { label: 'Node (host)', color: '#3fb950' },
+    { label: 'WASM app', color: '#8b5cf6' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'sync: root-entity delta (peer bytes)' },
+    { from: 1, to: 1, label: 'host cannot deserialize the app state type', color: '#3fb950' },
+    { from: 1, to: 2, label: '__calimero_merge_root_state(local, incoming)', color: '#8b5cf6' },
+    { from: 2, to: 2, label: 'deserialize as T; run Mergeable::merge', color: '#8b5cf6' },
+    { from: 2, to: 1, label: 'merged root bytes', dashed: true, color: '#8b5cf6' },
+    { from: 1, to: 1, label: 'commit; re-check root hash', color: '#3fb950' },
+    { type: 'divider', label: 'typed merge ⇒ converged root' },
+  ]}
+/>
 
 ## Nested collection ids and the re-key pass
 

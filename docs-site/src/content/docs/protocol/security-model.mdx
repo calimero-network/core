@@ -6,6 +6,8 @@ sidebar:
   order: 95
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 This page states, plainly, what Calimero protects against and what it does not. The protocol has no consensus and no quorum: security rests on **signatures** (who authored an operation), **membership** (who is allowed to write), and **encryption keys** (who is allowed to read). Get those three right and the rest of the model follows.
 
 It cross-links [Encryption & Confidentiality](/protocol/encryption/) (the byte-level map of what is encrypted), [Governance](/protocol/governance/) (how membership and roles change), [Key Rotation](/protocol/key-rotation/) (how group keys turn over on removal), and the operator-facing [Security](/operate/security/) guide.
@@ -51,6 +53,32 @@ The upshot: **an attacker cannot forge an operation as another identity.** Autho
 ## Authorization at the causal cut
 
 Authorization is evaluated at the operation's **causal cut** — the governance state the author referenced when they wrote it — not at the receiver's "now". Because the verdict is computed from the at-cut membership and ACL, it is identical on every node regardless of receive order. This is *forward-only* authority: revoking a member stops them from authoring new operations, but does not invalidate operations they authored while still a member. There is no rewriting of history and no retroactive authorization. See [Governance](/protocol/governance/) and the receive path for how the cut is resolved.
+
+The three checks compose into a single pipeline a received operation must clear before it touches state — and any one of them dropping the op ends the journey:
+
+<SeqDiagram
+  id="d-sec-trust-pipeline"
+  title="Trust pipeline on a received operation"
+  lanes={[
+    { label: 'Network (gossip / sync)', color: '#58a6ff' },
+    { label: 'Verify / Authorize', color: '#8b5cf6' },
+    { label: 'State (fold)', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'deliver op { id, author, signature, hlc, ciphertext }', color: '#8b5cf6' },
+    { from: 1, to: 1, label: 'verify Ed25519 signature over op.id against claimed author' },
+    { from: 0, to: 1, label: 'bad signature ⇒ DROP (forged authorship, never folded)', color: '#f0883e', dashed: true },
+    { from: 1, to: 1, label: 'resolve causal cut → may(author, entity, required)?' },
+    { from: 0, to: 1, label: 'unauthorized author ⇒ DROP (not a writer at the cut)', color: '#f0883e', dashed: true },
+    { from: 1, to: 1, label: 'SharedKey::from_sk(scope_key).decrypt(ciphertext) → artifact' },
+    { type: 'divider', label: 'authentic · authorized · decrypted — only now does it reach state' },
+    { from: 1, to: 2, label: 'fold artifact into projection (content only, no signature check)', color: '#3fb950' },
+  ]}
+/>
+
+:::caution[Normative]
+The signature MUST be verified against the claimed `author` at the network edge, before the fold. The fold path assumes pre-verified ops and performs no signature check of its own — so an operation with a bad signature or an unauthorized author MUST be dropped before it can perturb state.
+:::
 
 ## Confidentiality
 

@@ -7,6 +7,7 @@ sidebar:
 ---
 
 import { Steps, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 When you ship a new version of your app whose **state shape changes**, the bytes
 already stored in every context can no longer be read as the new layout. The
@@ -177,6 +178,26 @@ cascade mechanics live in:
 - [Operate](/operate/) — installing and rolling out an application version.
 - [Application upgrades &amp; migration](/protocol/upgrades/) — version identity, the
   wire fence, and how the upgrade cascades across a group.
+
+Each member node adopts the new version on its own, fences stale-schema writes,
+and replays the same migrate locally — so the group converges without anyone
+re-syncing the whole state:
+
+<SeqDiagram id="d-build-migrations-rollout" title="Roll out v2 across a group"
+  lanes={[
+    { label: 'Admin', color: '#f0883e' },
+    { label: 'Governance scope', color: '#8b5cf6' },
+    { label: 'Member node', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'publish app v2 (carries migration)' },
+    { from: 1, to: 2, label: 'announce new version' },
+    { from: 2, to: 2, label: 'fence stale-schema writes' },
+    { from: 2, to: 2, label: 'replay migrate v1 → v2 locally' },
+    { from: 2, to: 2, label: 'migration_check passes' },
+    { from: 2, to: 1, label: 'adopted v2', dashed: true },
+    { type: 'divider', label: 'every replica converges on byte-identical v2 state' },
+  ]} />
 
 The scenarios under `apps/migrations/` are runnable end-to-end fixtures (add field,
 remove field, rename, change type, struct→enum, CRDT-native, migration-check

@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Aside, Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 A Calimero node is a libp2p peer. This page is the operator's view of how nodes
 connect: the swarm transport and ports, the discovery mechanisms that find
@@ -115,6 +116,29 @@ by `[bootstrap] nodes` and driven by the swarm.
 
 A node behind a home/cloud NAT is not directly dialable. Three cooperating
 libp2p behaviours make it reachable.
+
+<SeqDiagram
+  id="d-op-nat"
+  title="Discovery → direct dial → relay fallback → DCUtR hole-punch"
+  lanes={[
+    { label: 'Node A', color: '#39d0d8' },
+    { label: 'Relay', color: '#f0883e' },
+    { label: 'Node B', color: '#8b5cf6' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'AutoNAT: learn reachability + observed address' },
+    { from: 0, to: 0, label: "rendezvous: discover Node B's addresses" },
+    { from: 0, to: 2, label: 'direct dial' },
+    { from: 2, to: 0, label: 'unreachable — Node B behind NAT', dashed: true, color: '#f59e0b' },
+    { type: 'divider', label: 'fall back to relay' },
+    { from: 2, to: 1, label: 'Relay client: reserve a slot' },
+    { from: 0, to: 1, label: 'dial Node B via relay reservation' },
+    { from: 1, to: 2, label: 'forward connection through relay' },
+    { type: 'divider', label: 'DCUtR hole-punch' },
+    { from: 0, to: 2, label: 'DCUTR: coordinate hole punch over relay' },
+    { from: 0, to: 2, label: 'direct connection upgraded', color: '#3fb950' },
+  ]}
+/>
 
 | Behaviour | Role |
 | --- | --- |

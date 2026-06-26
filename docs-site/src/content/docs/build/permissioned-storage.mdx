@@ -5,6 +5,8 @@ sidebar:
   order: 7
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 Most app state in Calimero is **public**: any context member can write it. When
 you need narrower rules — *only the owner*, *only this group of writers*,
 *write-once*, *per-user slots* — you wrap the value in an access-controlled
@@ -244,6 +246,30 @@ it. Members carry `SharedMember { anchor }`, so a single rotation retroactively
 changes the writer set for the entire subtree in O(1) — no per-entity churn, no
 risk of split-brain from a partial re-stamp. Rotating the anchor is how you
 revoke a writer's access to everything under it at once.
+
+The revocation bites at the **merge plane**: a removed writer can still author a
+`Put`, but every honest node re-derives the post-rotation writer set in
+`apply_action` and the removed key no longer verifies — so the write is dropped,
+not retroactively trusted:
+
+<SeqDiagram
+  id="d-perm-rotate"
+  title="Writer-set rotation revokes a writer at merge"
+  lanes={[
+    { label: 'Admin', color: '#8b5cf6' },
+    { label: 'Scope', color: '#39d0d8' },
+    { label: 'Removed writer', color: '#f0883e' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'rotate_writers — signed ADMIN, removes W' },
+    { from: 1, to: 1, label: 're-stamp anchor; subtree writer set updated O(1)', color: '#39d0d8' },
+    { from: 2, to: 1, label: 'Put alice = v — signed by removed key W', color: '#f0883e' },
+    { from: 1, to: 1, label: 'apply_action: re-derive authoritative writers', color: '#39d0d8' },
+    { from: 1, to: 1, label: 'ed25519_verify vs writers ⇒ no match', color: '#f0883e' },
+    { from: 1, to: 2, label: 'InvalidSignature — write dropped', dashed: true, color: '#f0883e' },
+    { type: 'divider', label: 'rotation revokes the subtree at merge' },
+  ]}
+/>
 
 When two current writers rotate **concurrently** (DAG siblings, neither in the
 other's causal history), the merge resolves deterministically

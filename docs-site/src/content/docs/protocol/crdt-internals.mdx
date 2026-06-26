@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 This page is the implementation-level companion to [Collections](/build/collections/)
 and [State, Projection & the Root Hash](/protocol/projection/). The former tells you
@@ -181,6 +182,28 @@ The same reasoning drives the rotation-log merge, which is an order-invariant un
 `delta_id` with a deterministic byte-tiebreak on collision — so two nodes that apply each
 other's logs in opposite orders produce byte-identical results and the same hash.
 </Aside>
+
+Two nodes write the *same* entity concurrently, gossip their deltas, and each
+runs the identical `lww_pick` — equal HLC, broken by `SHA-256(value)` — so both
+pick the same winner regardless of arrival order:
+
+<SeqDiagram
+  id="d-crdt-converge"
+  title="Concurrent writes converge by deterministic merge"
+  lanes={[
+    { label: 'Node A', color: '#3fb950' },
+    { label: 'Node B', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'write alice = vA — stamp HLC t, node A' },
+    { from: 1, to: 1, label: 'write alice = vB — same HLC t, node B', color: '#58a6ff' },
+    { from: 0, to: 1, label: 'gossip delta (alice = vA)', color: '#84cc16' },
+    { from: 1, to: 0, label: 'gossip delta (alice = vB)', color: '#84cc16' },
+    { from: 1, to: 1, label: 'lww_pick: equal HLC ⇒ SHA-256(value) tiebreak', color: '#8b5cf6' },
+    { from: 0, to: 0, label: 'lww_pick: same compare ⇒ same winner', color: '#8b5cf6' },
+    { type: 'divider', label: 'same op set ⇒ identical state' },
+  ]}
+/>
 
 ## Deterministic merge: `with_merge_mode`
 

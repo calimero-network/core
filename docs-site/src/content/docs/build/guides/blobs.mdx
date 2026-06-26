@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Steps, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
 
 **Task:** store a large binary (a file, an image) and make it available to other
 nodes in the context.
@@ -68,6 +69,29 @@ pub fn upload_file(&mut self, name: String, blob_id: BlobId, size: u64) -> app::
   (`env::context_id()`); the runtime guards against announcing into a context you
   aren't part of.
 </Aside>
+
+The full arc: write the bytes to get a content id, announce that id so the rest
+of the context learns the blob exists, then any peer opens it by id and streams
+the bytes — recomputing the id to confirm it got what it asked for.
+
+<SeqDiagram id="d-build-blobs-share" title="Upload, announce, and fetch a blob"
+  lanes={[
+    { label: 'Author', color: '#3fb950' },
+    { label: 'Node', color: '#58a6ff' },
+    { label: 'Peer', color: '#8b5cf6' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'blob_create()' },
+    { from: 1, to: 0, label: 'fd', dashed: true },
+    { from: 0, to: 1, label: 'blob_write(fd, data) …' },
+    { from: 0, to: 1, label: 'blob_close(fd)' },
+    { from: 1, to: 0, label: 'BlobId (content hash)', dashed: true },
+    { from: 0, to: 1, label: 'blob_announce_to_context(blob_id, ctx)' },
+    { type: 'divider', label: 'peers in the context learn the blob exists' },
+    { from: 2, to: 1, label: 'blob_open(blob_id)' },
+    { from: 1, to: 2, label: 'stream chunks', dashed: true },
+    { from: 2, to: 2, label: 'recompute id, store bytes locally' },
+  ]} />
 
 ## Exercise it
 

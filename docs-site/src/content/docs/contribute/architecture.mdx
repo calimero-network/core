@@ -7,6 +7,8 @@ sidebar:
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import ActorModel from '../../../components/diagrams/ActorModel.astro';
+import CrateStack from '../../../components/diagrams/CrateStack.astro';
 
 This page orients you in the workspace: first the **actor model** that drives a
 running node, then the **crate map** grouped by layer. For the protocol-level
@@ -28,6 +30,8 @@ go through thin **client façades** (`NodeClient`, `ContextClient`,
 | `NetworkManager` | `crates/network` | Owns and drives the libp2p `Swarm`. Publishes/subscribes gossipsub topics, runs the Kademlia DHT, mDNS, relay, and request/response streams. Handles `NetworkMessage`. |
 | `SyncManager` | `crates/node` | **Not an actor** — a long-lived async task spawned at startup. Runs periodic and on-demand sync cycles, selecting a sync protocol from handshake-negotiated divergence metrics. |
 | `GarbageCollector` | `crates/node` | Background actor that cleans up storage tombstones. |
+
+<ActorModel />
 
 How they talk, end to end:
 
@@ -56,6 +60,8 @@ How they talk, end to end:
 The workspace layers from external surfaces at the top down to shared primitives
 at the bottom. Binaries depend on the server and node crates, which fan out
 through the core libraries, all converging on `primitives`.
+
+<CrateStack />
 
 ### Client & Server layer
 

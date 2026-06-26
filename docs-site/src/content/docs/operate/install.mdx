@@ -7,6 +7,7 @@ sidebar:
 ---
 
 import { Steps, Tabs, TabItem, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 Both binaries — `merod` (the node daemon) and `meroctl` (the operator CLI) —
 live in this repository and build together.
@@ -66,6 +67,30 @@ docker run --rm -v calimero-data:/data calimero-node --node node1 --help
 
 The flow is always the same: initialize a node's home directory, run the
 daemon, then point `meroctl` at it.
+
+<SeqDiagram
+  id="d-op-install"
+  title="init → run → node ready"
+  lanes={[
+    { label: 'Operator', color: '#3fb950' },
+    { label: 'merod', color: '#58a6ff' },
+    { label: 'Network', color: '#8b5cf6' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'merod --node node1 init' },
+    { from: 1, to: 1, label: 'create home dir + write config.toml' },
+    { from: 1, to: 1, label: 'generate node identity keypair', color: '#84cc16' },
+    { from: 1, to: 1, label: 'create data + blobs dirs, open datastore' },
+    { from: 1, to: 0, label: 'initialized', dashed: true },
+    { type: 'divider', label: 'start the daemon' },
+    { from: 0, to: 1, label: 'merod --node node1 run' },
+    { from: 1, to: 1, label: 'load + validate config.toml' },
+    { from: 1, to: 1, label: 'open datastore' },
+    { from: 1, to: 1, label: 'start swarm (2428) + RPC server (2528)' },
+    { from: 1, to: 2, label: 'dial bootstrap nodes' },
+    { from: 2, to: 1, label: 'peers connected', dashed: true, color: '#3fb950' },
+  ]}
+/>
 
 <Steps>
 

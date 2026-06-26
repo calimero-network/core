@@ -5,6 +5,8 @@ sidebar:
   label: Hybrid Logical Clock
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 Every operation Calimero produces carries a timestamp, and last-writer-wins (LWW) state resolves conflicts by comparing those timestamps. But there is no global clock in a peer-to-peer network: machine clocks drift, and two nodes can mint events at "the same" wall-clock instant. A plain physical timestamp would let a node that is a few seconds slow overwrite an event that genuinely happened later, or tie two events with no deterministic winner.
 
 The Hybrid Logical Clock (HLC) is the fix. It is a single 64-bit value that *looks* like wall-clock time but is *nudged forward* whenever a higher clock is observed, so it stays **causally monotonic**: if operation `B` causally follows operation `A`, then `B`'s timestamp is strictly greater than `A`'s — on every node, regardless of clock skew. Pairing the clock with a per-instance `ID` makes every timestamp globally unique with no coordination.
@@ -88,6 +90,26 @@ else:
 ```
 
 Reading the remote counter on the equal-tick cases is essential: if a peer issues many events on one stalled tick and we observe its latest, our next timestamp must outrank that remote event even though our own counter is low (`test_update_preserves_cross_node_causality`).
+
+Walking two causally-related events across two nodes makes the receive rule concrete: B's stamp for the event that *follows* A's must come out strictly greater, on every node, regardless of whose physical clock is ahead.
+
+<SeqDiagram
+  id="d-hlc-cross-node-update"
+  title="HLC update across a causal edge A → B"
+  lanes={[
+    { label: 'Node A', color: '#58a6ff' },
+    { label: 'Node B', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'new_timestamp(): physical = quantize(now) → t_A = (time_A, id_A)' },
+    { from: 0, to: 1, label: 'send op carrying hlc = t_A', color: '#3fb950' },
+    { from: 1, to: 1, label: 'update(t_A): new_phys = max(last_time, remote_phys, now_phys)' },
+    { from: 1, to: 1, label: 'equal-tick? set_after(new_phys, max(counter, remote_counter)) — counter outranks A' },
+    { from: 1, to: 1, label: 'drift guard: reject if remote_phys > now_phys + 5s, clock untouched' },
+    { type: 'divider', label: 'B’s clock now folds in everything it has seen' },
+    { from: 1, to: 1, label: 'new_timestamp(): t_B = (time_B, id_B) with t_B > t_A, strictly' },
+  ]}
+/>
 
 ## Anti-drift protection
 
