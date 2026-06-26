@@ -41,11 +41,19 @@ fn balanced(src: &str, open: usize) -> (&str, usize) {
 }
 
 /// First string literal in `s` (its content + the index just past its close quote).
+/// Honors `\"` escapes so a quote inside the literal doesn't end it early.
 fn first_string(s: &str) -> Option<(&str, usize)> {
+    let bytes = s.as_bytes();
     let q1 = s.find('"')?;
-    let after = &s[q1 + 1..];
-    let q2 = after.find('"')?;
-    Some((&after[..q2], q1 + 1 + q2 + 1))
+    let mut i = q1 + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2, // skip the escaped byte
+            b'"' => return Some((&s[q1 + 1..i], i + 1)),
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// Join a nest `prefix` with a route `path`. Returns `None` for the top-level
@@ -99,14 +107,15 @@ fn collect(region: &str, prefix: &str, out: &mut BTreeSet<String>) {
         };
         // Methods = verb tokens (`get(`, `post(`, …) where the verb isn't part of
         // a longer identifier (so `get_foo(` doesn't count).
+        let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
         for verb in VERBS {
             let token = format!("{verb}(");
             let mut from = 0;
             while let Some(p) = inner[from..].find(&token) {
                 let abs = from + p;
-                let prev = inner.as_bytes().get(abs.wrapping_sub(1)).copied();
-                let boundary =
-                    abs == 0 || !matches!(prev, Some(b) if b.is_ascii_alphanumeric() || b == b'_');
+                // A token at the very start, or one preceded by a non-identifier
+                // byte, is a real verb call (not the tail of `get_foo(`).
+                let boundary = abs == 0 || !is_ident(inner.as_bytes()[abs - 1]);
                 if boundary {
                     out.insert(format!("{} {ADMIN_PREFIX}{full}", verb.to_uppercase()));
                 }
