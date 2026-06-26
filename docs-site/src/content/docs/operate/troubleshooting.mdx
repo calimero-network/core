@@ -20,6 +20,7 @@ protocol chapter that explains the underlying mechanism.
 | Context stuck behind; root hash differs from peers | Divergence after a partition or missed gossip; governance not yet applied | Let the reconciler run, or force a sync (`context sync`). See [context won't sync](#context-wont-sync). |
 | Sync logs show `NotMaterialized` for a peer | That peer is a valid member but hasn't materialised the context locally yet | Benign — no action. See [NotMaterialized](#key-not-delivered--notmaterialized). |
 | Deltas pile up but never apply | A peer is sending entities under a **newer schema** than this binary can read | Upgrade the node binary; absorbed deltas drain after upgrade. See [stale-schema deltas](#stale-schema-deltas-absorbed). |
+| Application upgrade doesn't take; a context still runs old code; the migration rollup shows a `failed` member | A migration **aborted** (check rejected / apply errored) or the context is **stranded** with no upgrade path | Inspect the migration-status rollup; recover via resync. See [upgrade stalled or stranded](#upgrade-stalled-or-stranded). |
 | `governance_pending_queue_depth` grows without draining | Deltas buffered awaiting the governance op that authorises their author | Ensure the governance DAG syncs; check `governance_drain_outcomes_total`. See [context won't sync](#context-wont-sync). |
 | Application or state references a blob that won't load | The blob hasn't been fetched from any peer holding it | Confirm a peer has the blob; retry the operation. See [blob fetch fails](#blob-fetch-fails). |
 | `sync_buffer_drops_total` increments | Incoming deltas outpace apply during a snapshot transfer | Re-sync to backfill dropped deltas; investigate apply/storage latency. |
@@ -175,6 +176,33 @@ stays buffered rather than lost. See the
 
 <LinkCard title="Application Upgrades & Migration" href="/protocol/upgrades/"
   description="Schema versioning and zero-downtime migration." />
+
+---
+
+## Upgrade stalled or stranded
+
+**Symptom.** A new application version is deployed, but a context keeps running
+the **old** code, or the migration rollup
+(`GET /admin-api/groups/<namespace_id>/migration-status`) reports a member as
+`failed` and `allMigrated` stays `false`.
+
+**Cause.** Distinct from a [stale-schema delta](#stale-schema-deltas-absorbed)
+(which is a node behind a *peer's* schema and self-heals on binary upgrade), this
+is an **application migration** that did not complete on this node. A handful of
+node-local
+[migration & recovery markers](/protocol/storage/#node-local-migration--recovery-markers)
+record what happened: `ContextMigrationFailed` categorises the failure
+(`check_aborted`, `apply_failed`, or `no_migration_path`), `ContextExecutingBlob`
+pins reads to the pre-upgrade bytecode, and `ContextActivatedBlob` lags the
+group's current app key until the context catches up.
+
+**Fix.** Confirm the failure from the rollup, then follow the
+[recover a stuck upgrade runbook](/operate/runbooks/#recover-a-stuck-upgrade) —
+fix the underlying cause for `check_aborted` / `apply_failed`, or request a
+full-state resync for a `no_migration_path` (stranded) context.
+
+<LinkCard title="Application Upgrades & Migration" href="/protocol/upgrades/"
+  description="Schema versioning, the upgrade ladder, and migration recovery." />
 
 ---
 

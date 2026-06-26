@@ -59,6 +59,56 @@ Caps on what crosses the network — RPC requests, signed governance ops, sync s
 There are two distinct DAG-head caps and they are not the same number. **32** bounds the *governance* DAG (`MAX_GOVERNANCE_DAG_HEADS`); **100** bounds the *sync snapshot* head set (`MAX_DAG_HEADS` in `snapshot.rs`). The governance store internally also triggers head compaction at **64** heads (its own `MAX_DAG_HEADS`), which is a compaction threshold, not a wire cap.
 :::
 
+## Sync protocol caps
+
+Bounds on the sync subsystem: how many in-flight deltas a node buffers while it
+catches up, how long a buffered delta waits for governance before it is dropped,
+and the per-message / per-session ceilings the incremental state-transfer
+protocols enforce so a peer cannot demand an unbounded walk. These are about
+liveness and DoS resistance, not the wire-format sizes above.
+
+### Delta buffering
+
+While a node is uninitialized or applying a snapshot, incoming gossip deltas are
+held in a FIFO buffer and replayed once the node has the state to apply them
+against. A separate buffer holds deltas whose authorizing governance hasn't been
+folded yet.
+
+| Cap | Value | Behaviour at the limit | Constant / source |
+| --- | --- | --- | --- |
+| Snapshot-sync delta buffer | **10 000** deltas / context | Oldest evicted first (FIFO); the `drops` counter increments | `DEFAULT_BUFFER_CAPACITY` (`node/primitives/delta_buffer.rs:29`) |
+| Minimum recommended buffer | **100** | Below this a startup warning is logged — small buffers drop under normal load | `MIN_RECOMMENDED_CAPACITY` (`delta_buffer.rs:35`) |
+| Zero-capacity buffer | **0** | Valid but drops **every** delta immediately (`DroppedZeroCapacity`) | `delta_buffer.rs` (`push`, the `capacity == 0` arm) |
+| Governance-pending drain attempts | **16** | After 16 re-buffer passes the delta is **permanently dropped** with a warn (`dropped_max_attempts`) | `MAX_GOVERNANCE_DRAIN_ATTEMPTS` (`delta_buffer.rs:158`), enforced in `handlers/state_delta/buffering.rs:195` |
+
+The drain counter advances on both drain triggers — a governance op applying and
+new state-delta traffic arriving — so 16 attempts is well past any legitimate
+partition-recovery delay; a still-orphaned delta is dropped rather than retained
+forever (a later gossip rebroadcast or snapshot would re-deliver it if valid).
+
+### Incremental state transfer (HashComparison / LevelWise)
+
+The two tree-walking protocols clamp every request and response so a malicious or
+buggy peer cannot force an arbitrarily expensive traversal. Note the two depth
+caps differ by protocol.
+
+| Cap | Value | Behaviour at the limit | Constant / source |
+| --- | --- | --- | --- |
+| HashComparison nodes per response | **1000** | Response with more nodes is rejected as invalid | `MAX_NODES_PER_RESPONSE` (`node/primitives/sync/hash_comparison.rs:20`) |
+| HashComparison request depth | **16** | `max_depth` MUST be validated against this before processing | `MAX_TREE_REQUEST_DEPTH` (`node/primitives/sync/wire.rs:47`) |
+| LevelWise nodes per level | **10 000** | Responder **bails** (errors the session) if a level response exceeds it | `MAX_NODES_PER_LEVEL` (`sync/levelwise.rs:83`; checked in `sync/level_sync.rs:306`) |
+| LevelWise parents per request | **1000** | **Truncated** to the cap and `truncation_occurred` is set — sync may be incomplete | `MAX_PARENTS_PER_REQUEST` (`levelwise.rs:77`; clamped in `level_sync.rs:523`) |
+| LevelWise requests per session | **128** | Further requests are refused, bounding how long a peer can hold the session open | `MAX_REQUESTS_PER_SESSION` (`levelwise.rs:90`; checked in `level_sync.rs:813`) |
+| LevelWise traversal depth | **64** | `max_depth` clamped to this (LevelWise targets depth ≤ 2; the ceiling is headroom) | `MAX_LEVELWISE_DEPTH` (`levelwise.rs:71`) |
+
+:::note
+The two depth caps are not the same number and gate different protocols: **16**
+(`MAX_TREE_REQUEST_DEPTH`) bounds a single HashComparison `TreeNodeRequest`; **64**
+(`MAX_LEVELWISE_DEPTH`) clamps a LevelWise traversal. Only the parents-per-request
+cap *silently* loses data (it truncates and flags `truncation_occurred`); the node
+and request caps error the exchange instead, which falls back to another protocol.
+:::
+
 ## Capability bitmask (`MemberCapabilities`)
 
 A member's capabilities are a `u32` bitset (`crates/context/config/src/lib.rs`, also exported via `crates/primitives/src/context.rs`). These gate governance actions beyond the implicit default-write that membership already grants. Capabilities flow through open subgroups — see [Capability inheritance](/protocol/capability-inheritance/).

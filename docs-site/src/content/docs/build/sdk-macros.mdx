@@ -40,6 +40,51 @@ brought into scope with `use calimero_sdk::app;`.
   of the attribute surface.
 </Aside>
 
+## A minimal app
+
+Before the per-macro reference, here is a complete, runnable skeleton that uses
+the four macros every app needs: state, an init constructor, a mutating method,
+and a read-only view. Each numbered comment maps to a macro described below.
+
+```rust
+use calimero_sdk::app;
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
+
+// 1. The single persistent state struct, built from CRDT collections.
+#[app::state(emits = for<'a> Event<'a>)]
+pub struct KvStore {
+    items: UnorderedMap<String, LwwRegister<String>>,
+}
+
+// 2. The events this app may emit (named in `emits = ..` above).
+#[app::event]
+pub enum Event<'a> {
+    Inserted { key: &'a str, value: &'a str },
+}
+
+#[app::logic]
+impl KvStore {
+    // 3. Constructor: runs once, when the app is first installed in a context.
+    #[app::init]
+    pub fn init() -> KvStore {
+        KvStore { items: UnorderedMap::new() }
+    }
+
+    // 4. Mutating method: takes `&mut self`, so it commits state on success.
+    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+        app::emit!(Event::Inserted { key: &key, value: &value });
+        self.items.insert(key, value.into())?;
+        Ok(())
+    }
+
+    // 5. Read-only view: takes `&self`, runs under a shared lock, never commits.
+    #[app::view]
+    pub fn get(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.items.get(&key)?.map(|v| v.get().clone()))
+    }
+}
+```
+
 ## State and logic
 
 ### `#[app::state]`

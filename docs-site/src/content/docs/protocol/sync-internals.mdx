@@ -183,6 +183,16 @@ SnapshotPage {
 
 Each page payload is an lz4-compressed run of records. The current format (sentinel byte `0xFF`, `snapshot.rs:56`) length-frames every record (`u32 LE len ‖ bytes`) so the receiver bounds each record's decode to its own sub-slice. `cursor` drives resumption: the receiver echoes the last `cursor` back in the next `SnapshotStreamRequest` until the responder returns `None`. `total_records` is the exact denominator the receiver's applied count converges to, so progress and ETA can be computed; `0` means unknown (empty snapshot or an older peer). Bounds: pages cap at `DEFAULT_PAGE_LIMIT = 16` and `DEFAULT_PAGE_BYTE_LIMIT = 64 KB` per burst, with a hard `MAX_SNAPSHOT_PAGE_SIZE = 4 MB` uncompressed ceiling. Snapshot apply runs an explicit per-entity readability check so a receiver on an older schema declines-and-buffers a future-schema entity rather than persisting unreadable bytes. Failures surface as `SnapshotError { error: SnapshotError }`.
 
+### Applying a snapshot
+
+Snapshot apply does not behave like the incremental protocols — it has three properties worth stating outright, because each is a deliberate trade-off (`crates/node/src/sync/snapshot.rs`).
+
+**It is a full REPLACE, not a merge.** Before the first page lands the receiver snapshots its existing state keys; after the last page it calls `cleanup_stale_keys`, which deletes every key that existed locally but was *not* present in the snapshot (`snapshot.rs:1022`). A key the receiver held that the sender has since deleted is therefore removed — the snapshot is treated as the authoritative whole, not a set of additions. The one deliberate exception is rotation history the receiver rebuilt locally from delta replay: those keys are kept in the received set so the cleanup does not wipe them (`snapshot.rs:535`).
+
+**It bypasses `apply_action`.** Each verified `Entity` record is written with a raw `put` after its signature checks out — it does **not** go through `Interface::apply_action`, so there is no nonce-replay protection and no CRDT merge on this path (`snapshot.rs:640`). That is sound only because `request_snapshot_sync` refuses a snapshot when the local context is already initialized; the sole bypass is `force = true`, reserved for crash recovery where an on-disk marker confirms the local state was already mid-snapshot and is known-incomplete. In both cases the receiver holds no newer state that an older-nonce write could clobber. If that gate ever loosens, this path would need the nonce / CRDT-merge logic the incremental leaf-apply uses.
+
+**It never ships rotation logs.** Every `Auxiliary` record — including `ROTATION_LOG` — is rejected on receipt, because no `Auxiliary` kind is per-record signature-verifiable yet and a forged rotation log would let the verifier accept actions from writers who weren't authorized at the relevant causal point (`snapshot.rs:808`). The receiver instead reconstructs writer-rotation history from verified delta replay. The bounded edge case: a late-arriving pre-snapshot delta that references a rotation point before the snapshot may fail to verify until per-entry rotation-log signing lands.
+
 ## Side messages: blobs and key recovery
 
 A few protocols ride the same stream envelope outside the main transfer flow:

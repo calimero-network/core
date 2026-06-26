@@ -367,11 +367,30 @@ Two coordinated fences enforce this:
   producing_app_key: Option<[u8; 32]>,
   ```
 
-- **The `cascade_hlc` HLC fence.** A cascade upgrade stamps a single hybrid-logical-clock
-  boundary on every migrated descendant (see below). Any context-state delta whose HLC
-  predates that boundary is rejected post-`Completed`, preventing an offline writer's
-  stale-schema write from overwriting migrated state
-  (`crates/context/src/hlc_fence.rs`).
+- **The `cascade_hlc` HLC fence — absorb, don't drop.** A cascade upgrade stamps a single
+  hybrid-logical-clock boundary (`cascade_hlc`) once, shared by every migrated descendant
+  (see below). The fence decides each incoming context-state delta against three facts: the
+  boundary, the delta's HLC, and — crucially — the **loaded reader** app_key, the bytecode
+  blob the receiver actually executes right now, *not* the replicated `GroupMeta.app_key`
+  migration target. Under `LazyOnAccess` the governance target advances for everyone at
+  cascade-apply while each node's binary swaps lazily, so keying on the target would fence a
+  node against a schema it can already read. The rule (`fence_decision`,
+  `crates/context/src/hlc_fence.rs`):
+
+  | Condition | Decision |
+  | --- | --- |
+  | no `cascade_hlc` boundary | `Apply` |
+  | `delta_hlc <= boundary` — pre-cascade legitimate history | `Apply` |
+  | delta schema matches the loaded reader | `Apply` |
+  | after the boundary **and** schema differs from the loaded reader | `Buffer` |
+
+  A fenced delta is **buffered (absorbed) for verbatim replay** once the local binary
+  catches up to the schema that produced it — it is never dropped. The migration fence never
+  emits `Drop`; that verdict is reserved for unrecoverable, non-absorbable cases. The loaded
+  reader resolves in execution order — the per-context activation marker, then the installed
+  application row's bytecode blob, then the group target as a last resort
+  (`loaded_reader_app_key`). The replicated target is threaded through only so the absorb
+  drain can later tell when the binary has reached it.
 
 ## Group-wide cascade upgrade
 
@@ -451,6 +470,110 @@ still have unconverted entries — `0` means the cohort is fully converted.
 The node also fires an `AppVersionChanged` context event (over SSE/WebSocket) when a
 context's application version flips, carrying `fromVersion` / `toVersion` — frontends use
 it to prompt owners to run `migrate_my_entries()` and to avoid bundle skew.
+
+## The in-progress upgrade write gate
+
+An **eager** group upgrade (the `Automatic` policy, driven by a propagator) walks the group
+migrating contexts one at a time. While that walk is mid-flight the group's upgrade row is
+`GroupUpgradeStatus::InProgress`, and a second fence — the execute write-gate — keeps a
+not-yet-migrated context from committing a write that would drift against group-mates
+already on the new schema.
+
+Only `InProgress` blocks, and the gate is deliberately narrow so it cannot deadlock the
+machinery that clears it:
+
+- **Lazy upgrades** write `Completed` directly and never pass through `InProgress`, so a
+  `LazyOnAccess` group is never write-frozen.
+- **The eager propagator** — the task doing the migrating — **bypasses the execute gate**, so
+  the migration commits that retire `InProgress` are never blocked by it.
+
+(`upgrade_blocks_write`, `crates/context/src/handlers/execute/upgrade_gate.rs`.)
+
+The subtle part is that read-vs-write intent does not exist upstream — neither
+`ExecuteRequest`, the RPC layer, the SDK, nor the ABI carries a "this call writes" flag. So
+write-intent is derived **post-execution**:
+
+- A **state-op** is a known write — refused *before* execution with `UpgradeInProgress`.
+- A **user call** is allowed to execute against the **pre-migration root**, then judged on
+  what it produced: a committed `root_hash` or queued `xcalls` means it wrote, and it is
+  rejected after the fact; a pure read produced neither, so its result returns normally
+  (`upgrade_rejects_committed_write`, call site
+  `crates/context/src/handlers/execute/mod.rs`).
+
+So during an eager upgrade a context still serves reads from its old state and only
+side-effecting calls are turned away — for exactly as long as the `InProgress` window lasts.
+
+## Lazy upgrades: replaying the ladder hop by hop
+
+Under `LazyOnAccess` nothing migrates at cascade-apply; a context reshapes its state on its
+**first access** afterward. A context idle through several releases can be many versions
+behind the group target — and it must **not** jump the latest edge against old state. Running
+`migrate_v2_to_v3` on still-`v1` bytes mis-decodes and panics. Instead the node replays the
+upgrade **ladder** one rung at a time: `v1→v2`, then `v2→v3`.
+
+Two facts decide what a stale context does (`maybe_lazy_upgrade`,
+`crates/context/src/handlers/execute/upgrade_gate.rs`):
+
+- The **activation marker** — `ContextActivatedBlob`, the bytecode blob this context last
+  *activated* (a migration commit, or a code-only swap). A context is up to date exactly when
+  its marker equals the group's `app_key` (`crates/context/src/activation.rs`).
+- The **ladder** — the recorded sequence of upgrade rungs (`app_key` paired with
+  `application_id`) the group has climbed.
+
+| Context state | Action |
+| --- | --- |
+| Marker present, behind target | **Replay** the ladder from the marker's blob; each hop's migrate method is resolved from the two blobs' embedded ABIs — the group-level migration *hint* is never run on this arm |
+| No marker, installed row resolves to a blob ≠ target | **Replay** from that installed version (a fresh joiner several versions behind) |
+| No marker, version unresolvable or already at the target | **Single jump** to the target with the group-level migration hint |
+
+`next_rung` positions a context on the ladder by the **last** occurrence of its bound blob,
+so an `A→B→A` re-pin lands it on the later `A`. A bound blob the ladder never recorded (a
+creation version) starts at the first rung; an empty or stale ladder degrades to a single
+synthesized jump to the current target — the pre-ladder behavior
+(`crates/context/src/activation.rs`). The call site seeds the marker to the replay's
+starting blob before running, binding execution to it, so a blocked hop strands the context
+on its real version rather than running target bytecode on un-migrated state.
+
+## Worked example: shipping v2 to a 3-node group
+
+A docs app's state is `DocV1 { entries, title }`. Release 2 adds a field:
+
+```rust
+#[app::state(version = 2)]
+#[derive(app::Migrate)]
+#[migrate(from = DocV1)]
+pub struct DocV2 {
+    entries: UnorderedMap<String, LwwRegister<String>>, // carried
+    title: LwwRegister<String>,                          // carried
+    #[migrate(new = LwwRegister::new("".to_owned()))]
+    notes: LwwRegister<String>,                          // additive
+}
+```
+
+Three nodes — `A`, `B`, `C` — run a context in one group. An admin on `A` ships v2 with
+`POST /groups/:id/upgrade`, emitting one `CascadeUpgrade` that replicates to all three. What
+happens next depends on the group's upgrade policy.
+
+**Eager (`Automatic`).** A propagator walks the group. The upgrade row goes `InProgress`,
+which write-freezes the context on every node: reads of `DocV1` still serve, but a call that
+would write `notes` is refused with `UpgradeInProgress`. Each node independently runs
+`migrate_v1_to_v2` against its own byte-identical `v1` state, the `migration_check` (if any)
+passes, the `v2` root commits, and an `AppVersionChanged { fromVersion: 1, toVersion: 2 }`
+fires. When the last context migrates the row flips to `Completed` and writes reopen.
+
+**Lazy (`LazyOnAccess`).** The `CascadeUpgrade` only records the new target plus the
+`cascade_hlc` fence; nothing migrates yet. `A` and `B`, which are actively used, migrate on
+their next context access; `C`, idle, keeps `DocV1` bytes on disk. The group is never
+write-frozen (lazy writes `Completed` directly).
+
+**The lagging node.** Say `C` stays offline across a *second* release, v3. While `C` is
+behind, the `v2`/`v3`-schema deltas its migrated peers broadcast arrive under a schema that
+`C`'s loaded binary cannot read yet, so `C` **buffers** them — the fence keys on `C`'s own
+loaded reader and absorbs rather than drops. When `C` finally opens the context it is two
+versions behind with no activation marker, so the gate sees its installed blob differ from
+the v3 target and **replays the ladder** — `v1→v2` then `v2→v3` — rather than jumping
+`migrate_v2_to_v3` onto `v1` bytes. Once its binary reaches the target schema the buffered
+deltas replay verbatim.
 
 ## Related
 

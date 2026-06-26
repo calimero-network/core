@@ -97,6 +97,75 @@ deterministic walk — so both editors land on the same text without coordinatio
   ]}
 />
 
+## Worked examples
+
+A different real scenario for each everyday type — pick the one whose merge
+behavior matches what you are modeling.
+
+**`SortedMap` — a live leaderboard.** Keys sort ascending by their *raw bytes*,
+so to show highest scores first, store `u64::MAX - score` big-endian; the index
+then puts top scores at the front and `page` seeks instead of scanning:
+
+```rust
+// Leaderboard, highest score first. Big-endian is mandatory: otherwise 255
+// sorts after 256, and `u64::MAX - score` inverts ascending order into a ranking.
+let mut board: SortedMap<[u8; 8], LwwRegister<String>> = SortedMap::new();
+board.insert((u64::MAX - score).to_be_bytes(), player.into())?;
+let top_10 = board.page(0, 10)?;                       // O(log n + 10) via the index
+```
+
+The same shape backs a time-ordered activity feed — key on a big-endian
+timestamp and `range(since.to_be_bytes()..now.to_be_bytes())?` to scan a window.
+
+**`UnorderedMap` — an asset registry.** The default key→value store when every
+access is a point lookup by id and iteration order never matters:
+
+```rust
+// id -> asset metadata; O(1) lookups, no ordering overhead.
+let mut assets: UnorderedMap<String, LwwRegister<String>> = UnorderedMap::new();
+assets.insert(asset_id.clone(), metadata_uri.into())?;
+let uri = assets.get(&asset_id)?;                      // O(1), independent of size
+```
+
+**`UnorderedSet` — a moderation blocklist.** Add-wins membership is exactly what
+a blocklist (or a tag set) wants: if two moderators block the same account on
+different nodes at once, the merge keeps it blocked rather than dropping an add:
+
+```rust
+let mut blocked: UnorderedSet<String> = UnorderedSet::new();
+let was_new = blocked.insert(account_id)?;             // false if already present
+if blocked.contains(&caller)? { return; }              // reject the action
+```
+
+**`Vector` — an append-only audit log.** `push` mints a stable element id, so
+insertion order survives reloads; read the whole log with a single `iter` pass:
+
+```rust
+let mut audit: Vector<LwwRegister<String>> = Vector::new();
+audit.push(format!("{caller} granted role: admin").into())?;
+for line in audit.iter()? { /* render oldest-first */ }  // one O(n) pass — never get(i) in a loop
+```
+
+**`Counter` — like / view counts.** Increments are tracked per executor and
+summed on read, so two nodes liking the same post concurrently both count — no
+lost updates, unlike a `LwwRegister<u64>` where one write would clobber the
+other. Nest per id:
+
+```rust
+let mut likes: UnorderedMap<String, Counter> = UnorderedMap::new();
+likes.entry(post_id)?.or_default().increment()?;       // every concurrent like survives merge
+```
+
+**`ReplicatedGrowableArray` — a collaborative document.** A shared notepad where
+two people type at once; build text with one bulk `insert_str`, never a
+per-character loop (each call re-materializes the whole document):
+
+```rust
+let mut doc: ReplicatedGrowableArray = ReplicatedGrowableArray::new();
+doc.insert_str(0, "Hello, world")?;                    // bulk — materializes order once
+let text = doc.get_text()?;                            // deterministic walk over all chars
+```
+
 ## Access-controlled collections
 
 These add an authorization model on top of a CRDT. The crucial property:

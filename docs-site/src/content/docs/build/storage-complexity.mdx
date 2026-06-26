@@ -183,6 +183,43 @@ Blobs are the right home for anything large or opaque (files, media,
 serialized snapshots). Storing big values as collection entries instead forces
 that data through the per-entry read and sibling-rehash machinery above.
 
+## Worked example: a chat that doesn't shard
+
+Make the write-cost cliff concrete. A chat app stores every message as a direct
+child of one map:
+
+```rust
+// All messages under a single parent — K grows without bound.
+messages: UnorderedMap<u64, LwwRegister<String>>,
+```
+
+By message 100,000, `K ≈ 100_000`. Each new message is an `insert`, and every
+insert re-sorts and SHA-256s **all** of the parent's children to recompute its
+Merkle hash — `O(K log K)`. So the 100,000th message hashes ~100k siblings, the
+room gets *slower the more it is used*, and a full sync that replays the room
+degrades toward `O(N^2)` because `K ≈ N`. This is a write/merge cliff, not a read
+problem — point reads stay `O(1)`.
+
+The fix is to bound `K`: shard the messages so no single parent holds the whole
+history. Bucketing by UTC day keeps each parent at one day's traffic, and the
+inner `SortedMap` still gives ordered reads within a day:
+
+```rust
+// "room:2026-06-25" -> that day's messages, time-ordered. Each parent's K is
+// one day of traffic (thousands), not the lifetime total (hundreds of thousands).
+messages: UnorderedMap<String, SortedMap<[u8; 8], LwwRegister<String>>>,
+```
+
+| | One flat map | Sharded by day |
+|---|---|---|
+| Parent size `K` at 100k messages | ~100,000 | ~one day's count |
+| Cost of the next `insert` | `O(100k · log 100k)` | `O(day · log day)` |
+| Full-room merge | toward `O(N^2)` | `O(N · day)` |
+
+The shard key is whatever bounds growth for *your* access pattern — a time
+bucket, a room id, a key prefix, or an owner. The only requirement is that no
+single parent grows unbounded.
+
 ## Practical guidance
 
 - **Use the right collection for the access pattern.** Point lookups →

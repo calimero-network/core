@@ -195,6 +195,51 @@ metric. Treat root-hash agreement as a log/RPC signal, and use the sync /
 governance counters above as the numeric proxy.
 </Aside>
 
+## Sync status & readiness
+
+Not every convergence signal is a Prometheus series. Two typed state machines
+surface a node's sync health at finer granularity than the counters above — both
+are pushed as events and readable on demand, so a client or operator can tell
+"actively syncing" from "waiting for a peer" from "stuck behind backoff".
+
+### Per-context sync phase
+
+Each context reports a coarse `sync_status` phase, published both as the
+`sync_status` JSON-RPC response and as a `SyncStatus` WebSocket event. The phase
+is recomputed from the context's `SyncState` and only re-emitted on a real
+transition, so the event stream stays quiet between changes
+(`crates/node/src/sync/session.rs`, produced from
+`crates/primitives/src/sync_status.rs`).
+
+| Phase | Carries | Meaning |
+| --- | --- | --- |
+| `Idle` | — | Settled — no sync in flight, nothing pending. |
+| `WaitingForPeers` | — | Not yet initialized and nothing actively syncing — typically waiting for a co-member peer to appear. Set explicitly on the benign `NoPeersAvailable` / `PeerNotMaterialized` outcomes, which otherwise look idle. |
+| `Syncing` | — | A sync attempt is in flight (handshake / delta exchange). |
+| `ReceivingSnapshot` | `records_received`, `percent`, `eta_secs` | Receiving an initial-state snapshot. `percent` / `eta_secs` are `None` against a peer too old to advertise the snapshot's total entity count, degrading to the raw `records_received` liveness count. |
+| `BackingOff` | `retry_in_secs` | The last attempt failed; the next retry is gated behind the [exponential backoff](/protocol/sync/) — `retry_in_secs` is the estimated wait. |
+
+### Per-namespace readiness tier
+
+Separately, each namespace runs a readiness FSM that governs when the node will
+participate in the three-phase governance contract. Peers exchange signed
+*beacons* advertising how far each has applied; the tier is a pure function of
+local progress, peer beacons, and elapsed boot grace
+(`crates/node/src/readiness.rs`, `evaluate_readiness`).
+
+| Tier | Carries | Meaning |
+| --- | --- | --- |
+| `Bootstrapping` | — | Just subscribed — no peer beacon yet and still within `boot_grace`, or an empty-DAG joiner with no known target. |
+| `LocallyReady` | — | Boot grace elapsed with no peer beacons; the node self-promotes on local state alone. |
+| `PeerValidatedReady` | — | Heard a fresh peer beacon and the local `applied_through` is within `applied_through_grace` of the peer's tip. The fully-converged tier. |
+| `CatchingUp` | `target_applied_through` | A peer beacon names a tip the node is still behind; carries the target to catch up to. |
+| `Degraded` | `reason` | Demoted — `PendingOps(n)` while ops are blocking promotion, or `NoRecentPeers` when a once-fresh namespace has heard no beacon within `ttl_heartbeat`. |
+
+Readiness config defaults (`ReadinessConfig::default`): `beacon_interval` **5 s**,
+`ttl_heartbeat` **60 s**, `boot_grace` **10 s**, `applied_through_grace` **2**
+ops. Any local pending op demotes to `Degraded` immediately — pending ops always
+win over a tip-fresh peer comparison.
+
 ## Logging
 
 `merod` initialises `tracing` with an `EnvFilter` driven by the **`RUST_LOG`**

@@ -272,6 +272,25 @@ pub fn subgroup_visible_to(&self, parent_group_id, child_group_id, caller) -> Ey
 }
 ```
 
+## Worked example: Open auto-join vs Restricted admission
+
+Take a namespace `acme` with three members and two subgroups:
+
+- Members of `acme`: **Alice** (admin), **Bob** (ordinary member, holds the default `CAN_JOIN_OPEN_SUBGROUPS`), **Mallory** (ordinary member whose `CAN_JOIN_OPEN_SUBGROUPS` an admin has revoked — the deny-list case).
+- Subgroups: **`eng`** is `Open`; **`payroll`** is `Restricted`.
+
+No membership op is ever written on either subgroup for these three. Resolving each identity against each subgroup runs the parent-chain walk above:
+
+| Identity | `eng` (Open) | `payroll` (Restricted) |
+| --- | --- | --- |
+| Alice (admin of `acme`) | `Inherited { anchor: acme, via_admin: true }` — admin flows down the Open chain | not an inherited member; the wall returns before any parent is consulted. She can _see_ and admit (inherited admin of the parent), but is not herself a member until admitted |
+| Bob (holds the bit) | `Inherited { anchor: acme, via_admin: false }` — auto-joined, no op | `None` — the wall stops the walk at the target; the subgroup is hidden from him entirely |
+| Mallory (bit revoked) | `None` — the anchor row exists but the bit is clear, so the recorded decision denies | `None` — same wall |
+
+**Open `eng`: auto-join, no op.** Bob and Alice replicate `eng`'s contexts without any operation naming them in `eng`. [Auto-follow](/protocol/governance/) walks up to the anchor — their direct row in `acme` — and honours that row's `auto_follow.contexts` flag. Revoking Bob's `acme` membership makes his `eng` inheritance simply stop resolving on the next walk; there is no `eng` row to clean up.
+
+**Restricted `payroll`: explicit admission.** For anyone to join `payroll`, an admin must write a direct `MemberAdded` row in `payroll` itself and deliver its scope key. Until then the subgroup's very existence is concealed from non-members: `subgroup_visible_to` returns `true` only for a member of `payroll` or an inherited admin of its parent. Flipping `payroll` to `Open` later would open inheritance to every parent member who holds the bit — which is why the flip is gated behind admin or `CAN_MANAGE_VISIBILITY`.
+
 ## Summary
 
 - Membership narrows as you descend the scope tree; it is never widened by a child.

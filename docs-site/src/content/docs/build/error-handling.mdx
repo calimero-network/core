@@ -141,6 +141,46 @@ is expected instead yields its `Display` text.
   `std::error::Error` becomes its `Display`.
 </Aside>
 
+## Worked example: a token-transfer app
+
+A typed error enum makes each failure mode a distinct, machine-readable object.
+Here a transfer can fail two ways — the caller is not allowed, or they don't have
+the funds — and each carries the data a client needs to react:
+
+```rust
+use calimero_sdk::{app, env, serde::Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Error, Serialize)]
+#[serde(crate = "calimero_sdk::serde", tag = "kind")]
+pub enum TransferError {
+    #[error("insufficient balance: need {need}, have {have}")]
+    InsufficientBalance { need: u64, have: u64 },
+    #[error("caller is not authorized to transfer")]
+    Unauthorized,
+}
+
+#[app::logic]
+impl Token {
+    pub fn transfer(&mut self, to: String, amount: u64) -> app::Result<()> {
+        // `executor_id()` is the unforgeable actor for per-user logic.
+        let caller = env::executor_id();
+        if !self.is_member(&caller) {
+            app::bail!(TransferError::Unauthorized);
+        }
+        let have = self.balance_of(&caller);
+        if amount > have {
+            app::bail!(TransferError::InsufficientBalance { need: amount, have });
+        }
+        // ... debit `caller`, credit `to` ...
+        Ok(())
+    }
+}
+```
+
+Because the variant is `Serialize`, `bail!` takes the structured path: the client
+receives the whole object, `kind` tag included, not just a flattened message.
+
 ## What the caller sees
 
 When your method returns `Err`, the SDK serializes the error as the `Err`
@@ -160,8 +200,23 @@ JSON-RPC `execute` path it arrives as a `FunctionCallError`:
 ```
 
 The `data` field holds your serialized error — a string for the message forms,
-or the JSON object for the `Serialize` form. Decoding failures and lower-level
-execution faults arrive under their own variants (`SerdeError`, `ExecuteError`).
+or the JSON object for the `Serialize` form. The `TransferError` above, returned
+when the balance is too low, arrives as a structured object the client can branch
+on by `kind`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "type": "FunctionCallError",
+    "data": { "kind": "InsufficientBalance", "need": 100, "have": 40 }
+  }
+}
+```
+
+Decoding failures and lower-level execution faults arrive under their own
+variants (`SerdeError`, `ExecuteError`).
 
 ## Traps and panics discard everything
 

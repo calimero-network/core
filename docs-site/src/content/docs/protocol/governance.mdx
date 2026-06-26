@@ -79,6 +79,31 @@ There are two ways a member stops being a member, and the difference is entirely
 
 Two invariants guard both paths: the scope's **owner** cannot be removed involuntarily and cannot self-leave without first transferring ownership, and a removal that would leave a group with no admin is rejected — the tree can never be orphaned.
 
+### Worked example: promote a member, then remove one
+
+Two operations, both signed by an admin, show how a role change and a removal compose. First promote Bob to admin with `MemberRoleSet { member, role: Admin }` (the upsert-role op); later remove Carol with `MemberRemoved`. Promotion is a plain membership write — no key changes. Removal is admin-initiated, so it carries a fresh scope key wrapped to every _remaining_ member (Bob now included, Carol excluded), the `KeyRotation { new_key_id, envelopes }` bundle attached to the op.
+
+<SeqDiagram
+  id="d-promote-remove"
+  title="Promote a member to admin, then remove a member"
+  lanes={[
+    { label: 'Admin', color: '#f0883e' },
+    { label: 'Governance scope', color: '#a5ff11' },
+    { label: 'Remaining members', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'MemberRoleSet { member: Bob, role: Admin }', color: '#a5ff11' },
+    { from: 1, to: 2, label: 'fold at the op cut → Bob is now an admin' },
+    { type: 'divider', label: 'later: remove Carol (admin-initiated → key rotation)' },
+    { from: 0, to: 1, label: 'MemberRemoved { member: Carol, expected_group_state_hash, ... }', color: '#a5ff11' },
+    { from: 0, to: 0, label: 'generate fresh scope key' },
+    { from: 0, to: 2, label: 'KeyRotation { new_key_id, envelopes } — one per remaining member (Bob in, Carol out)' },
+    { type: 'divider', label: 'Carol cannot read anything authored after this point' },
+  ]}
+/>
+
+Because authority is judged at each op's causal cut, the ordering is robust: the promotion stands on every node that folds it, and the removal's rotation reaches exactly the members who held a row at the cut it was signed against — including a member who was just promoted, and excluding the one being removed.
+
 ## Auto-follow: turning membership into replication
 
 Membership is a row in governance state; it is not, by itself, replicated data. Auto-follow is the mechanism that closes that gap — it is the answer to "I joined the group but no data synced." A member row carries two **auto-follow flags**, and when they are set the node automatically joins the contexts (and, eventually, subgroups) it is already entitled to, so membership turns into an actual replicating context on disk.
@@ -131,6 +156,20 @@ This rule is what lets a root-admitted `ReadOnlyTee` replicate Open-subgroup con
 ### Opting out of a single context
 
 Auto-follow is a group-level intent, but a node can suppress it for one context. Calling `leave_context` writes a node-local `ContextLeftMarker` for `(member, context)` into a local-only column — it is **never synced to peers**. While that marker is present, auto-follow skips the context even though `auto_follow.contexts` is still `true` at the group level, so a later `ContextRegistered` (or backfill) will not silently rejoin it. The marker is cleared only by an explicit user-initiated join request for that context.
+
+## Startup self-heal
+
+Governance apply is online and event-driven, but two crash/race windows can leave a node holding work that no future event will re-trigger. Both are swept once, on the way up.
+
+### Re-driving stranded buffered ops
+
+A governance op a node receives before it holds the scope key is **buffered** awaiting that key. The race: the op (e.g. a `ContextRegistered`) arrives and buffers, `GroupCreated` applies, the live one-shot `KeyDelivery` retry then runs and _fails_ (the key has not landed yet), and nothing remains to re-drive the buffered op. On startup the node sweeps every namespace it holds an identity for, and for every group whose key it **already holds** that still has buffered ops, it re-drives them (`crates/context/src/self_purge.rs`).
+
+The sweep is a **fixpoint loop**, because applying one op can unblock a later op from a _different_ signer (the nonce window is tracked per `(group, signer)`, so one pass orders only within a signer). It re-runs until a full pass applies nothing new — narrowing each pass to only the groups that just made progress — bounded by `MAX_PASSES = 64` as a defensive cap against a logic bug. It runs before the event loop and after the op-event subscription, so any `ContextRegistered` events it emits drive [auto-follow](#auto-follow-turning-membership-into-replication) rather than being lost. It is best-effort: per-group errors are logged and swallowed, and the next restart re-runs it.
+
+### Re-spawning interrupted eager upgrades
+
+An eager (`Automatic`) [group upgrade](/protocol/upgrades/) is driven by an in-memory propagator; a crash mid-walk leaves the upgrade row `InProgress` with no task pushing it. On actor startup the `ContextManager` scans the store for in-progress upgrades and re-spawns a propagator for each (`recover_in_progress_upgrades`, `crates/context/src/lifecycle.rs`). `LazyOnAccess` groups are skipped — they never enter `InProgress`, so there is nothing to resume.
 
 ## Roles, capabilities, and the owner
 

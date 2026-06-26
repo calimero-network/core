@@ -84,6 +84,24 @@ All governance record types share one column, distinguished by a 1-byte prefix f
 
 Note the `GroupOpLog` sequence is **big-endian** so keys sort in numeric order; id-based keys use the raw 32 bytes. The `key_id` in `GroupKeyEntry` is `SHA-256(scope_key)`, matching the `key_id` a `StateDelta` advertises on the wire (Chapter 7).
 
+## Node-local migration & recovery markers
+
+A handful of node-local columns hold no protocol state — they are **breadcrumbs** an in-progress (or stalled) upgrade leaves behind, and the signal an operator
+requested a recovery. None of them synchronize; each gets its **own column** so its `context_id`-only (or `application_id`-only) key can't collide with a
+same-shaped key in a shared column. For most of them the **presence of the row is the signal** and the value (if any) carries a reason or a pinned blob id. They
+are worth inspecting directly when an upgrade looks stuck (the [recover a stuck upgrade](/operate/runbooks/#recover-a-stuck-upgrade) runbook uses exactly these).
+
+| Marker (column) | Scope | What its presence signals |
+| --- | --- | --- |
+| `ContextMigrationFailed` | per-context | The last migration attempt did **not** complete. The value's `kind` byte categorises the failure: `1` = the migration check aborted, `2` = the migrate apply errored. Read by the migration heartbeat; self-clears when a later migrate commits (or a resync settles). A missing row = no failure on record. |
+| `ContextExecutingBlob` | per-context | A logically-aborted migration left this context **executing OLD bytecode**. The version-stable bundle id's `Application` row already holds the NEW bytecode, so this pin keeps reads on the pre-upgrade code until a migrate succeeds. Deleted on a successful migrate. A missing row = "execute the row's bytecode" (the normal case). |
+| `ContextActivatedBlob` | per-context | The bytecode blob this context **last activated** — set when a migration commits or a code-only swap applies, and moved forward only. The single up-to-date check everywhere is `marker == group.app_key`; if it lags the group's current app key, this node has not caught up to the activated code. |
+| `ContextResyncRequested` | per-context | An **operator requested a full-state resync** of this context (the recovery for a context stranded with no migration path). Its presence admits a snapshot full-state replacement; it is cleared once that snapshot completes. |
+| `ApplicationPreviousBlob` | per-application | The bytecode blob an **in-place (same-id) install overwrote**. It is the source for the executing-blob pin above and the pre-install ABI the downgrade gate compares against. A missing row = no prior in-place install on record. |
+
+These columns are auto-created from the column set at open time (no DB migration), so they exist even on a node that has never upgraded — they simply hold no rows
+until a migration writes one.
+
 ## Back to the protocol
 
 That is the on-disk shape of everything the ten chapters describe. Return to the [Protocol Reference](/protocol/overview/), or revisit [Operations](/protocol/operations/) (whose `Op` is what the unified store holds) and [Projection](/protocol/projection/) (whose root hash is the `root_hash` in `ContextMeta`).

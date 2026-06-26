@@ -90,6 +90,34 @@ Payload encryption protects the `artifact` only. The delta envelope (`root_hash`
 
 In other words, payload encryption gives you **content confidentiality**, but **not metadata privacy or membership privacy**. An observer who cannot read a single byte of your application state can still map your group's membership, activity, and topology.
 
+### One real message: what each reader gets
+
+Take a chat app where a member runs `send_message("hi")`. The node encrypts the artifact under the group key (`SharedKey::from_sk`) and publishes one `BroadcastMessage::StateDelta` on `TopicHash(context_id)` (`crates/node/primitives/src/client.rs`). Identical bytes reach every subscriber; only the key differs. (Hashes below are abbreviated and illustrative.)
+
+```text
+BroadcastMessage::StateDelta {
+  context_id:    0x7a1c…e0        // = the gossip topic itself
+  author_id:     0x9f4b…21        // the sending member's public key
+  delta_id:      0x3c08…9d        // hash(parents ‖ actions)
+  parent_ids:    [ 0x11aa…02 ]    // previous head(s)
+  hlc:           1750.000123:#0   // (seconds.fraction, logical counter)
+  root_hash:     0x6e72…ff        // author's expected scope_root after apply
+  key_id:        0x4d90…7c        // = SHA-256(group_key) — which key decrypts
+  nonce:         0x1b…(12 bytes)  // AES-GCM nonce
+  artifact:      0xa3f1…(opaque)  // CIPHERTEXT — borsh(actions) under group key
+  events:        [ { kind: "MessageSent", data: { len: 2 } } ]   // PLAINTEXT
+  delta_signature: Some(0x82c5…)  // author's envelope signature
+}
+```
+
+| Field group | Non-member observer (no key) | Member peer (holds `group_key` where `SHA-256 == key_id`) |
+| --- | --- | --- |
+| `artifact` | Opaque ciphertext — no key for `key_id`, stays unreadable | `SharedKey::from_sk(group_key).decrypt(artifact, nonce)` → the CRDT action(s): a `Put` to the messages collection entry with value `borsh("hi")` |
+| Envelope (`author_id`, `delta_id`, `parent_ids`, `hlc`, `root_hash`, `key_id`) | Fully readable — reconstructs who wrote, when, on top of what, and the convergence state | Same cleartext, plus it now *means* something: the peer folds the decrypted action and confirms its recomputed root matches `root_hash` |
+| `events` | **Readable**: sees a `MessageSent` event fired (kind + data) — even though it never learns the text was `"hi"` | Same — events are plaintext for everyone |
+
+So the observer learns *that* member `0x9f4b…21` sent a chat message of some length at a known time, building on a known parent — it just never learns the **content** `"hi"`. The member learns everything.
+
 ## Gotchas & boundaries
 
 These are the sharp edges. Read them before reasoning about what is and isn't private.

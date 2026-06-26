@@ -82,6 +82,58 @@ admin API). An event type implements `AppEvent`; in practice you derive it with
 |----------|--------------|--------|
 | `env::ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8]) -> bool` | Verifies an Ed25519 signature over `message` for `public_key`. | Returns `true`/`false`; it does not bail on an invalid signature — check the bool. Has no native mock: it panics under `TestHost`. |
 
+### Example: accepting an off-chain-signed voucher
+
+A voucher is signed by a trusted issuer *off* the network; the app accepts it
+only if the signature checks out, then records the redemption and emits an event
+so off-chain consumers can react. This pairs `env::ed25519_verify` (trust the
+payload) with `app::emit!`/`env::emit` (announce the outcome).
+
+```rust
+use calimero_sdk::{app, env};
+use calimero_storage::collections::UnorderedSet;
+
+#[app::state(emits = for<'a> Event<'a>)]
+pub struct Shop {
+    issuer_pk: [u8; 32],           // the trusted issuer's public key
+    redeemed: UnorderedSet<String>, // codes already used (anti-replay)
+}
+
+#[app::event]
+pub enum Event<'a> {
+    VoucherRedeemed { code: &'a str, amount: u64 },
+}
+
+#[app::logic]
+impl Shop {
+    pub fn redeem(
+        &mut self,
+        code: String,
+        amount: u64,
+        signature: [u8; 64],
+    ) -> app::Result<()> {
+        // The issuer signs the exact bytes `"<code>:<amount>"` off-chain.
+        // Reconstruct them identically and verify before trusting anything.
+        let message = format!("{code}:{amount}");
+        if !env::ed25519_verify(&signature, &self.issuer_pk, message.as_bytes()) {
+            app::bail!("invalid voucher signature");
+        }
+        // `ed25519_verify` returns a bool — a bad signature does not bail on
+        // its own, so the guard above is load-bearing.
+        if !self.redeemed.insert(code.clone())? {
+            app::bail!("voucher already redeemed");
+        }
+        app::emit!(Event::VoucherRedeemed { code: &code, amount });
+        Ok(())
+    }
+}
+```
+
+`UnorderedSet::insert` returns `false` when the value was already present, which
+doubles as the anti-replay check. The signed `message` must be byte-identical to
+what the issuer signed — a different separator or number format fails
+verification.
+
 ## Time & randomness
 
 <Aside type="caution">
@@ -144,6 +196,42 @@ node.
 
 See [`permissioned-storage`](/build/permissioned-storage/) for the
 synchronized-vs-local storage model.
+
+## JS runtime collection bridge
+
+The Rust SDK calls the storage layer directly, so its CRDT writes flow into the
+Merkle DAG and the outcome artifact automatically. The QuickJS runtime cannot —
+JavaScript has no access to the Rust storage interface. Instead it funnels its
+state back through a dedicated set of host functions that reproduce, host-side,
+what the Rust SDK does in-process. These are defined in
+`crates/runtime/src/logic/host_functions/system.rs` and `js_collections.rs`.
+
+The root-state bridge keeps the storage DAG and the outcome artifact in sync:
+
+| Host function | Role |
+|---------------|------|
+| `persist_root_state(doc_ptr, created_at, updated_at)` | Saves the serialized root document through the storage interface (recomputing parent hashes and emitting a CRDT action) rather than writing raw bytes. |
+| `read_root_state(register_id) -> i32` | Loads the persisted root document into a register; returns `1` if it exists, `0` if not. |
+| `apply_storage_delta(delta_ptr)` | Replays a Borsh-encoded `StorageDelta` from another executor, updating CRDT entities and the root atomically, then refreshes the root hash. |
+| `flush_delta() -> i32` | Emits the CRDT actions recorded since the last flush as a causal delta; returns `1` if a delta was emitted, `0` if there was nothing to commit. |
+
+<Aside type="caution" title="The collection bridge uses a different error ABI">
+  The `js_crdt_*` and `js_user_storage_*` collection host functions (e.g.
+  `js_crdt_map_insert`, `js_user_storage_insert`) do **not** trap on error. They
+  return `i32` where:
+
+  - `1` — success *with* a result (e.g. a previous value was written into the
+    destination register),
+  - `0` — success with *no* result (not found / no previous value),
+  - `-1` — **error**, with the error message written as UTF-8 into the
+    destination register (see `write_error_message` in `js_collections.rs`).
+
+  So a caller that checks `result == 1` to mean "ok" silently swallows both the
+  legitimate `0` case **and** the `-1` error case — the error string sits unread
+  in the register and execution continues as if nothing failed. The correct
+  pattern is to treat `-1` as the error branch (read the message out of the
+  register) and `0`/`1` as the two success shapes.
+</Aside>
 
 <Aside type="caution">
   A few host functions exist for completeness but do nothing useful today —

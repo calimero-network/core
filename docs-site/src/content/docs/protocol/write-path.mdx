@@ -51,6 +51,35 @@ The landing page promised to follow one operation from birth to convergence. Thi
 
 </Steps>
 
+## A worked example: `send_message("hi")`
+
+Follow one real chat write through the six steps. The context's current head is `0x11aa…02`, the executing member's key is `0x9f4b…21`, and the group key hashes to `key_id = 0x4d90…7c`. (Hashes are abbreviated and illustrative.)
+
+```text
+1. execute  — WASM appends to the messages collection.
+              outcome.artifact = [ Put(entity=messages["m17"], value=borsh("hi")) ]
+              outcome.events   = [ { kind: "MessageSent", data: { len: 2 } } ]
+              outcome.root     = 0x6e72…ff       (new scope_root after the put)
+
+2. build    — parents = [ 0x11aa…02 ]            (the current head)
+              hlc     = 1750.000123:#0
+              author  = 0x9f4b…21
+              delta_id = hash(parents ‖ artifact) = 0x3c08…9d
+
+3. sign     — delta_signature = Ed25519_sign(author_sk, payload of
+                 (b"calimero/delta/1", context_id, delta_id, author_id, governance_position))
+              The chat entry is Public, so the action carries no per-action signature.
+
+4. persist  — one atomic write: { delta, meta(root=0x6e72…ff, heads=[0x3c08…9d]), state }
+
+5. broadcast — SharedKey::from_sk(group_key).encrypt(borsh(artifact), nonce) → ciphertext
+               publish BroadcastMessage::StateDelta { author_id, delta_id, parent_ids,
+                 hlc, root_hash=0x6e72…ff, key_id=0x4d90…7c, nonce, artifact=ciphertext,
+                 events (plaintext), delta_signature } on TopicHash(context_id)
+```
+
+After step 4 the writer's own state already shows `"hi"` and its head has advanced to `delta_id`. The new head **is** the `delta_id` — the next op the same node authors will list `0x3c08…9d` as its parent. Step 5 is how everyone else finds out; the [receive path](/protocol/receive-path/) picks up this exact message from here.
+
 ## What gets committed before the broadcast
 
 The ordering is deliberate: **persist, then broadcast**. By the time a single byte leaves the node, the operation is already durable locally and the author's own state already reflects it. If the network is down, or no peer is listening, nothing is lost — the operation sits in the local DAG and will be served to peers later through the sync channel (Chapter 10). Convergence never depends on a broadcast being received; it only depends on the operation eventually being _available_.

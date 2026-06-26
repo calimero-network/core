@@ -229,6 +229,54 @@ window. Enabled by default; set `enabled = false` to opt out.
 | `retain_recent_count` | integer | `1000` | Number of most-recent deltas retained after a sweep. Must be strictly below `min_deltas_before_compact`. |
 | `check_interval` | duration (seconds) | `3600` | Interval between compaction sweeps. Serialized as a plain integer count of seconds (e.g. `check_interval = 3600`), not a `{ secs, nanos }` table. Must be non-zero. |
 
+### Tuning compaction for a high-write node
+
+The defaults keep ~1000 recent deltas per context and only start pruning once a
+context holds 10000 — fine for a quiet node, but a busy data-plane context can
+accumulate that history quickly. A production excerpt that prunes more
+aggressively on a high-write deployment:
+
+```toml
+[dag_compaction]
+enabled = true
+# Start pruning sooner on a high-write context...
+min_deltas_before_compact = 4000
+# ...but keep a generous recent window so peers can still catch up via deltas
+# instead of falling back to a full snapshot.
+retain_recent_count = 1500
+# Sweep more often than the 1h default so growth is bounded between checks.
+check_interval = 900
+```
+
+Keep `retain_recent_count` comfortably above the largest delta gap a lagging
+peer is expected to close incrementally: prune below that and the peer can only
+reconverge via a full snapshot. `retain_recent_count` must stay strictly below
+`min_deltas_before_compact`, and `check_interval` must be non-zero — the node
+**refuses to start** with `[dag_compaction] enabled = true` and either invariant
+violated, rather than silently letting the delta log grow unbounded.
+
+## Background tombstone GC (not configurable)
+
+DAG compaction is one of **two** independent background maintenance loops; the
+other is the **tombstone garbage collector**, and the two reclaim different
+things:
+
+| Loop | Reclaims | Cadence | Operator-tunable? |
+| --- | --- | --- | --- |
+| DAG compaction | old delta-log **history** older than the recent retain window | `[dag_compaction] check_interval` (default 1h) | Yes — the `[dag_compaction]` keys above. |
+| Tombstone GC | expired CRDT **tombstones** (the markers a deleted entity leaves behind) | fixed **12h** | No — not a `config.toml` key. |
+
+When an entity is deleted, the CRDT layer keeps a **tombstone** so the deletion
+can win against a concurrent or out-of-order write that arrives later. A
+tombstone is retained for a fixed **24h** before it becomes eligible for
+collection, and the GC loop runs every **12h**, scanning each context and
+deleting tombstones older than that window. Both durations are compile-time
+constants, not config keys — there is no `[gc]` section and no `gc_interval`
+knob, so nothing here needs (or accepts) tuning. The retention window is
+deliberately longer than the GC interval, and shorter than the offline window
+that forces a full resync, so a node that reconnects within the window can still
+reconcile deletions incrementally.
+
 ## `[tee]`
 
 Trusted Execution Environment configuration. The entire section is optional and

@@ -68,6 +68,69 @@ nesting.
   for "latest wins," `Counter` for "sum of increments."
 </Aside>
 
+## A worked domain model: a marketplace
+
+The patterns below are easier to see in one cohesive schema. Here is a small
+marketplace, and the modeling decision behind each field:
+
+```rust
+#[app::state]
+#[derive(Default, BorshSerialize, BorshDeserialize)]
+struct Marketplace {
+    // Primary store: listing id -> listing. Every access is a point lookup by
+    // id and there is no global ordering need, so UnorderedMap (not SortedMap).
+    listings: UnorderedMap<String, Listing>,
+
+    // Secondary index: (seller id ++ big-endian seq) -> listing id. There are no
+    // DB indexes here, so "this seller's listings, newest first" is a SortedMap
+    // you maintain yourself. One index for all sellers; `prefix(seller)` slices
+    // one seller's listings in order without scanning the whole marketplace.
+    by_seller: SortedMap<Vec<u8>, LwwRegister<String>>,
+
+    // Per-buyer slot: each buyer writes only their own shipping profile, and
+    // that owner-only rule is enforced at merge, not just locally.
+    buyers: UserStorage<LwwRegister<String>>,
+}
+
+#[derive(Default, app::Mergeable, BorshSerialize, BorshDeserialize)]
+struct Listing {
+    title: LwwRegister<String>,
+    price: LwwRegister<u64>,
+    sold: LwwRegister<bool>,   // a flag, never a `remove` — see below
+}
+```
+
+Publishing a listing writes the primary entry **and** its index entry together;
+both maps are convergent, so the index converges too:
+
+```rust
+listings.insert(id.clone(), listing)?;
+let mut key = seller_id.as_bytes().to_vec();
+key.extend_from_slice(&seq.to_be_bytes());     // big-endian: keep the index time-ordered
+by_seller.insert(key, id.into())?;
+
+// One seller's listings, newest-first, without touching anyone else's:
+let theirs = by_seller.prefix(seller_id.as_bytes())?;
+
+// A buyer sets their own shipping address; no other member can overwrite it:
+buyers.insert(address.into())?;
+```
+
+The decisions worth calling out:
+
+- **`sold` is a flag, not a `remove`.** `listings` is add-wins, so a hard `remove`
+  loses to a concurrent edit and the listing resurrects. Modeling "sold" as an
+  `LwwRegister<bool>` resolves edit-vs-sold by HLC instead — the
+  [tombstone pattern](#soft-delete-via-tombstones) below.
+- **The index is a hint.** After concurrent edits, an index entry can outlive its
+  target. Treat a `by_seller` hit as a pointer and confirm against `listings` on
+  read — the [secondary-index caveat](#a-secondary-index-you-maintain-in-a-second-map).
+- **Composite key over nesting.** A single `SortedMap` with `seller ++ seq` keys,
+  sliced by `prefix`, is simpler than a `UnorderedMap<seller, SortedMap<...>>` and
+  needs only one index collection to keep in sync.
+
+The rest of this section unpacks each of these patterns in isolation.
+
 ## Patterns &amp; recipes
 
 ### Ordered / paginated data with `SortedMap`

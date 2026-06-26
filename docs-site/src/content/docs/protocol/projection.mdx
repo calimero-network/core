@@ -97,6 +97,35 @@ With an order-independent fold and a single root, checking whether two nodes agr
 
 Equal roots mean the nodes hold the same state and are done. Unequal roots mean one is missing operations the other has — which is exactly the signal the sync engine acts on in Chapter 10.
 
+## A concrete fold: three ops to one root
+
+Take three data-plane ops in one scope. The entity ids are derived from their keys, so they are the same on every node (hashes abbreviated and illustrative):
+
+```text
+op1:  Put    entity=0x9a…m1  value="hi"   hlc=1750.000100:#0
+op2:  Put    entity=0xb3…m2  value="yo"   hlc=1750.000120:#0
+op3:  Delete entity=0x9a…m1               hlc=1750.000150:#0
+```
+
+Folding these — in *any* order — gives one materialized state. `op3` carries a higher stamp than `op1` on slot `0x9a…m1`, so the delete wins and `m1` is absent; a late-arriving `op1` cannot resurrect it (lower stamp loses):
+
+| Slot | Resolved value | Why |
+| --- | --- | --- |
+| `0x9a…m1` | *absent* | `op3` Delete stamp `…150` > `op1` Put stamp `…100` |
+| `0xb3…m2` | `"yo"` | only one writer |
+
+Only `m2` survives, so `entities_hash` is computed over that single live entity, in ascending-id order:
+
+```text
+entities_hash = SHA-256( 0xb3…m2 ‖ u64_le(2) ‖ "yo" )      = 0x1f44…ab
+acl_hash      = SHA-256( <no objects> )                     = 0xe3b0…55   (empty plane)
+groups_root   = SHA-256( <no governance> )                  = 0xe3b0…55   (empty plane)
+
+scope_root = SHA-256( entities_hash ‖ acl_hash ‖ groups_root ) = 0x8d27…f0
+```
+
+A node that applied `op3, op1, op2` and a node that applied `op1, op2, op3` walk different paths but resolve the same slots to the same bytes, so both land on `scope_root = 0x8d27…f0` — equal sets, equal root, converged. Add a fourth op that only rotates an object's writers and the *data* slots above are byte-identical, yet `acl_hash` moves and the `scope_root` changes with it — the property the [Key property](#the-scope-root) note above relies on.
+
 ## Reading the past: authorization at a cut
 
 The fold above produces the _current_ state. But authorization (Chapter 6) often needs the state **as it was at a particular point in history** — specifically, the membership and access-control state an operation's author had observed when they wrote it.

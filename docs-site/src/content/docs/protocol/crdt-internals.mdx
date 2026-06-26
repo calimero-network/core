@@ -150,6 +150,26 @@ existing side — first-write-wins. Two nodes that independently write *differen
 values will each keep their own and not converge; that is by design for immutable data,
 and is exactly why you should not use it for anything that must reconcile.
 
+## A concrete merge: two writes to one field
+
+Say a profile struct holds `name: LwwRegister<String>`. The field is one inline `Blob` entity at a derived id — the same id on every node, because it is a function of position, not content. Two users edit it concurrently:
+
+```text
+entity id (both nodes): compute_id(profile_id, "name") = 0x5b2e…c4
+
+Node A:  set name = "Alice"   →  LwwRegister { value: "Alice",  ts: 1750.000100:#0, node_id: A }
+Node B:  set name = "Alicia"  →  LwwRegister { value: "Alicia", ts: 1750.000140:#0, node_id: B }
+```
+
+Both writes land on entity `0x5b2e…c4` — there is nothing to match up at sync time. When the deltas cross, each node runs the identical `LwwRegister` merge on that one entity: compare `(ts, node_id)`, keep the greater. Here `ts` alone decides it — `…140 > …100` — so **both nodes converge on `"Alicia"`**, regardless of which delta arrived first:
+
+| Node | Applies | Compare | Result |
+| --- | --- | --- | --- |
+| A | local `"Alice"`, then remote `"Alicia"` | `…140 > …100` ⇒ incoming wins | `"Alicia"` |
+| B | local `"Alicia"`, then remote `"Alice"` | `…100 < …140` ⇒ existing wins | `"Alicia"` |
+
+`node_id` never enters into it because the timestamps differ — it is only consulted on an *exact* `ts` tie, which is the next section. The losing write (`"Alice"`) is simply dropped on merge; LWW keeps one value, it does not concatenate.
+
 ## The equal-HLC tiebreak
 
 Last-writer-wins needs a winner even when two writes carry the *exact same* HLC. This is

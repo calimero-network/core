@@ -52,6 +52,34 @@ An operation arrives — from a gossip broadcast or a sync stream; the path is i
 
 </Steps>
 
+## A worked example: the same message arriving
+
+The `send_message("hi")` delta from the [write path](/protocol/write-path/) lands at a peer that already holds the parent `0x11aa…02` and the group key (`SHA-256(group_key) == 0x4d90…7c`). It clears all six steps in one pass:
+
+```text
+1. verify    — verify_delta_signature(context_id, delta_id=0x3c08…9d,
+                  author_id=0x9f4b…21, governance_position, delta_signature)
+               → author's key signed this exact delta_id ⇒ OK   (bad sig ⇒ DROP)
+
+2. authorize — resolve author 0x9f4b…21 at the delta's causal cut.
+               member of the scope ⇒ holds WRITE on the Public messages entity ⇒ OK
+               (not a writer at the cut ⇒ DROP)
+
+3. decrypt   — message key_id 0x4d90…7c matches a key in the keyring ⇒
+               SharedKey::from_sk(group_key).decrypt(artifact, nonce)
+               → [ Put(entity=messages["m17"], value=borsh("hi")) ]
+               (no key yet ⇒ buffer briefly, not reject)
+
+4. insert    — parent 0x11aa…02 is already applied ⇒ ready (else hold in pending)
+
+5. fold      — apply the Put; messages["m17"] = "hi"; head advances to 0x3c08…9d
+               recompute scope_root → 0x6e72…ff == the message's root_hash ✓ converged
+
+6. handlers  — dispatch the plaintext "MessageSent" event to subscribed clients
+```
+
+The recomputed root in step 5 equals the `root_hash` the author put on the wire — the convergence assertion checks out, so the two peers now hold an identical scope root. Note the author's `root_hash` was never *trusted*: the peer folds its own state and compares, so a tampered value would surface as a divergence to repair, never as granted authority.
+
 ## Why buffering, not rejection
 
 A best-effort gossip mesh delivers operations out of order and sometimes before their prerequisites. The receive path is built to **tolerate** that rather than fight it. A missing parent or an undelivered key is a _"not yet,"_ not a _"no"_ — the operation is parked and revisited automatically. This is what lets a backfilled or reordered history snap into a correct state in a single cascade, and it is why convergence doesn't require any particular delivery order.

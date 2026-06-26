@@ -69,6 +69,44 @@ Transferred entities are merged through the same conflict-free fold as everythin
   ]}
 />
 
+## A worked example: two nodes diverge and heal
+
+Make it concrete. Two members, **A** and **B**, share a context. A network partition drops gossip between them for a few minutes. During the partition each applies a local write:
+
+- **A** sets `counter/x = 5` and **B** sets `note/y = "hi"`. Each folds its own op into state, so their entity Merkle roots — and therefore their scope roots — drift apart. Neither is "wrong"; they simply hold different operation sets.
+
+The partition lifts. On the next periodic tick (or the first `Heartbeat` whose advertised root doesn't match), **A** opens a session to **B**:
+
+1. **Handshake.** A sends `Init{ DagHeadsRequest }`; B replies with its `dag_heads`, `root_hash`, and `scope_root`.
+2. **Verdict.** A compares the `(scope_root, entity_root)` pairs. Entities differ, so the verdict is **DataDiverged** — run a state-transfer protocol.
+3. **Compare, don't dump.** The gap is tiny (one entity each), so the selector picks **HashComparison**. A and B walk their trees top-down, descending only where subtree hashes differ. The walk converges on exactly two differing leaves: `counter/x` (only on A) and `note/y` (only on B).
+4. **Transfer just the difference.** A pushes `counter/x` to B with `EntityPush`; the leaf it learns it's missing, `note/y`, comes back the same way. Each side CRDT-merges the leaf it received and re-checks its root. Both pushes pass the authorization gate — a leaf whose author is no longer a member is dropped, so sync can't smuggle in an unauthorized write.
+5. **Converged.** Both nodes now hold `{ counter/x = 5, note/y = "hi" }`; their entity roots match. A re-reads its now-merged root, recomputes `scope_root`, finds it equal to B's, and the post-sync governance pull returns nothing. Done — divergence detected by comparing one 32-byte hash, repaired by transferring exactly two entities.
+
+<SeqDiagram
+  id="d-sync-heal"
+  title="Two nodes diverge under partition, then heal"
+  lanes={[
+    { label: 'Node A', color: '#3fb950' },
+    { label: 'Node B', color: '#58a6ff' },
+  ]}
+  steps={[
+    { type: 'divider', label: 'partition: gossip dropped' },
+    { from: 0, to: 0, label: 'apply counter/x = 5  ⇒ root drifts', color: '#f0883e' },
+    { from: 1, to: 1, label: 'apply note/y = "hi"  ⇒ root drifts', color: '#f0883e' },
+    { type: 'divider', label: 'partition heals ⇒ A syncs B' },
+    { from: 0, to: 1, label: 'Init{ DagHeadsRequest }' },
+    { from: 1, to: 0, label: 'DagHeadsResponse{ dag_heads, root_hash, scope_root }', dashed: true },
+    { from: 0, to: 0, label: 'verdict: roots differ ⇒ DataDiverged', color: '#a5ff11' },
+    { from: 0, to: 1, label: 'TreeNodeRequest (descend only where hashes differ)' },
+    { from: 1, to: 0, label: 'TreeNodeResponse ⇒ differs at note/y', dashed: true },
+    { from: 0, to: 1, label: 'EntityPush{ counter/x }' },
+    { from: 1, to: 0, label: 'EntityPushAck + EntityPush{ note/y }', dashed: true },
+    { from: 0, to: 0, label: 'CRDT-merge + re-check root', color: '#a5ff11' },
+    { type: 'divider', label: 'scope roots equal ⇒ converged' },
+  ]}
+/>
+
 ## Closing the governance gap
 
 Data and governance live in different scopes and converge independently, so a successful _data_ sync doesn't by itself guarantee the governance planes agree. After any data transfer completes, the node recomputes the scope root and, if it still differs from the peer's, pulls governance operations too — **post-sync governance reconciliation**.
@@ -124,6 +162,12 @@ After a data transfer completes, the node **re-reads** its (now possibly merged)
 | wedge grace | ~60 s | watchdog that unsticks a stalled session |
 
 Beyond the periodic tick, a session also starts on a fresh **join**, on a **heartbeat** whose root doesn't match, and as the governance follow-up above.
+
+### Retry & backoff
+
+A context that keeps *failing* to sync is not retried at the periodic cadence — each genuine failure stretches the gap before the next attempt. The dispatch floor is `2^min(failures, 8)` seconds, so it doubles per consecutive failure and **caps at 256 s** (`2^8`; the exponent saturates at 8, and the `.min(300)` ceiling never trips). In steady state `failures = 0` gives `2^0 = 1 s`, below the periodic floor, so normal cadence is unchanged — the backoff only matters after real errors (`crates/node/src/sync/tracking.rs`, `backoff_delay`).
+
+What counts as a failure is deliberately narrow: the benign outcomes **`NoPeersAvailable`** and **`PeerNotMaterialized`** clear the in-flight marker *without* bumping `failure_count`, so a context with no reachable co-member keeps retrying every interval instead of being pushed behind a 256 s delay (`crates/node/src/sync/session.rs`). This periodic-sync backoff is distinct from the **reconcile-after-divergence** cooldown, which is a different, slower curve — **30 s** doubling to a **30 min** cap (`crates/node/src/sync/reconciler.rs`, `reconcile_cooldown`).
 
 ## The operation's life, complete
 

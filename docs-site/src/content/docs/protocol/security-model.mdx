@@ -50,6 +50,27 @@ Snapshot transfers carry the same guarantee at a finer grain: each entity record
 
 The upshot: **an attacker cannot forge an operation as another identity.** Authorship is cryptographic, not advisory.
 
+## Two-layer signatures: envelope and per-action
+
+A state delta is authenticated at **two independent grains**, and each closes a forgery class the other cannot see. A current group-key holder is the relevant attacker here: they hold a valid identity and the scope key, so transport and payload encryption do nothing to stop them relabelling or splicing deltas. The two signature layers are what do.
+
+**Layer 1 — the delta-envelope signature.** The author signs a canonical payload that binds `(domain, context_id, delta_id, author_id, governance_position)`, where `delta_id` is the content hash over the delta's parents and actions (`crates/node/primitives/src/sync/delta_auth.rs`). The domain constant `b"calimero/delta/1"` is serialized *into* the signed bytes so a signature minted for another protocol that happens to borsh-encode to the same shape cannot be replayed here. Every receive path — gossip, DAG-catchup, snapshot-buffer replay — calls `verify_delta_signature(...)` against the claimed `author_id` *before* the delta touches storage. This binds the **whole delta to one author**: a current member cannot take a delta authored by someone else and rebroadcast it under their own `author_id`, because the foreign author's signature won't verify under the new key and they cannot produce a fresh one.
+
+**Layer 2 — per-action signatures.** Restricted entities — `StorageType::User` (owner-scoped) and `StorageType::Shared` (writer-set–scoped) — carry a `signature_data` on each action. Inside `Interface::apply_action` (`crates/storage/src/interface.rs`), a remote `User`/`Shared` action with no signature is **rejected** (`"Remote User action must be signed"`), and the Ed25519 signature is verified over `action.payload_for_signing()` — a hash binding `(prefix, id, data, nonce, storage-type access-control triple)` — against the owner or a member of the writer set. This attributes **each individual restricted write** to a legitimate writer of *that object*. `Public` and `Frozen` entities carry no per-action signature (`apply_action` returns early for them).
+
+Neither layer subsumes the other:
+
+| Forgery class | Caught by | Missed by |
+| --- | --- | --- |
+| A current member relabels a *foreign* delta as their own `author_id` (envelope forgery) | **Envelope signature** — the original author's key never signed this `(author_id, delta_id)` binding | Per-action sigs — a `Public`-only delta has no per-action signatures at all, so nothing inside it attributes the delta to anyone |
+| A member splices a forged write to a *restricted* object into their own validly-signed delta (per-action forgery) | **Per-action signature** — the spliced action is verified against the object's writer set and fails | Envelope signature — it binds the delta to its author, but says nothing about *who is allowed to write each restricted entity inside it* |
+
+So the envelope signature answers *"did this author really send this delta?"* and the per-action signatures answer *"is each restricted write inside it from a legitimate writer of that object?"*. A delta is only trusted once both questions pass on the paths that apply to it.
+
+:::caution[Normative]
+A remote `User`/`Shared` action MUST carry a per-action signature verifying against the entity's owner/writer set, or `apply_action` MUST reject it. The delta-envelope signature MUST verify against the claimed `author_id` on every receive path before the delta is stored. Neither check is optional in the presence of the other — they cover disjoint forgery classes.
+:::
+
 ## Authorization at the causal cut
 
 Authorization is evaluated at the operation's **causal cut** — the governance state the author referenced when they wrote it — not at the receiver's "now". Because the verdict is computed from the at-cut membership and ACL, it is identical on every node regardless of receive order. This is *forward-only* authority: revoking a member stops them from authoring new operations, but does not invalidate operations they authored while still a member. There is no rewriting of history and no retroactive authorization. See [Governance](/protocol/governance/) and the receive path for how the cut is resolved.

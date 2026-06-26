@@ -80,6 +80,92 @@ clean stop/replace/restart.
 
 </Steps>
 
+## Recover a stuck upgrade
+
+Use this when an **application** upgrade (a new bytecode version) does not finish
+on a node: a context stays on its old code, or a peer never reports as migrated.
+The recovery walks the node-local
+[migration & recovery markers](/protocol/storage/#node-local-migration--recovery-markers)
+— inspect what they say, request a resync, then verify they clear.
+
+The endpoints below are on the loopback HTTP server (default `127.0.0.1:2528`);
+reach them the same way you reach the rest of the admin API for your auth setup.
+
+<Steps>
+
+1. **Inspect — find the stuck members.** The migration-status rollup is the
+   operator-facing "have all peers migrated?" view. It snapshots each member's
+   migration heartbeat, including any failure:
+
+   ```sh
+   curl -s http://127.0.0.1:2528/admin-api/groups/<namespace_id>/migration-status
+   ```
+
+   Read `rollup.allMigrated` (the go/no-go) and `rollup.failed`. Any member whose
+   `migrationFailed` is set names *why* it stalled — these map directly onto the
+   `ContextMigrationFailed` marker:
+
+   | `migrationFailed` value | What happened |
+   | --- | --- |
+   | `check_aborted` | The app's migration check rejected the upgrade; the migrate was rolled back (zero residue). |
+   | `apply_failed` | The migrate apply itself errored (e.g. the target wasm would not run). |
+   | `no_migration_path` | The context cannot replay its next upgrade rung — the intermediate bytecode is unobtainable. Recovery is a resync (below) or reinstalling the missing version. |
+
+   Under the hood, a context that aborted its migrate is pinned to its
+   pre-upgrade code by `ContextExecutingBlob`, while `ContextActivatedBlob` lags
+   the group's current app key — that gap *is* the "running old code" symptom.
+   See [the marker reference](/protocol/storage/#node-local-migration--recovery-markers)
+   for what each column means.
+
+2. **Decide the recovery.** A `check_aborted` / `apply_failed` member usually
+   recovers by re-driving the upgrade once the underlying cause is fixed (a bad
+   migration function, a missing dependency). A `no_migration_path` (stranded)
+   context cannot replay its ladder locally — its recovery is a **full-state
+   resync** from a healthy peer that already holds the upgraded state.
+
+3. **Request the resync.** This sets the `ContextResyncRequested` marker and
+   pulls a fresh snapshot, overwriting local state for that context:
+
+   ```sh
+   curl -s -X POST http://127.0.0.1:2528/admin-api/contexts/<context_id>/resync \
+     -H 'content-type: application/json' \
+     -d '{"force": false}'
+   ```
+
+   A successful call returns `{"contextId": "...", "resyncStarted": true}`.
+
+   <Aside type="caution">
+   A resync is **destructive**: it discards this node's local state for the
+   context and adopts a peer's. The request is **group-only**, and it **refuses**
+   when the context still holds local DAG heads (un-synced local work) unless you
+   pass `{"force": true}` — forcing throws that local work away. Only resync when
+   at least one healthy peer holds the authoritative upgraded state, and never on
+   the last/only holder.
+   </Aside>
+
+4. **Verify the markers clear.** Re-run the migration-status rollup. As the
+   snapshot lands, `ContextResyncRequested` is cleared on completion,
+   `ContextActivatedBlob` advances to the group's current app key (so the context
+   now runs the new code), and the `ContextMigrationFailed` marker self-clears —
+   the member should move out of `failed` toward `migrated`:
+
+   ```sh
+   curl -s http://127.0.0.1:2528/admin-api/groups/<namespace_id>/migration-status
+   ```
+
+   `rollup.allMigrated == true` means the cohort converged. If a member is still
+   `failed` after the resync settles, the cause is upstream (the upgraded state
+   isn't actually available on the peers you resynced from) — fix that before
+   retrying.
+
+</Steps>
+
+<Aside type="note">
+These markers are node-local columns that are **not** synchronized — they
+describe one node's upgrade state. The rollup reads each peer's self-reported
+heartbeat, so a member that is simply offline shows as `unknown`, not `failed`.
+</Aside>
+
 ## Back up & restore the datastore
 
 The datastore (RocksDB) and blob store are plain directories under the node

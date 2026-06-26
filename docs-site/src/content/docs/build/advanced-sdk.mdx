@@ -106,6 +106,53 @@ log. Always pair a hand-written `Mergeable` with a hand-written `RekeyTarget`
 `#[derive(Mergeable)]` and get both for free.
 :::
 
+## Example: a high-water-mark gauge (`merge = max`)
+
+Delegation (one `field.merge()` per field) is the common case, but a hand-written
+`merge` can also *be* the CRDT — encoding the convergence rule directly. A
+high-water-mark gauge tracks the largest value ever observed; its merge is simply
+`max`:
+
+```rust
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_storage::collections::crdt_meta::MergeError;
+use calimero_storage::collections::Mergeable;
+
+/// A monotonic high-water mark: the merged value is the larger of the two.
+#[derive(Debug, Default, Clone, BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct HighWaterMark {
+    peak: u64,
+}
+
+impl HighWaterMark {
+    pub fn observe(&mut self, sample: u64) {
+        self.peak = self.peak.max(sample);
+    }
+    pub fn get(&self) -> u64 {
+        self.peak
+    }
+}
+
+impl Mergeable for HighWaterMark {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.peak = self.peak.max(other.peak);
+        Ok(())
+    }
+}
+```
+
+The determinism rule: a `merge` must be **commutative, associative, and
+idempotent** so every replica converges to the same value regardless of the order
+deltas arrive in. `max` satisfies all three —
+`max(a, max(b, c)) == max(max(a, b), c)`, `max(a, b) == max(b, a)`, and
+`max(a, a) == a` — so two nodes that each `observe()` different samples always
+agree on the peak. Contrast a non-convergent rule like *last writer wins on a raw
+`u64`* (which needs a timestamp to be deterministic, i.e. `LwwRegister`) or
+*sum* (which double-counts when the same delta is delivered twice). Because this
+struct has no nested collection fields, `RekeyTarget` is a no-op — the gauge is a
+leaf value, merged whole.
+
 ## Storage strategy: `Blob` vs `Structured`
 
 Every CRDT type declares a `StorageStrategy`, and this is the lever that decides

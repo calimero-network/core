@@ -130,6 +130,114 @@ config-level switches `specialized_node.accept_mock_tee` and
 testing and must stay `false` in production.
 :::
 
+## KMS release-policy verification
+
+A TEE node pulls its storage-encryption keys from the mero-kms KMS only after it
+is satisfied the KMS is running the expected enclave. That decision is governed
+by an **attestation policy** — the allow-listed TDX measurements (MRTD, RTMR0–3)
+and TCB statuses the KMS quote must match. So that the policy itself can't be
+silently swapped, `merod` **verifies the policy with Sigstore before fetching any
+keys**.
+
+When you pin a KMS release version, merod downloads three assets from the
+official mero-tee GitHub release (`mero-kms-v{version}`) — the policy JSON, a
+detached signature, and a Sigstore bundle — and verifies, fail-closed:
+
+- the **Rekor** signed entry timestamp (the transparency-log inclusion proof),
+- the **detached signature** over the exact policy bytes, and
+- the **Fulcio** certificate chain, pinned to a specific GitHub Actions identity:
+  OIDC issuer `https://token.actions.githubusercontent.com`, repository
+  `calimero-network/mero-tee`, workflow `Release mero-kms`, trigger `push`, ref
+  `refs/heads/master`.
+
+If any check fails, startup **errors out** rather than continuing with an
+unverified policy.
+
+You select the release version through one of three environment variables, in
+precedence order — the first one set wins:
+
+| Env var | Precedence |
+| --- | --- |
+| `MERO_KMS_RELEASE_TAG` | highest |
+| `MERO_KMS_VERSION` | middle |
+| `MERO_TEE_VERSION` | lowest |
+
+The value may be a plain version (`2.1.14`) or the prefixed tag
+(`mero-kms-v2.1.14`). With **none** of these set and `USE_ENV_POLICY` unset, no
+release policy is fetched.
+
+:::note[Air-gapped: `USE_ENV_POLICY=true`]
+Setting `USE_ENV_POLICY=true` **skips the release fetch entirely** and uses the
+policy already provisioned in `config.toml` (see
+[`[tee.kms.phala.attestation]`](/operate/config/#teekmsphalaattestation)). This is
+for controlled / air-gapped deployments where your own tooling fetches and
+verifies the signed policy out of band — it bypasses merod's built-in Sigstore
+check, so the integrity of the in-config policy becomes your responsibility.
+:::
+
+## Hardening pass: an internet-facing node
+
+A concrete, end-to-end pass for a node that must be reachable from the public
+internet (its swarm port is public; its admin surface must not be). Adapt the
+hostnames and key handling to your environment.
+
+<Steps>
+
+1. **Keep the admin surface on loopback.** Leave `server.listen` at its
+   `127.0.0.1` / `[::1]` default and never widen it to `0.0.0.0`. The swarm
+   (`swarm.listen`) stays public on `0.0.0.0` / `::` — peers must dial it.
+
+   ```toml
+   [server]
+   listen = ["/ip4/127.0.0.1/tcp/2528", "/ip6/::1/tcp/2528"]
+   auth_mode = "embedded"
+
+   [swarm]
+   listen = ["/ip4/0.0.0.0/tcp/2428", "/ip4/0.0.0.0/udp/2428/quic-v1"]
+   ```
+
+2. **Turn auth on.** Either run the bundled service
+   (`auth_mode = "embedded"`, above) so the node validates JWTs itself, or keep
+   the default `proxy` mode and put an authenticating proxy in front. Do not run
+   `proxy` mode with the bind reachable off-host and nothing enforcing auth.
+
+3. **Terminate TLS at the edge** and forward to the loopback bind. The node's
+   HTTP server speaks plain HTTP; the reverse proxy is also where `proxy`-mode
+   auth is enforced. See the
+   [reverse-proxy setup](/operate/deployment/#put-the-server-behind-a-reverse-proxy).
+
+4. **Firewall `/metrics`.** The metrics endpoint is part of the same loopback
+   HTTP server — do **not** expose it publicly. Scrape it over loopback (or a
+   private network only your monitoring reaches), and let the host firewall drop
+   off-host traffic to the server port. Reach the dashboard and metrics through
+   the same authenticated proxy, never by widening the bind.
+
+5. **Encrypt state at rest.** Provision the datastore encryption key so the node
+   logs `Storage encryption enabled` at startup. On a TEE deployment, source
+   that key from the KMS and require real attestation — set a
+   `[tee.kms.phala.attestation]` policy with `enabled = true`, `accept_mock =
+   false`, and pin the KMS release version so the
+   [release-policy verification](#kms-release-policy-verification) above runs.
+
+6. **Keep the secrets private.** `config.toml` holds the `[identity] keypair`
+   (the node's private key) in plaintext, and the embedded-auth store holds the
+   JWT signing secret. Restrict the home directory to the service user, store
+   backups encrypted, and never commit either to version control.
+
+7. **No dev switches.** Confirm `--mock-tee` / `MEROD_MOCK_TEE`,
+   `specialized_node.accept_mock_tee`, and `attestation.accept_mock` are all off.
+   A node with a real KMS attestation configured refuses to start with
+   `--mock-tee` at all.
+
+</Steps>
+
+| Surface | Exposure on a hardened internet-facing node |
+| --- | --- |
+| `swarm.listen` (peer traffic) | **Public** — `0.0.0.0` / `::`, encrypted by the wire protocol. |
+| `server.listen` (admin / JSON-RPC / WS / SSE / metrics) | **Loopback only** — reached through an authenticating TLS proxy. |
+| `/metrics` | **Private** — scraped over loopback / a private monitoring network, never public. |
+| `config.toml`, `auth` store, home directory | **Secret** — service-user only, encrypted backups, never committed. |
+
 ## Do / don't checklist
 
 <Steps>
