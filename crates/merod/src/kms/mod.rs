@@ -2457,7 +2457,7 @@ mod tests {
         let binding = [0x22u8; 32];
         let report_data = build_kms_attestation_report_data(&nonce, &binding);
         let quote_bytes = mock_quote_bytes_with_report_data(&report_data);
-        verify_mock_attestation(&quote_bytes, &nonce, Some(&binding))
+        verify_mock_attestation(&quote_bytes, &nonce, &binding)
             .expect("mock verification result should be created")
     }
 
