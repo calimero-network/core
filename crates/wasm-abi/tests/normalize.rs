@@ -172,7 +172,6 @@ fn test_vec_types() {
 }
 
 #[test]
-#[ignore = "Normalize function simplified during formatting/clippy fixes"]
 fn test_btree_map_types() {
     let resolver = MockResolver::new();
 
@@ -192,7 +191,6 @@ fn test_btree_map_types() {
 }
 
 #[test]
-#[ignore = "Normalize function simplified during formatting/clippy fixes"]
 fn test_btree_map_invalid_keys() {
     let resolver = MockResolver::new();
 
@@ -206,7 +204,6 @@ fn test_btree_map_invalid_keys() {
 }
 
 #[test]
-#[ignore = "Normalize function simplified during formatting/clippy fixes"]
 fn test_array_types() {
     let resolver = MockResolver::new();
 
@@ -220,7 +217,6 @@ fn test_array_types() {
 }
 
 #[test]
-#[ignore = "Normalize function simplified during formatting/clippy fixes"]
 fn test_array_invalid_elements() {
     let resolver = MockResolver::new();
 
@@ -240,7 +236,6 @@ fn test_array_invalid_elements() {
 }
 
 #[test]
-#[ignore = "Normalize function simplified during formatting/clippy fixes"]
 fn test_vec_u8_bytes() {
     let resolver = MockResolver::new();
 
@@ -250,7 +245,6 @@ fn test_vec_u8_bytes() {
 }
 
 #[test]
-#[ignore = "Normalize function simplified during formatting/clippy fixes"]
 fn test_newtype_bytes() {
     let mut resolver = MockResolver::new();
     resolver.add_newtype_bytes("UserId32", 32);
@@ -266,7 +260,6 @@ fn test_newtype_bytes() {
 }
 
 #[test]
-#[ignore = "Normalize function simplified during formatting/clippy fixes"]
 fn test_record_and_variant_types() {
     let mut resolver = MockResolver::new();
     resolver.add_record("Person");
@@ -282,7 +275,6 @@ fn test_record_and_variant_types() {
 }
 
 #[test]
-#[ignore = "Normalize function simplified during formatting/clippy fixes"]
 fn test_unknown_external_types() {
     let resolver = MockResolver::new();
 
@@ -294,7 +286,6 @@ fn test_unknown_external_types() {
 }
 
 #[test]
-#[ignore = "Normalize function simplified during formatting/clippy fixes"]
 fn test_unit_type() {
     let resolver = MockResolver::new();
 
@@ -304,7 +295,6 @@ fn test_unit_type() {
 }
 
 #[test]
-#[ignore = "Normalize function simplified during formatting/clippy fixes"]
 fn test_nested_generics() {
     let mut resolver = MockResolver::new();
     resolver.add_newtype_bytes("UserId32", 32);
@@ -329,7 +319,6 @@ fn test_nested_generics() {
 }
 
 #[test]
-#[ignore = "Normalize function simplified during formatting/clippy fixes"]
 fn test_complex_nested_scenarios() {
     let mut resolver = MockResolver::new();
     resolver.add_newtype_bytes("UserId32", 32);
