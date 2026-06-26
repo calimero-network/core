@@ -17,7 +17,7 @@ use calimero_server_primitives::validation::Validate;
 use calimero_server_primitives::ws::{ResponseBody, ResponseBodyError, ServerResponseError};
 use tracing::{error, field, info, Span};
 
-use crate::execute::execute_request;
+use crate::execute::{execute_request, CallerIdentity};
 use crate::ws::ServiceState;
 
 /// Validate and run an `execute` request, producing the response body to send
@@ -57,7 +57,11 @@ pub(crate) async fn handle(
 
     info!("Received execution request");
 
-    match execute_request(&state.ctx_client, caller.as_ref(), request).await {
+    let caller_identity = match caller.as_ref() {
+        Some(key) => CallerIdentity::Key(key),
+        None => CallerIdentity::NodeOwner,
+    };
+    match execute_request(&state.ctx_client, caller_identity, request).await {
         Ok(response) => match serde_json::to_value(response) {
             Ok(value) => {
                 info!("Request completed successfully");

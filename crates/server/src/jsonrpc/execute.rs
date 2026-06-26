@@ -5,7 +5,7 @@ use tracing::error;
 
 use super::{Request, RpcError, ServiceState};
 use crate::auth::AuthenticatedKey;
-use crate::execute::execute_request;
+use crate::execute::{execute_request, CallerIdentity};
 
 impl Request for ExecutionRequest {
     type Response = ExecutionResponse;
@@ -18,7 +18,11 @@ impl Request for ExecutionRequest {
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
 
-        execute_request(&state.ctx_client, auth_key.as_ref().map(|k| &k.0), self)
+        let caller = match auth_key.as_ref() {
+            Some(k) => CallerIdentity::Key(&k.0),
+            None => CallerIdentity::NodeOwner,
+        };
+        execute_request(&state.ctx_client, caller, self)
             .await
             .map_err(|err| {
                 error!(%context_id, %err, "Failed to execute request");

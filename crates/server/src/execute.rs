@@ -14,33 +14,44 @@ use calimero_server_primitives::jsonrpc::{ExecutionError, ExecutionRequest, Exec
 use futures_util::StreamExt;
 use tracing::{error, info};
 
+/// Who is making an execute call, as determined by the auth layer.
+///
+/// Using an explicit enum instead of `Option<PublicKey>` makes the bypass path
+/// auditable at every call site: `NodeOwner` means the auth layer positively
+/// confirmed the caller via a non-key method (e.g. embedded username/password),
+/// not simply that no key was provided.
+#[derive(Debug)]
+pub(crate) enum CallerIdentity<'a> {
+    /// A specific public key, extracted from the verified auth token.
+    /// The membership check runs against this key.
+    Key(&'a PublicKey),
+    /// The node owner, authenticated via a non-key method (e.g. embedded
+    /// username/password auth). The auth layer already validated the token;
+    /// the caller is implicitly authorized for all contexts.
+    NodeOwner,
+}
+
 /// Execute a context method call against the runtime.
 ///
-/// `caller` is the public key extracted from the verified auth token, or `None`
-/// when the auth method does not provide a cryptographic key (e.g. embedded
-/// username/password auth). When `Some`, the call is rejected unless `caller`
-/// is a known member of `request.context_id`. When `None`, the auth layer has
-/// already validated the token and the caller is implicitly the node owner with
-/// full access — the membership check is skipped.
+/// `caller` identifies who is making the call after the auth layer verified
+/// their token. `CallerIdentity::Key` triggers a context-membership check
+/// before execution. `CallerIdentity::NodeOwner` skips the check — the auth
+/// layer already confirmed the caller is the node owner.
 ///
 /// After the membership check passes, the executor identity is auto-resolved:
 /// each node owns exactly one identity per context (the namespace identity),
 /// so callers never specify it.
 pub(crate) async fn execute_request(
     ctx_client: &ContextClient,
-    caller: Option<&PublicKey>,
+    caller: CallerIdentity<'_>,
     request: ExecutionRequest,
 ) -> Result<ExecutionResponse, ExecutionError> {
     // Verify the caller is a member of the target context before doing
     // anything else. This prevents a valid token from being used to execute
     // against contexts the caller has no membership in.
-    //
-    // When `caller` is `None` the auth layer used a non-key auth method (e.g.
-    // username/password embedded auth). The token was still verified; the caller
-    // is the node owner and implicitly authorized for all contexts.
-    if let Some(caller) = caller {
+    if let CallerIdentity::Key(key) = caller {
         let is_member = ctx_client
-            .has_member(&request.context_id, caller)
+            .has_member(&request.context_id, key)
             .map_err(|err| {
                 error!(%err, "Membership lookup failed during execute");
                 ExecutionError::FunctionCallError(
@@ -54,6 +65,7 @@ pub(crate) async fn execute_request(
             ));
         }
     }
+
     let args =
         serde_json::to_vec(&request.args_json).map_err(|err| ExecutionError::SerdeError {
             message: err.to_string(),
