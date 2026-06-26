@@ -81,10 +81,10 @@ polished product. Grouped by theme; check items off as they land. See
 - [ ] 62. Document the auth service / JWT providers.
 
 ## H · Protocol track content
-- [ ] 63. Identity & key-rotation chapter.
-- [ ] 64. Divergence & partition-recovery deep-dive.
-- [ ] 65. Governance edge cases (concurrent rotation, last-admin, cascades).
-- [ ] 66. Capability-inheritance chapter (open/restricted subgroups).
+- [x] 63. Identity & key-rotation chapter.
+- [x] 64. Divergence & partition-recovery deep-dive.
+- [x] 65. Governance edge cases (concurrent rotation, last-admin, cascades).
+- [x] 66. Capability-inheritance chapter (open/restricted subgroups).
 - [ ] 67. Conformance test vectors (op-id, scope_root).
 - [ ] 68. Worked numeric example for `compute_id` and `scope_root`.
 - [ ] 69. Normalize the whole spec to a consistent normative voice.

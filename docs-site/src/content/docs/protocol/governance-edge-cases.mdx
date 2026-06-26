@@ -1,0 +1,203 @@
+---
+title: Governance Edge Cases
+description: The corner cases of membership and authority — last-admin protection, owner immunity, concurrent ops, cascade delete, the deny-list, and replay defence.
+sidebar:
+  order: 19
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The [Governance](/protocol/governance/) chapter established the model: membership and authority are operations, folded by the same last-writer-wins projection, authorized at the author's causal cut, with **no quorum**. This chapter is the deep-dive into the corners — the guards that keep the scope tree well-formed, the rules that make a removal and a self-leave genuinely different operations, and the mechanics that let two members author governance ops at the same instant and still converge.
+
+Everything here is grounded in `crates/governance-store` (the apply handlers and guards), `crates/governance-types` (the op variants), and `crates/projection` (the at-cut fold). Nothing here repeats the basics — if a term is unfamiliar, the previous chapter defines it.
+
+## Last-admin protection
+
+A group must always have at least one admin. A removal or demotion that would leave a group with **zero admins** is rejected before it applies — the tree can never be orphaned into a state no one can govern.
+
+The guard lives in `MembershipPolicy` and is the same helper for both removal and demotion:
+
+```rust
+pub fn ensure_not_last_admin_removal(&self, member: &PublicKey) -> EyreResult<()> {
+    if self.would_orphan_admins(member)? {
+        bail!(MembershipError::LastAdmin);
+    }
+    Ok(())
+}
+```
+
+`would_orphan_admins` is `is_admin(member) && !has_another_admin(member)` — the member being removed is an admin, and no *other* admin remains. A non-admin removal short-circuits to `false` (removing a plain member can never orphan the admin set), which is why an inherited-member removal with no direct row passes this check trivially.
+
+The decision is resolved **at the operation's parent cut**, not at the receiver's present. `would_orphan_admins` first asks the at-cut authorizer (`is_last_admin_at_cut`) for the admin set as of the op's own parents — the state the author saw — and only falls back to the live materialized set when there is no apply-auth context (a local pre-check or a cascade). Resolving at the cut is what makes the verdict converge: every node folds the same parents and reaches the same answer, the same way authorization does generally.
+
+:::caution[Normative]
+A `MemberRemoved`, `MemberLeft`, or role-demoting `MemberRoleSet` that would leave a group with **no admin MUST be rejected** (`LastAdmin` / `LastAdminDemotion`). For a namespace self-leave the check **MUST** run for *every* descendant group the leaver holds a direct row in, before any mutation, so a partial cascade can never strand a sub-tree without an admin.
+:::
+
+The namespace-leave path makes the "before any mutation" requirement concrete: it gathers every descendant where the leaver has a direct row, runs the owner and last-admin checks across all of them up front, and only then begins removing rows — so a failure surfaces the offending scope with nothing half-applied.
+
+## Owner immunity
+
+The **owner** is a distinguished identity (`owner_identity` in the group meta), not a role. It carries two immunities that no admin can override:
+
+- **No involuntary removal.** An admin cannot remove the owner. `MemberRemoved` loads the meta and bails with `OwnerImmuneFromRemoval` if the target is the owner:
+
+  ```rust
+  if let Some(meta) = MetaRepository::new(store).load(group_id)? {
+      if meta.owner_identity == *member {
+          bail!(MembershipError::OwnerImmuneFromRemoval(/* ... */));
+      }
+  }
+  ```
+
+- **No self-leave without transferring first.** The owner cannot `MemberLeft` either; that path bails with `OwnerCannotSelfLeave`. In a namespace self-leave, the per-subgroup walk additionally rejects with `OwnerOwnsSubgroup` if the leaver owns any descendant group — you cannot abandon a sub-tree you own.
+
+The escape hatch in both directions is `TransferOwnership`: the current owner signs it, the `new_owner` must **already be a member**, and it updates `owner_identity`. The previous owner stays a regular admin — no automatic role change beyond the owner field. Only after a transfer can the former owner be removed or self-leave. Because ownership is folded into the governance hash, an op signed before a transfer resolves against a different owner than one signed after.
+
+<Aside type="note">
+The owner immunity check runs *before* the last-admin check in the remove path. A lone owner-admin is therefore protected by owner immunity first; the last-admin guard is the backstop for the multi-admin, non-owner case.
+</Aside>
+
+## Self-leave versus admin-removal
+
+Both paths end with a removed membership row, a deny-list entry, and a `MemberRemoved` event — but they are distinct operations with different signers and different cryptographic consequences. The split exists because of the **scope key**.
+
+| | `MemberLeft` (self-leave) | `MemberRemoved` (admin removal) |
+| --- | --- | --- |
+| **Who may sign** | The member themselves only — `signer == member` is enforced, else `SelfLeaveOnly` | An admin: `require_manage_members`, plus `require_admin_to_remove_admin` (only an admin may remove an admin) |
+| **Direct row** | Required — a purely inherited member has nothing to delete and bails with `MemberNotDirect` | Optional — an inherited Open-subgroup member with no direct row is removed via the soft-leave path |
+| **Key rotation** | **None** | **Yes** — a fresh scope key, wrapped to each remaining member |
+| **Owner** | Cannot self-leave (`OwnerCannotSelfLeave`) | Cannot be removed (`OwnerImmuneFromRemoval`) |
+
+The asymmetry on key rotation is the whole point. An admin removal rotates the scope key forward — `MemberRemoved` carries a `KeyRotation` bundle with one wrapped envelope per *remaining* member and none for the removed one, so the removed member can read nothing authored after the cut. That is forward secrecy.
+
+Self-leave deliberately skips rotation. The leaver is the one publishing the op, and they cannot mint a new key without also retaining it — rotating on self-leave would be theater. `MemberLeft` is the governance-level departure (row removed, peers observe it, traffic denied); for a cryptographically complete leave, an admin pairs it with a `MemberRemoved`.
+
+:::caution[Normative]
+A `MemberLeft` op **MUST** be signed by the leaving member (`signer == member`). A `MemberRemoved` **MUST** be signed by an admin, and an admin target **MUST** only be removable by another admin. Self-leave **MUST NOT** be relied on for forward secrecy — only an admin-initiated removal rotates the key.
+:::
+
+## Concurrent governance ops at the same parents
+
+Two members can author governance ops against the **same DAG head** — neither op is the other's parent, so they are causal siblings. Receivers may see them in either order. Convergence comes from two independent mechanisms working together.
+
+**The at-cut fold orders them deterministically.** `ScopeState::acl_view_at` walks the transitive ancestry of an op's parents and folds it with per-slot last-writer-wins. Governance ops all carry an HLC of `0`, so the tiebreak that actually decides causally-related writes is a **causal generation**: the longest path from a root, `1 + max(parent generation)`. A re-add that descends from an earlier remove has a strictly higher generation and therefore wins — independent of arrival order. Two genuinely concurrent ops touching disjoint slots simply both apply; two touching the same slot resolve by `(generation, op_id)`, identically on every node.
+
+**The nonce window keeps concurrent siblings from one author dedup-safe.** When the *same* signer authors two consecutive-nonce ops concurrently from two sessions, they are DAG siblings with no ordering between them. A naive high-water mark would advance to the higher nonce and then permanently drop the lower one when it arrives — a divergence. The window (next section) tolerates exactly this.
+
+<SeqDiagram
+  id="d-concurrent"
+  title="Two admins author against the same head"
+  lanes={[
+    { label: 'Admin A', color: '#f0883e' },
+    { label: 'Governance DAG', color: '#a5ff11' },
+    { label: 'Admin B', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 1, to: 0, label: 'both observe head H', dashed: true },
+    { from: 1, to: 2, label: 'both observe head H', dashed: true },
+    { from: 0, to: 1, label: 'op X { parents: [H] }' },
+    { from: 2, to: 1, label: 'op Y { parents: [H] }' },
+    { type: 'divider', label: 'X and Y are siblings — neither is the other\'s parent' },
+    { from: 1, to: 1, label: 'acl_view_at folds ancestry; generation + op_id tiebreak' },
+    { from: 1, to: 1, label: 'every node reaches the same verdict, any receive order' },
+  ]}
+/>
+
+There is no coordination round here. The DAG records both ops; the fold decides the outcome; the result is identical everywhere because every node folds the same cut.
+
+## Replay and dedup: the per-(group, signer) nonce window
+
+Each `(group, signer)` pair tracks a `NonceWindow` — a contiguous applied **floor** plus a sparse **set** of applied nonces above it:
+
+```rust
+pub struct NonceWindow {
+    floor: u64,            // every nonce in 1..=floor is applied
+    above: BTreeSet<u64>,  // applied nonces strictly above the floor (the concurrency gap)
+}
+```
+
+A nonce is a duplicate iff `nonce <= floor || above.contains(nonce)`, checked **before apply**. `record` applies it once, returns `false` on a repeat (drop it), and advances the floor through any now-contiguous run:
+
+```rust
+pub fn contains(&self, nonce: u64) -> bool {
+    nonce <= self.floor || self.above.contains(&nonce)
+}
+```
+
+This replaces a single high-water mark, which was correct only when ops applied in nonce order. The failure it fixes: floor is `4`, nonce `6` (a concurrent sibling) lands first and the old mark advances to `6`, then nonce `5` arrives and hits `5 <= 6` and is dropped forever. The window instead parks `6` in `above`, keeps the floor at `4`, and when `5` fills the gap the floor collapses forward to `6`. Replays in any order all dedup.
+
+Nonces start at `1`; `0` is never issued, so a fresh window (`floor == 0`) already deems `0` applied. An author mints its next nonce as `max_applied() + 1` — the max across floor *and* the above-set — so a session that has already seen out-of-order ops never re-mints a nonce sitting higher in the window.
+
+:::caution[Normative]
+A governance op **MUST** carry a per-signer nonce `>= 1`, and a receiver **MUST** check the window *before* apply: a nonce already covered by the floor or the above-set **MUST** be dropped, never re-applied. The dedup **MUST** tolerate out-of-order arrival of concurrent siblings — dropping a not-yet-seen below-floor-gap nonce is a divergence, not a dedup.
+:::
+
+Persistence is migration-free: the `floor` lives under the existing per-group nonce key (an old single-`u64` row loads as a floor with an empty set, matching the old behaviour exactly) and the above-set under a sibling key.
+
+## Cascade delete and reparent
+
+Structural changes to the tree are expressed as single ops that keep it consistent — there is no intermediate state where a group is orphaned or a subtree is half-deleted.
+
+### Cascade delete
+
+`GroupDeleted` removes a group, its **entire subtree**, and **every contained context** in one op. The signer pre-computes the payload — `cascade_group_ids` (descendants, children-first) and `cascade_context_ids` (every context on the root or any descendant) — by walking `collect_subtree_for_cascade`. Crucially, every receiver **re-enumerates its own subtree locally** and rejects the op if its payload disagrees:
+
+```rust
+GroupDeleted {
+    root_group_id: [u8; 32],
+    cascade_group_ids: Vec<[u8; 32]>,
+    cascade_context_ids: Vec<[u8; 32]>,
+}
+```
+
+A mismatch raises `CascadeDivergenceGroups` / `CascadeDivergenceContexts` — the local subtree has groups or contexts not in the payload. This is a **deterministic-application check**: rather than trusting the signer's enumeration, each node confirms it sees the same tree the signer saw, so a silent divergence in topology surfaces as a rejected op instead of an inconsistent delete. The children-first ordering matters because child-index edges must be torn down before their parents.
+
+### Reparent
+
+`GroupReparented` atomically moves a child from its current parent to a new one, replacing the older two-op nest/unnest pattern — so an orphaned-between-ops state is simply not expressible. The `reparent` helper swaps the edges in one handle: delete the old child-index edge, repoint the parent ref, write the new child-index edge.
+
+Three invariants guard it:
+
+<Steps>
+
+1. **The new parent must exist** in the namespace, else `ReparentTargetMissing`.
+
+2. **No cycles.** The new parent must not be a descendant of the child — `is_descendant_of(new_parent, child)` bails with `ReparentCycle`. Otherwise the move would detach a subtree into a loop with no path to the root.
+
+3. **The root cannot be reparented.** The namespace root has no parent edge to swap; attempting it yields `RootHasNoParent`.
+
+</Steps>
+
+The move is idempotent: if `new_parent == old_parent` it returns `Unchanged` with no writes, so a redelivered op performs no spurious mutation and emits no misleading "reparented" event.
+
+:::caution[Normative]
+A `GroupDeleted` receiver **MUST** re-enumerate the subtree locally and **MUST** reject the op if its own enumeration disagrees with the signed payload. A `GroupReparented` **MUST NOT** create a cycle and **MUST NOT** target the namespace root; both groups **MUST** already exist in the namespace.
+:::
+
+## The deny-list
+
+When a member is removed or leaves, their identity is added to a per-`(group, identity)` **deny-list**. Incoming state deltas from a denied author are dropped at the gossipsub receive entry point — an O(1) store-key existence check — *before* the heavier cross-DAG membership drain runs.
+
+```rust
+// added on MemberRemoved / MemberLeft apply
+DenyListRepository::new(store).mark(group_id, member)?;
+// cleared on MemberAdded / MemberJoinedViaTeeAttestation apply
+DenyListRepository::new(store).clear(group_id, member)?;
+```
+
+Two things to understand about its role:
+
+- **It is not the authority.** The cross-DAG check (`membership_status_at`) is the authoritative enforcement — a removed member's deltas are rejected by it regardless. The deny-list is a cheap early-rejection layer that saves the drain pass and the membership lookup for traffic from peers already removed, and gives removals a clean, correlatable log line. Defense-in-depth, not the gate.
+
+- **It is a derived view, not an audit log.** Add → Remove → Add ends with the entry **cleared**: a re-add wipes the deny-list entry, so a re-admitted member's traffic flows again. The entry means exactly "currently not a member," scoped per group — the same identity stays a welcome member of every other group it belongs to, which is why the key is `(group_id, identity)` and not a connection-level peer-id block.
+
+There is one inherited-membership nuance: a member who inherits into an Open subgroup but is on that subgroup's deny-list resolves to **no effective capabilities** there — `effective_capabilities` returns `None` for an `Inherited` path that is denied — so a removal at the subgroup level is honoured even while the parent row still grants inheritance. The deny-list is gated to **direct** rows on the cascade paths precisely so an inherited node's entry isn't stranded: re-inheritance is re-evaluated from the root row, with no per-subgroup re-join op to clear a stale entry.
+
+## Where this leaves the model
+
+The previous chapter gave governance its meaning; this one walked its corners. The throughline is that none of these edge cases needs a coordinator: a last-admin guard resolved at the cut, an owner field folded into the hash, a generation tiebreak over siblings, a nonce window tolerant of reordering, a re-enumerated cascade payload, and a derived deny-list all converge for the same reason the rest of the protocol does — every node folds the same operations and reaches the same verdict. For how these ops move between nodes, see [Networking](/protocol/networking/) and [Sync](/protocol/sync/); for the at-cut authorization primitive itself, see [Projection](/protocol/projection/) and the [Receive Path](/protocol/receive-path/).
