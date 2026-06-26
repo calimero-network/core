@@ -26,3 +26,38 @@ pub(crate) fn apply(
     caps.set_context_member(group_id, context_id, member, current & !capability)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::GroupApplyCtx;
+    use crate::test_fixtures::{test_group_id, test_store};
+    use crate::{MembershipRepository, LIVE_FALLBACK_AUTHORIZER};
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::PublicKey;
+
+    #[test]
+    fn non_admin_without_manage_members_cannot_revoke_capability() {
+        let store = test_store();
+        let gid = test_group_id();
+        let signer = PublicKey::from([0x02; 32]); // plain Member, no MANAGE_MEMBERS cap
+        let target = PublicKey::from([0x03; 32]);
+        let context_id = ContextId::from([0x04; 32]);
+        let capability: u8 = 0b0000_0001;
+
+        MembershipRepository::new(&store)
+            .add_member(&gid, &signer, GroupMemberRole::Member)
+            .unwrap();
+
+        let mut ctx = GroupApplyCtx::new_with_apply_auth(
+            &store,
+            &gid,
+            &signer,
+            &[],
+            &LIVE_FALLBACK_AUTHORIZER,
+        );
+        assert!(
+            super::apply(&mut ctx, &context_id, &target, &capability).is_err(),
+            "plain Member without MANAGE_MEMBERS should be rejected"
+        );
+    }
+}
