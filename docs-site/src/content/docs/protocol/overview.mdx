@@ -65,16 +65,43 @@ Astro island**, the thing this spike set out to prove:
 
 The write half (build → sign → persist → broadcast), the receive half (verify →
 authorize → decrypt → fold), and the repair channel (compare roots → transfer
-what differs) are the substance of the full reference — which this spike will
-migrate chapter by chapter from the existing `architecture/protocol/` pages into
-MDX like this one.
+what differs) are the substance of this reference.
 
-## What this spike demonstrates
+## How this reference is organized
 
-- **Astro Starlight** shell — built-in sidebar, search, dark/light, responsive,
-  fast — replacing the bespoke `nav.js` + custom search.
-- **The Calimero dark theme** ported into Starlight's tokens (lime accent,
-  lifted text contrast).
-- **MDX authoring** — this page is Markdown; prose diffs cleanly in PRs.
-- **The animated diagram engine as an island** — same step-cascade and Replay
-  button as the old site, now mounted in a component, content-authored from data.
+The chapters follow the operation's life, then branch into the subsystems built
+on top:
+
+- **The core** — _Concepts & Scopes_, _Identities & Keys_, _Operations & the
+  Causal DAG_, and _State, Projection & the Root Hash_. Read these first; the
+  rest assume them.
+- **The planes in motion** — _Application Execution_ (where data operations come
+  from) and _Governance_ (the membership/admin planes).
+- **Moving and reconciling** — _Networking_, _The Write Path_, _The Receive &
+  Apply Path_, and _Sync & Convergence_.
+- **Subsystems** — _Blob Transport_, _TEE Attestation_, _Cross-Context Calls_,
+  and _Application Upgrades & Migration_.
+- **Appendix** — the on-disk _Storage Schema_.
+
+## Status, versioning & conformance
+
+:::caution[Draft specification]
+This reference is a **draft**. It describes the _target_ unified model and is
+being hardened toward a normative specification — it is not yet a frozen
+standard. Treat the byte-level details as accurate-to-current-code but subject
+to change pre-1.0.
+:::
+
+- **Normative requirements** appear in **`Normative`** callouts using RFC 2119
+  wording (MUST / SHOULD / MAY). Everything else is explanatory — an
+  implementer may read only the Normative callouts plus the byte-level
+  `Specification` sections and build a conformant node.
+- **Version pinning.** Wire and signing formats are versioned. At the time of
+  writing: the signed group op is **schema version 8**, the signed namespace op
+  is **schema version 2**, and the libp2p sync/blob stream protocols are
+  `…/0.0.2`. A conformant implementation MUST match these for the versions it
+  claims to support.
+- **Conformance, in one line.** A node interoperates if it reproduces the
+  operation **id** computation, the **scope&nbsp;root** fold, and the
+  authorization-at-the-cut rule exactly — everything else is a consequence of
+  those three.

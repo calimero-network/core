@@ -1,0 +1,185 @@
+---
+title: Cross-Context Calls
+description: Fire-and-forget calls from one context's WASM into another on the same node, queued during execution and dispatched after commit.
+sidebar:
+  order: 15
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+## What a cross-context call is
+
+A **cross-context call** (`xcall`) lets the WASM application of one context invoke a method on **another context running on the same node**. It is the only way for two contexts to talk to each other inside a single node without going through the network or a human-driven RPC.
+
+An xcall is **fire-and-forget**:
+
+- The guest queues the call from inside a normal execution by naming a target context, a function, and a parameter blob.
+- The call does **not** run inline. It is buffered and only dispatched **after the current execution commits**.
+- The caller gets **no return value**. The outcome of each dispatched call surfaces out-of-band as a node `XCall` event, not as data the caller can read.
+
+Because there is no return channel and execution is local to the node, xcall is a one-directional signal — useful for keeping a second context in sync, not for request/response.
+
+<Aside type="note">
+xcall is strictly **node-local**. It dispatches against contexts that already live on this node; it never reaches a context on a remote peer. Cross-node consistency is the job of replication and sync, not xcall — see [Application Execution](/protocol/execution/) and the sync chapter for how state crosses nodes.
+</Aside>
+
+## The guest API
+
+From application code the call is a single SDK function. It queues; it never blocks or returns a result:
+
+```rust
+use calimero_sdk::env;
+
+// Queue a call to `index_entry` on `target_context`, dispatched after this
+// execution commits. No return value comes back to the caller.
+let params = serde_json::to_vec(&entry_id).unwrap();
+env::xcall(&target_context, "index_entry", &params);
+```
+
+`env::xcall` takes a `&[u8; 32]` context id, a function name, and an opaque parameter byte slice. The host records it as an `XCall { context_id, function, params }` descriptor on the execution's queue.
+
+The target reads its caller's provenance with `env::xcall_origin`:
+
+```rust
+// Returns Some(source_context_id) when this execution was dispatched via
+// xcall, or None for a direct/RPC call. The node sets the origin — a guest
+// cannot forge it.
+match env::xcall_origin() {
+    Some(src) => { /* called from context `src` */ }
+    None => { /* direct invocation */ }
+}
+```
+
+A method marked as an entry point declares itself with the `#[app::xcall]` attribute:
+
+```rust
+#[app::xcall]
+pub fn index_entry(&mut self, entry_id: String) {
+    // reachable from other contexts in the same namespace
+}
+```
+
+See [SDK macros](/build/sdk-macros/) for how `#[app::xcall]` fits alongside `#[app::init]` and `#[app::view]`. It is **mutually exclusive** with both: an initializer is never an xcall target, and a read-only `view` can have no observable effect through a fire-and-forget call, so its return value would be discarded.
+
+## Lifecycle: queue during execution, dispatch after commit
+
+Queuing happens inside the host `xcall` function while the guest runs. Dispatch happens in the node **after** the source execution has committed, by iterating the queued descriptors one at a time.
+
+<SeqDiagram
+  id="d-xcall"
+  title="Queue during execution, dispatch after commit"
+  lanes={[
+    { label: 'Caller ctx', color: '#f0883e' },
+    { label: 'Runtime', color: '#3fb950' },
+    { label: 'Node', color: '#a5ff11' },
+    { label: 'Target ctx', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'env::xcall(ctx, fn, params)' },
+    { from: 1, to: 1, label: 'validate + push to xcalls queue', color: '#f0883e' },
+    { from: 0, to: 1, label: 'commit()' },
+    { from: 1, to: 2, label: 'Outcome { xcalls, root_hash, ... }', dashed: true },
+    { from: 2, to: 2, label: 'for each queued xcall:' },
+    { from: 2, to: 2, label: 'L1 same-namespace? L2 owned member?', color: '#a5ff11' },
+    { from: 2, to: 3, label: 'execute_with_origin(fn, params, origin=caller)' },
+    { from: 3, to: 3, label: 'L3 gate: method #[app::xcall]?', color: '#58a6ff' },
+    { from: 3, to: 2, label: 'returns (discarded)', dashed: true },
+    { from: 2, to: 2, label: 'emit XCall event { Ok | Denied | ExecError }', color: '#a5ff11' },
+  ]}
+/>
+
+<Steps>
+
+1. **Queue.** During execution, `env::xcall` calls the host, which validates sizes and limits, then pushes an `XCall { context_id, function, params }` onto the execution's queue. Nothing runs yet.
+
+2. **Commit.** The source execution finishes and commits. The queued xcalls travel out on the `Outcome` alongside the new root hash.
+
+3. **Dispatch.** The node walks the queue. For each entry it runs the three authorization checks below, and on success calls the target method **as a member of the target context**, tagging the run with the source context id as the origin.
+
+4. **Report.** Each xcall emits a best-effort node event carrying its outcome. The caller is already done and never sees it.
+
+</Steps>
+
+### Host-side validation and limits
+
+The host rejects a queued xcall up front if it would exceed configured limits. These are the runtime defaults:
+
+| Limit | Default | Error on overflow |
+| --- | --- | --- |
+| Function name length | 100 bytes | `XCallFunctionSizeOverflow` |
+| Params size | 16 KiB | `XCallParamsSizeOverflow` |
+| Queued xcalls per execution | 100 | `XCallsOverflow` |
+
+A guest that trips any of these gets a host error during its own execution, before commit.
+
+## Authorization: three checks
+
+An xcall crosses a trust boundary, so it passes three independent checks. The first two are enforced by the node before dispatch; the third runs inside the target's execution. All three **fail closed**.
+
+### L1 — Namespace boundary (node, fail-closed)
+
+A context may only xcall a target in **its own namespace**. The node resolves the namespace (the governance group) of both the source and target context and requires them to be equal. A resolution error, or either side resolving to no namespace, is a denial — not a pass.
+
+```text
+src_namespace == target_namespace  → allowed
+anything else (mismatch, error, unresolved) → Denied { reason: "namespace boundary" }
+```
+
+A target outside the source's namespace can never be reached, and a guest cannot widen its own reach because the namespace comes from governance state, not from the call.
+
+After the namespace check the node also requires an **owned member** of the target context to execute as; if it finds none, the call is denied with `no owned member`.
+
+### L2 — Provenance via `xcall_origin` (unforgeable)
+
+When the node dispatches the call it executes the target as one of the target's members and tags the run with the **source context id**. The target reads it with `env::xcall_origin()`:
+
+- It returns `Some(source_context_id)` for an xcall-dispatched run.
+- It returns `None` for a direct/RPC call.
+
+The origin is set by the node from the calling context and is **never read from guest memory**, so a guest cannot forge it. A target can therefore authorize its caller — for example accept calls only from a context it spawned — and a method can require xcall-only invocation by rejecting `None`.
+
+### L3 — Entry-point gate via `#[app::xcall]`
+
+A method is reachable by xcall **only if the app author marked it** `#[app::xcall]`. The marker is recorded in the compiled ABI (`Method.xcall_callable`); the node keeps the per-blob set of declared method names and, for any xcall-dispatched run, denies a method that is not in that set:
+
+- If the executing blob declares an xcall set and the method **is not** in it → denied with `XCallNotPermitted`.
+- If the blob declares **no** xcall set at all → the method is not gated (no restriction is applied).
+
+Because the gate keys on "this run carries an origin," it also blocks reaching internal runtime methods (e.g. sync entry points) through xcall — those are never `#[app::xcall]` — while leaving the origin-less sync path itself unaffected.
+
+:::caution[Normative]
+A node MUST refuse to dispatch an xcall unless **all** of: (L1) source and target resolve to the same namespace, an owned member of the target exists; (L2) the dispatched run is tagged with the source context as origin; and (L3) the target method is declared `#[app::xcall]` when the target blob declares any xcall set. Each failing check MUST produce a `Denied` outcome and MUST NOT execute the target method. The origin a target reads via `xcall_origin` MUST be set by the node and MUST NOT be sourced from guest memory.
+:::
+
+## Outcomes are events, not return values
+
+The caller gets nothing back. Instead, each dispatched xcall emits a best-effort `XCall` node event describing what happened. The event carries the target context, the function name, and one of three outcomes:
+
+| Outcome | Meaning |
+| --- | --- |
+| `Ok` | Dispatched and the target execution returned `Ok`. |
+| `Denied { reason }` | Refused before running the target — wrong namespace, no owned member, or not an `#[app::xcall]` entry point. |
+| `ExecError { message }` | Dispatched, but the target method returned an error. |
+
+Event emission is best-effort: a failure to emit never aborts the dispatch loop or the source execution. The source context id rides on the wrapping event, so an observer can attribute the call.
+
+<Aside type="caution">
+Because outcomes are out-of-band events, an xcall failure is **not** visible to the calling application and does **not** roll back the caller's already-committed state. Treat xcall as a notification, not a transaction: design targets to be idempotent and tolerant of being called again.
+</Aside>
+
+## When to use xcall
+
+xcall fits **node-local, fire-and-forget coordination between contexts in the same namespace**:
+
+- **Secondary indexes.** A primary context records data and signals an index context to update a lookup it maintains.
+- **Notifications.** One context tells a sibling that something happened, without waiting for a reply.
+
+Reach for replication/sync instead — not xcall — when you need:
+
+- **Cross-node consistency.** xcall only touches contexts on the local node; state reaching other peers is the replication/sync data plane (see [Application Execution](/protocol/execution/)).
+- **A return value or transactional coupling.** xcall has neither: the caller is done before the target runs, and a target failure cannot undo the caller's commit.
+- **To cross a namespace.** The L1 boundary forbids it by design.
