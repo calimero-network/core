@@ -127,3 +127,133 @@ polished product. Grouped by theme; check items off as they land. See
 - [ ] 98. Privacy-friendly analytics to learn what's read.
 - [ ] 99. A "was this helpful?" feedback affordance.
 - [ ] 100. Print/offline-friendly stylesheet + PDF export for the spec.
+
+---
+
+# Round 2 — content & quality (post-restructure)
+
+A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
+
+## Build track — depth
+- [ ] R1. SDK API reference generated from rustdoc (every public type/fn).
+- [ ] R2. Per-collection reference pages with full method signatures + examples.
+- [ ] R3. Error-handling guide (`app::Result`, custom error enums, client propagation).
+- [ ] R4. Patterns & recipes: pagination, secondary indexes, per-user counters, soft-delete.
+- [ ] R5. State-modeling guide (designing `#[app::state]` for convergence).
+- [ ] R6. Multi-service app bundles (manifest, `service_name`, when to split).
+- [ ] R7. Frontend integration (subscribe over WS/SSE, optimistic UI, reading state).
+- [ ] R8. Local dev loop (`meroctl dev --watch`, hot reload, debugging an app).
+- [ ] R9. "Coming from a traditional DB" pitfalls page.
+- [ ] R10. A real chat-app tutorial with a frontend (beyond kv-store).
+
+## Protocol depth
+- [ ] R11. Conformance test vectors (compute_id, scope_root, HLC) as downloadable fixtures.
+- [ ] R12. Worked numeric example: one op through id → sign → fold → root.
+- [ ] R13. Wire-format appendix: Borsh encoding rules + a hexdump of a real StateDelta.
+- [ ] R14. Standalone HLC spec page (NTP64 layout, update rule, anti-drift).
+- [ ] R15. Sync protocol internals (HashComparison / LevelWise / Snapshot, message by message).
+- [ ] R16. The snapshot protocol (pages, compression, boundaries).
+- [ ] R17. Causal-auth deep-dive (`acl_view_at`, forward-only, generation tiebreak).
+- [ ] R18. Security / threat model page (trust assumptions, attacker capabilities, guarantees).
+- [ ] R19. "How Calimero differs from blockchains / consensus systems" framing.
+- [ ] R20. Peer/connection state-machine diagram.
+
+## Operate depth
+- [ ] R21. Admin API reference with request/response schemas (OpenAPI) + a Bruno/Postman collection.
+- [ ] R22. CLI reference generated from `--help` (merod/meroctl), always current.
+- [ ] R23. Metrics catalog (every metric, type, labels) + a sample Grafana dashboard JSON.
+- [ ] R24. Kubernetes/Helm deployment guide + manifests.
+- [ ] R25. Tested backup/restore with RPO/RTO guidance.
+- [ ] R26. Capacity planning & sizing (memory/disk per context, peer counts).
+- [ ] R27. Cross-version upgrade runbook (node binary + app together).
+- [ ] R28. Disaster recovery (recover a context from divergence; rebuild from peers).
+- [ ] R29. Bootstrap-node / relay-node operator guide.
+- [ ] R30. Log reference (what each warn/error means, what to do).
+
+## Reference completeness
+- [ ] R31. Config reference auto-generated from structs.
+- [ ] R32. Host-function ABI reference (every `env::*`) as a standalone page.
+- [ ] R33. Capability/role/permission matrix.
+- [ ] R34. Event catalog (NodeEvent variants + payloads).
+- [ ] R35. Error-code catalog (storage/runtime/sync/server).
+- [ ] R36. Inline-link key glossary terms across pages.
+- [ ] R37. Versioning & compatibility matrix (schema/protocol/runtime versions).
+- [ ] R38. One "limits & defaults" reference table (VMLimits + wire caps).
+
+## Diagrams & interactivity
+- [ ] R39. Interactive "life of an operation" stepper (play/pause/scrub).
+- [ ] R40. Animated CRDT-merge convergence visualization.
+- [ ] R41. Animated sync handshake + verdict decision.
+- [ ] R42. Clickable scope-tree explorer.
+- [ ] R43. One diagram palette + legend across all pages.
+- [ ] R44. State-machine diagrams (upgrade gate, sync session).
+- [ ] R45. Reduced-motion static fallbacks with step captions.
+- [ ] R46. Alt text / ARIA on every diagram.
+
+## Examples & tutorials
+- [ ] R47. Example gallery with "what it teaches" tags.
+- [ ] R48. Collaborative text-editor tutorial (RGA, end to end).
+- [ ] R49. Access-controlled app tutorial (Shared / Owner).
+- [ ] R50. Migration tutorial: ship v2 with a schema change.
+- [ ] R51. xcall worked example (secondary-index pattern).
+- [ ] R52. Blob upload/download worked example with a frontend.
+- [ ] R53. "Deploy to a 3-node cluster" tutorial.
+- [ ] R54. Testing tutorial: unit (TestHost) + e2e (merobox).
+
+## Design & UX polish
+- [ ] R55. Per-page OG/social-card images (auto-generated).
+- [ ] R56. Light-theme WCAG AA audit.
+- [ ] R57. Tuned callout color tokens (note/tip/caution/danger).
+- [ ] R58. Distinct visual style for Normative callouts.
+- [ ] R59. Code blocks: filename headers + line highlighting on long samples.
+- [ ] R60. Copy-link affordance on every heading.
+- [ ] R61. Tuned on-page TOC for long deep-dives.
+- [ ] R62. Mobile grouped-sidebar polish.
+- [ ] R63. Reading-time estimates on long pages.
+- [ ] R64. Home hero refinement.
+
+## Search & findability
+- [ ] R65. Tuned search (boost titles, group results by track).
+- [ ] R66. `llms-full.txt` full-content export (alongside `llms.txt`).
+- [ ] R67. Tag-driven "related pages" (extend the content schema).
+- [ ] R68. An "all pages" index page.
+- [ ] R69. Keyboard-shortcuts help modal.
+- [ ] R70. Canonical URLs + per-page meta-description audit.
+
+## Accuracy & automation
+- [ ] R71. CI: generate config/CLI/API/SDK refs from source.
+- [ ] R72. CI: drift check (generated vs committed).
+- [ ] R73. CI: anchor-link check + prose lint (Vale).
+- [ ] R74. CI: accessibility/contrast check (pa11y/axe).
+- [ ] R75. "Last verified against commit X" stamp on reference pages.
+- [ ] R76. Fix + close the filed code/doc issues (#2954–#2958) and update docs.
+- [ ] R77. Docs CODEOWNERS + review checklist.
+- [ ] R78. Asset/screenshot pipeline kept current.
+
+## Community & process
+- [ ] R79. Docs style guide (voice, terminology, capitalization).
+- [ ] R80. RFC/proposal process page (how to propose protocol changes).
+- [ ] R81. "What's new" / changelog surfaced in docs.
+- [ ] R82. Public roadmap page.
+- [ ] R83. Security policy / responsible disclosure page.
+- [ ] R84. FAQ page.
+- [ ] R85. Support / where-to-get-help page.
+- [ ] R86. Governance + code-of-conduct links.
+
+## Versioning & longevity
+- [ ] R87. Versioned docs (snapshot per release) as 1.0 nears.
+- [ ] R88. Version switcher in the header.
+- [ ] R89. "Report an issue with this page" link (next to Edit).
+- [ ] R90. i18n scaffolding (English-only for now).
+- [ ] R91. Stable anchor-ID policy for deep links.
+- [ ] R92. Deprecation-notice convention.
+
+## Cross-cutting / meta
+- [ ] R93. Clear "Concepts vs Spec" split note in the Protocol track.
+- [ ] R94. Comparison page: Calimero vs other local-first / CRDT frameworks.
+- [ ] R95. Performance benchmarks page (real numbers).
+- [ ] R96. Production-readiness checklist (app + node).
+- [ ] R97. Observability cookbook (alerts, SLOs).
+- [ ] R98. Data-privacy / what's-stored-where page.
+- [ ] R99. "Limitations & known issues" page (honest).
+- [ ] R100. "Was this helpful?" feedback widget to drive priorities.
