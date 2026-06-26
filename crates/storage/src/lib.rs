@@ -122,9 +122,9 @@ pub mod tests {
     /// stored-writers field staying frozen at bootstrap (see #2266 step 5).
     #[cfg(test)]
     pub mod write_hook_stale_writers;
-    // TODO: Re-enable once Clone is implemented for collections
-    // /// Nested CRDT merge behavior tests.
-    // pub mod nested_crdt_merge;
+    /// Nested CRDT merge behavior tests.
+    #[cfg(test)]
+    pub mod nested_crdt_merge;
 }
 
 #[cfg(test)]
