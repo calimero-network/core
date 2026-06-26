@@ -961,6 +961,56 @@ canonical source if a field is renamed in a later release.
 </table>
 </div>
 
+<div class="card gc"><h2>Breaking change in 0.11.0-rc.8: <code>state_hash</code> removed from governance ops</h2>
+<p>
+<strong>Flag-day upgrade required.</strong> As of <code>0.11.0-rc.8</code>, governance ops no longer
+carry a per-op <code>state_hash</code> field and the op schema version has been bumped. There is
+<strong>no mixed-version compatibility window</strong> — a node running the old schema and a node
+running the new schema cannot participate in the same context simultaneously. All nodes sharing a
+context must upgrade together before any of them resumes producing or validating ops.
+</p>
+
+<h3>What changed and why</h3>
+<p>
+The <code>state_hash</code> field was a per-op digest of the context's state at the time the op was
+produced. In practice it was a source of spurious mismatch failures (two nodes racing to produce an op
+could agree on every field except that hash) and complicated resilience recovery. Removing it
+simplifies the op schema and eliminates the entire class of hash-mismatch rejections.
+</p>
+
+<h3>Upgrade procedure</h3>
+<ol>
+  <li><strong>Coordinate with every operator of the context.</strong> Identify every node participating
+  in each affected context — there is no automated discovery; check your deployment inventory.</li>
+  <li><strong>Stop writes.</strong> Quiesce the context (no new signed ops) before any node upgrades.
+  An op produced by a new node while old nodes are still running will be rejected by them, and vice
+  versa.</li>
+  <li><strong>Upgrade all nodes simultaneously.</strong> Install <code>0.11.0-rc.8</code> (or later)
+  on every participating node in one coordinated step.</li>
+  <li><strong>Verify.</strong> Confirm all nodes report the same op schema version before re-enabling
+  writes:
+  <pre class="code">meroctl --node &lt;n&gt; context inspect &lt;ctx_id&gt;   # check opSchemaVersion field</pre>
+  </li>
+  <li><strong>Resume writes.</strong> Once all nodes agree on the new schema version, normal operation
+  resumes.</li>
+</ol>
+
+<h3>What happens if you don't coordinate</h3>
+<p>
+A node on the old schema will reject every op produced by a node on the new schema (unexpected field
+count) and vice versa (missing required field). The context will appear to stall — members can read
+their local state but new ops from mixed-version peers will fail validation. Recovery requires all
+remaining old-schema nodes to upgrade; no data loss occurs because no ops cross-validate until schema
+versions match.
+</p>
+<div class="note">
+<strong>This change does not affect the app-state migration machinery described in the rest of this
+page.</strong> <code>#[app::migrate]</code>, <code>#[derive(Migrate)]</code>, convergence rules, and
+the identity-gated convert path are all orthogonal to the op schema. If you are mid-rollout of an
+app-state migration when you perform this upgrade, complete the flag-day node upgrade first, confirm
+all nodes are on <code>0.11.0-rc.8</code>, then resume the app-state migration rollout.
+</div>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
