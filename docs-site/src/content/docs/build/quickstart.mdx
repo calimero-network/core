@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Steps, Aside, Tabs, TabItem, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 This walks from an empty crate to a method call. The two binaries you use are
 **`merod`** (the node daemon — `init`, `run`) and **`meroctl`** (the operator
@@ -178,3 +178,12 @@ configured alias) or `--api <URL>`.
   methods and assert on state under plain `cargo test`, with no node and no WASM
   build. See the `tests/` directories of the example apps.
 </Aside>
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Build your first app" href="/build/tutorial/" description="The guided long-form walkthrough, checking output at every step." />
+  <LinkCard title="Collections" href="/build/collections/" description="The CRDT types your state is built from and how they merge." />
+  <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The full set of #[app::*] attributes that define an app." />
+  <LinkCard title="Example apps" href="/build/examples/" description="A tour of the in-repo apps under apps/ and what each teaches." />
+</CardGrid>

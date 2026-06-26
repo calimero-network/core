@@ -5,6 +5,8 @@ sidebar:
   order: 9
 ---
 
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
 This page is for app builders making data-modeling decisions. It explains what
 each [collection](/build/collections/) actually costs — in CPU and, more
 importantly, in **disk reads** — so you can choose a shape that stays fast as
@@ -206,3 +208,11 @@ that data through the per-entry read and sibling-rehash machinery above.
 
 For the merge semantics that sit underneath these costs, see
 [Collections](/build/collections/) and [CRDT internals](/protocol/crdt-internals/).
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Collections" href="/build/collections/" description="The merge semantics of each collection these costs come from." />
+  <LinkCard title="CRDT internals" href="/protocol/crdt-internals/" description="The storage tree and merge model underneath the Big-O." />
+  <LinkCard title="Gotchas & sharp edges" href="/build/gotchas/" description="Sharp edges around writes, iteration, and large parents." />
+</CardGrid>

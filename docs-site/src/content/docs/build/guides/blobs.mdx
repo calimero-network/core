@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-import { Steps, Aside } from '@astrojs/starlight/components';
+import { Steps, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 **Task:** store a large binary (a file, an image) and make it available to other
 nodes in the context.
@@ -77,3 +77,11 @@ meroctl --node node1 call upload_file \
   --context <context-id> \
   --args '{"name": "notes.txt", "blob_id": "<base58-blob-id>", "size": 12}'
 ```
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Blobs reference" href="/protocol/blobs/" description="Content addressing, chunking, and the replication model." />
+  <LinkCard title="Example apps" href="/build/examples/" description="The apps/blobs file-sharing app this guide is drawn from." />
+  <LinkCard title="Storage performance & Big-O" href="/build/storage-complexity/" description="Why large payloads belong in the blob store, not collection state." />
+</CardGrid>

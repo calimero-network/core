@@ -5,7 +5,7 @@ sidebar:
   order: 4
 ---
 
-import { Aside, Steps } from '@astrojs/starlight/components';
+import { Aside, Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 **Task:** have a method in one context invoke a method in another context.
 
@@ -87,3 +87,11 @@ meroctl --node node1 call ping \
 ```
 
 The two contexts must run the same application and share a namespace.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Cross-context calls reference" href="/protocol/xcall/" description="The dispatch model and why the origin is trustworthy." />
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Fire-and-forget queueing, gating, and origin internals." />
+  <LinkCard title="Example apps" href="/build/examples/" description="The full ping-pong xcall-example with provenance checks." />
+</CardGrid>

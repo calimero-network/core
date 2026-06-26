@@ -6,7 +6,7 @@ sidebar:
   order: 4
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 `meroctl` is the operator CLI. It connects to a running `merod` node over its
 RPC server and manages applications, namespaces, groups, contexts, blobs, and
@@ -303,3 +303,11 @@ meroctl node ls
 For a remote node that needs authentication, login starts automatically; pass
 `--access-token` (and optionally `--refresh-token`) to skip it with explicit
 JWTs.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Admin & JSON-RPC API" href="/operate/admin-api/" description="The HTTP endpoints these CLI commands call under the hood." />
+  <LinkCard title="Runbooks" href="/operate/runbooks/" description="Step-by-step operational tasks built from these commands." />
+  <LinkCard title="merod reference" href="/operate/merod/" description="The node daemon meroctl connects to." />
+</CardGrid>

@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 **Task:** store a piece of your app's data in a field of `#[app::state]`, and
 read and write it from a method.
@@ -84,3 +84,11 @@ meroctl --node node1 call set \
 meroctl --node node1 call get \
   --context <context-id> --args '{"key": "hello"}'
 ```
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Collections reference" href="/build/collections/" description="Every collection type and its exact merge rule." />
+  <LinkCard title="Storage performance & Big-O" href="/build/storage-complexity/" description="What each collection costs as your state grows." />
+  <LinkCard title="Access-controlled storage" href="/build/guides/access-control/" description="Limit who is allowed to write a field." />
+</CardGrid>

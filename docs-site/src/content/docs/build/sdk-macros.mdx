@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 Everything an app exposes to the runtime is declared with macros re-exported
 under `calimero_sdk::app`. They are defined in `crates/sdk/macros/src/lib.rs` and
@@ -288,3 +288,11 @@ See `apps/team-metrics-macro` (derive) versus `apps/team-metrics-custom`
 | `app::log!("processing {}", id)` | a runtime log call (format-string like `println!`) |
 | `app::err!("not found")` | `Err(app::Error::new(..))` |
 | `app::bail!("not found")` | `return Err(app::Error::new(..))` |
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Collections" href="/build/collections/" description="The CRDT collection types your #[app::state] is built from." />
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="What the derive macros generate, plus xcall, handlers, and migrations in depth." />
+  <LinkCard title="Gotchas & sharp edges" href="/build/gotchas/" description="Non-obvious facts about the macros and runtime that bite builders." />
+</CardGrid>

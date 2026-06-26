@@ -6,7 +6,7 @@ sidebar:
   order: 2
 ---
 
-import { Steps, Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+import { Steps, Tabs, TabItem, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 Both binaries — `merod` (the node daemon) and `meroctl` (the operator CLI) —
 live in this repository and build together.
@@ -129,3 +129,12 @@ meroctl node ls
 `node add` accepts a local home directory path or a remote `http(s)://` URL; see
 the [meroctl reference](/operate/meroctl/#node-connection-management) for
 authentication options.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Build your first app" href="/build/tutorial/" description="Write, build, install, and call an app on the node you just started." />
+  <LinkCard title="merod reference" href="/operate/merod/" description="Every init, config, and run flag for the node daemon." />
+  <LinkCard title="meroctl reference" href="/operate/meroctl/" description="The operator CLI command groups for apps, contexts, and calls." />
+  <LinkCard title="Configuration reference" href="/operate/config/" description="Every config.toml section, key, and default." />
+</CardGrid>

@@ -5,7 +5,7 @@ sidebar:
   order: 13
 ---
 
-import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Steps, Tabs, TabItem, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 A `merod` node's HTTP server (admin API, JSON-RPC, WebSocket, SSE) can be
 protected either by an external proxy or by a bundled authentication service,
@@ -192,3 +192,11 @@ auth service directly if you need them:
 - **Standalone operation:** `mero-auth` can also run as its own service (default
   listen `127.0.0.1:3001`) rather than embedded in the node; that deployment
   shape is not covered here.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Admin & JSON-RPC API" href="/operate/admin-api/" description="The protected routes and the JWT flow auth gates." />
+  <LinkCard title="Hardening & security" href="/operate/security/" description="Where auth fits in the broader node-hardening picture." />
+  <LinkCard title="Configuration reference" href="/operate/config/" description="The [server] auth_mode and embedded-auth config keys." />
+</CardGrid>

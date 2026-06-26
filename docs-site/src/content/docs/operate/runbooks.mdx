@@ -5,7 +5,7 @@ sidebar:
   order: 9
 ---
 
-import { Steps, Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
+import { Steps, Aside, Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
 
 Concrete, ordered procedures for the operations you run on a live deployment.
 They assume a node started as:
@@ -259,3 +259,11 @@ production keys.
 
 <LinkCard title="Membership & governance" href="/protocol/governance/"
   description="How joins, leaves, roles, and key registration are recorded." />
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Troubleshooting" href="/operate/troubleshooting/" description="Diagnose the symptoms these procedures are meant to resolve." />
+  <LinkCard title="Observability" href="/operate/observability/" description="The metrics and logs to watch while running these runbooks." />
+  <LinkCard title="Production deployment" href="/operate/deployment/" description="The deployment shape these operational tasks assume." />
+</CardGrid>

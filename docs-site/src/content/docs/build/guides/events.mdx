@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 **Task:** announce that something changed so clients (and optionally other
 methods of your app) can react.
@@ -100,3 +100,11 @@ published on the node's event stream for subscribed clients.
 Events are consumed by clients over the node's API rather than by `meroctl`
 itself; check your node's API docs for the exact subscription endpoint.
 :::
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The #[app::event] and emit! surface in full." />
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Handler replay semantics — why handlers must be idempotent." />
+  <LinkCard title="Admin & JSON-RPC API" href="/operate/admin-api/" description="The WebSocket and SSE streams clients subscribe to for events." />
+</CardGrid>

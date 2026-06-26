@@ -5,7 +5,7 @@ sidebar:
   order: 7
 ---
 
-import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 A `merod` node is observable through two channels: a Prometheus `/metrics`
 endpoint for numeric time series, and structured `tracing` logs for
@@ -223,3 +223,11 @@ comma-separated; `target[span]=level` for finer control). Panics are captured by
 a custom hook that logs a structured message plus backtrace before exiting, so
 crash diagnostics survive even without `RUST_BACKTRACE` set.
 </Aside>
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Troubleshooting" href="/operate/troubleshooting/" description="Map the metrics and logs here to concrete symptoms and fixes." />
+  <LinkCard title="Runbooks" href="/operate/runbooks/" description="Operational procedures that lean on these counters and logs." />
+  <LinkCard title="Production deployment" href="/operate/deployment/" description="Wire /metrics and logs into a real monitoring stack." />
+</CardGrid>

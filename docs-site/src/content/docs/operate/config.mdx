@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 A node reads a single TOML file, `config.toml`, from its home directory
 (written by `merod init` and re-read on `merod run`). This page documents every
@@ -354,3 +354,11 @@ enabled = true
 min_deltas_before_compact = 10000
 retain_recent_count = 1000
 ```
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Networking & discovery" href="/operate/networking/" description="What the [swarm], [bootstrap], and [discovery] keys actually do." />
+  <LinkCard title="Hardening & security" href="/operate/security/" description="Which settings keep the admin API and keys safe in production." />
+  <LinkCard title="Production deployment" href="/operate/deployment/" description="Put this config behind a reverse proxy and run it as a service." />
+</CardGrid>

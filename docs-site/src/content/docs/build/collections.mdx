@@ -5,7 +5,7 @@ sidebar:
   order: 4
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 Your [`#[app::state]`](/build/sdk-macros/) is built from the collection types in
 `calimero_storage::collections`. Each is a **CRDT**: concurrent edits on
@@ -120,3 +120,11 @@ against the writer set / owner. A forged write does not survive convergence.
   [`#[derive(app::Mergeable)]`](/build/sdk-macros/) so the struct merges
   field-by-field. Every nested field must itself be `Mergeable`.
 </Aside>
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="Restrict who may write a value, and how that rule is enforced at merge." />
+  <LinkCard title="Storage performance & Big-O" href="/build/storage-complexity/" description="What each collection costs in time and disk reads as state grows." />
+  <LinkCard title="CRDT internals" href="/protocol/crdt-internals/" description="The merge model underneath these collection types." />
+</CardGrid>

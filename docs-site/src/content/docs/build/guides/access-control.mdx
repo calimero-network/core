@@ -5,7 +5,7 @@ sidebar:
   order: 6
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 **Task:** keep a piece of state but limit who is allowed to change it.
 
@@ -136,3 +136,11 @@ impl KvStore {
 meroctl --node node1 call set_shared \
   --context <context-id> --args '{"value": "agreed"}'
 ```
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Access-controlled storage (deep dive)" href="/build/permissioned-storage/" description="The two planes, op masks, and how writes are enforced at merge." />
+  <LinkCard title="Collections" href="/build/collections/" description="The full set of CRDT and access-controlled collection types." />
+  <LinkCard title="Governance" href="/protocol/governance/" description="How context membership and roles drive the write boundary." />
+</CardGrid>

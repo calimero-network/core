@@ -6,7 +6,7 @@ sidebar:
   order: 3
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 `merod` is the node daemon. Every invocation takes two global arguments, then a
 subcommand.
@@ -121,3 +121,11 @@ merod --node node1 kms probe --json
   `kms probe` requires a node whose config has a `tee.kms.phala` section; it
   errors if TEE/KMS is not configured.
 </Aside>
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Configuration reference" href="/operate/config/" description="Every config.toml section the init flags seed and run reads back." />
+  <LinkCard title="meroctl reference" href="/operate/meroctl/" description="The operator CLI that talks to the node you just ran." />
+  <LinkCard title="Production deployment" href="/operate/deployment/" description="Run merod as a long-lived service behind a reverse proxy." />
+</CardGrid>

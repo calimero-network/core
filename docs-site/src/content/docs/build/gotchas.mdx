@@ -5,6 +5,8 @@ sidebar:
   order: 10
 ---
 
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
 These are the sharp edges that bite — each one a concrete, non-obvious fact grounded
 in the code, not folklore. They are the things you only learn after a replica
 diverges, a write silently vanishes, or a test passes locally and fails in
@@ -99,3 +101,11 @@ collections — but the mental model is what bites.
 - Event handlers are not auto-dispatched by `TestHost`; emitting an event does not run its handler, so handler logic must be exercised directly.
 - The default `TestHost` identity satisfies owner checks — a test can pass on permissions that would fail in production under a real, non-owner executor.
 - Only one `TestHost` may be live per thread at a time — run host-using tests serially within a thread, not nested.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="The deeper mechanics behind the determinism, merge, and xcall edges above." />
+  <LinkCard title="Storage performance & Big-O" href="/build/storage-complexity/" description="Why writes rehash siblings and how to keep collections fast." />
+  <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="How the Public write boundary and merge-plane enforcement work." />
+</CardGrid>

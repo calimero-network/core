@@ -5,7 +5,7 @@ sidebar:
   order: 12
 ---
 
-import { Steps } from '@astrojs/starlight/components';
+import { Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 This page collects the security-relevant decisions for running a `merod` node:
 how authentication is enforced, what must never face the public internet, where
@@ -162,3 +162,11 @@ testing and must stay `false` in production.
    them — they contain private key material.
 
 </Steps>
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Production deployment" href="/operate/deployment/" description="The reverse-proxy and TLS setup these rules depend on." />
+  <LinkCard title="Auth service & providers" href="/operate/auth/" description="Running the embedded auth service to validate tokens in-node." />
+  <LinkCard title="Configuration reference" href="/operate/config/" description="Every config.toml key referenced in this checklist." />
+</CardGrid>

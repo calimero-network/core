@@ -5,7 +5,7 @@ sidebar:
   order: 6
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 The node's HTTP server (default bind `/ip4/127.0.0.1/tcp/2528` and
 `/ip6/::1/tcp/2528`) exposes four
@@ -247,3 +247,11 @@ name to resolve is a path segment and the handlers are registered with `post`.
 | GET | `/admin-api/network/status` | libp2p connectivity snapshot (relays, rendezvous, DCUtR, AutoNAT). |
 | GET | `/admin-api/peers` | Connected peers count. |
 | GET | `/admin-api/usage` | Per-namespace usage (counts and on-disk bytes). |
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Auth service & providers" href="/operate/auth/" description="How the protected admin routes are authenticated." />
+  <LinkCard title="meroctl reference" href="/operate/meroctl/" description="The CLI wrapping most of these endpoints." />
+  <LinkCard title="Production deployment" href="/operate/deployment/" description="Front the HTTP server with a reverse proxy and keep it private." />
+</CardGrid>

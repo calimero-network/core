@@ -5,6 +5,8 @@ sidebar:
   order: 8
 ---
 
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
 This page collects the load-bearing details behind the SDK's convenience
 macros: what `#[derive(Mergeable)]` actually generates, why a value stored in a
 map needs deterministic ids, how root-state merges round-trip through your WASM
@@ -379,3 +381,11 @@ A grab-bag of things that are easy to get wrong:
 
 For the runtime mechanics behind these, see [`xcall`](/protocol/xcall/) and
 [`crdt-internals`](/protocol/crdt-internals/).
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="CRDT internals" href="/protocol/crdt-internals/" description="The full merge-dispatch path and id derivation behind the SDK." />
+  <LinkCard title="Cross-context calls" href="/protocol/xcall/" description="The dispatch and namespace model behind env::xcall." />
+  <LinkCard title="Gotchas & sharp edges" href="/build/gotchas/" description="The non-obvious facts that bite once a replica diverges." />
+</CardGrid>
