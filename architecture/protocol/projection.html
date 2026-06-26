@@ -135,6 +135,59 @@ governance_hash = <span class="ty">H</span>( memberships ‖ admin ‖ policy �
 <p>A write authored <em>before</em> a member was revoked is judged against the access-control state that existed <em>before</em> the revocation — so it stays valid regardless of the order in which a peer happens to receive the write and the revocation. Authority is evaluated at the author's cut, never at the receiver's present. Chapter 6 builds the full membership and capability rules on top of this primitive.</p></div>
 </div>
 
+<div class="card ga" id="spec">
+<h2>Specification</h2>
+<p>The exact composition of the scope root. Every node must hash identical bytes in identical order, so the rules below are normative for interop. All integers are <strong>little-endian</strong>; every map is iterated in <strong>ascending key order</strong> (the determinism source).</p>
+
+<div class="typedef" aria-label="scope_root">
+<span class="field">scope_root</span> = <span class="ty">SHA-256</span>( entities_root ‖ acl_hash ‖ governance_hash )<span style="color:var(--text-dim)">&nbsp;// three 32-byte inputs</span>
+</div>
+
+<div class="step"><span class="n">important</span><h4>Two entity roots — pick the right one for the wire.</h4>
+<p>The <code>entities_root</code> input has two sources. The projection can hash its own entity map (a self-contained root, used in tests and local checks). But the <strong>convergence signal exchanged on the wire</strong> folds the <em>storage layer's Merkle root</em> as <code>entities_root</code>, with this projection's <code>acl_hash</code> and <code>governance_hash</code> on top. The storage Merkle root is authoritative for the data plane; the projection never re-hashes entity state for the wire signal. A second implementation must fold its <em>storage</em> root here, not a re-hash of the entity map.</p></div>
+
+<h3>entities_hash (projection-local data plane)</h3>
+<div class="typedef"><span class="comment">// for each (id, value) in entities, ascending by id</span><br>
+h.update( id )<span style="color:var(--text-dim)">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;// 32 bytes</span><br>
+h.update( u64_le(len(value)) )<br>
+h.update( value )</div>
+
+<h3>acl_hash (access-control plane)</h3>
+<div class="typedef"><span class="comment">// for each (object_id, writers) ascending; writers ascending by key</span><br>
+h.update( object_id )<span style="color:var(--text-dim)">&nbsp;// 32 bytes</span><br>
+<span class="kw">for</span> (writer, mask) <span class="kw">in</span> writers:<br>
+&nbsp;&nbsp;h.update( writer )<span style="color:var(--text-dim)">&nbsp;// 32 bytes</span><br>
+&nbsp;&nbsp;h.update( [mask.bits()] )<span style="color:var(--text-dim)">&nbsp;// 1 byte bitflag</span></div>
+
+<h3>governance_hash (membership + admin + policy + structure + caps)</h3>
+<div class="typedef"><span class="comment">// 1) groups — ascending; empty groups are skipped entirely</span><br>
+<span class="kw">for</span> (group, members) <span class="kw">in</span> groups, <span class="kw">if</span> members not empty:<br>
+&nbsp;&nbsp;h.update( group )<br>
+&nbsp;&nbsp;<span class="kw">for</span> (member, role) <span class="kw">in</span> members: h.update( member ‖ [role_byte] )<br>
+<span class="comment">// 2) root admin</span><br>
+h.update( admin ? [1] ‖ admin : [0] )<br>
+<span class="comment">// 3) policy</span><br>
+h.update( u64_le(len(policy)) ‖ policy )<br>
+<span class="comment">// 4) live subgroups — ascending; only those whose latest exists=true</span><br>
+<span class="kw">for</span> (child, slot) <span class="kw">in</span> subgroups, <span class="kw">if</span> slot.live:<br>
+&nbsp;&nbsp;h.update( child ‖ [parent if set] ‖ [restricted_byte] )<br>
+<span class="comment">// 5) capability plane — each map ascending</span><br>
+<span class="kw">for</span> (group, caps) <span class="kw">in</span> default_caps: h.update( group ‖ u32_le(caps) )<br>
+<span class="kw">for</span> ((group,member), caps) <span class="kw">in</span> member_caps: h.update( group ‖ member ‖ u32_le(caps) )<br>
+<span class="kw">for</span> (group, admin) <span class="kw">in</span> group_admin: h.update( group ‖ admin )</div>
+
+<h3>Stable role encoding</h3>
+<p>Roles hash to an explicit byte — fixed independently of any in-memory enum order, so the root survives refactors:</p>
+<table class="slots">
+<tr><th>Role</th><th><code>role_byte</code></th></tr>
+<tr><td><code>Admin</code></td><td>0</td></tr>
+<tr><td><code>Member</code></td><td>1</td></tr>
+<tr><td><code>ReadOnly</code></td><td>2</td></tr>
+<tr><td><code>ReadOnlyTee</code></td><td>3</td></tr>
+</table>
+<p class="page-subtitle" style="margin-top:0">Note the empty-group skip and the live-subgroup filter: materialized state must hash identically no matter how it was reached, so a phantom empty group or a deleted subgroup must never perturb the root.</p>
+</div>
+
 <div class="card gc">
 <h2>Where this leads</h2>
 <p>Chapters 3 and 4 are the core: a signed operation, a causally-ordered DAG, an order-independent fold to state, and a single scope root that makes convergence a hash comparison. Everything else is this machinery applied to a purpose — <strong>Chapter 5</strong> shows where data operations come from (running a WASM application), and <strong>Chapter 6</strong> shows how the governance planes encode membership and authority.</p>

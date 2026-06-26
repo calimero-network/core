@@ -49,17 +49,18 @@
 <span class="comment">// content address — deterministic on every node</span><br>
 <span class="field">id</span> = <span class="ty">SHA-256</span>(<br>
 &nbsp;&nbsp;scope&nbsp;&nbsp;‖<br>
-&nbsp;&nbsp;<span class="kw">len</span>(parents) ‖ sorted(parents)<span style="color:var(--text-dim)">&nbsp;&nbsp;// sorted ⇒ order of parents can't change the id</span><br>
+&nbsp;&nbsp;<span class="kw">u64_le</span>(count(parents)) ‖ sorted(parents)<span style="color:var(--text-dim)">&nbsp;// sorted ascending ⇒ order can't change the id</span><br>
 &nbsp;&nbsp;author ‖<br>
-&nbsp;&nbsp;hlc&nbsp;&nbsp;‖<br>
-&nbsp;&nbsp;encode(payload)<br>
+&nbsp;&nbsp;borsh(hlc) ‖<br>
+&nbsp;&nbsp;borsh(payload)<br>
 )
 </div>
 <p>Two details carry weight:</p>
 <ul>
-<li><strong>Parents are sorted</strong> before hashing, so the <em>set</em> of parents determines the id — the order an author happened to list them in cannot.</li>
-<li>The parent list is <strong>length-prefixed</strong>, so the boundary between "parents" and "author" is unambiguous and two different field layouts can never collide into the same preimage.</li>
+<li><strong>Parents are sorted</strong> (ascending, by their raw 32-byte value) before hashing, so the <em>set</em> of parents determines the id — the order an author happened to list them in cannot.</li>
+<li>The parent list is <strong>length-prefixed</strong> with a little-endian <code>u64</code> count, so the boundary between "parents" and "author" is unambiguous and two different field layouts can never collide into the same preimage.</li>
 </ul>
+<p>The signature is excluded from the preimage and is an Ed25519 signature over the resulting <code>id</code>. Exact byte layout and the reimplementer's checklist are in the <a href="#spec">specification</a> at the foot of this chapter.</p>
 </div>
 
 <div class="card gb">
@@ -166,6 +167,63 @@
 <div class="step"><span class="n">1</span><h4>Receive the operation and look at its parents.</h4><p>If every parent is already applied, the operation is ready. If any parent is missing, store it in the pending buffer keyed by the missing parents and stop — it will be revisited.</p></div>
 <div class="step"><span class="n">2</span><h4>Apply a ready operation by folding it into the projection.</h4><p>This is the deterministic step from Chapter 4. Applying never has side effects on consensus — it only updates materialized state and advances the heads.</p></div>
 <div class="step"><span class="n">3</span><h4>Cascade.</h4><p>Applying an operation can unblock pending children whose last missing parent just arrived. Scan the buffer, apply any now-ready operations, and repeat until nothing new becomes ready. This is how a backfilled history snaps into place in one pass.</p></div>
+</div>
+
+<div class="card ga" id="spec">
+<h2>Specification</h2>
+<p>The exact wire-level details a second implementation must match byte-for-byte to compute identical operation ids. All multi-byte integers are <strong>little-endian</strong>; composite fields use <strong>Borsh</strong> encoding.</p>
+
+<h3>Id preimage byte layout</h3>
+<table class="slots">
+<tr><th>Field</th><th>Bytes</th><th>Encoding</th></tr>
+<tr><td><code>scope</code></td><td>32</td><td>raw <code>ScopeId</code></td></tr>
+<tr><td>parent count</td><td>8</td><td><code>u64</code> little-endian</td></tr>
+<tr><td><code>parents</code></td><td>32 × n</td><td>each a 32-byte hash, <strong>sorted ascending</strong></td></tr>
+<tr><td><code>author</code></td><td>32</td><td>raw Ed25519 public key</td></tr>
+<tr><td><code>hlc</code></td><td>borsh</td><td>hybrid timestamp (below)</td></tr>
+<tr><td><code>payload</code></td><td>borsh</td><td>enum: 1-byte variant tag, then fields in order</td></tr>
+</table>
+<div class="typedef" aria-label="compute_id algorithm">
+<span class="comment">// id = SHA-256 over the concatenation, in this exact order</span><br>
+sorted = sort_ascending(parents)<br>
+h = Sha256()<br>
+h.update( scope )<span style="color:var(--text-dim)">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;// 32 bytes</span><br>
+h.update( u64_le(len(sorted)) )<span style="color:var(--text-dim)">&nbsp;// 8 bytes</span><br>
+<span class="kw">for</span> p <span class="kw">in</span> sorted: h.update( p )<span style="color:var(--text-dim)">&nbsp;// 32 bytes each</span><br>
+h.update( author )<span style="color:var(--text-dim)">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;// 32 bytes</span><br>
+h.update( borsh(hlc) )<br>
+h.update( borsh(payload) )<br>
+id = h.finalize()<span style="color:var(--text-dim)">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;// 32 bytes</span><br>
+signature = Ed25519_sign( member_secret, id )
+</div>
+<p class="page-subtitle" style="margin-top:0">Borsh reminder for reimplementers: a <code>Vec&lt;u8&gt;</code> is a <code>u32</code> little-endian length followed by the bytes; a <code>BTreeMap</code> is a <code>u32</code> length followed by entries in <strong>ascending key order</strong>; an enum is a single-byte variant index then its fields.</p>
+
+<h3>Payload variants</h3>
+<table class="slots">
+<tr><th>Plane</th><th>Variant</th><th>Fields</th></tr>
+<tr><td rowspan="2">Data</td><td><code>Put</code></td><td><code>entity: Id</code>, <code>value: Vec&lt;u8&gt;</code></td></tr>
+<tr><td><code>Delete</code></td><td><code>entity: Id</code></td></tr>
+<tr><td>Access</td><td><code>SetWriters</code></td><td><code>object: Id</code>, <code>writers: BTreeMap&lt;PublicKey, OpMask&gt;</code> (mask is a 1-byte bitflag)</td></tr>
+<tr><td rowspan="2">Membership</td><td><code>MemberAdded</code></td><td><code>group: ContextGroupId</code>, <code>member: PublicKey</code>, <code>role: GroupMemberRole</code></td></tr>
+<tr><td><code>MemberRemoved</code></td><td><code>group: ContextGroupId</code>, <code>member: PublicKey</code></td></tr>
+<tr><td rowspan="5">Admin / structure</td><td><code>AdminChanged</code></td><td><code>new_admin: PublicKey</code></td></tr>
+<tr><td><code>PolicyUpdated</code></td><td><code>policy_bytes: Vec&lt;u8&gt;</code></td></tr>
+<tr><td><code>SubgroupCreated</code></td><td><code>child: ScopeId</code>, <code>parent: ScopeId</code>, <code>restricted: bool</code>, <code>admin: PublicKey</code></td></tr>
+<tr><td><code>SubgroupReparented</code> / <code>SubgroupDeleted</code></td><td><code>child, new_parent</code> / <code>scope</code></td></tr>
+<tr><td><code>SubgroupVisibilitySet</code></td><td><code>scope: ScopeId</code>, <code>restricted: bool</code></td></tr>
+<tr><td rowspan="2">Capability</td><td><code>DefaultCapabilitiesSet</code></td><td><code>group: ContextGroupId</code>, <code>capabilities: u32</code></td></tr>
+<tr><td><code>MemberCapabilitySet</code></td><td><code>group, member, capabilities: u32</code></td></tr>
+<tr><td>Graph</td><td><code>Noop</code></td><td>— (folds to nothing)</td></tr>
+</table>
+
+<h3>The hybrid logical clock</h3>
+<p>The <code>hlc</code> is a hybrid logical clock: a wall-clock-ish value that is also nudged forward on observation, so it stays causally monotonic without depending on synchronized clocks.</p>
+<ul>
+<li><strong>Timestamp</strong> — a 64-bit NTP64 value (RFC-5909): high 32 bits seconds, low 32 bits fraction, with the <em>low 16 bits</em> serving as a logical counter that increments when two events share a physical instant.</li>
+<li><strong>Node id</strong> — a <code>u128</code> unique per clock instance, making every timestamp globally unique without coordination and giving a final deterministic tiebreak.</li>
+<li><strong>Anti-drift</strong> — a timestamp more than a few seconds ahead of local time is rejected, bounding the damage a skewed peer can do.</li>
+</ul>
+<p>Comparison is lexicographic over <em>(timestamp, node&nbsp;id)</em>. Governance operations are authored with a <strong>zero</strong> hlc, which is why their ordering falls to the <em>generation</em> component of the fold stamp in Chapter 4 rather than to wall-clock time.</p>
 </div>
 
 <div class="card gc">
