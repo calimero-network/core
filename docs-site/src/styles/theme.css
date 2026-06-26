@@ -1,0 +1,65 @@
+/* Calimero brand theme for Starlight — dark-first, lime accent.
+ * Applies the design-system fixes from the roadmap: lifted dim-text contrast,
+ * accent reserved as punctuation, and the animated-diagram engine styles so the
+ * bespoke SVG island renders identically to the old site. */
+
+:root {
+  --sl-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --sl-font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+/* ---- Dark theme (default) ---- */
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #1a2e0b;
+  --sl-color-accent: #84cc16;        /* calmer than #a5ff11 — accent as punctuation */
+  --sl-color-accent-high: #d9f99d;
+
+  --sl-color-white: #f0f6fc;
+  --sl-color-gray-1: #e6edf3;
+  --sl-color-gray-2: #c9d1d9;
+  --sl-color-gray-3: #a8b1ba;        /* lifted for WCAG AA on dark surfaces */
+  --sl-color-gray-4: #7d8590;
+  --sl-color-gray-5: #444c56;
+  --sl-color-gray-6: #21262d;
+  --sl-color-gray-7: #161b22;
+  --sl-color-black: #0d1117;
+
+  --sl-color-bg: #0d1117;
+  --sl-color-bg-nav: #0f141aee;
+  --sl-color-bg-sidebar: #0f141a;
+  --sl-color-hairline-shade: #21262d;
+}
+
+/* ---- Light theme (kept honest — accent darkened for contrast) ---- */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #d7eeb0;
+  --sl-color-accent: #4d7c0f;
+  --sl-color-accent-high: #1a2e05;
+}
+
+/* A touch more air in prose; restrained accent on links. */
+.sl-markdown-content { line-height: 1.7; }
+.sl-markdown-content a { text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+/* ---- Animated diagram engine (ported from the bespoke site) ---- */
+.diagram-container { overflow-x: auto; margin: 1.25rem 0; }
+.diagram-container svg { border-radius: 10px; max-height: 75vh; }
+.diagram-container.seq svg { min-width: 700px; }
+.seq-step { opacity: 0; }
+.diagram-container.animating .seq-step {
+  animation: stepIn .4s ease-out forwards;
+  animation-delay: calc(var(--step-i) * .35s);
+}
+@keyframes stepIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.diagram-tools { display: flex; justify-content: flex-end; margin-bottom: .5rem; }
+.replay-btn {
+  padding: 6px 16px; border: 1px solid var(--sl-color-gray-5);
+  background: var(--sl-color-gray-6); color: var(--sl-color-gray-2);
+  font-family: var(--sl-font-mono); font-size: .74rem; border-radius: 8px; cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.replay-btn:hover { border-color: var(--sl-color-accent); color: var(--sl-color-accent); }
+@media (prefers-reduced-motion: reduce) {
+  .seq-step { opacity: 1; }
+  .diagram-container.animating .seq-step { animation: none; }
+}

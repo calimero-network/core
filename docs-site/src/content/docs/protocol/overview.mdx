@@ -1,0 +1,80 @@
+---
+title: Protocol Reference — Overview
+description: How a Calimero node works, told as the life of one operation — enough to reimplement the protocol from scratch.
+sidebar:
+  label: Overview
+  order: 1
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+This is the **implementation reference** — a design-level description of the
+Calimero protocol aimed at building an independent node. It follows one
+**operation** from birth to convergence rather than touring the Rust crates.
+
+## The one idea everything hangs on
+
+A Calimero node runs **sandboxed WASM applications** over **replicated,
+causally-consistent shared state**. There is **no global consensus and no
+quorum**. Every change — a data write, an access-control change, a membership
+change, an admin action — is a **signed operation** in a **content-addressed
+DAG**.
+
+Each node **folds that DAG deterministically** into materialized state. Because
+the fold is order-independent (last-writer-wins per slot, keyed on a hybrid
+clock), any two nodes that have seen the same set of operations compute the same
+state and the same **scope root** hash. Nodes don't _prevent_ divergence — they
+_detect_ it by comparing scope roots, and _heal_ it by syncing missing
+operations.
+
+> Hold onto that sentence — _"a signed op DAG that folds to a state plus a root
+> hash, with divergence detected, not prevented"_ — and every chapter is a
+> detail of it.
+
+## The life of an operation
+
+The whole reference follows one operation from birth to convergence. This is the
+spine — and the diagram below is the **bespoke animated engine running as an
+Astro island**, the thing this spike set out to prove:
+
+<SeqDiagram
+  id="d-op-life"
+  title="The life of an operation"
+  lanes={[
+    { label: 'Author node', color: '#3fb950' },
+    { label: 'Gossip (scope topic)', color: '#8b5cf6' },
+    { label: 'Peer node', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'app execution / governance action' },
+    { from: 0, to: 0, label: 'build Op { scope, parents, hlc, payload }' },
+    { from: 0, to: 0, label: 'sign id with member key' },
+    { from: 0, to: 0, label: 'append to local DAG → fold → scope_root' },
+    { from: 0, to: 1, label: 'broadcast Op (encrypted under scope key)', color: '#84cc16' },
+    { from: 1, to: 2, label: 'deliver Op' },
+    { from: 2, to: 2, label: 'verify signature' },
+    { from: 2, to: 2, label: 'authorize at the causal cut' },
+    { from: 2, to: 2, label: 'decrypt; buffer if parent / key missing' },
+    { from: 2, to: 2, label: 'append to DAG → fold → scope_root′' },
+    { type: 'divider', label: 'scope_root == scope_root′  ⇒  converged' },
+  ]}
+/>
+
+The write half (build → sign → persist → broadcast), the receive half (verify →
+authorize → decrypt → fold), and the repair channel (compare roots → transfer
+what differs) are the substance of the full reference — which this spike will
+migrate chapter by chapter from the existing `architecture/protocol/` pages into
+MDX like this one.
+
+## What this spike demonstrates
+
+- **Astro Starlight** shell — built-in sidebar, search, dark/light, responsive,
+  fast — replacing the bespoke `nav.js` + custom search.
+- **The Calimero dark theme** ported into Starlight's tokens (lime accent,
+  lifted text contrast).
+- **MDX authoring** — this page is Markdown; prose diffs cleanly in PRs.
+- **The animated diagram engine as an island** — same step-cascade and Replay
+  button as the old site, now mounted in a component, content-authored from data.
