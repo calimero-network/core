@@ -11,6 +11,7 @@ use rand::{thread_rng, Rng};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::constants::MAX_BLOB_STREAM_SIZE_BYTES;
 use super::manager::SyncManager;
 use super::tracking::Sequencer;
 
@@ -86,10 +87,16 @@ impl SyncManager {
 
         let (tx, mut rx) = mpsc::channel(1);
 
-        let expected_size = if size > 0 { Some(size) } else { None };
+        // Always cap the inbound stream. A peer advertising size==0 (unknown)
+        // still gets a hard ceiling so a rogue sender cannot stream unbounded data.
+        let size_limit = if size > 0 {
+            size.min(MAX_BLOB_STREAM_SIZE_BYTES)
+        } else {
+            MAX_BLOB_STREAM_SIZE_BYTES
+        };
         let add_task = self.node_client.add_blob(
             poll_fn(|cx| rx.poll_recv(cx)).into_async_read(),
-            expected_size,
+            Some(size_limit),
             None,
         );
 
@@ -130,6 +137,11 @@ impl SyncManager {
         let ((received_blob_id, _), _) = tokio::try_join!(add_task, read_task)?;
 
         if received_blob_id != blob_id {
+            // Discard the incorrectly-hashed blob before propagating the error
+            // so we don't persist corrupt data.
+            if let Err(err) = self.node_client.delete_blob(received_blob_id).await {
+                warn!(%received_blob_id, %err, "failed to delete mismatched blob");
+            }
             bail!(
                 "unexpected blob id: expected {}, got {}",
                 blob_id,
