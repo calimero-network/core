@@ -5,7 +5,7 @@ use super::context::GroupApplyCtx;
 use crate::CapabilitiesRepository;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
@@ -13,6 +13,9 @@ pub(crate) fn apply(
     member: &PublicKey,
     capability: &u8,
 ) -> EyreResult<()> {
+    if *capability == 0 {
+        bail!("ContextCapabilityRevoked: capability bitmask must not be zero");
+    }
     let signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();

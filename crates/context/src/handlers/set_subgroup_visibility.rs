@@ -55,11 +55,6 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
             return ActorResponse::reply(Err(err));
         }
 
-        let mode_u8 = match subgroup_visibility {
-            calimero_context_config::VisibilityMode::Open => 0u8,
-            calimero_context_config::VisibilityMode::Restricted => 1u8,
-        };
-
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
@@ -73,7 +68,7 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
                     &ack_router,
                     &group_id,
                     &sk,
-                    GroupOp::SubgroupVisibilitySet { mode: mode_u8 },
+                    GroupOp::SubgroupVisibilitySet { mode: subgroup_visibility },
                 )
                 .await?;
                 report.observe("set_subgroup_visibility", "SubgroupVisibilitySet");

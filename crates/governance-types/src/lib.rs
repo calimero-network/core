@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_context_config::types::SignedGroupOpenInvitation;
+use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -204,10 +205,10 @@ pub enum GroupOp {
     },
     /// Unregister a context from this group.
     ContextDetached { context_id: ContextId },
-    /// Subgroup visibility (`0` = Open, `1` = Restricted). When `Open`,
-    /// parent-group members holding `CAN_JOIN_OPEN_SUBGROUPS` are inherited
-    /// as members of this subgroup. See [`crate::group::SetSubgroupVisibilityRequest`].
-    SubgroupVisibilitySet { mode: u8 },
+    /// Subgroup visibility. When `Open`, parent-group members holding
+    /// `CAN_JOIN_OPEN_SUBGROUPS` are inherited as members of this subgroup.
+    /// See [`crate::group::SetSubgroupVisibilityRequest`].
+    SubgroupVisibilitySet { mode: VisibilityMode },
     /// Wholly replace the metadata record (name + opaque `data`) of the group
     /// itself (a namespace is a root group, so this covers it).
     /// **Signer:** group admin or holder of `CAN_MANAGE_METADATA`.
