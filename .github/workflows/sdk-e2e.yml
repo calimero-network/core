@@ -38,7 +38,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned to a commit SHA (supply-chain hygiene); comment tracks the tag.
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache Rust dependencies
         uses: actions/cache@v3
