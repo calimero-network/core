@@ -11,6 +11,7 @@ import EntityStorage from '../../../components/diagrams/EntityStorage.astro';
 import StateProduction from '../../../components/diagrams/StateProduction.astro';
 import DagVsState from '../../../components/diagrams/DagVsState.astro';
 import StoreLayout from '../../../components/diagrams/StoreLayout.astro';
+import ContextInMemory from '../../../components/diagrams/ContextInMemory.astro';
 
 This page answers, with diagrams, the six "what does it actually look like"
 questions: the **DAG vs the state**, how the **CRDT data is stored**, what the
@@ -135,6 +136,58 @@ different keys, different merge rules.
   a peer compares during sync — so a node detects "we disagree on the data" and
   "we disagree on membership" through the same hash check. See
   [Governance](/protocol/governance/) and the [Storage schema](/protocol/storage/).
+
+## Worked example: an org in memory
+
+To make the whole layout concrete, picture one org. **Acme** owns the namespace
+`acme` (its root governance scope, `acme 0xa0…`). Under it sits a group
+**Engineering** (`eng 0xe9…`), and inside Engineering lives the chat context
+**deploys-chat** (`ctx 0x7a…`) — the same `msgs: UnorderedMap<String, Message>`
+app from the top of this page. Alice is an admin at `acme`; Bob is a member of
+`eng`. Each of these is a [scope in the same tree](/protocol/concepts/), and
+each lays its records into these column families under its own id. (Hashes and
+ids below are short illustrative hex, not real digests.)
+
+### Governance scopes (namespace + group)
+
+Membership and capabilities never live in the context — they live in the
+`Group` column family, keyed by the **scope id** (the namespace id or group id),
+each record distinguished by a one-byte prefix. Here is what `acme` and `eng`
+actually hold:
+
+| Key (`Group` CF) | Layout | For our org | Value |
+| --- | --- | --- | --- |
+| `GroupMeta` | `0x20 ‖ group_id` | `0x20 ‖ acme 0xa0…` | namespace meta `{ admin_identity: Alice, … }` |
+| `GroupMeta` | `0x20 ‖ group_id` | `0x20 ‖ eng 0xe9…` | group meta `{ target_application_id, … }` |
+| `GroupMember` | `0x21 ‖ group_id ‖ identity` | `0x21 ‖ acme 0xa0… ‖ Alice` | `{ role: Admin, … }` |
+| `GroupMember` | `0x21 ‖ group_id ‖ identity` | `0x21 ‖ eng 0xe9… ‖ Bob` | `{ role: Member, … }` |
+| `MemberCapability` | `0x26 ‖ group_id ‖ identity` | `0x26 ‖ eng 0xe9… ‖ Bob` | `{ capabilities: <bitfield> }` |
+| `GroupOpLog` | `0x30 ‖ group_id ‖ seq(8 BE)` | `0x30 ‖ eng 0xe9… ‖ 0…07` | `Borsh(SignedGroupOp)` |
+
+A **namespace is just a root group**, so it carries the same `0x20`/`0x21`/`0x26`/`0x30`
+records — plus a couple it owns alone: its node-identity keypair under
+`NamespaceIdentity` (`0x36 ‖ namespace_id`) and its governance ops under
+`NamespaceGovOp` (`0x38 ‖ namespace_id ‖ delta_id`). The `GroupOpLog` sequence is
+a **big-endian** `u64` so the log sorts in numeric order; every other component
+is a raw 32-byte id. The point: **governance lives in the `Group` CF, keyed by
+scope id** — read all of `eng`'s membership with one range scan over `0x21 ‖ eng…`.
+
+### The context scope
+
+`deploys-chat` adds no governance rows of its own. Its footprint is purely
+**`State`** entities, one **`Meta`** record, and its own **`UnifiedOp`** DAG —
+every row keyed by the context id:
+
+<ContextInMemory />
+
+So the context's data is just `State` / `Meta` / `UnifiedOp` rows under
+`ctx 0x7a…`, while *who may write them* — Alice, Bob, and their roles — comes
+entirely from the Engineering group above it. The context stores no member list.
+
+Every scope has the same uniform shape: **its own id + its own records (in these
+CFs) + its own `scope_root`.** The namespace, the group, and the context differ
+only in which records they carry, not in how they are laid out — which is exactly
+why one sync engine reconciles governance and application data alike.
 
 ## Next steps
 
