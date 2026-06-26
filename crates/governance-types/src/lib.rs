@@ -21,6 +21,7 @@
 //! group-scoped ops they cannot decrypt.
 
 use std::collections::BTreeMap;
+use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_context_config::types::SignedGroupOpenInvitation;
@@ -99,6 +100,38 @@ pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 8;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
+
+/// A non-zero `u8` bitmask representing per-context member capabilities.
+///
+/// Validated at Borsh deserialization time: a zero value is rejected on the
+/// wire, making it impossible to construct an invalid capability op from
+/// received bytes.
+#[derive(Copy, Clone, Debug, BorshSerialize)]
+pub struct ContextCapabilityBits(u8);
+
+impl ContextCapabilityBits {
+    /// Construct from a raw bitmask, returning `None` if `bits == 0`.
+    pub fn new(bits: u8) -> Option<Self> {
+        if bits == 0 { None } else { Some(Self(bits)) }
+    }
+
+    pub fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl BorshDeserialize for ContextCapabilityBits {
+    fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        let bits = u8::deserialize_reader(reader)?;
+        if bits == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ContextCapabilityBits: capability bitmask must not be zero",
+            ));
+        }
+        Ok(Self(bits))
+    }
+}
 
 /// Group mutation for local governance (signed, gossip-replicated).
 ///
@@ -239,13 +272,13 @@ pub enum GroupOp {
     ContextCapabilityGranted {
         context_id: ContextId,
         member: PublicKey,
-        capability: u8,
+        capability: ContextCapabilityBits,
     },
     /// Revoke a capability from a member for a specific context.
     ContextCapabilityRevoked {
         context_id: ContextId,
         member: PublicKey,
-        capability: u8,
+        capability: ContextCapabilityBits,
     },
     /// TEE admission policy: defines which TEE nodes can auto-join the group.
     /// Only admins can set this policy.
