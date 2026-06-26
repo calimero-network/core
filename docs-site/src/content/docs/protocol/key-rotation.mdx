@@ -227,7 +227,9 @@ Only then does the responder load the current key, ECDH-wrap it for the requeste
   ]}
 />
 
-When a key finally lands, `apply_received_group_key` stores it and replays any encrypted ops that were buffered awaiting it — governance ops that had been frozen as undecodable now decode to their real payload, so the membership projection catches up. The `responder_identity` rides along as the trust anchor a keyless bootstrap joiner uses to seed the namespace admin (it replaces the old on-DAG `KeyDelivery` signer for that one bootstrap case).
+When a key finally lands, `apply_received_group_key` stores it and replays any encrypted ops that were buffered awaiting it — governance ops that had been frozen as undecodable now decode to their real payload, so the membership projection catches up.
+
+A keyless bootstrap joiner does **not** trust the key deliverer as the namespace admin. Instead it seeds the namespace root with an all-zeros **placeholder admin** that grants authority to nobody; the replayable `NamespaceCreated` genesis op later overwrites the placeholder with the real founder, and the two converge regardless of arrival order (seed-first or genesis-first). The all-zeros key is a safe sentinel because it decodes outside the Ed25519 prime-order subgroup, so no real key can collide. This replaced an earlier scheme that trusted the `responder_identity` to seed the admin — which could pin the wrong admin and wedge backfill.
 
 <Aside type="note">
 The same pull answers the rotation case too. A member that was _offline_ during a `MemberRemoved` rotation comes back lacking the new key; on its next sync it appears in `namespace_groups_awaiting_key` and pulls the new epoch key from any current holder. Recovery is one self-healing loop, not a special path per delivery type.

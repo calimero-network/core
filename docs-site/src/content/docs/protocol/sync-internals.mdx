@@ -152,12 +152,16 @@ LevelWiseResponse {
 
 The fallback for a node so far behind that incremental comparison is not worth it — a fresh joiner, or one long offline. It transfers the whole materialized scope as compressed pages.
 
-A node first negotiates a cutoff with `SnapshotBoundaryRequest { context_id, requested_cutoff_timestamp }`, answered by `SnapshotBoundaryResponse { boundary_timestamp, boundary_root_hash, dag_heads }` (`wire.rs:366`) — fixing the root the pages will reconstruct. It then streams with `SnapshotStreamRequest` (`wire.rs:158`):
+A node first asks for a boundary with `SnapshotBoundaryRequest { context_id, requested_cutoff_timestamp }`, answered by `SnapshotBoundaryResponse { boundary_timestamp, boundary_root_hash, dag_heads }` (`wire.rs:366`) — fixing the root the pages will reconstruct. It then streams with `SnapshotStreamRequest` (`wire.rs:158`):
+
+:::caution[The cutoff is not honored]
+Despite the field name, `requested_cutoff_timestamp` is **ignored** — the requester always sends `None` and the responder always answers with its **current live `root_hash`** and `time_now()`. There is no historical-snapshot negotiation; you get the responder's state as of the moment it replies. (`snapshot.rs` — the parameter is `_requested_cutoff_timestamp`.)
+:::
 
 ```rust
 SnapshotStreamRequest {
   context_id,
-  boundary_root_hash: Hash,       // the negotiated boundary
+  boundary_root_hash: Hash,       // the responder's current root (from the boundary response)
   page_limit: u16,                // max pages per response burst
   byte_limit: u32,                // max bytes per response
   resume_cursor: Option<Vec<u8>>, // pagination cursor

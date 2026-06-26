@@ -140,7 +140,7 @@ The reference reuses a small, load-bearing vocabulary. This page collects those 
 
 **Migration** — A deterministic, pure transform that reshapes a context's existing state into a new schema when a code release changes the state shape. It runs once per node on first access and is re-derived locally on every node — the migrated state is never sent over sync. See [Application Upgrades & Migration](/protocol/upgrades/).
 
-**Schema / app version** — The markers that identify which bytecode and schema a node runs: `state_version` (the embedded schema generation, from `#[app::state(version = N)]`) and `app_key` (= `blob_id` of the bytecode). Both advance on each release while the application id stays version-stable. See [Application Upgrades & Migration](/protocol/upgrades/).
+**Schema / app version** — The markers that identify which bytecode and schema a node runs: `state_version` (the embedded schema generation, from `#[app::state(version = N)]`) and the governance `app_key` (the `blob_id` of the active bytecode). Both advance on each release while the **application id** stays version-stable. Don't confuse that per-release `app_key` field with the Rust `AppKey` type — `(package, signerId)` — which is the version-stable application identity, not the bytecode pointer. See [Application Upgrades & Migration](/protocol/upgrades/).
 
 **Cascade upgrade** — A single governance operation (`GroupOp::CascadeUpgrade`) by which an admin atomically retargets a group and every matching descendant to new bytecode plus a migration, stamping one `cascade_hlc` fence boundary so every node records an identical fence. See [Application Upgrades & Migration](/protocol/upgrades/).
 

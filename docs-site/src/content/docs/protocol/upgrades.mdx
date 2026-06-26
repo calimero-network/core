@@ -47,11 +47,13 @@ pub struct MigrationEdgeAbi {
 Retaining multiple edges lets a node that is several versions behind replay
 `v1→v2` then `v2→v3` rather than jumping the latest edge against older state.
 
-<Aside type="note" title="Not grounded: a `minRuntimeVersion` field">
-This chapter omits any node-runtime version floor (a `minRuntimeVersion` /
-`min_runtime_version` field). No such field exists in the current codebase — the
-version surface is the `state_version` / `app_key` pair above. If a runtime-version
-gate is added later, document it here.
+<Aside type="note" title="The `minRuntimeVersion` floor">
+Separate from the `state_version` / `app_key` schema surface above, a signed
+bundle manifest carries an optional **`minRuntimeVersion`** — a floor on the
+node runtime. It is enforced at install: if `min_runtime_version` exceeds the
+node's current runtime version the install **bails** (`"bundle requires runtime
+version X but current runtime is Y"`). This gate applies to signed and
+dev-bundle installs, not to a raw `.wasm` install.
 </Aside>
 
 ## What a migration is
@@ -115,7 +117,7 @@ Which moves are safe depends on the field type:
 
 | Category | Types | In a migration |
 | --- | --- | --- |
-| **Convergent** | `UnorderedMap`, `Vector`, `UnorderedSet`, `UserStorage`, `FrozenStorage` | key/content-addressed — rebuild freely; auto-converges |
+| **Convergent** | `UnorderedMap`, `Vector`, `UnorderedSet`, `SortedMap`, `SortedSet`, `UserStorage`, `FrozenStorage` | key/content-addressed — rebuild freely; auto-converges |
 | **Replayable** | `Counter`/`GCounter`/`PNCounter`, `RGA` | carry across, or replay deterministically with the `*_for(id, …)` APIs |
 | **Identity-gated** | `AuthoredMap`, `AuthoredVector`, `SharedStorage` | carry-through only — re-inserting stamps *this* node as owner and diverges |
 

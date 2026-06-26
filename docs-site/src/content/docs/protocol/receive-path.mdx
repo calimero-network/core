@@ -42,7 +42,7 @@ An operation arrives — from a gossip broadcast or a sync stream; the path is i
 
 2. **Authorize at the author's cut.** — Resolve the author's membership and writer rights at the operation's causal cut — the governance state they referenced — and check they were allowed to write it (Chapters 4 and 6). Because the verdict is computed at the cut, it is the same on every node regardless of receive order: forward-only authority.
 
-3. **Decrypt — or buffer for the key.** — Decrypt the payload with the scope key. A node that is a member but hasn't yet received the key (the join race from Chapter 6) holds the operation in a **key-pending** buffer and drains it the moment the wrapped key arrives.
+3. **Decrypt — or wait for the key.** — Decrypt the payload with the scope key. The wait differs by plane. A **governance op** whose key hasn't arrived is held undecodable and replayed the moment the wrapped key lands (`apply_received_group_key`). A **state delta** does _not_ wait indefinitely: the node polls briefly (~3s) for the key, then drops the delta and relies on gossip rebroadcast plus the hash heartbeat to redeliver it once the key is in hand — there is no persistent per-delta key-pending buffer on the data plane.
 
 4. **Insert into the DAG — or buffer for parents.** — If all parents are applied, the operation is ready. If a parent hasn't arrived (gossip delivered a child before its parent), it waits in the **pending** buffer keyed by the missing parent — the same buffer-and-cascade from Chapter 3.
 
