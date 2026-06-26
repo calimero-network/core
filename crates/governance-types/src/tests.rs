@@ -239,7 +239,28 @@ const GOLDEN_GROUP_OP_CASCADE_GROUP_MIGRATION_SET: &[u8] = &[
     0, // migration = None
 ];
 
-/// GroupOp ordinal 25 — CascadeUpgrade (all zero; HybridTimestamp::zero() is 24 bytes)
+/// Borsh encoding of `HybridTimestamp::zero()` — 24 bytes.
+///
+/// Verified by `hlc_zero_golden_bytes_are_self_consistent` below; kept as a
+/// named constant so both the CascadeUpgrade golden vector and the verifier
+/// test reference the same source of truth.
+const GOLDEN_HLC_ZERO: &[u8] = &[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+#[test]
+fn hlc_zero_golden_bytes_are_self_consistent() {
+    // Pins the Borsh encoding of HybridTimestamp::zero() so that if the
+    // HybridTimestamp layout changes the constant above is updated together
+    // with the CascadeUpgrade golden vector that embeds it.
+    let actual = borsh::to_vec(&HybridTimestamp::zero()).expect("serialize HLC zero");
+    assert_eq!(
+        actual.as_slice(),
+        GOLDEN_HLC_ZERO,
+        "HybridTimestamp::zero() Borsh encoding changed — update GOLDEN_HLC_ZERO \
+         and GOLDEN_GROUP_OP_CASCADE_UPGRADE to match the new layout"
+    );
+}
+
+/// GroupOp ordinal 25 — CascadeUpgrade (all zero fields; HybridTimestamp::zero() via GOLDEN_HLC_ZERO)
 const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
     25, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -249,7 +270,7 @@ const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // target_application_id
     0, // migration = None
-    // HybridTimestamp::zero() = 24 bytes (verified by existing cascade_upgrade_back_compat test)
+    // HybridTimestamp::zero() — same bytes as GOLDEN_HLC_ZERO (verified by hlc_zero_golden_bytes_are_self_consistent)
     0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
@@ -257,24 +278,31 @@ const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
 fn group_op_discriminants_are_golden() {
     // Decode each frozen byte vector and verify the correct variant is returned.
     // A mid-enum insertion shifts ordinals so the wrong variant is decoded (or
-    // decoding fails) — the assert catches both cases.
+    // decoding fails). Failures are accumulated so ALL mismatches are reported
+    // in one run rather than stopping at the first panic.
+    let mut failures: Vec<String> = Vec::new();
     macro_rules! check_group_op {
         ($golden:expr, $pat:pat, $discriminant:expr) => {{
-            assert_eq!(
-                $golden[0], $discriminant,
-                "GroupOp variant discriminant must stay at ordinal {}; \
-                 a leading-byte change means a variant was inserted mid-enum",
-                $discriminant
-            );
-            let decoded: GroupOp =
-                borsh::from_slice($golden).expect("frozen GroupOp bytes must decode cleanly");
-            assert!(
-                matches!(decoded, $pat),
-                "frozen bytes with discriminant {} decoded as {:?} — \
-                 a variant was inserted before this one, shifting its ordinal",
-                $discriminant,
-                decoded
-            );
+            if $golden[0] != $discriminant {
+                failures.push(format!(
+                    "GroupOp ordinal {}: leading byte is {}, expected {} — \
+                     a variant was inserted mid-enum",
+                    $discriminant, $golden[0], $discriminant
+                ));
+            } else {
+                match borsh::from_slice::<GroupOp>($golden) {
+                    Err(e) => failures.push(format!(
+                        "GroupOp ordinal {}: decode failed: {e}",
+                        $discriminant
+                    )),
+                    Ok(decoded) if !matches!(decoded, $pat) => failures.push(format!(
+                        "GroupOp ordinal {}: decoded as {:?} — \
+                         a variant was inserted before this one, shifting its ordinal",
+                        $discriminant, decoded
+                    )),
+                    Ok(_) => {}
+                }
+            }
         }};
     }
 
@@ -383,6 +411,13 @@ fn group_op_discriminants_are_golden() {
         GOLDEN_GROUP_OP_CASCADE_UPGRADE,
         GroupOp::CascadeUpgrade { .. },
         25
+    );
+
+    assert!(
+        failures.is_empty(),
+        "GroupOp discriminant golden failures ({} total):\n{}",
+        failures.len(),
+        failures.join("\n")
     );
 }
 
@@ -527,27 +562,37 @@ const GOLDEN_ROOT_OP_NAMESPACE_CREATED: &[u8] = &[
 fn root_op_discriminants_are_golden() {
     // bytes[0] = NamespaceOp::Root discriminant (always 0).
     // bytes[1] = RootOp variant discriminant (pinned here).
+    // Failures are accumulated so ALL mismatches are reported in one run.
+    let mut failures: Vec<String> = Vec::new();
     macro_rules! check_root_op {
         ($golden:expr, $pat:pat, $root_discriminant:expr) => {{
-            assert_eq!(
-                $golden[0], 0u8,
-                "NamespaceOp::Root must keep discriminant 0 (frozen bytes assume it)"
-            );
-            assert_eq!(
-                $golden[1], $root_discriminant,
-                "RootOp variant discriminant must stay at ordinal {}; \
-                 a changed leading byte means a variant was inserted mid-enum",
-                $root_discriminant
-            );
-            let decoded: NamespaceOp =
-                borsh::from_slice($golden).expect("frozen RootOp bytes must decode cleanly");
-            assert!(
-                matches!(decoded, NamespaceOp::Root($pat)),
-                "frozen bytes with RootOp discriminant {} decoded as {:?} — \
-                 a variant was inserted before this one, shifting its ordinal",
-                $root_discriminant,
-                decoded
-            );
+            if $golden[0] != 0u8 {
+                failures.push(format!(
+                    "RootOp ordinal {}: NamespaceOp::Root byte is {}, expected 0",
+                    $root_discriminant, $golden[0]
+                ));
+            } else if $golden[1] != $root_discriminant {
+                failures.push(format!(
+                    "RootOp ordinal {}: leading byte is {}, expected {} — \
+                     a variant was inserted mid-enum",
+                    $root_discriminant, $golden[1], $root_discriminant
+                ));
+            } else {
+                match borsh::from_slice::<NamespaceOp>($golden) {
+                    Err(e) => failures.push(format!(
+                        "RootOp ordinal {}: decode failed: {e}",
+                        $root_discriminant
+                    )),
+                    Ok(decoded) if !matches!(decoded, NamespaceOp::Root($pat)) => {
+                        failures.push(format!(
+                            "RootOp ordinal {}: decoded as {:?} — \
+                             a variant was inserted before this one, shifting its ordinal",
+                            $root_discriminant, decoded
+                        ))
+                    }
+                    Ok(_) => {}
+                }
+            }
         }};
     }
 
@@ -561,6 +606,13 @@ fn root_op_discriminants_are_golden() {
     check_root_op!(GOLDEN_ROOT_OP_MEMBER_JOINED_OPEN, RootOp::MemberJoinedOpen { .. }, 7);
     check_root_op!(GOLDEN_ROOT_OP_MEMBER_JOINED_AT, RootOp::MemberJoinedAt { .. }, 8);
     check_root_op!(GOLDEN_ROOT_OP_NAMESPACE_CREATED, RootOp::NamespaceCreated { .. }, 9);
+
+    assert!(
+        failures.is_empty(),
+        "RootOp discriminant golden failures ({} total):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 fn sample_group_id() -> [u8; 32] {
