@@ -150,6 +150,92 @@ existing side — first-write-wins. Two nodes that independently write *differen
 values will each keep their own and not converge; that is by design for immutable data,
 and is exactly why you should not use it for anything that must reconcile.
 
+## The algorithms
+
+Everything above is prose; the two blocks here are the executable summary — enough
+to reimplement the merge layer from scratch. The unifying shape is the same for every
+type: **combine the two sides commutatively, then resolve each element by a
+deterministic, node-independent rule.** Because the rule reads only the data and never
+the arrival order, merge is commutative, idempotent, and associative — so order never
+matters.
+
+### Per-type merge
+
+```rust
+// LwwRegister<T> — entity resolved by `lww_pick` (interface.rs).
+//   winner = max over (hlc, SHA-256(value_bytes)): newer HLC wins; on an exact HLC
+//   tie the higher content hash wins — a property of the data, not of who arrived last.
+fn merge(existing, incoming) -> bytes {
+    match incoming.hlc.cmp(&existing.hlc) {
+        Greater => incoming,
+        Less    => existing,
+        Equal   => if Sha256(incoming) >= Sha256(existing) { incoming } else { existing },
+    }
+}
+
+// Counter<ALLOW_DECREMENT> — state-based G/PN counter (crdt_impls.rs).
+//   Each executor owns one slot of grow-only counts; merge = per-executor MAX
+//   (NOT a sum of deltas). `max` is commutative + idempotent, so two replicas
+//   converge with zero coordination regardless of apply order.
+fn merge(&mut self, other) {
+    for (executor, n) in other.positive { self.positive[executor] = max(self.positive[executor], n) }
+    if ALLOW_DECREMENT {
+        for (executor, n) in other.negative { self.negative[executor] = max(self.negative[executor], n) }
+    }
+}
+// value = Σ positive  (− Σ negative for the PN variant).
+
+// UnorderedMap / UnorderedSet (+ Sorted variants) — add-wins (crdt_impls.rs + interface.rs).
+//   Container merge = union of keys/elements; a shared map key recurses into V::merge.
+//   Presence is LWW per entry ENTITY, decided in the storage layer, where a remove
+//   is a tombstone carrying its own stamp:
+fn present(entry) -> bool {
+    entry.add_hlc > entry.delete_hlc   // newest stamp wins; an add outliving its tombstone ⇒ present
+    // cf. apply_delete_ref_action: `deleted_at < updated_at` ⇒ deletion loses ⇒ entry kept
+}
+
+// Rga (text) — union of immutable char nodes (rga.rs).
+//   A char is immutable, keyed by CharId = (hlc, seq); merge is a plain SET UNION;
+//   a delete is a tombstone (the char drops out of the live set).
+fn merge(&mut self, other) {
+    for (id, ch) in other.chars { self.chars.entry(id).or_insert(ch) } // identical chars are a no-op
+}
+// Read order = pre-order DFS over the tree induced by each char's `left` edge.
+// Within one sibling group (chars sharing a `left` origin) the HIGHEST CharId is
+// emitted FIRST — so two concurrent inserts at the same position sort by (hlc, seq)
+// the same way on every node, and a later insert lands ahead of the earlier one.
+```
+
+### How an entity is hashed and addressed
+
+```text
+own_hash(entity)  = SHA-256( borsh(value) )            // value bytes ONLY — metadata and
+                                                       // schema_version are excluded, and in merge
+                                                       // mode timestamps zero out, so two replicas
+                                                       // that computed the same value hash identically
+
+full_hash(node)   = SHA-256( own_hash ‖ for c in children.sorted_by(c.id): c.merkle_hash )
+                                                       // c.merkle_hash IS the child's own full_hash → a
+                                                       // recursive roll-up. Children are sorted by id
+                                                       // ALONE (not by created_at) so the hash is purely
+                                                       // content-derived and ignores each peer's local
+                                                       // creation clock.
+
+id(parent, key)   = SHA-256( parent ‖ "__calimero_entry__"        ‖ key )    // map / set entry
+id(parent, field) = SHA-256( [parent ‖] "__calimero_collection__" ‖ field )  // nested collection
+                                                       // (parent is omitted for a top-level field)
+```
+
+Consequences:
+
+- **Content-derived ids** ⇒ the same logical key or field computes to the same id on
+  every node, offline. Convergence is *by id*; there is nothing to match up at sync time.
+- **Recursive roll-up** ⇒ editing one leaf rehashes only that leaf and its ancestor
+  chain — `O(depth)`, not `O(tree)`. Untouched siblings keep their hashes.
+- **The root entity's `full_hash` is the storage `root_hash`** — the single value two
+  replicas compare to detect (and then localise) divergence; see
+  [Projection](/protocol/projection/).
+
 ## A concrete merge: two writes to one field
 
 Say a profile struct holds `name: LwwRegister<String>`. The field is one inline `Blob` entity at a derived id — the same id on every node, because it is a function of position, not content. Two users edit it concurrently:

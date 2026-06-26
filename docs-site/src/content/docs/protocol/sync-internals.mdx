@@ -119,6 +119,32 @@ EntityPush { context_id, entities: Vec<TreeLeafData> }
 
 The responder applies each via a CRDT merge and replies with `EntityPushAck { applied_count }`. Because the tree comparison is add-wins, deletions cannot ride along implicitly — they are pushed explicitly as `EntityDeletePush { context_id, deletions: Vec<EntityDeletion> }` (`wire.rs:220`), which the responder applies delete-wins by HLC through the authenticated `DeleteRef` path, acked by `EntityDeletePushAck`.
 
+### The algorithm: comparing two trees
+
+The whole transfer is one recursive tree-walk, driven from the initiator. Each step requests one node *plus its immediate children* (`max_depth: 1`), compares child hashes, and recurses only into the children that disagree. Reimplementation-grade:
+
+```text
+fn reconcile(node_id = root):
+    local  = local_tree.node(node_id)
+    remote = request(TreeNodeRequest { node_id, max_depth: 1 }).nodes  // peer's node + child hashes
+    if remote.not_found:        push EntityPush(local subtree leaves); return
+    if local.full_hash == remote.full_hash:  return        // whole subtree agrees, prune
+
+    for child_id in union(local.children, remote.children):
+        match (local.child(child_id), remote.child(child_id)):
+            (Some l, Some r) if l.hash != r.hash => reconcile(child_id)   // differ → descend
+            (Some l, Some r) if l.hash == r.hash => skip                  // agree → prune
+            (Some l, None)                       => push EntityPush(l)    // we have it, peer doesn't
+            (None,   Some r)                     => pull/merge r          // peer has it, we don't
+
+    // leaves carry full entity data, so a differing leaf is a CRDT merge, not another round-trip
+    // deletions never surface as a missing child here — they ride EntityDeletePush (delete-wins by HLC)
+    // every EntityPush the responder ingests is authorization-gated on the initiator's peer_identity
+    // each request's max_depth is clamped to MAX_TREE_REQUEST_DEPTH (16) so a peer can't force an unbounded walk
+```
+
+Because a subtree whose `full_hash` matches is pruned outright, the walk only touches the parts of the tree that actually differ: cost is proportional to the *difference* between the two trees, not to their total size. Two large but identical contexts converge in a single root-level request.
+
 ### The authorization gate
 
 A pushed plain entity is not trusted blindly. `handle_tree_node_request` takes the authenticated `peer_identity` of the session initiator and uses it to gate ingestion of authorless pushes: a peer that is no longer an authorized member must not be able to launder a write into the store via HashComparison (`hash_comparison.rs:76`). Authorized leaves carry their wire authorization forward into the stored metadata (`hash_comparison.rs:524`). This is what guarantees sync can never introduce a write the author was not entitled to make.

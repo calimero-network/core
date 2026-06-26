@@ -198,6 +198,57 @@ An operation is authorized against the membership and access-control state that 
 
 The same mechanism covers data writes: an entity's **writer set** (the access-control plane) is resolved at the cut, and a write is accepted only if its author was an authorized writer at that point.
 
+## The algorithm: authorization at the cut
+
+Below is the whole security model in two folds — the governance plane and the data plane — written to match the code, so it is reimplementation-grade. Both resolve authority at the **cut the op references**, never at the receiver's present.
+
+The governance plane is a single fold (`authorize`) over the op's payload, decided against an `AclView` the projection resolves at the op's causal parents (`acl_view_at(op.parents)`). It is the one causal-auth boundary; it never walks the DAG itself.
+
+```text
+// view = ScopeState::acl_view_at(op.parents)
+//        -> membership + capabilities + per-object ACL, as of the op's causal cut
+fn authorize(op, view) -> Result<(), Rejected>:
+    match op.payload:
+        Put{entity}          => require view.may(op.author, entity, WRITE)    // else NotPermitted
+        Delete{entity}       => require view.may(op.author, entity, DELETE)   // else NotPermitted
+        SetWriters{object}   => require view.is_owner(op.author, object)      // = may(.., ADMIN); else NotOwner
+        MemberAdded|MemberRemoved{group}                  => require view.is_group_admin(op.author, group)  // else NotGroupAdmin
+        SubgroupVisibilitySet{scope}                      => require view.is_group_admin(op.author, scope)
+        DefaultCapabilitiesSet|MemberCapabilitySet{group} => require view.is_group_admin(op.author, group)
+        AdminChanged|PolicyUpdated|SubgroupCreated|SubgroupReparented|SubgroupDeleted
+                             => require view.is_root_admin(op.author)         // else NotRootAdmin
+        Noop                 => Ok
+
+// The writer-set check (default-write = membership), two-tier:
+fn may(author, entity, required: OpMask) -> bool:
+    if let Some(writers) = view.acl.get(entity):    // restricted object: explicit ACL is authoritative
+        return writers.get(author).is_some_and(|held| held.contains(required))
+    // non-restricted: any scope member implicitly holds WRITE|DELETE — but NOT ADMIN,
+    // so a plain member can write/delete default data yet cannot rotate its writer set.
+    return view.is_scope_member(author) and (WRITE|DELETE).contains(required)
+```
+
+Note what the fold actually keys on: governance ops are gated by **role at the cut** (group admin, or root admin for namespace-level ops), and the `u32` capability bitmask gates membership inheritance (the `CAN_JOIN_OPEN_SUBGROUPS` bit on the open-subgroup walk), not these admin ops. A capability is read as `view.capability(group, member)` = explicit per-member override, else the group default, else `0`, then bit-tested.
+
+The data plane (`apply_action`) is the writer-set analogue: it resolves the authoritative writer set per `StorageType` and verifies a **per-action signature** against it, then enforces the operation's required bit. The writer set is resolved at the **delta's own causal parents** (`effective_writers = writers_at(delta.parents)`), the data-DAG cut, while the delta separately carries a `governance_position` (the governance heads at sign time) so receivers gate membership at the governance cut too.
+
+```text
+fn apply_action(action, ctx):
+    required = required_op_mask(action)         // Add|Update => WRITE, DeleteRef => DELETE
+    match action.storage_type:
+        Public  => accept                       // no signature; membership is the only gate
+        Frozen  => verify content hash          // immutable, content-addressed (no signature)
+        User{owner} =>
+            require ed25519_verify(sig, owner, payload_for_signing)   // exactly one writer: the owner
+        Shared{writers} | SharedMember{anchor} =>
+            set    = ctx.effective_writers ?? stored_writers          // writers at the delta's cut
+            signer = set.keys().find(|w| ed25519_verify(sig, w, payload_for_signing))
+            require signer.is_some()                                  // else InvalidSignature
+            require set[signer].contains(required)                   // op-granularity bit; else ActionNotAllowed
+```
+
+**Why the cut, not "now":** because every input is resolved at the op's referenced causal position, the verdict is a pure function of state the author had already observed. Two nodes that fold the same DAG reach the same answer regardless of receive order, so authority converges with no coordination. And it is forward-only: a write authored before a revocation stays valid even if a peer applies the revocation first — the revocation is not in the write's causal past, so it cannot retroactively un-authorize it.
+
 ## Specification
 
 ### Capability bits
