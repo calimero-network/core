@@ -1,0 +1,73 @@
+---
+title: Operate a Calimero Node
+description: Run and manage a Calimero node — install merod, drive it with meroctl.
+sidebar:
+  label: Overview
+  order: 1
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+
+This track is for **node operators** — anyone who installs, runs, and manages a
+Calimero node. If you are reimplementing the protocol, read the
+[Protocol Reference](/core/protocol/overview/) instead; this track is about
+driving the existing binaries.
+
+## The mental model
+
+A Calimero deployment is built from two binaries:
+
+- **`merod`** — the node daemon. One `merod` process owns a **home directory**
+  (config, identity keypair, datastore, blob store) and exposes a network
+  (libp2p) listener plus an RPC/admin server. You `init` a node once, then `run`
+  it.
+- **`meroctl`** — the operator CLI. It is a **client**: it talks to a running
+  `merod` over its RPC server (locally or remotely) to manage applications,
+  namespaces, groups, contexts, blobs, and to call methods.
+
+A single `merod` process serves many **namespaces** (root groups / application
+instances), each of which holds **groups** and **contexts** — the replicated,
+causally-consistent state units. You point `meroctl` at a node and operate on
+those resources.
+
+<Aside type="caution" title="Draft">
+  This track is generated from the clap command definitions in `crates/merod`
+  and `crates/meroctl`. Flags and subcommands are grounded in code, but the
+  surrounding guidance is still being reviewed. Run `merod --help` and
+  `meroctl --help` (and `<command> --help`) on your build to confirm.
+</Aside>
+
+## Start here
+
+<CardGrid>
+  <LinkCard
+    title="Install & first run"
+    href="/core/operate/install/"
+    description="Build from source or run with Docker, then init → run → verify."
+  />
+  <LinkCard
+    title="merod CLI reference"
+    href="/core/operate/merod/"
+    description="The node daemon: init, config, run, kms."
+  />
+  <LinkCard
+    title="meroctl CLI reference"
+    href="/core/operate/meroctl/"
+    description="The operator CLI: app, context, group, namespace, blob, call, and more."
+  />
+</CardGrid>
+
+## Default ports
+
+A freshly initialized node listens on two ports (grounded in the `init`
+defaults):
+
+| Port   | Purpose                              | `merod init` flag |
+| ------ | ------------------------------------ | ----------------- |
+| `2428` | libp2p swarm (peer-to-peer)          | `--swarm-port`    |
+| `2528` | RPC / admin / JSON-RPC / WS / SSE    | `--server-port`   |
+
+`meroctl` defaults to `http://127.0.0.1:2528` when no node is configured.

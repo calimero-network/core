@@ -1,0 +1,302 @@
+---
+title: meroctl CLI Reference
+description: The Calimero operator CLI — command groups for apps, contexts, groups, namespaces, blobs, calls, and node connections.
+sidebar:
+  label: meroctl reference
+  order: 4
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`meroctl` is the operator CLI. It connects to a running `merod` node over its
+RPC server and manages applications, namespaces, groups, contexts, blobs, and
+method calls.
+
+## Global arguments
+
+| Flag                       | Type / values            | Notes                                                                       |
+| -------------------------- | ------------------------ | --------------------------------------------------------------------------- |
+| `--home <PATH>`            | path                     | Directory for config and data. Env: `CALIMERO_HOME`.                        |
+| `--node <ALIAS>`           | string                   | Use a pre-configured node alias. Conflicts with `--api`.                    |
+| `--api <URL>`              | URL                      | API endpoint URL of the node to target.                                     |
+| `--output-format <FORMAT>` | enum                     | Output format (e.g. JSON) — used by commands such as `network status`.      |
+
+When neither `--node` nor `--api` is given, `meroctl` uses the active node (set
+with `node use`), falling back to `http://127.0.0.1:2528`.
+
+## Command groups
+
+| Group         | Purpose                                                          |
+| ------------- | ---------------------------------------------------------------- |
+| `app`         | Manage applications (install, list, versions, watch).            |
+| `context`     | Manage contexts, identities, aliases, and sync.                  |
+| `group`       | Manage groups: members, contexts, metadata, upgrades, settings.  |
+| `namespace`   | Manage namespaces (root groups / application instances). Alias `ns`. |
+| `blob`        | Upload, download, inspect, and delete blobs.                     |
+| `call`        | Call a method on a context (mutation or view).                   |
+| `dev`         | Developer workflow: build, install, create context, watch.       |
+| `network`     | Inspect libp2p networking state.                                 |
+| `peers`       | Return the number of connected peers.                            |
+| `tee`         | TEE fleet-node commands.                                          |
+| `node`        | Manage node connections used by `meroctl` (local config).        |
+
+---
+
+## app
+
+| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
+| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| `get <APP_ID>`                     | Fetch application details.                        | `APP_ID`                                                      |
+| `install`                          | Install an application.                           | `--path`/`-p`, `--url`/`-u`, `--metadata`/`-m`, `--hash`, `--watch`/`-w`, `--package`, `--version` |
+| `list` (`ls`)                      | List installed applications.                      | —                                                            |
+| `uninstall <APP_ID>`               | Uninstall an application.                         | `APP_ID`                                                      |
+| `versions <APP_ID>`                | List locally installed versions of an app.        | `APP_ID`                                                      |
+| `watch`                            | Watch a WASM file and update all contexts using the app. | `--path`/`-p`, `--metadata`, `--current-app-id`, `--package`, `--version` |
+| `list-packages`                    | List all packages.                                | —                                                            |
+| `list-versions <package>`          | List registry versions of a package.              | `package`                                                    |
+| `get-latest-version <package>`     | Get the latest version of a package.              | `package`                                                    |
+
+```sh
+meroctl --node node1 app install --package com.example.myapp --version 1.0.0 --path ./my-app.wasm
+meroctl --node node1 app ls
+```
+
+`--path` and `--url` are mutually exclusive; `--version` defaults to `0.0.0`.
+
+---
+
+## context
+
+| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
+| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| `list` (`ls`)                      | List all contexts.                                | —                                                            |
+| `create`                           | Create a new context.                             | `--application-id`, `--group-id` (required), `--params`, `--watch <path>`, `--metadata`, `--context-seed`, `--as` (identity alias), `--name` (context alias), `--service`, `--identity-secret`, `--group-name` |
+| `get <CONTEXT>`                    | Fetch context details: `info`, `client-keys`, or `storage`. | `CONTEXT`, subcommand                                  |
+| `delete` (`del`) `<CONTEXT>`       | Delete a context.                                 | `CONTEXT`, `--requester`                                     |
+| `update`                           | Update the application in a context.              | `--context`/`-c`, `--application-id`/`-a`, `--path`, `--metadata`, `--watch`/`-w`, `--as` (executor) |
+| `watch` (`ws`)                     | Stream context events, optionally run a command.  | `--context`, `-x`/`--exec`, `-n`/`--count`                  |
+| `sync`                             | Explicitly request a sync.                        | `--context`/`-c`, `--all`                                    |
+| `invite-specialized-node`          | Invite a specialized (e.g. read-only TEE) node.   | `--context`, `--inviter`                                     |
+| `identity`                         | Manage context identities (see below).            | subcommand                                                    |
+| `alias`                            | Manage context aliases: `add`, `remove`, `get`, `list`. | subcommand                                              |
+| `use <CONTEXT>`                    | Set the default context.                          | `CONTEXT`, `--force`                                        |
+
+### context identity
+
+| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
+| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| `list` (`ls`)                      | List identities in a context.                     | `--context`, `--owned`                                       |
+| `generate` (`new`)                 | Generate a new identity keypair.                  | —                                                            |
+| `use <IDENTITY>`                   | Set the default identity for a context.           | `IDENTITY`, `--context`, `--force`                          |
+| `alias`                            | Manage identity aliases.                          | subcommand                                                    |
+| `grant`                            | Grant a permission to an identity.                | identity, capability, `--context`, `--as`                   |
+| `revoke`                           | Revoke a permission from an identity.             | identity, capability, `--context`, `--as`                   |
+
+```sh
+meroctl --node node1 context create --application-id <app_id> --group-id <group_id>
+meroctl --node node1 context identity grant bob ManageApplication --context <context_id> --as alice
+```
+
+---
+
+## group
+
+| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
+| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| `get <GROUP_ID>`                   | Get information about a group.                    | `GROUP_ID`                                                    |
+| `delete` (`del`) `<GROUP_ID>`      | Delete a group.                                   | `GROUP_ID`, `--requester`                                    |
+| `update <GROUP_ID>`                | Update group settings.                            | `GROUP_ID`, `--upgrade-policy`, `--requester`                |
+| `members`                          | Manage group members (see below).                 | subcommand                                                    |
+| `contexts`                         | List (`list`/`ls`) or `detach` contexts in a group. | subcommand                                                  |
+| `metadata`                         | Show / update a group's metadata record.          | subcommand                                                    |
+| `member-metadata`                  | Show / update a member's metadata record.         | subcommand                                                    |
+| `context-metadata`                 | Show / update a registered context's metadata.    | subcommand                                                    |
+| `reparent <GROUP_ID> <NEW_PARENT_ID>` | Atomically move a group to a new parent.       | `GROUP_ID`, `NEW_PARENT_ID`, `--requester`                  |
+| `subgroups <GROUP_ID>`             | List direct subgroups of a group.                 | `GROUP_ID`                                                    |
+| `signing-key`                      | Manage signing keys: `register`.                  | subcommand                                                    |
+| `upgrade`                          | `trigger`, `status`, or `retry` a group upgrade.  | subcommand                                                    |
+| `sync <GROUP_ID>`                  | Sync a group from local state.                    | `GROUP_ID`, `--requester`                                   |
+| `join-context <CONTEXT_ID>`        | Join a context via group membership.              | `CONTEXT_ID`                                                  |
+| `leave-context <CONTEXT_ID>`       | Locally opt out of a context (no DAG op).         | `CONTEXT_ID`                                                  |
+| `leave <GROUP_ID>`                 | Voluntarily leave a group (publishes MemberLeft). | `GROUP_ID`                                                    |
+| `settings`                         | Manage group-level default settings (see below).  | subcommand                                                    |
+
+### group members
+
+| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
+| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| `list` (`ls`) `<GROUP_ID>`         | List all members of a group.                      | `GROUP_ID`                                                    |
+| `add <GROUP_ID> <IDENTITY>`        | Add a member to a group.                          | `--role`, `--requester`                                      |
+| `remove <GROUP_ID> <IDENTITY...>`  | Remove members from a group.                      | identities, `--requester`                                   |
+| `set-role <GROUP_ID> <IDENTITY> <ROLE>` | Update a member's role.                       | `--requester`                                                |
+| `set-capabilities` (`set-caps`)    | Set capabilities for a member (admin-only).       | `GROUP_ID`, `IDENTITY`, `--can-*` flags                     |
+| `get-capabilities` (`get-caps`)    | Get a member's capabilities.                      | `GROUP_ID`, `IDENTITY`                                       |
+| `check-access`                     | Check if an identity can join a context.          | `GROUP_ID`, identity                                        |
+
+### group settings
+
+| Subcommand (aliases)                       | Purpose                                  | Key args                                              |
+| ------------------------------------------ | ---------------------------------------- | ----------------------------------------------------- |
+| `get <GROUP_ID>`                           | Get current default settings.            | `GROUP_ID`                                            |
+| `set-default-capabilities` (`set-default-caps`) | Set default capabilities for new members. | `GROUP_ID`, `--can-*` flags, `--requester`        |
+| `set-subgroup-visibility` (`set-subgroup-vis`) | Set subgroup visibility (open/restricted). | `GROUP_ID`, `--mode`, `--requester`               |
+
+```sh
+meroctl --node node1 group members list <group_id>
+meroctl --node node1 group reparent <group_id> <new_parent_id>
+meroctl --node node1 group signing-key register <group_id> <hex_signing_key>
+```
+
+---
+
+## namespace
+
+Alias: `ns`. Namespaces are root groups (application instances).
+
+| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
+| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| `create`                           | Create a new namespace.                           | `--application-id`, `--upgrade-policy`, `--name`, `--app-key` |
+| `get <NAMESPACE_ID>`               | Get details about a namespace.                    | `NAMESPACE_ID`                                                |
+| `delete` (`del`) `<NAMESPACE_ID>`  | Delete a namespace.                               | `NAMESPACE_ID`, `--requester`                                |
+| `invite <NAMESPACE_ID>`            | Create an invitation for a namespace.             | `NAMESPACE_ID`, `--requester`, `--expiration-timestamp`, `--recursive` |
+| `join <NAMESPACE_ID> <INVITATION>` | Join a namespace using an invitation.             | `NAMESPACE_ID`, invitation JSON                              |
+| `leave <NAMESPACE_ID>`             | Leave a namespace (cascades through descendants). | `NAMESPACE_ID`                                               |
+| `groups <NAMESPACE_ID>`            | List direct groups under a namespace.             | `NAMESPACE_ID`                                               |
+| `create-group <NAMESPACE_ID>`      | Create a child group in a namespace.              | `NAMESPACE_ID`, `--alias`                                    |
+| `list` (`ls`)                      | List all namespaces.                              | —                                                           |
+| `identity` (`id`) `<NAMESPACE_ID>` | Get this node's identity for a namespace.         | `NAMESPACE_ID`                                               |
+
+```sh
+meroctl --node node1 namespace create --application-id <app_id>
+meroctl --node node2 namespace join <namespace_id> '<invitation_json>'
+```
+
+---
+
+## blob
+
+| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
+| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| `list` (`ls`)                      | List all blobs.                                   | —                                                            |
+| `upload`                           | Upload a blob from a file.                         | `--file`, `--context-id`                                    |
+| `download`                         | Download a blob to a file.                         | `--blob-id`, `--output`, `--context-id`                    |
+| `info`                             | Get information about a blob.                      | `--blob-id`                                                  |
+| `delete` (`rm`)                    | Delete a blob by its ID.                           | `--blob-id`                                                  |
+
+```sh
+meroctl --node node1 blob upload --file /path/to/file
+meroctl --node node1 blob download --blob-id <blob_id> --output /path/to/output
+```
+
+<Aside type="caution">
+  The blob `upload`/`download`/`info`/`delete` flag names above (`--file`,
+  `--output`, `--blob-id`, `--context-id`) are taken from the command help text.
+  Confirm the exact long-flag spelling with `meroctl blob <subcommand> --help`.
+</Aside>
+
+---
+
+## call
+
+Call a method on a context. The method runs as a mutation by default; pass an
+identity to run a view as that identity.
+
+| Arg / flag                | Type / values        | Default     | Purpose                                                         |
+| ------------------------- | -------------------- | ----------- | --------------------------------------------------------------- |
+| `<METHOD>`                | string               | —           | Method to call (omit with `--interactive`).                    |
+| `--context`/`-c <CONTEXT>` | context alias/id    | `default`   | Context to call the method on.                                  |
+| `--args <JSON>`           | JSON                 | `{}`        | JSON arguments to pass to the method.                          |
+| `--as <KEY>` (`--substitute`) | alias list       | —           | Aliases to substitute in the payload (use `{alias}`).          |
+| `--id <ID>`               | string               | —           | JSON-RPC call id.                                              |
+| `--interactive`/`-i`      | bool                 | `false`     | Open a persistent WebSocket shell and run many calls.          |
+| `--timeout <SECONDS>`     | u64                  | `120`       | Per-call timeout in the interactive shell (`0` disables).      |
+
+```sh
+meroctl --node <NODE> call <METHOD> --context <CONTEXT_ID> --args '<ARGS_JSON>'
+meroctl --node <NODE> call -i --context <CONTEXT_ID>
+```
+
+<Aside type="note">
+  In the interactive shell, enter `<method> [args-json]` lines. Meta-commands:
+  `:context <alias>`, `:help`, `:quit` (or Ctrl-D).
+</Aside>
+
+---
+
+## dev
+
+| Subcommand        | Purpose                                                   | Key args                                                                 |
+| ----------------- | --------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `start <path>`    | Build, install, create/reuse a context, optionally watch. | `--group-id` (required), `--watch`/`-w`, `--new`, `--params`/`-p`, `--seed`/`-s`, `--no-build`, `--metadata` |
+
+`<path>` may be a `.wasm`, a `.mpk` bundle, or a project directory with a
+`Cargo.toml` (which is built with `cargo build --target wasm32-unknown-unknown
+--release`).
+
+```sh
+meroctl --node node1 dev start ./my-app --group-id <group_id> --watch
+```
+
+---
+
+## network
+
+| Subcommand | Purpose                                                                 |
+| ---------- | ----------------------------------------------------------------------- |
+| `status`   | Dump swarm connectivity: listen/external addresses, relay reservations, rendezvous registrations, DCUtR upgrades, AutoNAT. |
+
+```sh
+meroctl --node node1 network status
+meroctl --output-format json --node node1 network status
+```
+
+---
+
+## peers
+
+No subcommand — returns the number of connected peers.
+
+```sh
+meroctl --node node1 peers
+```
+
+---
+
+## tee
+
+| Subcommand (aliases)            | Purpose                                          | Key args     |
+| ------------------------------- | ------------------------------------------------ | ------------ |
+| `fleet-join <GROUP_ID>`         | Announce this node as a TEE fleet member and auto-join contexts in the group once admitted. | `GROUP_ID`   |
+
+```sh
+meroctl --node node1 tee fleet-join <GROUP_ID>
+```
+
+---
+
+## node (connection management)
+
+These commands manage `meroctl`'s **local connection config** — they do not call
+a node. A node may be a local home directory or a remote URL.
+
+| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
+| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| `add` (`connect`) `<NAME> <LOCATION>` | Add or connect to a node.                      | `LOCATION` (path or URL), `--access-token`, `--refresh-token` |
+| `remove` (`rm`, `disconnect`) `<NAME>` | Remove a node connection.                     | `NAME`                                                        |
+| `use <NAME>`                       | Set a node as active (default for commands).      | `NAME`                                                        |
+| `list` (`ls`)                      | List all configured nodes.                        | —                                                            |
+| `identity` (`id`)                  | Display the node's peer ID (local nodes only).    | —                                                            |
+
+```sh
+meroctl node add node1 /path/to/home
+meroctl node add node3 http://public.node.com
+meroctl node use node1
+meroctl node ls
+```
+
+For a remote node that needs authentication, login starts automatically; pass
+`--access-token` (and optionally `--refresh-token`) to skip it with explicit
+JWTs.

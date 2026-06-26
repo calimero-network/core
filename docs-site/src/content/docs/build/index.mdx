@@ -1,0 +1,78 @@
+---
+title: Build Calimero Apps
+description: Write a Calimero application — a sandboxed WASM module that is a shared, replicated state machine.
+sidebar:
+  label: Overview
+  order: 1
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+
+This is the **Build** track — for developers writing Calimero applications. If
+you want the deep model of how nodes replicate, authorize, and converge state,
+read the [Protocol Reference](/protocol/overview/) instead.
+
+## What a Calimero app is
+
+A Calimero application is a single **WebAssembly module**. You write it in Rust
+against the [`calimero-sdk`](https://github.com/calimero-network/core/tree/master/crates/sdk)
+and [`calimero-storage`](https://github.com/calimero-network/core/tree/master/crates/storage)
+crates, compile it to `wasm32-unknown-unknown`, and install it on a node.
+
+The module is best understood as a **shared state machine**:
+
+- It defines a single **state** struct (`#[app::state]`) built out of CRDT
+  collections — types whose concurrent edits merge deterministically.
+- It exposes **methods** (`#[app::logic]`) that read and mutate that state.
+- Many nodes run the *same* module over the *same* logical state. Each node
+  folds the operations it has seen into a materialized copy. Because every
+  collection merges order-independently, any two nodes that have seen the same
+  operations compute the same state.
+
+You never write networking, signing, or merge code. You write state + methods;
+the runtime replicates the rest.
+
+<Aside type="note" title="Mental model">
+  Your app is the deterministic fold. The node is everything around it —
+  identity, gossip, encryption, conflict detection. Keep your logic
+  deterministic and built on CRDT collections, and convergence is automatic.
+</Aside>
+
+## Start here
+
+<CardGrid>
+  <LinkCard
+    title="Quickstart"
+    href="/build/quickstart/"
+    description="Scaffold and build an app, install it on a node, create a context, and call a method."
+  />
+  <LinkCard
+    title="SDK macros"
+    href="/build/sdk-macros/"
+    description="Reference for the #[app::*] macros — state, logic, init, view, event, private, migrate, xcall."
+  />
+  <LinkCard
+    title="Collections"
+    href="/build/collections/"
+    description="The CRDT collection types — maps, sets, vectors, counters, registers, and the access-controlled ones."
+  />
+  <LinkCard
+    title="Protocol Reference"
+    href="/protocol/overview/"
+    description="How replication, authorization, and convergence actually work under the hood."
+  />
+</CardGrid>
+
+## Where the truth lives
+
+Everything in this track is grounded in the code you ship against:
+
+| Topic | Source of truth |
+|-------|-----------------|
+| App macros | `crates/sdk/macros/src/` |
+| Environment / host calls | `crates/sdk/src/env.rs`, `crates/runtime/HOST_FUNCTIONS.md` |
+| Collection types | `crates/storage/src/collections/` |
+| Working examples | `apps/` (e.g. `kv-store`, `collaborative-editor`, `blobs`) |

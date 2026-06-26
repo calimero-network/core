@@ -1,0 +1,126 @@
+---
+title: merod CLI Reference
+description: The Calimero node daemon — init, config, run, and kms subcommands with their real flags.
+sidebar:
+  label: merod reference
+  order: 3
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`merod` is the node daemon. Every invocation takes two global arguments, then a
+subcommand.
+
+## Global arguments
+
+| Flag                | Type   | Default                  | Notes                                                       |
+| ------------------- | ------ | ------------------------ | ----------------------------------------------------------- |
+| `--home <PATH>`     | path   | platform node directory  | Directory for config and data. Env: `CALIMERO_HOME`.        |
+| `-n`, `--node <NAME>` | name | — (required)             | Name of the node; its home is `<home>/<NAME>`.              |
+
+```sh
+merod --home data/ --node node1 <subcommand>
+```
+
+Subcommands: `init`, `config`, `run` (alias `up`), `kms`.
+
+## init
+
+Initialize node configuration: creates the home directory, generates an
+ed25519 identity keypair, writes `config.toml`, and opens the datastore.
+
+| Flag                                | Type / values            | Default            | Purpose                                                                 |
+| ----------------------------------- | ------------------------ | ------------------ | ----------------------------------------------------------------------- |
+| `--boot-nodes <ADDR>`               | multiaddr (repeatable)   | —                  | Explicit bootstrap node multiaddrs.                                     |
+| `--boot-network <NETWORK>`          | `calimero-dev`, `ipfs`   | `calimero-dev`     | Use a known network's bootstrap nodes.                                  |
+| `--swarm-host <HOST>`               | IP list                  | `0.0.0.0,::`       | Hosts to listen on for the libp2p swarm.                                |
+| `--swarm-port <PORT>`               | u16                      | `2428`             | Swarm (peer-to-peer) port.                                              |
+| `--server-host <HOST>`              | IP list                  | `127.0.0.1,::1`    | Hosts to listen on for the RPC server.                                  |
+| `--server-port <PORT>`              | u16                      | `2528`             | RPC / admin / JSON-RPC / WS / SSE port.                                 |
+| `--auth-mode <MODE>`                | `proxy`, `embedded`      | `proxy`            | Authentication mode for server endpoints.                               |
+| `--auth-storage <KIND>`             | `persistent`, `memory`   | `persistent`       | Embedded-auth storage backend (only with `--auth-mode embedded`).       |
+| `--auth-storage-path <PATH>`        | path                     | `auth`             | Embedded-auth storage path (persistent storage only).                   |
+| `--mdns`                            | bool                     | `true`             | Enable mDNS local discovery.                                            |
+| `--advertise-address`               | bool                     | `false`            | Advertise the node's observed address.                                  |
+| `--external-address <MULTIADDR>`    | multiaddr (repeatable)   | —                  | Static external multiaddrs to advertise; requires `--advertise-address`. |
+| `--rendezvous-registrations-limit <N>` | usize                 | `3`                | Max rendezvous registrations.                                           |
+| `--relay-registrations-limit <N>`   | usize                    | `3`                | Max relay registrations.                                                |
+| `--autonat-probe-interval <SECS>`   | u64                      | `10`               | Interval between AutoNAT probes, in seconds.                            |
+| `--autonat-max-candidates <N>`      | usize                    | `5`                | Max untested address candidates to probe with AutoNAT.                  |
+| `--force`                           | bool                     | `false`            | Wipe and re-initialize even if the directory already exists.            |
+| `--mode <MODE>`                     | `standard`, `read-only`  | `standard`         | Node operation mode (read-only disables JSON-RPC execution).            |
+
+```sh
+# Initialize with the default network and ports
+merod --node node1 init
+
+# Initialize with custom ports
+merod --node node1 init --server-port 2528 --swarm-port 2428
+```
+
+<Aside type="note">
+  `--server-host` defaults to loopback (`127.0.0.1,::1`), so the RPC server is
+  not reachable off-host until you widen it. The swarm host defaults to all
+  interfaces (`0.0.0.0,::`).
+</Aside>
+
+## config
+
+Update keys in the node's `config.toml`. Arguments are `key=value` pairs where
+the key is a dotted TOML path. The change is validated by reloading the
+resulting config before it is written.
+
+```sh
+# Quote the argument so your shell does not glob the brackets
+merod --node node1 config "server.listen=['/ip4/127.0.0.2/tcp/3000', '/ip6/::1/tcp/3000']"
+```
+
+There are no flags — only positional `key=value` arguments (repeatable).
+
+## run
+
+Run the node: loads and validates `config.toml`, then starts the swarm and RPC
+server. Foreground process. Alias: `up`.
+
+| Flag                 | Type / values          | Default | Purpose                                                                    |
+| -------------------- | ---------------------- | ------- | -------------------------------------------------------------------------- |
+| `--auth-mode <MODE>` | `proxy`, `embedded`    | —       | Override the authentication mode from `config.toml` for this run.          |
+| `--mock-tee`         | bool                   | `false` | DEV/TEST ONLY. Produce/accept mock TEE attestation quotes. Env: `MEROD_MOCK_TEE`. |
+
+```sh
+merod --node node1 run
+merod --node node1 up --auth-mode embedded
+```
+
+<Aside type="caution" title="--mock-tee is insecure">
+  `--mock-tee` bypasses real TDX attestation and is for development and testing
+  only. The node refuses to start with `--mock-tee` if a real KMS attestation is
+  configured.
+</Aside>
+
+## kms
+
+KMS (key management service) operations for TEE-enabled nodes.
+
+### kms probe
+
+Probe the KMS attestation and storage-key fetch flow against the node's
+configured TEE/KMS settings.
+
+| Flag              | Type | Default | Purpose                                          |
+| ----------------- | ---- | ------- | ------------------------------------------------ |
+| `--kms-url <URL>` | URL  | —       | Override the configured KMS URL for this probe.  |
+| `--json`          | bool | `false` | Emit the probe result as machine-readable JSON.  |
+
+```sh
+merod --node node1 kms probe
+merod --node node1 kms probe --json
+```
+
+<Aside type="caution">
+  `kms probe` requires a node whose config has a `tee.kms.phala` section; it
+  errors if TEE/KMS is not configured.
+</Aside>

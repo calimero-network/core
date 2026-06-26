@@ -27,8 +27,20 @@ export default defineConfig({
           items: [{ label: 'Overview', slug: 'index' }],
         },
         {
+          label: 'Build',
+          autogenerate: { directory: 'build' },
+        },
+        {
+          label: 'Operate',
+          autogenerate: { directory: 'operate' },
+        },
+        {
           label: 'Protocol Reference',
           autogenerate: { directory: 'protocol' },
+        },
+        {
+          label: 'Contribute',
+          autogenerate: { directory: 'contribute' },
         },
       ],
     }),

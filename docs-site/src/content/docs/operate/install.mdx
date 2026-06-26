@@ -1,0 +1,134 @@
+---
+title: Install & First Run
+description: Build merod and meroctl from source or with Docker, then init, run, and verify a node.
+sidebar:
+  label: Install & first run
+  order: 2
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Steps, Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+Both binaries — `merod` (the node daemon) and `meroctl` (the operator CLI) —
+live in this repository and build together.
+
+## Install
+
+<Tabs>
+  <TabItem label="From source (cargo)">
+
+The repository pins a Rust toolchain in `rust-toolchain.toml` (channel
+`1.88.0`). With `rustup` installed, the toolchain is selected automatically.
+
+```sh
+git clone https://github.com/calimero-network/core
+cd core
+cargo build --locked --release -p merod -p meroctl
+```
+
+The binaries land in `target/release/merod` and `target/release/meroctl`. Add
+them to your `PATH`, or invoke them by path.
+
+<Aside type="note">
+  Building from source needs the system packages the Docker build installs:
+  `clang`, `libclang-dev`, `make`, `pkg-config`, and `libssl-dev` (Debian/Ubuntu
+  names). Install the equivalents for your platform.
+</Aside>
+
+  </TabItem>
+  <TabItem label="Docker">
+
+The root `Dockerfile` builds both binaries and produces a runtime image whose
+entrypoint is `merod`:
+
+```sh
+docker build -t calimero-node .
+```
+
+The image sets `CALIMERO_HOME=/data`, exposes ports `2428` (swarm) and `2528`
+(RPC), and declares `/data` as a volume. Run a command by appending it after the
+image name (the entrypoint is already `merod`):
+
+```sh
+docker run --rm -v calimero-data:/data calimero-node --node node1 --help
+```
+
+<Aside type="caution" title="Verify the run invocation">
+  The image entrypoint is `merod` and `CMD` defaults to `--help`. The exact
+  `docker run` flags for a long-lived node (port publishing, volume layout)
+  depend on your deployment; treat the command above as a starting point and
+  confirm against your environment.
+</Aside>
+
+  </TabItem>
+</Tabs>
+
+## Quickstart
+
+The flow is always the same: initialize a node's home directory, run the
+daemon, then point `meroctl` at it.
+
+<Steps>
+
+1. **Initialize the node.** This creates the home directory, generates the
+   node's identity keypair, writes `config.toml`, and opens the datastore.
+
+   ```sh
+   merod --node node1 init
+   ```
+
+   By default `merod` stores nodes under `CALIMERO_HOME` (override with
+   `--home`). The node listens on the swarm port `2428` and RPC port `2528`
+   unless you pass `--swarm-port` / `--server-port`. To place data under a
+   project directory:
+
+   ```sh
+   mkdir data
+   merod --home data/ --node node1 init --server-port 2528 --swarm-port 2428
+   ```
+
+   :::tip
+   Re-running `init` on an already-initialized node is a no-op unless you pass
+   `--force`, which wipes and re-initializes the directory.
+   :::
+
+2. **Run the node.** This loads `config.toml`, validates it, and starts the
+   daemon (swarm + RPC server). It runs in the foreground.
+
+   ```sh
+   merod --node node1 run
+   ```
+
+   `run` has the alias `up`. Use `--auth-mode <proxy|embedded>` to override the
+   authentication mode from `config.toml` for this run.
+
+3. **Verify with meroctl.** In a second terminal, talk to the running node. With
+   no node configured, `meroctl` targets `http://127.0.0.1:2528`:
+
+   ```sh
+   meroctl --node node1 peers
+   meroctl --node node1 app ls
+   meroctl --node node1 namespace ls
+   ```
+
+   `peers` returns the connected-peer count; the `ls` commands return empty lists
+   on a fresh node. Any successful response confirms the RPC server is up.
+
+</Steps>
+
+## Registering a node with meroctl
+
+So you don't pass connection details every time, register the node once and set
+it active:
+
+```sh
+meroctl node add node1 /path/to/home
+meroctl node use node1
+meroctl node ls
+```
+
+`node add` accepts a local home directory path or a remote `http(s)://` URL; see
+the [meroctl reference](/core/operate/meroctl/#node-connection-management) for
+authentication options.

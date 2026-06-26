@@ -1,0 +1,183 @@
+---
+title: Quickstart
+description: Build a Calimero app to WASM, install it on a node, attach it to a context, and call a method.
+sidebar:
+  order: 2
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+This walks from an empty crate to a method call. The two binaries you use are
+**`merod`** (the node daemon — `init`, `run`) and **`meroctl`** (the operator
+CLI — `app`, `context`, `namespace`, `call`).
+
+<Aside type="caution">
+  Commands are grounded in the in-repo CLI definitions (`crates/merod/src/cli/`,
+  `crates/meroctl/src/cli/`) and the example apps' `build.sh` scripts. The exact
+  context-bootstrap surface (namespaces / groups) is evolving — where a step is
+  not fully verifiable from a single source it is flagged inline. Run
+  `meroctl <command> --help` to confirm flags for your build.
+</Aside>
+
+## 1. Write and build the app
+
+<Steps>
+
+1. Create a library crate with a WASM-compatible `crate-type`. A minimal
+   `Cargo.toml`, modelled on `apps/kv-store/Cargo.toml`:
+
+   ```toml
+   [lib]
+   crate-type = ["cdylib", "rlib"]
+
+   [dependencies]
+   calimero-sdk = { git = "https://github.com/calimero-network/core" }
+   calimero-storage = { git = "https://github.com/calimero-network/core" }
+
+   [dev-dependencies]
+   # native test harness (TestHost) + CRDT merge under `cargo test`
+   calimero-storage = { git = "https://github.com/calimero-network/core", features = ["testing"] }
+   ```
+
+   :::caution
+   The dependency lines above show the crate names; pin them to a tag, rev, or
+   workspace path as appropriate for your setup. The in-repo example apps use
+   `calimero-sdk.workspace = true`.
+   :::
+
+2. Write the smallest possible app — a state struct plus one method. This is the
+   shape every Calimero app follows (see [SDK macros](/build/sdk-macros/)):
+
+   ```rust
+   use calimero_sdk::app;
+   use calimero_storage::collections::{LwwRegister, UnorderedMap};
+
+   #[app::state]
+   pub struct KvStore {
+       items: UnorderedMap<String, LwwRegister<String>>,
+   }
+
+   #[app::logic]
+   impl KvStore {
+       #[app::init]
+       pub fn init() -> KvStore {
+           KvStore { items: UnorderedMap::new() }
+       }
+
+       pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+           self.items.insert(key, value.into())?;
+           Ok(())
+       }
+
+       #[app::view]
+       pub fn get(&self, key: String) -> app::Result<Option<String>> {
+           Ok(self.items.get(&key)?.map(|v| v.get().clone()))
+       }
+   }
+   ```
+
+3. Build to WASM. The example apps ship a `build.sh`; the load-bearing line is:
+
+   ```sh
+   rustup target add wasm32-unknown-unknown
+   cargo build --target wasm32-unknown-unknown --profile app-release
+   ```
+
+   The artifact lands at
+   `target/wasm32-unknown-unknown/app-release/<crate_name>.wasm`. The example
+   scripts then copy it into a local `res/` directory and (if `wasm-opt` is
+   installed) shrink it:
+
+   ```sh
+   wasm-opt -Oz --enable-bulk-memory ./res/my_app.wasm -o ./res/my_app.wasm
+   ```
+
+   :::note
+   The `app-release` (and `app-profiling`) profiles are defined in the workspace.
+   Building a standalone crate outside the workspace? Either copy those profiles
+   into your `Cargo.toml` or use `--release` instead.
+   :::
+
+</Steps>
+
+## 2. Run a node
+
+<Steps>
+
+1. Initialize a node's config and data directory, then run it:
+
+   ```sh
+   merod --node node1 init --server-port 2428 --swarm-port 2528
+   merod --node node1 run
+   ```
+
+   `merod --node node1 init --help` lists the full set (swarm/server host and
+   port, boot nodes, mDNS, auth mode). Config and data live under
+   `CALIMERO_HOME` / `--home`.
+
+</Steps>
+
+## 3. Install the app, attach a context, call a method
+
+`meroctl` talks to a running node. Select the node with `--node node1` (a
+configured alias) or `--api <URL>`.
+
+<Steps>
+
+1. **Install** the WASM module. The node returns an application id:
+
+   ```sh
+   meroctl --node node1 app install \
+     --path ./res/my_app.wasm \
+     --package com.example.myapp \
+     --version 1.0.0
+   ```
+
+   List what is installed with `meroctl --node node1 app ls`.
+
+2. **Attach the app to a context.** A context is a running instance of an app
+   over a shared state. The simplest entry is to create a namespace bound to the
+   application id:
+
+   ```sh
+   meroctl --node node1 namespace create --application-id <app-id>
+   ```
+
+   :::caution
+   `meroctl context create` also exists and takes `--application-id`, but in the
+   current CLI it additionally requires a `--group-id` (and optionally `--as`,
+   `--name`, `--params`). The namespace/group bootstrap is the part most in
+   flux — confirm the exact flow with `meroctl namespace --help` and
+   `meroctl context create --help` before scripting it.
+   :::
+
+3. **Call a method** on the context. Mutations and views both go through the
+   top-level `call` command:
+
+   ```sh
+   # mutate
+   meroctl --node node1 call set \
+     --context <context-id> \
+     --args '{"key": "hello", "value": "world"}'
+
+   # view (optionally as a specific identity)
+   meroctl --node node1 call get \
+     --context <context-id> \
+     --args '{"key": "hello"}' \
+     --as <identity-public-key>
+   ```
+
+   `--args` takes JSON matching the method's parameters. `<context-id>` accepts a
+   context id or an alias you created with `--name`.
+
+</Steps>
+
+<Aside type="tip" title="Test before you ship">
+  The SDK ships a native in-process harness (`calimero_sdk::testing::TestHost`,
+  enabled by the `calimero-storage` `testing` feature). You can drive your app's
+  methods and assert on state under plain `cargo test`, with no node and no WASM
+  build. See the `tests/` directories of the example apps.
+</Aside>

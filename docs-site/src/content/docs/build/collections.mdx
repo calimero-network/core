@@ -1,0 +1,125 @@
+---
+title: Collections
+description: The CRDT collection types your app state is built from — their merge semantics and when to use each.
+sidebar:
+  order: 4
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Your [`#[app::state]`](/build/sdk-macros/) is built from the collection types in
+`calimero_storage::collections`. Each is a **CRDT**: concurrent edits on
+different nodes merge deterministically, with no coordination, so replicas
+converge to the same state. Choosing the right collection is choosing the right
+merge behavior.
+
+<Aside type="note" title="Get returns an owned, read-only copy">
+  Storage values are not resident in memory like a `HashMap`'s — every `get`
+  deserializes a fresh copy, returned as a read-only `ValueRef<V>`. To mutate and
+  persist, use `get_mut` or `entry().or_default()` (both write back on drop). To
+  keep a copy, `.clone()` it. Mutating a plain `get` result does not compile —
+  that closes the "edit a throwaway copy and lose the change" footgun.
+</Aside>
+
+## Type reference
+
+| Type | Merge semantics | When to use |
+|------|-----------------|-------------|
+| `UnorderedMap<K, V>` | Add-wins union; shared keys merge their values recursively. No iteration order. | Default key→value store; O(1) point lookups. |
+| `UnorderedSet<V>` | Add-wins union of membership. | Default set; O(1) membership tests. |
+| `SortedMap<K, V>` | Same merge as `UnorderedMap`, plus a node-local ordered index. | When you need range / prefix / pagination / sorted iteration. |
+| `SortedSet<V>` | Same merge as `UnorderedSet`, plus a node-local ordered index. | Ordered membership with range / prefix / pagination. |
+| `Vector<V>` | Append-only sequence; `push` mints a stable element id. | Ordered lists where you append and index. |
+| `ReplicatedGrowableArray` | Text-editing CRDT; characters ordered by neighbor + HLC. | Concurrent collaborative text. |
+| `LwwRegister<T>` | Last-writer-wins by HLC timestamp (ties broken by node id). | A single scalar/field where the latest write should win. |
+| `Counter` / `GCounter` / `PNCounter` | Per-executor slots summed at read. | Distributed counts; `PNCounter` allows decrements. |
+| `AuthoredMap<K, V>` | `UnorderedMap` where each entry is owned by its inserter. | Shared map where users own their own entries. |
+| `AuthoredVector<V>` | `Vector` where each slot is owned by its author. | Append-only log where authors control their entries. |
+| `UserStorage<T>` | Per-user slots; each executor writes only its own. | Per-user state; anyone reads, only the owner writes their slot. |
+| `SharedStorage<T>` | Value guarded by a writer set; writes verified at merge. | Group-writable shared state with rotatable writers. |
+| `Ownable<T>` | Single-owner cell (a `SharedStorage` with one writer). | Single-owner resource with transfer. |
+| `PermissionedStorage<T, A>` | Writer-set cell with a custom authorization policy. | Fine-grained per-operation access (read/write/delete/admin). |
+| `FrozenStorage<T>` | Content-addressed, immutable; key is `SHA256(value)`. | Immutable, de-duplicated blobs/documents. |
+| `AccessControl` | Role registry (admins + named roles) backed by `SharedStorage`. | Multi-tier authorization (admins, editors, ...). |
+
+<Aside type="caution">
+  These are the publicly re-exported types in `crates/storage/src/collections.rs`.
+  `Counter` is an alias over a const-generic `Counter<ALLOW_DECREMENT>`:
+  `GCounter` (increment-only, reads `u64`) and `PNCounter` (increment + decrement,
+  reads `i64`). `WriterSetCell` and `FrozenValue` also exist but are the building
+  blocks behind `SharedStorage` and `FrozenStorage` — reach for the higher-level
+  types.
+</Aside>
+
+## The everyday types
+
+- **`UnorderedMap` / `UnorderedSet`** — your defaults. Both are *add-wins*:
+  concurrent inserts all survive a merge. Values in a map merge recursively, so
+  a `UnorderedMap<String, LwwRegister<String>>` gives you per-key last-writer-wins
+  (the pattern `apps/kv-store` uses).
+- **`SortedMap` / `SortedSet`** — same CRDT as the unordered pair, but they also
+  maintain a node-local ordered index, unlocking `range(a..b)`, `prefix(p)`,
+  `page(offset, limit)`, `first()`, and `last()`. The index is **not**
+  synchronized — each node keeps its own and rebuilds it after sync if stale — so
+  you pay a little write overhead. They are the `BTreeMap`/`BTreeSet` to the
+  unordered types' `HashMap`/`HashSet`. See `apps/sorted-kv-store`.
+- **`Vector`** — append + index. `push` assigns each element a stable id, so
+  iteration order is preserved across reloads.
+- **`LwwRegister<T>`** — wrap any scalar that should follow last-writer-wins.
+  This is how you store a `String`, number, or enum inside CRDT state (bare
+  scalars are rejected by the state lint). `set` stamps a fresh timestamp;
+  `get_mut` edits in place and re-stamps on drop.
+- **`Counter` family** — increments are tracked per executor and summed on read,
+  so concurrent increments on different nodes all count. `GCounter` is
+  increment-only; `PNCounter` also decrements.
+
+## Access-controlled collections
+
+These add an authorization model on top of a CRDT. The crucial property:
+**authorization is enforced at merge time**, not just locally. A node's
+fail-fast local check (e.g. `only_admin()`, `owner_of()`) is a UX convenience;
+the security boundary is the merge, where every replica re-verifies signed writes
+against the writer set / owner. A forged write does not survive convergence.
+
+- **`AuthoredMap<K, V>` / `AuthoredVector<V>`** — *per-entry ownership*. Anyone
+  can insert a new key (or push a new slot); the inserter is recorded as owner.
+  Only the owner may `update` or `remove` (vector entries are tombstoned, not
+  physically removed, so concurrent merges stay sound). Anyone can read. Use for
+  shared maps/logs where users own what they contributed.
+
+- **`UserStorage<T>`** — *per-user slots keyed by identity*. Each executor can
+  only write its own slot (`insert` targets `env::executor_id()`); reads are
+  unrestricted (`get` for the current user, `get_for_user(key)` for any). Use for
+  per-user preferences or state. See `apps/kv-store-with-user-and-frozen-storage`.
+
+- **`SharedStorage<T>` / `Ownable<T>` / `PermissionedStorage<T, A>`** —
+  *writer-set guarded*. The value lives behind a set of authorized writer
+  identities. `SharedStorage` lets any current writer write; `Ownable` is the
+  single-writer case with `owner` / `transfer_ownership`; `PermissionedStorage`
+  takes a policy `A` (e.g. `OwnerAcl`, `WriterSetAcl`, `ProtocolAuthorizer`) for
+  per-operation granularity (read / write / delete / admin). Writers are
+  rotatable (`rotate_writers`) and rotation is itself authenticated. See
+  `apps/kv-store-with-shared-storage`.
+
+- **`AccessControl`** — a role registry built on `SharedStorage` whose writer set
+  is the admin tier. Admins grant/revoke named roles (`grant(role, who)`,
+  `has_role`, `grant_admin`, ...); roles are LWW booleans enforced at merge. Use
+  for multi-tier authorization.
+
+## Immutable / content-addressed
+
+- **`FrozenStorage<T>`** — a map whose key is the `SHA256` of the value. Entries
+  are immutable: no overwrite, no remove. `insert(value)` returns the hash;
+  concurrent inserts of identical content de-duplicate automatically. Use for
+  archives, static assets, or any content-addressed immutable data. See
+  `apps/kv-store-with-user-and-frozen-storage`.
+
+<Aside type="tip" title="Composing values">
+  Collection values can be other CRDTs. Nest them
+  (`UnorderedMap<String, Counter>`), or build a struct of CRDT fields and derive
+  [`#[derive(app::Mergeable)]`](/build/sdk-macros/) so the struct merges
+  field-by-field. Every nested field must itself be `Mergeable`.
+</Aside>

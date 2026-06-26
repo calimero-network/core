@@ -1,0 +1,139 @@
+---
+title: Architecture Orientation
+description: The Calimero Core actor model and the crate map, grouped layer by layer, with each crate's responsibility in one line.
+sidebar:
+  label: Architecture
+  order: 2
+  badge:
+    text: Draft
+    variant: caution
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This page orients you in the workspace: first the **actor model** that drives a
+running node, then the **crate map** grouped by layer. For the protocol-level
+model (the signed-op DAG and the deterministic fold) see the
+[Protocol Reference](/protocol/overview/).
+
+## The actor model
+
+A running node is organized as a small set of **Actix actors** that talk to each
+other through **typed messages**, plus a couple of long-lived async tasks. The
+actors never reach into each other's state directly — they exchange messages and
+go through thin **client façades** (`NodeClient`, `ContextClient`,
+`NetworkClient`) that wrap message recipients.
+
+| Actor / task | Crate | Role |
+| --- | --- | --- |
+| `NodeManager` | `crates/node` | Central orchestrator. Receives network events, routes incoming state deltas to contexts, handles blob caching (multi-phase LRU), heartbeats, and key delivery. Handles `NodeMessage`. |
+| `ContextManager` | `crates/context` | Manages contexts (application instances), groups (governance units), and per-namespace governance DAGs. 30+ message handlers covering execution, governance, membership, and upgrades. Handles `ContextMessage`. |
+| `NetworkManager` | `crates/network` | Owns and drives the libp2p `Swarm`. Publishes/subscribes gossipsub topics, runs the Kademlia DHT, mDNS, relay, and request/response streams. Handles `NetworkMessage`. |
+| `SyncManager` | `crates/node` | **Not an actor** — a long-lived async task spawned at startup. Runs periodic and on-demand sync cycles, selecting a sync protocol from handshake-negotiated divergence metrics. |
+| `GarbageCollector` | `crates/node` | Background actor that cleans up storage tombstones. |
+
+How they talk, end to end:
+
+- External clients hit the **Server layer** (`crates/server`) over REST /
+  JSON-RPC / WebSocket / SSE. The server holds no business logic — it delegates
+  to `ContextClient` and `NodeClient`.
+- `NodeManager` routes work: an execution request goes to `ContextManager`,
+  which runs a WASM method on the **runtime** (`crates/runtime`) and produces a
+  **state delta**.
+- Deltas are recorded in the causal **DAG** (`crates/dag`), persisted through
+  the **storage layer** (`crates/store` + `crates/storage`), and broadcast to
+  peers via `NetworkManager`.
+- Inbound network events flow the other way: `NetworkManager` → `NodeManager` →
+  the right context, where deltas are applied and convergence is reconciled by
+  `SyncManager`.
+
+<Aside type="tip">
+  Key boundary: the network layer only moves **opaque bytes**. `calimero-network`
+  never imports application-level types — it ferries `Vec<u8>` between peers and
+  hands them up as `NetworkEvent` variants. Message decoding happens in the node
+  layer.
+</Aside>
+
+## The crate map
+
+The workspace layers from external surfaces at the top down to shared primitives
+at the bottom. Binaries depend on the server and node crates, which fan out
+through the core libraries, all converging on `primitives`.
+
+### Client & Server layer
+
+| Crate | Responsibility |
+| --- | --- |
+| `crates/server` (+ `server/primitives`) | Single Axum HTTP server mounting all public surfaces: Admin REST API, JSON-RPC 2.0, WebSocket, SSE, Prometheus metrics, and the embedded admin dashboard SPA. |
+| `crates/auth` (`mero-auth`) | Forward-auth service: JWT issuing/verification, pluggable providers (NEAR, Ethereum, custom), challenge/nonce wallet auth. Runs embedded in the server or behind a reverse proxy. |
+| `crates/client` | Trait-based client library for talking to Calimero APIs (auth, storage abstractions) — used by tooling and integrations. |
+
+### Node & Context layer
+
+| Crate | Responsibility |
+| --- | --- |
+| `crates/node` (+ `node/primitives`) | `NodeManager` actor, the `SyncManager` task, and the `GarbageCollector`. Orchestrates the whole node and owns delta handling and blob caching. |
+| `crates/context` (+ `context/primitives`) | `ContextManager` actor: contexts, groups, namespace governance DAGs, lifecycle recovery, and metrics. |
+| `crates/context/config` | Context configuration types and the on-chain/config-contract client surface. |
+| `crates/config` | Node configuration (`config.toml`) types and loading. |
+
+### Sync, Network, Runtime & Store layer
+
+| Crate | Responsibility |
+| --- | --- |
+| `crates/network` (+ `network/primitives`) | `NetworkManager` actor wrapping the composed libp2p behaviour stack (gossipsub, Kademlia, mDNS, relay, rendezvous, hole-punching, streams). Moves opaque bytes only. |
+| `crates/runtime` | Wasmer + Cranelift WASM execution engine. Builds a `VMLogic` per call, runs the exported method, and returns an `Outcome` (return value, logs, events, storage delta). 50+ host functions. |
+| `crates/store` | Column-family key-value abstraction over RocksDB via the `Database` trait; typed keys with compile-time size/column guarantees. |
+| `crates/store/impl/rocksdb` | The RocksDB-backed implementation of the `Database` trait. |
+| `crates/store/blobs` | Blob store (`calimero-blobstore`) for large binary artifacts. |
+| `crates/store/encryption` | Optional transparent AES-GCM encryption of values at rest. |
+| `crates/storage` (+ `storage-macros`) | CRDT storage collections and the derive macros that wire app state into the storage subtree. |
+
+### Governance, Op & DAG layer
+
+| Crate | Responsibility |
+| --- | --- |
+| `crates/dag` | Pure causal DAG for delta tracking with automatic dependency resolution — no network or storage deps. Orders state changes correctly even when messages arrive out of order. |
+| `crates/governance-types` | Signed group-operation types for local (no-chain) group governance. |
+| `crates/governance-store` | Apply pipeline, broadcast/ack flow, metrics, and notifications for the local group-governance domain (extracted from `calimero-context`). |
+| `crates/op` | The unified `Op` envelope for the causal log — one operation type for data writes, writer-set rotation, membership, and policy changes. |
+| `crates/projection` | `ScopeState` — the single deterministic projection (materializer) of a scope's op-log into values plus a `root` hash. |
+| `crates/authz` | The single authorization fold over the op-log: `authorize` is one match over the op payload against an ACL view resolved at the op's causal cut. |
+| `crates/op-adapter` | Transitional bridge mapping per-plane operation types onto the unified causal log. |
+
+<Aside type="caution">
+  The `op` / `projection` / `authz` / `op-adapter` crates are part of the
+  in-progress **unified causal log** migration. `op-adapter` in particular is
+  explicitly transitional and is slated for removal once everything runs on the
+  unified payload. Treat their exact boundaries as moving targets and check the
+  source before relying on them.
+</Aside>
+
+### SDK & Primitives layer
+
+| Crate | Responsibility |
+| --- | --- |
+| `crates/sdk` (+ `sdk/macros`) | Proc-macro SDK for building apps: `#[app::state]`, `#[app::logic]`, `#[app::event]`. Compiles to WASM and exposes methods as JSON-RPC-callable endpoints. |
+| `crates/sys` | Low-level system/host ABI bindings used by the SDK and runtime boundary. |
+| `crates/wasm-abi` | WASM ABI definitions shared between host and guest. |
+| `crates/primitives` | Core shared types (e.g. `ContextId`, identities) used across the workspace. |
+| `crates/prelude` | Common re-exports for ergonomic imports across crates. |
+| `crates/crypto` | Cryptographic primitives (keys, signing, hashing). |
+| `crates/tee-attestation` | Platform-agnostic TEE attestation generation/verification (e.g. TDX quotes). |
+
+### Binaries & tools
+
+| Crate | Responsibility |
+| --- | --- |
+| `crates/merod` | The node daemon binary. |
+| `crates/meroctl` | The operator/developer CLI. |
+| `tools/calimero-abi` (`mero-abi`) | Inspect/verify application WASM ABIs. |
+| `tools/mero-sign` | Sign application bundles. |
+| `tools/merodb` | Inspect and debug the node's RocksDB database. |
+
+<Aside type="note">
+  This is the map, not the territory. Each layer above has a deeper companion in
+  the repo's generated `architecture/` pages (one HTML page per crate group); use
+  this table to find the crate, then read its `src/lib.rs` module docs and any
+  local `AGENTS.md` for the current detail.
+</Aside>
