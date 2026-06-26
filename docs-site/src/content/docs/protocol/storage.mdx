@@ -102,6 +102,19 @@ are worth inspecting directly when an upgrade looks stuck (the [recover a stuck 
 These columns are auto-created from the column set at open time (no DB migration), so they exist even on a node that has never upgraded — they simply hold no rows
 until a migration writes one.
 
+## Atomic writes: temporal staging and the `WriteBatch`
+
+A node never dribbles individual puts to the backend in the middle of an operation. Writes flow through a small stack of composable **layers** (`crates/store/src/layer.rs:16-61`): `Layer` is the base marker, `ReadLayer` adds `get`/`has`/`iter`, and `WriteLayer` adds `put`/`delete`/`apply`/`commit`. `LayerExt` lets any layer wrap itself — `.temporal()` produces a staging shadow, `.read_only()` a read-only view — so the stack composes without the backend knowing.
+
+The staging layer is `Temporal` (`crates/store/src/layer/temporal.rs:11-104`). It wraps a mutable inner layer and holds a `shadow` `Transaction`. Every `put`/`delete` records the op into the shadow only; nothing touches the inner layer yet. Reads consult the shadow **first**, then fall through to the inner layer:
+
+- `get`: a shadow `Put` returns the staged value; a shadow `Delete` returns `None`; a shadow miss delegates to the inner layer.
+- iteration merges the inner layer's keys with the shadow's, hiding any key the shadow has deleted.
+
+So an operation reads its own uncommitted writes, while the persisted store stays untouched until the end. `commit()` is a single line — `self.inner.apply(&self.shadow)` — handing the whole staged transaction to the inner layer's `apply`. On the RocksDB-backed `Store` that lands as one `WriteBatch` (`crates/store/src/lib.rs:127-135`): every put and delete in the set — **across column families** — is persisted together, or none is. Drop the `Temporal` without committing and the staged set is simply discarded.
+
+The same all-or-nothing primitive is exposed directly as `StoreBatch` (`crates/store/src/batch.rs:9-77`) for callers that must move several keys together (for example, cascade-delta records plus their context's `dag_heads`): `put`/`delete` stage into a `Transaction`, `commit()` is one `Store::apply`, and a serialization error surfaces at stage time — before anything is written.
+
 ## Back to the protocol
 
 That is the on-disk shape of everything the ten chapters describe. Return to the [Protocol Reference](/protocol/overview/), or revisit [Operations](/protocol/operations/) (whose `Op` is what the unified store holds) and [Projection](/protocol/projection/) (whose root hash is the `root_hash` in `ContextMeta`).

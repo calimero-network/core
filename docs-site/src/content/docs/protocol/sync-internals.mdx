@@ -123,6 +123,10 @@ The responder applies each via a CRDT merge and replies with `EntityPushAck { ap
 
 A pushed plain entity is not trusted blindly. `handle_tree_node_request` takes the authenticated `peer_identity` of the session initiator and uses it to gate ingestion of authorless pushes: a peer that is no longer an authorized member must not be able to launder a write into the store via HashComparison (`hash_comparison.rs:76`). Authorized leaves carry their wire authorization forward into the stored metadata (`hash_comparison.rs:524`). This is what guarantees sync can never introduce a write the author was not entitled to make.
 
+### Deferred root-entity merge through WASM
+
+Most leaves merge directly on the host, but **root-entity** leaves cannot — the app's root state is application-typed, and only the WASM module knows how to merge it. So `handle_entity_push` does not apply those inline: it collects each root-entity leaf into the `deferred_root_merges` bucket (carrying the leaf's real remote-write HLC timestamp, not a synthetic one) and returns them for the caller to dispatch *after* the batch, via `ContextClient::merge_root_state` (`crates/node/src/sync/helpers.rs:700-733`). The dispatcher re-enters WASM per entity, then writes the merged bytes back with `updated_at = max(existing, incoming)` so the next round's LWW comparison resolves consistently (`crates/node/src/sync/protocol_selector.rs:501-577`). When the receiver has never seen the root entity, its metadata reads as all-zero, so `existing.created_at == existing.updated_at` and the WASM-side **bootstrap fast-path accepts the incoming bytes unconditionally** (`protocol_selector.rs:508`). The one exception that stays on the host: an opaque root entity with no app-defined `crdt_type` (test fixtures, apps without `#[app::state]`) has nothing for WASM to dispatch to, so it is direct-written LWW instead of deferred.
+
 ## LevelWise
 
 A breadth-first variant tuned for wide, shallow trees (depth ≤ 2). The initiator requests a whole level at a time with `LevelWiseRequest` (`wire.rs:189`):
@@ -193,12 +197,35 @@ Snapshot apply does not behave like the incremental protocols — it has three p
 
 **It never ships rotation logs.** Every `Auxiliary` record — including `ROTATION_LOG` — is rejected on receipt, because no `Auxiliary` kind is per-record signature-verifiable yet and a forged rotation log would let the verifier accept actions from writers who weren't authorized at the relevant causal point (`snapshot.rs:808`). The receiver instead reconstructs writer-rotation history from verified delta replay. The bounded edge case: a late-arriving pre-snapshot delta that references a rotation point before the snapshot may fail to verify until per-entry rotation-log signing lands.
 
+### Crash recovery and forced resync
+
+Two paths let a snapshot overwrite an already-initialized context, both bypassing the fresh-node invariant of the previous section.
+
+- **Crash recovery.** Before the first page lands, the receiver writes a `sync-in-progress` marker keyed by context id (`snapshot.rs:1043-1061`). If the node crashes mid-snapshot, that on-disk marker is still present on restart; `request_snapshot_sync` treats its presence as `is_crash_recovery` and forces a re-sync **without** an explicit `force` flag — the local state is known-incomplete, so the fresh-node gate is the wrong thing to enforce (`snapshot.rs:58-60,324-329`). The marker is the only thing that lets the bypass happen silently.
+- **Operator resync (`force = true`).** A `force` resync (routed from `handle_dag_sync` for a `ContextResyncRequested` context) disables **both** the fresh-node gate (`snapshot.rs:329`) **and** the per-entity schema fence (`snapshot.rs:561-570`): a stranded context's loaded reader is its old bound blob, so fencing would decline the peer's current-schema entities and recover nothing. The receiver therefore adopts the peer's state wholesale, even from a peer that is behind — so the activation marker is bound to the **schema actually observed** on the applied entities, not the group target, so the result isn't mislabeled "up to date" (`snapshot.rs:490-502`).
+
 ## Side messages: blobs and key recovery
 
 A few protocols ride the same stream envelope outside the main transfer flow:
 
 - **`BlobShare { blob_id }`** (`wire.rs:130`) requests a blob; the responder streams it back as a sequence of `MessagePayload::BlobShare { chunk }` data chunks, terminated by an empty chunk (`crates/node/src/sync/blobs.rs`). Used to fetch application blobs a peer is missing.
 - **Key recovery** — `GroupKeyRequest { namespace_id, group_id, requester_public_key }` (`wire.rs:283`) is the pull-based replacement for the old on-DAG key-delivery op: a joiner that is already an admitted member but does not yet hold a group key *pulls* it from a sync peer each round. The responder validates membership, ECDH-wraps the key, and answers `GroupKeyResponse { key_envelope_bytes, responder_identity }` — an empty envelope means "I do not hold it, try another peer." Companion direct-join flows (`NamespaceJoinRequest`/`Response`, `OpenSubgroupJoinRequest`/`Response`) and `NamespaceBackfillRequest`/`Response` follow the same request/wrapped-envelope shape.
+
+## Run-loop mechanics
+
+The sync driver is a single `tokio::select!` loop dispatching sessions per context. A few of its self-protection mechanisms are worth stating because they bound failure modes the wire protocol can't.
+
+### Wedge watchdog
+
+A dispatched session that never produces a `SyncSessionResult` — a wedged actor, a dropped stream, a peer that went silent mid-transfer — would otherwise leave the context pinned in the in-progress state forever. The watchdog catches it. A session is considered wedged once it has been silent for the **grace window**, which is `session_deadline × 2` (60 s by default, from a 30 s deadline) (`crates/node/src/sync/session.rs:168,177`). The check itself only runs on the loop's interval tick (`frequency`, 10 s by default), so detection lands up to one tick **after** the grace lapses — roughly 60 s + 10 s in the worst case (`driver.rs:138-160`). When it fires, the watchdog synthesises an `on_failure` on the context so periodic sync retries it, and emits a per-context warn (`session.rs:554-577`).
+
+### Mailbox-full backoff and rollup
+
+If the `SyncSessionActor` mailbox is full, a dispatch `try_send` returns `Full`; the driver backs that context off for one `interval` (5 s) rather than spinning (`driver.rs:333-360`, `session.rs:321-335`). The warn is rate-limited to one per context per 60 s window; further drops in the window log at debug and feed a counter. When the window closes, a single rolled-up `info` line summarises it with `full_drops_in_window` (total drops) and `contexts_affected` (distinct contexts), so a storm shows up as one line instead of thousands (`session.rs:47,592-611`).
+
+### Targeted `context sync` syncs all contexts under churn
+
+An explicit `context sync` request normally carries a specific context (and optionally a peer) and force-bypasses the recency throttle for just that one. But if the request queue holds more than one pending request — common when many contexts join in a burst — the driver drains the entire queue and **clears the requested-context override to `None`**, falling back to a full sweep of every context (`driver.rs:198-255`). This trades one request's targeted-sync precision for a guarantee that no later-queued context is left stalled with empty DAG heads; the alternative (one request per loop iteration) starved contexts 2..N indefinitely.
 
 ## Post-sync governance reconciliation
 

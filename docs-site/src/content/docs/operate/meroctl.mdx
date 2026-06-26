@@ -304,6 +304,86 @@ For a remote node that needs authentication, login starts automatically; pass
 `--access-token` (and optionally `--refresh-token`) to skip it with explicit
 JWTs.
 
+## End-to-end session
+
+A complete run from an installed WASM module to reading back state. Each command
+below adds `--output-format json` so the ids you need to copy forward are
+machine-readable; drop it to get the default human-readable table.
+
+1. **Install the application.** The node returns an `applicationId`:
+
+   ```bash
+   meroctl --node node1 app install \
+     --path ./kv_store.wasm \
+     --package com.example.kvstore \
+     --version 0.1.0 \
+     --output-format json
+   ```
+
+   ```json
+   {"data":{"applicationId":"<app-id>"}}
+   ```
+
+2. **Create a namespace** bound to that application id. A namespace is a root
+   group; its id is the `--group-id` a context attaches to:
+
+   ```bash
+   meroctl --node node1 namespace create --application-id <app-id> \
+     --output-format json
+   ```
+
+   ```json
+   {"data":{"namespaceId":"<namespace-id>"}}
+   ```
+
+3. **Create a context** from the application id and the namespace id, giving it a
+   memorable alias with `--name`:
+
+   ```bash
+   meroctl --node node1 context create \
+     --application-id <app-id> \
+     --group-id <namespace-id> \
+     --name my-kv \
+     --output-format json
+   ```
+
+   ```json
+   {"data":{"contextId":"<context-id>","memberPublicKey":"<public-key>"}}
+   ```
+
+4. **Call a mutating method.** Whether a call mutates or only reads is decided by
+   the method's own `#[app::view]` declaration, not a CLI flag — `set` here
+   writes a key. Refer to the context by its alias:
+
+   ```bash
+   meroctl --node node1 call set \
+     --context my-kv \
+     --args '{"key": "hello", "value": "world"}' \
+     --output-format json
+   ```
+
+   `set` returns `()`, so the result is `null`:
+
+   ```json
+   {"jsonrpc":"2.0","id":null,"result":{"output":null}}
+   ```
+
+5. **Read it back with a view method.** `get` is declared `#[app::view]`, so the
+   same `call` command runs it read-only:
+
+   ```bash
+   meroctl --node node1 call get \
+     --context my-kv \
+     --args '{"key": "hello"}' \
+     --output-format json
+   ```
+
+   ```json
+   {"jsonrpc":"2.0","id":null,"result":{"output":"world"}}
+   ```
+
+The value you stored comes back under `result.output`.
+
 ## Next steps
 
 <CardGrid>

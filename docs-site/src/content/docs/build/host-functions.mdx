@@ -59,6 +59,29 @@ How a method's return value (or error) leaves the WASM module.
 |----------|--------------|--------|
 | `env::log(message: &str)` | Appends a UTF-8 line to the execution log, surfaced in the node logs and the execution outcome. | Logs are bounded (`max_logs`, `max_log_size`). Prefer the `app::log!("..", x)` macro for formatting. Logging is a side effect, not state — it does not sync. |
 
+### `tracing` integration
+
+With the optional `tracing` cargo feature enabled, the SDK installs a
+host-backed `tracing` subscriber at method entry (`env::init_logging()`, wired
+into every generated export). From then on, `tracing::info!`/`debug!`/… calls —
+**from your app and from any crate it depends on** — are formatted and forwarded
+to the same host log as `env::log`, with no per-app setup.
+
+<Aside type="caution" title="Default level is WARN, and DEBUG leaks storage internals">
+  The default forwarded level is **`WARN`**, not `INFO` — so `info!`/`debug!`
+  lines are silently dropped out of the box. (The default is deliberately
+  conservative: dependencies like `calimero_storage` log routine operations at
+  `INFO`, which would otherwise flood every execution's log buffer.) Retune it at
+  runtime with `env::set_log_level(LevelFilter::..)`; the change takes effect
+  immediately, even for the already-installed subscriber.
+
+  At `DEBUG` (and below), `tracing` from *every* crate compiled into the guest is
+  forwarded — including `calimero_storage` internals (keys, values, merge
+  detail). Those lines land in the persisted execution `Outcome`, so treat
+  `DEBUG` as a transient debugging aid, not something to leave on where the
+  `Outcome` is stored or exposed.
+</Aside>
+
 ## Events
 
 Structured notifications for off-chain consumers (WebSocket subscribers, the

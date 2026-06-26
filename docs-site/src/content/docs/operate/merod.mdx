@@ -132,6 +132,58 @@ merod --node node1 kms probe --json
   errors if TEE/KMS is not configured.
 </Aside>
 
+## Example: a long-lived node
+
+A hosted node that should rejoin the network across restarts is initialized once
+with a persistent home, has its `config.toml` adjusted for the deployment, then
+runs as a foreground service (under your process supervisor).
+
+1. **Initialize** under a stable home directory. Keep the RPC server on loopback
+   so it is only reachable through a local reverse proxy:
+
+   ```bash
+   merod --home /var/lib/calimero --node node1 init \
+     --server-port 2528 --swarm-port 2428
+   ```
+
+2. **Edit `config.toml`** for a datacenter deployment — turn off LAN discovery,
+   dial known peers on startup, and advertise a stable public swarm address
+   instead of relying on AutoNAT. These keys live in the file `init` wrote
+   (`<home>/node1/config.toml`):
+
+   ```toml
+   [bootstrap]
+   nodes = [
+       "/ip4/198.51.100.7/tcp/2428/p2p/12D3KooW…<peer-id>",
+   ]
+
+   [discovery]
+   mdns = false
+   advertise_address = true
+   external_address = ["/ip4/203.0.113.10/tcp/2428"]
+   ```
+
+   You can apply individual keys without hand-editing using the `config`
+   subcommand, which validates the result before writing:
+
+   ```bash
+   merod --home /var/lib/calimero --node node1 config "discovery.mdns=false"
+   ```
+
+3. **Run** the node. It reloads and validates `config.toml`, then stays in the
+   foreground:
+
+   ```bash
+   merod --home /var/lib/calimero --node node1 run
+   ```
+
+<Aside type="note">
+  `init` seeds the swarm on all interfaces (`0.0.0.0,::`) but the RPC server on
+  loopback only. Widen `server.listen` only if something off-host must reach the
+  API directly; otherwise terminate TLS and authenticate at a reverse proxy in
+  front of the loopback port.
+</Aside>
+
 ## Next steps
 
 <CardGrid>

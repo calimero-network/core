@@ -271,6 +271,42 @@ Every frame is length-delimited and capped at `MAX_MESSAGE_SIZE` (8 MiB) by the
 stream codec. Since stored chunks are 1 MiB, a `BlobChunk` frame stays well
 under that cap.
 
+## Worked example: a 5 MB image
+
+To see the pieces fit together, follow a 5 MB image from the app that stores it
+to a peer that fetches it.
+
+<Steps>
+
+1. **Store it.** The producing app calls `blob_create()`, streams the image in
+   with repeated `blob_write(fd, …)`, and calls `blob_close(fd, dst)`. The blob
+   store re-chunks the byte stream into roughly five 1 MiB storage chunks (the
+   last one short), and `close` writes back the root `BlobId` — the hash of the
+   ordered chunk-id list. The app keeps that id (typically by storing it in
+   state).
+
+2. **Announce it.** `blob_announce_to_context(blob_id, context_id)` looks up the
+   blob's size locally and `put_record`s a Kademlia record keyed
+   `context_id ‖ blob_id` with value `local_peer_id ‖ size` at `Quorum::One`. The
+   image is now discoverable by any member of that context.
+
+3. **Discover it.** A second node holds the `BlobId` in state (it synced the
+   reference) but not the bytes. It `get_record`s the same `context_id ‖ blob_id`
+   key — retried with backoff, since a fresh record takes a moment to propagate —
+   and learns the announcing peer and the size.
+
+4. **Fetch it.** The fetcher opens `/calimero/blob/0.0.2` to that peer and sends a
+   `BlobRequest { blob_id, context_id, auth? }`. The provider authorizes the
+   request, replies `BlobResponse { found: true, size }`, then streams its stored
+   chunks as `BlobChunk` frames — one per 1 MiB chunk — and a final empty
+   `BlobChunk` to mark the end.
+
+5. **Verify it.** The fetcher concatenates the chunks, recomputes the `BlobId`,
+   and accepts the bytes only if it matches the id it asked for. It stores the
+   image locally and can now serve (and announce) it itself.
+
+</Steps>
+
 ## Blob transfer during sync
 
 Blobs can also move **inside** a sync session over the sync stream

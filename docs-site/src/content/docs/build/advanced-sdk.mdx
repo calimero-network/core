@@ -294,6 +294,18 @@ expected to converge on; only the data you deliberately publish to `#[app::state
 (here, the secret *hashes*) leaves the node.
 :::
 
+:::caution[Type aliases defeat the private-storage rewrite]
+To make tree-backed collection fields node-local, `#[app::private]` injects
+`PrivateStorage` as the trailing generic on `UnorderedMap`, `UnorderedSet`,
+`Vector` (and the sorted variants). It matches on the **last path segment** of
+the type, so a fully-qualified path (`calimero_storage::collections::UnorderedMap`)
+is covered — but a type alias or `use … as` rename is **not**. An aliased
+collection silently keeps its default `MainStorage` and its entries leak into the
+synced tree, defeating the whole point of `#[app::private]`. Write the collection
+type out by name (or pass the explicit `PrivateStorage` parameter yourself);
+never reach a private field through an alias.
+:::
+
 ## `xcall`: fire-and-forget, node-gated, same-node only
 
 A cross-context call is **fire-and-forget**. `env::xcall(...)` does not invoke
@@ -439,6 +451,46 @@ pub struct MigrationSuiteV5ChangeType {
 the still-committed old root and the produced-but-uncommitted new root, so you can
 assert invariants like entity-count parity. The witness it relies on is transient
 — it rides the `Outcome` side-channel and is not part of committed state.
+
+## The ABI travels inside the bytecode
+
+The app's state schema (the wasm-ABI manifest) is embedded as a wasm **custom
+section** named `calimero_abi_v1`, so it ships *inside* the module bytes and is
+covered by the same `blob_id` hash as the code. The schema therefore cannot
+change independently of the code: any edit to the ABI is an edit to the wasm
+blob's identity.
+
+The two sides of that boundary fail in opposite directions on purpose:
+
+- **Reads are validation-gated and fail-open.** Loading the embedded schema
+  returns `None` if the section is absent *or* malformed *or* well-formed JSON
+  that doesn't pass manifest validation (dangling refs, bad state root). A
+  missing schema doesn't brick a module — pre-schema modules simply get the
+  default (write-lock, no downgrade check) behaviour.
+- **Writes fail-closed.** Embedding the schema (build-time tooling) refuses a
+  malformed or truncated module rather than emitting a corrupt one.
+
+### The identity-downgrade rail
+
+Calimero's upgrade gate (and the `calimero-abi diff` CI lint) compare the old and
+new manifests to catch a class of silent ACL-stripping upgrades. The
+access-controlled wrappers — `PermissionedStorage` / `Ownable` / `AccessControl`
+(and `SharedStorage`) — all normalize in the ABI to a collection carrying
+`crdt_type = SharedStorage` plus the inner type, so their writer-set ACL is
+*visible* in the schema. Swapping such a field to a plain, ungated type (say
+`UnorderedMap`) is a network-wide ACL strip, and surfacing the wrapper as a
+distinct shape is what makes the downgrade diff able to see it.
+
+:::caution[The downgrade check fails closed on unresolvable types]
+When the gate resolves a field's top-level type, an **unresolvable** type — a
+reference cycle, a dangling `$ref`, or an unknown `crdt_type` — is *not* graded
+as "plain". Folding it into "plain" would let an identity-gated field hidden
+behind a broken ref slip past the gate as a missed downgrade. So an old field
+that's gated-or-unknown is always compared against its new shape, and an
+unresolvable new type reads as a downgrade. The only carve-out is when *both*
+old and new are unresolvable and unchanged — a legacy app that has always had a
+dangling ref and never used gated state.
+:::
 
 ## Multi-service bundles
 

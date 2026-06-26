@@ -150,6 +150,44 @@ StateDelta {
 
 Signatures are fixed `[u8;64]` (Ed25519); hashes and ids are `[u8;32]`; a `Nonce` is the crypto-layer nonce, distinct from the raw `[u8;32]` nonces used by node-discovery messages.
 
+## Specialized-node invitation: a direct request-response
+
+Most of the wire is gossip-and-streams, but one flow is neither: inviting a
+**specialized node** (for example a read-only TEE node) runs over a dedicated
+libp2p **request-response** protocol, a single unicast round trip to one peer
+rather than a topic broadcast.
+
+```rust
+// crates/network/primitives/src/specialized_node_invite.rs
+pub const CALIMERO_SPECIALIZED_NODE_INVITE_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/calimero/specialized-node-invite/1.0.0");
+pub const MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE: u64 = 1024 * 1024; // 1 MiB
+```
+
+The codec reads a 4-byte big-endian length prefix, caps the body at 1 MiB, then
+Borsh-decodes exactly one message each way — there is no chunked stream and no
+rolling-nonce envelope, just a request and its response:
+
+| Direction | Message | Fields |
+| --- | --- | --- |
+| Request | `VerificationRequest::TeeAttestation` | `nonce: [u8;32]`, `quote_bytes: Vec<u8>`, `public_key: PublicKey` |
+| Response | `SpecializedNodeInvitationResponse` | `nonce: [u8;32]`, `invitation_bytes: Option<Vec<u8>>`, `error: Option<String>` |
+
+The two halves are distinct flows. The inviter first **gossips** a discovery
+announcement (a `nonce` + node type) on the global topic. A specialized node that
+hears it does *not* reply on the topic — it opens this request-response protocol
+directly to the inviter and sends its `VerificationRequest`. Note what the
+request omits: there is no `context_id` on the wire. The inviter tracks the
+context internally, keyed by the `nonce` it generated, so the `nonce` is the
+correlation token that binds the unicast reply back to the original broadcast (it
+also binds the TEE attestation `quote_bytes` to this exact request).
+
+The inviter verifies the attestation, and on success returns a
+`SpecializedNodeInvitationResponse` carrying `invitation_bytes` — a serialized
+signed open invitation the node uses to join the context. On failure the same
+struct carries an `error` string and no invitation. The response echoes the
+`nonce` so a later join confirmation on the context topic can be matched up.
+
 ## Where this leads
 
 We can now move operations between nodes. The next three chapters trace the round trip end to end: **Chapter 8** creates and broadcasts an operation, **Chapter 9** receives and applies one, and **Chapter 10** reconciles whatever the eager channel missed.

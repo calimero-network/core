@@ -113,7 +113,12 @@ pub struct KvStore {
   `#[app::state]` (and `#[derive(app::Mergeable)]`) reject fields that have no
   merge semantics — `std::collections::*`, bare `Vec`, bare `String`, and bare
   primitives — because they would silently diverge across replicas. Wrap scalars
-  in `LwwRegister<T>` and use the SDK CRDT collections instead.
+  in `LwwRegister<T>` and use the SDK CRDT collections instead. The same lint
+  also rejects interior-mutability and shared-ownership wrappers
+  (`Rc`, `Arc`, `Weak`, `Cell`, `RefCell`, `UnsafeCell`, `OnceCell`, `OnceLock`,
+  `Mutex`, `RwLock`) **at any depth** — they have no merge semantics, don't
+  round-trip through borsh, and are non-portable to the single-writer wasm
+  replica.
 </Aside>
 
 ### `#[app::logic]`
@@ -131,6 +136,23 @@ impl KvStore {
     }
 }
 ```
+
+<Aside type="caution" title="The method-argument JSON contract is strict">
+  Arguments are decoded from **one** JSON object whose keys are the parameter
+  names, and the generated input struct is `#[serde(deny_unknown_fields)]` — an
+  unexpected key is a hard error, not ignored. A method that declares **no**
+  arguments still rejects a call that sends a populated JSON object (extra
+  fields); an absent, empty, or `null` body is accepted, so callers need not send
+  `{}`. Decode failures `panic_str` with the method name and the expected
+  argument shape.
+</Aside>
+
+<Aside type="note">
+  Method names beginning with the reserved `__calimero` prefix are a **compile
+  error**. That prefix is reserved for the SDK's own generated exports (the
+  merge-registration hook, root-state merge, rekey thunks), so a public app
+  method using it would collide with an emitted symbol.
+</Aside>
 
 ### `#[app::init]`
 
@@ -160,6 +182,17 @@ pub fn get(&self, key: String) -> app::Result<Option<String>> {
     Ok(self.items.get(&key)?.map(|v| v.get().clone()))
 }
 ```
+
+<Aside type="note" title="Read-only intent is enforced post-execution">
+  The `&self` receiver is checked at compile time, but the read-only contract is
+  also enforced *after* the method runs: a method declared read-only that
+  nonetheless produces a non-empty state artifact is rejected
+  (defence-in-depth), since a shared read lock must not mutate shared state.
+  `#[app::init]` is **always** treated as mutating regardless of any attribute —
+  the macro already rejects `#[app::view]` + `#[app::init]`, and the ABI emitter
+  hard-codes init as non-read-only so a rogue annotation from a non-SDK toolchain
+  can't trick the node into taking a read lock for an initializer.
+</Aside>
 
 ### `#[app::destroy]`
 

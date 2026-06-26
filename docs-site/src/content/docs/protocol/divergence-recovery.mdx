@@ -76,6 +76,14 @@ Two lighter signals exist to keep a partitioned namespace from sitting idle once
 The sync landing page describes a heartbeat that advertises heads *and a root* as a direct reconcile trigger. In the code today the namespace heartbeat is liveness-only and the authoritative triggers are the sync-handshake scope verdict and the signed-op divergence report. Treat "heartbeat root mismatch" as an observational signal, not the remediation path.
 </Aside>
 
+### Beacon debounce and anti-abuse
+
+A `Ready` peer beacons roughly every beacon interval, so the beacon-divergence trigger is rate-limited on both sides to keep a recovering namespace from melting into sync traffic:
+
+- **Debounce on the consumer.** A beacon that indicates divergence fires at most one namespace governance sync per `NS_BEACON_SYNC_DEBOUNCE` (5 s) **per namespace** — without it a behind node would launch one sync per beacon per peer (`crates/node/src/handlers/network_event/readiness.rs:28-71`).
+- **Probe-response rate-limit on the producer.** A peer answers readiness probes at most once per `beacon_interval / 2` per `(peer, namespace)` pair. This closes both a traffic-amplification path (one small probe otherwise pulls a signed beacon from every Ready peer on the topic) and a mailbox-CPU path; the budget keys on `(peer, namespace)`, so varying the probe nonce can't bypass it (`crates/node/src/readiness.rs:759-808`).
+- **Clock-drift rejection.** A beacon whose timestamp is more than `MAX_BEACON_CLOCK_DRIFT_MS` (60 s) ahead of local wall-clock is rejected outright. The window tolerates legitimate NTP-synced drift while closing a cache-poisoning vector — a forged far-future beacon that would otherwise lodge in the readiness cache and never age out (`crates/node/src/readiness.rs:206-213`).
+
 ## How divergence is repaired
 
 Repair is layered. Ordinary divergence heals through the normal sync session; the signed-op path adds a stronger, anchor-verified recovery; and a final governance pull closes the plane the data protocols can't reach.

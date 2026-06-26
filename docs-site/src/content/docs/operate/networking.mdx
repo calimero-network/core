@@ -184,6 +184,40 @@ Setting the address list without the flag has no effect. The same pairing
 applies to the `merod init --external-address` / `--advertise-address` flags.
 </Aside>
 
+### The reachability state machine
+
+AutoNAT isn't just a probe — its verdict drives a small state machine that
+switches the node's whole posture between "publicly reachable server" and "NAT'd
+client". The node runs a **switchable** AutoNAT v2 behaviour that starts as a
+client only and is flipped into a client-and-server as reachability is confirmed.
+Confirmed external addresses (from AutoNAT probes or the swarm) move the node
+between three states, and each transition fires a batch of discovery actions:
+
+| State | Meaning | Actions on entering |
+| --- | --- | --- |
+| `Unknown` | no probe result yet | none — wait for the first verdict |
+| `Reachable` | a confirmed external address exists | **enable** the AutoNAT server (so this node can probe others) and **register** with rendezvous so peers can find it |
+| `Unreachable` | no confirmed external address | **disable** the AutoNAT server, refresh its rendezvous registration, **request relay reservations**, and re-run rendezvous discovery to reattach through relays |
+
+Only real transitions act — re-confirming an address while already `Reachable`
+is a no-op, so the machine doesn't thrash. A separate trigger covers the
+restart/partition case: losing the **last** connection to a regular peer forces
+an immediate rendezvous re-discovery that bypasses the normal query throttle (see
+[below](#reconnecting-after-a-restart-or-partition)), so a node picks up a peer's
+fresh post-restart registration without waiting out the throttle window.
+
+The latest probe is retained (one slot, newest only) and surfaced for operators:
+
+```bash
+meroctl --node <name> network status
+```
+
+reports the current reachability (`Unknown` / `Public` / `Private`) plus the last
+AutoNAT test — the address that was tested, whether it came back reachable or
+failed, and when — so "is this node behind NAT?" is answerable without scraping
+`RUST_LOG=debug`. The same snapshot lists relay reservations, rendezvous
+registrations, and any DCUtR direct-connection upgrades.
+
 ## Reconnecting after a restart or partition
 
 Plain discovery finds peers; three further mechanisms keep a node attached to the

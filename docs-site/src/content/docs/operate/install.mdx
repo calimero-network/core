@@ -97,8 +97,14 @@ daemon, then point `meroctl` at it.
 1. **Initialize the node.** This creates the home directory, generates the
    node's identity keypair, writes `config.toml`, and opens the datastore.
 
-   ```sh
+   ```bash
    merod --node node1 init
+   ```
+
+   It prints a single confirmation line naming the node home it created:
+
+   ```text
+   INFO Initialized a node in "<home>/node1"
    ```
 
    By default `merod` stores nodes under `CALIMERO_HOME` (override with
@@ -119,9 +125,24 @@ daemon, then point `meroctl` at it.
 2. **Run the node.** This loads `config.toml`, validates it, and starts the
    daemon (swarm + RPC server). It runs in the foreground.
 
-   ```sh
+   ```bash
    merod --node node1 run
    ```
+
+   On startup the daemon logs its swarm listen address (which ends in the node's
+   peer id) and one line per HTTP service it brings up:
+
+   ```text
+   INFO Listening on: /ip4/0.0.0.0/tcp/2428/p2p/12D3KooW…<peer-id>
+   INFO Admin API listening on /ip4/127.0.0.1/tcp/2528/http{/admin-api}
+   INFO JSON RPC server listening on /ip4/127.0.0.1/tcp/2528/http{/jsonrpc}
+   INFO WebSocket server listening on /ip4/127.0.0.1/tcp/2528/ws{/ws}
+   INFO SSE server listening on /ip4/127.0.0.1/tcp/2528/http{/sse}
+   ```
+
+   The `/p2p/...` suffix on the swarm address is this node's peer id — the
+   identity generated during `init`. The admin, JSON-RPC, WebSocket, and SSE
+   services all share the RPC port (`2528`); the swarm uses `2428`.
 
    `run` has the alias `up`. Use `--auth-mode <proxy|embedded>` to override the
    authentication mode from `config.toml` for this run.

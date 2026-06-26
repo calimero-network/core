@@ -101,6 +101,75 @@ Events are consumed by clients over the node's API rather than by `meroctl`
 itself; check your node's API docs for the exact subscription endpoint.
 :::
 
+## Worked example: a chat notification flow
+
+A messaging app emits `MessageSent` whenever a member posts, and a web client
+subscribes over WebSocket to render new messages the moment they land. The event
+and the method that emits it:
+
+```rust
+#[app::event]
+pub enum Event<'a> {
+    MessageSent { from: &'a str, text: &'a str },
+}
+
+#[app::logic]
+impl Chat {
+    pub fn send_message(&mut self, from: String, text: String) -> app::Result<()> {
+        self.messages.push(text.clone())?;
+        app::emit!(Event::MessageSent { from: &from, text: &text });
+        Ok(())
+    }
+}
+```
+
+A client subscribes by sending a single frame on the node's WebSocket endpoint,
+naming the contexts it wants events for. The `method` is `subscribe` and the
+context ids go under `params.contextIds`:
+
+```json
+{ "id": 1, "method": "subscribe", "params": { "contextIds": ["<context-id>"] } }
+```
+
+After a `send_message` call commits, every subscriber to that context receives a
+state-mutation frame. The application event rides inside it under `data.events`:
+
+```json
+{
+  "contextId": "<context-id>",
+  "type": "StateMutation",
+  "data": {
+    "newRoot": "<root-hash>",
+    "events": [
+      { "kind": "MessageSent", "data": [123, 34, 102, 114, 111, 109, 34], "handler": null }
+    ]
+  }
+}
+```
+
+Each entry in `events` has three fields:
+
+- `kind` is the variant name — here `"MessageSent"`.
+- `data` is the variant's fields serialized to JSON, delivered as a **byte
+  array**. Decode the bytes back to UTF-8 and parse them to read the fields.
+- `handler` is the in-app handler name when you emitted with the tuple form
+  above, or `null` for a plain `emit!`.
+
+```js
+const ev = frame.data.events[0];                      // { kind, data, handler }
+const { from, text } = JSON.parse(
+  new TextDecoder().decode(new Uint8Array(ev.data)),  // -> {"from":"alice","text":"hi"}
+);
+renderMessage(from, text);                            // update the UI
+```
+
+<Aside type="note" title="Bytes, not an inline object">
+  The event payload arrives as a JSON array of bytes rather than a nested object
+  because the node treats each app's event `data` as opaque — it never parses
+  your event schema. The variant name in `kind` tells the client which shape to
+  decode the bytes into.
+</Aside>
+
 ## Next steps
 
 <CardGrid>

@@ -360,7 +360,59 @@ delta is what later flows to peers:
     { type: 'divider', label: 'delta broadcast to peers, replicas converge' },
   ]} />
 
-## 7. Next steps
+## 7. Make it multi-user
+
+So far one node owns the context. The payoff of a Calimero app is that a second
+node can hold the **same** context and the two converge automatically — that is
+the "replicas converge" divider in the diagram above. With a second node `node2`
+running, bring it into your context:
+
+<Steps>
+
+1. On `node1` (the context owner), create a group invitation for the namespace.
+   A namespace is its own group, so pass the `namespaceId` from step 6 as the
+   group id. The command prints an invitation JSON blob:
+
+   ```sh
+   meroctl --node node1 group invite <namespace-id>
+   ```
+
+2. On `node2`, redeem that blob to join the group, then join the context itself:
+
+   ```sh
+   meroctl --node node2 group join '<invitation-json>'
+   meroctl --node node2 group join-context <context-id>
+   ```
+
+3. Now both nodes hold the context. Write from `node2` and read it back on
+   `node1` — once the delta has synced, the value is there:
+
+   ```sh
+   meroctl --node node2 call set \
+     --context <context-id> --args '{"key": "from", "value": "node2"}'
+
+   meroctl --node node1 call get \
+     --context <context-id> --args '{"key": "from"}' --output-format json
+   ```
+
+   ```json
+   {"jsonrpc":"2.0","id":null,"result":{"output":"node2"}}
+   ```
+
+</Steps>
+
+Both nodes wrote and read the same key with no central server. Because `items`
+is a CRDT map, concurrent writes from both nodes merge instead of clobbering —
+that is what makes the convergence safe, not just eventual.
+
+<Aside type="note">
+  The exact `group`/`namespace` membership flags are still settling pre-1.0; run
+  `meroctl group --help` and `meroctl namespace --help` to confirm them for your
+  build. The convergence behavior itself — two holders of one context reaching
+  the same state — is the stable part.
+</Aside>
+
+## 8. Next steps
 
 You have the full loop: write, build, install, attach, call. From here:
 

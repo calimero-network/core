@@ -168,6 +168,83 @@ Event emission is best-effort: a failure to emit never aborts the dispatch loop 
 Because outcomes are out-of-band events, an xcall failure is **not** visible to the calling application and does **not** roll back the caller's already-committed state. Treat xcall as a notification, not a transaction: design targets to be idempotent and tolerant of being called again.
 </Aside>
 
+## Worked example: marketplace locks funds in escrow
+
+Two contexts in one namespace: a **marketplace** that accepts a purchase, and an
+**escrow** that holds the buyer's funds until a trade settles. When an order is
+placed the marketplace must tell escrow to lock the amount — fire-and-forget,
+node-local, exactly what xcall is for.
+
+The marketplace dispatches the call. It serializes the parameters escrow needs
+and, critically, includes **its own context id** so escrow can match it against
+the origin the node will set:
+
+```rust
+use calimero_sdk::{app, env, ContextId};
+
+#[app::logic]
+impl Marketplace {
+    pub fn place_order(&mut self, escrow: ContextId, amount: u64) -> app::Result<()> {
+        #[derive(calimero_sdk::serde::Serialize)]
+        #[serde(crate = "calimero_sdk::serde")]
+        struct LockArgs { from_context: ContextId, amount: u64 }
+
+        let params = calimero_sdk::serde_json::to_vec(&LockArgs {
+            from_context: ContextId::from(env::context_id()), // who we are
+            amount,
+        })?;
+
+        // queued now, dispatched after this execution commits. No return value.
+        env::xcall(escrow.as_ref(), "lock_funds", &params);
+        Ok(())
+    }
+}
+```
+
+Escrow's entry point is marked `#[app::xcall]` — without it the node denies the
+call before it runs. Inside, it reads the unforgeable origin the node stamped on
+the run and refuses anything that does not match the self-reported sender:
+
+```rust
+use calimero_sdk::{app, env, ContextId};
+
+#[app::logic]
+impl Escrow {
+    #[app::xcall]
+    pub fn lock_funds(&mut self, from_context: ContextId, amount: u64) -> app::Result<()> {
+        // origin is set by the node from the calling context — never from params
+        let Some(origin) = env::xcall_origin().map(ContextId::from) else {
+            app::bail!("lock_funds is xcall-only: direct calls are rejected");
+        };
+        if origin != from_context {
+            app::bail!("provenance mismatch: origin {origin} != claimed {from_context}");
+        }
+
+        // origin is authentic — record the hold against the calling marketplace
+        self.locked.insert(origin, amount.into())?;
+        Ok(())
+    }
+}
+```
+
+Walking the three checks against this call:
+
+- **L1** passes only if marketplace and escrow resolve to the **same
+  namespace** — a marketplace cannot reach an escrow it shares no governance
+  group with.
+- **L2** gives escrow `env::xcall_origin() == Some(marketplace_id)`. The
+  `from_context` in the params is just a claim; comparing it to the node-set
+  origin is what authenticates the caller. A direct RPC call gets `None` and is
+  rejected outright.
+- **L3** lets the call reach `lock_funds` only because it carries
+  `#[app::xcall]`; a method like an internal `release_funds` left unmarked is
+  denied with `XCallNotPermitted`.
+
+Because the outcome is a node `XCall` event rather than a return value, the
+marketplace does not learn inline whether the lock succeeded — so `lock_funds`
+is written to be idempotent and the trade-settlement design treats the lock as a
+signal to confirm later, not a synchronous transaction.
+
 ## When to use xcall
 
 xcall fits **node-local, fire-and-forget coordination between contexts in the same namespace**:

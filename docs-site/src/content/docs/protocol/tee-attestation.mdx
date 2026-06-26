@@ -148,6 +148,69 @@ The verifier (a key-holder) therefore calls `deliver_group_key_to_member`, which
 
 Back in `fleet-join`, the poll loop watches `list_group_contexts`. Once the membership op and `KeyDelivery` have propagated and been applied, the replica sees itself in the group, joins every context in the namespace, and publishes its own `MemberSetAutoFollow { auto_follow_contexts: true, auto_follow_subgroups: true }` — signed with its **own** namespace identity, which satisfies that op's admin-or-self authorization rule. The verifier cannot do this on the replica's behalf because it holds neither admin authority nor the replica's signing key. From then on, new contexts and subgroups auto-join without further sidecar polling (see [Governance](/protocol/governance/) for the auto-follow machinery).
 
+## Worked example: a replica joins a fleet
+
+Concretely, here is how a brand-new TEE replica brings itself online as a
+read-only follower of an existing namespace — no operator invite at any point.
+
+<Steps>
+
+1. **An admin sets the policy, once.** Ahead of time, a namespace-root admin
+   publishes the measurements the fleet trusts. This is the only human step, and
+   it happens long before any replica exists:
+
+   ```bash
+   # the namespace is its own root group, so the group id is the namespace id
+   curl -X PUT \
+     "$NODE/admin-api/groups/$NS/settings/tee-admission-policy" \
+     -d '{ "allowed_mrtd": ["<approved-td-measurement>"],
+           "allowed_tcb_statuses": ["UpToDate"],
+           "accept_mock": false }'
+   ```
+
+   This publishes `TeeAdmissionPolicySet` on the namespace root. `allowed_mrtd`
+   is non-empty, so the policy fails closed; an empty allowlist would be
+   rejected rather than admitting every quote.
+
+2. **The replica boots and announces.** The fleet sidecar calls the protected
+   route on the new node. The node resolves its namespace identity, builds
+   `report_data = nonce || SHA-256(pubkey)`, generates a TDX quote over it, and
+   broadcasts `TeeAttestationAnnounce` on `ns/<hex>`:
+
+   ```bash
+   curl -X POST "$NODE/admin-api/tee/fleet-join" -d '{ "group_id": "'"$NS"'" }'
+   ```
+
+   The call re-announces every ~2 s for up to ~30 s, seeding the gossip mesh
+   each cycle, because a single publish into a not-yet-formed mesh would be lost.
+
+3. **Any existing member verifies and admits.** A current member receives the
+   announce, runs `verify_attestation` (DCAP signature + nonce +
+   `SHA-256(pubkey)` bind), checks the quote's `mrtd`/`tcb_status` against the
+   policy, guards against a replayed `quote_hash`, and publishes
+   `MemberJoinedViaTeeAttestation { role: ReadOnlyTee, quote_hash, mrtd, … }`.
+   No special "verifier" role exists — any member may admit a valid quote.
+
+4. **The verifier delivers the key.** The membership row is encrypted, so the
+   verifier also publishes `RootOp::KeyDelivery` carrying the namespace group key
+   ECDH-wrapped to the replica's public key. Only the replica can unwrap it; if
+   this best-effort delivery is missed, the replica's own `GroupKeyRequest`
+   recovery pull fills the gap.
+
+5. **The replica self-confirms and follows.** Once the membership op and key have
+   propagated, the replica's poll loop sees itself in the group, joins every
+   context in the namespace, and signs its own `MemberSetAutoFollow { contexts,
+   subgroups }` — authorized by the admin-or-self rule because it signs with its
+   own namespace identity. From here new contexts and subgroups auto-join with no
+   further sidecar polling. `fleet-join` returns `{ admitted: true }`.
+
+</Steps>
+
+The replica is now a `ReadOnlyTee` member: it decrypts and serves the
+namespace's data and answers sync requests, but it can never author a write —
+keeping the namespace available even while the human-operated owner node is
+offline.
+
 ## The `ReadOnlyTee` role
 
 `ReadOnlyTee` is one of the group member roles ([identities](/protocol/identities/) covers the keypair model). Its constraints:

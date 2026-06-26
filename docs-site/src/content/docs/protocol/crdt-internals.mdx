@@ -274,6 +274,28 @@ skew), and the unique instance id guaranteeing global uniqueness with no coordin
 When a node observes a remote timestamp it advances its own clock past it, so a locally
 issued timestamp always sorts strictly after any event it causally follows.
 
+## Three subtler mechanisms
+
+The rules above cover the common path. Three further mechanisms close gaps that only surface under writer rotation, runtime nesting, and schema migration — each one a small reuse of machinery you have already seen.
+
+### The rotation log is just add-wins children
+
+A `Shared` set tracks who may write it through a per-entity **writer-rotation log**. Rather than invent a side channel, the log is materialised as an ordinary `UnorderedMap<delta_id, RotationLogEntry>` child of the `Shared` anchor entity, keyed by `delta_id` (`crates/storage/src/rotation_log.rs:17-22`, `crates/storage/src/interface.rs:388-416`). Each rotation is therefore one more hashed Merkle child — a content-addressed leaf — and converges through the very same add-wins entity-tree comparison that reconciles any other map.
+
+A single blob holding the whole log would *not* converge: its custom merge re-runs every sync round and never settles. Per-`delta_id` leaves reconcile individually via the proven structural path, and insertion order does not matter — causal precedence between concurrent rotations is resolved at read time, not baked into storage order.
+
+### Runtime id rekey and the `DeleteRef` tombstone
+
+A collection created on the fly — for example a `Counter` inserted as a map value — is born with a random id (`Collection::new(None)`). The moment it is inserted as a value of another collection it must take a **parent-derived deterministic id** so every node mints the same id and the children converge (`crates/storage/src/collections.rs:490-537`): the runtime computes `compute_collection_id(parent, field_name)`, removes the old random-id entry, and re-adds the entity under the new id. `rekey_nested_value` recurses this through any nested collections the value itself carries (`crates/storage/src/collections/rekey.rs:145-197`).
+
+There is a subtlety for **nested** collections (`parent_id.is_some()`). Such a collection's `Add` action, under its random id, may already have been pushed to the outgoing delta. Re-keying locally removes the random-id entry, but a receiver that already applied the random-id `Add` would keep it as an orphan and diverge its parent's hash. So the rekey also pushes a `DeleteRef` tombstone for the old random id, cancelling the shipped `Add`. Top-level rekeys (`parent_id == None`) run before any state is broadcast, so the old id was never shipped and no tombstone is needed.
+
+### `schema_version` is Merkle-invisible
+
+Each entity's `Metadata` carries a `schema_version: Option<u32>` (`crates/storage/src/entities.rs:603-611`). Crucially it is **never folded into `own_hash`**: a leaf's `own_hash` is `Sha256` of its *data bytes* only, not its metadata (`crates/storage/src/interface.rs`), so stamping or bumping the version never changes the entity's Merkle leaf.
+
+That is precisely what makes identity-gated migration possible. An owner re-stamps its identity-gated entries at a new version on its next ordinary signed write (`with_schema_version`, `crates/storage/src/entities.rs:689-705`) without diverging peers' hashes and without a coordinated flag-day upgrade. A `None` tag reads as a legacy/v0 entry.
+
 ## Summary
 
 | Mechanism | What it buys |
