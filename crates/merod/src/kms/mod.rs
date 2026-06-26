@@ -666,10 +666,10 @@ async fn verify_kms_attestation_from_release_policy(
         warn!(
             "Accepting mock KMS attestation quote from release policy path - development/testing only"
         );
-        verify_mock_attestation(&quote_bytes, &nonce, Some(&binding))
+        verify_mock_attestation(&quote_bytes, &nonce, &binding)
             .context("KMS mock attestation verification failed")?
     } else {
-        verify_attestation(&quote_bytes, &nonce, Some(&binding))
+        verify_attestation(&quote_bytes, &nonce, &binding)
             .await
             .context("KMS attestation verification failed")?
     };
@@ -1033,17 +1033,17 @@ async fn verify_kms_attestation(
         }
 
         warn!("Accepting mock KMS attestation quote - this is insecure and for development only");
-        verify_mock_attestation(&quote_bytes, &nonce, Some(&policy.binding))
+        verify_mock_attestation(&quote_bytes, &nonce, &policy.binding)
             .context("Failed to verify mock KMS attestation")?
     } else {
-        verify_attestation(&quote_bytes, &nonce, Some(&policy.binding))
+        verify_attestation(&quote_bytes, &nonce, &policy.binding)
             .await
             .context("Failed to verify KMS attestation quote")?
     };
 
     if !verification_result.is_valid() {
         bail!(
-            "KMS attestation verification failed: quote_verified={}, nonce_verified={}, app_hash_verified={:?}",
+            "KMS attestation verification failed: quote_verified={}, nonce_verified={}, app_hash_verified={}",
             verification_result.quote_verified,
             verification_result.nonce_verified,
             verification_result.application_hash_verified
