@@ -410,7 +410,8 @@ impl<'ast> Visit<'ast> for AbiEmitter {
         // Check if this is a newtype pattern
         if is_newtype_pattern(item_struct) {
             if let Some(target_type) = extract_newtype_target(item_struct) {
-                let target_type_ref = self.normalize_or_record(target_type, &format!("newtype `{struct_name}`"));
+                let target_type_ref =
+                    self.normalize_or_record(target_type, &format!("newtype `{struct_name}`"));
                 let target_type_ref = post_process_type_ref(target_type_ref, self);
 
                 // Add as an alias type definition
@@ -434,7 +435,10 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                     .as_ref()
                     .map_or_else(|| "unnamed".to_owned(), ToString::to_string);
 
-                let field_type = self.normalize_or_record(&field.ty, &format!("field `{field_name}` in `{struct_name}`"));
+                let field_type = self.normalize_or_record(
+                    &field.ty,
+                    &format!("field `{field_name}` in `{struct_name}`"),
+                );
                 let field_type = post_process_type_ref(field_type, self);
 
                 // Check if it's Option<T> to set nullable
@@ -480,7 +484,9 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         let mut record_fields = Vec::new();
                         for field in &fields.named {
                             let field_name = field.ident.as_ref().unwrap().to_string();
-                            let ctx = format!("field `{field_name}` in variant `{enum_name}::{variant_name}`");
+                            let ctx = format!(
+                                "field `{field_name}` in variant `{enum_name}::{variant_name}`"
+                            );
                             let field_type = self.normalize_or_record(&field.ty, &ctx);
                             let field_type = post_process_type_ref(field_type, self);
                             record_fields.push(Field {
@@ -506,7 +512,9 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         // Tuple variant with multiple fields
                         for (i, field) in fields.unnamed.iter().enumerate() {
                             let field_name = format!("field_{i}");
-                            let ctx = format!("field `{field_name}` in variant `{enum_name}::{variant_name}`");
+                            let ctx = format!(
+                                "field `{field_name}` in variant `{enum_name}::{variant_name}`"
+                            );
                             let field_type = self.normalize_or_record(&field.ty, &ctx);
                             let field_type = post_process_type_ref(field_type, self);
                             record_fields.push(Field {
@@ -519,7 +527,9 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         // Struct variant with multiple fields
                         for field in &fields.named {
                             let field_name = field.ident.as_ref().unwrap().to_string();
-                            let ctx = format!("field `{field_name}` in variant `{enum_name}::{variant_name}`");
+                            let ctx = format!(
+                                "field `{field_name}` in variant `{enum_name}::{variant_name}`"
+                            );
                             let field_type = self.normalize_or_record(&field.ty, &ctx);
                             let field_type = post_process_type_ref(field_type, self);
                             record_fields.push(Field {
@@ -563,7 +573,10 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         if let syn::FnArg::Typed(pat_type) = param {
                             if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
                                 let param_name = pat_ident.ident.to_string();
-                                let param_type = self.normalize_or_record(&pat_type.ty, &format!("param `{param_name}` in `{method_name}`"));
+                                let param_type = self.normalize_or_record(
+                                    &pat_type.ty,
+                                    &format!("param `{param_name}` in `{method_name}`"),
+                                );
                                 let param_type = post_process_type_ref(param_type, self);
 
                                 // Check if it's Option<T> to set nullable
@@ -589,7 +602,8 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         // Init methods should always return void
                         (Some(TypeRef::Scalar(ScalarType::Unit)), None)
                     } else if let syn::ReturnType::Type(_, ty) = &method.sig.output {
-                        let return_type = self.normalize_or_record(ty, &format!("return type of `{method_name}`"));
+                        let return_type = self
+                            .normalize_or_record(ty, &format!("return type of `{method_name}`"));
                         let return_type = post_process_type_ref(return_type, self);
 
                         // Check if it's Option<T> to set nullable
