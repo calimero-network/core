@@ -634,6 +634,35 @@ docker logs &lt;container&gt; 2&gt;&amp;1 \
 <h3>Relationship to the Corrective Pull</h3>
 <p>The <code>gov_divergence_pull_triggered</code> marker is emitted by the <code>scope_root</code> governance reconciliation path when it detects that the local governance epoch lags behind the epoch carried by an incoming state delta. The corrective pull requests a namespace backfill to close the gap. The CI step makes this otherwise-invisible activity visible in test run logs without introducing a flaky hard gate on trigger frequency.</p>
 </div>
+<div class="card ga"><h2>Cycle-Safe DFS in <code>collect_subtree_for_cascade</code></h2>
+
+<h3>Overview</h3>
+<p>The stack-based depth-first traversal inside <code>collect_subtree_for_cascade</code> — invoked by <code>NamespaceRepository::list_all_contexts</code> — now carries a <code>HashSet&lt;ContextGroupId&gt;</code> named <code>visited</code> to prevent infinite loops caused by cycles or diamond-shaped graphs in the child index.</p>
+
+<h3>What Changed</h3>
+<ul>
+  <li>A <code>visited: HashSet&lt;ContextGroupId&gt;</code> is allocated at the start of the traversal.</li>
+  <li>The root group is pre-inserted into <code>visited</code> before the loop begins.</li>
+  <li>Before any child group is pushed onto the DFS stack, the code checks <code>visited.contains(&amp;child_id)</code>. If the child has already been seen, it is skipped without being pushed.</li>
+  <li>Each newly-pushed child is immediately inserted into <code>visited</code>.</li>
+</ul>
+
+<h3>Failure Mode Prevented</h3>
+<p>Without this guard, two graph shapes could cause the traversal to loop indefinitely:</p>
+<ul>
+  <li><strong>Direct cycle</strong> — a group whose child index contains a reference back to itself (self-reference).</li>
+  <li><strong>Diamond graph</strong> — a group reachable via two or more distinct parent paths. Each path would push the shared group onto the stack again, causing it to be expanded multiple times and, if the child index itself contains a back-edge, spinning without bound.</li>
+</ul>
+<p>Either shape would hang or crash the process. The visited set reduces worst-case traversal to <em>O(N)</em> in the number of groups rather than unbounded.</p>
+
+<h3>Invariant</h3>
+<p>A group is expanded <strong>at most once</strong> per call to <code>collect_subtree_for_cascade</code>. The pre-insertion of the root ensures that even a self-referencing root is handled safely before the loop body executes.</p>
+
+<h3>Relationship to Cascade Correctness</h3>
+<p>
+  <code>collect_subtree_for_cascade</code> produces the ordered list of groups and contexts that <code>GroupDeleted</code> and <code>MemberRemoved</code> cascades operate over. Skipping a duplicate group during DFS means the cascade list contains each group exactly once — consistent with the deterministic application contract required for convergence across nodes.
+</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
