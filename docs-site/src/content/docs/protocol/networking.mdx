@@ -14,6 +14,34 @@ Calimero is built on **libp2p**. Nodes connect over TCP (with Noise/TLS) or QUIC
 
 <Libp2pStack />
 
+## Protocol versioning & compatibility
+
+Every libp2p protocol Calimero speaks is **version-pinned in its name**. The
+identify protocol carries the crate version directly — `/calimero/<pkg>/<version>`,
+built as `concat!("/", CARGO_PKG_NAME, "/", CARGO_PKG_VERSION)` — and each
+behaviour names a fixed version:
+
+| Protocol name | Carries |
+| --- | --- |
+| `/calimero/stream/0.0.2` | the sync stream (heads, tree-diff, snapshots, key recovery) |
+| `/calimero/blob/0.0.2` | the dedicated blob transfer stream |
+| `/calimero/kad/1.0.0` | the Kademlia DHT (blob discovery) |
+| `/calimero/specialized-node-invite/1.0.0` | the specialized-node invitation request-response |
+
+libp2p only opens a stream when both peers advertise the **exact same protocol
+name** — the version is part of that string, so a peer running `/calimero/blob/0.0.2`
+and one running a future `/calimero/blob/0.0.3` simply never negotiate that
+protocol. The connection still forms (transport and identify succeed), but the
+mismatched sub-protocol is **silently unavailable** rather than erroring: there is
+no version-negotiation handshake that downgrades or reports the skew.
+
+For operators this means a **mixed-version fleet fails quietly**. Two nodes can be
+connected and gossiping yet unable to, say, transfer blobs or run a sync, because
+one side bumped a protocol version the other doesn't offer. Roll versions out
+fleet-wide rather than piecemeal, and treat "connected but never syncs" as a
+possible version-skew symptom. (`crates/network/src/behaviour.rs`,
+`crates/network/primitives/src/stream.rs`.)
+
 ## Two channels: gossip and streams
 
 Everything on the wire travels one of two ways, and the choice is about _eager vs. on-demand_:

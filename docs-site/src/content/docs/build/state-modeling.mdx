@@ -68,6 +68,49 @@ nesting.
   for "latest wins," `Counter` for "sum of increments."
 </Aside>
 
+## Synced vs node-local state
+
+Everything above is **synced** state: it lives in your `#[app::state]` struct, is
+replicated to every member, counts toward the Merkle root, and is multi-writer — so
+it must be a CRDT. That is the default, and almost all of your data belongs here.
+
+Calimero also has a second, deliberately separate plane: **node-local private state**,
+declared with `#[app::private]`. It lives in its own storage column (`PrivateState`),
+is **never synchronized**, sits **outside the Merkle root**, and has exactly **one
+writer — this node**. Because nothing about it crosses the wire, two nodes running the
+same app will hold *different* private state, and that per-node divergence is the whole
+point, not a bug.
+
+| | Synced state (`#[app::state]`) | Node-local state (`#[app::private]`) |
+|---|---|---|
+| Replicated to other nodes | Yes — in the Merkle root | No — outside it, never on the wire |
+| Writers | Every member (multi-writer) | This node only (single-writer) |
+| Field types | CRDTs (merge rule required) | Plain values: `u64`, `String`, `Vec`, `BTreeMap`, and the structural `UnorderedMap` / `UnorderedSet` / `Vector` (auto-pointed at private storage) |
+| Convergence | All replicas converge | Intentionally per-node — no convergence |
+
+Because a private namespace has a single writer, CRDT and access-control machinery is
+meaningless there — so `#[app::private]` **rejects those types at compile time** rather
+than silently mis-storing them. A `LwwRegister`, `Counter`, `SharedStorage`,
+`UserStorage`, `FrozenStorage`, `AuthoredMap`, and friends inside a private struct each
+produce a targeted compile error pointing at the plain type to use instead (a
+`LwwRegister<u64>` becomes a bare `u64`; a `Counter` becomes a plain integer).
+
+Reach for `#[app::private]` when data is *meant* to stay on one node:
+
+- **Secrets** — a plaintext value where only its hash should ever sync. The
+  `apps/private_data` game keeps each guess's secret in private state and publishes only
+  `sha256(secret)` to the shared map.
+- **A per-node cache** — a derived lookup you can rebuild locally and don't want to pay
+  to replicate or merge.
+- **A derived index or local bookkeeping** — per-node counters, "have I attempted this?"
+  sets, an append-only local log — state that describes *this* node's view, not the
+  group's.
+
+The *how* — the typed `private_load` / `private_load_or_default` accessors and the
+save-on-drop write pattern — lives on
+[Access-controlled storage](/build/permissioned-storage/#node-local-private-state),
+next to the other write-boundary tools.
+
 ## A worked domain model: a marketplace
 
 The patterns below are easier to see in one cohesive schema. Here is a small

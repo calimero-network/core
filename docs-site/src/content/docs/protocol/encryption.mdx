@@ -118,6 +118,29 @@ BroadcastMessage::StateDelta {
 
 So the observer learns *that* member `0x9f4b…21` sent a chat message of some length at a known time, building on a known parent — it just never learns the **content** `"hi"`. The member learns everything.
 
+## How at-rest encryption works
+
+When the `EncryptedDatabase` wrapper is enabled, its mechanics are worth
+understanding because they make key rotation a non-event (`crates/store/encryption/src/lib.rs`,
+`key_manager.rs`):
+
+- **A key hierarchy.** The KMS hands the wrapper a single master key. That master
+  never encrypts values directly — it feeds `HKDF-SHA256` (salt
+  `calimero-dek-v{n}`) to derive a **versioned data-encryption key (DEK)**. Values
+  are encrypted under the current DEK with AES-256-GCM and a fresh 12-byte nonce.
+- **A 1-byte version prefix.** Each ciphertext is laid out as
+  `version ‖ nonce ‖ ciphertext+tag`. On read, the wrapper reads byte zero and
+  **auto-selects the matching DEK**, deriving it from the master if it isn't
+  cached. Rotating the key just bumps the current version for new writes; old
+  values keep decrypting under their own prefix, so rotation needs **no migration
+  pass** over existing data.
+- **Transparent reads.** Iteration returns a `DecryptingIter` that decrypts each
+  value as it is yielded, so callers above the store never see ciphertext — the
+  wrapper is a drop-in around any `Database`.
+- **Keys stay plaintext.** Only values are encrypted; record keys are written in
+  the clear so range scans and prefix seeks still work (the column-family layout in
+  [Anatomy of state](/protocol/data-anatomy/) depends on this).
+
 ## Gotchas & boundaries
 
 These are the sharp edges. Read them before reasoning about what is and isn't private.

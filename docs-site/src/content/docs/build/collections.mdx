@@ -166,6 +166,43 @@ doc.insert_str(0, "Hello, world")?;                    // bulk — materializes 
 let text = doc.get_text()?;                            // deterministic walk over all chars
 ```
 
+## Key types
+
+Map and set entries are addressed by the **raw bytes of their key**, so a key type
+must implement `AsRef<[u8]>` (the SDK's `StorageKey` requirement, alongside being
+borsh-(de)serializable, `Eq`, and `'static`). A bare `u64` or an arbitrary struct has
+no canonical byte form, so it is **rejected at compile time** — `insert` / `get` simply
+won't accept it:
+
+```rust
+// Does not compile: `u64` is not a `StorageKey` — it has no `AsRef<[u8]>`.
+let mut scores: UnorderedMap<u64, LwwRegister<String>> = UnorderedMap::new();
+```
+
+The fix is a thin **newtype** that wraps an already-byte-encodable representation and
+forwards `AsRef<[u8]>` to it. This is the `apps/custom-key-store` pattern — and it is
+also where you put key normalization or validation:
+
+```rust
+#[derive(Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct Slug(String);
+
+impl AsRef<[u8]> for Slug {        // the impl that makes it a valid key
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+// Now compiles: `Slug: StorageKey`, so every key op is available.
+let mut pages: UnorderedMap<Slug, LwwRegister<String>> = UnorderedMap::new();
+```
+
+The same shape works for an id newtype over `[u8; 32]`. For a numeric key, wrap the
+**big-endian** bytes (`u64::to_be_bytes()`) so that — in a `SortedMap` — byte order
+matches numeric order; see [Modeling your state](/build/state-modeling/) for why
+little-endian keys sort incorrectly.
+
 ## Access-controlled collections
 
 These add an authorization model on top of a CRDT. The crucial property:

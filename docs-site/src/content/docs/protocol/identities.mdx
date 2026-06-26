@@ -24,6 +24,20 @@ Authority lives in the **member identity**: an Ed25519 keypair held **per namesp
 
 Because identity is per namespace, the same node participating in two namespaces presents two unrelated member keys — identity isolation across application instances, independent of the single transport identity underneath.
 
+### Choosing the executor
+
+A node is not limited to one member key per context. It can hold **several**
+member keypairs for the same context — each a `ContextIdentity` whose private key
+the node manages (`crates/context/primitives/src/client/crypto.rs`) — so one
+process can act as multiple distinct authors.
+
+Because of that, every execute call names an **executor**: the `executor: PublicKey`
+on `ExecuteRequest` (`crates/context/primitives/src/messages.rs`) selects which of
+those member keys authors and signs the resulting operation. A context also carries
+a **default** member key — stored as the `default` identity alias — so calls that
+don't name an executor fall back to it. Picking the executor is therefore picking
+*who* the write is attributed to, from among the keys this node controls.
+
 ## Scope key — reading a scope
 
 A scope's operations are encrypted at rest and on the wire under a **symmetric scope key** (every [scope owns a key](/protocol/concepts/)). Holding the key is what lets a member _read_ a scope; lacking it, a node sees only opaque ciphertext.
@@ -33,6 +47,26 @@ Scope keys are never sent in the clear. They are delivered **wrapped** to a spec
 ## How they compose
 
 Put together, a single received operation touches all three: it arrives over a connection authenticated by **transport** identities, its ciphertext is decrypted with the **scope** key, and its authorship is verified against the author's **member** key before anything trusts it. The [Receive & Apply Path](/protocol/receive-path/) and [Sync](/protocol/sync/) show that sequence on the wire.
+
+## A fourth role: the bundle signing key
+
+The three keys above are all **node-side** — they live on a node and act inside a
+namespace. There is one more key role that belongs to a different actor entirely:
+the **bundle signing key**, an Ed25519 key held by whoever *publishes* an
+application.
+
+When an application bundle is built, its manifest is signed with this key, and the
+public half is rendered as a `did:key` `signerId` — the bundle's **update
+authority** (`crates/node/primitives/src/bundle/signature.rs`). That `signerId` is
+what anchors an [application's](/protocol/applications/) id across releases: a new
+version signed by the same key keeps the same application identity, and only the
+holder of that key can publish an update under it.
+
+It is **not** a node or member key. It identifies an app publisher, not a box on the
+network or an author inside a context, and it never participates in the transport /
+member / scope sequence that processes an operation. Keep it separate when reasoning
+about authority: the first three say "who may write into a context"; the bundle key
+says "who may ship the code that context runs."
 
 ---
 

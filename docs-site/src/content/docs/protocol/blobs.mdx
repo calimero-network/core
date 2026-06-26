@@ -81,6 +81,14 @@ through its chunk-id list; `BlobMeta.hash` is the digest of the raw content.
 Code that wants "the hash of the bytes" must read `hash`, not reuse the id.
 :::
 
+Because a chunk's id is the hash of its bytes, two blobs that share identical
+1 MiB chunks resolve to the **same chunk `BlobId`** and are stored once —
+deduplication falls out of content addressing with no extra bookkeeping. A
+`delete(blob_id)` path exists to drop a blob's stored bytes
+(`crates/store/blobs/src/lib.rs`), but content-addressed **garbage collection** of
+chunks no longer referenced from state is **not yet implemented**: removing a state
+reference does not by itself reclaim the bytes.
+
 ## The guest blob API
 
 Applications never touch storage or the network directly. They use host

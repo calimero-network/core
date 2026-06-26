@@ -137,6 +137,31 @@ different keys, different merge rules.
   "we disagree on membership" through the same hash check. See
   [Governance](/protocol/governance/) and the [Storage schema](/protocol/storage/).
 
+## Content addressing: every id is derived, not assigned
+
+The entity ids in section 2 are one instance of a principle that runs through the
+whole system: **ids are computed from content, never handed out by a coordinator.**
+There is no allocator, no auto-increment, no central registry — an id is a hash of
+the thing it names.
+
+| Id | Derived from | Where |
+| --- | --- | --- |
+| `BlobId` | `SHA-256(chunk bytes)` | [Blobs](/protocol/blobs/) (`crates/store/blobs/src/lib.rs`) |
+| Map-entry id | `SHA-256(parent_id ‖ "__calimero_entry__" ‖ key)` | `compute_id(parent, key)` (`crates/storage/src/collections.rs`) |
+| Collection id | `SHA-256(parent_id ‖ "__calimero_collection__" ‖ field)` | `compute_collection_id` (same file) |
+| Delta id | `SHA-256(parents ‖ actions)` — **HLC deliberately excluded** | `CausalDelta::compute_id` (`crates/storage/src/delta.rs`) |
+| App / bundle id | hash of the manifest's `package` + `signerId` | [Applications](/protocol/applications/) |
+
+The delta id is the sharpest case: its `compute_id` takes the HLC but ignores it,
+hashing only parents and the content-addressable parts of each action. Two nodes
+that replay the same operations therefore mint the **same delta id regardless of
+physical time**, so the DAG has identical node ids everywhere.
+
+That is the payoff of content addressing across the board: because the same bytes
+always hash to the same id, every node independently computes the **same id for the
+same thing** — the convergence in sections 4 and 5 needs no coordination, no
+agreement round, and no id assignment to fall back on.
+
 ## Worked example: an org in memory
 
 To make the whole layout concrete, picture one org. **Acme** owns the namespace

@@ -167,7 +167,9 @@ service name; only the blob behind it advances, version by version.
 
 ## Where this leads
 
-An application's bundle id is anchored on its `signerId` — the `did:key` that holds
-update authority. That signing key is one of three distinct key roles in Calimero.
+Next, the **[Context Lifecycle](/protocol/context-lifecycle/)** — how a context that
+runs this application is created, joined, left, and deleted.
 
-→ [Identities & Keys](/protocol/identities/)
+An application's bundle id is anchored on its `signerId` — the `did:key` that holds
+update authority. That signing key is one of the [distinct key roles](/protocol/identities/)
+in Calimero (an app-publisher key, separate from a node's transport, member, and scope keys).

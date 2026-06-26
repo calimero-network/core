@@ -72,6 +72,7 @@ export default defineConfig({
                 'build/guides/cross-context',
                 'build/guides/blobs',
                 'build/guides/access-control',
+                'build/packaging-signing',
                 'build/examples',
                 'build/testing',
               ],
@@ -83,6 +84,7 @@ export default defineConfig({
                 'build/host-functions',
                 'build/collections',
                 'build/state-modeling',
+                'build/app-abi',
                 'build/error-handling',
               ],
             },
@@ -156,6 +158,7 @@ export default defineConfig({
                 'protocol/governance',
                 'protocol/capability-inheritance',
                 'protocol/applications',
+                'protocol/context-lifecycle',
               ],
             },
             {

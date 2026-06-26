@@ -24,6 +24,43 @@ method calls.
 When neither `--node` nor `--api` is given, `meroctl` uses the active node (set
 with `node use`), falling back to `http://127.0.0.1:2528`.
 
+## Aliases
+
+Almost every command accepts an **alias** wherever it accepts an id. An alias is
+a human-readable name (max 50 characters) that the node resolves server-side to
+a `ContextId`, an `ApplicationId`, or a member `PublicKey`. Aliases live on the
+node, not in the CLI: they are created, looked up, and deleted through the
+[admin API alias endpoints](/operate/admin-api/#admin-api--identity--alias), so
+every client talking to the same node sees the same aliases.
+
+**Scoping is not uniform across the three target types:**
+
+| Alias target     | Scope                | Created with                                              |
+| ---------------- | -------------------- | -------------------------------------------------------- |
+| `ContextId`      | Node-global          | `context alias add`, or `context create --name`          |
+| `ApplicationId`  | Node-global          | admin API `alias/create/application`                     |
+| `PublicKey` (identity) | **Per context** | `context identity alias add` (scoped to one context)     |
+
+Context and application aliases are unique across the whole node; an identity
+alias only has meaning **within the context it was created in**, so the same
+name can resolve to different keys in different contexts.
+
+A reserved `default` alias exists for both contexts and identities. Commands
+that take `--context` (or an executor identity) fall back to `default` when the
+flag is omitted, and `context use <CONTEXT>` / `context identity use <IDENTITY>`
+just point the `default` alias at a chosen target. The `call --substitute`
+flag is a related but distinct feature: it resolves a comma-separated list of
+**identity** aliases and templates them into the request payload wherever you
+write `{alias}` (see [`call`](#call)).
+
+<Aside type="caution">
+  `--node <ALIAS>` is a different kind of name entirely. It is a **meroctl
+  connection name** — client-side state stored in `nodes.toml`
+  (see [meroctl's own config](#meroctls-own-config-nodestoml)) that selects
+  which node to talk to. It never reaches the node and has nothing to do with
+  the context/application/identity aliases above.
+</Aside>
+
 ## Command groups
 
 | Group         | Purpose                                                          |
@@ -303,6 +340,36 @@ meroctl node ls
 For a remote node that needs authentication, login starts automatically; pass
 `--access-token` (and optionally `--refresh-token`) to skip it with explicit
 JWTs.
+
+### meroctl's own config (`nodes.toml`)
+
+The `node` commands above read and write a single client-side config file at
+`~/.config/calimero/meroctl/nodes.toml` (under your platform config dir). This
+is meroctl's own state — it is never sent to a node. It records:
+
+- Each configured **node connection** under its connection name, as either a
+  local node (a `path` to a node home) or a remote node (a `url`).
+- `active_node` — the connection used when neither `--node` nor `--api` is given.
+- Per-node **JWT access and refresh tokens**, saved here after a login so
+  subsequent commands reuse them.
+
+Because it holds bearer tokens, the file is written with owner-only permissions
+(`0600`) and re-written atomically with those permissions on every update. Treat
+it as secret material:
+
+```toml
+active_node = "node1"
+
+[nodes.node1]
+path = "/home/alice/.calimero"
+
+[nodes.node1.jwt_tokens]
+access_token = "<jwt>"
+refresh_token = "<jwt>"
+
+[nodes.prod]
+url = "https://node.example.com/"
+```
 
 ## End-to-end session
 

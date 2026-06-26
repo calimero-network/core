@@ -287,6 +287,59 @@ against the writer set **as of its own causal parents**, not the post-merge set 
 so a write authored while you were a valid writer is never retroactively rejected
 by a later rotation that removed you.
 
+## Node-local private state
+
+Every wrapper above narrows *who in the context* may write a value, but the value
+still **syncs** — it lives in the Merkle root and reaches every node. The tightest
+boundary of all is the one where data never leaves the node at all:
+`#[app::private]` declares a struct that stores into a separate `PrivateState`
+column, is **never synchronized**, sits **outside the Merkle root**, and has exactly
+one writer — this node. There is no merge plane here because there is no merge: each
+node keeps its own copy, and per-node divergence is intentional. See
+[Synced vs node-local state](/build/state-modeling/#synced-vs-node-local-state) for
+when to choose it (secrets, per-node caches, derived indexes).
+
+Annotating a struct with `#[app::private]` generates typed accessors on it:
+
+- `private_load()` → `Result<Option<EntryRef<Self>>>` — `None` if nothing is stored yet.
+- `private_load_or_default()` → `Result<EntryRef<Self>>` — loads, or seeds `Self::default()`.
+- `private_load_or_init_with(f)` → `Result<EntryRef<Self>>` — loads, or seeds from a closure.
+
+An `EntryRef` derefs to `&Self` for reads. Call `.as_mut()` to get an `EntryMut`,
+which derefs to `&mut Self` and **writes back on drop** — so a read → modify → save
+cycle is just "load, mutate through `as_mut()`, let it fall out of scope." This is the
+`apps/private_data` pattern:
+
+```rust
+// Node-local private state — never synced, single-writer, outside the Merkle root.
+#[derive(BorshSerialize, BorshDeserialize, Default)]
+#[borsh(crate = "calimero_sdk::borsh")]
+#[app::private]
+pub struct Secrets {
+    secrets: UnorderedMap<String, String>, // structural collection: auto-private
+    secrets_added: u64,                     // plain value: no CRDT in private state
+}
+
+pub fn add_secret(&mut self, game_id: String, secret: String) -> app::Result<()> {
+    // Load (or seed default), then take a save-on-drop mutable view.
+    let mut secrets = Secrets::private_load_or_default()?;
+    let mut secrets_mut = secrets.as_mut();
+    secrets_mut.secrets.insert(game_id.clone(), secret.clone())?;
+    secrets_mut.secrets_added = secrets_mut.secrets_added.saturating_add(1);
+    // `secrets_mut` writes the private blob back when it drops at end of scope.
+
+    // Only the hash crosses the wire, into ordinary synced state.
+    let hash_hex = hex::encode(Sha256::digest(secret.as_bytes()));
+    self.games.insert(game_id, hash_hex.into())?;
+    Ok(())
+}
+```
+
+For a one-liner that does not need an intermediate binding, the underlying
+`private_storage::EntryHandle<T>` (returned by the generated `private_handle()`)
+offers `get_or_init_with(f)` and a `modify(|state| { ... })` closure that loads,
+mutates, and saves in a single call.
+
 ## See also
 
 - [Collections](/build/collections/) — the CRDT types these wrappers guard, and their merge semantics

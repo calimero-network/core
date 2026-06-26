@@ -30,6 +30,32 @@ variable. For example `NODE_PATH_PREFIX=/node1` makes the admin API live at
 `/node1/admin-api`. The tables below show the unprefixed paths.
 </Aside>
 
+## Choosing an API surface
+
+All four surfaces are mounted on a single HTTP server and wrapped by the **same
+optional auth layer** — when embedded auth is on, every one of them is guarded
+identically; when it is off, all four are open. They differ in shape, not in how
+they authenticate:
+
+| Surface | Path | Shape | Use it for |
+| --- | --- | --- | --- |
+| Admin REST | `/admin-api` | Request/response | Node management: install apps, create contexts and groups, manage members and aliases, inspect state. |
+| JSON-RPC | `/jsonrpc` | Request/response | One-shot app calls. `execute` (run a method) and `sync_status`. |
+| WebSocket | `/ws` | Bidirectional, long-lived | App calls plus live updates over one connection: `execute`, `subscribe`, `unsubscribe`. |
+| SSE | `/sse` | Server→client stream | A read-only event feed when you only need to *receive* events (no custom request headers needed). |
+
+Two practical notes:
+
+- **There is one execute, reached two ways.** The `execute` over JSON-RPC and the
+  `execute` over WebSocket resolve to the **same execution kernel** — same
+  executor resolution, same runtime invocation, same result envelope. Pick
+  JSON-RPC for a single stateless call; pick WebSocket when you also want to
+  subscribe to events on the same connection.
+- **Query vs. mutate is not a flag you set.** Whether an `execute` call only
+  reads state or commits a change is decided by the target method's own
+  `#[app::view]` declaration in the app, not by the transport or any request
+  field. The same `execute` request shape covers both.
+
 ## Authentication
 
 Admin routes split into **protected** and **public** sets. The protected set is
