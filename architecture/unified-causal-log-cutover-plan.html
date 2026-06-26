@@ -192,6 +192,19 @@ unified_causal_log_shadow = true   # default; set false to disable C0 shadow</pr
 <p>C1b also introduces the reversed-shadow arrangement: the legacy log becomes the shadow checked against the now-live unified log. The existing <code>scope_root_shadow_divergence</code> marker infrastructure was evaluated for polarity changes as part of the C1b design doc.</p>
 </div>
 
+<div class="card ga">
+<h2>C2/C3 — Unified op-store for governance and group ops</h2>
+<p>A follow-on refactor (tracked as C2/C3) migrated locally-authored governance and group ops from the governance-DAG fold to a single <strong>unified op-store</strong>. The context projection is now reconstructed entirely from that store rather than from separate legacy paths.</p>
+<p>The rollout followed a four-phase gate to preserve safety at each step:</p>
+<ol>
+<li><strong>Observe-only gate</strong> — the unified op-store was written alongside the legacy path and its output was compared but never read, mirroring the C0 shadow approach.</li>
+<li><strong>Read shadow</strong> — reads were served from the unified op-store in a shadow capacity while the legacy fold remained authoritative; divergences were surfaced via the existing <code>scope_root_shadow_divergence</code> infrastructure.</li>
+<li><strong>Read-flip with atomic dual-writes</strong> — the unified op-store became the authoritative read source while both stores continued to receive writes atomically, allowing safe rollback.</li>
+<li><strong>Removal of legacy dual-writes</strong> — once the read-flip was stable the legacy write path was removed, leaving the unified op-store as the sole persistence layer for governance and group ops.</li>
+</ol>
+<p>This is an <strong>internal storage refactor with no public API change</strong>. It is recorded in the CHANGELOG under <em>Changed</em>. No new wire-protocol messages were introduced; the <code>ShadowRootAnnouncement</code> gossip and canary gate infrastructure from C0 were reused without modification.</p>
+</div>
+
 <div class="card gd">
 <h2>Open questions for C1 planning</h2>
 <p>The following questions are deliberately left open until the C0 canary gate passes. They should be resolved as part of writing the C1 design doc section:</p>
