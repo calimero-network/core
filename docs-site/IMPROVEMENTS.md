@@ -52,7 +52,7 @@ polished product. Grouped by theme; check items off as they land. See
 - [x] 37. Built-in full-text search (Pagefind) shipped.
 - [ ] 38. Group search results by track.
 - [ ] 39. Add keyboard-shortcut hints and verify focus management.
-- [ ] 40. Add an `llms.txt` machine-readable index for AI tools.
+- [x] 40. Add an `llms.txt` machine-readable index for AI tools.
 - [x] 41. Add `robots.txt` (sitemap already generated).
 - [ ] 42. Add canonical URLs + verify per-page descriptions for SEO.
 
