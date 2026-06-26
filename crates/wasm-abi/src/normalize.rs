@@ -210,12 +210,21 @@ fn normalize_generic_type(
                 )));
             };
 
-            // Normalize key and value types; only string keys are valid in the ABI
-            let key_type = normalize_type(key_ty, wasm32, resolver)?;
-            if !matches!(key_type, TypeRef::Scalar(ScalarType::String)) {
-                return Err(NormalizeError::UnsupportedMapKey(format!(
-                    "{ident_str} key must be String, got {key_type:?}"
-                )));
+            // CRDT maps (UnorderedMap, SortedMap, AuthoredMap) accept any Rust
+            // key type — the CRDT layer handles keying internally and the ABI
+            // always emits `string` as the key. Non-CRDT maps (BTreeMap, HashMap,
+            // IndexMap) require a String key to satisfy the WIT/ABI contract.
+            let is_crdt_map = matches!(
+                ident_str.as_str(),
+                "UnorderedMap" | "SortedMap" | "AuthoredMap"
+            );
+            if !is_crdt_map {
+                let key_type = normalize_type(key_ty, wasm32, resolver)?;
+                if !matches!(key_type, TypeRef::Scalar(ScalarType::String)) {
+                    return Err(NormalizeError::UnsupportedMapKey(format!(
+                        "{ident_str} key must be String, got {key_type:?}"
+                    )));
+                }
             }
             let value_type = normalize_type(value_ty, wasm32, resolver)?;
 
