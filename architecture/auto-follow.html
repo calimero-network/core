@@ -810,6 +810,57 @@ deleted because they pinned behaviour that no longer exists:
   <code>Ok(())</code> early, as before.</li>
 </ul>
 </div>
+<div class="card gd"><h2>Cycle Guard in Context-Group DFS Traversal</h2>
+
+<p>
+<strong>(<code>collect_subtree_for_cascade</code> / <code>NamespaceRepository::list_all_contexts</code>)</strong>
+The stack-based depth-first traversal that collects all contexts under a group subtree now
+maintains a <code>HashSet&lt;ContextGroupId&gt;</code> named <code>visited</code> to prevent
+infinite loops.
+</p>
+
+<h3>What Changed</h3>
+<p>
+Inside <code>collect_subtree_for_cascade</code>, the root group id is pre-inserted into
+<code>visited</code> before the DFS loop begins. Before any child group id is pushed onto the
+work stack, the traversal checks whether that id is already present in the set. If it is, the
+child is silently skipped; otherwise it is inserted and pushed. This single guard covers both
+classes of problematic topology:
+</p>
+<ul>
+  <li><strong>Direct cycles.</strong> A group whose child index references itself (self-loop).</li>
+  <li><strong>Diamond / shared-ancestor graphs.</strong> A group reachable via two or more
+  distinct paths through the index; without the guard, both paths would enqueue it and its
+  subtree would be walked twice — potentially triggering the same cycle on the second visit.</li>
+</ul>
+
+<h3>Why It Matters</h3>
+<p>
+Without the visited set, any cycle or shared-ancestor entry in the child index causes the
+traversal to run indefinitely. <code>list_all_contexts</code> is called on every context
+enumeration request; a hanging traversal blocks the calling task and — because the store is
+shared — can effectively stall the node. The fix is purely defensive: the governance layer
+already rejects topology changes that would introduce cycles, but the store traversal must not
+rely on that invariant holding for all existing data.
+</p>
+
+<h3>Behaviour Summary</h3>
+<ul>
+  <li>Acyclic trees: no change in output — each group is visited exactly once, as before.</li>
+  <li>Cyclic or diamond graphs: the traversal terminates; the back-edge or shared node is
+  visited once and then skipped on subsequent encounters. Contexts under the skipped duplicate
+  path are still collected on the first visit.</li>
+  <li>The guard allocates a <code>HashSet</code> per traversal call. For typical subtree sizes
+  this is negligible; the alternative — an infinite loop — is unbounded.</li>
+</ul>
+
+<h3>Key File</h3>
+<ul>
+  <li><code>crates/context/src/namespace_store/mod.rs</code> (or equivalent) —
+  <code>collect_subtree_for_cascade</code>: add <code>let mut visited = HashSet::new()</code>,
+  pre-insert root, gate each child push on <code>visited.insert(child_id)</code>.</li>
+</ul>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
