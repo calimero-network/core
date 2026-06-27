@@ -198,12 +198,15 @@ where
                                 parts.extensions.insert(AuthenticatedKey(pk));
                             }
                             Err(err) => {
-                                // The stored value is not a valid Ed25519 public key —
-                                // this is the embedded username/password auth path where
-                                // the key_id is a username string. The token was valid;
-                                // treat the caller as the node owner.
-                                warn!(key_id=%auth_response.key_id, %err, "auth key_id public_key is not a valid PublicKey; treating as node owner");
-                                parts.extensions.insert(AuthenticatedNodeOwner);
+                                // The stored value is not a valid Ed25519 public key.
+                                // This is unexpected: Ok(Some(_)) means a value IS
+                                // stored, so a parse failure indicates data corruption
+                                // or a bug in key registration. Fail closed rather
+                                // than granting node-owner access on corrupted data.
+                                // The expected embedded auth path (no key registered)
+                                // produces Ok(None), handled below.
+                                warn!(key_id=%auth_response.key_id, %err, "auth key_id has a stored value that is not a valid PublicKey; rejecting request");
+                                return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
                             }
                         }
                     }
