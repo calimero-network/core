@@ -139,10 +139,6 @@ fn test_map_of_counters_merge() {
         6,
         "Counters should sum across executors: 3 + 3 = 6"
     );
-    // Explicit reset so that a panic anywhere above does not leak executor ID
-    // [200;32] — the leading reset_for_testing() in every test already covers
-    // this, but being explicit here makes the invariant visible at the call site.
-    env::reset_for_testing();
 }
 
 #[test]
@@ -253,12 +249,16 @@ fn test_map_merge_with_different_keys() {
     let mut map1 = UnorderedMap::<String, Counter>::new();
     let mut map2 = UnorderedMap::<String, Counter>::new();
 
-    // Node 1: add counter_a (1 increment)
+    // Distinct executor IDs are required so each counter's GCounter entry is
+    // keyed separately. Without them, both increments would land under the same
+    // executor key and `max` semantics would give the wrong total.
+    env::set_executor_id([1; 32]);
     let mut ca = Counter::new();
     ca.increment().unwrap();
     map1.insert("counter_a".to_string(), ca).unwrap();
 
     // Node 2: add counter_b (2 increments)
+    env::set_executor_id([2; 32]);
     let mut cb = Counter::new();
     cb.increment().unwrap();
     cb.increment().unwrap();
