@@ -258,11 +258,12 @@ fn test_map_merge_with_different_keys() {
     let mut map1 = UnorderedMap::<String, Counter>::new();
     let mut map2 = UnorderedMap::<String, Counter>::new();
 
-    // counter_a and counter_b live under different map keys, so their GCounter
-    // entries are independent regardless of executor ID. No set_executor_id is
-    // needed here — the test checks that a union-merge of disjoint keys preserves
-    // each counter's own value, which is a map-level property unaffected by how
-    // GCounter tracks per-executor increments within a single counter.
+    // counter_a and counter_b live under different map keys, so the merge is a
+    // pure key union with no overlap. Using the same executor ID is safe here
+    // because the two counters never share a key — their GCounter entries are
+    // independent. If the same key appeared in both maps, the shared executor ID
+    // would cause GCounter to take max(1,1)=1 instead of summing; that scenario
+    // is covered by test_map_of_counters_merge.
     let mut ca = Counter::new();
     ca.increment().unwrap();
     map1.insert("counter_a".to_string(), ca).unwrap();
