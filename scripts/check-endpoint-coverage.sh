@@ -3,14 +3,15 @@
 # endpoint that ships without an SDK test is flagged.
 #
 # Args:
-#   $1  endpoints.json      committed route manifest, e.g. ["/admin-api/contexts/:context_id", ...]
-#   $2  covered-endpoints.json   concrete request paths the SDK e2e HttpClient recorded
+#   $1  endpoints.json      committed route manifest, e.g. ["GET /admin-api/contexts/:context_id", ...]
+#   $2  covered-endpoints.json   concrete "METHOD /path" entries the SDK e2e recorded
 #   $3  coverage-baseline.json   (optional) accepted-uncovered routes — known gaps
 #                                that don't fail the build (the ratchet). A new
 #                                uncovered route NOT in the baseline fails.
 #
-# Recorded concrete paths are matched against manifest patterns (":seg" -> one
-# segment, "*rest" -> anything). Query strings on recorded paths are ignored.
+# Entries are method-aware "METHOD /path". A recorded "METHOD /concrete" covers a
+# manifest "METHOD /pattern" when the methods match and the path matches the
+# pattern (":seg" -> one segment, "*rest" -> anything). Query strings are ignored.
 set -euo pipefail
 
 MANIFEST="${1:?usage: check-endpoint-coverage.sh <endpoints.json> <covered-endpoints.json> [baseline.json]}"
@@ -36,12 +37,18 @@ is_baselined() {
 new_uncovered=()
 baselined_uncovered=()
 for pattern in "${patterns[@]}"; do
+  # Split "METHOD /path-pattern".
+  pmethod="${pattern%% *}"
+  ppath="${pattern#* }"
   # ":seg" -> "[^/]+"; "*rest" -> ".*"
-  rx="^$(printf '%s' "$pattern" | sed -E 's#:[^/]+#[^/]+#g; s#\*[^/]+#.*#g')$"
+  rx="^$(printf '%s' "$ppath" | sed -E 's#:[^/]+#[^/]+#g; s#\*[^/]+#.*#g')$"
   matched=0
   for hit in "${hits[@]}"; do
-    hp="${hit%%\?*}"
-    if [[ "$hp" =~ $rx ]]; then matched=1; break; fi
+    hmethod="${hit%% *}"
+    hrest="${hit#* }"
+    hp="${hrest%%\?*}"
+    hp="${hp%/}"  # trailing slash is path-equivalent (e.g. /contexts/sync/ == /contexts/sync)
+    if [ "$hmethod" = "$pmethod" ] && [[ "$hp" =~ $rx ]]; then matched=1; break; fi
   done
   if [ "$matched" -eq 0 ]; then
     if is_baselined "$pattern"; then baselined_uncovered+=("$pattern"); else new_uncovered+=("$pattern"); fi
