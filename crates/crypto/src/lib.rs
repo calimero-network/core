@@ -2,7 +2,7 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use ed25519_dalek::SigningKey;
 use ring::aead;
 use thiserror::Error;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 pub const NONCE_LEN: usize = 12;
 
@@ -34,6 +34,14 @@ impl Zeroize for SharedKey {
     }
 }
 
+impl Drop for SharedKey {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for SharedKey {}
+
 impl std::fmt::Debug for SharedKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SharedKey([redacted])")
@@ -52,12 +60,12 @@ impl SharedKey {
             .decompress()
             .ok_or(SharedKeyError::InvalidPublicKey)?;
 
+        let signing_key = SigningKey::from_bytes(sk);
+        let scalar = Zeroizing::new(signing_key.to_scalar());
+        let shared = (*scalar * decompressed).compress().to_bytes();
+
         Ok(Self {
-            key: Zeroizing::new(
-                (SigningKey::from_bytes(sk).to_scalar() * decompressed)
-                    .compress()
-                    .to_bytes(),
-            ),
+            key: Zeroizing::new(shared),
         })
     }
 
