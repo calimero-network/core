@@ -554,6 +554,7 @@ merod --home /data --node mynode init \
 <div class="cb">
 <h4>group</h4>
 <p><span class="code">create</span> (with <span class="code">--parent-group-id</span>), <span class="code">list</span>, <span class="code">get</span>, <span class="code">delete</span>, <span class="code">invite</span>, <span class="code">join</span>, <span class="code">members</span> (add/remove/list/set-role/set-caps/get-caps), <span class="code">contexts</span>, <span class="code">join-context</span>.</p>
+<p style="margin-top:8px;">Member capability flags in <span class="code">set-caps</span>, <span class="code">get-caps</span>, <span class="code">set-default-capabilities</span>, and related API responses are encoded using the named constants from <span class="code">MemberCapabilities</span> (<span class="code">CAN_CREATE_CONTEXT</span>, <span class="code">CAN_INVITE_MEMBERS</span>, <span class="code">CAN_JOIN_OPEN_SUBGROUPS</span>, <span class="code">CAN_CREATE_SUBGROUP</span>, <span class="code">CAN_DELETE_SUBGROUP</span>, <span class="code">CAN_MANAGE_VISIBILITY</span>, <span class="code">CAN_MANAGE_METADATA</span>) rather than raw bit-shift literals (<span class="code">1 &lt;&lt; 0</span>, <span class="code">1 &lt;&lt; 1</span>, etc.).</p>
 </div>
 <div class="cb">
 <h4>call</h4>
