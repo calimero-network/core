@@ -59,9 +59,10 @@ pub fn normalize_type(
                 }
             }
 
-            // Otherwise, treat as list
-            let item_type = normalize_type(elem_type, wasm32, resolver)?;
-            Ok(TypeRef::list(item_type))
+            // Non-u8 fixed arrays are not supported in the ABI
+            Err(NormalizeError::UnsupportedArrayElement(
+                "array element must be u8".to_owned(),
+            ))
         }
         Type::Tuple(type_tuple) => {
             // () -> unit
@@ -209,8 +210,22 @@ fn normalize_generic_type(
                 )));
             };
 
-            // Normalize key and value types
-            let _key_type = normalize_type(key_ty, wasm32, resolver)?;
+            // CRDT maps (UnorderedMap, SortedMap, AuthoredMap) accept any Rust
+            // key type — the CRDT layer handles keying internally and the ABI
+            // always emits `string` as the key. Non-CRDT maps (BTreeMap, HashMap,
+            // IndexMap) require a String key to satisfy the WIT/ABI contract.
+            let is_crdt_map = matches!(
+                ident_str.as_str(),
+                "UnorderedMap" | "SortedMap" | "AuthoredMap"
+            );
+            if !is_crdt_map {
+                let key_type = normalize_type(key_ty, wasm32, resolver)?;
+                if !matches!(key_type, TypeRef::Scalar(ScalarType::String)) {
+                    return Err(NormalizeError::UnsupportedMapKey(format!(
+                        "{ident_str} key must be String, got {key_type:?}"
+                    )));
+                }
+            }
             let value_type = normalize_type(value_ty, wasm32, resolver)?;
 
             // Preserve CRDT type for UnorderedMap / SortedMap / AuthoredMap

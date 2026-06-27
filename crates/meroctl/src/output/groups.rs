@@ -1,3 +1,4 @@
+use calimero_context_config::MemberCapabilities;
 use calimero_server_primitives::admin::{
     AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
     CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
@@ -502,15 +503,30 @@ impl Report for GetMemberCapabilitiesApiResponse {
         ]);
         let _ = table.add_row(vec![
             "CAN_CREATE_CONTEXT".to_owned(),
-            if caps & (1 << 0) != 0 { "yes" } else { "no" }.to_owned(),
+            if caps & MemberCapabilities::CAN_CREATE_CONTEXT != 0 {
+                "yes"
+            } else {
+                "no"
+            }
+            .to_owned(),
         ]);
         let _ = table.add_row(vec![
             "CAN_INVITE_MEMBERS".to_owned(),
-            if caps & (1 << 1) != 0 { "yes" } else { "no" }.to_owned(),
+            if caps & MemberCapabilities::CAN_INVITE_MEMBERS != 0 {
+                "yes"
+            } else {
+                "no"
+            }
+            .to_owned(),
         ]);
         let _ = table.add_row(vec![
             "CAN_JOIN_OPEN_SUBGROUPS".to_owned(),
-            if caps & (1 << 2) != 0 { "yes" } else { "no" }.to_owned(),
+            if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0 {
+                "yes"
+            } else {
+                "no"
+            }
+            .to_owned(),
         ]);
         let _ = table.add_row(vec![
             "Raw value".to_owned(),
