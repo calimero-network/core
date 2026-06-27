@@ -689,6 +689,52 @@
 </details>
 </div>
 
+<div class="card ga"><h2>CRDT Nested Merge Test Module</h2>
+<p>The <code>nested_crdt_merge</code> test module was previously disabled with a <code>TODO</code> comment in <code>lib.rs</code> due to a <code>Clone</code> dependency on storage-backed collections. All five tests are now unconditionally compiled, active, and included in the default test run.</p>
+
+<h3>Key Changes</h3>
+<ul>
+  <li><strong>Module enabled:</strong> The <code>#[cfg(...)]</code> / comment guard around <code>nested_crdt_merge</code> in <code>lib.rs</code> has been removed. The module compiles unconditionally.</li>
+  <li><strong>No more <code>#[ignore]</code>:</strong> All five tests previously carried <code>#[ignore]</code>. These attributes have been removed; the tests now run by default with <code>cargo test</code>.</li>
+  <li><strong><code>#[serial]</code> on every test:</strong> Because storage-backed CRDT instances share process-level state, all tests in this module are annotated with <code>#[serial]</code> (from the <code>serial_test</code> crate) to prevent interference from parallel execution.</li>
+</ul>
+
+<h3>Root&lt;T&gt; → Direct UnorderedMap Usage</h3>
+<p>Tests previously wrapped collections in <code>Root&lt;T&gt;</code> and called <code>Mergeable::merge</code> on the wrapper. <code>Root&lt;T&gt;</code> drives merge through an app-registered callback, not through <code>Mergeable</code>, so the tests never exercised merge logic. All tests now call <code>Mergeable::merge</code> directly on <code>UnorderedMap</code> instances.</p>
+
+<h3>String Leaves → LwwRegister&lt;String&gt;</h3>
+<p><code>String</code> intentionally does not implement <code>Mergeable</code>. All leaf CRDT values in nested map tests are now <code>LwwRegister&lt;String&gt;</code>, which implements Last-Write-Wins merge semantics and satisfies the <code>Mergeable</code> bound.</p>
+
+<h3>Clone-to-Fork → Independent Node Construction</h3>
+<p>Storage-backed collections cannot be cloned. Each test now constructs two completely independent collection instances from scratch. Both are populated with the same shared initial state, then each receives node-specific divergent writes before the merge assertion.</p>
+
+<h3>Deterministic Timestamps in LWW Tests</h3>
+<p>The <code>test_map_of_lww_registers_merge</code> test previously used <code>std::thread::sleep</code> to force wall-clock ordering between writes. This made timestamp ordering depend on scheduler behavior. All <code>LwwRegister</code> insertions now use <code>LwwRegister::new_with_metadata</code> with explicit <code>HybridTimestamp</code> values:</p>
+<pre class="code">// module-private helper
+fn ts(time: u64, node: NonZeroU128) -> HybridTimestamp { ... }
+
+// usage in tests
+let reg = LwwRegister::new_with_metadata(value, ts(10, node1));
+</pre>
+<p><code>NonZeroU128</code> is used for the node parameter so that accidental zero values produce a compile error rather than a silent correctness bug.</p>
+
+<h3>Distinct Executor IDs in Counter Merge Tests</h3>
+<p>In <code>test_map_of_counters_merge</code>, both nodes previously used the same executor ID. Because <code>GCounter</code> tracks increments per executor key and applies max-semantics per key on merge, identical IDs on both nodes yield <code>max(node1_val, node2_val)</code> instead of <code>node1_val + node2_val</code>. Node 1 now uses executor ID <code>[100; 32]</code> and node 2 uses <code>[200; 32]</code>, producing the correct sum after merge.</p>
+
+<h3>Test Renamed for Clarity</h3>
+<ul>
+  <li><strong>Before:</strong> <code>test_map_merge_with_different_keys</code></li>
+  <li><strong>After:</strong> <code>test_map_union_merge_with_disjoint_keys</code></li>
+</ul>
+<p>The new name accurately describes what the test validates: that merging two maps with completely disjoint key sets produces a union containing all keys from both sides.</p>
+
+<h3>Summary of Resolved Blockers</h3>
+<ol>
+  <li><strong>Clone:</strong> Replaced clone-to-fork with independent construction — no <code>Clone</code> bound needed.</li>
+  <li><strong>Root&lt;T&gt; / Mergeable mismatch:</strong> Removed <code>Root&lt;T&gt;</code> wrappers; <code>Mergeable::merge</code> is called directly.</li>
+  <li><strong>String not Mergeable:</strong> Leaf values changed to <code>LwwRegister&lt;String&gt;</code>.</li>
+</ol>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
