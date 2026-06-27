@@ -179,17 +179,25 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
         .ensure_not_last_admin_demotion(&lone_admin, &GroupMemberRole::Member)
         .is_ok());
 
-    // symmetric case: when the founder IS the sole admin, the guard still fires
-    let mut sole_founder_meta = test_meta();
-    sole_founder_meta.admin_identity = lone_admin;
-    MetaRepository::new(&founder_store)
-        .save(&founder_gid, &sole_founder_meta)
+    // symmetric case (independent store): when the founder IS the sole admin,
+    // the guard still fires
+    let sole_store = test_store();
+    let sole_gid = test_group_id();
+    let sole_admin = PrivateKey::random(&mut rng).public_key();
+    MembershipRepository::new(&sole_store)
+        .add_member(&sole_gid, &sole_admin, GroupMemberRole::Admin)
         .unwrap();
-    assert!(founder_policy
-        .ensure_not_last_admin_removal(&lone_admin)
+    let mut sole_founder_meta = test_meta();
+    sole_founder_meta.admin_identity = sole_admin;
+    MetaRepository::new(&sole_store)
+        .save(&sole_gid, &sole_founder_meta)
+        .unwrap();
+    let sole_policy = MembershipPolicy::new(&sole_store, sole_gid);
+    assert!(sole_policy
+        .ensure_not_last_admin_removal(&sole_admin)
         .is_err());
-    assert!(founder_policy
-        .ensure_not_last_admin_demotion(&lone_admin, &GroupMemberRole::Member)
+    assert!(sole_policy
+        .ensure_not_last_admin_demotion(&sole_admin, &GroupMemberRole::Member)
         .is_err());
 
     let signer_sk = PrivateKey::random(&mut rng);

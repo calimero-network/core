@@ -28,11 +28,14 @@ impl<'a> GroupMembershipView<'a> {
         MembershipRepository::new(self.store).is_member(&self.group_id, member)
     }
 
-    /// Precondition: callers must have confirmed `excluded` is itself an admin
-    /// (the sole caller, `would_orphan_admins`, short-circuits on `is_admin`).
-    /// For a non-admin `excluded` this answers "is any admin present", not
-    /// "is there another admin besides X".
+    /// Answers "is there an admin other than `excluded`". Self-enforces that
+    /// `excluded` is itself an admin: a non-admin can never be the last admin,
+    /// so we return `false` for it rather than treating the genesis founder as
+    /// the "other" admin.
     pub fn has_another_admin(&self, excluded: &PublicKey) -> EyreResult<bool> {
+        if !self.is_admin(excluded)? {
+            return Ok(false);
+        }
         if self
             .list_members()?
             .into_iter()
