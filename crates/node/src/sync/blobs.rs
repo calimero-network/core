@@ -96,7 +96,10 @@ impl SyncManager {
         let read_task = async {
             let mut sequencer = Sequencer::default();
 
-            while let Some(msg) = self.recv(stream, Some((shared_key.clone(), their_nonce))).await? {
+            while let Some(msg) = self
+                .recv(stream, Some((shared_key.clone(), their_nonce)))
+                .await?
+            {
                 let (sequence_id, chunk, their_new_nonce) = match msg {
                     StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                     StreamMessage::Message {
