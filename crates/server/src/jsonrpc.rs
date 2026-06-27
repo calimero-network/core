@@ -36,12 +36,18 @@ impl JsonRpcConfig {
 pub(crate) struct ServiceState {
     ctx_client: ContextClient,
     node_client: NodeClient,
+    /// Whether the auth guard is active on this service's routes. When `false`
+    /// the server was intentionally started without auth (no-auth mode); when
+    /// `true` both `AuthenticatedKey` and `AuthenticatedNodeOwner` extensions
+    /// are expected to be injected by the guard on every request.
+    pub(crate) auth_enabled: bool,
 }
 
 pub(crate) fn service(
     config: &ServerConfig,
     ctx_client: ContextClient,
     node_client: NodeClient,
+    auth_enabled: bool,
 ) -> Option<(String, Router)> {
     // Check if JSON-RPC is configured and enabled
     let _jsonrpc_config = match &config.jsonrpc {
@@ -68,6 +74,7 @@ pub(crate) fn service(
     let state = Arc::new(ServiceState {
         ctx_client,
         node_client,
+        auth_enabled,
     });
     let handler = post(handle_request).layer(Extension(Arc::clone(&state)));
 

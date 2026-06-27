@@ -62,7 +62,11 @@ pub(crate) async fn handle(
         Some(key) => CallerIdentity::Key(key),
         None => {
             if !node_owner {
-                warn!("No auth extensions on WebSocket execute — auth guard may not be running");
+                if state.auth_enabled {
+                    warn!(
+                        "No auth extensions on WebSocket execute — auth guard may not be running"
+                    );
+                }
             }
             CallerIdentity::NodeOwner
         }

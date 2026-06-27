@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use calimero_server_primitives::jsonrpc::{ExecutionError, ExecutionRequest, ExecutionResponse};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use super::{Request, RpcError, ServiceState};
 use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
@@ -22,16 +22,25 @@ impl Request for ExecutionRequest {
         // Three auth paths:
         //   AuthenticatedKey       → token with a verified Ed25519 key; membership check runs
         //   AuthenticatedNodeOwner → non-key auth (embedded username/password); skip check
-        //   neither                → no-auth mode where the auth guard is intentionally disabled
-        //                            (auth_service = None in config). Warn so a misconfigured
-        //                            guard is visible in production logs. This is a deliberate
-        //                            deployment choice, not a silent security bypass — operators
-        //                            must explicitly omit auth config to reach this path.
+        //   neither                → no extensions injected; two sub-cases distinguished by
+        //                            `state.auth_enabled`:
+        //                             - auth enabled  → guard ran but injected nothing; this
+        //                               should not happen and indicates a misconfiguration, so
+        //                               warn loudly and proceed as NodeOwner (fail-open with a
+        //                               visible signal rather than silently rejecting).
+        //                             - auth disabled → intentional no-auth deployment; proceed
+        //                               silently at debug level.
         let caller = match auth_key.as_ref() {
             Some(k) => CallerIdentity::Key(&k.0),
             None => {
                 if auth_node_owner.is_none() {
-                    warn!("No auth extensions present on JSON-RPC execute request — auth guard may not be running");
+                    if state.auth_enabled {
+                        warn!("No auth extensions present on JSON-RPC execute request — auth guard may not be running");
+                    } else {
+                        debug!(
+                            "No-auth mode: JSON-RPC execute proceeding without membership check"
+                        );
+                    }
                 }
                 CallerIdentity::NodeOwner
             }

@@ -125,6 +125,9 @@ pub(crate) struct ServiceState {
     ctx_client: ContextClient,
     connections: RwLock<HashMap<ConnectionId, ConnectionState>>,
     config: WsConfig,
+    /// Whether the auth guard is active on this service's routes. When `false`
+    /// the server was intentionally started without auth (no-auth mode).
+    pub(crate) auth_enabled: bool,
 }
 
 /// Get current Unix timestamp in seconds
@@ -139,6 +142,7 @@ pub(crate) fn service(
     config: &ServerConfig,
     node_client: NodeClient,
     ctx_client: ContextClient,
+    auth_enabled: bool,
 ) -> Option<(String, MethodRouter)> {
     let ws_config = match &config.websocket {
         Some(config) if config.enabled => *config,
@@ -166,6 +170,7 @@ pub(crate) fn service(
         ctx_client,
         connections: RwLock::default(),
         config: ws_config,
+        auth_enabled,
     });
 
     Some((path, get(ws_handler).layer(Extension(state))))
@@ -211,15 +216,22 @@ async fn ws_handler(
     //   AuthenticatedKey       → verified public key; stored as Some(pk)
     //   AuthenticatedNodeOwner → non-key auth (e.g. embedded username/password);
     //                            stored as None (NodeOwner path in execute)
-    //   neither                → no-auth mode (auth_service = None); warn so a
-    //                            misconfigured guard is visible in production logs
+    //   neither                → two sub-cases:
+    //                             - auth_enabled=true  → guard ran but injected nothing;
+    //                               warn loudly (misconfiguration signal)
+    //                             - auth_enabled=false → intentional no-auth deployment;
+    //                               proceed silently at debug level
     let (caller, node_owner) = match (auth_key, auth_node_owner) {
         (Some(ext), _) => (Some(ext.0 .0), false),
         (None, Some(_)) => (None, true),
         (None, None) => {
-            warn!(
-                "No auth extensions present on WebSocket upgrade — auth guard may not be running"
-            );
+            if state.auth_enabled {
+                warn!(
+                    "No auth extensions present on WebSocket upgrade — auth guard may not be running"
+                );
+            } else {
+                debug!("No-auth mode: WebSocket upgrade proceeding without auth extensions");
+            }
             (None, false)
         }
     };
