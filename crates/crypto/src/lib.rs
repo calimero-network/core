@@ -2,7 +2,7 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use ed25519_dalek::SigningKey;
 use ring::aead;
 use thiserror::Error;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 pub const NONCE_LEN: usize = 12;
 
@@ -23,6 +23,12 @@ pub enum SharedKeyError {
 #[derive(Clone)]
 pub struct SharedKey {
     key: Zeroizing<[u8; 32]>,
+}
+
+impl Zeroize for SharedKey {
+    fn zeroize(&mut self) {
+        self.key.zeroize();
+    }
 }
 
 impl std::fmt::Debug for SharedKey {
