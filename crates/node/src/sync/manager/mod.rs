@@ -2257,7 +2257,7 @@ impl SyncManager {
                             // carved out above via the author sentinel, so no
                             // legitimate non-genesis delta arrives without one.
                             let sig_for_head = match response_delta_signature {
-                                Some(ref s) => s,
+                                Some(s) => s,
                                 None => {
                                     warn!(
                                         %context_id,
@@ -2274,7 +2274,7 @@ impl SyncManager {
                                     storage_delta.id,
                                     author,
                                     pos.as_ref(),
-                                    sig_for_head,
+                                    &sig_for_head,
                                 )
                             {
                                 warn!(

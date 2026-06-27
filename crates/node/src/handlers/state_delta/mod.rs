@@ -184,7 +184,7 @@ pub(crate) async fn apply_authorized_state_delta(
     // all-zeros author sentinel), so there is no legitimate case where
     // a non-genesis delta arrives without a signature.
     let sig = match delta_signature {
-        Some(ref s) => s,
+        Some(s) => s,
         None => {
             warn!(
                 %context_id,
@@ -200,7 +200,7 @@ pub(crate) async fn apply_authorized_state_delta(
         delta_id,
         author_id,
         governance_position.as_ref(),
-        sig,
+        &sig,
     ) {
         warn!(
             %context_id,
@@ -1362,7 +1362,7 @@ async fn request_missing_deltas(
                     // indistinguishable from a stripped signature. Genesis
                     // deltas are carved out above via the author sentinel.
                     let sig_for_parent = match response_delta_signature {
-                        Some(ref s) => s,
+                        Some(s) => s,
                         None => {
                             warn!(
                                 %context_id,
@@ -1379,7 +1379,7 @@ async fn request_missing_deltas(
                             storage_delta.id,
                             response_author,
                             governance_position.as_ref(),
-                            sig_for_parent,
+                            &sig_for_parent,
                         )
                     {
                         warn!(
@@ -1749,7 +1749,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // there is no legitimate case where a buffered delta lacks a
     // signature.
     let sig_for_replay = match buffered.delta_signature {
-        Some(ref s) => s,
+        Some(s) => s,
         None => {
             warn!(
                 %context_id,
@@ -1765,7 +1765,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         delta_id,
         buffered.author_id,
         buffered.governance_position.as_ref(),
-        sig_for_replay,
+        &sig_for_replay,
     ) {
         warn!(
             %context_id,

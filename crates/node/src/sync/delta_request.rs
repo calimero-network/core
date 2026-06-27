@@ -136,7 +136,7 @@ fn verify_fetched_parent(
     // Genesis deltas are carved out above via the author sentinel, so no
     // legitimate non-genesis delta arrives without a signature.
     let sig = match fetched.delta_signature {
-        Some(ref s) => s,
+        Some(s) => s,
         None => {
             warn!(
                 %context_id,
@@ -152,7 +152,7 @@ fn verify_fetched_parent(
         delta_id,
         fetched.author_id,
         pos.as_ref(),
-        sig,
+        &sig,
     ) {
         warn!(
             %context_id,
