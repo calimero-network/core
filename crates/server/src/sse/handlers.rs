@@ -343,16 +343,20 @@ pub async fn sse_handler(
                             .data(message),
                     ),
                     Err(err) => {
-                        error!("Failed to serialize SseResponse: {}", err);
-                        let error_data = serde_json::json!({
-                            "type": "error",
-                            "message": "Failed to serialize SseResponse"
+                        error!(%err, "Failed to serialize SseResponse");
+                        let error_response = SseResponse {
+                            body: ResponseBody::Error(ResponseBodyError::ServerError(
+                                ServerResponseError::InternalError { err: None },
+                            )),
+                        };
+                        let data = to_json_string(&error_response).unwrap_or_else(|_| {
+                            r#"{"error":{"type":"InternalError","data":{}}}"#.to_owned()
                         });
                         Ok::<Event, Infallible>(
                             Event::default()
                                 .event(SseEvent::Message.as_str())
                                 .id(id_str)
-                                .data(error_data.to_string()),
+                                .data(data),
                         )
                     }
                 },
