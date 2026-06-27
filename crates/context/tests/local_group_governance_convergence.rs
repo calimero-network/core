@@ -282,7 +282,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: gid,
-        expiration_timestamp: 9_999_999_999,
+        expiration_timestamp: 0,
         secret_salt: [0x42; 32],
         invited_role: 1,
     };
@@ -623,19 +623,21 @@ fn recursive_invite_joins_all_descendant_groups() {
 
     assert_eq!(invitations.len(), 4); // ns_id + child_a + child_b + grandchild
 
-    // Joiner publishes MemberJoined for each invitation
+    // Joiner publishes MemberJoinedAt for each invitation (expiration is set,
+    // so joined_at must be provided; use 1 which is safely before any future expiry).
     for (i, (_gid, signed_inv)) in invitations.iter().enumerate() {
         let ns_op = SignedNamespaceOp::sign(
             &joiner_sk,
             ns_id.to_bytes(),
             vec![],
             (i + 1) as u64,
-            NamespaceOp::Root(RootOp::MemberJoined {
+            NamespaceOp::Root(RootOp::MemberJoinedAt {
                 member: joiner_pk,
                 signed_invitation: signed_inv.clone(),
+                joined_at: 1,
             }),
         )
-        .expect("sign MemberJoined");
+        .expect("sign MemberJoinedAt");
 
         group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     }
@@ -1753,7 +1755,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: gid,
-        expiration_timestamp: 9_999_999_999,
+        expiration_timestamp: 0,
         secret_salt: [0x42; 32],
         invited_role: 1,
     };
