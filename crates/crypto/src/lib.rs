@@ -25,6 +25,9 @@ pub struct SharedKey {
     key: Zeroizing<[u8; 32]>,
 }
 
+// Explicit Zeroize impl so SharedKey satisfies a `Zeroize` bound and callers
+// can eagerly wipe the key (e.g. before returning from a function) without
+// waiting for drop. The actual byte clearing delegates to Zeroizing<_>.
 impl Zeroize for SharedKey {
     fn zeroize(&mut self) {
         self.key.zeroize();
