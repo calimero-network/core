@@ -1494,9 +1494,10 @@ fn capability_zero_means_no_permissions() {
         .unwrap();
     assert_eq!(caps, 0);
     // All capability bits are off
-    assert_eq!(caps & (1 << 0), 0); // CAN_CREATE_CONTEXT
-    assert_eq!(caps & (1 << 1), 0); // CAN_INVITE_MEMBERS
-    assert_eq!(caps & (1 << 2), 0); // CAN_JOIN_OPEN_SUBGROUPS
+    use calimero_context_config::MemberCapabilities;
+    assert_eq!(caps & MemberCapabilities::CAN_CREATE_CONTEXT, 0);
+    assert_eq!(caps & MemberCapabilities::CAN_INVITE_MEMBERS, 0);
+    assert_eq!(caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS, 0);
 }
 
 #[test]
