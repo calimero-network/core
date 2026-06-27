@@ -483,6 +483,33 @@ FIND>>>
 </ul>
 </div>
 
+<div class="card ga"><h2>Member Capability Constants (<code>MemberCapabilities</code>)</h2>
+<p>
+All raw bit-shift literals previously used to encode or decode capability flags (e.g.
+<code>1 &lt;&lt; 0</code>, <code>1 &lt;&lt; 1</code>, <code>1 &lt;&lt; 2</code>, <code>1 &lt;&lt; 5</code> …
+<code>1 &lt;&lt; 8</code>) have been replaced with named constants from
+<code>calimero_context_config::MemberCapabilities</code>. The affected sites are:
+<code>SetCapabilitiesCommand</code>, <code>CheckAccessCommand</code>,
+<code>SettingsGetCommand</code>, <code>SetDefaultCapabilitiesCommand</code>,
+<code>GetMemberCapabilitiesApiResponse</code> in the <code>meroctl</code> CLI, and the
+<code>capability_zero_means_no_permissions</code> governance-store test.
+</p>
+<ul>
+  <li><code>MemberCapabilities::CAN_CREATE_CONTEXT</code> — formerly <code>1 &lt;&lt; 0</code></li>
+  <li><code>MemberCapabilities::CAN_INVITE_MEMBERS</code> — formerly <code>1 &lt;&lt; 1</code></li>
+  <li><code>MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS</code> — formerly <code>1 &lt;&lt; 2</code></li>
+  <li><code>MemberCapabilities::CAN_CREATE_SUBGROUP</code> — formerly <code>1 &lt;&lt; 5</code></li>
+  <li><code>MemberCapabilities::CAN_DELETE_SUBGROUP</code> — formerly <code>1 &lt;&lt; 6</code></li>
+  <li><code>MemberCapabilities::CAN_MANAGE_VISIBILITY</code> — formerly <code>1 &lt;&lt; 7</code></li>
+  <li><code>MemberCapabilities::CAN_MANAGE_METADATA</code> — formerly <code>1 &lt;&lt; 8</code></li>
+</ul>
+<p>
+Any tooling or external code that constructed capability bitmasks with raw integer literals
+should be updated to use these named constants. The numeric values are unchanged; this is a
+readability and maintainability refactor only.
+</p>
+</div>
+
 <div class="card gd"><h2>Re-drive Buffered Ops on GroupCreated &amp; Born-Open Subgroups <em>(#2848 / #2771)</em></h2>
 
 <p>
