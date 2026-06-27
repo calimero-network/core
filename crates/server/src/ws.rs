@@ -229,9 +229,9 @@ async fn ws_handler(
                 warn!(
                     "No auth extensions present on WebSocket upgrade — auth guard may not be running"
                 );
-            } else {
-                debug!("No-auth mode: WebSocket upgrade proceeding without auth extensions");
+                return StatusCode::UNAUTHORIZED.into_response();
             }
+            debug!("No-auth mode: WebSocket upgrade proceeding without auth extensions");
             (None, false)
         }
     };
