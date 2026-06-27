@@ -61,12 +61,11 @@ pub(crate) async fn handle(
     let caller_identity = match caller.as_ref() {
         Some(key) => CallerIdentity::Key(key),
         None => {
-            if !node_owner {
-                if state.auth_enabled {
-                    warn!(
-                        "No auth extensions on WebSocket execute — auth guard may not be running"
-                    );
-                }
+            if !node_owner && state.auth_enabled {
+                warn!("No auth extensions on WebSocket execute — auth guard may not be running");
+                return ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::ParseError("authentication required".to_owned()),
+                ));
             }
             CallerIdentity::NodeOwner
         }

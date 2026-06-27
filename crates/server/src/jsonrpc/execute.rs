@@ -25,9 +25,8 @@ impl Request for ExecutionRequest {
         //   neither                → no extensions injected; two sub-cases distinguished by
         //                            `state.auth_enabled`:
         //                             - auth enabled  → guard ran but injected nothing; this
-        //                               should not happen and indicates a misconfiguration, so
-        //                               warn loudly and proceed as NodeOwner (fail-open with a
-        //                               visible signal rather than silently rejecting).
+        //                               should not happen and indicates a misconfiguration; reject
+        //                               the request to avoid silently granting elevated access.
         //                             - auth disabled → intentional no-auth deployment; proceed
         //                               silently at debug level.
         let caller = match auth_key.as_ref() {
@@ -36,11 +35,11 @@ impl Request for ExecutionRequest {
                 if auth_node_owner.is_none() {
                     if state.auth_enabled {
                         warn!("No auth extensions present on JSON-RPC execute request — auth guard may not be running");
-                    } else {
-                        debug!(
-                            "No-auth mode: JSON-RPC execute proceeding without membership check"
-                        );
+                        return Err(RpcError::MethodCallError(
+                            ExecutionError::FunctionCallError("authentication required".to_owned()),
+                        ));
                     }
+                    debug!("No-auth mode: JSON-RPC execute proceeding without membership check");
                 }
                 CallerIdentity::NodeOwner
             }
