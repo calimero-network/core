@@ -7,10 +7,20 @@
 //! each "node" is modelled as a separate collection instance. Different executor IDs
 //! ensure Counter increments are tracked independently per node.
 
+use core::num::NonZeroU128;
+
 use serial_test::serial;
 
 use crate::collections::{Counter, LwwRegister, Mergeable, UnorderedMap};
 use crate::env;
+use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+
+fn ts(time: u64) -> HybridTimestamp {
+    HybridTimestamp::new(Timestamp::new(
+        NTP64(time),
+        ID::from(NonZeroU128::new(1).unwrap()),
+    ))
+}
 
 #[test]
 #[serial]
@@ -110,6 +120,8 @@ fn test_map_of_counters_merge() {
         6,
         "Counters should sum across executors: 3 + 3 = 6"
     );
+    // Reset executor ID so subsequent tests don't inherit [200;32].
+    env::reset_for_testing();
 }
 
 #[test]
@@ -117,21 +129,19 @@ fn test_map_of_counters_merge() {
 fn test_map_of_lww_registers_merge() {
     env::reset_for_testing();
 
-    // Node 1: set "title" = "From Node 1" at an earlier timestamp
+    // Node 1: set "title" = "From Node 1" at timestamp 100
     let mut map1 = UnorderedMap::<String, LwwRegister<String>>::new();
     map1.insert(
         "title".to_string(),
-        LwwRegister::new("From Node 1".to_string()),
+        LwwRegister::new_with_metadata("From Node 1".to_string(), ts(100), [1u8; 32]),
     )
     .unwrap();
 
-    std::thread::sleep(std::time::Duration::from_millis(2));
-
-    // Node 2: set "title" = "From Node 2" at a later timestamp (concurrent update)
+    // Node 2: set "title" = "From Node 2" at timestamp 200 (explicitly later)
     let mut map2 = UnorderedMap::<String, LwwRegister<String>>::new();
     map2.insert(
         "title".to_string(),
-        LwwRegister::new("From Node 2".to_string()),
+        LwwRegister::new_with_metadata("From Node 2".to_string(), ts(200), [2u8; 32]),
     )
     .unwrap();
 
