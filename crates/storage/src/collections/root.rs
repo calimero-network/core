@@ -207,12 +207,10 @@ where
             StorageDelta::Comparisons(_) => "Comparisons",
         };
 
-        // Observe the remote delta's HLC before applying it, so a later
-        // local insert is stamped strictly after the remote char it causally
-        // follows (RGA CharId / LWW ordering). `CausalActions` carries the
-        // delta's HLC; `Actions` (host-side replay) carries none. A
-        // drift-rejected timestamp (>5s ahead) is logged, not fatal — the
-        // actions are still valid replicated state.
+        // Observe the remote delta's HLC before applying, so a later local insert
+        // sorts after the remote char it follows (CausalActions carries the HLC;
+        // Actions don't). A drift-rejected (>5s ahead) HLC is logged, not fatal —
+        // the actions are still valid state.
         if let StorageDelta::CausalActions { delta_hlc, .. } = &artifact {
             if let Err(crate::env::HlcDriftError) = crate::env::update_hlc(delta_hlc) {
                 tracing::warn!(

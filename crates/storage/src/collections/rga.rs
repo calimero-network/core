@@ -481,12 +481,9 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
                 continue;
             }
 
-            // Absent from `self`'s live set: distinguish "never seen" from
-            // "concurrently deleted". A tombstone means `self` deleted this char
-            // (delete wins), so don't resurrect it. `entry_id`/`is_deleted` both
-            // address `self`'s own map+store (adaptor `S`); `S2` only read
-            // `other.entries()` above. Same `CharId` → same entity id under a
-            // shared map id, which is the only case two replicas converge.
+            // Absent from `self`'s live set: a tombstone means `self` deleted this
+            // char (delete wins, don't resurrect); otherwise it's genuinely new.
+            // `entry_id`/`is_deleted` address `self`'s own store (adaptor `S`).
             let entry_id = self.chars.entry_id(&key);
             if crate::index::Index::<S>::is_deleted(entry_id)? {
                 continue;
@@ -796,13 +793,10 @@ mod tombstone_merge_tests {
         );
     }
 
-    /// In one pass: a char `self` tombstoned is NOT resurrected while a char
-    /// `self` never saw IS added (add-wins) — so the guard can't be faked by
-    /// suppressing all inserts. Two `MockedStorage` scopes are load-bearing (a
-    /// shared store makes deleter and holder the same entity, trivially passing).
-    /// Asserted at the index level (`is_deleted`/`deleted_children`), not
-    /// `get_text`, which filters tombstones; removing the guard fails the
-    /// `is_deleted` assertion.
+    /// In one pass: a tombstoned char is NOT resurrected while an unseen char IS
+    /// added — so the guard can't be faked by suppressing all inserts. Two stores
+    /// are load-bearing, and it asserts at the index level (`is_deleted`), not
+    /// `get_text` (which filters tombstones).
     #[test]
     fn merge_distinguishes_tombstoned_from_unseen_in_one_pass() {
         type A = crate::store::MockedStorage<815>;

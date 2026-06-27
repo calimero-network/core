@@ -609,12 +609,9 @@ mod tests {
         }
     }
 
-    /// A naive XOR-fold alternative (`seed[i % 16] ^= key[i]`) — considered and
-    /// rejected for this fix, never the production code — collapses any key with
-    /// `key[i] == key[i + 16]` (most starkly `[k; 32]`) to an ALL-ZERO seed, so
-    /// every such executor collapses to the same (zero→1-guarded) HLC id. This is
-    /// why the fix uses a SHA-256 prefix, not a fold. (The replaced production
-    /// code was a first-16-byte prefix copy, not this fold.)
+    /// A naive XOR-fold (`seed[i % 16] ^= key[i]`) collapses any `[k; 32]` key to
+    /// an all-zero seed, colliding every such executor's HLC id — which is why the
+    /// seed uses a SHA-256 prefix, not a fold.
     #[test]
     fn test_naive_xor_fold_collapses_repeated_key_to_zero() {
         // The rejected XOR-fold alternative, reproduced verbatim.
