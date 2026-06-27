@@ -231,8 +231,11 @@ async fn ws_handler(
                 );
                 return StatusCode::UNAUTHORIZED.into_response();
             }
-            debug!("No-auth mode: WebSocket upgrade proceeding without auth extensions");
-            (None, false)
+            // Intentional no-auth deployment: treat every connection as
+            // node-owner so the no-auth path is positively distinguishable
+            // from a misconfigured guard (which returns 401 above).
+            debug!("No-auth mode: WebSocket upgrade proceeding as NodeOwner");
+            (None, true)
         }
     };
     ws.on_upgrade(move |socket| handle_socket(socket, state, caller, node_owner))
