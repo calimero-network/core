@@ -211,22 +211,19 @@ where
                         }
                     }
                     Ok(None) => {
-                        // No Ed25519 public key is stored for this key_id. There are
-                        // two cases where this is expected and both are legitimate
-                        // node-owner sessions:
+                        // No Ed25519 public key is stored for this key_id. The only
+                        // legitimate case is a client key (`KeyType::Client`): created
+                        // via the `/auth/client-keys` API by the node owner for their
+                        // own applications and provisioned with `public_key: None` by
+                        // design (see `Key::new_client_key`). Client keys are always
+                        // issued by and to the node owner; treating them as NodeOwner
+                        // matches the intended access model.
                         //
-                        // 1. Username/password root keys: `user_password` provider
-                        //    stores the username as a non-base58 string in the
-                        //    `public_key` field; `from_str` fails → falls through to
-                        //    here via the parse-failure arm above. In practice this arm
-                        //    is reached for truly-absent values.
-                        //
-                        // 2. Client keys (`KeyType::Client`): created via the
-                        //    `/auth/client-keys` API by the node owner for their own
-                        //    applications. These are provisioned with `public_key: None`
-                        //    by design (see `Key::new_client_key`). Client keys are
-                        //    always issued by and to the node owner; treating them as
-                        //    NodeOwner matches the intended access model.
+                        // Note: username/password root keys do NOT reach this arm.
+                        // The `user_password` provider stores the username as a
+                        // non-base58 string in `public_key`, so `get_key_public_key`
+                        // returns `Ok(Some(username))` and `PublicKey::from_str` fails
+                        // → that path is handled by the `Err(_)` arm above.
                         //
                         // No other key type with `public_key = None` should exist in
                         // the store. This is a schema guarantee in the auth crate:

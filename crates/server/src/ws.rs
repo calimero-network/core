@@ -234,7 +234,7 @@ async fn ws_handler(
             // Intentional no-auth deployment: treat every connection as
             // node-owner so the no-auth path is positively distinguishable
             // from a misconfigured guard (which returns 401 above).
-            debug!("No-auth mode: WebSocket upgrade proceeding as NodeOwner");
+            warn!("No-auth mode: WebSocket upgrade proceeding as NodeOwner — auth is disabled");
             (None, true)
         }
     };
