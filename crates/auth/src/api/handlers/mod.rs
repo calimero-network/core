@@ -20,9 +20,11 @@ use crate::server::AppState;
 #[folder = "$CALIMERO_AUTH_FRONTEND_PATH"]
 struct AuthUiStaticFiles;
 
+#[cfg(debug_assertions)]
+pub use auth::mock_token_handler;
 /// Re-export authentication flow handlers
 pub use auth::{
-    callback_handler, challenge_handler, login_handler, mock_token_handler, refresh_token_handler,
+    callback_handler, challenge_handler, login_handler, refresh_token_handler,
     revoke_token_handler, token_handler, validate_handler,
 };
 /// Re-export client key management handlers
