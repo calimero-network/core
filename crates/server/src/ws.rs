@@ -94,14 +94,23 @@ pub(crate) struct ConnectionStateInner {
     /// cryptographic key (e.g. embedded username/password auth). Set once at
     /// upgrade time; immutable for the life of the connection.
     pub(crate) caller: Option<calimero_primitives::identity::PublicKey>,
+    /// `true` when the auth layer positively confirmed this connection as the
+    /// node owner via a non-key method (e.g. embedded username/password).
+    /// Distinguishes the "legitimate NodeOwner" path from "no auth at all"
+    /// when `caller` is `None`.
+    pub(crate) node_owner: bool,
 }
 
 impl ConnectionStateInner {
-    fn new(caller: Option<calimero_primitives::identity::PublicKey>) -> Self {
+    fn new(
+        caller: Option<calimero_primitives::identity::PublicKey>,
+        node_owner: bool,
+    ) -> Self {
         Self {
             subscriptions: HashSet::default(),
             last_pong: AtomicU64::new(unix_timestamp()),
             caller,
+            node_owner,
         }
     }
 }
@@ -207,15 +216,15 @@ async fn ws_handler(
     //                            stored as None (NodeOwner path in execute)
     //   neither                → no-auth mode (auth_service = None); warn so a
     //                            misconfigured guard is visible in production logs
-    let caller = match (auth_key, auth_node_owner) {
-        (Some(ext), _) => Some(ext.0 .0),
-        (None, Some(_)) => None,
+    let (caller, node_owner) = match (auth_key, auth_node_owner) {
+        (Some(ext), _) => (Some(ext.0 .0), false),
+        (None, Some(_)) => (None, true),
         (None, None) => {
             warn!("No auth extensions present on WebSocket upgrade — auth guard may not be running");
-            None
+            (None, false)
         }
     };
-    ws.on_upgrade(move |socket| handle_socket(socket, state, caller))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, caller, node_owner))
         .into_response()
 }
 
@@ -223,6 +232,7 @@ async fn handle_socket(
     socket: WebSocket,
     state: Arc<ServiceState>,
     caller: Option<calimero_primitives::identity::PublicKey>,
+    node_owner: bool,
 ) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
 
@@ -232,7 +242,7 @@ async fn handle_socket(
     let connection_id = Uuid::new_v4();
     let connection_state = ConnectionState {
         commands: commands_sender.clone(),
-        inner: Arc::new(RwLock::new(ConnectionStateInner::new(caller))),
+        inner: Arc::new(RwLock::new(ConnectionStateInner::new(caller, node_owner))),
     };
 
     {
@@ -554,8 +564,10 @@ async fn handle_text_message(
                     .await
                     .to_res_body(),
                 RequestPayload::Execute(request) => {
-                    let caller = connection_state.inner.read().await.caller;
-                    execute::handle(&state, caller, request).await
+                    let inner = connection_state.inner.read().await;
+                    let (caller, node_owner) = (inner.caller, inner.node_owner);
+                    drop(inner);
+                    execute::handle(&state, caller, node_owner, request).await
                 }
             },
             Err(err) => {

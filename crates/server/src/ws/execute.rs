@@ -27,6 +27,7 @@ use crate::ws::ServiceState;
 pub(crate) async fn handle(
     state: &ServiceState,
     caller: Option<PublicKey>,
+    node_owner: bool,
     request: ExecutionRequest,
 ) -> ResponseBody {
     let validation_errors = request.validate();
@@ -60,7 +61,9 @@ pub(crate) async fn handle(
     let caller_identity = match caller.as_ref() {
         Some(key) => CallerIdentity::Key(key),
         None => {
-            warn!("No authenticated key on WebSocket execute — running as node owner (no-auth mode)");
+            if !node_owner {
+                warn!("No auth extensions on WebSocket execute — auth guard may not be running");
+            }
             CallerIdentity::NodeOwner
         }
     };
