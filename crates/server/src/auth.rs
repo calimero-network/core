@@ -210,9 +210,28 @@ where
                         }
                     }
                     Ok(None) => {
-                        // No public key value stored for this key_id (client keys have
-                        // public_key = None). The token was valid; treat the caller as
-                        // the node owner.
+                        // No Ed25519 public key is stored for this key_id. There are
+                        // two cases where this is expected and both are legitimate
+                        // node-owner sessions:
+                        //
+                        // 1. Username/password root keys: `user_password` provider
+                        //    stores the username as a non-base58 string in the
+                        //    `public_key` field; `from_str` fails → falls through to
+                        //    here via the parse-failure arm above. In practice this arm
+                        //    is reached for truly-absent values.
+                        //
+                        // 2. Client keys (`KeyType::Client`): created via the
+                        //    `/auth/client-keys` API by the node owner for their own
+                        //    applications. These are provisioned with `public_key: None`
+                        //    by design (see `Key::new_client_key`). Client keys are
+                        //    always issued by and to the node owner; treating them as
+                        //    NodeOwner matches the intended access model.
+                        //
+                        // No other key type with `public_key = None` should exist in
+                        // the store. This is a schema guarantee in the auth crate:
+                        // `new_root_key_with_permissions` always sets `public_key` to
+                        // a non-empty string, and `new_client_key` is the only other
+                        // constructor.
                         parts.extensions.insert(AuthenticatedNodeOwner);
                     }
                     Err(err) => {
