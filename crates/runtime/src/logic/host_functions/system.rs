@@ -276,8 +276,7 @@ impl VMHostFunctions<'_> {
             return Ok(0);
         }
 
-        self.read_guest_memory_slice_mut(&dest_data)?
-            .copy_from_slice(data);
+        self.write_guest_memory_slice(&dest_data, data)?;
 
         trace!(
             target: "runtime::host::system",

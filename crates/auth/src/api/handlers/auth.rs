@@ -778,6 +778,7 @@ pub async fn revoke_token_handler(
 }
 
 /// Mock token request for CI and testing
+#[cfg(debug_assertions)]
 #[derive(Debug, Deserialize, Validate)]
 pub struct MockTokenRequest {
     /// Client name for identification
@@ -814,6 +815,7 @@ pub struct MockTokenRequest {
 /// # Returns
 ///
 /// * `impl IntoResponse` - The response containing access and refresh tokens
+#[cfg(debug_assertions)]
 pub async fn mock_token_handler(
     state: Extension<Arc<AppState>>,
     headers: HeaderMap,
