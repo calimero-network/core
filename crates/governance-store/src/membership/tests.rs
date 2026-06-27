@@ -179,6 +179,19 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
         .ensure_not_last_admin_demotion(&lone_admin, &GroupMemberRole::Member)
         .is_ok());
 
+    // symmetric case: when the founder IS the sole admin, the guard still fires
+    let mut sole_founder_meta = test_meta();
+    sole_founder_meta.admin_identity = lone_admin;
+    MetaRepository::new(&founder_store)
+        .save(&founder_gid, &sole_founder_meta)
+        .unwrap();
+    assert!(founder_policy
+        .ensure_not_last_admin_removal(&lone_admin)
+        .is_err());
+    assert!(founder_policy
+        .ensure_not_last_admin_demotion(&lone_admin, &GroupMemberRole::Member)
+        .is_err());
+
     let signer_sk = PrivateKey::random(&mut rng);
     let policy_op = SignedGroupOp::sign(
         &signer_sk,
