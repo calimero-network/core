@@ -699,6 +699,46 @@
 </div>
 </div>
 
+<div class="card ga"><h2>9. ABI Emitter — Collected normalize_type Errors</h2>
+<p>Previously, <code>AbiEmitter</code> called <code>normalize_type(...).unwrap()</code> or <code>.unwrap_or_else(|e| panic!(...))</code> at every call site. A single unsupported type — such as a new <code>UnsupportedArrayElement</code> or a stricter <code>UnsupportedMapKey</code> — would abort the entire build script with an opaque panic, hiding all other type errors in the same crate.</p>
+
+<h3>What Changed</h3>
+<ul>
+  <li><code>AbiEmitter</code> gained a <code>normalize_errors: Vec&lt;String&gt;</code> field that accumulates every failed <code>normalize_type</code> call.</li>
+  <li>A new helper method <code>normalize_or_record</code> replaces all former <code>unwrap</code>/<code>panic</code> call sites. On error it appends a descriptive context string to the vector and returns the placeholder type <code>string</code> so AST visitation continues uninterrupted.</li>
+  <li>After all AST passes complete, <code>emit_manifest_from_crate</code> inspects <code>normalize_errors</code>. If it is non-empty, all collected messages are joined into a single combined diagnostic and returned as an <code>Err</code> — no panic is ever allowed to propagate.</li>
+</ul>
+
+<h3>Error Flow</h3>
+<ol>
+  <li><strong>Encounter unsupported type</strong> — <code>normalize_type</code> returns <code>Err(UnsupportedArrayElement | UnsupportedMapKey | …)</code>.</li>
+  <li><strong>Record, don't abort</strong> — <code>normalize_or_record</code> pushes <code>"context: &lt;error message&gt;"</code> onto <code>normalize_errors</code> and returns <code>"string"</code> as a stand-in so the remaining fields and methods continue to be visited.</li>
+  <li><strong>Full-pass collection</strong> — every unsupported type anywhere in the crate is recorded in one compilation, not just the first one encountered.</li>
+  <li><strong>Combined diagnostic</strong> — <code>emit_manifest_from_crate</code> returns a multi-line <code>Err</code> enumerating all unsupported types. The build script surfaces this as a single, readable compiler error.</li>
+</ol>
+
+<h3>Before vs. After</h3>
+<pre class="code">// Before — panics on first failure, hides the rest
+let ty = normalize_type(&raw_ty).unwrap_or_else(|e| panic!("unsupported: {e}"));
+
+// After — records and continues; errors surfaced together at the end
+let ty = self.normalize_or_record(&raw_ty, "MyStruct::field_name");
+// → on failure: pushes "MyStruct::field_name: UnsupportedArrayElement(…)"
+//               returns "string" placeholder, visitation continues</pre>
+
+<h3>Developer Impact</h3>
+<ul>
+  <li>Build failures caused by unsupported ABI types now produce a <strong>single, enumerated error message</strong> listing every problematic field in one shot.</li>
+  <li>No more opaque <em>thread 'main' panicked at …</em> output from the build script; the error is returned through the normal <code>Result</code> chain and formatted by the toolchain.</li>
+  <li>Developers can fix all unsupported types in one edit-compile cycle instead of iterating one panic at a time.</li>
+</ul>
+
+<h3>Invariants Preserved</h3>
+<ul>
+  <li>The placeholder <code>string</code> type is <strong>never written to the final manifest</strong> — <code>emit_manifest_from_crate</code> returns <code>Err</code> before any output is emitted when <code>normalize_errors</code> is non-empty.</li>
+  <li>Successful compilations (empty <code>normalize_errors</code>) are completely unaffected; the happy path is identical to before.</li>
+</ul>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
