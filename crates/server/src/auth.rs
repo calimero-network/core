@@ -197,23 +197,22 @@ where
                             Ok(pk) => {
                                 parts.extensions.insert(AuthenticatedKey(pk));
                             }
-                            Err(err) => {
-                                // The stored value is not a valid Ed25519 public key.
-                                // This is unexpected: Ok(Some(_)) means a value IS
-                                // stored, so a parse failure indicates data corruption
-                                // or a bug in key registration. Fail closed rather
-                                // than granting node-owner access on corrupted data.
-                                // The expected embedded auth path (no key registered)
-                                // produces Ok(None), handled below.
-                                warn!(key_id=%auth_response.key_id, %err, "auth key_id has a stored value that is not a valid PublicKey; rejecting request");
-                                return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                            Err(_) => {
+                                // The stored value is not a valid Ed25519/base58 public
+                                // key. This is expected for username/password auth: the
+                                // user_password provider stores the username in the
+                                // `public_key` field as a human-readable identifier, not
+                                // a real cryptographic key. Treat this path identically
+                                // to Ok(None) — the auth layer confirmed a valid session;
+                                // the caller is the node owner.
+                                parts.extensions.insert(AuthenticatedNodeOwner);
                             }
                         }
                     }
                     Ok(None) => {
-                        // No public key registered for this key_id — embedded auth
-                        // (username/password) where the key_id has no associated key.
-                        // The token was valid; treat the caller as the node owner.
+                        // No public key value stored for this key_id (client keys have
+                        // public_key = None). The token was valid; treat the caller as
+                        // the node owner.
                         parts.extensions.insert(AuthenticatedNodeOwner);
                     }
                     Err(err) => {
