@@ -150,6 +150,8 @@
 </div>
 
 <p>Limits are enforced at the host function boundary — each call checks remaining budget before proceeding. Exceeding any limit causes the method to abort with a <span class="code">LimitExceeded</span> error, and all mutations are rolled back.</p>
+
+<p style="margin-top:10px;">Guest memory bounds are validated by <span class="code">check_guest_memory_bounds</span> before any side effects are performed, ensuring that an invalid destination address causes an immediate abort rather than a partial write or silent corruption.</p>
 </div>
 
 <!-- ════════════════════════════════════════════════════════
@@ -159,6 +161,11 @@
 <h2>Host Functions</h2>
 <p style="margin-bottom:18px;">The runtime imports 50+ host functions into the WASM module. Each function is registered as a Wasmer import under the <span class="code">"env"</span> namespace. Organized by domain:</p>
 
+<div class="cb" style="margin-bottom:18px;">
+  <h4 style="color:#ec4899;">Guest Memory Write Safety</h4>
+  <p style="margin-top:8px;">All writes into guest (WASM linear) memory must go through <span class="code">write_guest_memory_slice(&amp;self, slice: &amp;sys::BufferMut, data: &amp;[u8])</span>. This method bounds-checks the destination buffer against total guest memory, then delegates the actual copy to Wasmer's safe <span class="code">MemoryView::write</span> API. A <span class="code">&amp;mut [u8]</span> alias into guest memory must <em>never</em> be materialized while any immutable <span class="code">&amp;[u8]</span> view over the same backing store exists — doing so violates Rust's aliasing rules and constitutes undefined behaviour. The former internal helper <span class="code">read_guest_memory_slice_mut</span> (which used <span class="code">data_unchecked_mut</span> to produce such an alias) has been removed entirely. When a caller must verify that a guest buffer is writable before executing side effects, <span class="code">check_guest_memory_bounds(&amp;self, slice: &amp;sys::BufferMut)</span> performs the bounds validation without copying any data.</p>
+</div>
+
 <details>
   <summary>Identity &amp; I/O</summary>
   <div class="detail-body">
@@ -167,6 +174,7 @@
     <div class="fr"><div class="fp">input</div><div class="fd">Read the method's serialized input arguments into a register</div></div>
     <div class="fr"><div class="fp">value_return</div><div class="fd">Set the return value for the method call</div></div>
     <div class="fr"><div class="fp">log_utf8</div><div class="fd">Emit a UTF-8 log message (counted against max_logs)</div></div>
+    <div class="fr"><div class="fp">random_bytes</div><div class="fd">Validate guest destination with <span class="code">check_guest_memory_bounds</span>, fill a host-owned buffer via the RNG, then copy into guest memory via <span class="code">write_guest_memory_slice</span> — no mutable alias into guest memory is created</div></div>
     <div class="fr"><div class="fp">panic</div><div class="fd">Abort execution with an error code</div></div>
     <div class="fr"><div class="fp">panic_utf8</div><div class="fd">Abort execution with a UTF-8 error message</div></div>
   </div>
@@ -176,8 +184,8 @@
   <summary>Registers</summary>
   <div class="detail-body">
     <div class="fr"><div class="fp">register_len</div><div class="fd">Get the byte length of data in a register</div></div>
-    <div class="fr"><div class="fp">read_register</div><div class="fd">Copy register contents into WASM linear memory</div></div>
-    <p style="margin-top:10px;">Registers act as a transfer buffer between host and guest. Host functions write results into numbered registers; the guest reads them out. This avoids complex multi-return calling conventions.</p>
+    <div class="fr"><div class="fp">read_register</div><div class="fd">Copy register contents into WASM linear memory via <span class="code">write_guest_memory_slice</span> — safe copy-out pattern, no mutable alias</div></div>
+    <p style="margin-top:10px;">Registers act as a transfer buffer between host and guest. Host functions write results into numbered registers; the guest reads them out via <span class="code">read_register</span>, which uses <span class="code">write_guest_memory_slice</span> to copy data safely into the guest's linear memory. This avoids complex multi-return calling conventions.</p>
   </div>
 </details>
 
@@ -248,6 +256,8 @@
     <div class="fr"><div class="fp">blob_exists</div><div class="fd">Check if a blob exists in the local store</div></div>
     <div class="fr"><div class="fp">blob_create</div><div class="fd">Store new blob content (content-addressed, returns BlobId)</div></div>
     <div class="fr"><div class="fp">blob_available</div><div class="fd">Check if a blob is locally available (may need to fetch from peers)</div></div>
+    <div class="fr"><div class="fp">blob_read</div><div class="fd">Copy blob data into guest memory using <span class="code">write_guest_memory_slice</span> (safe copy-out)</div></div>
+    <div class="fr"><div class="fp">blob_close</div><div class="fd">Validate the guest destination with <span class="code">check_guest_memory_bounds</span> before committing any side effects, then copy-out via <span class="code">write_guest_memory_slice</span></div></div>
   </div>
 </details>
 
