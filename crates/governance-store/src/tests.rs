@@ -1121,8 +1121,11 @@ fn transfer_ownership_rejects_non_owner_signer() {
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
     assert!(
-        err.to_string().contains("can transfer ownership"),
-        "expected owner-only rejection, got: {err}"
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::OnlyOwnerCanTransfer(_))
+        ),
+        "expected OnlyOwnerCanTransfer, got: {err}"
     );
     // Ownership is unchanged.
     assert_eq!(
@@ -1175,8 +1178,14 @@ fn transfer_ownership_rejects_new_owner_not_admin() {
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
     assert!(
-        err.to_string().contains("must be an Admin"),
-        "expected new-owner-not-admin rejection, got: {err}"
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::TransferTargetNotAdmin {
+                role: GroupMemberRole::Member,
+                ..
+            })
+        ),
+        "expected TransferTargetNotAdmin(Member), got: {err}"
     );
     assert_eq!(
         MetaRepository::new(&store)
@@ -1224,8 +1233,11 @@ fn transfer_ownership_rejects_new_owner_not_member() {
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
     assert!(
-        err.to_string().contains("not a member"),
-        "expected new-owner-not-member rejection, got: {err}"
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::TransferTargetNotMember(_))
+        ),
+        "expected TransferTargetNotMember, got: {err}"
     );
     assert_eq!(
         MetaRepository::new(&store)
@@ -1283,8 +1295,12 @@ fn context_capability_granted_rejects_unauthorized_signer() {
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
     assert!(
-        err.to_string().contains("grant context capability"),
-        "expected unauthorized-signer rejection, got: {err}"
+        matches!(
+            err.downcast_ref::<CapabilitiesError>(),
+            Some(CapabilitiesError::Unauthorized { operation, .. })
+                if operation == "grant context capability"
+        ),
+        "expected Unauthorized(grant context capability), got: {err}"
     );
     // Nothing was granted.
     assert_eq!(
@@ -1344,8 +1360,12 @@ fn context_capability_revoked_rejects_unauthorized_signer() {
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
     assert!(
-        err.to_string().contains("revoke context capability"),
-        "expected unauthorized-signer rejection, got: {err}"
+        matches!(
+            err.downcast_ref::<CapabilitiesError>(),
+            Some(CapabilitiesError::Unauthorized { operation, .. })
+                if operation == "revoke context capability"
+        ),
+        "expected Unauthorized(revoke context capability), got: {err}"
     );
     // The grant is untouched — the rejected op wrote nothing.
     assert_eq!(

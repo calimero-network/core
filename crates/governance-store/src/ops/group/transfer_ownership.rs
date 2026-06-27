@@ -36,16 +36,13 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, new_owner: &PublicKey) -> EyreR
     //     promote then transfer if needed.
     match MembershipRepository::new(store).role_of(group_id, new_owner)? {
         Some(GroupMemberRole::Admin) => {}
-        Some(other) => bail!(
-            "new owner of group {} must be an Admin, but is currently {:?}; \
-             promote them to Admin before transferring ownership",
-            hex::encode(group_id.to_bytes()),
-            other
-        ),
-        None => bail!(
-            "new owner is not a member of group {}; invite and promote them first",
-            hex::encode(group_id.to_bytes())
-        ),
+        Some(other) => bail!(MembershipError::TransferTargetNotAdmin {
+            group: hex::encode(group_id.to_bytes()),
+            role: other,
+        }),
+        None => bail!(MembershipError::TransferTargetNotMember(hex::encode(
+            group_id.to_bytes()
+        ))),
     }
 
     meta.owner_identity = *new_owner;
