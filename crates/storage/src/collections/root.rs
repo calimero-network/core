@@ -207,7 +207,7 @@ where
             StorageDelta::Comparisons(_) => "Comparisons",
         };
 
-        // #D1 — observe the remote delta's HLC before applying it, so a later
+        // Observe the remote delta's HLC before applying it, so a later
         // local insert is stamped strictly after the remote char it causally
         // follows (RGA CharId / LWW ordering). `CausalActions` carries the
         // delta's HLC; `Actions` (host-side replay) carries none. A

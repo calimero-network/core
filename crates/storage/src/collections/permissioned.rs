@@ -377,7 +377,7 @@ where
     }
 }
 
-// #D5: RekeyTarget supertrait — delegate to the inner cell (a no-op, as above).
+// RekeyTarget supertrait — delegate to the inner cell (a no-op, as above).
 impl<T, A> crate::collections::rekey::RekeyTarget for PermissionedStorage<T, A>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default + 'static,
@@ -512,7 +512,7 @@ mod tests {
     #[derive(BorshSerialize, BorshDeserialize, Default, Debug, PartialEq, Clone, Copy)]
     struct TestVal(u64);
 
-    // RekeyTarget supertrait of Mergeable (#D5).
+    // RekeyTarget supertrait of Mergeable.
     impl crate::collections::rekey::RekeyTarget for TestVal {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(

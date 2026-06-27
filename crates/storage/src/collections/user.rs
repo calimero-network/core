@@ -211,7 +211,7 @@ where
     }
 }
 
-// `RekeyTarget` is a supertrait of `Mergeable` (#D5): delegate re-keying to the
+// `RekeyTarget` is a supertrait of `Mergeable`: delegate re-keying to the
 // inner collection so it converges when this wrapper is stored as a value.
 impl<T, S> crate::collections::rekey::RekeyTarget for UserStorage<T, S>
 where

@@ -69,14 +69,15 @@ pub trait CrdtMeta {
 
 /// Marker trait for types that can be merged (all CRDTs).
 ///
-/// `RekeyTarget` is a **supertrait** (#D5): any `Mergeable` type that nests a
-/// collection must also register that collection's deterministic-id re-key
-/// thunk, or its nested collection keeps a per-replica `Id::random()` and
-/// diverges permanently — with NO runtime error. `#[derive(Mergeable)]`
-/// generates both impls together, so the danger is only a HAND-WRITTEN `impl
-/// Mergeable`: requiring `RekeyTarget` makes "forgot to register" a compile
-/// error instead of silent data loss. A leaf-only struct (no nested
-/// collection) satisfies it with the no-op default `rekey_relative_to`.
+/// `RekeyTarget` is a **supertrait**: a `Mergeable` type that nests a
+/// collection must re-key that collection's id deterministically, or the nested
+/// collection keeps a per-replica `Id::random()` and diverges permanently with
+/// NO runtime error. `#[derive(Mergeable)]` and `#[app::state]` generate both
+/// impls together; the bound only bites a HAND-WRITTEN `impl Mergeable`, forcing
+/// it to also `impl RekeyTarget`. It enforces only that the impl EXISTS — not
+/// that its body re-keys every field, nor that the type is registered
+/// (registration is a separate runtime registry lookup; see `rekey`). A
+/// leaf-only struct satisfies it with the no-op default `rekey_relative_to`.
 #[diagnostic::on_unimplemented(
     message = "(calimero)> `{Self}` cannot be stored in replicated state — it is not a CRDT",
     label = "this type has no merge semantics",
@@ -92,6 +93,16 @@ pub trait Mergeable: crate::collections::rekey::RekeyTarget {
     ///
     /// Returns error if merge fails (e.g., incompatible states)
     fn merge(&mut self, other: &Self) -> Result<(), MergeError>;
+}
+
+// Feature-insensitive compile guard for the `Mergeable: RekeyTarget` supertrait.
+// This body type-checks only while the bound holds; removing it breaks the build
+// in every feature set. Complements the `testing`-gated trybuild negative case
+// (which only runs when `testing` is on). Never called.
+#[allow(dead_code)]
+fn _mergeable_requires_rekeytarget<T: Mergeable>() {
+    fn assert_rekey<U: crate::collections::rekey::RekeyTarget>() {}
+    assert_rekey::<T>();
 }
 
 /// Marker for types usable as a **key** in a Calimero collection
@@ -268,26 +279,22 @@ macro_rules! is_crdt {
 }
 
 /// Implement `Mergeable` as a whole-record **last-write-wins** for a leaf struct
-/// that is stored as a collection value but is NOT made of CRDT fields — e.g. an
-/// immutable upload record (`FileRecord { id, name, size, uploaded_at, .. }`)
-/// keyed by a monotonic `uploaded_at`/version field. `#[derive(Mergeable)]`
-/// can't express this: it requires every field to be `Mergeable`, which would
-/// force each plain `String`/`u64` into a `LwwRegister`/`Counter` — overkill for
-/// a record that is replaced atomically.
+/// stored as a collection value but NOT made of CRDT fields — e.g. an immutable
+/// upload record (`FileRecord { id, name, size, uploaded_at, .. }`) keyed by a
+/// monotonic `uploaded_at`/version field. `#[derive(Mergeable)]` can't express
+/// this: it requires every field to be `Mergeable`, forcing each plain
+/// `String`/`u64` into a `LwwRegister`/`Counter`.
 ///
-/// This macro is the storage-crate-provided alternative so application authors
-/// write ZERO `RekeyTarget` boilerplate (the maintainer's #2950 review point):
-/// it emits BOTH the LWW `Mergeable` impl AND the matching no-op `RekeyTarget`
-/// impl together, in one line. The no-op `RekeyTarget` is correct because a
-/// whole-record-LWW leaf has no nested collection id to re-key. The supertrait
-/// guard still bites: a HAND-WRITTEN `impl Mergeable` on a struct that DOES nest
-/// a collection cannot use this macro (it would silently never re-key) — that
-/// path stays a compile error until the author derives or re-keys explicitly.
+/// Emits BOTH the LWW `Mergeable` impl AND a no-op `RekeyTarget` in one line, so
+/// the author writes no `RekeyTarget` boilerplate.
 ///
-/// The second argument names a field on `$t` whose `PartialOrd` decides the
-/// winner: `other` replaces `self` iff `other.$tie > self.$tie` (ties keep
-/// `self`, so merge is idempotent and order-independent for distinct tie
-/// values). `$t` must be `Clone`.
+/// MUST only be used on a struct with NO collection fields. The emitted
+/// `RekeyTarget` is an unconditional no-op, so applying this to a struct that
+/// nests a collection compiles cleanly and then SILENTLY never re-keys it (the
+/// #2577 divergence). The macro cannot check this — it is the caller's
+/// obligation. `$tie` must be monotonic and `$t` must be `Clone`: `other`
+/// replaces `self` iff `other.$tie > self.$tie` (ties keep `self`, so the merge
+/// is idempotent and order-independent for distinct tie values).
 ///
 /// ```ignore
 /// calimero_storage::impl_atomic_lww!(FileRecord, uploaded_at);

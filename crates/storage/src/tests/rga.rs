@@ -621,7 +621,7 @@ fn test_rga_delete_after_merge_delta_sync_converges() {
     struct RgaDoc {
         content: ReplicatedGrowableArray,
     }
-    // RekeyTarget supertrait of Mergeable (#D5).
+    // RekeyTarget supertrait of Mergeable.
     impl crate::collections::rekey::RekeyTarget for RgaDoc {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -797,7 +797,7 @@ fn test_rga_concurrent_appends_then_delete_delta_sync_converges() {
     struct RgaDoc {
         content: ReplicatedGrowableArray,
     }
-    // RekeyTarget supertrait of Mergeable (#D5).
+    // RekeyTarget supertrait of Mergeable.
     impl crate::collections::rekey::RekeyTarget for RgaDoc {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -964,7 +964,7 @@ fn test_rga_concurrent_appends_then_delete_delta_sync_converges() {
     );
 }
 
-/// D1 — `Root::sync` must advance the local HLC to observe a remote delta's
+/// `Root::sync` must advance the local HLC to observe a remote delta's
 /// clock. After applying a `CausalActions` delta with a high `delta_hlc`, the
 /// next locally-minted timestamp must sort strictly after it.
 #[test]
@@ -1007,11 +1007,59 @@ fn test_sync_advances_local_hlc_to_observe_remote_delta() {
     assert!(
         next.get_time().as_u64() > remote_hlc.get_time().as_u64(),
         "after observing a remote delta at {remote_hlc}, the next local timestamp \
-         {next} must sort strictly after it (D1: HLC causality on receive)"
+         {next} must sort strictly after it (HLC causality on receive)"
     );
 }
 
-/// D1 end-to-end: B observes A's char (CausalActions delta carrying A's HLC),
+/// A remote delta whose HLC is beyond the 5s drift tolerance is rejected by the
+/// guard, but `Root::sync` must still SUCCEED (warn-and-continue) and apply the
+/// actions — it just must NOT advance the local clock to the far-future value.
+#[test]
+#[serial_test::serial]
+fn test_sync_drift_rejected_hlc_still_applies_without_advancing_clock() {
+    use std::collections::BTreeMap;
+
+    use crate::collections::Root;
+    use crate::delta::StorageDelta;
+    use crate::interface::ApplyContext;
+    use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+    use crate::store::MainStorage;
+
+    env::reset_for_testing();
+
+    // Remote HLC ~10s ahead — beyond the 5s drift tolerance, so it is rejected.
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let remote_secs = (now_nanos / 1_000_000_000) + 10;
+    let remote_hlc = HybridTimestamp::new(Timestamp::new(
+        NTP64(remote_secs << 32),
+        ID::from(core::num::NonZeroU128::new(0x1234_5678).unwrap()),
+    ));
+
+    let delta = StorageDelta::CausalActions {
+        actions: vec![],
+        delta_id: [0x99; 32],
+        delta_hlc: remote_hlc,
+        effective_writers: BTreeMap::new(),
+    };
+    let payload = borsh::to_vec(&delta).unwrap();
+
+    // Sync must SUCCEED despite the drift rejection (warn, not fatal).
+    Root::<crate::collections::Vector<u8>, MainStorage>::sync(&payload, &ApplyContext::empty())
+        .expect("drift-rejected HLC must not fail sync — actions are still valid state");
+
+    // The local clock must NOT have jumped to the rejected far-future HLC.
+    let next = env::hlc_timestamp();
+    assert!(
+        next.get_time().as_u64() < remote_hlc.get_time().as_u64(),
+        "a drift-rejected (>5s ahead) remote HLC {remote_hlc} must NOT advance the \
+         local clock; next local timestamp {next} should stay near wall-clock"
+    );
+}
+
+/// End-to-end: B observes A's char (CausalActions delta carrying A's HLC),
 /// then inserts locally. The receive path advances B's clock past A's HLC, so
 /// B's `CharId` sorts after A's and the rendered order is causal ("AB").
 #[test]
@@ -1033,7 +1081,7 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
     struct RgaDoc {
         content: ReplicatedGrowableArray,
     }
-    // RekeyTarget supertrait of Mergeable (#D5).
+    // RekeyTarget supertrait of Mergeable.
     impl crate::collections::rekey::RekeyTarget for RgaDoc {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -1146,7 +1194,7 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
         b_minted_hlc.get_time().as_u64() > a_hlc.get_time().as_u64(),
         "the CharId B MINTED for its insert ({b_minted_hlc}) must sort strictly after \
          A's observed HLC ({a_hlc}) — proving Root::sync advanced B's clock on the \
-         receive path, not just that a clock read happened to be larger (D1)"
+         receive path, not just that a clock read happened to be larger"
     );
 
     // Rendered order is causal: 'A' then 'B' (B's later CharId sorts after A's).
@@ -1161,7 +1209,7 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
     );
 }
 
-/// D3 — real RGA interleave + convergence merge (the `sync_compliance` test
+/// Real RGA interleave + convergence merge (the `sync_compliance` test
 /// only checks `crdt_type`). Two replicas concurrently insert distinct runs at
 /// the same gap; merging in either order must converge to identical text/hash,
 /// with each run kept as a contiguous block between the base anchors.
@@ -1191,7 +1239,7 @@ fn test_rga_real_interleave_merge_converges() {
     struct RgaDoc {
         content: ReplicatedGrowableArray,
     }
-    // RekeyTarget supertrait of Mergeable (#D5).
+    // RekeyTarget supertrait of Mergeable.
     impl crate::collections::rekey::RekeyTarget for RgaDoc {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(

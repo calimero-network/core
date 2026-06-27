@@ -3,6 +3,9 @@
 //!
 //! These tests prove that the Mergeable trait + registry system works end-to-end
 //! without requiring Clone implementations.
+//!
+//! Each test's local `impl Mergeable` carries a sibling `impl RekeyTarget`
+//! (the supertrait): re-key each nested collection field, leaf fields no-op.
 
 use crate::collections::{
     Counter, LwwRegister, Mergeable, ReplicatedGrowableArray, Root, UnorderedMap, UnorderedSet,
@@ -28,9 +31,6 @@ impl Mergeable for TestApp {
     }
 }
 
-// `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-// `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-// collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
 impl crate::collections::rekey::RekeyTarget for TestApp {
     fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
         crate::rekey_field_if_supported!(
@@ -216,9 +216,6 @@ fn test_merge_with_nested_map() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for AppWithNestedMap {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -348,9 +345,6 @@ fn test_root_cold_join_with_registered_merger_accepts_remote_contents() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for App {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -480,9 +474,6 @@ fn test_root_cold_join_bootstrap_signal_with_registered_merger_uses_merger() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for App {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -572,9 +563,6 @@ fn test_root_cold_join_bootstrap_signal_with_merger_preserves_local_fields() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for App {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -712,9 +700,6 @@ fn test_merge_map_of_counters() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for AppWithCounters {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -802,9 +787,6 @@ fn test_merge_map_of_lww_registers() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for AppWithRegisters {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -884,9 +866,6 @@ fn test_merge_vector_of_counters() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for AppWithVectorCounters {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -973,9 +952,6 @@ fn test_merge_map_of_sets() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for AppWithSetTags {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -1079,9 +1055,6 @@ fn test_merge_nested_document_with_rga() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for Document {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -1111,9 +1084,6 @@ fn test_merge_nested_document_with_rga() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for CollabEditor {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -1273,9 +1243,6 @@ fn test_merge_determinism_reproduces_e2e_issue() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for E2eKvStoreSimulation {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -1469,9 +1436,6 @@ fn test_counter_serialization_architecture() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for HandlerApp {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -2322,9 +2286,6 @@ fn test_nested_counter_in_map_concurrent_increments_converge() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for NestedCounters {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -2479,9 +2440,6 @@ fn test_nested_counter_first_touch_concurrent_converges() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for NestedCounters {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -2632,9 +2590,6 @@ fn test_nested_counter_first_touch_via_entry_api_converges() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for NestedCounters {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -2778,9 +2733,6 @@ fn test_nested_map_first_touch_via_or_default_converges() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for NestedMaps {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -2929,9 +2881,6 @@ fn test_nested_counter_first_touch_via_or_default_converges() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for NestedCounters {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -3072,9 +3021,6 @@ fn test_nested_counter_first_touch_via_extend_converges() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for NestedCounters {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -3211,9 +3157,6 @@ fn test_nested_set_first_touch_concurrent_converges() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for Tags {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -3368,9 +3311,6 @@ fn test_nested_pncounter_single_writer_converges() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for PnDoc {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -3502,9 +3442,6 @@ fn test_nested_pncounter_concurrent_writers_converge() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for PnDoc {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -3674,9 +3611,6 @@ fn test_kv_map_bidirectional_distinct_key_inserts_converge() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for KvApp {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(
@@ -3815,9 +3749,6 @@ fn test_kv_map_same_key_concurrent_writes_converge() {
         }
     }
 
-    // `RekeyTarget` is a supertrait of `Mergeable` (#D5): a hand-written
-    // `impl Mergeable` must also impl `RekeyTarget`. Re-key each nested
-    // collection field; leaf fields (`LwwRegister`) dispatch to a no-op.
     impl crate::collections::rekey::RekeyTarget for KvApp {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(

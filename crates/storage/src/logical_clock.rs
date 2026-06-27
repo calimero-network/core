@@ -239,26 +239,17 @@ pub fn logical_counter(ts: &HybridTimestamp) -> u32 {
 
 /// Derive a 16-byte HLC instance seed from a 32-byte executor id.
 ///
-/// The HLC instance id is 16 bytes (`u128`) but the executor public key is 32
-/// bytes. Compressing 32 bytes into 16 must be collision-resistant: two
-/// executors with distinct keys must get DISTINCT HLC ids — otherwise their
-/// timestamps share the same id space, two concurrently-minted `CharId`s
-/// collide, and one replica's character is silently lost during RGA sync.
+/// The compression must be collision-resistant: distinct executors must get
+/// distinct seeds, or two concurrently-minted `CharId`s collide and one
+/// replica's character is silently lost during RGA sync. (The replaced
+/// production code copied only the first 16 bytes, so any two keys sharing a
+/// 16-byte prefix collided.)
 ///
-/// We hash the full 32-byte executor id with SHA-256 (the same digest
-/// `compute_id` and the index hashing use — already a crate dependency) and
-/// take the first 16 bytes of the digest as the seed. This is the right tool
-/// for compressing a key while preserving distinctness:
-///
-/// - **Collision-resistant.** Distinct keys yield distinct digests with
-///   cryptographic probability, so distinct executors get distinct seeds. There
-///   is no structural input that collapses two keys to one seed.
-/// - **No trivial all-zero seed.** The prior XOR-fold (`seed[i % 16] ^= key[i]`)
-///   collapsed any key with `key[i] == key[i + 16]` (e.g. `[k; 32]`) to an
-///   all-zero seed, defeating the constructor's zero→1 guard for a whole family
-///   of keys. A SHA-256 prefix has no such structure; producing an all-zero
-///   16-byte prefix would require a (computationally infeasible) preimage. The
-///   zero→1 guard in [`LogicalClock::new`] remains as a final safety net.
+/// We take the first 16 bytes of `SHA-256(executor_id)` — `sha2` is already a
+/// crate dependency (`compute_id`, index hashing). A naive XOR-fold
+/// (`seed[i % 16] ^= key[i]`) would instead collapse any `[k; 32]` key to an
+/// all-zero seed; a SHA-256 prefix has no such structure. The zero→1 guard in
+/// [`LogicalClock::new`] remains as a final safety net.
 #[must_use]
 pub fn hlc_seed_from_executor_id(executor_id: &[u8; 32]) -> [u8; 16] {
     use sha2::{Digest, Sha256};
@@ -624,15 +615,15 @@ mod tests {
         }
     }
 
-    /// Reproduce the XOR-fold seeding bug (D4): the prior fix folded the high 16
-    /// bytes of the executor id onto the low 16 (`seed[i % 16] ^= key[i]`). Any
-    /// key with `key[i] == key[i + 16]` for all `i` — most starkly `[k; 32]` —
-    /// XOR-cancels to an ALL-ZERO seed, so every such executor collapses to the
-    /// same (zero→1-guarded) HLC id. This test demonstrates both failure modes
-    /// of the fold the SHA-256 digest replaces.
+    /// A naive XOR-fold alternative (`seed[i % 16] ^= key[i]`) — considered and
+    /// rejected for this fix, never the production code — collapses any key with
+    /// `key[i] == key[i + 16]` (most starkly `[k; 32]`) to an ALL-ZERO seed, so
+    /// every such executor collapses to the same (zero→1-guarded) HLC id. This is
+    /// why the fix uses a SHA-256 prefix, not a fold. (The replaced production
+    /// code was a first-16-byte prefix copy, not this fold.)
     #[test]
-    fn test_old_xor_fold_collapses_repeated_key_to_zero() {
-        // The OLD (XOR-fold) seeding logic, reproduced verbatim.
+    fn test_naive_xor_fold_collapses_repeated_key_to_zero() {
+        // The rejected XOR-fold alternative, reproduced verbatim.
         fn xor_fold_seed(executor_id: &[u8; 32]) -> [u8; 16] {
             let mut seed = [0u8; 16];
             for (i, byte) in executor_id.iter().enumerate() {

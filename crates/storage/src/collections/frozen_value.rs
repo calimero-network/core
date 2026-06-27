@@ -14,7 +14,7 @@ use core::ops::Deref;
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrozenValue<T>(pub T);
 
-// Frozen values are immutable and never re-keyed (#D5: RekeyTarget supertrait).
+// Frozen values are immutable and never re-keyed.
 impl<T: 'static> crate::collections::rekey::RekeyTarget for FrozenValue<T> {
     fn rekey_relative_to(&mut self, _parent_id: crate::address::Id) {}
 }

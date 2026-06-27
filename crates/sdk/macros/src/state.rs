@@ -64,7 +64,7 @@ impl ToTokens for StateImpl<'_> {
         let rekey_call = quote! { <#ident #ty_generics>::__calimero_register_rekey(); };
 
         // Generate the `RekeyTarget` impl (supertrait of the `Mergeable` impl
-        // above). Without it, the supertrait bound (#D5) fails to compile.
+        // above). Without it, the supertrait bound fails to compile.
         let rekey_target_impl = generate_rekey_target_impl(ident, generics, orig);
 
         // Generate registration hook
@@ -104,7 +104,7 @@ impl ToTokens for StateImpl<'_> {
             #merge_impl
 
             // Auto-generated deterministic re-key support (RekeyTarget — the
-            // supertrait of the Mergeable impl above; #D5)
+            // supertrait of the Mergeable impl above)
             #rekey_target_impl
 
             // Auto-generated registration hook
@@ -774,26 +774,13 @@ fn generate_rekey_register_method(
     }
 }
 
-/// Generate the `RekeyTarget` impl for the state struct.
+/// Generate the `RekeyTarget` impl for the state struct (the supertrait of the
+/// `Mergeable` impl `#[app::state]` also generates).
 ///
-/// `RekeyTarget` is a supertrait of `Mergeable` (#D5): a `Mergeable` type that
-/// nests a collection must also re-key that collection's id deterministically,
-/// or its nested collection keeps a per-replica `Id::random()` and diverges
-/// permanently with no runtime error (the #2577 data loss). `#[app::state]`
-/// generates a `Mergeable` impl, so it must generate the matching `RekeyTarget`
-/// impl too — the same way `#[derive(Mergeable)]` does — or the supertrait
-/// bound fails to compile.
-///
-/// The generated `rekey_relative_to` cascades over the struct's fields,
-/// re-keying each nested collection field under a field-namespaced child of the
-/// parent id (via `rekey_field_if_supported!`, which autoref-dispatches to a
-/// real re-key for `RekeyTarget` fields and a no-op for leaves). The generated
-/// `register_nested_value_types` re-runs the same per-field scan
-/// (`rekey_register_calls`) the WASM load hook uses, so the cascade walks the
-/// reachable value graph.
-///
-/// Enums get no impl: they have no `Mergeable` impl either (state enums are not
-/// merged field-by-field), so there is no supertrait bound to satisfy.
+/// Mirrors `#[derive(Mergeable)]`: `rekey_relative_to` cascades over the fields
+/// (`rekey_field_if_supported!` — real re-key for `RekeyTarget` fields, no-op
+/// for leaves) and `register_nested_value_types` re-runs the same per-field scan
+/// (`rekey_register_calls`). Enums get no impl (they get no `Mergeable` impl).
 fn generate_rekey_target_impl(
     ident: &Ident,
     generics: &Generics,

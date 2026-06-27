@@ -345,7 +345,7 @@ mod tests {
         counter: Counter,
     }
 
-    // RekeyTarget supertrait of Mergeable (#D5).
+    // RekeyTarget supertrait of Mergeable.
     impl crate::collections::rekey::RekeyTarget for TestState {
         fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
             crate::rekey_field_if_supported!(

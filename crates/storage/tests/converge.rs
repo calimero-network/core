@@ -26,7 +26,7 @@ impl Mergeable for TeamMetrics {
     }
 }
 
-// `RekeyTarget` is a supertrait of `Mergeable` (#D5): re-key the nested `teams`
+// `RekeyTarget` is a supertrait of `Mergeable`: re-key the nested `teams`
 // collection deterministically (mirrors `apps/team-metrics-custom`).
 impl calimero_storage::collections::rekey::RekeyTarget for TeamMetrics {
     fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
@@ -88,7 +88,7 @@ impl Mergeable for Inline {
     }
 }
 
-// `RekeyTarget` is a supertrait of `Mergeable` (#D5): re-key both nested counters
+// `RekeyTarget` is a supertrait of `Mergeable`: re-key both nested counters
 // under distinct field-namespaced child ids.
 impl calimero_storage::collections::rekey::RekeyTarget for Inline {
     fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {

@@ -290,7 +290,7 @@ where
     }
 }
 
-// #D5: RekeyTarget supertrait — delegate to the inner collection.
+// RekeyTarget supertrait — delegate to the inner collection.
 impl<K, V, S> crate::collections::rekey::RekeyTarget for AuthoredMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,

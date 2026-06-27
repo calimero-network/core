@@ -189,7 +189,7 @@ where
     }
 }
 
-// #D5: RekeyTarget supertrait — delegate to the inner collection.
+// RekeyTarget supertrait — delegate to the inner collection.
 impl<T, S> crate::collections::rekey::RekeyTarget for FrozenStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize + 'static,

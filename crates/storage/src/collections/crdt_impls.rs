@@ -72,7 +72,7 @@ use crate::store::StorageAdaptor;
 // Bonus: it makes the `error_non_mergeable_field` golden drift-proof as new
 // `Mergeable` impls land. `do_not_recommend` only affects diagnostics, never
 // trait resolution.
-// `RekeyTarget` is a supertrait of `Mergeable` (#D5). `Option`/`Box` delegate
+// `RekeyTarget` is a supertrait of `Mergeable`. `Option`/`Box` delegate
 // re-keying to the inner value so a nested collection inside an `Option`/`Box`
 // field is still registered.
 impl<T: super::rekey::RekeyTarget + 'static> super::rekey::RekeyTarget for Option<T> {
@@ -268,7 +268,7 @@ impl Mergeable for ReplicatedGrowableArray {
         // We can't use `chars.merge()` because RgaChar doesn't implement Mergeable
         // (it's a simple data struct, not a CRDT). `merge_chars_from` copies each
         // char from `other` that `self` neither holds live nor has TOMBSTONED —
-        // so a concurrently-deleted char is never resurrected (#D2). Delegated to
+        // so a concurrently-deleted char is never resurrected. Delegated to
         // a generic method so it is unit-testable across isolated storage scopes.
         self.merge_chars_from(other)?;
         Ok(())

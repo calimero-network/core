@@ -34,7 +34,7 @@ impl Data for EmptyData {
     }
 }
 
-// RekeyTarget supertrait of Mergeable (#D5).
+// RekeyTarget supertrait of Mergeable.
 impl crate::collections::rekey::RekeyTarget for EmptyData {
     fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
         crate::rekey_field_if_supported!(
@@ -76,7 +76,7 @@ impl Page {
 
 impl AtomicUnit for Page {}
 
-// RekeyTarget supertrait of Mergeable (#D5).
+// RekeyTarget supertrait of Mergeable.
 impl crate::collections::rekey::RekeyTarget for Page {
     fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
         crate::rekey_field_if_supported!(
@@ -146,7 +146,7 @@ impl Paragraph {
 
 impl AtomicUnit for Paragraph {}
 
-// RekeyTarget supertrait of Mergeable (#D5).
+// RekeyTarget supertrait of Mergeable.
 impl crate::collections::rekey::RekeyTarget for Paragraph {
     fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
         crate::rekey_field_if_supported!(
@@ -228,7 +228,7 @@ impl Data for Person {
     }
 }
 
-// RekeyTarget supertrait of Mergeable (#D5).
+// RekeyTarget supertrait of Mergeable.
 impl crate::collections::rekey::RekeyTarget for Person {
     fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
         crate::rekey_field_if_supported!(

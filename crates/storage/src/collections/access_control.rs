@@ -390,7 +390,7 @@ impl Data for AccessControl {
     }
 }
 
-// #D5: RekeyTarget supertrait — delegate to the inner `grants` collection.
+// RekeyTarget supertrait — delegate to the inner `grants` collection.
 impl crate::collections::rekey::RekeyTarget for AccessControl {
     fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
         self.grants.rekey_relative_to(parent_id);

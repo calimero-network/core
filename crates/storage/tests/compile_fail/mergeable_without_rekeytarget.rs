@@ -1,4 +1,4 @@
-// Rejection (#D5): a HAND-WRITTEN `impl Mergeable` that does NOT also implement
+// Rejection: a HAND-WRITTEN `impl Mergeable` that does NOT also implement
 // `RekeyTarget`. `RekeyTarget` is a supertrait of `Mergeable`, so this is a hard
 // compile error — turning the "nested collection silently gets a per-replica
 // random id because its owning struct's Mergeable impl never registered a

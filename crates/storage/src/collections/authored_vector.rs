@@ -287,7 +287,7 @@ where
     }
 }
 
-// #D5: RekeyTarget supertrait — delegate to the inner vector.
+// RekeyTarget supertrait — delegate to the inner vector.
 impl<V, S> crate::collections::rekey::RekeyTarget for AuthoredVector<V, S>
 where
     V: BorshSerialize + BorshDeserialize + 'static,
