@@ -28,15 +28,11 @@ pub struct SharedKey {
 // Explicit Zeroize impl so SharedKey satisfies a `Zeroize` bound and callers
 // can eagerly wipe the key (e.g. before returning from a function) without
 // waiting for drop. The actual byte clearing delegates to Zeroizing<_>.
+// The `Zeroizing<_>` field's own Drop handles zeroization on drop; no manual
+// Drop impl is needed (that would double-zeroize).
 impl Zeroize for SharedKey {
     fn zeroize(&mut self) {
         self.key.zeroize();
-    }
-}
-
-impl Drop for SharedKey {
-    fn drop(&mut self) {
-        self.zeroize();
     }
 }
 
@@ -61,6 +57,8 @@ impl SharedKey {
             .ok_or(SharedKeyError::InvalidPublicKey)?;
 
         let signing_key = SigningKey::from_bytes(sk);
+        // curve25519-dalek 4.x Scalar implements Zeroize, so Zeroizing<Scalar>
+        // clears the private scalar bytes when it is dropped here.
         let scalar = Zeroizing::new(signing_key.to_scalar());
         let shared = (*scalar * decompressed).compress().to_bytes();
 
