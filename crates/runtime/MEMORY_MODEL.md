@@ -250,12 +250,17 @@ impl VMHostFunctions<'_> {
         std::str::from_utf8(bytes).map_err(|_| HostError::BadUTF8.into())
     }
     
-    /// Get mutable slice for writing to guest memory
-    pub fn read_guest_memory_slice_mut<'a>(
-        &self, 
-        buf: &sys::BufferMut<'a>
-    ) -> VMLogicResult<&'a mut [u8]> {
-        // Similar to read, but returns mutable reference
+    /// Copy bytes out into a guest buffer (copy-out)
+    ///
+    /// Never hands out a `&mut [u8]` aliasing guest memory: that would overlap
+    /// the immutable views returned by `read_guest_memory_slice` (undefined
+    /// behaviour). Instead it copies via Wasmer's `MemoryView::write`.
+    pub fn write_guest_memory_slice(
+        &self,
+        buf: &sys::BufferMut<'_>,
+        data: &[u8],
+    ) -> VMLogicResult<()> {
+        // Bounds-check `buf`, ensure `data` fits, then `memory.write(ptr, data)`
     }
 }
 ```
