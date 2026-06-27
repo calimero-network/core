@@ -258,16 +258,16 @@ fn test_map_merge_with_different_keys() {
     let mut map1 = UnorderedMap::<String, Counter>::new();
     let mut map2 = UnorderedMap::<String, Counter>::new();
 
-    // Distinct executor IDs are required so each counter's GCounter entry is
-    // keyed separately. Without them, both increments would land under the same
-    // executor key and `max` semantics would give the wrong total.
-    env::set_executor_id([1; 32]);
+    // counter_a and counter_b live under different map keys, so their GCounter
+    // entries are independent regardless of executor ID. No set_executor_id is
+    // needed here — the test checks that a union-merge of disjoint keys preserves
+    // each counter's own value, which is a map-level property unaffected by how
+    // GCounter tracks per-executor increments within a single counter.
     let mut ca = Counter::new();
     ca.increment().unwrap();
     map1.insert("counter_a".to_string(), ca).unwrap();
 
     // Node 2: add counter_b (2 increments)
-    env::set_executor_id([2; 32]);
     let mut cb = Counter::new();
     cb.increment().unwrap();
     cb.increment().unwrap();
