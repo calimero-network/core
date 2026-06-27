@@ -1224,9 +1224,7 @@ mod tests {
                 .unwrap()
         };
 
-        let err_beyond = host
-            .check_guest_memory_bounds(&buffer_beyond)
-            .unwrap_err();
+        let err_beyond = host.check_guest_memory_bounds(&buffer_beyond).unwrap_err();
         assert!(matches!(
             err_beyond,
             VMLogicError::HostError(HostError::InvalidMemoryAccess)
