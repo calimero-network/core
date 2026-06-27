@@ -6,6 +6,12 @@
 //! Pattern: two independent nodes build their state, then merge. No Clone needed —
 //! each "node" is modelled as a separate collection instance. Different executor IDs
 //! ensure Counter increments are tracked independently per node.
+//!
+//! Test isolation contract: every test calls `env::reset_for_testing()` as its first
+//! statement. This guarantees that any state leaked by a prior panicking test (e.g. a
+//! non-default executor ID) is cleared before the current test runs. The `#[serial]`
+//! attribute ensures tests run sequentially, so no concurrent state corruption is
+//! possible.
 
 use core::num::NonZeroU128;
 
@@ -15,10 +21,15 @@ use crate::collections::{Counter, LwwRegister, Mergeable, UnorderedMap};
 use crate::env;
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 
-fn ts(time: u64) -> HybridTimestamp {
+/// Build a HybridTimestamp with an explicit logical time and node ID.
+///
+/// `node` distinguishes the originating replica for tiebreaking when two
+/// timestamps share the same `NTP64` value.  Pass distinct values for each
+/// simulated node so tiebreak logic is exercised correctly.
+fn ts(time: u64, node: u128) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(time),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU128::new(node).unwrap()),
     ))
 }
 
@@ -89,6 +100,11 @@ fn test_nested_map_merge_different_inner_keys() {
 fn test_map_of_counters_merge() {
     env::reset_for_testing();
 
+    // The executor ID is set *before* each block of increments so that
+    // Counter::increment() records the correct per-replica key in the GCounter.
+    // UnorderedMap::insert() does not consume the executor ID; it is only used
+    // by Counter::increment() (and decrement()) when writing GCounter entries.
+
     // Node 1 (executor [100;32]): increment "counter1" three times
     env::set_executor_id([100; 32]);
     let mut map1 = UnorderedMap::<String, Counter>::new();
@@ -120,7 +136,9 @@ fn test_map_of_counters_merge() {
         6,
         "Counters should sum across executors: 3 + 3 = 6"
     );
-    // Reset executor ID so subsequent tests don't inherit [200;32].
+    // Explicit reset so that a panic anywhere above does not leak executor ID
+    // [200;32] — the leading reset_for_testing() in every test already covers
+    // this, but being explicit here makes the invariant visible at the call site.
     env::reset_for_testing();
 }
 
@@ -129,19 +147,22 @@ fn test_map_of_counters_merge() {
 fn test_map_of_lww_registers_merge() {
     env::reset_for_testing();
 
-    // Node 1: set "title" = "From Node 1" at timestamp 100
+    // Use explicit logical timestamps with distinct node IDs so the test is
+    // deterministic (no wall-clock dependency) and exercises realistic
+    // per-node ID tiebreaking semantics.
+    // Node 1: timestamp 100, node ID 1
     let mut map1 = UnorderedMap::<String, LwwRegister<String>>::new();
     map1.insert(
         "title".to_string(),
-        LwwRegister::new_with_metadata("From Node 1".to_string(), ts(100), [1u8; 32]),
+        LwwRegister::new_with_metadata("From Node 1".to_string(), ts(100, 1), [1u8; 32]),
     )
     .unwrap();
 
-    // Node 2: set "title" = "From Node 2" at timestamp 200 (explicitly later)
+    // Node 2: timestamp 200, node ID 2 (explicitly later — must win)
     let mut map2 = UnorderedMap::<String, LwwRegister<String>>::new();
     map2.insert(
         "title".to_string(),
-        LwwRegister::new_with_metadata("From Node 2".to_string(), ts(200), [2u8; 32]),
+        LwwRegister::new_with_metadata("From Node 2".to_string(), ts(200, 2), [2u8; 32]),
     )
     .unwrap();
 
