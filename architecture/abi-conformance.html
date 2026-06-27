@@ -135,12 +135,25 @@ pub struct AbiState {
 <p><strong>Never</strong> add a new variant to the schema without a matching conformance field. A CI failure from the gate is the intended signal that step 3 was skipped.</p>
 </div>
 
+<div class="card gd">
+<h2>Fixed-size array type restrictions</h2>
+<p>The ABI normalizer enforces a strict rule on fixed-size array types (<code>[T; N]</code>): <strong>only <code>[u8; N]</code> is valid</strong>. Any fixed-size array whose element type is not <code>u8</code> is immediately rejected with <code>NormalizeError::UnsupportedArrayElement</code> instead of silently falling through to list normalization and producing an incorrect ABI representation.</p>
+<ul>
+<li><code>[u8; 32]</code>, <code>[u8; 64]</code>, etc. — accepted; serialized as a fixed-length bytes type.</li>
+<li><code>[u32; 8]</code>, <code>[String; 4]</code>, etc. — rejected with <code>UnsupportedArrayElement</code>.</li>
+</ul>
+<p>Note that <code>Vec&lt;u8&gt;</code> and newtype wrappers around byte arrays remain valid and are normalized to the bytes ABI type as before.</p>
+<h3>CRDT map key validation</h3>
+<p>The stricter key-type validation introduced for standard maps is guarded by an <code>is_crdt_map</code> check. <code>UnorderedMap</code>, <code>SortedMap</code>, and <code>AuthoredMap</code> skip the key validation step to avoid regressions in existing app code (e.g. <code>UnorderedMap&lt;Slug, V&gt;</code> where <code>Slug</code> is a newtype key). Standard <code>BTreeMap</code> and <code>HashMap</code> types remain subject to key validation.</p>
+</div>
+
 <div class="card ga">
 <h2>File locations</h2>
 <ul>
 <li><code>apps/abi_conformance/src/lib.rs</code> — <code>AbiState</code> struct definition; add new fields here.</li>
 <li><code>apps/abi_conformance/abi.expected.json</code> — golden ABI snapshot; regenerate after struct changes.</li>
 <li><code>crates/primitives/src/crdt.rs</code> — authoritative <code>CrdtCollectionType</code> enum.</li>
+<li><code>crates/wasm-abi/tests/normalize.rs</code> — 21 normalization tests (all active); covers array acceptance/rejection, map key validation, bytes types, record/variant types, and nested generics.</li>
 <li><code>scripts/check_crdt_coverage.sh</code> (or equivalent CI step) — the coverage gate; allowlist must stay empty.</li>
 </ul>
 </div>
