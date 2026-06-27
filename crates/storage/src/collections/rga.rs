@@ -469,6 +469,18 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         &mut self,
         other: &ReplicatedGrowableArray<S2>,
     ) -> Result<(), StoreError> {
+        // The tombstone guard below derives entry ids from `self`'s map id, so it
+        // only addresses the right entities when both replicas' `chars` maps share
+        // that id — which the real sync path guarantees (deterministic id from the
+        // field name / parent). Assert it in debug builds so a caller that merges
+        // two unrelated (e.g. never-re-keyed) RGAs fails loudly here instead of
+        // silently resurrecting a deleted char.
+        debug_assert_eq!(
+            self.chars.id(),
+            other.chars.id(),
+            "merge_chars_from requires both chars maps to share a map id"
+        );
+
         let other_chars = other.chars.entries()?;
 
         for (key, char_data) in other_chars {

@@ -1230,6 +1230,10 @@ fn test_rga_real_interleave_merge_converges() {
     // Non-zero HLC at physical tick `tick`, distinct from the root sentinel.
     // Used to PIN each replica's insert timestamp so the merged order is a pure
     // function of the chosen ticks, not of wall-clock spacing.
+    //
+    // All pinned timestamps share the same HLC instance id (zero's id), so
+    // ordering here is by tick only; the ID-based CharId tiebreaker is not
+    // exercised by this test (the ticks always differ).
     fn ts_at(tick: u64) -> HybridTimestamp {
         let id = *HybridTimestamp::zero().get_id();
         HybridTimestamp::new(Timestamp::new(NTP64(tick << 32), id))
