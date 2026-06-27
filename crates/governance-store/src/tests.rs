@@ -1044,9 +1044,11 @@ fn apply_local_signed_group_op_rejects_last_admin_removal() {
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
-    MetaRepository::new(&store)
-        .save(&gid, &test_meta())
-        .unwrap();
+    // Founder == sole admin (no other admin to count), owner kept distinct so
+    // the last-admin guard fires, not owner-immunity.
+    let mut meta = test_meta();
+    meta.admin_identity = admin_pk;
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
     MembershipRepository::new(&store)
         .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
         .unwrap();
