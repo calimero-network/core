@@ -41,6 +41,17 @@ pub(crate) enum CallerIdentity<'a> {
 /// After the membership check passes, the executor identity is auto-resolved:
 /// each node owns exactly one identity per context (the namespace identity),
 /// so callers never specify it.
+///
+/// # Security note — caller vs executor identity
+///
+/// When `CallerIdentity::Key` is used, the **caller's key** gates access (the
+/// membership check). However, the **executor identity** passed to the WASM
+/// runtime is the node's owned key for the context, not the caller's key.
+/// Applications that inspect `executor` inside WASM will see the node's owned
+/// identity, which may have different in-application permissions than the
+/// caller's identity. This is an intentional design: the node always executes
+/// on behalf of its own namespace identity; the caller's key is used only to
+/// authorise the call.
 pub(crate) async fn execute_request(
     ctx_client: &ContextClient,
     caller: CallerIdentity<'_>,

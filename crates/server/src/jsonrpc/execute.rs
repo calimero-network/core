@@ -26,6 +26,14 @@ impl Request for ExecutionRequest {
         //                            caller is the node owner, check skipped
         //   neither                → no-auth mode (auth_service = None); warn so a
         //                            misconfigured guard is visible in production logs
+        // Three auth paths:
+        //   AuthenticatedKey       → token with a verified Ed25519 key; membership check runs
+        //   AuthenticatedNodeOwner → non-key auth (embedded username/password); skip check
+        //   neither                → no-auth mode where the auth guard is intentionally disabled
+        //                            (auth_service = None in config). Warn so a misconfigured
+        //                            guard is visible in production logs. This is a deliberate
+        //                            deployment choice, not a silent security bypass — operators
+        //                            must explicitly omit auth config to reach this path.
         let caller = match auth_key.as_ref() {
             Some(k) => CallerIdentity::Key(&k.0),
             None => {
