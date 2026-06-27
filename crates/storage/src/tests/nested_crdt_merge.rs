@@ -8,10 +8,14 @@
 //! ensure Counter increments are tracked independently per node.
 //!
 //! Test isolation contract: every test calls `env::reset_for_testing()` as its first
-//! statement. This guarantees that any state leaked by a prior panicking test (e.g. a
-//! non-default executor ID) is cleared before the current test runs. The `#[serial]`
-//! attribute ensures tests run sequentially, so no concurrent state corruption is
-//! possible.
+//! statement. `reset_for_testing()` calls `reset_environment()`, which unconditionally
+//! resets the executor ID to `[237;32]` (the default), clears mock storage, and resets
+//! the HLC. This means any state mutated by a prior test — including a leaked executor
+//! ID from a panicking test — is fully cleared before the current test's body runs.
+//! The `#[serial]` attribute ensures tests run sequentially, so no concurrent state
+//! corruption is possible. Tests that call `env::set_executor_id` do NOT need a trailing
+//! reset: the next test's leading `reset_for_testing()` is the correct and sufficient
+//! cleanup point.
 
 use core::num::NonZeroU128;
 
@@ -37,6 +41,11 @@ fn ts(time: u64, node: NonZeroU128) -> HybridTimestamp {
 #[serial]
 fn test_nested_map_merge_different_inner_keys() {
     env::reset_for_testing();
+
+    // This test covers disjoint-key divergence: node 1 and node 2 each add a
+    // unique key to the same outer-map entry, and the merge must union them.
+    // Same-key LWW conflict resolution (where both nodes write the same key
+    // with different values) is covered by test_map_of_lww_registers_merge.
 
     // Node 1: doc-1 has "initial" + "title"
     let mut map1 = UnorderedMap::<String, UnorderedMap<String, LwwRegister<String>>>::new();
