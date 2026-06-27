@@ -478,7 +478,13 @@ fn app_state_macro_generated_cascade_makes_nested_value_converge() {
 
     let (wa, wb, converged) = drive::<AppStateTeam>();
     println!("APP-STATE wins a={wa} b={wb} converged={converged}");
-    assert_eq!(wa, 2, "replica A: both increments must survive via the macro cascade");
-    assert_eq!(wb, 2, "replica B: both increments must survive via the macro cascade");
+    assert_eq!(
+        wa, 2,
+        "replica A: both increments must survive via the macro cascade"
+    );
+    assert_eq!(
+        wb, 2,
+        "replica B: both increments must survive via the macro cascade"
+    );
     assert!(converged, "replicas must converge to the same root hash");
 }

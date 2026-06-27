@@ -40,23 +40,14 @@ const BASE58_ENCODED_MAX_SIZE: usize = 44;
 // HELPER TYPES
 
 /// Nested map type for user storage.
-///
-/// `#[derive(Mergeable)]` generates the field-by-field merge AND the matching
-/// `RekeyTarget` impl, so this nested collection re-keys deterministically with
-/// no hand-written boilerplate.
 #[derive(Debug, BorshSerialize, BorshDeserialize, Default, Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct NestedMap {
     map: UnorderedMap<String, LwwRegister<String>>,
 }
 
-/// File record for blob metadata.
-///
-/// Merged as an atomic whole-record last-write-wins by `uploaded_at` (an
-/// immutable upload record, not a struct of CRDT fields, so `#[derive(Mergeable)]`
-/// doesn't apply). `impl_atomic_lww!` is the storage-crate-provided way to get
-/// both the LWW `Mergeable` and the (no-op, leaf) `RekeyTarget` with no
-/// hand-written `RekeyTarget`.
+/// File record for blob metadata. Atomic whole-record LWW by `uploaded_at`
+/// (see `impl_atomic_lww!`); not a struct of CRDT fields, so no derive.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize, Serialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]

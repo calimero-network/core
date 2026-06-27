@@ -37,10 +37,6 @@ pub struct Person {
 }
 
 // Profile with all CRDT fields (can be used directly in UnorderedMap).
-//
-// `#[derive(Mergeable)]` generates the field-by-field merge AND the matching
-// `RekeyTarget` impl (re-keying the `visit_count` collection, no-op for the
-// `LwwRegister` leaf) — no hand-written `RekeyTarget` boilerplate.
 #[derive(Debug, BorshSerialize, BorshDeserialize, calimero_storage::collections::Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct Profile {

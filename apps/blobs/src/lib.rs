@@ -53,14 +53,8 @@ pub struct FileRecord {
     pub uploaded_at: u64,
 }
 
-// Whole-record last-write-wins per file ID, keyed by `uploaded_at`.
-//
-// Why not `#[derive(Mergeable)]`? `FileRecord` is treated atomically (one full
-// record per file_id). Deriving would require every inner field (`String`,
-// `u64`, ...) to be Mergeable, forcing each into a `LwwRegister` / `Counter` —
-// overkill for an immutable upload record. `impl_atomic_lww!` is the
-// storage-crate-provided way to get the atomic LWW `Mergeable` AND the matching
-// (no-op, leaf) `RekeyTarget` in one line — no hand-written `RekeyTarget`.
+// Atomic whole-record LWW by `uploaded_at` (see `impl_atomic_lww!`); not a
+// struct of CRDT fields, so `#[derive(Mergeable)]` doesn't apply.
 calimero_storage::impl_atomic_lww!(FileRecord, uploaded_at);
 
 /// Application state for the file sharing system.

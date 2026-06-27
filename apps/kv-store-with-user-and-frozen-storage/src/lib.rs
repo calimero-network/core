@@ -28,11 +28,7 @@ pub struct KvStore {
     frozen_items: FrozenStorage<String>,
 }
 
-// Define the nested map type for user_items_nested.
-//
-// `#[derive(Mergeable)]` generates the field-by-field merge AND the matching
-// `RekeyTarget` impl, so the nested collection re-keys deterministically with no
-// hand-written boilerplate. (Needs Borsh + Default too.)
+// Nested map type for `user_items_nested`.
 #[derive(Debug, BorshSerialize, BorshDeserialize, Default, Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct NestedMap {
