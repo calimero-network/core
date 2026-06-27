@@ -12,8 +12,8 @@ impl Handler<StoreSubgroupVisibilityRequest> for ContextManager {
         StoreSubgroupVisibilityRequest { group_id, mode }: StoreSubgroupVisibilityRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result = CapabilitiesRepository::new(&self.datastore)
-            .set_subgroup_visibility(&group_id, mode);
+        let result =
+            CapabilitiesRepository::new(&self.datastore).set_subgroup_visibility(&group_id, mode);
         ActorResponse::reply(result)
     }
 }

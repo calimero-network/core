@@ -68,7 +68,9 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
                     &ack_router,
                     &group_id,
                     &sk,
-                    GroupOp::SubgroupVisibilitySet { mode: subgroup_visibility },
+                    GroupOp::SubgroupVisibilitySet {
+                        mode: subgroup_visibility,
+                    },
                 )
                 .await?;
                 report.observe("set_subgroup_visibility", "SubgroupVisibilitySet");

@@ -120,7 +120,9 @@ fn fold_subgroup_structure(
     let vis = ns_group_envelope(namespace, admin, subgroup);
     proj.ingest_op(&op_from_namespace_op(
         &vis,
-        Some(&GroupOp::SubgroupVisibilitySet { mode: calimero_context_config::VisibilityMode::Open }),
+        Some(&GroupOp::SubgroupVisibilitySet {
+            mode: calimero_context_config::VisibilityMode::Open,
+        }),
         visibility_id,
         hlc(0),
         &[created_id],
