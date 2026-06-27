@@ -1,3 +1,4 @@
+use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
@@ -260,25 +261,25 @@ impl SetCapabilitiesCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let mut capabilities: u32 = 0;
         if self.can_create_context {
-            capabilities |= 1 << 0;
+            capabilities |= MemberCapabilities::CAN_CREATE_CONTEXT;
         }
         if self.can_invite_members {
-            capabilities |= 1 << 1;
+            capabilities |= MemberCapabilities::CAN_INVITE_MEMBERS;
         }
         if self.can_join_open_subgroups {
-            capabilities |= 1 << 2;
+            capabilities |= MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS;
         }
         if self.can_create_subgroup {
-            capabilities |= 1 << 5;
+            capabilities |= MemberCapabilities::CAN_CREATE_SUBGROUP;
         }
         if self.can_delete_subgroup {
-            capabilities |= 1 << 6;
+            capabilities |= MemberCapabilities::CAN_DELETE_SUBGROUP;
         }
         if self.can_manage_visibility {
-            capabilities |= 1 << 7;
+            capabilities |= MemberCapabilities::CAN_MANAGE_VISIBILITY;
         }
         if self.can_manage_metadata {
-            capabilities |= 1 << 8;
+            capabilities |= MemberCapabilities::CAN_MANAGE_METADATA;
         }
 
         let identity_hex = hex::encode(self.identity.digest());
@@ -356,59 +357,31 @@ impl CheckAccessCommand {
         println!("Role:                    {role}");
         println!(
             "CAN_CREATE_CONTEXT:      {}",
-            if caps & (1 << 0) != 0 {
-                "true"
-            } else {
-                "false"
-            }
+            caps & MemberCapabilities::CAN_CREATE_CONTEXT != 0
         );
         println!(
             "CAN_INVITE_MEMBERS:      {}",
-            if caps & (1 << 1) != 0 {
-                "true"
-            } else {
-                "false"
-            }
+            caps & MemberCapabilities::CAN_INVITE_MEMBERS != 0
         );
         println!(
             "CAN_JOIN_OPEN_SUBGROUPS: {}",
-            if caps & (1 << 2) != 0 {
-                "true"
-            } else {
-                "false"
-            }
+            caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0
         );
         println!(
             "CAN_CREATE_SUBGROUP:     {}",
-            if caps & (1 << 5) != 0 {
-                "true"
-            } else {
-                "false"
-            }
+            caps & MemberCapabilities::CAN_CREATE_SUBGROUP != 0
         );
         println!(
             "CAN_DELETE_SUBGROUP:     {}",
-            if caps & (1 << 6) != 0 {
-                "true"
-            } else {
-                "false"
-            }
+            caps & MemberCapabilities::CAN_DELETE_SUBGROUP != 0
         );
         println!(
             "CAN_MANAGE_VISIBILITY:   {}",
-            if caps & (1 << 7) != 0 {
-                "true"
-            } else {
-                "false"
-            }
+            caps & MemberCapabilities::CAN_MANAGE_VISIBILITY != 0
         );
         println!(
             "CAN_MANAGE_METADATA:     {}",
-            if caps & (1 << 8) != 0 {
-                "true"
-            } else {
-                "false"
-            }
+            caps & MemberCapabilities::CAN_MANAGE_METADATA != 0
         );
 
         Ok(())

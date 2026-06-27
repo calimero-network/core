@@ -16,6 +16,10 @@ pub const MAX_BLOB_CACHE_COUNT: usize = 100;
 /// The maximum size of the blob cache (in bytes).
 /// Currently, equals to 500 MiB.
 pub const MAX_BLOB_CACHE_SIZE_BYTES: usize = 500 * 1024 * 1024;
+/// Hard upper bound on a single inbound blob received over the sync stream.
+/// A peer advertising size==0 (unknown) is still capped at this limit.
+/// u64 to match the wire-protocol `size: u64` field; usize would truncate on 32-bit targets.
+pub const MAX_BLOB_STREAM_SIZE_BYTES: u64 = 500 * 1024 * 1024;
 /// The period of eviction of old blobs (every 300 seconds) for the node (in seconds).
 pub const OLD_BLOBS_EVICTION_FREQUENCY_S: u64 = 300;
 

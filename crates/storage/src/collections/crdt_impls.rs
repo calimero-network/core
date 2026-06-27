@@ -124,7 +124,7 @@ impl<T: 'static> CrdtMeta for LwwRegister<T> {
 }
 
 #[diagnostic::do_not_recommend]
-impl<T: Clone> Mergeable for LwwRegister<T> {
+impl<T: Clone + borsh::BorshSerialize> Mergeable for LwwRegister<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Use existing merge implementation
         LwwRegister::merge(self, other);
