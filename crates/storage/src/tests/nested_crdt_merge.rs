@@ -3,141 +3,209 @@
 //! These tests validate that the Mergeable implementations solve the
 //! nested CRDT divergence problem identified in production.
 //!
-//! Note: These tests demonstrate the merge logic but require Clone implementations
-//! which aren't available for all collections. For now, documenting the pattern.
+//! Pattern: two independent nodes build their state, then merge. No Clone needed —
+//! each "node" is modelled as a separate collection instance. Different executor IDs
+//! ensure Counter increments are tracked independently per node.
+//!
+//! Test isolation contract: every test calls `env::reset_for_testing()` as its first
+//! statement. `reset_for_testing()` calls `reset_environment()`, which unconditionally
+//! resets the executor ID to `[237;32]` (the default), clears mock storage, and resets
+//! the HLC. This means any state mutated by a prior test — including a leaked executor
+//! ID from a panicking test — is fully cleared before the current test's body runs.
+//! The `#[serial]` attribute ensures tests run sequentially, so no concurrent state
+//! corruption is possible. Tests that call `env::set_executor_id` do NOT need a trailing
+//! reset: the next test's leading `reset_for_testing()` is the correct and sufficient
+//! cleanup point.
 
-use crate::collections::{Counter, LwwRegister, Mergeable, Root, UnorderedMap};
+use core::num::NonZeroU128;
+
+use serial_test::serial;
+
+use crate::collections::{Counter, LwwRegister, Mergeable, UnorderedMap};
 use crate::env;
+use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+
+/// Build a HybridTimestamp with an explicit logical time and node ID.
+///
+/// `node` distinguishes the originating replica for tiebreaking when two
+/// timestamps share the same `NTP64` value.  Pass distinct values for each
+/// simulated node so tiebreak logic is exercised correctly.
+///
+/// The parameter is `NonZeroU128` rather than `u128` so that callers must
+/// explicitly handle the `None` case from `NonZeroU128::new`, making the
+/// zero-check visible at the call site rather than silently producing a
+/// wrong timestamp.
+fn ts(time: u64, node: NonZeroU128) -> HybridTimestamp {
+    HybridTimestamp::new(Timestamp::new(NTP64(time), ID::from(node)))
+}
 
 #[test]
-#[ignore] // Requires Clone for collections - implement in future
+#[serial]
 fn test_nested_map_merge_different_inner_keys() {
     env::reset_for_testing();
 
-    // This test demonstrates what WILL work once Clone is implemented
-    // The Mergeable logic is correct, just need Clone support
-    
-    // Create initial state on both nodes
-    let mut map1 = Root::new(|| UnorderedMap::<String, UnorderedMap<String, String>>::new());
-    let mut initial_inner = UnorderedMap::new();
-    initial_inner
-        .insert("initial".to_string(), "value".to_string())
-        .unwrap();
-    map1.insert("doc-1".to_string(), initial_inner)
-        .unwrap();
+    // This test covers disjoint-key divergence: node 1 and node 2 each add a
+    // unique key to the same outer-map entry, and the merge must union them.
+    // Same-key LWW conflict resolution (where both nodes write the same key
+    // with different values) is covered by test_map_of_lww_registers_merge.
 
-    // Clone for node 2 (TODO: implement Clone for Root)
-    let mut map2 = map1; // Placeholder
+    let node1 = NonZeroU128::new(1).unwrap();
+    let node2 = NonZeroU128::new(2).unwrap();
 
-    // Node 1: Update title field
-    let mut inner1 = map1.get(&"doc-1".to_string()).unwrap().unwrap().into_inner();
+    // Node 1: doc-1 has "initial" + "title"
+    let mut map1 = UnorderedMap::<String, UnorderedMap<String, LwwRegister<String>>>::new();
+    let mut inner1 = UnorderedMap::new();
     inner1
-        .insert("title".to_string(), "Updated Title".to_string())
+        .insert(
+            "initial".to_string(),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node1), [1u8; 32]),
+        )
+        .unwrap();
+    inner1
+        .insert(
+            "title".to_string(),
+            LwwRegister::new_with_metadata("Updated Title".to_string(), ts(110, node1), [1u8; 32]),
+        )
         .unwrap();
     map1.insert("doc-1".to_string(), inner1).unwrap();
 
-    // Node 2: Add owner field (concurrent modification)
-    let mut inner2 = map2.get(&"doc-1".to_string()).unwrap().unwrap().into_inner();
+    // Node 2: doc-1 has "initial" + "owner" (concurrent modification)
+    let mut map2 = UnorderedMap::<String, UnorderedMap<String, LwwRegister<String>>>::new();
+    let mut inner2 = UnorderedMap::new();
     inner2
-        .insert("owner".to_string(), "Alice".to_string())
+        .insert(
+            "initial".to_string(),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node2), [2u8; 32]),
+        )
+        .unwrap();
+    inner2
+        .insert(
+            "owner".to_string(),
+            LwwRegister::new_with_metadata("Alice".to_string(), ts(110, node2), [2u8; 32]),
+        )
         .unwrap();
     map2.insert("doc-1".to_string(), inner2).unwrap();
 
-    // At this point:
-    // map1["doc-1"] has: {"initial": "value", "title": "Updated Title"}
-    // map2["doc-1"] has: {"initial": "value", "owner": "Alice"}
-
-    // MERGE - this is the critical operation!
+    // MERGE — this is the critical operation
     Mergeable::merge(&mut map1, &map2).unwrap();
 
-    // Verify: BOTH changes should be preserved
+    // Verify: ALL keys are present after merge.
+    // "initial" is written by both nodes at the same logical time (100); the
+    // node2 ID tiebreak wins, but both hold "value" so the assertion is the same
+    // either way. The test checks key *presence* and value correctness after union.
     let final_inner = map1.get(&"doc-1".to_string()).unwrap().unwrap();
 
     assert_eq!(
-        final_inner.get(&"initial".to_string()).unwrap(),
+        final_inner
+            .get(&"initial".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
         Some("value".to_string()),
         "Initial value should be preserved"
     );
-
     assert_eq!(
-        final_inner.get(&"title".to_string()).unwrap(),
+        final_inner
+            .get(&"title".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
         Some("Updated Title".to_string()),
         "Title update from Node 1 should be preserved"
     );
-
     assert_eq!(
-        final_inner.get(&"owner".to_string()).unwrap(),
+        final_inner
+            .get(&"owner".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
         Some("Alice".to_string()),
         "Owner update from Node 2 should be preserved"
     );
 }
 
 #[test]
-#[ignore] // Requires Clone for collections - implement in future
+#[serial]
 fn test_map_of_counters_merge() {
     env::reset_for_testing();
 
-    // Map<String, Counter>
-    let mut map1 = Root::new(|| UnorderedMap::<String, Counter>::new());
-    let mut counter1 = Counter::new();
-    counter1.increment().unwrap();
-    counter1.increment().unwrap(); // value = 2
-    map1.insert("counter1".to_string(), counter1).unwrap();
+    // The executor ID is set *before* each block of increments so that
+    // Counter::increment() records the correct per-replica key in the GCounter.
+    // UnorderedMap::insert() does not consume the executor ID; it is only used
+    // by Counter::increment() (and decrement()) when writing GCounter entries.
 
-    let mut map2 = map1.clone();
+    // Node 1 (executor [100;32]): increment "counter1" three times
+    env::set_executor_id([100; 32]);
+    let mut map1 = UnorderedMap::<String, Counter>::new();
+    let mut c1 = Counter::new();
+    c1.increment().unwrap();
+    c1.increment().unwrap();
+    c1.increment().unwrap(); // positive[[100;32]] = 3
+    map1.insert("counter1".to_string(), c1).unwrap();
 
-    // Node 1: Increment counter1
-    let mut c = map1.get(&"counter1".to_string()).unwrap().unwrap().into_inner();
-    c.increment().unwrap(); // value = 3
-    map1.insert("counter1".to_string(), c).unwrap();
+    // Node 2 (executor [200;32]): also increment "counter1" three times (concurrent)
+    env::set_executor_id([200; 32]);
+    let mut map2 = UnorderedMap::<String, Counter>::new();
+    let mut c2 = Counter::new();
+    c2.increment().unwrap();
+    c2.increment().unwrap();
+    c2.increment().unwrap(); // positive[[200;32]] = 3
+    map2.insert("counter1".to_string(), c2).unwrap();
 
-    // Node 2: Also increment counter1 (concurrent)
-    let mut c = map2.get(&"counter1".to_string()).unwrap().unwrap().into_inner();
-    c.increment().unwrap(); // value = 3
-    map2.insert("counter1".to_string(), c).unwrap();
-
-    // MERGE
+    // MERGE — GCounter takes max per executor, so [100]=3 + [200]=3 → total = 6
     Mergeable::merge(&mut map1, &map2).unwrap();
 
-    // Verify: Counters should sum (not LWW!)
-    let final_counter = map1.get(&"counter1".to_string()).unwrap().unwrap();
-    assert_eq!(final_counter.value().unwrap(), 6, "Counters should sum: 3 + 3 = 6");
+    let final_counter = map1
+        .get(&"counter1".to_string())
+        .unwrap()
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        final_counter.value().unwrap(),
+        6,
+        "Counters should sum across executors: 3 + 3 = 6"
+    );
 }
 
 #[test]
-#[ignore] // Requires Clone for collections - implement in future
+#[serial]
 fn test_map_of_lww_registers_merge() {
     env::reset_for_testing();
 
-    // Map<String, LwwRegister<String>>
-    let mut map1 = Root::new(|| UnorderedMap::<String, LwwRegister<String>>::new());
+    // Use explicit logical timestamps with distinct node IDs so the test is
+    // deterministic (no wall-clock dependency). The timestamps differ (100 vs
+    // 200), so the LWW winner is decided by NTP64 magnitude alone — the node
+    // ID is distinct but not exercised as a tiebreaker here.
+    let node1 = NonZeroU128::new(1).unwrap();
+    let node2 = NonZeroU128::new(2).unwrap();
+
+    // Pin the ordering assumption: NTP64(200) > NTP64(100) regardless of node ID.
+    assert!(
+        ts(200, node2) > ts(100, node1),
+        "timestamp ordering assumption violated"
+    );
+
+    // Node 1: timestamp 100, node ID 1
+    let mut map1 = UnorderedMap::<String, LwwRegister<String>>::new();
     map1.insert(
         "title".to_string(),
-        LwwRegister::new("Initial".to_string()),
+        LwwRegister::new_with_metadata("From Node 1".to_string(), ts(100, node1), [1u8; 32]),
     )
     .unwrap();
 
-    let mut map2 = map1.clone();
+    // Node 2: timestamp 200, node ID 2 (explicitly later — must win)
+    let mut map2 = UnorderedMap::<String, LwwRegister<String>>::new();
+    map2.insert(
+        "title".to_string(),
+        LwwRegister::new_with_metadata("From Node 2".to_string(), ts(200, node2), [2u8; 32]),
+    )
+    .unwrap();
 
-    std::thread::sleep(std::time::Duration::from_millis(1));
-
-    // Node 1: Update title
-    let mut title1 = map1.get(&"title".to_string()).unwrap().unwrap().into_inner();
-    title1.set("From Node 1".to_string());
-    map1.insert("title".to_string(), title1).unwrap();
-
-    std::thread::sleep(std::time::Duration::from_millis(1));
-
-    // Node 2: Update title (concurrent, later timestamp)
-    let mut title2 = map2.get(&"title".to_string()).unwrap().unwrap().into_inner();
-    title2.set("From Node 2".to_string());
-    map2.insert("title".to_string(), title2).unwrap();
-
-    // MERGE
+    // MERGE — LWW: latest timestamp wins
     Mergeable::merge(&mut map1, &map2).unwrap();
 
-    // Verify: Latest timestamp wins
-    let final_title = map1.get(&"title".to_string()).unwrap().unwrap();
+    let final_title = map1
+        .get(&"title".to_string())
+        .unwrap()
+        .unwrap()
+        .into_inner();
     assert_eq!(
         final_title.get(),
         "From Node 2",
@@ -146,43 +214,53 @@ fn test_map_of_lww_registers_merge() {
 }
 
 #[test]
-#[ignore] // Requires Clone for collections - implement in future
+#[serial]
 fn test_three_level_nesting_merge() {
     env::reset_for_testing();
 
-    // Map<String, Map<String, LwwRegister<String>>>
     type InnerMap = UnorderedMap<String, LwwRegister<String>>;
     type OuterMap = UnorderedMap<String, InnerMap>;
 
-    let mut map1 = Root::new(|| OuterMap::new());
+    let node1 = NonZeroU128::new(1).unwrap();
+    let node2 = NonZeroU128::new(2).unwrap();
 
-    // Initialize with a document
-    let mut doc_fields = InnerMap::new();
-    doc_fields
-        .insert("initial".to_string(), LwwRegister::new("value".to_string()))
-        .unwrap();
-    map1.insert("doc-1".to_string(), doc_fields).unwrap();
-
-    let mut map2 = map1.clone();
-
-    // Node 1: Update title field
-    let mut inner1 = map1.get(&"doc-1".to_string()).unwrap().unwrap().into_inner();
+    // Node 1: doc-1 has "initial" + "title"
+    let mut map1 = OuterMap::new();
+    let mut inner1 = InnerMap::new();
     inner1
-        .insert("title".to_string(), LwwRegister::new("Title 1".to_string()))
+        .insert(
+            "initial".to_string(),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node1), [1u8; 32]),
+        )
+        .unwrap();
+    inner1
+        .insert(
+            "title".to_string(),
+            LwwRegister::new_with_metadata("Title 1".to_string(), ts(110, node1), [1u8; 32]),
+        )
         .unwrap();
     map1.insert("doc-1".to_string(), inner1).unwrap();
 
-    // Node 2: Add owner field (concurrent)
-    let mut inner2 = map2.get(&"doc-1".to_string()).unwrap().unwrap().into_inner();
+    // Node 2: doc-1 has "initial" + "owner" (concurrent modification)
+    let mut map2 = OuterMap::new();
+    let mut inner2 = InnerMap::new();
     inner2
-        .insert("owner".to_string(), LwwRegister::new("Alice".to_string()))
+        .insert(
+            "initial".to_string(),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node2), [2u8; 32]),
+        )
+        .unwrap();
+    inner2
+        .insert(
+            "owner".to_string(),
+            LwwRegister::new_with_metadata("Alice".to_string(), ts(110, node2), [2u8; 32]),
+        )
         .unwrap();
     map2.insert("doc-1".to_string(), inner2).unwrap();
 
     // MERGE
     Mergeable::merge(&mut map1, &map2).unwrap();
 
-    // Verify: All three fields present
     let final_inner = map1.get(&"doc-1".to_string()).unwrap().unwrap();
 
     assert_eq!(
@@ -192,7 +270,6 @@ fn test_three_level_nesting_merge() {
             .map(|r| r.get().clone()),
         Some("value".to_string())
     );
-
     assert_eq!(
         final_inner
             .get(&"title".to_string())
@@ -200,7 +277,6 @@ fn test_three_level_nesting_merge() {
             .map(|r| r.get().clone()),
         Some("Title 1".to_string())
     );
-
     assert_eq!(
         final_inner
             .get(&"owner".to_string())
@@ -211,35 +287,48 @@ fn test_three_level_nesting_merge() {
 }
 
 #[test]
-#[ignore] // Requires Clone for collections - implement in future
-fn test_map_merge_with_different_keys() {
+#[serial]
+fn test_map_union_merge_with_disjoint_keys() {
     env::reset_for_testing();
 
-    let mut map1 = Root::new(|| UnorderedMap::<String, Counter>::new());
-    let mut map2 = Root::new(|| UnorderedMap::<String, Counter>::new());
+    let mut map1 = UnorderedMap::<String, Counter>::new();
+    let mut map2 = UnorderedMap::<String, Counter>::new();
 
-    // Node 1: Add counter_a
+    // After reset_for_testing() the executor ID is [237;32] (the default).
+    // Both counters use this same ID, which is safe because counter_a and
+    // counter_b live under different map keys — the merge is a pure key union
+    // with no overlap. If the same key appeared in both maps, the shared
+    // executor ID would cause GCounter to take max(1,1)=1 instead of summing;
+    // that scenario is covered by test_map_of_counters_merge.
     let mut ca = Counter::new();
     ca.increment().unwrap();
     map1.insert("counter_a".to_string(), ca).unwrap();
 
-    // Node 2: Add counter_b
+    // Node 2: add counter_b (2 increments)
     let mut cb = Counter::new();
     cb.increment().unwrap();
     cb.increment().unwrap();
     map2.insert("counter_b".to_string(), cb).unwrap();
 
-    // MERGE
+    // MERGE — both keys should appear in map1
     Mergeable::merge(&mut map1, &map2).unwrap();
 
-    // Verify: Both counters present
     assert_eq!(
-        map1.get(&"counter_a".to_string()).unwrap().unwrap().value().unwrap(),
+        map1.get(&"counter_a".to_string())
+            .unwrap()
+            .unwrap()
+            .into_inner()
+            .value()
+            .unwrap(),
         1
     );
     assert_eq!(
-        map1.get(&"counter_b".to_string()).unwrap().unwrap().value().unwrap(),
+        map1.get(&"counter_b".to_string())
+            .unwrap()
+            .unwrap()
+            .into_inner()
+            .value()
+            .unwrap(),
         2
     );
 }
-
