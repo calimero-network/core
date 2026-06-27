@@ -87,6 +87,11 @@ pub(crate) async fn execute_request(
     // Always auto-resolve the executor identity. Each node has exactly one
     // owned identity per context (the namespace identity). The caller should
     // not need to specify it.
+    // TODO: pass the caller's key as the executor identity so that WASM
+    // applications that enforce per-member permissions see the actual caller
+    // rather than the node's owned key. Until then, a context member whose
+    // in-WASM permissions are lower than the node-owner's can execute at
+    // the higher privilege level. Tracked as a known limitation.
     let executor = {
         let members = ctx_client.get_context_members(&request.context_id, Some(true));
         let mut members = pin!(members);

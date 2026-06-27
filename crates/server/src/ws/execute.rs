@@ -64,7 +64,9 @@ pub(crate) async fn handle(
             if !node_owner && state.auth_enabled {
                 warn!("No auth extensions on WebSocket execute — auth guard may not be running");
                 return ResponseBody::Error(ResponseBodyError::ServerError(
-                    ServerResponseError::ParseError("authentication required".to_owned()),
+                    ServerResponseError::ParseError(
+                        "authentication required: no valid credentials".to_owned(),
+                    ),
                 ));
             }
             CallerIdentity::NodeOwner
