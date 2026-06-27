@@ -12,7 +12,7 @@ use calimero_context_client::client::ContextClient;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{ExecutionError, ExecutionRequest, ExecutionResponse};
 use futures_util::StreamExt;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 /// Who is making an execute call, as determined by the auth layer.
 ///
@@ -75,6 +75,8 @@ pub(crate) async fn execute_request(
                 "Caller is not a member of this context".to_owned(),
             ));
         }
+    } else {
+        debug!(context_id=%request.context_id, method=%request.method, "NodeOwner-privileged execute: membership check skipped");
     }
 
     let args =
