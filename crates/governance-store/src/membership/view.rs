@@ -1,4 +1,4 @@
-use crate::{MembershipError, MembershipRepository};
+use crate::{MembershipError, MembershipRepository, MetaRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
@@ -29,10 +29,17 @@ impl<'a> GroupMembershipView<'a> {
     }
 
     pub fn has_another_admin(&self, excluded: &PublicKey) -> EyreResult<bool> {
-        Ok(self
+        if self
             .list_members()?
             .into_iter()
-            .any(|(member, role)| role == GroupMemberRole::Admin && member != *excluded))
+            .any(|(member, role)| role == GroupMemberRole::Admin && member != *excluded)
+        {
+            return Ok(true);
+        }
+        // also count the genesis founder (meta.admin_identity), which has no stored row
+        Ok(MetaRepository::new(self.store)
+            .load(&self.group_id)?
+            .is_some_and(|meta| meta.admin_identity != *excluded))
     }
 
     pub fn list_members(&self) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {

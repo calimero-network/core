@@ -158,6 +158,27 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
         .is_err());
     assert!(membership.read_required_tee_admission_policy().is_err());
 
+    // sole Admin row is demotable/removable when a different genesis founder exists
+    let founder_store = test_store();
+    let founder_gid = test_group_id();
+    let lone_admin = PrivateKey::random(&mut rng).public_key();
+    let founder = PrivateKey::random(&mut rng).public_key();
+    MembershipRepository::new(&founder_store)
+        .add_member(&founder_gid, &lone_admin, GroupMemberRole::Admin)
+        .unwrap();
+    let mut founder_meta = test_meta();
+    founder_meta.admin_identity = founder;
+    MetaRepository::new(&founder_store)
+        .save(&founder_gid, &founder_meta)
+        .unwrap();
+    let founder_policy = MembershipPolicy::new(&founder_store, founder_gid);
+    assert!(founder_policy
+        .ensure_not_last_admin_removal(&lone_admin)
+        .is_ok());
+    assert!(founder_policy
+        .ensure_not_last_admin_demotion(&lone_admin, &GroupMemberRole::Member)
+        .is_ok());
+
     let signer_sk = PrivateKey::random(&mut rng);
     let policy_op = SignedGroupOp::sign(
         &signer_sk,
