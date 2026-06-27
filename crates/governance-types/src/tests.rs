@@ -260,6 +260,15 @@ fn hlc_zero_golden_bytes_are_self_consistent() {
         "HybridTimestamp::zero() Borsh encoding changed — update GOLDEN_HLC_ZERO \
          and GOLDEN_GROUP_OP_CASCADE_UPGRADE to match the new layout"
     );
+    // Verify that the HLC bytes embedded inline in GOLDEN_GROUP_OP_CASCADE_UPGRADE
+    // match GOLDEN_HLC_ZERO.  The two must stay in sync: if HybridTimestamp gains a
+    // field, updating GOLDEN_HLC_ZERO alone would leave CASCADE_UPGRADE stale.
+    assert_eq!(
+        &GOLDEN_GROUP_OP_CASCADE_UPGRADE[GOLDEN_GROUP_OP_CASCADE_UPGRADE.len() - 24..],
+        GOLDEN_HLC_ZERO,
+        "HLC bytes embedded in GOLDEN_GROUP_OP_CASCADE_UPGRADE diverged from \
+         GOLDEN_HLC_ZERO — update both constants together"
+    );
 }
 
 /// GroupOp ordinal 25 — CascadeUpgrade (all zero fields; HybridTimestamp::zero() via GOLDEN_HLC_ZERO)
@@ -285,24 +294,27 @@ fn group_op_discriminants_are_golden() {
     let mut failures: Vec<String> = Vec::new();
     macro_rules! check_group_op {
         ($golden:expr, $pat:pat, $discriminant:expr) => {{
-            if $golden[0] != $discriminant {
-                failures.push(format!(
-                    "GroupOp ordinal {}: leading byte is {}, expected {} — \
-                     a variant was inserted mid-enum",
-                    $discriminant, $golden[0], $discriminant
-                ));
-            } else {
-                match borsh::from_slice::<GroupOp>($golden) {
-                    Err(e) => failures.push(format!(
-                        "GroupOp ordinal {}: decode failed: {e}",
-                        $discriminant
-                    )),
-                    Ok(decoded) if !matches!(decoded, $pat) => failures.push(format!(
-                        "GroupOp ordinal {}: decoded as {:?} — \
-                         a variant was inserted before this one, shifting its ordinal",
-                        $discriminant, decoded
-                    )),
-                    Ok(_) => {}
+            match borsh::from_slice::<GroupOp>($golden) {
+                Err(e) => failures.push(format!(
+                    "GroupOp ordinal {}: decode failed: {e}",
+                    $discriminant
+                )),
+                Ok(decoded) if !matches!(decoded, $pat) => failures.push(format!(
+                    "GroupOp ordinal {}: decoded as {:?} — \
+                     a variant was inserted before this one, shifting its ordinal",
+                    $discriminant, decoded
+                )),
+                Ok(decoded) => {
+                    let reencoded = borsh::to_vec(&decoded).expect("re-encode");
+                    if reencoded.len() != $golden.len() {
+                        failures.push(format!(
+                            "GroupOp ordinal {}: golden has {} bytes but re-encoding \
+                             produced {} — golden vector has unexpected trailing bytes",
+                            $discriminant,
+                            $golden.len(),
+                            reencoded.len()
+                        ));
+                    }
                 }
             }
         }};
@@ -572,31 +584,29 @@ fn root_op_discriminants_are_golden() {
     let mut failures: Vec<String> = Vec::new();
     macro_rules! check_root_op {
         ($golden:expr, $pat:pat, $root_discriminant:expr) => {{
-            if $golden[0] != 0u8 {
-                failures.push(format!(
-                    "RootOp ordinal {}: NamespaceOp::Root byte is {}, expected 0",
-                    $root_discriminant, $golden[0]
-                ));
-            } else if $golden[1] != $root_discriminant {
-                failures.push(format!(
-                    "RootOp ordinal {}: leading byte is {}, expected {} — \
-                     a variant was inserted mid-enum",
-                    $root_discriminant, $golden[1], $root_discriminant
-                ));
-            } else {
-                match borsh::from_slice::<NamespaceOp>($golden) {
-                    Err(e) => failures.push(format!(
-                        "RootOp ordinal {}: decode failed: {e}",
-                        $root_discriminant
-                    )),
-                    Ok(decoded) if !matches!(decoded, NamespaceOp::Root($pat)) => {
+            match borsh::from_slice::<NamespaceOp>($golden) {
+                Err(e) => failures.push(format!(
+                    "RootOp ordinal {}: decode failed: {e}",
+                    $root_discriminant
+                )),
+                Ok(decoded) if !matches!(decoded, NamespaceOp::Root($pat)) => {
+                    failures.push(format!(
+                        "RootOp ordinal {}: decoded as {:?} — \
+                         a variant was inserted before this one, shifting its ordinal",
+                        $root_discriminant, decoded
+                    ))
+                }
+                Ok(decoded) => {
+                    let reencoded = borsh::to_vec(&decoded).expect("re-encode");
+                    if reencoded.len() != $golden.len() {
                         failures.push(format!(
-                            "RootOp ordinal {}: decoded as {:?} — \
-                             a variant was inserted before this one, shifting its ordinal",
-                            $root_discriminant, decoded
-                        ))
+                            "RootOp ordinal {}: golden has {} bytes but re-encoding \
+                             produced {} — golden vector has unexpected trailing bytes",
+                            $root_discriminant,
+                            $golden.len(),
+                            reencoded.len()
+                        ));
                     }
-                    Ok(_) => {}
                 }
             }
         }};
