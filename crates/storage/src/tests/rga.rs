@@ -1126,14 +1126,9 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
         .expect("A's insert must produce a delta");
     let a_actions = a_delta.actions;
 
-    // A's advertised HLC, set deliberately ~2s AHEAD of the real wall clock
-    // (within the 5s drift tolerance, so `update_hlc` accepts it). This is the
-    // crux of making the test DISCRIMINATING: B mints its own CharId from the
-    // real wall clock, which is naturally BEHIND this future HLC. So B's mint
-    // can only end up after A's HLC if the receive path actually advanced B's
-    // clock to observe it. Without setting A ahead, B's wall clock alone would
-    // already exceed A's HLC and the test would pass even with the receive-path
-    // advance removed (the trivial pass the reviewer flagged).
+    // A's advertised HLC, set ~2s AHEAD of wall-clock (within the 5s drift
+    // tolerance) so the test DISCRIMINATES: B's mint (from its own wall clock,
+    // behind this) can only sort after A's HLC if the receive path advanced it.
     let now_nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -1167,14 +1162,9 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
         "B must have materialized A's char before its own insert"
     );
 
-    // B inserts 'B' AFTER 'A' (position 1). `insert` MINTS a fresh CharId from
-    // B's HLC — the operative event. Capture B's insert as a delta and read its
-    // `hlc`, which is the timestamp embedded in the CharId B just minted. This
-    // proves the *mint* (not merely a `hlc_timestamp()` read) advanced past A's
-    // observed HLC: the receive path moved B's clock on `Root::sync`, so the
-    // mint is forced strictly later. A test that only read `hlc_timestamp()`
-    // could pass for an unrelated reason (e.g. B's wall clock simply being
-    // ahead); asserting on the minted CharId's HLC closes that gap.
+    // B inserts 'B' after 'A' (position 1), minting a fresh CharId from its HLC.
+    // Asserting on the minted CharId's HLC (`b_delta.hlc`), not a bare
+    // `hlc_timestamp()` read, is what proves the receive path advanced B's clock.
     reset_delta_context();
     set_current_heads(vec![a_hash]);
     b.content.insert(1, 'B').unwrap();
@@ -1227,13 +1217,10 @@ fn test_rga_real_interleave_merge_converges() {
     use crate::merge::register_crdt_merge;
     use crate::store::MainStorage;
 
-    // Non-zero HLC at physical tick `tick`, distinct from the root sentinel.
-    // Used to PIN each replica's insert timestamp so the merged order is a pure
-    // function of the chosen ticks, not of wall-clock spacing.
-    //
-    // All pinned timestamps share the same HLC instance id (zero's id), so
-    // ordering here is by tick only; the ID-based CharId tiebreaker is not
-    // exercised by this test (the ticks always differ).
+    // Non-zero HLC at tick `tick` (distinct from the root sentinel), used to PIN
+    // each insert's timestamp so the merged order is a function of the ticks, not
+    // wall-clock. All share one HLC instance id, so ordering is by tick only (the
+    // ID tiebreaker isn't exercised).
     fn ts_at(tick: u64) -> HybridTimestamp {
         let id = *HybridTimestamp::zero().get_id();
         HybridTimestamp::new(Timestamp::new(NTP64(tick << 32), id))
@@ -1285,12 +1272,9 @@ fn test_rga_real_interleave_merge_converges() {
         env::set_executor_id(executor);
     };
 
-    // Genesis: shared base "ab" (identical CharIds on every replica). Pin the
-    // base at a LOW tick so the concurrent inserts below — which we pin at
-    // strictly-higher ticks — sort BEFORE 'b' under `Reverse(CharId)` and land
-    // in the a|b gap (with the real HLC, X/Y minted later-than-base wall-clock
-    // timestamps and got this for free; with pinned ticks the base must be
-    // pinned lower too, or the inserts would sort after the higher-CharId 'b').
+    // Genesis: shared base "ab" (identical CharIds on every replica), pinned at a
+    // LOW tick so the concurrent inserts (pinned higher) sort before 'b' under
+    // `Reverse(CharId)` and land in the a|b gap.
     fresh_node([9; 32]);
     let mut g = Root::<RgaDoc, S>::new(|| RgaDoc {
         content: ReplicatedGrowableArray::new_with_field_name("content"),
@@ -1303,15 +1287,9 @@ fn test_rga_real_interleave_merge_converges() {
     let base_actions = capture(g_data);
     let base_hash = root_hash();
 
-    // X and Y insert concurrently at the same a|b gap. The merged ORDER (which
-    // run's block sorts first) is decided by `Reverse(CharId)`: the run with the
-    // strictly-HIGHER CharId comes first. CharId is `(HybridTimestamp, seq)`,
-    // ordered by the timestamp first, so we PIN each run's timestamp explicitly
-    // (`insert_str_at_timestamp`) rather than the node-local HLC — otherwise the
-    // order would depend on which replica's wall clock happened to tick later,
-    // making the assertion non-deterministic. Both are strictly above the base
-    // tick (so they land in the a|b gap, not after 'b'); with `y_ts > x_ts`,
-    // Y's CharIds are strictly higher and Y's block sorts FIRST → "aYYXXb".
+    // X and Y insert concurrently into the a|b gap. Order is decided by
+    // `Reverse(CharId)` (timestamp first), so we PIN each run's timestamp for
+    // determinism; `y_ts > x_ts` → Y's block sorts first → "aYYXXb".
     let x_ts = ts_at(10);
     let y_ts = ts_at(11);
 
@@ -1368,12 +1346,8 @@ fn test_rga_real_interleave_merge_converges() {
         hex::encode(yx_hash),
     );
 
-    // Each run stays a contiguous block between the base anchors, and the order
-    // is DETERMINISTIC: siblings sort by `Reverse(CharId)`, so the run with the
-    // higher CharId comes first. We pinned `y_ts > x_ts`, so Y's CharIds are
-    // strictly higher and Y's block sorts before X's → exactly "aYYXXb". (The
-    // previous `"aXXYYb" || "aYYXXb"` had a dead branch: with fixed timestamps
-    // only one order is reachable.)
+    // Each run is a contiguous block between the anchors, in a deterministic
+    // order: `y_ts > x_ts` → Y's CharIds are higher → Y sorts first → "aYYXXb".
     assert_eq!(
         xy_text, "aYYXXb",
         "Y (higher CharId, y_ts > x_ts) must sort before X under Reverse(CharId), \

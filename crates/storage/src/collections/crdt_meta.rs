@@ -69,15 +69,12 @@ pub trait CrdtMeta {
 
 /// Marker trait for types that can be merged (all CRDTs).
 ///
-/// `RekeyTarget` is a **supertrait**: a `Mergeable` type that nests a
-/// collection must re-key that collection's id deterministically, or the nested
-/// collection keeps a per-replica `Id::random()` and diverges permanently with
-/// NO runtime error. `#[derive(Mergeable)]` and `#[app::state]` generate both
-/// impls together; the bound only bites a HAND-WRITTEN `impl Mergeable`, forcing
-/// it to also `impl RekeyTarget`. It enforces only that the impl EXISTS — not
-/// that its body re-keys every field, nor that the type is registered
-/// (registration is a separate runtime registry lookup; see `rekey`). A
-/// leaf-only struct satisfies it with the no-op default `rekey_relative_to`.
+/// `RekeyTarget` is a **supertrait**: a `Mergeable` type that nests a collection
+/// must re-key it deterministically or it diverges permanently with no runtime
+/// error. The bound forces a hand-written `impl Mergeable` to also `impl
+/// RekeyTarget` — but only checks the impl EXISTS, not that its body re-keys
+/// every field or that the type is registered (a runtime lookup; see `rekey`).
+/// `#[derive(Mergeable)]` / `#[app::state]` generate both; leaves no-op.
 #[diagnostic::on_unimplemented(
     message = "(calimero)> `{Self}` cannot be stored in replicated state — it is not a CRDT",
     label = "this type has no merge semantics",
@@ -278,23 +275,16 @@ macro_rules! is_crdt {
     };
 }
 
-/// Implement `Mergeable` as a whole-record **last-write-wins** for a leaf struct
-/// stored as a collection value but NOT made of CRDT fields — e.g. an immutable
-/// upload record (`FileRecord { id, name, size, uploaded_at, .. }`) keyed by a
-/// monotonic `uploaded_at`/version field. `#[derive(Mergeable)]` can't express
-/// this: it requires every field to be `Mergeable`, forcing each plain
-/// `String`/`u64` into a `LwwRegister`/`Counter`.
+/// Whole-record last-write-wins `Mergeable` for a leaf struct stored as a
+/// collection value but NOT made of CRDT fields (e.g. an immutable upload record
+/// keyed by a monotonic `uploaded_at`). Emits the LWW `Mergeable` and a matching
+/// no-op `RekeyTarget` in one line.
 ///
-/// Emits BOTH the LWW `Mergeable` impl AND a no-op `RekeyTarget` in one line, so
-/// the author writes no `RekeyTarget` boilerplate.
+/// MUST only be used on a struct with NO collection fields: the emitted
+/// `RekeyTarget` is an unconditional no-op, so a nested collection would silently
+/// never re-key (the #2577 divergence) and the macro can't check this.
 ///
-/// MUST only be used on a struct with NO collection fields. The emitted
-/// `RekeyTarget` is an unconditional no-op, so applying this to a struct that
-/// nests a collection compiles cleanly and then SILENTLY never re-keys it (the
-/// #2577 divergence). The macro cannot check this — it is the caller's
-/// obligation. `$tie` must be monotonic and `$t` must be `Clone`: `other`
-/// replaces `self` iff `other.$tie > self.$tie` (ties keep `self`, so the merge
-/// is idempotent and order-independent for distinct tie values).
+/// `$t: Clone`, `$tie` monotonic; `other` replaces `self` iff `other.$tie > self.$tie`.
 ///
 /// ```ignore
 /// calimero_storage::impl_atomic_lww!(FileRecord, uploaded_at);

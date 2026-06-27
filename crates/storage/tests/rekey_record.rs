@@ -50,16 +50,11 @@ impl RekeyTarget for FixedStats {
     }
 }
 
-/// Same shape, but never REGISTERED — i.e. the pre-fix world. Re-key dispatch is
-/// by registry lookup (`register_rekey_if_supported!`), not by the trait bound,
-/// so a type that is never registered keeps a per-replica-random nested id, its
-/// blob differs, and concurrent writes are last-writer-wins'd (data loss).
-///
-/// Since `RekeyTarget` is a supertrait of `Mergeable`, this type MUST
-/// still impl `RekeyTarget` to be `Mergeable` at all — "Mergeable without
-/// RekeyTarget" is no longer expressible (which is the point). The
-/// pre-fix data-loss case is reproduced not by omitting the impl but by
-/// deliberately NOT registering the thunk in `unregistered_value_loses_data_pre_fix`.
+/// Same shape as `FixedStats` but never REGISTERED — the pre-fix world. Re-key is
+/// dispatched by registry lookup, not the trait bound, so an unregistered type
+/// keeps a per-replica-random nested id and concurrent writes are LWW'd (loss).
+/// It still must impl `RekeyTarget` to be `Mergeable`; the loss is reproduced by
+/// NOT registering it (in `unregistered_value_loses_data_pre_fix`), not by omitting it.
 #[derive(BorshSerialize, BorshDeserialize, Default)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct UnfixedStats {

@@ -814,14 +814,11 @@ fn generate_rekey_target_impl(
     }
 }
 
-/// Emit the per-field re-key cascade body for a struct's `rekey_relative_to`.
-///
-/// Mirrors `#[derive(Mergeable)]`'s field scan: each field is re-keyed relative
-/// to a field-namespaced child of the parent id so sibling collection fields get
-/// distinct id namespaces and every replica derives identical nested ids.
-/// `rekey_field_if_supported!` autoref-dispatches — a real re-key for fields
-/// whose type implements `RekeyTarget`, a no-op for leaf fields. Each expansion
-/// MUST stay in its own block (the macro defines per-invocation helper traits).
+/// Emit the per-field re-key cascade for a struct's `rekey_relative_to`, mirroring
+/// `#[derive(Mergeable)]`: each field is re-keyed under a field-namespaced child id
+/// (`rekey_field_if_supported!` autoref-dispatches — real re-key for `RekeyTarget`
+/// fields, no-op for leaves). Each expansion stays in its own block (the macro
+/// defines per-invocation helper traits).
 fn generate_struct_rekey(fields: &syn::Fields) -> TokenStream {
     match fields {
         syn::Fields::Named(named) => {

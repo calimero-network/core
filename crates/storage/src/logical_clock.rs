@@ -239,17 +239,11 @@ pub fn logical_counter(ts: &HybridTimestamp) -> u32 {
 
 /// Derive a 16-byte HLC instance seed from a 32-byte executor id.
 ///
-/// The compression must be collision-resistant: distinct executors must get
-/// distinct seeds, or two concurrently-minted `CharId`s collide and one
-/// replica's character is silently lost during RGA sync. (The replaced
-/// production code copied only the first 16 bytes, so any two keys sharing a
-/// 16-byte prefix collided.)
-///
-/// We take the first 16 bytes of `SHA-256(executor_id)` — `sha2` is already a
-/// crate dependency (`compute_id`, index hashing). A naive XOR-fold
-/// (`seed[i % 16] ^= key[i]`) would instead collapse any `[k; 32]` key to an
-/// all-zero seed; a SHA-256 prefix has no such structure. The zero→1 guard in
-/// [`LogicalClock::new`] remains as a final safety net.
+/// Must be collision-resistant: distinct executors need distinct seeds, or two
+/// concurrently-minted `CharId`s collide and a character is silently lost during
+/// RGA sync. Takes the first 16 bytes of `SHA-256(executor_id)` (`sha2` is
+/// already a dep). The replaced code copied only the first 16 bytes, so keys
+/// sharing a 16-byte prefix collided.
 #[must_use]
 pub fn hlc_seed_from_executor_id(executor_id: &[u8; 32]) -> [u8; 16] {
     use sha2::{Digest, Sha256};

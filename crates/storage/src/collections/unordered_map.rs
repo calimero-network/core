@@ -513,12 +513,9 @@ where
         }
     }
 
-    /// Returns the deterministic storage entity id this `key` maps to.
-    ///
-    /// Exposed so callers that reason about an entry's tombstone state — e.g.
-    /// the RGA blob-merge path checking `Index::is_deleted` before re-inserting
-    /// a char absent from `self` — can address the entry's index without a
-    /// second `compute_id` derivation drifting from the map's own keying.
+    /// The deterministic storage entity id this `key` maps to. Exposed so the RGA
+    /// blob-merge tombstone check (`Index::is_deleted`) addresses the entry without
+    /// re-deriving `compute_id` and drifting from the map's own keying.
     pub(crate) fn entry_id<Q>(&self, key: &Q) -> Id
     where
         K: Borrow<Q>,

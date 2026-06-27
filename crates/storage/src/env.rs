@@ -452,13 +452,10 @@ mod calimero_vm {
     fn ensure_hlc_initialized() {
         WASM_HLC.with(|hlc_cell| {
             if hlc_cell.borrow().is_none() {
-                // Use executor ID (node identity) as deterministic seed for HLC ID.
-                // This ensures each node has a unique but deterministic HLC ID.
-                //
-                // Seed from all 32 bytes (via SHA-256) — seeding from only the
-                // first 16 collapsed any two executors sharing a 16-byte prefix
-                // to one HLC id → CharId collision → silent character loss
-                // during RGA sync.
+                // Deterministic per-node HLC seed from the executor id, from all
+                // 32 bytes via SHA-256 — using only the first 16 collapsed
+                // executors sharing a 16-byte prefix to one id → CharId collision
+                // → silent character loss during RGA sync.
                 let executor_id = env::executor_id();
                 let seed = crate::logical_clock::hlc_seed_from_executor_id(&executor_id);
                 *hlc_cell.borrow_mut() = Some(LogicalClock::new(|buf| {

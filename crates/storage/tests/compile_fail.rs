@@ -24,21 +24,11 @@ fn compile_fail() {
     t.compile_fail("tests/compile_fail/state_hashmap_field.rs");
     t.compile_fail("tests/compile_fail/state_hashmap_in_lww.rs");
 
-    // Feature-SENSITIVE case. rustc's "the following other types implement
-    // trait `RekeyTarget`" help block lists implementing types alphabetically
-    // and truncates after 8 (trybuild collapses the rest to `and $N others`).
-    // The `testing` feature pulls `tests::common::EmptyData` (and its
-    // `RekeyTarget` impl) into scope; it sorts into that first-8 window and
-    // displaces another type, so the captured `.stderr` differs between the
-    // default and `testing` feature sets — and trybuild has no partial-line
-    // wildcard to paper over the difference.
-    //
-    // CI runs `cargo test` over the whole workspace, where feature unification
-    // (`calimero-dag`/`calimero-node` enable `calimero-storage/testing`) turns
-    // `testing` ON for this crate's own test binary too. So the captured
-    // `.stderr` is blessed for the `testing`-ON output, and the case is gated to
-    // run only when that feature is active — matching CI exactly while keeping
-    // the default-feature run (`-p calimero-storage` in isolation) mismatch-free.
+    // Feature-SENSITIVE: rustc's "other types implement `RekeyTarget`" help block
+    // lists implementors alphabetically (truncated at 8), and the `testing` feature
+    // changes that set, so the `.stderr` differs between feature sets. CI builds the
+    // workspace with `testing` on (feature unification), so the snapshot is blessed
+    // for that and gated to it — keeping the default `-p calimero-storage` run clean.
     #[cfg(feature = "testing")]
     t.compile_fail("tests/compile_fail/mergeable_without_rekeytarget.rs");
 }

@@ -8,25 +8,14 @@
 //!
 //! ## SCOPE — what these tests actually assert (read before extending)
 //!
-//! These tests run against the `sync_sim` harness, which models entity
-//! metadata + protocol *selection*. `force_protocol(HashComparison)` only sets
-//! a field — **it does not execute a merge**. So every `test_i5_*` below
-//! asserts only that:
-//!   - both nodes hold the entity with the expected `crdt_type`, and
-//!   - per-entity `hlc_timestamp` metadata is preserved.
+//! These run against the `sync_sim` harness, which models entity metadata +
+//! protocol *selection*. `force_protocol` only sets a field — it does NOT execute
+//! a merge. So every `test_i5_*` asserts only that both nodes hold the entity with
+//! the expected `crdt_type` and preserved `hlc_timestamp` — NOT merged values. The
+//! names read like value assertions; the bodies are metadata/protocol assertions.
 //!
-//! They do **not** assert merged *values* (e.g. that a GCounter actually sums,
-//! or that an RGA actually interleaves). The names read like value assertions;
-//! the bodies are metadata/protocol-selection assertions. Renaming the whole
-//! module is out of scope for this PR, but the misleading
-//! "verified by the actual sync execution" comments have been corrected so the
-//! next reader isn't misled.
-//!
-//! The REAL value-level CRDT merge laws (convergence, interleave order,
-//! counter sums, LWW, tombstone non-resurrection) are exercised where actual
-//! merge logic runs — the `calimero-storage` crate's `tests/` and
-//! `src/tests/` modules (e.g. `src/tests/rga.rs`'s delta-sync convergence
-//! tests and `collections/rga.rs`'s tombstone-merge tests).
+//! Real value-level merge laws (convergence, interleave, counter sums, LWW,
+//! tombstone non-resurrection) live in `calimero-storage`'s `tests/` + `src/tests/`.
 //!
 //! ## Test Coverage (metadata / protocol-selection only)
 //!
@@ -343,19 +332,11 @@ fn test_i5_unordered_set_union_merge() {
 // I5: RGA Merge
 // =============================================================================
 
-/// CIP §6.2.6: RGA entities are tagged `CrdtType::Rga` and selected for the
-/// state-based protocol.
-///
-/// SCOPE: this asserts only the `crdt_type` tag + protocol selection — the
-/// `sync_sim` harness does NOT run an RGA merge, so it cannot and does not
-/// assert interleave order. The opaque blobs `b"rga-alice"`/`b"rga-bob"` are
-/// not valid RGA element streams; they exist only to give the entities a body.
-///
-/// The REAL RGA interleave + convergence merge (decoding both replicas' char
-/// streams, running an actual merge, asserting the expected order and that
-/// both render identically) is exercised in `calimero-storage`:
-/// `src/tests/rga.rs::test_rga_real_interleave_merge_converges` and the
-/// delta-sync convergence tests there.
+/// CIP §6.2.6: asserts only that RGA entities are tagged `CrdtType::Rga` and
+/// selected for the state-based protocol — the `sync_sim` harness runs no merge,
+/// so the opaque blobs are just bodies and interleave order is not checked. The
+/// real interleave/convergence merge is in
+/// `calimero-storage::tests::rga::test_rga_real_interleave_merge_converges`.
 #[test]
 fn test_i5_rga_crdt_type_and_protocol_selection() {
     let mut alice = SimNode::new("alice");

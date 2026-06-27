@@ -453,18 +453,10 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         Ok(())
     }
 
-    /// Tombstone-aware RGA character merge (the root-level blob / full-state
-    /// conflict path; see `crdt_impls`'s `Mergeable` impl).
-    ///
-    /// Copies each char from `other` into `self` unless `self` already holds it
-    /// live or has tombstoned it. A char `self` concurrently deleted stays
-    /// deleted — delete wins, like the `DeleteRef` LWW path. RGA chars are
-    /// immutable, so the only conflict is presence-vs-tombstone (no
-    /// update-vs-delete race). Still commutative/associative/idempotent: a char
-    /// is live iff live somewhere and tombstoned nowhere, independent of merge
-    /// order. The prior `is_none()`-only gate resurrected deleted chars.
-    ///
-    /// Generic over `S2` so the cross-store (two-replica) merge is unit-testable.
+    /// Tombstone-aware RGA char merge (root-level blob / full-state path; see the
+    /// `crdt_impls` `Mergeable` impl). Copies each char from `other` that `self`
+    /// neither holds live nor has tombstoned — a concurrently-deleted char stays
+    /// deleted (delete wins). Generic over `S2` so the cross-store merge is testable.
     pub(crate) fn merge_chars_from<S2: StorageAdaptor>(
         &mut self,
         other: &ReplicatedGrowableArray<S2>,
