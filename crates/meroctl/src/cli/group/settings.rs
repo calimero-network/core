@@ -1,3 +1,4 @@
+use calimero_context_config::MemberCapabilities;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     SetDefaultCapabilitiesApiRequest, SetSubgroupVisibilityApiRequest,
@@ -71,7 +72,7 @@ impl SettingsGetCommand {
         let _ = table.add_row(vec!["Subgroup Visibility", vis.as_str()]);
         let _ = table.add_row(vec![
             "CAN_CREATE_CONTEXT",
-            if caps & (1 << 0) != 0 {
+            if caps & MemberCapabilities::CAN_CREATE_CONTEXT != 0 {
                 "true"
             } else {
                 "false"
@@ -79,7 +80,7 @@ impl SettingsGetCommand {
         ]);
         let _ = table.add_row(vec![
             "CAN_INVITE_MEMBERS",
-            if caps & (1 << 1) != 0 {
+            if caps & MemberCapabilities::CAN_INVITE_MEMBERS != 0 {
                 "true"
             } else {
                 "false"
@@ -87,7 +88,7 @@ impl SettingsGetCommand {
         ]);
         let _ = table.add_row(vec![
             "CAN_JOIN_OPEN_SUBGROUPS",
-            if caps & (1 << 2) != 0 {
+            if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0 {
                 "true"
             } else {
                 "false"
@@ -125,13 +126,13 @@ impl SetDefaultCapabilitiesCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let mut capabilities: u32 = 0;
         if self.can_create_context {
-            capabilities |= 1 << 0;
+            capabilities |= MemberCapabilities::CAN_CREATE_CONTEXT;
         }
         if self.can_invite_members {
-            capabilities |= 1 << 1;
+            capabilities |= MemberCapabilities::CAN_INVITE_MEMBERS;
         }
         if self.can_join_open_subgroups {
-            capabilities |= 1 << 2;
+            capabilities |= MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS;
         }
 
         let request = SetDefaultCapabilitiesApiRequest {
