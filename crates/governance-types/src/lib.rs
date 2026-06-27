@@ -112,7 +112,11 @@ pub struct ContextCapabilityBits(u8);
 impl ContextCapabilityBits {
     /// Construct from a raw bitmask, returning `None` if `bits == 0`.
     pub fn new(bits: u8) -> Option<Self> {
-        if bits == 0 { None } else { Some(Self(bits)) }
+        if bits == 0 {
+            None
+        } else {
+            Some(Self(bits))
+        }
     }
 
     pub fn get(self) -> u8 {
