@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `BadStruct: RekeyTarget` is not satisfied
-  --> tests/compile_fail/mergeable_without_rekeytarget.rs:35:20
+  --> tests/compile_fail/mergeable_without_rekeytarget.rs:19:20
    |
-35 | impl Mergeable for BadStruct {
+19 | impl Mergeable for BadStruct {
    |                    ^^^^^^^^^ the trait `RekeyTarget` is not implemented for `BadStruct`
    |
    = help: the following other types implement trait `RekeyTarget`:

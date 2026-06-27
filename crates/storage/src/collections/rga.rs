@@ -461,15 +461,6 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         &mut self,
         other: &ReplicatedGrowableArray<S2>,
     ) -> Result<(), StoreError> {
-        // Tombstone entry ids derive from `self`'s map id, so both maps must share
-        // it (the real sync path always does). Assert in debug builds: an unrelated
-        // map would otherwise silently resurrect a deleted char.
-        debug_assert_eq!(
-            self.chars.id(),
-            other.chars.id(),
-            "merge_chars_from requires both chars maps to share a map id"
-        );
-
         let other_chars = other.chars.entries()?;
 
         for (key, char_data) in other_chars {

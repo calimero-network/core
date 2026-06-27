@@ -524,13 +524,6 @@ where
         compute_id(self.inner.id(), key.as_ref())
     }
 
-    /// The map's own collection entity id. Exposed so a cross-store merge can
-    /// assert two replicas share a map id before reasoning about per-entry
-    /// tombstones (entry ids are derived from this id).
-    pub(crate) fn id(&self) -> Id {
-        self.inner.id()
-    }
-
     /// Check if the map contains a key.
     ///
     /// # Errors
