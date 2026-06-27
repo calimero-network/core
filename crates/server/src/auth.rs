@@ -214,8 +214,12 @@ where
                         parts.extensions.insert(AuthenticatedNodeOwner);
                     }
                     Err(err) => {
-                        warn!(key_id=%auth_response.key_id, %err, "failed to look up public key for auth key_id");
-                        parts.extensions.insert(AuthenticatedNodeOwner);
+                        // A store or network error during key lookup is an
+                        // infrastructure failure, not a known auth path. Fail
+                        // closed rather than failing open: do NOT grant
+                        // node-owner access on a transient error.
+                        warn!(key_id=%auth_response.key_id, %err, "failed to look up public key for auth key_id; rejecting request");
+                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
                     }
                 }
             }
