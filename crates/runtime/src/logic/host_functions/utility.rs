@@ -125,7 +125,13 @@ impl VMHostFunctions<'_> {
     pub fn random_bytes(&mut self, dest_ptr: u64) -> VMLogicResult<()> {
         let dest_buf = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_ptr)? };
 
-        rand::thread_rng().fill_bytes(self.read_guest_memory_slice_mut(&dest_buf)?);
+        // Validate the destination bounds before allocating a buffer sized from
+        // the guest-provided length.
+        self.check_guest_memory_bounds(&dest_buf)?;
+
+        let mut bytes = vec![0_u8; dest_buf.len() as usize];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        self.write_guest_memory_slice(&dest_buf, &bytes)?;
 
         Ok(())
     }
@@ -170,8 +176,7 @@ impl VMHostFunctions<'_> {
             .as_nanos() as u64;
 
         // Record the time into the guest memory buffer
-        let guest_time_out_buf: &mut [u8] = self.read_guest_memory_slice_mut(&guest_time_ptr)?;
-        guest_time_out_buf.copy_from_slice(&now.to_le_bytes());
+        self.write_guest_memory_slice(&guest_time_ptr, &now.to_le_bytes())?;
 
         Ok(())
     }
