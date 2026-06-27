@@ -34,7 +34,7 @@ impl SharedKey {
             .ok_or(SharedKeyError::InvalidPublicKey)?;
 
         Ok(Self {
-            key: (SigningKey::from_bytes(sk).to_scalar() * decompressed)
+            key: (SigningKey::from_bytes(sk.as_bytes()).to_scalar() * decompressed)
                 .compress()
                 .to_bytes(),
         })
@@ -42,7 +42,9 @@ impl SharedKey {
 
     #[must_use]
     pub fn from_sk(sk: &PrivateKey) -> Self {
-        Self { key: **sk }
+        Self {
+            key: *sk.as_bytes(),
+        }
     }
 
     #[must_use]
