@@ -1457,9 +1457,11 @@ impl Validate for TeeVerifyQuoteRequest {
 
         // Expected application hash must be exactly 64 hex characters (32 bytes).
         // It is mandatory: an unbound attestation can never be considered valid.
-        if let Some(e) =
-            validate_hex_string(&self.expected_application_hash, "expected_application_hash", 32)
-        {
+        if let Some(e) = validate_hex_string(
+            &self.expected_application_hash,
+            "expected_application_hash",
+            32,
+        ) {
             errors.push(e);
         }
 
