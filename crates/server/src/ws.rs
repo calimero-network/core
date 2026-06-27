@@ -539,7 +539,7 @@ async fn handle_text_message(
                     .await
                     .to_res_body(),
                 RequestPayload::Execute(request) => {
-                    let caller = connection_state.inner.read().await.caller.clone();
+                    let caller = connection_state.inner.read().await.caller;
                     execute::handle(&state, caller, request).await
                 }
             },
