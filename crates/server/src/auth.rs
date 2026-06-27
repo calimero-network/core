@@ -233,7 +233,7 @@ where
                         // `new_root_key_with_permissions` always sets `public_key` to
                         // a non-empty string, and `new_client_key` is the only other
                         // constructor.
-                        debug!(key_id=%auth_response.key_id, "non-key auth (absent public key): granting NodeOwner");
+                        warn!(key_id=%auth_response.key_id, "non-key auth (absent public key): granting NodeOwner");
                         parts.extensions.insert(AuthenticatedNodeOwner);
                     }
                     Err(err) => {
