@@ -4,7 +4,7 @@ use calimero_server_primitives::jsonrpc::{ExecutionError, ExecutionRequest, Exec
 use tracing::error;
 
 use super::{Request, RpcError, ServiceState};
-use crate::auth::AuthenticatedKey;
+use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
 use crate::execute::{execute_request, CallerIdentity};
 
 impl Request for ExecutionRequest {
@@ -15,9 +15,14 @@ impl Request for ExecutionRequest {
         self,
         state: Arc<ServiceState>,
         auth_key: Option<AuthenticatedKey>,
+        _auth_node_owner: Option<AuthenticatedNodeOwner>,
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
 
+        // Determine the caller identity from the auth extensions injected by
+        // AuthGuardService. `AuthenticatedKey` means a verified public key is
+        // known. Anything else (`AuthenticatedNodeOwner` from non-key auth, or
+        // neither from no-auth mode) maps to `NodeOwner`.
         let caller = match auth_key.as_ref() {
             Some(k) => CallerIdentity::Key(&k.0),
             None => CallerIdentity::NodeOwner,

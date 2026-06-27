@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, field, info, info_span, Instrument};
 use uuid::Uuid;
 
-use crate::auth::AuthenticatedKey;
+use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
 use crate::config::ServerConfig;
 
 mod execute;
@@ -79,6 +79,7 @@ pub(crate) fn service(
 async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
+    auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     Json(request): Json<PrimitiveRequest<serde_json::Value>>,
 ) -> Json<PrimitiveResponse> {
     // One correlation id per inbound request. Carried on a span so every log
@@ -98,14 +99,20 @@ async fn handle_request(
         method = field::Empty,
     );
 
-    handle_request_inner(state, auth_key.map(|ext| ext.0), request)
-        .instrument(span)
-        .await
+    handle_request_inner(
+        state,
+        auth_key.map(|ext| ext.0),
+        auth_node_owner.map(|ext| ext.0),
+        request,
+    )
+    .instrument(span)
+    .await
 }
 
 async fn handle_request_inner(
     state: Arc<ServiceState>,
     auth_key: Option<AuthenticatedKey>,
+    auth_node_owner: Option<AuthenticatedNodeOwner>,
     request: PrimitiveRequest<serde_json::Value>,
 ) -> Json<PrimitiveResponse> {
     let body = match serde_json::from_value::<RequestPayload>(request.payload.clone()) {
@@ -142,7 +149,10 @@ async fn handle_request_inner(
 
                 info!(args=%exec_request.args_json, "Received execution request");
 
-                let result = exec_request.handle(state, auth_key).await.to_res_body();
+                let result = exec_request
+                    .handle(state, auth_key, auth_node_owner)
+                    .await
+                    .to_res_body();
 
                 match &result {
                     ResponseBody::Error(err) => {
@@ -160,7 +170,10 @@ async fn handle_request_inner(
                 span.record("context_id", field::display(&status_request.context_id));
                 span.record("method", "sync_status");
 
-                status_request.handle(state, auth_key).await.to_res_body()
+                status_request
+                    .handle(state, auth_key, auth_node_owner)
+                    .await
+                    .to_res_body()
             }
         },
         Err(err) => {
@@ -183,6 +196,7 @@ pub(crate) trait Request {
         self,
         state: Arc<ServiceState>,
         auth_key: Option<AuthenticatedKey>,
+        auth_node_owner: Option<AuthenticatedNodeOwner>,
     ) -> Result<Self::Response, RpcError<Self::Error>>;
 }
 

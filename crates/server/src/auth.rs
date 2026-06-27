@@ -42,6 +42,19 @@ fn unauthorized_response(err: &AuthError) -> Response {
 #[derive(Clone, Debug)]
 pub struct AuthenticatedKey(pub calimero_primitives::identity::PublicKey);
 
+/// Marker injected by [`AuthGuardService`] when a request carries a valid token
+/// but the auth method does not produce a cryptographic public key (e.g.
+/// embedded username/password). The presence of this extension tells handlers
+/// that the caller is the node owner, positively confirmed by the auth layer.
+///
+/// Using an explicit marker instead of relying on `Option<AuthenticatedKey>`
+/// being `None` makes the bypass path auditable: `None` for both extensions
+/// means the auth guard did not run (no-auth mode), not that a specific auth
+/// method was used. Handlers can match on both extensions and reason about
+/// exactly which auth path was taken.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedNodeOwner;
+
 /// Wrapper around the embedded authentication application, keeping the router and shared state.
 pub struct BundledAuth {
     app: EmbeddedAuthApp,
@@ -185,13 +198,24 @@ where
                                 parts.extensions.insert(AuthenticatedKey(pk));
                             }
                             Err(err) => {
-                                warn!(key_id=%auth_response.key_id, %err, "auth key_id public_key is not a valid PublicKey; skipping extension injection");
+                                // The stored value is not a valid Ed25519 public key —
+                                // this is the embedded username/password auth path where
+                                // the key_id is a username string. The token was valid;
+                                // treat the caller as the node owner.
+                                warn!(key_id=%auth_response.key_id, %err, "auth key_id public_key is not a valid PublicKey; treating as node owner");
+                                parts.extensions.insert(AuthenticatedNodeOwner);
                             }
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        // No public key registered for this key_id — embedded auth
+                        // (username/password) where the key_id has no associated key.
+                        // The token was valid; treat the caller as the node owner.
+                        parts.extensions.insert(AuthenticatedNodeOwner);
+                    }
                     Err(err) => {
                         warn!(key_id=%auth_response.key_id, %err, "failed to look up public key for auth key_id");
+                        parts.extensions.insert(AuthenticatedNodeOwner);
                     }
                 }
             }

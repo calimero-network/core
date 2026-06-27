@@ -170,6 +170,7 @@ async fn ws_handler(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     Extension(state): Extension<Arc<ServiceState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
+    auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -199,7 +200,16 @@ async fn ws_handler(
             .into_response();
     }
 
-    let caller = auth_key.map(|ext| ext.0 .0);
+    // Determine the caller identity from the auth extensions injected by
+    // AuthGuardService. `AuthenticatedKey` carries the verified public key.
+    // `AuthenticatedNodeOwner` means a valid token was presented but the auth
+    // method has no associated key (e.g. embedded username/password). When
+    // neither extension is present the guard did not run (no-auth mode) and
+    // the connection is treated as a node-owner connection.
+    let caller = match (auth_key, auth_node_owner) {
+        (Some(ext), _) => Some(ext.0 .0),
+        (None, Some(_)) | (None, None) => None,
+    };
     ws.on_upgrade(move |socket| handle_socket(socket, state, caller))
         .into_response()
 }
@@ -642,7 +652,7 @@ macro_rules! mount_method {
 
 pub(crate) use mount_method;
 
-use crate::auth::AuthenticatedKey;
+use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
 use crate::config::ServerConfig;
 
 /// WebSocket command channel buffer size
