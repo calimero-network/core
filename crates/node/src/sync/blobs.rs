@@ -11,9 +11,9 @@ use rand::{thread_rng, Rng};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::constants::MAX_BLOB_STREAM_SIZE_BYTES;
 use super::manager::SyncManager;
 use super::tracking::Sequencer;
+use crate::constants::MAX_BLOB_STREAM_SIZE_BYTES;
 
 impl SyncManager {
     pub(super) async fn initiate_blob_share_process(
