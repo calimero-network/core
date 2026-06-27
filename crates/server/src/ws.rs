@@ -576,6 +576,8 @@ async fn handle_text_message(
                     .to_res_body(),
                 RequestPayload::Execute(request) => {
                     let inner = connection_state.inner.read().await;
+                    // caller and node_owner are set once at upgrade time and
+                    // never mutated; copying them before dropping the lock is safe.
                     let (caller, node_owner) = (inner.caller, inner.node_owner);
                     drop(inner);
                     execute::handle(&state, caller, node_owner, request).await
@@ -789,6 +791,7 @@ mod tests {
             ctx_client,
             connections: RwLock::default(),
             config: WsConfig::new(true),
+            auth_enabled: false,
         });
 
         let app = Router::new()
