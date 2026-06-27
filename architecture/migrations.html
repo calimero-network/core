@@ -961,6 +961,112 @@ canonical source if a field is renamed in a later release.
 </table>
 </div>
 
+<div class="card gc"><h2>Testing CRDT merge logic: patterns and pitfalls</h2>
+<p>
+The <code>nested_crdt_merge</code> test module was previously disabled behind a TODO comment. It is
+now unconditionally compiled and runs as part of the default test suite. The fixes required to
+unblock it surface a handful of patterns that apply to any test exercising
+<code>Mergeable::merge</code> on storage-backed collections.
+</p>
+
+<h3>Call <code>Mergeable::merge</code> on the collection, not on a <code>Root&lt;T&gt;</code> wrapper</h3>
+<p>
+<code>Root&lt;T&gt;</code> drives merge through an app-registered callback, not through
+<code>Mergeable</code>. Wrapping a collection in <code>Root&lt;T&gt;</code> and calling
+<code>Mergeable::merge</code> on the root does not exercise the collection's merge logic. Call
+<code>Mergeable::merge</code> directly on <code>UnorderedMap</code>, <code>Vector</code>, etc.:
+</p>
+<pre class="code">// wrong — Root's merge goes through a different dispatch path
+let mut root_a: Root&lt;UnorderedMap&lt;…&gt;&gt; = …;
+Mergeable::merge(&amp;mut root_a, root_b);
+
+// correct
+let mut map_a: UnorderedMap&lt;String, LwwRegister&lt;String&gt;&gt; = …;
+Mergeable::merge(&amp;mut map_a, map_b);</pre>
+
+<h3>Use <code>LwwRegister&lt;T&gt;</code>, not <code>String</code>, as leaf values</h3>
+<p>
+<code>String</code> intentionally does not implement <code>Mergeable</code>. Leaf values inside a
+nested CRDT must themselves implement <code>Mergeable</code>. Use
+<code>LwwRegister&lt;String&gt;</code> (or another concrete CRDT type) as the leaf:
+</p>
+<pre class="code">// String does not implement Mergeable — compile error at the merge call
+UnorderedMap&lt;String, String&gt;
+
+// LwwRegister implements Mergeable via Last-Write-Wins semantics
+UnorderedMap&lt;String, LwwRegister&lt;String&gt;&gt;</pre>
+
+<h3>Construct two independent instances — don't clone</h3>
+<p>
+Storage-backed collections cannot be cloned. Attempting to clone one collection to simulate a second
+replica does not compile. Instead, construct two completely independent instances and populate each
+with the same baseline data plus node-specific divergent writes:
+</p>
+<pre class="code">let mut node_a: UnorderedMap&lt;String, LwwRegister&lt;String&gt;&gt; = UnorderedMap::new();
+node_a.insert("shared".into(), LwwRegister::new("v1".into()))?;
+node_a.insert("only_a".into(), LwwRegister::new("a".into()))?;
+
+let mut node_b: UnorderedMap&lt;String, LwwRegister&lt;String&gt;&gt; = UnorderedMap::new();
+node_b.insert("shared".into(), LwwRegister::new("v1".into()))?;
+node_b.insert("only_b".into(), LwwRegister::new("b".into()))?;</pre>
+
+<h3>Use distinct executor IDs for counter replica tests</h3>
+<p>
+<code>GCounter</code> tracks increments per executor key. If both replicas increment using the same
+executor ID, max-semantics collapse the divergent increments into one, producing a wrong total after
+merge. Use a distinct executor ID on each replica before calling <code>increment</code>:
+</p>
+<pre class="code">// node 1
+env::executor_id_set([100; 32]);
+counter_a.increment(3)?;
+
+// node 2
+env::executor_id_set([200; 32]);
+counter_b.increment(3)?;
+
+// after merge: 3 + 3 = 6 (correct)
+// with same id on both: max(3, 3) = 3 (wrong)</pre>
+
+<h3>Use explicit timestamps — don't rely on <code>sleep</code></h3>
+<p>
+<code>LwwRegister</code> orders concurrent writes by <code>HybridTimestamp</code>. Using
+<code>std::thread::sleep</code> to create ordering makes tests depend on wall-clock behavior and
+scheduler resolution. Construct timestamps explicitly with a helper and use
+<code>LwwRegister::new_with_metadata</code>:
+</p>
+<pre class="code">use std::num::NonZeroU128;
+
+fn ts(time: u64, node: NonZeroU128) -&gt; HybridTimestamp {
+    HybridTimestamp::new(time, node)
+}
+
+let node1 = NonZeroU128::new(1).unwrap();
+let node2 = NonZeroU128::new(2).unwrap();
+
+// node 2's write is definitively later — no sleep needed
+let reg_a = LwwRegister::new_with_metadata("old".into(), ts(10, node1));
+let reg_b = LwwRegister::new_with_metadata("new".into(), ts(20, node2));</pre>
+<p>
+After merging <code>reg_a</code> and <code>reg_b</code>, the value is <code>"new"</code> because
+<code>ts(20, …) &gt; ts(10, …)</code> deterministically.
+</p>
+
+<h3>Serialize nested CRDT merge tests with <code>#[serial]</code></h3>
+<p>
+Storage-backed collections rely on global mock-store state. Running CRDT merge tests in parallel
+causes them to interfere with each other. Annotate every test in the module with
+<code>#[serial]</code> from the <code>serial_test</code> crate:
+</p>
+<pre class="code">use serial_test::serial;
+
+#[test]
+#[serial]
+fn test_map_union_merge_with_disjoint_keys() { … }
+
+#[test]
+#[serial]
+fn test_map_of_counters_merge() { … }</pre>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
