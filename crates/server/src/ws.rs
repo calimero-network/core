@@ -102,10 +102,7 @@ pub(crate) struct ConnectionStateInner {
 }
 
 impl ConnectionStateInner {
-    fn new(
-        caller: Option<calimero_primitives::identity::PublicKey>,
-        node_owner: bool,
-    ) -> Self {
+    fn new(caller: Option<calimero_primitives::identity::PublicKey>, node_owner: bool) -> Self {
         Self {
             subscriptions: HashSet::default(),
             last_pong: AtomicU64::new(unix_timestamp()),
@@ -220,7 +217,9 @@ async fn ws_handler(
         (Some(ext), _) => (Some(ext.0 .0), false),
         (None, Some(_)) => (None, true),
         (None, None) => {
-            warn!("No auth extensions present on WebSocket upgrade — auth guard may not be running");
+            warn!(
+                "No auth extensions present on WebSocket upgrade — auth guard may not be running"
+            );
             (None, false)
         }
     };
