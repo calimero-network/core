@@ -40,6 +40,7 @@ for pattern in "${patterns[@]}"; do
   # Split "METHOD /path-pattern".
   pmethod="${pattern%% *}"
   ppath="${pattern#* }"
+  ppath="${ppath%/}"  # normalize trailing slash on both sides (symmetry with the hit)
   # ":seg" -> "[^/]+"; "*rest" -> ".*"
   rx="^$(printf '%s' "$ppath" | sed -E 's#:[^/]+#[^/]+#g; s#\*[^/]+#.*#g')$"
   matched=0

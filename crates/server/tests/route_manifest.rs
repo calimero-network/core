@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 
 const ADMIN_PREFIX: &str = "/admin-api";
-const VERBS: [&str; 5] = ["get", "post", "put", "delete", "patch"];
+const VERBS: [&str; 6] = ["get", "post", "put", "delete", "patch", "head"];
 
 /// Find the balanced region inside the `(...)` that begins at `open` (the index of
 /// the byte just after the `(`). Returns `(inner, end)` where `inner` is the text
@@ -56,12 +56,16 @@ fn first_string(s: &str) -> Option<(&str, usize)> {
     None
 }
 
-/// Join a nest `prefix` with a route `path`. Returns `None` for the top-level
-/// bare-root / catch-all literals (`/`, `/*path`) — those are the static-file /
-/// SPA handlers, not gated API. A nested `"/"` collapses to the nest root.
+/// Join a nest `prefix` with a route `path`. Returns `None` for catch-all
+/// literals (`/*path`, at any depth) and the top-level bare root (`/`) — those are
+/// the static-file / SPA handlers, not gated API. A nested `"/"` collapses to the
+/// nest root.
 fn join_path(prefix: &str, path: &str) -> Option<String> {
+    if path.starts_with("/*") {
+        return None;
+    }
     if prefix.is_empty() {
-        if path == "/" || path.starts_with("/*") {
+        if path == "/" {
             return None;
         }
         return Some(path.to_string());

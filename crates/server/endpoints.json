@@ -43,6 +43,7 @@
   "GET /admin-api/packages/:package/versions",
   "GET /admin-api/peers",
   "GET /admin-api/usage",
+  "HEAD /admin-api/blobs/:blob_id",
   "PATCH /admin-api/groups/:group_id",
   "POST /admin-api/contexts",
   "POST /admin-api/contexts/:context_id/application",
