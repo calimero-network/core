@@ -157,6 +157,40 @@ op_store_gate_unavailable</pre>
 <h3>Why this catches what static tests miss</h3>
 <p>A renamed or removed parameter in a handler causes the SDK to send the old request shape; the node returns a <code>4xx</code> and the workflow fails on the core developer's PR — before the downstream SDK picks up the change. Schema and ABI checks validate structure; the SDK e2e workflow validates <em>behaviour</em> across a live HTTP boundary.</p>
 </div>
+<div class="card ga"><h2>Route coverage gate is now method-aware</h2>
+<p>The <code>check-endpoint-coverage.sh</code> script previously matched coverage by path alone. A recorded hit on <em>any</em> HTTP verb for a path would satisfy coverage for <em>every</em> verb on that same path. Coverage is now tracked and matched as <strong><code>METHOD /path</code> pairs</strong>, so a hit on one verb never satisfies coverage for a different verb on the same path.</p>
+
+<h3>What changed</h3>
+<ul>
+<li>Each manifest entry is expected in the form <code>METHOD /path</code>, for example <code>GET /admin-api/blobs/:blob_id</code>.</li>
+<li>Each recorded hit must also be a <code>METHOD /path</code> string. Both the method and the path must match before a route is marked covered.</li>
+<li>Trailing slashes on recorded hits are normalized before comparison.</li>
+</ul>
+
+<h3>Why the change was made</h3>
+<p>A real bug slipped through the old check: the SDK's <code>getBlob</code> was sending <code>DELETE /admin-api/blobs/:id</code> instead of <code>GET /admin-api/blobs/:id</code>. Because path-only coverage saw the path exercised via <code>DELETE</code>, it reported the route as covered and the CI gate stayed green. <code>GET</code> was never actually exercised. The method-aware check would have failed on that PR.</p>
+
+<h3>Impact on the recorded-hits file</h3>
+<p>If your e2e suite or any tooling that feeds the recorded-hits file emits bare paths, those entries must be updated to include the method. Bare-path entries will no longer match any manifest route and will cause previously-green coverage checks to fail.</p>
+
+<ul>
+<li><strong>Old format (no longer accepted):</strong> <code>/admin-api/blobs/:blob_id</code></li>
+<li><strong>Required format:</strong> <code>GET /admin-api/blobs/:blob_id</code></li>
+</ul>
+
+<h3>Manifest format</h3>
+<p>The endpoint manifest must list one route per line as <code>METHOD /path</code>. Routes that share a path but differ in method are separate entries and must each be hit independently to achieve full coverage:</p>
+<pre class="code">GET  /admin-api/blobs/:blob_id
+POST /admin-api/blobs
+DELETE /admin-api/blobs/:blob_id</pre>
+
+<h3>What to check if coverage unexpectedly fails after this change</h3>
+<ol>
+<li>Confirm that the recorded-hits file produced by the e2e run contains <code>METHOD /path</code> strings, not bare paths.</li>
+<li>Check for trailing-slash mismatches between the manifest and any SDK calls — the script normalizes recorded hits but not manifest entries.</li>
+<li>Verify that every distinct <code>METHOD /path</code> pair in the manifest is actually exercised by at least one test; paths shared across verbs each need their own hit.</li>
+</ol>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>
