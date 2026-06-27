@@ -47,16 +47,22 @@ fn test_nested_map_merge_different_inner_keys() {
     // Same-key LWW conflict resolution (where both nodes write the same key
     // with different values) is covered by test_map_of_lww_registers_merge.
 
+    let node1 = NonZeroU128::new(1).unwrap();
+    let node2 = NonZeroU128::new(2).unwrap();
+
     // Node 1: doc-1 has "initial" + "title"
     let mut map1 = UnorderedMap::<String, UnorderedMap<String, LwwRegister<String>>>::new();
     let mut inner1 = UnorderedMap::new();
     inner1
-        .insert("initial".to_string(), LwwRegister::new("value".to_string()))
+        .insert(
+            "initial".to_string(),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node1), [1u8; 32]),
+        )
         .unwrap();
     inner1
         .insert(
             "title".to_string(),
-            LwwRegister::new("Updated Title".to_string()),
+            LwwRegister::new_with_metadata("Updated Title".to_string(), ts(110, node1), [1u8; 32]),
         )
         .unwrap();
     map1.insert("doc-1".to_string(), inner1).unwrap();
@@ -65,10 +71,16 @@ fn test_nested_map_merge_different_inner_keys() {
     let mut map2 = UnorderedMap::<String, UnorderedMap<String, LwwRegister<String>>>::new();
     let mut inner2 = UnorderedMap::new();
     inner2
-        .insert("initial".to_string(), LwwRegister::new("value".to_string()))
+        .insert(
+            "initial".to_string(),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node2), [2u8; 32]),
+        )
         .unwrap();
     inner2
-        .insert("owner".to_string(), LwwRegister::new("Alice".to_string()))
+        .insert(
+            "owner".to_string(),
+            LwwRegister::new_with_metadata("Alice".to_string(), ts(110, node2), [2u8; 32]),
+        )
         .unwrap();
     map2.insert("doc-1".to_string(), inner2).unwrap();
 
@@ -76,9 +88,9 @@ fn test_nested_map_merge_different_inner_keys() {
     Mergeable::merge(&mut map1, &map2).unwrap();
 
     // Verify: ALL keys are present after merge.
-    // The "initial" key exists on both nodes with the same string value "value";
-    // this test checks key *presence* only — which replica's LwwRegister wins
-    // the tiebreak is intentionally irrelevant here (both hold the same string).
+    // "initial" is written by both nodes at the same logical time (100); the
+    // node2 ID tiebreak wins, but both hold "value" so the assertion is the same
+    // either way. The test checks key *presence* and value correctness after union.
     let final_inner = map1.get(&"doc-1".to_string()).unwrap().unwrap();
 
     assert_eq!(
@@ -206,14 +218,23 @@ fn test_three_level_nesting_merge() {
     type InnerMap = UnorderedMap<String, LwwRegister<String>>;
     type OuterMap = UnorderedMap<String, InnerMap>;
 
+    let node1 = NonZeroU128::new(1).unwrap();
+    let node2 = NonZeroU128::new(2).unwrap();
+
     // Node 1: doc-1 has "initial" + "title"
     let mut map1 = OuterMap::new();
     let mut inner1 = InnerMap::new();
     inner1
-        .insert("initial".to_string(), LwwRegister::new("value".to_string()))
+        .insert(
+            "initial".to_string(),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node1), [1u8; 32]),
+        )
         .unwrap();
     inner1
-        .insert("title".to_string(), LwwRegister::new("Title 1".to_string()))
+        .insert(
+            "title".to_string(),
+            LwwRegister::new_with_metadata("Title 1".to_string(), ts(110, node1), [1u8; 32]),
+        )
         .unwrap();
     map1.insert("doc-1".to_string(), inner1).unwrap();
 
@@ -221,10 +242,16 @@ fn test_three_level_nesting_merge() {
     let mut map2 = OuterMap::new();
     let mut inner2 = InnerMap::new();
     inner2
-        .insert("initial".to_string(), LwwRegister::new("value".to_string()))
+        .insert(
+            "initial".to_string(),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node2), [2u8; 32]),
+        )
         .unwrap();
     inner2
-        .insert("owner".to_string(), LwwRegister::new("Alice".to_string()))
+        .insert(
+            "owner".to_string(),
+            LwwRegister::new_with_metadata("Alice".to_string(), ts(110, node2), [2u8; 32]),
+        )
         .unwrap();
     map2.insert("doc-1".to_string(), inner2).unwrap();
 
@@ -258,7 +285,7 @@ fn test_three_level_nesting_merge() {
 
 #[test]
 #[serial]
-fn test_map_merge_with_different_keys() {
+fn test_map_union_merge_with_disjoint_keys() {
     env::reset_for_testing();
 
     let mut map1 = UnorderedMap::<String, Counter>::new();
