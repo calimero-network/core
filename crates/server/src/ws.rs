@@ -201,14 +201,19 @@ async fn ws_handler(
     }
 
     // Determine the caller identity from the auth extensions injected by
-    // AuthGuardService. `AuthenticatedKey` carries the verified public key.
-    // `AuthenticatedNodeOwner` means a valid token was presented but the auth
-    // method has no associated key (e.g. embedded username/password). When
-    // neither extension is present the guard did not run (no-auth mode) and
-    // the connection is treated as a node-owner connection.
+    // AuthGuardService:
+    //   AuthenticatedKey       → verified public key; stored as Some(pk)
+    //   AuthenticatedNodeOwner → non-key auth (e.g. embedded username/password);
+    //                            stored as None (NodeOwner path in execute)
+    //   neither                → no-auth mode (auth_service = None); warn so a
+    //                            misconfigured guard is visible in production logs
     let caller = match (auth_key, auth_node_owner) {
         (Some(ext), _) => Some(ext.0 .0),
-        (None, Some(_)) | (None, None) => None,
+        (None, Some(_)) => None,
+        (None, None) => {
+            warn!("No auth extensions present on WebSocket upgrade — auth guard may not be running");
+            None
+        }
     };
     ws.on_upgrade(move |socket| handle_socket(socket, state, caller))
         .into_response()
