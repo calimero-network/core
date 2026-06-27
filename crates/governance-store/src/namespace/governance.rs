@@ -153,6 +153,23 @@ impl<'a> NamespaceGovernance<'a> {
     }
 
     pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
+        // Validate the op's namespace BEFORE any side effects. The op-log write
+        // (`store_signed_operation`) already rejects a namespace mismatch, but
+        // it runs only *after* `advance_dag_head` and the per-op-kind side
+        // effects below — so a mismatched op would mutate state and advance the
+        // DAG head, then fail at store time, leaving the head advanced for an op
+        // that was never logged (and never can be). Checking here keeps the
+        // idempotency guard's invariant ("op in the log ⟹ its head advance
+        // already ran") intact: a wrong-namespace op is rejected before it can
+        // touch anything.
+        if op.namespace_id != self.namespace_id {
+            return Err(eyre::eyre!(
+                "namespace mismatch in apply_signed_op: handle={}, op={}",
+                hex::encode(self.namespace_id),
+                hex::encode(op.namespace_id)
+            ));
+        }
+
         op.verify_signature()
             .map_err(|e| eyre::eyre!("signed namespace op: {e}"))?;
 
