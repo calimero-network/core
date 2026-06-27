@@ -713,9 +713,11 @@ After a governance op is successfully applied by the live gate, the handler runs
       <code>DefaultCapabilitiesSet</code> → <code>Admin</code></li>
     </ul>
     Explicitly <em>excluded</em> from the mapping (returning <code>None</code>):
-    <code>MemberJoined</code> (inviter authority), <code>MemberJoinedOpen</code> (inheritance
-    proof), <code>MemberLeft</code> (self-authored), <code>GroupDeleted</code> and
-    <code>TransferOwnership</code> (owner-gated), and other metadata/context-registration ops.
+    <code>MemberJoined</code> / <code>MemberJoinedAt</code> (inviter authority; <code>MemberJoinedAt</code>
+    additionally enforces deterministic expiry — apply rejects when <code>joined_at &gt; expiration_timestamp</code>),
+    <code>MemberJoinedOpen</code> (inheritance proof), <code>MemberLeft</code> (self-authored),
+    <code>GroupDeleted</code> and <code>TransferOwnership</code> (owner-gated), and other
+    metadata/context-registration ops.
   </li>
   <li>The handler then calls the corresponding at-cut accessor against the op's
   <code>delta_parents</code> cut (the DAG state the signer observed, not the post-apply cut).
