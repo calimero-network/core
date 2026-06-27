@@ -19,13 +19,6 @@ impl Request for ExecutionRequest {
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
 
-        // Determine the caller identity from the auth extensions injected by
-        // AuthGuardService:
-        //   AuthenticatedKey       → verified public key, membership check runs
-        //   AuthenticatedNodeOwner → non-key auth (e.g. embedded username/password),
-        //                            caller is the node owner, check skipped
-        //   neither                → no-auth mode (auth_service = None); warn so a
-        //                            misconfigured guard is visible in production logs
         // Three auth paths:
         //   AuthenticatedKey       → token with a verified Ed25519 key; membership check runs
         //   AuthenticatedNodeOwner → non-key auth (embedded username/password); skip check
