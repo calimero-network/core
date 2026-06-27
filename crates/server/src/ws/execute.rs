@@ -15,7 +15,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::ExecutionRequest;
 use calimero_server_primitives::validation::Validate;
 use calimero_server_primitives::ws::{ResponseBody, ResponseBodyError, ServerResponseError};
-use tracing::{error, field, info, Span};
+use tracing::{error, field, info, warn, Span};
 
 use crate::execute::{execute_request, CallerIdentity};
 use crate::ws::ServiceState;
@@ -59,7 +59,10 @@ pub(crate) async fn handle(
 
     let caller_identity = match caller.as_ref() {
         Some(key) => CallerIdentity::Key(key),
-        None => CallerIdentity::NodeOwner,
+        None => {
+            warn!("No authenticated key on WebSocket execute — running as node owner (no-auth mode)");
+            CallerIdentity::NodeOwner
+        }
     };
     match execute_request(&state.ctx_client, caller_identity, request).await {
         Ok(response) => match serde_json::to_value(response) {
