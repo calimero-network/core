@@ -683,6 +683,39 @@
 <h2>Transport</h2>
 <p style="margin-bottom:18px;">The sync transport layer wraps libp2p streams with framing, encryption, and authentication.</p>
 
+<div class="cb" style="margin-bottom:18px; border-left:3px solid #f59e0b; padding-left:14px;">
+  <h4 style="color:#f59e0b; margin-bottom:8px;">Blob Receive Size Cap — <span class="code">MAX_BLOB_STREAM_SIZE_BYTES</span> (500 MiB)</h4>
+  <p style="margin-bottom:10px;">A new constant <span class="code">MAX_BLOB_STREAM_SIZE_BYTES</span> (500 MiB, typed <span class="code">u64</span> to match the wire-protocol <span class="code">size: u64</span> field and avoid truncation on 32-bit targets) is defined in <code>constants.rs</code> and enforced in <span class="code">SyncManager::initiate_blob_share_process</span> as a hard ceiling on any single blob received over the sync wire protocol.</p>
+  <p style="margin-bottom:10px;">Previously, when a peer advertised <span class="code">size == 0</span> (meaning "unknown"), <span class="code">expected_size</span> was set to <span class="code">None</span> and passed to <span class="code">add_blob</span>, leaving the receive loop with no upper bound on accepted data. Now a <span class="code">size_limit</span> is computed unconditionally:</p>
+  <ul style="margin:0 0 10px 18px; color:#c9c9d4; font-family:'DM Sans',sans-serif; font-size:14px; line-height:1.8;">
+    <li>When <span class="code">size &gt; 0</span> — the advertised size capped at <span class="code">MAX_BLOB_STREAM_SIZE_BYTES</span>.</li>
+    <li>When <span class="code">size == 0</span> — <span class="code">MAX_BLOB_STREAM_SIZE_BYTES</span> itself.</li>
+  </ul>
+  <p style="margin-bottom:10px;"><span class="code">Some(size_limit)</span> is always passed to <span class="code">add_blob</span>; a <span class="code">None</span> limit is never used.</p>
+  <p style="margin-bottom:10px;">After a full blob receive, if the computed blob-id does not match the advertised blob-id, <span class="code">delete_blob</span> is called on the incorrectly-hashed blob before the error is returned, preventing corrupt data from being persisted. A <span class="code">WARN</span> log is emitted including the expected id, the received id, and the advertised size. A secondary warning is logged if the <span class="code">delete_blob</span> call itself fails.</p>
+  <div class="typedef" style="margin-top:12px;">
+<span class="comment">// constants.rs — hard ceiling for any single inbound sync blob</span><br>
+<span class="kw">pub const</span> <span class="field">MAX_BLOB_STREAM_SIZE_BYTES</span>: <span class="ty">u64</span> = 500 * 1024 * 1024; <span class="comment">// 500 MiB</span><br><br>
+<span class="comment">// size_limit is always Some — unknown-size (size==0) uses the constant</span><br>
+<span class="kw">let</span> size_limit = <span class="kw">if</span> size &gt; 0 {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;size.min(<span class="ty">MAX_BLOB_STREAM_SIZE_BYTES</span>)<br>
+} <span class="kw">else</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="ty">MAX_BLOB_STREAM_SIZE_BYTES</span><br>
+};<br>
+<span class="comment">// add_blob is always called with Some(size_limit)</span><br>
+<span class="kw">let</span> received_id = store.<span class="field">add_blob</span>(stream, <span class="ty">Some</span>(size_limit)).<span class="kw">await</span>?;<br><br>
+<span class="comment">// Hash mismatch — delete corrupt blob before returning error</span><br>
+<span class="kw">if</span> received_id != advertised_blob_id {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">warn!</span>(expected = %advertised_blob_id, received = %received_id, size, <span class="comment">/*...*/</span>);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">if let</span> <span class="ty">Err</span>(e) = store.<span class="field">delete_blob</span>(&amp;received_id).<span class="kw">await</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">warn!</span>(<span class="string">"failed to delete corrupt blob: {e}"</span>);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">return</span> <span class="ty">Err</span>(...)<br>
+}
+  </div>
+  <p style="margin-top:10px; font-size:12px; color:#6b6b80;"><strong>Operators:</strong> Every inbound sync blob is now capped at 500 MiB regardless of what the peer advertises, including peers that report an unknown size. Blobs whose computed hash does not match the advertised id are deleted from the store immediately and never left in a corrupt state. No configuration knob exposes <span class="code">MAX_BLOB_STREAM_SIZE_BYTES</span> — it is a hard compile-time ceiling.</p>
+</div>
+
 <div class="g2" style="margin-bottom:16px;">
   <div class="cb">
     <h4 style="color:#8b5cf6;">SyncTransport</h4>
