@@ -26,11 +26,11 @@ use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 /// `node` distinguishes the originating replica for tiebreaking when two
 /// timestamps share the same `NTP64` value.  Pass distinct values for each
 /// simulated node so tiebreak logic is exercised correctly.
-fn ts(time: u64, node: u128) -> HybridTimestamp {
-    HybridTimestamp::new(Timestamp::new(
-        NTP64(time),
-        ID::from(NonZeroU128::new(node).unwrap()),
-    ))
+///
+/// The parameter is `NonZeroU128` rather than `u128` so that passing `0`
+/// is a compile-time error instead of a runtime panic.
+fn ts(time: u64, node: NonZeroU128) -> HybridTimestamp {
+    HybridTimestamp::new(Timestamp::new(NTP64(time), ID::from(node)))
 }
 
 #[test]
@@ -66,7 +66,10 @@ fn test_nested_map_merge_different_inner_keys() {
     // MERGE — this is the critical operation
     Mergeable::merge(&mut map1, &map2).unwrap();
 
-    // Verify: ALL keys are present after merge
+    // Verify: ALL keys are present after merge.
+    // The "initial" key exists on both nodes with the same string value "value";
+    // this test checks key *presence* only — which replica's LwwRegister wins
+    // the tiebreak is intentionally irrelevant here (both hold the same string).
     let final_inner = map1.get(&"doc-1".to_string()).unwrap().unwrap();
 
     assert_eq!(
@@ -150,11 +153,14 @@ fn test_map_of_lww_registers_merge() {
     // Use explicit logical timestamps with distinct node IDs so the test is
     // deterministic (no wall-clock dependency) and exercises realistic
     // per-node ID tiebreaking semantics.
+    let node1 = NonZeroU128::new(1).unwrap();
+    let node2 = NonZeroU128::new(2).unwrap();
+
     // Node 1: timestamp 100, node ID 1
     let mut map1 = UnorderedMap::<String, LwwRegister<String>>::new();
     map1.insert(
         "title".to_string(),
-        LwwRegister::new_with_metadata("From Node 1".to_string(), ts(100, 1), [1u8; 32]),
+        LwwRegister::new_with_metadata("From Node 1".to_string(), ts(100, node1), [1u8; 32]),
     )
     .unwrap();
 
@@ -162,7 +168,7 @@ fn test_map_of_lww_registers_merge() {
     let mut map2 = UnorderedMap::<String, LwwRegister<String>>::new();
     map2.insert(
         "title".to_string(),
-        LwwRegister::new_with_metadata("From Node 2".to_string(), ts(200, 2), [2u8; 32]),
+        LwwRegister::new_with_metadata("From Node 2".to_string(), ts(200, node2), [2u8; 32]),
     )
     .unwrap();
 
