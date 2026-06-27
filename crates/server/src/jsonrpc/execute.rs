@@ -35,9 +35,9 @@ impl Request for ExecutionRequest {
                 if auth_node_owner.is_none() {
                     if state.auth_enabled {
                         warn!("No auth extensions present on JSON-RPC execute request — auth guard may not be running");
-                        return Err(RpcError::MethodCallError(
-                            ExecutionError::FunctionCallError("authentication required".to_owned()),
-                        ));
+                        return Err(RpcError::InternalError(eyre::eyre!(
+                            "authentication required"
+                        )));
                     }
                     debug!("No-auth mode: JSON-RPC execute proceeding without membership check");
                 }
