@@ -111,6 +111,9 @@ pub mod tests {
     /// Merkle hash propagation tests.
     #[cfg(test)]
     pub mod merkle;
+    /// Nested CRDT merge behavior tests.
+    #[cfg(test)]
+    pub mod nested_crdt_merge;
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;
@@ -122,9 +125,6 @@ pub mod tests {
     /// stored-writers field staying frozen at bootstrap (see #2266 step 5).
     #[cfg(test)]
     pub mod write_hook_stale_writers;
-    /// Nested CRDT merge behavior tests.
-    #[cfg(test)]
-    pub mod nested_crdt_merge;
 }
 
 #[cfg(test)]

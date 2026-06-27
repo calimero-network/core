@@ -18,14 +18,10 @@ fn test_nested_map_merge_different_inner_keys() {
     env::reset_for_testing();
 
     // Node 1: doc-1 has "initial" + "title"
-    let mut map1 =
-        UnorderedMap::<String, UnorderedMap<String, LwwRegister<String>>>::new();
+    let mut map1 = UnorderedMap::<String, UnorderedMap<String, LwwRegister<String>>>::new();
     let mut inner1 = UnorderedMap::new();
     inner1
-        .insert(
-            "initial".to_string(),
-            LwwRegister::new("value".to_string()),
-        )
+        .insert("initial".to_string(), LwwRegister::new("value".to_string()))
         .unwrap();
     inner1
         .insert(
@@ -36,20 +32,13 @@ fn test_nested_map_merge_different_inner_keys() {
     map1.insert("doc-1".to_string(), inner1).unwrap();
 
     // Node 2: doc-1 has "initial" + "owner" (concurrent modification)
-    let mut map2 =
-        UnorderedMap::<String, UnorderedMap<String, LwwRegister<String>>>::new();
+    let mut map2 = UnorderedMap::<String, UnorderedMap<String, LwwRegister<String>>>::new();
     let mut inner2 = UnorderedMap::new();
     inner2
-        .insert(
-            "initial".to_string(),
-            LwwRegister::new("value".to_string()),
-        )
+        .insert("initial".to_string(), LwwRegister::new("value".to_string()))
         .unwrap();
     inner2
-        .insert(
-            "owner".to_string(),
-            LwwRegister::new("Alice".to_string()),
-        )
+        .insert("owner".to_string(), LwwRegister::new("Alice".to_string()))
         .unwrap();
     map2.insert("doc-1".to_string(), inner2).unwrap();
 
@@ -173,16 +162,10 @@ fn test_three_level_nesting_merge() {
     let mut map1 = OuterMap::new();
     let mut inner1 = InnerMap::new();
     inner1
-        .insert(
-            "initial".to_string(),
-            LwwRegister::new("value".to_string()),
-        )
+        .insert("initial".to_string(), LwwRegister::new("value".to_string()))
         .unwrap();
     inner1
-        .insert(
-            "title".to_string(),
-            LwwRegister::new("Title 1".to_string()),
-        )
+        .insert("title".to_string(), LwwRegister::new("Title 1".to_string()))
         .unwrap();
     map1.insert("doc-1".to_string(), inner1).unwrap();
 
@@ -190,16 +173,10 @@ fn test_three_level_nesting_merge() {
     let mut map2 = OuterMap::new();
     let mut inner2 = InnerMap::new();
     inner2
-        .insert(
-            "initial".to_string(),
-            LwwRegister::new("value".to_string()),
-        )
+        .insert("initial".to_string(), LwwRegister::new("value".to_string()))
         .unwrap();
     inner2
-        .insert(
-            "owner".to_string(),
-            LwwRegister::new("Alice".to_string()),
-        )
+        .insert("owner".to_string(), LwwRegister::new("Alice".to_string()))
         .unwrap();
     map2.insert("doc-1".to_string(), inner2).unwrap();
 
