@@ -31,8 +31,10 @@ use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 /// timestamps share the same `NTP64` value.  Pass distinct values for each
 /// simulated node so tiebreak logic is exercised correctly.
 ///
-/// The parameter is `NonZeroU128` rather than `u128` so that passing `0`
-/// is a compile-time error instead of a runtime panic.
+/// The parameter is `NonZeroU128` rather than `u128` so that callers must
+/// explicitly handle the `None` case from `NonZeroU128::new`, making the
+/// zero-check visible at the call site rather than silently producing a
+/// wrong timestamp.
 fn ts(time: u64, node: NonZeroU128) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(NTP64(time), ID::from(node)))
 }
@@ -168,8 +170,9 @@ fn test_map_of_lww_registers_merge() {
     env::reset_for_testing();
 
     // Use explicit logical timestamps with distinct node IDs so the test is
-    // deterministic (no wall-clock dependency) and exercises realistic
-    // per-node ID tiebreaking semantics.
+    // deterministic (no wall-clock dependency). The timestamps differ (100 vs
+    // 200), so the LWW winner is decided by NTP64 magnitude alone — the node
+    // ID is distinct but not exercised as a tiebreaker here.
     let node1 = NonZeroU128::new(1).unwrap();
     let node2 = NonZeroU128::new(2).unwrap();
 
@@ -291,12 +294,12 @@ fn test_map_union_merge_with_disjoint_keys() {
     let mut map1 = UnorderedMap::<String, Counter>::new();
     let mut map2 = UnorderedMap::<String, Counter>::new();
 
-    // counter_a and counter_b live under different map keys, so the merge is a
-    // pure key union with no overlap. Using the same executor ID is safe here
-    // because the two counters never share a key — their GCounter entries are
-    // independent. If the same key appeared in both maps, the shared executor ID
-    // would cause GCounter to take max(1,1)=1 instead of summing; that scenario
-    // is covered by test_map_of_counters_merge.
+    // After reset_for_testing() the executor ID is [237;32] (the default).
+    // Both counters use this same ID, which is safe because counter_a and
+    // counter_b live under different map keys — the merge is a pure key union
+    // with no overlap. If the same key appeared in both maps, the shared
+    // executor ID would cause GCounter to take max(1,1)=1 instead of summing;
+    // that scenario is covered by test_map_of_counters_merge.
     let mut ca = Counter::new();
     ca.increment().unwrap();
     map1.insert("counter_a".to_string(), ca).unwrap();
