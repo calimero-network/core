@@ -161,6 +161,12 @@ fn test_map_of_lww_registers_merge() {
     let node1 = NonZeroU128::new(1).unwrap();
     let node2 = NonZeroU128::new(2).unwrap();
 
+    // Pin the ordering assumption: NTP64(200) > NTP64(100) regardless of node ID.
+    assert!(
+        ts(200, node2) > ts(100, node1),
+        "timestamp ordering assumption violated"
+    );
+
     // Node 1: timestamp 100, node ID 1
     let mut map1 = UnorderedMap::<String, LwwRegister<String>>::new();
     map1.insert(
