@@ -41,6 +41,16 @@ impl Handler<Dial> for NetworkManager {
             }
         }
 
-        Response::fut(async { receiver.await.expect("Sender not to be dropped.") })
+        Response::fut(async move {
+            // The sender lives in `pending_dial` and is normally either fired
+            // by `ConnectionEstablished`/`OutgoingConnectionError` or carried
+            // until then. If it is dropped without sending — e.g. the manager
+            // is shutting down and tears down the swarm — `recv` errors out.
+            // Surface that as a dial error rather than panicking the actor.
+            match receiver.await {
+                Ok(result) => result,
+                Err(_) => Err(eyre!("dial cancelled before completion")),
+            }
+        })
     }
 }

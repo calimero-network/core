@@ -1,7 +1,6 @@
 use actix::{AsyncContext, StreamHandler};
 use calimero_network_primitives::messages::NetworkEvent;
 use eyre::eyre;
-use libp2p::core::ConnectedPoint;
 use libp2p::swarm::{DialError, SwarmEvent};
 use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
@@ -110,10 +109,17 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 let cache_addr = remote.clone();
                 self.record_connected_addr(peer_id, cache_addr);
 
-                if let ConnectedPoint::Dialer { .. } = endpoint {
-                    if let Some(sender) = self.pending_dial.remove(&peer_id) {
-                        let _ignored = sender.send(Ok(()));
-                    }
+                // Resolve any pending dial for this peer on *any* established
+                // connection, not just the `Dialer` endpoint. A dial we
+                // initiated can complete as a `Listener` endpoint (e.g. a
+                // simultaneous-open / hole-punched connection where the peer's
+                // SYN wins the race), in which case scoping the clear to
+                // `Dialer` would strand the `pending_dial` entry — and its
+                // oneshot sender — until shutdown. That leak both wedges the
+                // awaiting `Dial` future indefinitely and, when the swarm is
+                // finally torn down, drops the sender and surfaces as a panic.
+                if let Some(sender) = self.pending_dial.remove(&peer_id) {
+                    let _ignored = sender.send(Ok(()));
                 }
             }
             SwarmEvent::ConnectionClosed {
