@@ -6,7 +6,7 @@ use core::panic::Location as PanicLocation;
 
 use serde::Serialize;
 use thiserror::Error as ThisError;
-use wasmer::{ExportError, InstantiationError, LinkError, RuntimeError};
+use wasmer::{DeserializeError, ExportError, InstantiationError, LinkError, RuntimeError};
 use wasmer_types::{CompileError, TrapCode};
 
 #[derive(Debug, ThisError)]
@@ -49,6 +49,32 @@ pub enum FunctionCallError {
     ExecutionError(Vec<u8>),
     #[error("module size limit (max_module_size) exceeded: {size} bytes > {max} bytes limit")]
     ModuleSizeLimitExceeded { size: u64, max: u64 },
+}
+
+/// Error returned by
+/// [`Engine::from_precompiled`](crate::Engine::from_precompiled).
+///
+/// Kept separate from [`FunctionCallError`] because deserializing a
+/// precompiled artifact is a distinct operation from compiling source WASM:
+/// it carries a wasmer [`DeserializeError`] (not a [`CompileError`]) and its
+/// own size cap. Not `Serialize` — it wraps `DeserializeError`, which is not
+/// serializable, and these failures are node-local, not surfaced to guests.
+#[derive(Debug, ThisError)]
+#[non_exhaustive]
+pub enum PrecompiledModuleError {
+    /// The serialized precompiled artifact is larger than the configured
+    /// `max_precompiled_module_size` cap. Checked before handing the bytes to
+    /// wasmer so a corrupt or oversized blob cannot drive unbounded
+    /// allocation during deserialization, even when the caller attests the
+    /// bytes are trusted.
+    #[error(
+        "precompiled module size limit (max_precompiled_module_size) exceeded: \
+         {size} bytes > {max} bytes limit"
+    )]
+    SizeLimitExceeded { size: u64, max: u64 },
+    /// Wasmer rejected the bytes (wrong format, version mismatch, corruption).
+    #[error(transparent)]
+    Deserialize(#[from] DeserializeError),
 }
 
 #[derive(Debug, Serialize, ThisError)]
