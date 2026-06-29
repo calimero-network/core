@@ -21,7 +21,11 @@ use tracing::{debug, error, info, warn};
 const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes total
 const CHUNK_SEND_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
 
-// Replay protection window (30 seconds past, 10 seconds future)
+// Replay-protection window for a signed blob request: the auth envelope's
+// timestamp must be within 30s in the past / 10s in the future. Tight on
+// purpose — it bounds how long a captured BlobAuth can be replayed — while
+// still tolerating typical NTP drift (sub-second) and path latency. Widen only
+// with care; a larger window directly lengthens the replay opportunity.
 const MAX_REQUEST_AGE_SECS: u64 = 30;
 const MAX_REQUEST_FUTURE_AGE_SECS: u64 = 10;
 
@@ -350,7 +354,12 @@ fn is_signed_context_member(
     //
     // `ContextRegistry::new` takes the `Store` by value, whereas the inherited
     // check below borrows it — hence the asymmetry. `Store` is `Arc`-backed, so
-    // `clone()` is a cheap ref-count bump, not a deep copy.
+    // `clone()` is a cheap ref-count bump, not a deep copy, and both checks read
+    // the *same* underlying store (not a separate snapshot). The two reads are
+    // sequential, but the result is a membership OR — a row appearing or
+    // vanishing in the sub-microsecond gap can only flip a non-member to a
+    // member (never revoke an in-flight read), so there is no exploitable
+    // TOCTOU for this read-authorization path.
     let mut is_member =
         ContextRegistry::new(store.clone()).has_member(&request.context_id, &auth.public_key)?;
     if !is_member {
