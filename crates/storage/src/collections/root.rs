@@ -156,12 +156,21 @@ where
             match self.inner.get(id) {
                 Ok(Some(value)) => value,
                 Ok(None) => {
+                    // The root collection was loaded (we have `self.inner`) but
+                    // its single entry is absent. That entry is written
+                    // atomically at construction, and `fetch` returning `Some`
+                    // guarantees it exists, so reaching here means a partial
+                    // write / store corruption — never a normal "empty root".
                     tracing::error!(
                         target: "storage::root",
                         %id,
-                        "Root<T> entry missing from store — cannot materialise root value"
+                        "Root<T> collection present but its single entry is absent — \
+                         partial write or store corruption, not an empty root"
                     );
-                    panic!("fatal: Root<T> entry missing from store");
+                    panic!(
+                        "fatal: Root<T> entry missing from store (collection present, \
+                         entry absent — store corruption)"
+                    );
                 }
                 Err(e) => {
                     tracing::error!(
@@ -242,6 +251,15 @@ where
         reason = "store write faults here are fatal; log the cause before aborting"
     )]
     pub fn commit(mut self) {
+        // `dirty` is only ever set by `DerefMut`, which populates the cache
+        // before flipping the flag, so a dirty `Root` always has a cached
+        // value. Guard the invariant: if it ever breaks (e.g. a future API
+        // change), the write-back below would be silently skipped.
+        debug_assert!(
+            !self.dirty || self.value.get().is_some(),
+            "Root marked dirty but its value cache is empty — write-back would be skipped"
+        );
+
         if self.dirty {
             if let Some(value) = self.value.into_inner() {
                 let entry = self.inner.get_mut(Self::entry_id()).unwrap_or_else(|e| {
@@ -587,6 +605,10 @@ where
     S: StorageAdaptor,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // Materialise the cache first. If the lazy load panics on a store
+        // fault, `dirty` stays unset — so a failed load can never leave a
+        // dirty-but-unloaded `Root` that `commit` would try to write back.
+        let _: &T = self.get();
         self.dirty = true;
 
         self.get_mut()
