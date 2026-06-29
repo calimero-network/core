@@ -242,7 +242,11 @@ pub struct VMLimits {
     /// Even though `from_precompiled` callers attest (via `unsafe`) that the
     /// bytes are trusted, this cap is a defense-in-depth bound so a corrupt or
     /// unexpectedly large artifact cannot drive unbounded allocation. Setting
-    /// it to 0 rejects all non-empty precompiled modules.
+    /// it to 0 rejects all non-empty precompiled modules. An empty slice (0
+    /// bytes) always passes the size check regardless of this setting (the
+    /// check is `size > limit`, so `0 > 0` is false) and surfaces as a
+    /// deserialization error instead, matching the behavior of
+    /// [`max_module_size`](Self::max_module_size).
     pub max_precompiled_module_size: u64,
 }
 

@@ -1411,4 +1411,45 @@ mod wasm_integration_tests {
             Ok(_) => panic!("garbage bytes should not deserialize into a module"),
         }
     }
+
+    /// Edge case mirroring `test_wasm_module_size_limit_zero` for the
+    /// precompiled path: with `max_precompiled_module_size = 0`, any non-empty
+    /// slice is rejected by the cap, while an empty slice passes the size check
+    /// (`0 > 0` is false) and surfaces as a deserialization error instead.
+    #[test]
+    fn test_from_precompiled_size_limit_zero() {
+        use crate::logic::VMLimits;
+
+        let limits = VMLimits {
+            max_precompiled_module_size: 0,
+            ..Default::default()
+        };
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // Any non-empty slice is rejected by the cap before reaching wasmer.
+        // SAFETY: test-only bytes; the cap rejects before deserialization.
+        let non_empty = unsafe { engine.from_precompiled(&[0u8; 8]) };
+        match non_empty {
+            Err(PrecompiledModuleError::SizeLimitExceeded { size, max }) => {
+                assert_eq!(max, 0);
+                assert!(size > 0, "non-empty slice should exceed a cap of 0");
+            }
+            Ok(_) => panic!("Expected SizeLimitExceeded with max_precompiled_module_size=0"),
+            Err(other) => panic!("Expected SizeLimitExceeded, got: {other:?}"),
+        }
+
+        // An empty slice passes the size check (0 is not > 0) and fails in
+        // wasmer's deserialize instead.
+        // SAFETY: test-only bytes; asserting the error path, not soundness.
+        let empty = unsafe { engine.from_precompiled(&[]) };
+        match empty {
+            Err(PrecompiledModuleError::Deserialize(_)) => {
+                // Expected - empty slice passes the cap but cannot deserialize.
+            }
+            Err(PrecompiledModuleError::SizeLimitExceeded { .. }) => {
+                panic!("empty slice should pass the size check (0 is not > 0)")
+            }
+            Ok(_) => panic!("empty slice should not deserialize into a module"),
+        }
+    }
 }
