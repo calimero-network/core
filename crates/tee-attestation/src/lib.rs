@@ -11,9 +11,10 @@
 //! ```ignore
 //! use calimero_tee_attestation::{generate_attestation, verify_attestation, build_report_data};
 //!
-//! // Generate an attestation
+//! // Generate an attestation, binding it to an application/identity hash
 //! let nonce = [0u8; 32];
-//! let report_data = build_report_data(&nonce, None);
+//! let app_hash = [1u8; 32];
+//! let report_data = build_report_data(&nonce, Some(&app_hash));
 //! let result = generate_attestation(report_data)?;
 //!
 //! // On non-Linux, result.is_mock will be true
@@ -21,11 +22,13 @@
 //!     println!("Generated mock attestation for development");
 //! }
 //!
-//! // Verify an attestation (use verify_mock_attestation for mock quotes)
+//! // Verify an attestation (use verify_mock_attestation for mock quotes).
+//! // The expected application hash is mandatory: a quote that does not bind it
+//! // can never be considered valid.
 //! let verification = if result.is_mock {
-//!     verify_mock_attestation(&result.quote_bytes, &nonce, None)?
+//!     verify_mock_attestation(&result.quote_bytes, &nonce, &app_hash)?
 //! } else {
-//!     verify_attestation(&result.quote_bytes, &nonce, None).await?
+//!     verify_attestation(&result.quote_bytes, &nonce, &app_hash).await?
 //! };
 //! assert!(verification.is_valid());
 //! ```
