@@ -120,25 +120,40 @@ impl TokenManager {
             .or_else(|| headers.get("host"))
             .and_then(|h| h.to_str().ok());
 
-        if let Some(request_host) = request_host {
-            // Skip validation if request is coming from internal auth service.
-            // Only allow exact "auth" hostname or "auth:" followed by a numeric port.
-            // This prevents bypass attacks using forged headers like "auth:malicious.com".
-            if Self::is_internal_auth_service(request_host) {
-                return Ok(());
-            }
+        // This is only reached for a node-bound token (the caller invokes it
+        // exactly when `node_url` is set). If the request carries no
+        // determinable host, we cannot prove it is addressed to the bound node
+        // — fail closed. Letting a `None` host fall through to `Ok(())` would
+        // let any client strip the `Host`/`X-Forwarded-Host` header and bypass
+        // node binding entirely.
+        let Some(request_host) = request_host else {
+            return Err(
+                "Token is node-bound but the request carries no Host or X-Forwarded-Host \
+                 header to validate against"
+                    .to_owned(),
+            );
+        };
 
-            // Extract the host from the token's node URL
-            if let Ok(token_url) = Url::parse(token_node_url) {
-                if let Some(token_host) = token_url.host_str() {
-                    // Compare the hosts (handle both with and without port)
-                    let request_host_without_port =
-                        request_host.split(':').next().unwrap_or(request_host);
-                    if request_host_without_port != token_host && request_host != token_host {
-                        return Err(format!(
-                            "Token is not valid for this host. Token is for '{token_host}' but request is to '{request_host}'"
-                        ));
-                    }
+        // Skip validation if request is coming from internal auth service.
+        // Only allow exact "auth" hostname or "auth:" followed by a numeric port.
+        // This prevents bypass attacks using forged headers like "auth:malicious.com".
+        if Self::is_internal_auth_service(request_host) {
+            return Ok(());
+        }
+
+        // Extract the host from the token's node URL. `node_url` is not always a
+        // URL (it can carry a client name), so an unparseable value is left to
+        // fall through rather than rejected here — the missing-request-host case
+        // above is the binding-bypass this guards.
+        if let Ok(token_url) = Url::parse(token_node_url) {
+            if let Some(token_host) = token_url.host_str() {
+                // Compare the hosts (handle both with and without port)
+                let request_host_without_port =
+                    request_host.split(':').next().unwrap_or(request_host);
+                if request_host_without_port != token_host && request_host != token_host {
+                    return Err(format!(
+                        "Token is not valid for this host. Token is for '{token_host}' but request is to '{request_host}'"
+                    ));
                 }
             }
         }

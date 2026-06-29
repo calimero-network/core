@@ -930,6 +930,80 @@ mod tests {
             .verify_token_from_headers(&headers_mismatch)
             .await;
         assert!(result.is_err(), "Token should fail with mismatched host");
+
+        // Test with NO host header at all: a node-bound token must fail closed,
+        // otherwise a client could strip Host/X-Forwarded-Host to bypass the
+        // node binding entirely.
+        let mut headers_no_host = HeaderMap::new();
+        headers_no_host.insert(
+            "Authorization",
+            HeaderValue::from_str(&format!("Bearer {access_token}")).unwrap(),
+        );
+
+        let result = token_manager
+            .verify_token_from_headers(&headers_no_host)
+            .await;
+        assert!(
+            result.is_err(),
+            "node-bound token must fail closed when the request carries no host header"
+        );
+
+        // X-Forwarded-Host (set by reverse proxies) is honoured too: a matching
+        // forwarded host with no `Host` header still validates.
+        let mut headers_fwd = HeaderMap::new();
+        headers_fwd.insert(
+            "Authorization",
+            HeaderValue::from_str(&format!("Bearer {access_token}")).unwrap(),
+        );
+        headers_fwd.insert(
+            "X-Forwarded-Host",
+            HeaderValue::from_static("node1.example.com"),
+        );
+
+        let result = token_manager.verify_token_from_headers(&headers_fwd).await;
+        assert!(
+            result.is_ok(),
+            "matching X-Forwarded-Host should validate even without a Host header"
+        );
+    }
+
+    /// A token that is NOT node-bound (no `node_url`) is unaffected by the
+    /// host check — it stays valid even with no host header present, so the
+    /// fail-closed guard only tightens node-bound tokens.
+    #[tokio::test]
+    async fn test_non_node_bound_token_unaffected_by_missing_host() {
+        let (storage, token_manager, _) = create_test_setup().await;
+
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+        let key = crate::storage::models::Key::new_root_key_with_permissions(
+            "test_public_key".to_string(),
+            "test_method".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        key_manager.set_key("test_key_no_node", &key).await.unwrap();
+
+        let (access_token, _) = token_manager
+            .generate_mock_token_pair(
+                "test_key_no_node".to_string(),
+                vec!["admin".to_string()],
+                None,
+                Some(3600),
+            )
+            .await
+            .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_str(&format!("Bearer {access_token}")).unwrap(),
+        );
+
+        let result = token_manager.verify_token_from_headers(&headers).await;
+        assert!(
+            result.is_ok(),
+            "a token without node_url should validate regardless of host header"
+        );
     }
 
     #[tokio::test]
