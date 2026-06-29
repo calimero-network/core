@@ -1361,7 +1361,8 @@ fn context_capability_granted_rejects_unauthorized_signer() {
         GroupOp::ContextCapabilityGranted {
             context_id,
             member: target_pk,
-            capability: 0b1,
+            capability: calimero_governance_types::ContextCapabilityBits::new(0b1)
+                .expect("capability bitmask is non-zero"),
         },
     )
     .unwrap();
@@ -1426,7 +1427,8 @@ fn context_capability_revoked_rejects_unauthorized_signer() {
         GroupOp::ContextCapabilityRevoked {
             context_id,
             member: target_pk,
-            capability: 0b1,
+            capability: calimero_governance_types::ContextCapabilityBits::new(0b1)
+                .expect("capability bitmask is non-zero"),
         },
     )
     .unwrap();

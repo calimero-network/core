@@ -1338,6 +1338,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-crypto",
  "calimero-dag",
+ "calimero-governance-types",
  "calimero-network-primitives",
  "calimero-node-primitives",
  "calimero-op",
