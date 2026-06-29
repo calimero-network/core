@@ -24,6 +24,11 @@ pub(crate) fn apply(
     let current = caps
         .context_member_capability(group_id, context_id, member)?
         .unwrap_or(0);
-    caps.set_context_member(group_id, context_id, member, current & !capability.get())?;
+    let new_caps = current & !capability.get();
+    if new_caps == 0 {
+        caps.delete_context_member(group_id, context_id, member)?;
+    } else {
+        caps.set_context_member(group_id, context_id, member, new_caps)?;
+    }
     Ok(())
 }

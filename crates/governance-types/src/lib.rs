@@ -106,11 +106,12 @@ pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
 /// Validated at Borsh deserialization time: a zero value is rejected on the
 /// wire, making it impossible to construct an invalid capability op from
 /// received bytes.
-#[derive(Copy, Clone, Debug, BorshSerialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, BorshSerialize)]
 pub struct ContextCapabilityBits(u8);
 
 impl ContextCapabilityBits {
     /// Construct from a raw bitmask, returning `None` if `bits == 0`.
+    #[must_use]
     pub fn new(bits: u8) -> Option<Self> {
         if bits == 0 {
             None
@@ -119,8 +120,15 @@ impl ContextCapabilityBits {
         }
     }
 
+    #[must_use]
     pub fn get(self) -> u8 {
         self.0
+    }
+}
+
+impl From<std::num::NonZeroU8> for ContextCapabilityBits {
+    fn from(v: std::num::NonZeroU8) -> Self {
+        Self(v.get())
     }
 }
 
