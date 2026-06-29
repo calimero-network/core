@@ -139,7 +139,14 @@ where
     T::Key: Ord + Clone + Borrow<[u8]>,
 {
     fn open(_config: &StoreConfig) -> EyreResult<Self> {
-        todo!("phase this out, please. it's not even worth writing an accomodation for")
+        // `InMemoryDB` has no on-disk representation to open and is never
+        // constructed through the generic `Database::open` path in practice.
+        // Return a recoverable error (rather than panicking) so generic
+        // callers don't crash, and point them at the real constructors.
+        Err(eyre!(
+            "InMemoryDB cannot be opened via `Database::open`; \
+             use `InMemoryDB::owned()` or `InMemoryDB::referenced()` instead"
+        ))
     }
 
     fn has(&self, col: Column, key: Slice<'_>) -> EyreResult<bool> {
