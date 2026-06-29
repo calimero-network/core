@@ -1,6 +1,5 @@
 //! Self-leave from a namespace (root group).
 //!
-//! See `architecture/membership-and-leave.html` § 6 for the design.
 //! This handler is a thin wrapper over `leave_group`: it publishes
 //! `GroupOp::MemberLeft { member: signer }` at the namespace root.
 //! The apply path in `calimero_governance_store` detects "this group has no
@@ -26,8 +25,7 @@
 //! `node_client.unsubscribe_namespace` call below is still issued
 //! synchronously by this handler so the unsubscribe is ordered with
 //! the user-visible handler response; the listener also issues an
-//! unsubscribe (idempotent) as part of its TEE-eviction cleanup. See
-//! ADR 0002 (`docs/adr/0002-fleet-tee-leave-protocol.md`).
+//! unsubscribe (idempotent) as part of its TEE-eviction cleanup.
 
 use std::sync::Arc;
 

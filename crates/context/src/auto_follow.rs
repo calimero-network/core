@@ -5,8 +5,7 @@
 //! join ops on behalf of this node — subject to the member having the
 //! relevant [`AutoFollowFlags`] set for the group in question.
 //!
-//! See `architecture/auto-follow.html` for the full
-//! architecture. This module implements the context side of Phase 3:
+//! This module implements the context side of Phase 3:
 //!
 //! - `OpEvent::ContextRegistered { group, context }` — if this node is
 //!   a member of `group` with `auto_follow.contexts = true`, emit a

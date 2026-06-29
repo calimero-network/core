@@ -3,8 +3,7 @@
 //! Downstream handlers subscribe to observe governance ops as they are
 //! applied to local state. Every emitted event corresponds to a
 //! successfully-applied op; this is the hook used by higher-level
-//! features (notably auto-follow for group membership, see
-//! `architecture/auto-follow.html`) to react to state
+//! features (notably auto-follow for group membership) to react to state
 //! changes without reaching into the apply path.
 //!
 //! The channel is best-effort: slow subscribers that fall behind receive

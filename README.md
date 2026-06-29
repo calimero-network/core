@@ -31,9 +31,7 @@ Peer-to-peer application platform with local-first governance, CRDT state sync, 
 | Work on Calimero Core itself | [Contribute](https://calimero-network.github.io/core/contribute/) — architecture, crate guide, dev workflow |
 | Look up a term | [Glossary](https://calimero-network.github.io/core/protocol/glossary/) |
 
-The docs live in [`docs-site/`](docs-site/) (Astro Starlight). The previous
-hand-built site is preserved at
-[`/architecture-legacy/`](https://calimero-network.github.io/core/architecture-legacy/).
+The docs live in [`docs/`](docs/) (Astro Starlight).
 
 ## Related Repositories
 

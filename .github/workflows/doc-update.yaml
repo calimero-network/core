@@ -22,7 +22,6 @@ on:
     # infinite loop. Mirrors the paths-ignore in ai-review.yaml.
     paths-ignore:
       - 'docs/**'
-      - 'architecture/**'
       - 'docs-static/**'
   workflow_dispatch:
     inputs:

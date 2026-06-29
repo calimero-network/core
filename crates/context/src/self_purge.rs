@@ -7,9 +7,6 @@
 //! that signing-key material, gov-op log, namespace identity, and
 //! membership-side metadata do not linger after a TEE eviction.
 //!
-//! See `docs/adr/0002-fleet-tee-leave-protocol.md` for the architectural
-//! framing.
-//!
 //! # Role-scoped: TEE removals only
 //!
 //! The listener intentionally gates on `OpEvent::TeeMemberRemoved`,

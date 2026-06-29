@@ -156,7 +156,6 @@ pub enum GroupOp {
     /// proper forward secrecy requires a follow-up two-phase rotation
     /// (planned as a follow-up). For full cryptographic leave today,
     /// pair with admin-initiated `MemberRemoved`.
-    /// See `architecture/membership-and-leave.html` § 5.
     ///
     /// Carries the same two convergence claims as `MemberRemoved`,
     /// signed by the leaver. The leaver is honest by definition for
@@ -285,7 +284,6 @@ pub enum GroupOp {
     /// current Owner; `new_owner` must already be a member. Updates
     /// `GroupMetaValue.owner_identity`. The previous owner remains a
     /// regular admin (no automatic role change beyond the owner field).
-    /// See `architecture/membership-and-leave.html` § 7.
     TransferOwnership { new_owner: PublicKey },
     /// Cascade variant of [`Self::TargetApplicationSet`]: update the
     /// target application on the signed group AND on every descendant
