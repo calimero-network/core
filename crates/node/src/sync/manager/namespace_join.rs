@@ -55,9 +55,9 @@ const MAX_PEERS_PER_ROUND: usize = 4;
 ///   `discovery_wait` budget rather than giving up after a fixed
 ///   number of cheap rounds.
 /// * **Every discovered peer is excluded** (all have already rejected
-///   this join): the set won't change within this call, so this counts
-///   as a failed round against `mesh_retries` and the caller's protocol
-///   loop escalates instead of the join blocking on the full budget.
+///   this join): we still poll (a fresh, non-excluded peer may yet
+///   appear), but cap it at `mesh_retries` rounds rather than the full
+///   budget so the caller's protocol loop escalates promptly if none does.
 ///
 /// A round where peers were tried and all failed likewise counts
 /// against `mesh_retries` so a small set of unreachable peers fails
