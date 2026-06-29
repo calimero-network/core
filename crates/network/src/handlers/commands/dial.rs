@@ -21,6 +21,13 @@ impl Handler<Dial> for NetworkManager {
         match self.pending_dial.entry(peer_id) {
             Entry::Occupied(_) => {
                 // todo! await the existing receiver
+                //
+                // NB: this `Ok(())` means "a dial to this peer is already in
+                // flight", not "the dial succeeded". The in-flight dial owns
+                // the only sender, so we can't subscribe to its result here
+                // without a broadcast/clone; until that's wired up, a caller
+                // hitting this branch gets a spurious success even if the
+                // real dial later fails.
                 return Response::reply(Ok(()));
             }
             Entry::Vacant(entry) => {
@@ -41,6 +48,16 @@ impl Handler<Dial> for NetworkManager {
             }
         }
 
-        Response::fut(async { receiver.await.expect("Sender not to be dropped.") })
+        Response::fut(async move {
+            // The sender lives in `pending_dial` and is normally either fired
+            // by `ConnectionEstablished`/`OutgoingConnectionError` or carried
+            // until then. If it is dropped without sending — e.g. the manager
+            // is shutting down and tears down the swarm — `recv` errors out.
+            // Surface that as a dial error rather than panicking the actor.
+            match receiver.await {
+                Ok(result) => result,
+                Err(_) => Err(eyre!("dial cancelled before completion")),
+            }
+        })
     }
 }
