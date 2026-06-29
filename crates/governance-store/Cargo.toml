@@ -28,7 +28,6 @@ tracing.workspace = true
 
 calimero-context-config.workspace = true
 calimero-context-client.workspace = true
-calimero-governance-types.workspace = true
 calimero-crypto.workspace = true
 calimero-dag.workspace = true
 calimero-network-primitives.workspace = true
