@@ -233,7 +233,11 @@ where
             .expect("failed to read entries for re-key");
 
         // Clear the collection (removes old entries with old IDs).
-        self.inner.clear().expect("failed to clear for re-key");
+        // Uses the re-key clear so `Frozen` entries are relocated (re-inserted
+        // below under their new id) rather than rejected as deletions.
+        self.inner
+            .clear_for_rekey()
+            .expect("failed to clear for re-key");
 
         // Reassign the collection's ID (Collection's `_with_crdt_type` is itself
         // just `_under(None, ..)`, so this single call covers both variants).

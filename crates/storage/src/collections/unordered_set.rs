@@ -68,7 +68,9 @@ where
             .inner
             .entries_with_storage_type()
             .expect("read set elements for re-key");
-        self.inner.clear().expect("clear set for re-key");
+        self.inner
+            .clear_for_rekey()
+            .expect("clear set for re-key");
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__set",
@@ -183,8 +185,12 @@ where
             .entries_with_storage_type()
             .expect("failed to read elements for migration");
 
-        // Clear the collection (removes old entries with old IDs)
-        self.inner.clear().expect("failed to clear for migration");
+        // Clear the collection (removes old entries with old IDs).
+        // Uses the re-key clear so `Frozen` entries are relocated (re-inserted
+        // below under their new id) rather than rejected as deletions.
+        self.inner
+            .clear_for_rekey()
+            .expect("failed to clear for migration");
 
         // Now reassign the collection's ID
         self.inner.reassign_deterministic_id_with_crdt_type(

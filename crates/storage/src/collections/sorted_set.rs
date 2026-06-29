@@ -88,7 +88,9 @@ where
             .iter_unordered()
             .expect("read set elements for re-key")
             .collect();
-        self.inner.clear().expect("clear set for re-key");
+        self.inner
+            .clear_for_rekey()
+            .expect("clear set for re-key");
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__sorted_set",
@@ -158,7 +160,9 @@ where
             .iter_unordered()
             .expect("failed to read elements for migration")
             .collect();
-        self.inner.clear().expect("failed to clear for migration");
+        self.inner
+            .clear_for_rekey()
+            .expect("failed to clear for migration");
         self.inner.reassign_deterministic_id_with_crdt_type(
             field_name,
             CrdtType::sorted_set(std::any::type_name::<V>()),
