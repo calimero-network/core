@@ -298,12 +298,13 @@ impl TeeAdmissionThrottle {
         // admitted within the TTL — and entries are only inserted on the commit
         // (Proceed) path, gated by the per-peer rate limit and the global
         // inflight cap, so a rejected flood can't grow this map at all. If the
-        // cap is somehow hit, evicting the oldest *non-expired* entries degrades
-        // dedup to best-effort for those quotes (a replay could trigger one more
-        // verify) — an intentional trade-off: the memory bound is the hard
-        // guarantee, and the rate-limit + inflight gates (plus the durable
-        // `is_quote_hash_used` check for admitted quotes) remain the real DoS
-        // backstop. Do not "fix" this by removing the cap.
+        // cap is somehow hit, evicting the oldest entries by *insertion time*
+        // (which, since the dedup TTL is uniform, are exactly those nearest to
+        // expiry) degrades dedup to best-effort for those quotes (a replay could
+        // trigger one more verify) — an intentional trade-off: the memory bound
+        // is the hard guarantee, and the rate-limit + inflight gates (plus the
+        // durable `is_quote_hash_used` check for admitted quotes) remain the
+        // real DoS backstop. Do not "fix" this by removing the cap.
         if self.recent_quotes.len() > MAX_TRACKED_QUOTES {
             Self::evict_oldest(&mut self.recent_quotes, MAX_TRACKED_QUOTES);
         }
@@ -343,21 +344,24 @@ impl TeeAdmissionThrottle {
         Self::evict_oldest_entries(map, &mut entries, keep);
     }
 
-    /// Remove the oldest entries from `map` until at most `keep` remain, given
-    /// `entries` as a freshly-taken `(key, timestamp)` snapshot of `map`. Uses
-    /// `select_nth_unstable` (O(n) average) rather than a full O(n log n) sort,
-    /// since the cap is only ever crossed under adversarial churn and the
-    /// evicted entries are discarded, so their relative order is irrelevant.
-    ///
-    /// `remove` is derived from `map.len()` (the source of truth for the cap),
-    /// then clamped to the snapshot length, so the hard cap is enforced robustly
-    /// even if `entries` were ever a partial view of `map`.
+    /// Remove the oldest entries from `map` until at most `keep` remain. `entries`
+    /// MUST be a full `(key, timestamp)` snapshot of `map` — both callers collect
+    /// every entry immediately before calling — so `remove` (derived from
+    /// `map.len()`) indexes the snapshot correctly. Uses `select_nth_unstable`
+    /// (O(n) average) rather than a full O(n log n) sort, since the cap is only
+    /// ever crossed under adversarial churn and the evicted entries are
+    /// discarded, so their relative order is irrelevant.
     fn evict_oldest_entries<K: std::hash::Hash + Eq, V>(
         map: &mut HashMap<K, V>,
         entries: &mut [(K, Instant)],
         keep: usize,
     ) {
-        let remove = map.len().saturating_sub(keep).min(entries.len());
+        debug_assert_eq!(
+            entries.len(),
+            map.len(),
+            "evict_oldest_entries requires a full snapshot of `map`"
+        );
+        let remove = map.len().saturating_sub(keep);
         if remove == 0 {
             return;
         }

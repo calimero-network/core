@@ -163,41 +163,13 @@ pub(super) fn handle_specialized_broadcast(
             let quote_hash: [u8; 32] = Sha256::digest(quote_bytes).into();
             let group_id = ContextGroupId::from(namespace_id_bytes);
 
-            // Durable dedup, pulled earlier from `admit_tee_node`: a quote
-            // already admitted to this group never needs re-verifying. A store
-            // read error is non-fatal — the authoritative check still runs in
-            // `admit_tee_node`, so we proceed (the in-memory throttle below
-            // still applies) rather than drop a possibly-legitimate announce.
-            match calimero_governance_store::is_quote_hash_used(
-                &this.datastore,
-                &group_id,
-                &quote_hash,
-            ) {
-                Ok(true) => {
-                    debug!(
-                        %source,
-                        quote_hash = %hex::encode(quote_hash),
-                        "Dropping TeeAttestationAnnounce: quote already admitted to group"
-                    );
-                    return true;
-                }
-                Ok(false) => {}
-                Err(err) => {
-                    warn!(
-                        %source,
-                        error = %err,
-                        "Failed to read quote-hash usage; proceeding to throttle gate"
-                    );
-                }
-            }
-
-            // Per-group quote dedup + per-peer rate limit + global
-            // inflight-verify cap. The returned permit must outlive the verify,
-            // so it is moved into the spawned task and held until completion.
-            // Key the throttle on `group_id.to_bytes()` — the *same*
-            // `ContextGroupId` the durable `is_quote_hash_used` check used above
-            // — so the two dedup mechanisms can never key on divergent bytes if
-            // `ContextGroupId`'s representation ever changes.
+            // In-memory admission gates FIRST — per-group quote dedup + per-peer
+            // rate limit + global inflight-verify cap — so a flood is rejected on
+            // cheap in-memory state before we touch the store below. The returned
+            // permit must outlive the verify, so it is moved into the spawned
+            // task and held until completion. Key the throttle on
+            // `group_id.to_bytes()` so it and the durable check share one
+            // `ContextGroupId`-derived key (no divergence if the repr changes).
             let now = std::time::Instant::now();
             let verify_permit = match this.tee_admission_throttle.check(
                 now,
@@ -229,6 +201,38 @@ pub(super) fn handle_specialized_broadcast(
                     return true;
                 }
             };
+
+            // Durable dedup (a store read), pulled earlier from `admit_tee_node`:
+            // a quote already admitted to this group never needs re-verifying.
+            // Run it only AFTER the cheap in-memory gates above, so an
+            // unauthenticated announce flood can't drive a store read per frame.
+            // A read error is non-fatal — the authoritative check still runs in
+            // `admit_tee_node` — so we proceed rather than drop a possibly-
+            // legitimate announce. On a hit we drop here: `verify_permit` is
+            // released as it goes out of scope, and the dedup entry the throttle
+            // just recorded keeps suppressing further re-announces of this quote.
+            match calimero_governance_store::is_quote_hash_used(
+                &this.datastore,
+                &group_id,
+                &quote_hash,
+            ) {
+                Ok(true) => {
+                    debug!(
+                        %source,
+                        quote_hash = %hex::encode(quote_hash),
+                        "Dropping TeeAttestationAnnounce: quote already admitted to group"
+                    );
+                    return true;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    warn!(
+                        %source,
+                        error = %err,
+                        "Failed to read quote-hash usage; proceeding to verify"
+                    );
+                }
+            }
 
             let context_client = this.clients.context.clone();
             let quote_bytes = quote_bytes.clone();

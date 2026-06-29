@@ -76,6 +76,13 @@ impl VerifyQuoteThrottle {
         assert!(refill > Duration::ZERO, "refill must be positive");
         Self {
             inflight: Arc::new(Semaphore::new(max_inflight)),
+            // Start full, anchored at construction. The first `check_at` credits
+            // elapsed-since-construction (clamped to `burst`), so the bucket is
+            // full on first use regardless of how long the `LazyLock` sat idle.
+            // `check_at` uses `saturating_duration_since`, so even a `now` passed
+            // slightly *before* this `Instant::now()` (e.g. a fixed `now` in
+            // tests captured just after construction) yields 0 elapsed, not a
+            // panic — the bucket simply stays full.
             bucket: Mutex::new(Bucket {
                 tokens: burst,
                 last: Instant::now(),
