@@ -54,18 +54,14 @@ pub(crate) fn apply(
     // `synced_up_to_hlc` (see `MigrationEmitter::refresh_hlc`). The
     // migration-status rollup pins the cohort by comparing those two SEQUENCES
     // like-for-like; `cascade_hlc` (an NTP64 HLC) must never serve as that pin.
-    // Best-effort: a missing head or read error leaves `cascade_seq` `None`
-    // (no pin) rather than failing the apply.
-    let cascade_seq = NamespaceRepository::new(store)
-        .resolve(group_id)
-        .ok()
-        .and_then(|ns| {
-            store
-                .handle()
-                .get(&NamespaceGovHead::new(ns.to_bytes()))
-                .ok()
-                .flatten()
-        })
+    // A genuinely-absent head leaves `cascade_seq` `None` (no pin), but a read
+    // error MUST propagate: swallowing it with `.ok()` would let the same op
+    // pin `None` on a node that hit a transient store error while peers pinned
+    // `Some(seq)`, diverging the cohort comparison across the cluster.
+    let ns = NamespaceRepository::new(store).resolve(group_id)?;
+    let cascade_seq = store
+        .handle()
+        .get(&NamespaceGovHead::new(ns.to_bytes()))?
         .map(|head| head.sequence);
 
     // Pre-scan: verify the signer would pass the per-descendant
