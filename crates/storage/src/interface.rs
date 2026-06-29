@@ -1674,15 +1674,29 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // leaks current-nonce state to
                                 // unauthenticated probers).
                                 //
-                                // DeleteRef keeps the strict `Err` on
-                                // `<=` (unlike upsert's silent skip)
-                                // because a stale delete being
-                                // silently accepted vs dropped
-                                // carries different semantics than
-                                // a stale upsert, and rare-by-design
-                                // deletes don't drive the
-                                // post-divergence convergence problem
-                                // upsert silent-skip fixes.
+                                // DeleteRef rejects only STRICTLY stale
+                                // nonces (`<`) with a hard `Err` — unlike
+                                // upsert's silent skip — because a stale
+                                // delete dropped vs accepted carries
+                                // different semantics than a stale upsert,
+                                // and rare-by-design deletes don't drive
+                                // the post-divergence convergence problem
+                                // the upsert silent-skip fixes.
+                                //
+                                // The EQUAL-nonce case (`==`) is NOT
+                                // rejected here: it falls through to
+                                // `apply_delete_ref_action`, whose tiebreak
+                                // (`deleted_at < updated_at` ⇒ delete loses,
+                                // so equal ⇒ delete WINS) resolves the
+                                // delete-vs-update tie deterministically and
+                                // identically for every storage type. The
+                                // previous `<=` rejected equal-HLC deletes
+                                // for signed types only, while `Public` (no
+                                // nonce gate) and the apply path both let
+                                // equal through — so signed vs `Public`
+                                // diverged on the equal-HLC delete-vs-update
+                                // tie. Using `<` here unifies the tiebreak
+                                // across all storage types.
                                 let payload = action.payload_for_signing();
                                 let verification_result = crate::env::ed25519_verify(
                                     &sig_data.signature,
@@ -1699,7 +1713,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // the index.
                                 let new_nonce = sig_data.nonce;
                                 let last_nonce = *existing_metadata.updated_at;
-                                if new_nonce <= last_nonce {
+                                if new_nonce < last_nonce {
                                     return Err(StorageError::NonceReplay(Box::new((
                                         *owner, new_nonce,
                                     ))));
@@ -1742,10 +1756,14 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // `NonceReplay` (which leaks
                                 // current-nonce state).
                                 //
-                                // DeleteRef keeps the strict `Err` on
-                                // `<=` (unlike upsert's silent skip)
-                                // — see the User DeleteRef arm for
-                                // rationale.
+                                // DeleteRef rejects only STRICTLY stale
+                                // nonces (`<`) with a hard `Err` (unlike
+                                // upsert's silent skip); the equal-nonce
+                                // case falls through to the apply-path
+                                // tiebreak so the equal-HLC delete-vs-update
+                                // resolution is identical across storage
+                                // types — see the User DeleteRef arm for
+                                // the full rationale.
                                 //
                                 // Identify the signer.
                                 // Fast path: if the action carries a `signer` hint and that
@@ -1781,19 +1799,21 @@ impl<S: StorageAdaptor> Interface<S> {
 
                                 // Replay protection (per-entity monotonic nonce).
                                 //
-                                // Strict `<=` Err, symmetric with the
+                                // Strict `<` Err, symmetric with the
                                 // User DeleteRef arm above and matching
                                 // the rationale documented there: stale
                                 // delete semantics differ from upsert
-                                // silent-skip, and DeleteRef tests do
-                                // not opt into the test-only bypass.
-                                // Removing the previously-speculative
+                                // silent-skip, the equal-HLC case falls
+                                // through to the unified apply-path
+                                // tiebreak, and DeleteRef tests do not
+                                // opt into the test-only bypass. Removing
+                                // the previously-speculative
                                 // `nonce_check_disabled_for_testing`
                                 // guard here so the two delete arms
                                 // behave identically.
                                 let new_nonce = sig_data.nonce;
                                 let last_nonce = *existing_metadata.updated_at;
-                                if new_nonce <= last_nonce {
+                                if new_nonce < last_nonce {
                                     let placeholder = existing_writers
                                         .keys()
                                         .copied()
@@ -1880,10 +1900,12 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // Operation-granularity gate: deletes need DELETE.
                                 Self::enforce_op_mask(&signer, OpMask::DELETE, &existing_writers)?;
 
-                                // Replay protection (strict `<=` Err, as Shared).
+                                // Replay protection (strict `<` Err, as Shared:
+                                // equal-HLC falls through to the unified
+                                // apply-path delete-vs-update tiebreak).
                                 let new_nonce = sig_data.nonce;
                                 let last_nonce = *existing_metadata.updated_at;
-                                if new_nonce <= last_nonce {
+                                if new_nonce < last_nonce {
                                     let placeholder = existing_writers
                                         .keys()
                                         .copied()
@@ -2315,7 +2337,16 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(());
         };
 
-        // Guard: Local update is newer, deletion loses
+        // Guard: Local update is newer, deletion loses.
+        //
+        // This is the SINGLE canonical equal-HLC delete-vs-update tiebreak
+        // for every storage type. The strict `<` means a STRICTLY older
+        // delete loses, while an equal-HLC delete (`deleted_at ==
+        // updated_at`) WINS. The signed-type verify arms (User/Shared/
+        // SharedMember) reject only strictly-stale nonces (`<`) and let
+        // equal-HLC deletes fall through to here, and `Public` has no nonce
+        // gate at all — so all four types resolve the equal-HLC tie
+        // identically rather than signed types rejecting it earlier.
         if deleted_at < *metadata.updated_at {
             // Local update wins, ignore older deletion
             return Ok(());
