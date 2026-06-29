@@ -76,18 +76,16 @@ pub(super) async fn open_namespace_join_stream(
     discovery_wait: std::time::Duration,
     excluded_peers: &HashSet<PeerId>,
 ) -> eyre::Result<(Stream, PeerId)> {
-    // A zero budget would make the first deadline check fire
-    // immediately and return Err with a confusing "deadline 0ms,
-    // elapsed 0ms" message. Production wiring always passes the
-    // non-zero `DEFAULT_NAMESPACE_DISCOVERY_WAIT_MS`; assert (not
-    // `debug_assert!`) so a degenerate value is caught in release too —
-    // the one-time branch is free against the discovery loop's latency.
-    assert!(!discovery_wait.is_zero(), "discovery_wait must be > 0");
-    // A zero retry budget makes `failed_attempts >= mesh_retries` true on
-    // the first peer-present (or all-excluded) round and breaks before any
-    // attempt. Production passes a non-zero `DEFAULT_MESH_RETRIES_UNINITIALIZED`;
-    // assert so a degenerate value is caught rather than silently fast-failing.
-    assert!(
+    // Degenerate budgets are a misconfiguration, not a runtime condition:
+    // a zero `discovery_wait` makes the first deadline check fire
+    // immediately, and a zero `mesh_retries` makes `failed_attempts >=
+    // mesh_retries` true before any attempt. Production passes the
+    // non-zero `DEFAULT_NAMESPACE_DISCOVERY_WAIT_MS` /
+    // `DEFAULT_MESH_RETRIES_UNINITIALIZED`. Return a typed `Err` (not a
+    // panic) so a misconfigured `SyncConfig` surfaces as a clean 500 on
+    // the join path instead of an opaque task `JoinError`.
+    eyre::ensure!(!discovery_wait.is_zero(), "discovery_wait must be > 0");
+    eyre::ensure!(
         mesh_retries > 0,
         "mesh_retries must be > 0; got {mesh_retries}"
     );
@@ -133,10 +131,14 @@ pub(super) async fn open_namespace_join_stream(
 
         if peers.is_empty() {
             if discovered_any {
-                // Every discovered peer is excluded — the set won't
-                // change within this call, so spend the bounded retry
-                // budget and let the caller's protocol loop escalate
-                // rather than block on the whole discovery_wait.
+                // Every *currently* discovered peer is excluded (all
+                // rejected this join). The excluded set is fixed within
+                // this call, but the discovered set is not — discovery
+                // may still surface a fresh, non-excluded peer. So we
+                // keep polling on the shared cadence below, but cap it
+                // at `mesh_retries` rounds (rather than the full
+                // discovery_wait) so that if no new peer shows up the
+                // caller's protocol loop escalates promptly.
                 failed_attempts += 1;
                 if failed_attempts >= mesh_retries {
                     break 'connect;
@@ -151,6 +153,11 @@ pub(super) async fn open_namespace_join_stream(
                     "No namespace mesh peer discovered yet; waiting for cross-network discovery..."
                 );
             }
+            // Shared poll cadence for both empty cases: sleep one
+            // `mesh_retry_delay`, then re-poll — that delay is what gives
+            // a newly-arrived peer (cold-start) or a fresh non-excluded
+            // peer (all-excluded) time to appear in the subscriber set.
+            // Skip the sleep if it would overrun the budget.
             if connect_started.elapsed().saturating_add(mesh_retry_delay) >= discovery_wait {
                 break 'connect;
             }
@@ -713,6 +720,48 @@ mod tests {
         assert!(
             elapsed <= discovery_wait.saturating_add(retry_delay),
             "cold-start waited {elapsed:?}, expected ≤ budget {discovery_wait:?} + one poll"
+        );
+    }
+
+    /// Degenerate budgets surface as a typed `Err` (via `eyre::ensure!`)
+    /// rather than panicking the async task, so a misconfigured
+    /// `SyncConfig` returns a clean error on the join path instead of an
+    /// opaque `JoinError`.
+    #[tokio::test(start_paused = true)]
+    async fn degenerate_budgets_return_err_not_panic() {
+        let mock = MockSyncNetwork::default();
+        let (open_timeout, retries, retry_delay, discovery_wait) = defaults();
+
+        let zero_wait = open_namespace_join_stream(
+            &mock,
+            NAMESPACE_ID,
+            open_timeout,
+            retries,
+            retry_delay,
+            Duration::ZERO,
+            &no_excluded(),
+        )
+        .await;
+        let err = zero_wait.unwrap_err().to_string();
+        assert!(
+            err.contains("discovery_wait must be > 0"),
+            "zero discovery_wait should Err with a diagnostic, got: {err}"
+        );
+
+        let zero_retries = open_namespace_join_stream(
+            &mock,
+            NAMESPACE_ID,
+            open_timeout,
+            0,
+            retry_delay,
+            discovery_wait,
+            &no_excluded(),
+        )
+        .await;
+        let err = zero_retries.unwrap_err().to_string();
+        assert!(
+            err.contains("mesh_retries must be > 0"),
+            "zero mesh_retries should Err with a diagnostic, got: {err}"
         );
     }
 }
