@@ -172,6 +172,12 @@ pub async fn token_handler(
     // used only as an opaque map key and is never logged. (See module docs for
     // the identity-rotation / IP-keying follow-up.)
     //
+    // Note the key is built from the RAW (pre-sanitization) values, while the
+    // rate-limit `warn!` below logs the SANITIZED `auth_method`. They can
+    // therefore differ; the raw value is deliberate for the bucket (so two
+    // distinct identities can't be collapsed by sanitization), and the
+    // sanitized value is deliberate for the log (low-cardinality, injection-safe).
+    //
     // Length-prefix the first component so the `|` separator is unambiguous:
     // raw, attacker-controlled values could otherwise inject a `|` to collide
     // two distinct identities into one bucket (e.g. lock out a victim by

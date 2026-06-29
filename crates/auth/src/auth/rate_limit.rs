@@ -175,13 +175,18 @@ impl LoginRateLimiter {
         }
         let failures = map.entry(key.to_owned()).or_default();
         prune(failures, now, self.window_ms);
-        // Cap per-key history. Once the bucket holds `max_attempts` in-window
-        // failures the caller is already locked out, and the unlock time is
-        // fixed by the *oldest* in-window failure (`failures[0]`), so further
-        // timestamps cannot extend or change the lockout — recording them would
-        // only grow the Vec without bound under a high-rate flood. Drop them.
+        // Bound the bucket at `max_attempts` entries while keeping the window
+        // rolling. When the bucket is already full, drop the oldest in-window
+        // failure before pushing the new one: this advances `failures[0]`,
+        // which fixes the unlock time, so sustained hammering keeps extending
+        // the lockout — matching the 429-path `record_failure` in
+        // `token_handler` — rather than letting an attacker wait out a lockout
+        // anchored to their very first failure. The Vec never exceeds
+        // `max_attempts` entries (a handful), so the `remove(0)` shift is cheap,
+        // and pruning above means a bucket that has fully aged out is refilled
+        // from empty rather than rolled.
         if failures.len() >= self.max_attempts as usize {
-            return;
+            let _ = failures.remove(0);
         }
         failures.push(now);
     }
@@ -205,6 +210,12 @@ fn reclaim_expired(map: &mut HashMap<String, Vec<u64>>, now: u64, window_ms: u64
 /// The key of the least-recently-active bucket (smallest most-recent failure
 /// timestamp), used to pick an eviction victim when the map is full of live
 /// buckets. `None` only if the map is empty.
+///
+/// This is an O(n) scan (n ≤ [`MAX_TRACKED_KEYS`]) that clones the victim key
+/// under the lock. It only runs on the rare full-map eviction path — i.e. a
+/// genuine ~100k-distinct-identity flood; the steady state never reaches it. A
+/// secondary last-active index (min-heap / ordered set) would make this
+/// O(log n) but is out of scope for this in-memory best-effort limiter.
 fn oldest_active_key(map: &HashMap<String, Vec<u64>>) -> Option<String> {
     map.iter()
         .min_by_key(|(_, failures)| failures.iter().copied().max().unwrap_or(0))
@@ -264,18 +275,20 @@ mod tests {
     }
 
     #[test]
-    fn per_key_history_is_capped_under_flood() {
+    fn per_key_history_caps_and_rolls_under_flood() {
         let rl = LoginRateLimiter::new(3, 60_000);
         let key = "flooder";
-        // 50 failures, all inside the window: the bucket must not grow past
-        // `max_attempts`, since extra in-window failures cannot change the
-        // (oldest-failure-based) unlock time.
+        // 50 failures at t=0..49, all inside the window.
         for t in 0..50 {
             rl.record_failure_at(key, t);
         }
-        let len = rl.lock().get(key).map(Vec::len).unwrap_or(0);
-        assert_eq!(len, 3, "bucket must be capped at max_attempts entries");
-        // Still correctly locked out.
+        let bucket = rl.lock().get(key).cloned().unwrap_or_default();
+        // Bounded at max_attempts entries — no unbounded Vec growth...
+        assert_eq!(bucket.len(), 3, "bucket capped at max_attempts entries");
+        // ...and the window rolled forward: the oldest retained failure is the
+        // (50 - 3)th, not the original t=0, so the lockout tracks recent
+        // hammering instead of staying anchored to the first failure.
+        assert_eq!(bucket[0], 47, "window rolled to the most recent failures");
         assert!(rl.check_at(key, 100).is_some(), "flooded key stays locked");
     }
 
