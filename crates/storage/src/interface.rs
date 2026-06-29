@@ -3708,17 +3708,6 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(Some(full_hash))
     }
 
-    /// Validates Merkle tree integrity.
-    ///
-    /// **Note**: Not yet implemented.
-    ///
-    /// # Errors
-    /// Currently panics (unimplemented).
-    ///
-    pub fn validate() -> Result<(), StorageError> {
-        unimplemented!()
-    }
-
     /// Helper to verify an upsert (`Add` or `Update`) action against the
     /// receiver's currently-stored entity.
     ///
