@@ -28,7 +28,7 @@ use serde_json::{
     to_value as to_json_value, Value,
 };
 use tokio::spawn;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio::time::interval;
 use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
@@ -238,7 +238,11 @@ async fn ws_handler(
             (None, true)
         }
     };
-    ws.on_upgrade(move |socket| handle_socket(socket, state, caller, node_owner))
+    // Cap inbound message/frame size so a single oversized frame cannot exhaust
+    // memory during JSON parsing (the connection is closed instead).
+    ws.max_message_size(WS_MAX_MESSAGE_BYTES)
+        .max_frame_size(WS_MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_socket(socket, state, caller, node_owner))
         .into_response()
 }
 
@@ -249,6 +253,10 @@ async fn handle_socket(
     node_owner: bool,
 ) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
+
+    // Bounds the number of concurrently-processed text frames for this
+    // connection (see WS_MAX_CONCURRENT_MESSAGES).
+    let message_limiter = Arc::new(Semaphore::new(WS_MAX_CONCURRENT_MESSAGES));
 
     // Generate a globally unique connection ID. A UUID (vs a per-process
     // counter) stays unique across node restarts and when logs from multiple
@@ -300,11 +308,19 @@ async fn handle_socket(
 
         match message {
             Message::Text(message) => {
-                drop(spawn(handle_text_message(
-                    connection_id,
-                    Arc::clone(&state),
-                    message,
-                )));
+                // Acquire a permit before spawning. When all permits are in use
+                // this awaits — applying backpressure to the read loop instead
+                // of spawning unbounded handler tasks under a message flood.
+                let permit = match Arc::clone(&message_limiter).acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break, // semaphore closed — connection shutting down
+                };
+                let state = Arc::clone(&state);
+                drop(spawn(async move {
+                    // Held for the lifetime of the handler; released on completion.
+                    let _permit = permit;
+                    handle_text_message(connection_id, state, message).await;
+                }));
             }
             Message::Binary(_) => {
                 debug!("Received binary message");
@@ -697,6 +713,19 @@ use crate::config::ServerConfig;
 /// This controls how many WebSocket commands can be queued in the channel before
 /// the sender blocks. Should match SSE's COMMAND_CHANNEL_BUFFER_SIZE for consistency.
 const WS_COMMAND_CHANNEL_BUFFER_SIZE: usize = 32;
+
+/// Maximum number of text messages from a single connection being processed
+/// concurrently. Each text frame was previously `spawn`ed unconditionally, so a
+/// client flooding messages could spawn unbounded tasks (memory/CPU exhaustion).
+/// A per-connection permit pool bounds in-flight handlers and applies
+/// backpressure (the read loop awaits a permit before accepting the next frame).
+const WS_MAX_CONCURRENT_MESSAGES: usize = 32;
+
+/// Maximum size of a single inbound WebSocket message. Frames are JSON-parsed in
+/// full, so without a cap a single huge frame could exhaust memory. Oversized
+/// messages cause the connection to be closed by the WebSocket layer rather than
+/// buffered. 16 MiB comfortably covers legitimate execute payloads.
+const WS_MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 #[cfg(test)]
 mod tests {
