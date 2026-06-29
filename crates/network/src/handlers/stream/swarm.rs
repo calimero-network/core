@@ -110,7 +110,12 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 self.record_connected_addr(peer_id, cache_addr);
 
                 // Resolve any pending dial for this peer on *any* established
-                // connection, not just the `Dialer` endpoint. A dial we
+                // connection, not just the `Dialer` endpoint. `pending_dial`
+                // is only ever populated by the `Dial` handler when we call
+                // `swarm.dial()`, so resolving on any endpoint is safe: a
+                // purely inbound connection cannot carry a `pending_dial`
+                // entry unless we also initiated a dial to that peer (the
+                // simultaneous-open case this fix targets). A dial we
                 // initiated can complete as a `Listener` endpoint (e.g. a
                 // simultaneous-open / hole-punched connection where the peer's
                 // SYN wins the race), in which case scoping the clear to

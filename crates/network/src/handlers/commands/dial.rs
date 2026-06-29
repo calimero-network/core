@@ -21,6 +21,13 @@ impl Handler<Dial> for NetworkManager {
         match self.pending_dial.entry(peer_id) {
             Entry::Occupied(_) => {
                 // todo! await the existing receiver
+                //
+                // NB: this `Ok(())` means "a dial to this peer is already in
+                // flight", not "the dial succeeded". The in-flight dial owns
+                // the only sender, so we can't subscribe to its result here
+                // without a broadcast/clone; until that's wired up, a caller
+                // hitting this branch gets a spurious success even if the
+                // real dial later fails.
                 return Response::reply(Ok(()));
             }
             Entry::Vacant(entry) => {
