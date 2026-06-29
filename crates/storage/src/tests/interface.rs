@@ -2793,7 +2793,9 @@ mod storage_type_edge_cases {
             "equal-HLC signed delete must be accepted (delete-wins), got {result:?}"
         );
         assert!(
-            MainInterface::find_by_id::<Page>(page.id()).unwrap().is_none(),
+            MainInterface::find_by_id::<Page>(page.id())
+                .unwrap()
+                .is_none(),
             "equal-HLC delete must win, removing the entity"
         );
     }
