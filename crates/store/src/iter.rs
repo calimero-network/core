@@ -79,10 +79,28 @@ impl<'a, K, V> Iter<'a, K, V> {
         }
     }
 
+    /// Returns an iterator over the keys.
+    ///
+    /// # Allocation
+    ///
+    /// Each yielded key is copied into an owned buffer so it stays valid after
+    /// the iterator advances (the backend hands out slices that borrow its
+    /// internal cursor buffer, which the next step overwrites). This means one
+    /// allocation per item — for backends that yield already-owned buffers the
+    /// copy is elided, but for the RocksDB backend (borrowed slices) it is not.
+    /// Callers that only need each key transiently within a single loop
+    /// iteration still pay this cost; a zero-copy streaming variant would
+    /// require a lending iterator (GAT) and is not currently provided.
     pub const fn keys(&mut self) -> IterKeys<'_, 'a, K, V> {
         IterKeys { iter: self }
     }
 
+    /// Returns an iterator over the key-value entries.
+    ///
+    /// # Allocation
+    ///
+    /// Each yielded key and value is copied into an owned buffer; see
+    /// [`Iter::keys`] for the rationale and cost.
     pub const fn entries(&mut self) -> IterEntries<'_, 'a, K, V> {
         IterEntries { iter: self }
     }

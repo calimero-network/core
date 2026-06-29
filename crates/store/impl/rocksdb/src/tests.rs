@@ -183,6 +183,10 @@ fn test_rocksdb_entries_survive_collection() {
     // Collect every entry up front, holding each yielded slice across the
     // `next()` calls that follow it.
     let mut iter = db.iter(Column::Identity).expect("iter should succeed");
+    // NB: the items are typed `Slice<'_>` (the iterator's `Item` carries the
+    // iterator's lifetime), not `Slice<'static>` — even though the fix backs
+    // them with owned `Box<[u8]>` at runtime. Annotating `'static` here would
+    // wrongly require `db` to be borrowed for `'static` and fail to compile.
     let collected: Vec<(Slice<'_>, Slice<'_>)> = iter
         .entries()
         .map(|(k, v)| {
