@@ -4,7 +4,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tracing::{debug, error, info};
-use wasmer::{DeserializeError, Instance, SerializeError, Store};
+use wasmer::{Instance, SerializeError, Store};
 
 // Profiling feature: Only compile these imports when profiling feature is enabled
 #[cfg(feature = "profiling")]
@@ -21,7 +21,9 @@ pub mod store;
 
 pub use config::{RuntimeConfig, RuntimeLimitsConfig};
 pub use constraint::Constraint;
-use errors::{FunctionCallError, HostError, Location, PanicContext, VMRuntimeError};
+use errors::{
+    FunctionCallError, HostError, Location, PanicContext, PrecompiledModuleError, VMRuntimeError,
+};
 use logic::{CallbackHandlerGuard, Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
 use memory::WasmerTunables;
 use store::Storage;
@@ -210,24 +212,48 @@ impl Engine {
         })
     }
 
+    /// Deserialize a precompiled (serialized) module produced by
+    /// [`Module::to_bytes`].
+    ///
     /// # Safety
     ///
-    /// This function deserializes a precompiled WASM module. The caller must ensure
-    /// the bytes come from a trusted source (e.g., previously compiled by this engine).
+    /// `wasmer::Module::deserialize` trusts its input: it maps the bytes
+    /// straight into an executable artifact without re-validating them. Feeding
+    /// it attacker-controlled bytes is undefined behavior. The caller MUST
+    /// ensure `bytes` originate from a trusted source — the only sound
+    /// provenance is bytes this very node produced via [`Module::to_bytes`]
+    /// (e.g. its own on-disk compilation cache). The `unsafe` marker is the
+    /// provenance assertion: every call site must justify, at the point of
+    /// call, why its bytes are trusted.
     ///
-    /// # Security Note
+    /// # Size cap (defense-in-depth)
     ///
-    /// No size limit check is performed here. This is an accepted security trade-off because:
-    /// 1. Precompiled modules have already been validated during their original compilation
-    /// 2. The serialized format may differ significantly in size from the original WASM binary
-    /// 3. The `unsafe` marker already requires callers to ensure the bytes are from a trusted source
-    ///
-    /// **Audit requirement**: All call sites using this method should be reviewed to ensure
-    /// precompiled bytes originate from trusted sources only (e.g., the node's own compilation cache).
-    ///
-    /// If precompiled bytes could come from an untrusted source, callers should implement
-    /// their own size validation before calling this method.
-    pub unsafe fn from_precompiled(&self, bytes: &[u8]) -> Result<Module, DeserializeError> {
+    /// Unlike the original design, this method now enforces a configurable size
+    /// cap ([`VMLimits::max_precompiled_module_size`]) *before* handing the
+    /// bytes to wasmer. Trusted provenance does not preclude a truncated cache
+    /// entry or a corrupt-on-disk artifact, and deserialization allocates
+    /// proportionally to the input; the cap bounds that allocation regardless.
+    /// It is intentionally separate from (and larger than)
+    /// [`VMLimits::max_module_size`], since a serialized artifact is bigger than
+    /// the source WASM it came from.
+    pub unsafe fn from_precompiled(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Module, PrecompiledModuleError> {
+        // Note: `as u64` is safe because usize <= u64 on all supported platforms.
+        let size = bytes.len() as u64;
+        if size > self.limits.max_precompiled_module_size {
+            tracing::warn!(
+                size,
+                max = self.limits.max_precompiled_module_size,
+                "precompiled WASM module size limit exceeded"
+            );
+            return Err(PrecompiledModuleError::SizeLimitExceeded {
+                size,
+                max: self.limits.max_precompiled_module_size,
+            });
+        }
+
         let module = wasmer::Module::deserialize(&self.engine, bytes)?;
 
         Ok(Module {
@@ -1298,6 +1324,91 @@ mod wasm_integration_tests {
             }
             Ok(_) => panic!("Empty bytes should not compile successfully"),
             Err(other) => panic!("Expected CompilationError for empty bytes, got: {other:?}"),
+        }
+    }
+
+    /// A precompiled artifact this engine produced round-trips back through
+    /// `from_precompiled` when it is within the configured cap.
+    #[test]
+    fn test_from_precompiled_round_trips_within_cap() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+        let precompiled = module.to_bytes().expect("Failed to serialize module");
+
+        // SAFETY: bytes were just produced by this same engine via `to_bytes`.
+        let restored = unsafe { engine.from_precompiled(&precompiled) };
+        assert!(
+            restored.is_ok(),
+            "Expected precompiled round-trip to succeed, got: {restored:?}"
+        );
+    }
+
+    /// `from_precompiled` enforces `max_precompiled_module_size` before handing
+    /// the bytes to wasmer, independent of the source-WASM `max_module_size`.
+    #[test]
+    fn test_from_precompiled_size_limit_exceeded() {
+        use crate::logic::VMLimits;
+
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Compile with a generous engine, then serialize.
+        let precompiled = Engine::default()
+            .compile(&wasm)
+            .expect("Failed to compile module")
+            .to_bytes()
+            .expect("Failed to serialize module");
+
+        // A second engine whose precompiled cap is smaller than the artifact.
+        let limits = VMLimits {
+            max_precompiled_module_size: 1, // 1 byte - far below any artifact
+            ..Default::default()
+        };
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // SAFETY: bytes came from a trusted compile above; we are exercising the
+        // size cap, which must reject before deserialization is attempted.
+        let result = unsafe { engine.from_precompiled(&precompiled) };
+        match result {
+            Err(PrecompiledModuleError::SizeLimitExceeded { size, max }) => {
+                assert_eq!(max, 1);
+                assert!(size > 1, "artifact should be larger than the cap");
+            }
+            Ok(_) => panic!("Expected SizeLimitExceeded, but deserialization succeeded"),
+            Err(other) => panic!("Expected SizeLimitExceeded, got: {other:?}"),
+        }
+    }
+
+    /// Bytes within the cap but not a valid artifact surface as a `Deserialize`
+    /// error, not a size error — the cap check is separate from validation.
+    #[test]
+    fn test_from_precompiled_invalid_bytes_surface_deserialize_error() {
+        let engine = Engine::default();
+        let garbage = vec![0u8; 1024];
+
+        // SAFETY: test-only bytes; here we assert the error path, not soundness.
+        let result = unsafe { engine.from_precompiled(&garbage) };
+        match result {
+            Err(PrecompiledModuleError::Deserialize(_)) => {
+                // Expected - within cap, but wasmer rejects the bytes.
+            }
+            Err(PrecompiledModuleError::SizeLimitExceeded { .. }) => {
+                panic!("1 KiB is within the default cap; should not be a size error")
+            }
+            Ok(_) => panic!("garbage bytes should not deserialize into a module"),
         }
     }
 }
