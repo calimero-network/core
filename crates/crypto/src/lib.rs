@@ -56,7 +56,7 @@ impl SharedKey {
             .decompress()
             .ok_or(SharedKeyError::InvalidPublicKey)?;
 
-        let signing_key = SigningKey::from_bytes(sk);
+        let signing_key = SigningKey::from_bytes(sk.as_bytes());
         // curve25519-dalek 4.x Scalar implements Zeroize, so Zeroizing<Scalar>
         // clears the private scalar bytes when it is dropped here.
         let scalar = Zeroizing::new(signing_key.to_scalar());
@@ -70,7 +70,7 @@ impl SharedKey {
     #[must_use]
     pub fn from_sk(sk: &PrivateKey) -> Self {
         Self {
-            key: Zeroizing::new(**sk),
+            key: Zeroizing::new(*sk.as_bytes()),
         }
     }
 

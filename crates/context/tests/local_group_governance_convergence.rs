@@ -1721,8 +1721,8 @@ fn group_member_with_keys_persists_and_retrieves() {
             &gid,
             &member_pk,
             GroupMemberRole::Member,
-            Some(*member_sk),
-            Some(*sender_sk),
+            Some(*member_sk.as_bytes()),
+            Some(*sender_sk.as_bytes()),
         )
         .unwrap();
 
@@ -1738,8 +1738,8 @@ fn group_member_with_keys_persists_and_retrieves() {
         .expect("member value should exist");
 
     assert_eq!(value.role, GroupMemberRole::Member);
-    assert_eq!(value.private_key, Some(*member_sk));
-    assert_eq!(value.sender_key, Some(*sender_sk));
+    assert_eq!(value.private_key, Some(*member_sk.as_bytes()));
+    assert_eq!(value.sender_key, Some(*sender_sk.as_bytes()));
 }
 
 #[test]

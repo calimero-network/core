@@ -776,7 +776,7 @@ mod tests {
                 .save(&gid, &sample_meta(pk))
                 .expect("save_group_meta");
             NamespaceRepository::new(&store)
-                .store_identity(&gid, &pk, &sk, &[0u8; 32])
+                .store_identity(&gid, &pk, sk.as_bytes(), &[0u8; 32])
                 .expect("store_namespace_identity");
             MembershipRepository::new(&store)
                 .add_member(&gid, &pk, GroupMemberRole::Member)
