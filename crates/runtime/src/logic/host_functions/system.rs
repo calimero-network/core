@@ -857,11 +857,24 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if this function is called more than once or if memory
     ///   access fails for descriptor buffers.
+    /// * `HostError::ArtifactSizeOverflow` if the artifact exceeds `max_artifact_size`.
     pub fn commit(&mut self, src_root_hash_ptr: u64, src_artifact_ptr: u64) -> VMLogicResult<()> {
         let root_hash =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_root_hash_ptr)? };
         let artifact =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_artifact_ptr)? };
+
+        // Bound the artifact before copying it out of guest memory: the copy
+        // lands on the host `Outcome`, so without this cap the only limit is
+        // guest memory itself (~64 MiB).
+        let max_artifact_size = self.borrow_logic().limits.max_artifact_size;
+        if artifact.len() > max_artifact_size {
+            return Err(HostError::ArtifactSizeOverflow {
+                size: artifact.len(),
+                max: max_artifact_size,
+            }
+            .into());
+        }
 
         let root_hash = *self.read_guest_memory_sized::<DIGEST_SIZE>(&root_hash)?;
         let artifact = self.read_guest_memory_slice(&artifact)?.to_vec();
@@ -1810,5 +1823,51 @@ mod tests {
         // Verify the host successfully stored the root hash and artifact in the `VMLogic` state.
         assert_eq!(host.borrow_logic().root_hash, Some(root_hash));
         assert_eq!(host.borrow_logic().artifact, artifact);
+    }
+
+    /// Tests that `commit()` rejects an artifact larger than `max_artifact_size`
+    /// instead of copying it onto the `Outcome`.
+    #[test]
+    fn test_commit_artifact_size_overflow() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_artifact_size: 4,
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let root_hash = [1u8; DIGEST_SIZE];
+        let artifact = vec![1, 2, 3, 4, 5]; // 5 bytes > 4-byte limit
+        let root_hash_ptr = 200u64;
+        let artifact_ptr = 300u64;
+        host.borrow_memory()
+            .write(root_hash_ptr, &root_hash)
+            .unwrap();
+        host.borrow_memory().write(artifact_ptr, &artifact).unwrap();
+
+        let root_hash_buf_ptr = 16u64;
+        let artifact_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(
+            &host,
+            root_hash_buf_ptr,
+            root_hash_ptr,
+            root_hash.len() as u64,
+        );
+        prepare_guest_buf_descriptor(&host, artifact_buf_ptr, artifact_ptr, artifact.len() as u64);
+
+        let err = host
+            .commit(root_hash_buf_ptr, artifact_buf_ptr)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::ArtifactSizeOverflow { size: 5, max: 4 })
+        ));
+
+        // The over-large artifact must not have been copied onto the state, and
+        // the commit must not be marked as completed.
+        assert!(host.borrow_logic().artifact.is_empty());
+        assert_eq!(host.borrow_logic().root_hash, None);
+        assert!(!host.borrow_logic().commit_called);
     }
 }
