@@ -24,11 +24,21 @@ use tracing::debug;
 
 use crate::sync::network::SyncNetwork;
 
+/// Hard cap on how many peers a single round tries before sleeping and
+/// re-polling. Bounds one round's cost to `cap × open_timeout` so a
+/// large all-hanging mesh can't let a single round monopolise the whole
+/// discovery budget. Namespace meshes are typically 1–3 peers during a
+/// cold-start join, so this rarely bites; it's a backstop for the
+/// pathological large-mesh case. Peers are shuffled before truncation,
+/// so successive rounds still sample the full set.
+const MAX_PEERS_PER_ROUND: usize = 4;
+
 /// Open a stream to a namespace mesh peer.
 ///
 /// Polls for a namespace mesh peer until one's stream opens or
 /// `discovery_wait` elapses. Each round discovers mesh peers,
-/// shuffles, and tries each with a per-peer `open_timeout`. Peers in
+/// shuffles, and tries up to [`MAX_PEERS_PER_ROUND`] of them with a
+/// per-peer `open_timeout`. Peers in
 /// `excluded_peers` are filtered out before the inner loop —
 /// `initiate_namespace_join` uses this to retry against a different
 /// peer after one returns `NamespaceJoinRejected` without opening
@@ -73,6 +83,14 @@ pub(super) async fn open_namespace_join_stream(
     // `debug_assert!`) so a degenerate value is caught in release too —
     // the one-time branch is free against the discovery loop's latency.
     assert!(!discovery_wait.is_zero(), "discovery_wait must be > 0");
+    // A zero retry budget makes `failed_attempts >= mesh_retries` true on
+    // the first peer-present (or all-excluded) round and breaks before any
+    // attempt. Production passes a non-zero `DEFAULT_MESH_RETRIES_UNINITIALIZED`;
+    // assert so a degenerate value is caught rather than silently fast-failing.
+    assert!(
+        mesh_retries > 0,
+        "mesh_retries must be > 0; got {mesh_retries}"
+    );
 
     let topic = TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
 
@@ -98,7 +116,7 @@ pub(super) async fn open_namespace_join_stream(
                 elapsed_ms = connect_started.elapsed().as_millis() as u64,
                 "namespace-join discovery budget exhausted, giving up"
             );
-            break;
+            break 'connect;
         }
 
         let discovered = sync_network.subscribed_peers(topic.clone()).await;
@@ -121,7 +139,7 @@ pub(super) async fn open_namespace_join_stream(
                 // rather than block on the whole discovery_wait.
                 failed_attempts += 1;
                 if failed_attempts >= mesh_retries {
-                    break;
+                    break 'connect;
                 }
             } else {
                 // Cross-network discovery hasn't surfaced a namespace
@@ -134,7 +152,7 @@ pub(super) async fn open_namespace_join_stream(
                 );
             }
             if connect_started.elapsed().saturating_add(mesh_retry_delay) >= discovery_wait {
-                break;
+                break 'connect;
             }
             time::sleep(mesh_retry_delay).await;
             continue;
@@ -142,8 +160,12 @@ pub(super) async fn open_namespace_join_stream(
 
         // In-place shuffle avoids the second `Vec` allocation that
         // `choose_multiple` would produce. Matches the pattern used
-        // in `perform_interval_sync`.
+        // in `perform_interval_sync`. Cap the per-round fan-out after
+        // shuffling so one round can't burn the whole budget on a large
+        // all-hanging mesh; the shuffle keeps successive rounds sampling
+        // different peers.
         peers.shuffle(&mut rand::thread_rng());
+        peers.truncate(MAX_PEERS_PER_ROUND);
 
         for peer in &peers {
             if connect_started.elapsed() >= discovery_wait {
@@ -176,10 +198,10 @@ pub(super) async fn open_namespace_join_stream(
 
         failed_attempts += 1;
         if failed_attempts >= mesh_retries {
-            break;
+            break 'connect;
         }
         if connect_started.elapsed().saturating_add(mesh_retry_delay) >= discovery_wait {
-            break;
+            break 'connect;
         }
         debug!(
             namespace_id = %hex::encode(namespace_id),
@@ -358,33 +380,26 @@ mod tests {
         );
     }
 
-    /// Outer deadline fires mid-loop on a huge mesh: queue many
-    /// hanging peers, set a tight deadline by making `open_timeout`
-    /// large relative to total budget. Verifies the per-peer
-    /// deadline-check inside the inner loop bails the whole connect
-    /// loop without going round-robin through every peer past the
-    /// budget.
+    /// The per-peer deadline check is the global backstop: with peers
+    /// that all hang, the inner loop bails as soon as the discovery
+    /// budget is reached rather than running every peer or every round.
+    /// `mesh_retries` is set high so the budget — not the retry count —
+    /// is what fires.
     #[tokio::test(start_paused = true)]
-    async fn outer_deadline_fires_inside_peer_loop_on_large_mesh() {
+    async fn per_peer_deadline_check_bounds_hanging_peers() {
         let mock = MockSyncNetwork::default();
-        // 10 peers — enough that an unbounded round overruns the budget.
         let many_peers: Vec<PeerId> = (0..10).map(|_| PeerId::random()).collect();
         mock.push_subscribed_peers(many_peers);
-        // Every peer hangs for the full open_timeout — so the
-        // per-peer cost lower-bound is open_timeout.
         for i in 0..50 {
             mock.push_open_stream_hang(Duration::from_secs(60), format!("h-{i}"));
         }
 
         let open_timeout = Duration::from_millis(200);
-        let mesh_retries: u32 = 3;
+        let mesh_retries: u32 = 10; // high enough not to bind first
         let mesh_retry_delay = Duration::from_millis(10);
-        // Budget chosen so the per-peer deadline check, not the retry
-        // count, is what bounds this. With 10 peers × 200ms each, an
-        // unbounded round would take 2000ms — so the per-peer check
-        // must bail somewhere inside round 2 to keep total under the
-        // 2430ms budget.
-        let discovery_wait = Duration::from_millis(2_430);
+        // Tight budget so the per-peer check inside the peer loop is
+        // what bounds the run.
+        let discovery_wait = Duration::from_millis(500);
 
         let start = time::Instant::now();
         let result = open_namespace_join_stream(
@@ -400,15 +415,61 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(result.is_err());
-        // Without the per-peer deadline check, the loop would run
-        // through every peer in round 1 = 10 × 200ms = 2000ms,
-        // then sleep 10ms, then maybe one more peer in round 2
-        // before the top-of-loop check fires = ~2210ms. With the
-        // per-peer check inside the loop, we should bail no later
-        // than the budget + one per-peer slot ≈ 2430 + 200 = 2630ms.
+        // Bail no later than the budget plus one in-flight open_timeout
+        // slot (the per-peer check may interrupt an attempt up to one
+        // timeout late).
+        let upper_bound = discovery_wait.saturating_add(open_timeout);
         assert!(
-            elapsed < Duration::from_secs(3),
-            "loop took {elapsed:?}, expected discovery budget + per-peer guard to bound this"
+            elapsed <= upper_bound,
+            "loop took {elapsed:?}, expected ≤ {upper_bound:?} (budget {discovery_wait:?} + \
+             one open_timeout slot)"
+        );
+    }
+
+    /// A single round tries at most `MAX_PEERS_PER_ROUND` peers, even on
+    /// a larger mesh — so one round can't monopolise the budget. Proven
+    /// by timing: with a one-round budget and every peer hanging for
+    /// `open_timeout`, the round costs `MAX_PEERS_PER_ROUND × open_timeout`,
+    /// not `mesh_size × open_timeout`.
+    #[tokio::test(start_paused = true)]
+    async fn round_fan_out_is_capped() {
+        let mock = MockSyncNetwork::default();
+        // Comfortably more peers than the per-round cap.
+        let mesh_size = MAX_PEERS_PER_ROUND + 4;
+        let many_peers: Vec<PeerId> = (0..mesh_size).map(|_| PeerId::random()).collect();
+        mock.push_subscribed_peers(many_peers);
+        for i in 0..mesh_size {
+            mock.push_open_stream_hang(Duration::from_secs(60), format!("h-{i}"));
+        }
+
+        let open_timeout = Duration::from_millis(100);
+        let mesh_retries: u32 = 1; // one round, then give up
+        let mesh_retry_delay = Duration::from_millis(10);
+        // Large enough that the budget never bounds the single round.
+        let discovery_wait = Duration::from_secs(10);
+
+        let start = time::Instant::now();
+        let result = open_namespace_join_stream(
+            &mock,
+            NAMESPACE_ID,
+            open_timeout,
+            mesh_retries,
+            mesh_retry_delay,
+            discovery_wait,
+            &no_excluded(),
+        )
+        .await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err());
+        // Exactly the cap's worth of per-peer timeouts, not the whole
+        // mesh: ≥ cap × open_timeout, and < (cap + 1) × open_timeout.
+        let cap = MAX_PEERS_PER_ROUND as u32;
+        assert!(
+            elapsed >= open_timeout.saturating_mul(cap)
+                && elapsed < open_timeout.saturating_mul(cap + 1),
+            "round tried peers for {elapsed:?}, expected ≈ {cap} × {open_timeout:?} \
+             (cap), not the whole {mesh_size}-peer mesh"
         );
     }
 

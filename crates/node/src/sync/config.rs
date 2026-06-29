@@ -194,6 +194,13 @@ pub struct SyncConfig {
     /// sensitive: shorter for low-latency LANs with aggressive QUIC idle
     /// timeouts, longer for high-latency WAN.
     pub open_stream_timeout: time::Duration,
+
+    /// How long a cold namespace join keeps polling for a mesh peer to
+    /// appear before giving up. See [`DEFAULT_NAMESPACE_DISCOVERY_WAIT_MS`].
+    /// Deployment-sensitive: the cross-network discovery floor is higher
+    /// for NAT'd nodes needing relay + hole-punch, lower for directly
+    /// reachable ones.
+    pub namespace_discovery_wait: time::Duration,
 }
 
 impl Default for SyncConfig {
@@ -210,6 +217,9 @@ impl Default for SyncConfig {
             parent_pull_additional_peers: DEFAULT_PARENT_PULL_ADDITIONAL_PEERS,
             parent_pull_budget: time::Duration::from_millis(DEFAULT_PARENT_PULL_BUDGET_MS),
             open_stream_timeout: time::Duration::from_millis(DEFAULT_OPEN_STREAM_TIMEOUT_MS),
+            namespace_discovery_wait: time::Duration::from_millis(
+                DEFAULT_NAMESPACE_DISCOVERY_WAIT_MS,
+            ),
         }
     }
 }
