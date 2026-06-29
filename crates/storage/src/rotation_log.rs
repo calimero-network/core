@@ -10,8 +10,24 @@
 //!
 //! # Design
 //!
-//! Every accepted rotation appends an entry; the node-side reader compares
-//! entries by **causal-first → HLC → signer-pubkey** ordering.
+//! Every accepted rotation appends an entry; the node-side reader resolves
+//! concurrent rotations by a three-level **causal-first → HLC →
+//! signer-pubkey** ordering, each level a deterministic fallback for the one
+//! above:
+//!
+//! - **Causal-first** — if one rotation happens-before another, the later one
+//!   wins unconditionally; its author rotated with full knowledge of the
+//!   earlier rotation, so honoring it can never lose information.
+//! - **HLC tiebreak** — for truly concurrent rotations (neither in the
+//!   other's causal history) the larger `HybridTimestamp` wins. The HLC
+//!   embeds wall-time plus a node id, giving every node the same total order
+//!   without coordination.
+//! - **Signer-pubkey tiebreak** — on the (astronomically rare) HLC tie, the
+//!   smaller signing-key bytes win, so the resolution is total and every node
+//!   converges on the same writer set.
+//!
+//! The user-facing writeup of this rule lives on the Permissioned Storage
+//! docs page: <https://calimero-network.github.io/core/build/permissioned-storage/>.
 //!
 //! The log is materialized as an `UnorderedMap<[u8; 32], RotationLogEntry>`
 //! child of the Shared anchor entity (keyed by `delta_id`), so each rotation
