@@ -196,7 +196,10 @@ impl PeerAddrCache {
         out
     }
 
-    /// All currently-cached, still-fresh peers — the dial-on-startup set.
+    /// All currently-cached, still-fresh peers, sorted by `peer_id`. A
+    /// test-only inspection helper for the cache contents; production dials the
+    /// recency-capped [`startup_dial_set`](Self::startup_dial_set) instead.
+    #[cfg(test)]
     pub(crate) fn dial_candidates(&self, now_secs: u64, ttl_secs: u64) -> Vec<CachedPeer> {
         let mut out: Vec<CachedPeer> = self
             .peers
@@ -205,6 +208,42 @@ impl PeerAddrCache {
             .cloned()
             .collect();
         out.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+        out
+    }
+
+    /// Count of currently-cached, still-fresh peers (the full reconnect set
+    /// before the startup dial cap is applied). Used only for logging how many
+    /// of the fresh candidates were dropped by the cap.
+    pub(crate) fn fresh_count(&self, now_secs: u64, ttl_secs: u64) -> usize {
+        self.peers
+            .values()
+            .filter(|p| is_fresh(p.last_seen_secs, now_secs, ttl_secs))
+            .count()
+    }
+
+    /// The startup reconnect dial set: at most `max` fresh peers, ordered
+    /// most-recently-seen first (ties broken by `peer_id` for determinism).
+    ///
+    /// Bounds the startup dial burst so a full or poisoned cache can't trigger
+    /// a dial storm; the dropped peers are simply rediscovered via rendezvous.
+    pub(crate) fn startup_dial_set(
+        &self,
+        now_secs: u64,
+        ttl_secs: u64,
+        max: usize,
+    ) -> Vec<CachedPeer> {
+        let mut out: Vec<CachedPeer> = self
+            .peers
+            .values()
+            .filter(|p| is_fresh(p.last_seen_secs, now_secs, ttl_secs))
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| {
+            b.last_seen_secs
+                .cmp(&a.last_seen_secs)
+                .then_with(|| a.peer_id.cmp(&b.peer_id))
+        });
+        out.truncate(max);
         out
     }
 
@@ -335,6 +374,43 @@ mod tests {
         );
         // within TTL → kept.
         assert_eq!(c.dial_candidates(900, 1000).len(), 1);
+    }
+
+    #[test]
+    fn startup_dial_set_caps_to_most_recent_and_excludes_stale() {
+        let mut c = PeerAddrCache::default();
+        // Five fresh peers (last_seen 910..=950) and one stale (800).
+        c.record(peer(1), addr("/ip4/1.0.0.1/tcp/1"), 910);
+        c.record(peer(2), addr("/ip4/1.0.0.2/tcp/1"), 920);
+        c.record(peer(3), addr("/ip4/1.0.0.3/tcp/1"), 930);
+        c.record(peer(4), addr("/ip4/1.0.0.4/tcp/1"), 940);
+        c.record(peer(5), addr("/ip4/1.0.0.5/tcp/1"), 950);
+        c.record(peer(6), addr("/ip4/1.0.0.6/tcp/1"), 800);
+
+        // now=1000, ttl=100 → fresh iff last_seen >= 900, so peer(6) is stale.
+        let now = 1000;
+        let ttl = 100;
+        assert_eq!(c.fresh_count(now, ttl), 5, "stale peer excluded from count");
+
+        // Cap of 3 → the three most-recently-seen, most-recent-first.
+        let set = c.startup_dial_set(now, ttl, 3);
+        let ids: Vec<PeerId> = set.iter().map(|p| p.peer_id).collect();
+        assert_eq!(
+            ids,
+            vec![peer(5), peer(4), peer(3)],
+            "most-recently-seen three, newest first"
+        );
+        // Ordering is strictly descending by last_seen.
+        assert!(set
+            .windows(2)
+            .all(|w| w[0].last_seen_secs >= w[1].last_seen_secs));
+        // The stale peer is never dialed regardless of the cap.
+        assert!(
+            !c.startup_dial_set(now, ttl, 100)
+                .iter()
+                .any(|p| p.peer_id == peer(6)),
+            "stale peer must not be in the dial set even when the cap is not reached"
+        );
     }
 
     #[test]
