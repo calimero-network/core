@@ -211,6 +211,15 @@ pub(super) fn handle_specialized_broadcast(
             // legitimate announce. On a hit we drop here: `verify_permit` is
             // released as it goes out of scope, and the dedup entry the throttle
             // just recorded keeps suppressing further re-announces of this quote.
+            //
+            // Trade-off of throttle-before-store: an already-admitted quote that
+            // is re-announced burns one per-peer token before we learn it's
+            // admitted. That is bounded (the dedup entry suppresses the rest of
+            // the burst) and rare (a node stops announcing once admitted), and it
+            // is the price of not doing a store read for every flood frame. We
+            // deliberately do NOT `forget_quote` here — keeping the entry is what
+            // makes the follow-up re-announces cheap — nor restore the token,
+            // which would just re-open the store read on the next frame.
             match calimero_governance_store::is_quote_hash_used(
                 &this.datastore,
                 &group_id,

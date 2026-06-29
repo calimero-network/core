@@ -144,15 +144,17 @@ impl TeeAdmissionThrottle {
     ///
     /// # Panics
     ///
-    /// Panics if `max_inflight == 0`, `per_peer_burst < 1.0`, or
-    /// `per_peer_refill == 0`: with no inflight permits no announce could ever
-    /// proceed, a sub-unit burst can never satisfy the `tokens >= 1.0` gate, and
-    /// a zero refill interval would make the refill rate non-finite (poisoning
-    /// the lazy-refill arithmetic with `NaN`) — so each renders the throttle
-    /// useless. These are construction-time programmer errors — the only in-tree
-    /// callers are [`Default`] and tests, both of which pass valid constants —
-    /// so they are asserted rather than surfaced as a runtime `Result` the
-    /// caller would have to thread through node startup.
+    /// Panics if `max_inflight == 0`, `per_peer_burst` is not in
+    /// `[1.0, u32::MAX]`, or `per_peer_refill == 0`: with no inflight permits no
+    /// announce could ever proceed, a sub-unit burst can never satisfy the
+    /// `tokens >= 1.0` gate, a burst beyond `u32::MAX` would overflow the
+    /// `burst * refill` idle-eviction window cast, and a zero refill interval
+    /// would make the refill rate non-finite (poisoning the lazy-refill
+    /// arithmetic with `NaN`) — so each renders the throttle useless or
+    /// ill-defined. These are construction-time programmer errors — the only
+    /// in-tree callers are [`Default`] and tests, both of which pass valid
+    /// constants — so they are asserted rather than surfaced as a runtime
+    /// `Result` the caller would have to thread through node startup.
     pub fn new(
         max_inflight: usize,
         per_peer_burst: f64,
@@ -160,7 +162,10 @@ impl TeeAdmissionThrottle {
         dedup_ttl: Duration,
     ) -> Self {
         assert!(max_inflight > 0, "max_inflight must be positive");
-        assert!(per_peer_burst >= 1.0, "per_peer_burst must be >= 1");
+        assert!(
+            per_peer_burst >= 1.0 && per_peer_burst <= u32::MAX as f64,
+            "per_peer_burst must be in [1, u32::MAX]"
+        );
         assert!(
             per_peer_refill > Duration::ZERO,
             "per_peer_refill must be positive"
@@ -249,6 +254,13 @@ impl TeeAdmissionThrottle {
         // Gate 3: global inflight cap. Acquire last so a rejection here does
         // not burn a per-peer token. No bucket has been inserted/mutated for a
         // refused-here peer, so an `AtCapacity` return advances nothing.
+        //
+        // Intentional trade-off: a brand-new peer refused here is never
+        // inserted, so it retains a full bucket and can burst at the full rate
+        // the moment capacity opens, regardless of how many times it was refused.
+        // The global inflight cap — not per-peer fairness — is the binding
+        // constraint while saturated, and not tracking never-proceeding peers is
+        // what stops a unique-peer flood from growing `peers` (see module docs).
         let permit = match Arc::clone(&self.inflight).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => return Decision::AtCapacity,
@@ -369,6 +381,13 @@ impl TeeAdmissionThrottle {
         for (k, _) in &entries[..remove] {
             let _ = map.remove(k);
         }
+        // Post-condition: the cap is actually enforced. Catches a future caller
+        // that passes a stale snapshot (some `entries[..remove]` key already
+        // gone from `map`, so `remove` deletions don't bring it under `keep`).
+        debug_assert!(
+            map.len() <= keep,
+            "evict_oldest_entries left the map over its cap (stale snapshot?)"
+        );
     }
 }
 
