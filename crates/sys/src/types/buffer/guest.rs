@@ -29,6 +29,12 @@ impl<'a, T> Slice<'a, T> {
         self.len as usize
     }
 
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     // The borrowing accessors deliberately tie the returned slice to the borrow
     // of `self`, NOT to `'a`. Returning `&'a`/`&'a mut` here would let safe SDK
     // code mint two aliasing `&mut [T]` (two `as_mut` calls), or a `&[T]` and a
@@ -37,19 +43,28 @@ impl<'a, T> Slice<'a, T> {
     // serialises every access through the one live descriptor.
     #[inline]
     pub(crate) fn as_slice(&self) -> &[T] {
-        // SAFETY: a `Slice` is only ever constructed from a live `&[T]`/`&mut [T]`
-        // (`Slice::new`/`From`) or the empty/null descriptor, so `ptr` is non-null
-        // and valid for `len` elements; the returned borrow is tied to `self`, so
-        // it cannot outlive that backing storage.
+        // The empty descriptor (`Slice::empty`) carries a null `ptr`, and
+        // `from_raw_parts` is UB on a null pointer even for `len == 0`, so a
+        // zero-length slice returns the canonical empty slice without touching it.
+        if self.is_empty() {
+            return &[];
+        }
+        // SAFETY: a non-empty `Slice` is only ever constructed from a live
+        // `&[T]`/`&mut [T]` (`Slice::new`/`From`), so `ptr` is non-null and valid
+        // for `len` elements; the returned borrow is tied to `self`, so it cannot
+        // outlive that backing storage.
         unsafe { from_raw_parts(self.ptr.as_ptr(), self.len()) }
     }
 
     #[inline]
     pub(crate) fn as_mut_slice(&mut self) -> &mut [T] {
-        // SAFETY: as in `as_slice`, `ptr` is valid for `len` elements; the
-        // descriptor was built from a `&mut [T]` so the bytes are uniquely owned,
-        // and `&mut self` (on a move-only `Slice`) guarantees this is the only
-        // live handle, so the returned `&mut` does not alias.
+        if self.is_empty() {
+            return &mut [];
+        }
+        // SAFETY: as in `as_slice`, `ptr` is non-null and valid for `len`
+        // elements; the descriptor was built from a `&mut [T]` so the bytes are
+        // uniquely owned, and `&mut self` (on a move-only `Slice`) guarantees this
+        // is the only live handle, so the returned `&mut` does not alias.
         unsafe { from_raw_parts_mut(self.ptr.as_mut_ptr(), self.len()) }
     }
 
@@ -59,8 +74,12 @@ impl<'a, T> Slice<'a, T> {
     // out — the one place that genuinely needs the `'a` lifetime.
     #[inline]
     pub(crate) fn into_slice(self) -> &'a [T] {
-        // SAFETY: same validity invariant as `as_slice`; `self` is consumed, so
-        // the `'a` borrow it yields cannot coexist with any other handle.
+        if self.is_empty() {
+            return &[];
+        }
+        // SAFETY: same validity invariant as `as_slice` (non-null, valid for
+        // `len`); `self` is consumed, so the `'a` borrow it yields cannot coexist
+        // with any other handle.
         unsafe { from_raw_parts(self.ptr.as_ptr(), self.len()) }
     }
 }
