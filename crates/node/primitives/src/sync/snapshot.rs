@@ -664,12 +664,17 @@ pub const MAX_STATE_DELTA_PLAINTEXT_BYTES: usize = 1024 * 1024;
 /// Plaintext that gets encrypted into the `artifact` field of a
 /// [`BroadcastMessage::StateDelta`].
 ///
-/// Bundling the expected post-apply `root_hash` together with the
-/// storage-delta bytes means the root hash is sealed under the group key
-/// instead of riding on the wire in cleartext. Only key holders (members)
-/// can read it, which is the point: the root hash is a state fingerprint,
-/// and broadcasting it openly would leak how a context's state evolves to
+/// Bundling the expected post-apply `root_hash` and the execution `events`
+/// together with the storage-delta bytes means all three are sealed under the
+/// group key instead of riding on the wire in cleartext. Only key holders
+/// (members) can read them, which is the point: the root hash is a state
+/// fingerprint and the events are the application's emitted activity —
+/// broadcasting either openly would leak how a context's state evolves to
 /// non-members subscribed to the gossip topic.
+///
+/// All three share the delta's single nonce because they are sealed together
+/// in one AEAD operation; encrypting `events` as a separate field would have
+/// required a second nonce to avoid GCM nonce reuse.
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub struct SealedDeltaPayload {
     /// Expected state root after the receiver applies `artifact`. Becomes the
@@ -682,17 +687,25 @@ pub struct SealedDeltaPayload {
     /// dependency on the storage-delta layout; the receiver deserializes it
     /// after decryption.
     pub artifact: Vec<u8>,
+
+    /// Execution events emitted during the state change, as the serialized
+    /// `Vec<ExecutionEvent>` the receiver replays handlers from. `None` when
+    /// the delta emitted no events. Sealed alongside `artifact` rather than
+    /// sent in cleartext.
+    pub events: Option<Vec<u8>>,
 }
 
 impl SealedDeltaPayload {
-    /// Size guard for the wrapped `artifact`, mirroring the `is_valid()`
-    /// convention the other wire types in this module follow. Callers that
-    /// deserialize a `SealedDeltaPayload` from untrusted (post-decryption)
-    /// bytes should reject it when this returns `false` before deserializing
-    /// the inner storage delta. See [`MAX_STATE_DELTA_PLAINTEXT_BYTES`].
+    /// Size guard for the wrapped `artifact` plus `events`, mirroring the
+    /// `is_valid()` convention the other wire types in this module follow.
+    /// Callers that deserialize a `SealedDeltaPayload` from untrusted
+    /// (post-decryption) bytes should reject it when this returns `false`
+    /// before deserializing the inner storage delta or replaying events.
+    /// See [`MAX_STATE_DELTA_PLAINTEXT_BYTES`].
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.artifact.len() <= MAX_STATE_DELTA_PLAINTEXT_BYTES
+        let events_len = self.events.as_ref().map_or(0, Vec::len);
+        self.artifact.len().saturating_add(events_len) <= MAX_STATE_DELTA_PLAINTEXT_BYTES
     }
 }
 
@@ -714,16 +727,15 @@ pub enum BroadcastMessage<'a> {
         hlc: calimero_storage::logical_clock::HybridTimestamp,
 
         /// Encrypted delta payload — a borsh-encoded [`SealedDeltaPayload`]
-        /// holding the storage-delta actions AND the expected post-apply
-        /// `root_hash`. The root hash travels inside the ciphertext (not as a
-        /// cleartext field) so it cannot be read off the gossip topic by
-        /// non-members: a cleartext root hash is a state fingerprint that
-        /// leaks how state evolves to peers who hold no group key.
+        /// holding the storage-delta actions, the expected post-apply
+        /// `root_hash`, AND the execution `events`. All three travel inside
+        /// the ciphertext (not as cleartext fields) so they cannot be read
+        /// off the gossip topic by non-members: the root hash is a state
+        /// fingerprint and the events are application activity, both of which
+        /// would otherwise leak how state evolves to peers who hold no group
+        /// key.
         artifact: Cow<'a, [u8]>,
         nonce: Nonce,
-
-        /// Execution events that were emitted during the state change.
-        events: Option<Cow<'a, [u8]>>,
 
         /// Cross-DAG reference: names the exact governance DAG cut the
         /// author relied on when producing this delta. Receivers use it

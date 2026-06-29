@@ -146,7 +146,6 @@ mod tests {
             payload: vec![1, 2, 3],
             nonce: [0; 12],
             author_id: PublicKey::from([0; 32]),
-            events: None,
             source_peer: libp2p::PeerId::random().to_bytes(),
             key_id: [0; 32],
             governance_position: None,

@@ -1,6 +1,5 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -554,10 +553,11 @@ impl NodeClient {
         let shared_key = SharedKey::from_sk(sender_key);
         let nonce = rand::thread_rng().gen();
 
-        // Seal the expected post-apply root hash together with the storage
-        // delta so it never rides the gossip topic in cleartext. The root
-        // hash is a state fingerprint; encrypting it under the group key keeps
-        // it readable only by members, who get it back on decrypt.
+        // Seal the expected post-apply root hash and the execution events
+        // together with the storage delta so none of them ride the gossip
+        // topic in cleartext. The root hash is a state fingerprint and the
+        // events are application activity; encrypting them under the group key
+        // keeps them readable only by members, who get them back on decrypt.
         //
         // A serialization failure here returns via `?` before any publish, so
         // the delta is NOT gossiped at all. Treat it as a hard failure rather
@@ -567,6 +567,7 @@ impl NodeClient {
         let sealed = borsh::to_vec(&SealedDeltaPayload {
             root_hash: context.root_hash,
             artifact,
+            events,
         })?;
 
         let encrypted = shared_key
@@ -581,7 +582,6 @@ impl NodeClient {
             hlc,
             artifact: encrypted.into(),
             nonce,
-            events: events.map(Cow::from),
             governance_position,
             key_id,
             delta_signature,

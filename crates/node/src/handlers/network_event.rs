@@ -66,7 +66,6 @@ impl Handler<NetworkEvent> for NodeManager {
                         hlc,
                         artifact,
                         nonce,
-                        events,
                         governance_position,
                         key_id,
                         delta_signature,
@@ -77,7 +76,6 @@ impl Handler<NetworkEvent> for NodeManager {
                             %author_id,
                             delta_id = ?delta_id,
                             parent_count = parent_ids.len(),
-                            has_events = events.is_some(),
                             governance_dag_heads_len = governance_position
                                 .as_ref()
                                 .map(|p| p.governance_dag_heads.len())
@@ -101,7 +99,6 @@ impl Handler<NetworkEvent> for NodeManager {
                                 hlc,
                                 artifact: artifact.into_owned(),
                                 nonce,
-                                events: events.map(|e| e.into_owned()),
                                 governance_position,
                                 key_id,
                                 delta_signature,

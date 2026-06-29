@@ -885,7 +885,6 @@ mod tests {
             payload: vec![],
             nonce: [0u8; 12],
             author_id: PublicKey::from([0u8; 32]),
-            events: None,
             source_peer,
             key_id: [0u8; 32],
             governance_position: None,

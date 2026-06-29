@@ -107,8 +107,9 @@ pub(super) async fn lookup_group_key_with_wait(
     }
 }
 
-/// A decrypted state delta: the storage actions to apply plus the expected
-/// post-apply `root_hash` that was sealed alongside them.
+/// A decrypted state delta: the storage actions to apply, plus the expected
+/// post-apply `root_hash` and the execution `events` that were sealed
+/// alongside them.
 #[derive(Debug)]
 pub(super) struct DecryptedDelta {
     /// Expected state root after applying `actions`. Sealed inside the
@@ -116,6 +117,9 @@ pub(super) struct DecryptedDelta {
     pub(super) root_hash: Hash,
     /// The storage mutations carried by the delta.
     pub(super) actions: Vec<Action>,
+    /// Serialized execution events for handler replay, sealed inside the
+    /// ciphertext. `None` when the delta emitted no events.
+    pub(super) events: Option<Vec<u8>>,
 }
 
 /// Decrypt a state delta's encrypted payload, returning the sealed
@@ -155,6 +159,7 @@ pub(super) fn decrypt_delta_actions(
         calimero_storage::delta::StorageDelta::Actions(actions) => Ok(DecryptedDelta {
             root_hash: sealed.root_hash,
             actions,
+            events: sealed.events,
         }),
         _ => bail!("Expected Actions variant in state delta"),
     }
@@ -178,6 +183,7 @@ mod tests {
         let sealed = SealedDeltaPayload {
             root_hash: Hash::from([9u8; 32]),
             artifact: borsh::to_vec(&storage_delta)?,
+            events: Some(b"events-blob".to_vec()),
         };
         let plaintext = borsh::to_vec(&sealed)?;
         let cipher = shared_key
@@ -185,11 +191,13 @@ mod tests {
             .ok_or_eyre("encryption failed")?;
 
         // Encrypted payload should decrypt back to empty actions AND the
-        // sealed root hash — proving the root hash survives the round-trip
-        // inside the ciphertext rather than on the cleartext wire.
+        // sealed root hash AND the sealed events — proving all three survive
+        // the round-trip inside the ciphertext rather than on the cleartext
+        // wire.
         let decrypted = decrypt_delta_actions(cipher, nonce, sender_key)?;
         assert!(decrypted.actions.is_empty());
         assert_eq!(decrypted.root_hash, Hash::from([9u8; 32]));
+        assert_eq!(decrypted.events.as_deref(), Some(b"events-blob".as_ref()));
 
         Ok(())
     }
@@ -218,6 +226,7 @@ mod tests {
         let sealed = SealedDeltaPayload {
             root_hash: Hash::from([0u8; 32]),
             artifact: vec![0u8; MAX_STATE_DELTA_PLAINTEXT_BYTES + 1],
+            events: None,
         };
         let plaintext = borsh::to_vec(&sealed).expect("serialize");
         let cipher = shared_key
