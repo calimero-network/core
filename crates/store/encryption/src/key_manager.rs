@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use aes_gcm::aead::rand_core::RngCore;
-use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use eyre::{bail, eyre, Result};
 use hkdf::Hkdf;
@@ -23,6 +23,18 @@ const TAG_SIZE: usize = 16;
 
 /// Minimum ciphertext size (version + nonce + tag).
 const MIN_CIPHERTEXT_SIZE: usize = 1 + NONCE_SIZE + TAG_SIZE;
+
+/// Build the additional authenticated data (AAD) bound to a ciphertext.
+///
+/// The AAD is `version || nonce`, matching the unencrypted header prepended to
+/// every ciphertext. Authenticating it ensures the header cannot be altered
+/// without failing decryption.
+fn aad_for(version: u8, nonce: &[u8]) -> [u8; 1 + NONCE_SIZE] {
+    let mut aad = [0u8; 1 + NONCE_SIZE];
+    aad[0] = version;
+    aad[1..].copy_from_slice(nonce);
+    aad
+}
 
 /// A Data Encryption Key (DEK) with secure memory handling.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -135,9 +147,20 @@ impl KeyManager {
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
+        // Bind the version and nonce as additional authenticated data so the
+        // unencrypted header cannot be tampered with (e.g. flipping the version
+        // byte to force a different DEK) without failing the integrity check.
+        let aad = aad_for(version, &nonce_bytes);
+
         // Encrypt
         let ciphertext = cipher
-            .encrypt(nonce, plaintext)
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: plaintext,
+                    aad: &aad,
+                },
+            )
             .map_err(|e| eyre!("Encryption failed: {e}"))?;
 
         // Build output: version || nonce || ciphertext
@@ -173,14 +196,26 @@ impl KeyManager {
         }
 
         let version = ciphertext[0];
-        let nonce = Nonce::from_slice(&ciphertext[1..1 + NONCE_SIZE]);
+        let nonce_bytes = &ciphertext[1..1 + NONCE_SIZE];
+        let nonce = Nonce::from_slice(nonce_bytes);
         let encrypted_data = &ciphertext[1 + NONCE_SIZE..];
+
+        // The version and nonce header is authenticated via AAD, so any
+        // tampering with it (or with the DEK version selection) causes the
+        // integrity check below to fail.
+        let aad = aad_for(version, nonce_bytes);
 
         let dek = self.get_dek(version)?;
         let cipher = dek.cipher();
 
         cipher
-            .decrypt(nonce, encrypted_data)
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: encrypted_data,
+                    aad: &aad,
+                },
+            )
             .map_err(|e| eyre!("Decryption failed (version {version}): {e}"))
     }
 
@@ -303,6 +338,35 @@ mod tests {
         let mut tampered = manager.encrypt(b"test").unwrap();
         tampered[15] ^= 0xFF; // Flip a bit
         assert!(manager.decrypt(&tampered).is_err());
+    }
+
+    #[test]
+    fn test_tampered_version_rejected() {
+        let mut manager = KeyManager::new(test_master_key()).unwrap();
+
+        // Rotate so a second valid DEK version exists; flipping the header to
+        // that version must still be rejected because it is bound as AAD.
+        let _ = manager.rotate_key().unwrap();
+
+        let plaintext = b"data with key v1";
+        let mut ciphertext = manager.encrypt(plaintext).unwrap();
+        // The encryption used the current version (2); rewrite the header to a
+        // different valid version (1) to simulate header tampering.
+        assert_eq!(ciphertext[0], 2);
+        ciphertext[0] = 1;
+
+        assert!(manager.decrypt(&ciphertext).is_err());
+    }
+
+    #[test]
+    fn test_tampered_nonce_rejected() {
+        let mut manager = KeyManager::new(test_master_key()).unwrap();
+
+        let mut ciphertext = manager.encrypt(b"sensitive").unwrap();
+        // Flip a bit in the nonce portion of the header.
+        ciphertext[1] ^= 0xFF;
+
+        assert!(manager.decrypt(&ciphertext).is_err());
     }
 
     #[test]
