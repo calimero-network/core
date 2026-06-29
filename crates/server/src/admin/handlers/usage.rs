@@ -244,7 +244,7 @@ mod tests {
             .store_identity(
                 &namespace_id,
                 &node_identity_pk,
-                node_identity_sk.as_bytes(),
+                node_identity_sk,
                 &[0x44; 32],
             )
             .expect("store identity");
