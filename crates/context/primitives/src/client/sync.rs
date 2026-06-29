@@ -10,6 +10,7 @@ use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
+use eyre::WrapErr;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, warn};
@@ -377,9 +378,11 @@ impl ContextClient {
                 outcome: sender,
             })
             .await
-            .expect("Mailbox not to be dropped");
+            .wrap_err("context manager mailbox closed")?;
 
-        receiver.await.expect("Mailbox not to be dropped");
+        receiver
+            .await
+            .wrap_err("context manager dropped the response channel")?;
 
         Ok(Context::with_service(
             context_id,

@@ -79,7 +79,13 @@ impl PrivateKey {
 
         csprng.fill_bytes(&mut secret);
 
-        Self::from(secret)
+        let key = Self::from(secret);
+
+        // Zeroize the local copy of the seed so it doesn't linger on the stack
+        // after being moved into the key.
+        secret.zeroize();
+
+        key
     }
 
     pub fn sign(&self, message: &[u8]) -> Result<Signature, SignatureError> {
