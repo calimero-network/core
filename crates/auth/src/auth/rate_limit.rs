@@ -171,11 +171,12 @@ impl LoginRateLimiter {
                 } else {
                     // Unreachable: the map is non-empty here (it just passed the
                     // `>= MAX_TRACKED_KEYS` check) and reclaim only removes
-                    // entries, so `oldest_active_key` always finds a victim. Log
-                    // loudly and drop the record rather than panicking if that
-                    // invariant is ever violated, so the failure is visible.
-                    warn!("Login rate-limiter: no eviction victim on a full map; dropping failure record (unexpected)");
-                    return;
+                    // entries, so `oldest_active_key` always finds a victim. If
+                    // that invariant is ever violated, still record the failure
+                    // (the cap is a soft bound, transiently exceeded by one)
+                    // rather than dropping it — dropping would fail open for this
+                    // identity. Log loudly so the unexpected state is visible.
+                    warn!("Login rate-limiter: no eviction victim on a full map (unexpected); recording without eviction");
                 }
             }
         }
