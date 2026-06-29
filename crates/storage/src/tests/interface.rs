@@ -2139,6 +2139,8 @@ mod frozen_storage_verification {
     /// permanently diverged from the rest of the network.
     #[test]
     fn remove_child_from_rejects_frozen_child() {
+        use crate::delta::{commit_causal_delta, reset_delta_context};
+
         env::reset_for_testing();
 
         // Parent under root.
@@ -2150,6 +2152,10 @@ mod frozen_storage_verification {
         child_element.set_frozen_domain();
         let mut para = Paragraph::new_from_element("Frozen child", child_element);
         assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+
+        // Discard the actions emitted by the setup above — the assertion
+        // below is only about what the rejected delete contributes.
+        reset_delta_context();
 
         // Local delete must be refused.
         let result = MainInterface::remove_child_from(page.id(), para.id());
@@ -2171,6 +2177,21 @@ mod frozen_storage_verification {
                 .any(|child| child.id() == para.id()),
             "Frozen child must remain after a rejected delete"
         );
+
+        // The rejected delete must not have broadcast a `DeleteRef`: that is
+        // the split-brain this guards against — every peer rejects a Frozen
+        // `DeleteRef`, leaving only the deleter diverged. The guard fires
+        // before any state is mutated, so no action should reach the delta.
+        if let Some(delta) = commit_causal_delta(&[0; 32]).unwrap() {
+            assert!(
+                !delta
+                    .actions
+                    .iter()
+                    .any(|a| matches!(a, Action::DeleteRef { id, .. } if *id == para.id())),
+                "rejected Frozen delete must not emit a DeleteRef, got: {:?}",
+                delta.actions
+            );
+        }
     }
 
     #[test]
