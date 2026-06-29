@@ -16,8 +16,13 @@ pub trait CastsTo<This> {}
 impl CastsTo<Slice<'_>> for Slice<'_> {}
 
 pub trait InMemoryDBImpl<'a> {
-    type Key: AsRef<[u8]> + CastsTo<Slice<'a>>;
-    type Value: CastsTo<Slice<'a>>;
+    // The `for<'x>` bound makes the cast lifetime-agnostic (it holds for every
+    // `'x` already, via `impl CastsTo<Slice<'_>> for Slice<'_>`). This lets the
+    // database impl recover the value as a `Slice<'static>` when it owns it,
+    // instead of being pinned to `'a`, which is what made `ArcSlice::new`'s
+    // lifetime laundering necessary in the first place.
+    type Key: AsRef<[u8]> + for<'x> CastsTo<Slice<'x>>;
+    type Value: for<'x> CastsTo<Slice<'x>>;
 
     fn db(&self) -> &RwLock<InMemoryDBInner<Self::Key, Self::Value>>;
 
