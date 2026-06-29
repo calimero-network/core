@@ -90,6 +90,28 @@ pub const DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED: u64 = 1_000;
 /// for connection death.
 pub const DEFAULT_OPEN_STREAM_TIMEOUT_MS: u64 = 3_000;
 
+/// How long a namespace join keeps polling for a namespace mesh peer to
+/// appear before giving up (milliseconds).
+///
+/// On a cold cross-network join the inviter and joiner have never
+/// talked, so the joiner can't see the inviter until peer discovery
+/// completes: connect to a rendezvous server, confirm an external
+/// address via AutoNAT, issue the periodic rendezvous discover, dial,
+/// and let gossipsub exchange subscriptions. Those steps are each gated
+/// on a timer or a NAT handshake and run sequentially, so the inviter
+/// routinely takes tens of seconds to enter the joiner's namespace
+/// subscriber set. The join must keep re-polling that whole time — a
+/// fixed round count would burn through cheap empty polls in a few
+/// seconds, far short of the discovery floor, and fail a join that
+/// would have succeeded moments later.
+///
+/// 45s comfortably covers the typical 30–60s discovery floor while
+/// still bounding how long the join request blocks on a genuinely
+/// absent inviter. Only the empty-mesh (still-discovering) wait uses
+/// this budget; once a peer is found the open is bounded by
+/// [`DEFAULT_OPEN_STREAM_TIMEOUT_MS`] instead.
+pub const DEFAULT_NAMESPACE_DISCOVERY_WAIT_MS: u64 = 45_000;
+
 /// Max concurrent peer probes when looking for a peer with state.
 /// Typical meshes are 2-20 peers; a pool of 4 is enough parallelism
 /// that the tail is bounded by the fastest responder, without racing
