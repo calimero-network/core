@@ -37,6 +37,8 @@ pub enum AuthError {
     InvalidToken(String),
     #[error("Token has expired")]
     TokenExpired,
+    #[error("Challenge replay detected: {0}")]
+    ChallengeReplay(String),
     #[error("Storage error: {0}")]
     StorageError(String),
     #[error("Provider error: {0}")]

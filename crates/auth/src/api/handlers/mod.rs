@@ -25,7 +25,7 @@ pub use auth::mock_token_handler;
 /// Re-export authentication flow handlers
 pub use auth::{
     callback_handler, challenge_handler, login_handler, refresh_token_handler,
-    revoke_token_handler, token_handler, validate_handler,
+    revoke_token_handler, token_handler, validate_handler, verify_challenge_handler,
 };
 /// Re-export client key management handlers
 pub use client_keys::{delete_client_handler, list_clients_handler};

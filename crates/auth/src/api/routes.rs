@@ -10,7 +10,7 @@ use super::handlers::client_keys::generate_client_key_handler;
 use crate::api::handlers::auth::mock_token_handler;
 use crate::api::handlers::auth::{
     callback_handler, challenge_handler, login_handler, refresh_token_handler,
-    revoke_token_handler, token_handler, validate_handler,
+    revoke_token_handler, token_handler, validate_handler, verify_challenge_handler,
 };
 use crate::api::handlers::client_keys::{delete_client_handler, list_clients_handler};
 use crate::api::handlers::permissions::{
@@ -69,6 +69,7 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         // Public Auth API endpoints
         .route("/token", post(token_handler))
         .route("/challenge", get(challenge_handler))
+        .route("/challenge/verify", post(verify_challenge_handler))
         .route("/callback", get(callback_handler))
         .route("/providers", get(providers_handler))
         .route("/health", get(health_handler))

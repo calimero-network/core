@@ -13,8 +13,8 @@ use {base64, hex, rand, uuid};
 use crate::api::handlers::auth::ChallengeResponse;
 use crate::config::JwtConfig;
 use crate::secrets::SecretManager;
-use crate::storage::models::KeyType;
-use crate::storage::{KeyManager, Storage};
+use crate::storage::models::{prefixes, KeyType};
+use crate::storage::{deserialize, serialize, KeyManager, Storage};
 use crate::{AuthError, AuthResponse};
 
 /// Token type enum
@@ -69,6 +69,7 @@ pub struct TokenManager {
     config: JwtConfig,
     key_manager: KeyManager,
     secret_manager: Arc<SecretManager>,
+    storage: Arc<dyn Storage>,
 }
 
 impl TokenManager {
@@ -93,6 +94,7 @@ impl TokenManager {
             config,
             key_manager,
             secret_manager,
+            storage,
         }
     }
 
@@ -599,7 +601,94 @@ impl TokenManager {
         )
         .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
 
+        // Persist the challenge `jti` so it can be consumed exactly once during
+        // verification. Without this record, a validly signed challenge could be
+        // replayed any number of times within its expiry window.
+        self.persist_challenge_jti(&claims.jti, claims.exp).await?;
+
+        // Opportunistically prune expired records so the store does not grow
+        // unbounded with challenges that were issued but never verified.
+        self.cleanup_expired_challenges().await;
+
         Ok(ChallengeResponse { challenge, nonce })
+    }
+
+    /// Storage key for a challenge's one-time-use record.
+    fn challenge_jti_key(jti: &str) -> String {
+        format!("{}{}", prefixes::CHALLENGE_JTI, jti)
+    }
+
+    /// Persist a freshly issued challenge `jti` together with its expiry so the
+    /// challenge can later be consumed exactly once.
+    async fn persist_challenge_jti(&self, jti: &str, exp: u64) -> Result<(), AuthError> {
+        let key = Self::challenge_jti_key(jti);
+        let value = serialize(&exp).map_err(|e| AuthError::StorageError(e.to_string()))?;
+        self.storage
+            .set(&key, &value)
+            .await
+            .map_err(|e| AuthError::StorageError(e.to_string()))
+    }
+
+    /// Consume a challenge `jti`, removing its record so it cannot be reused.
+    ///
+    /// Returns [`AuthError::ChallengeReplay`] if the `jti` is absent, which
+    /// means the challenge was either never issued by this instance or has
+    /// already been consumed (a replay attempt).
+    async fn consume_challenge_jti(&self, jti: &str) -> Result<(), AuthError> {
+        let key = Self::challenge_jti_key(jti);
+        // NB: storage exposes no atomic compare-and-delete, so this read-then-delete
+        // leaves a narrow race window under concurrent verification of the same
+        // challenge. Two simultaneous requests could both observe the record before
+        // either deletes it; the practical impact is at most one extra accepted use,
+        // which is acceptable for a single-instance, locally-backed auth service.
+        let existed = self
+            .storage
+            .get(&key)
+            .await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?
+            .is_some();
+
+        if !existed {
+            return Err(AuthError::ChallengeReplay(
+                "challenge has already been used or was never issued".to_string(),
+            ));
+        }
+
+        self.storage
+            .delete(&key)
+            .await
+            .map_err(|e| AuthError::StorageError(e.to_string()))
+    }
+
+    /// Best-effort sweep of expired challenge records to bound storage growth.
+    ///
+    /// Failures are logged but never propagated: cleanup is an optimization,
+    /// not a correctness requirement (expired challenges are already rejected
+    /// by signature/expiry validation in [`Self::verify_challenge`]).
+    async fn cleanup_expired_challenges(&self) {
+        let now = Utc::now().timestamp() as u64;
+
+        let keys = match self.storage.list_keys(prefixes::CHALLENGE_JTI).await {
+            Ok(keys) => keys,
+            Err(e) => {
+                tracing::warn!("Failed to list challenge records for cleanup: {e}");
+                return;
+            }
+        };
+
+        for key in keys {
+            match self.storage.get(&key).await {
+                Ok(Some(data)) => {
+                    if let Ok(exp) = deserialize::<u64>(&data) {
+                        if exp < now {
+                            let _ = self.storage.delete(&key).await;
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!("Failed to read challenge record {key} during cleanup: {e}"),
+            }
+        }
     }
 
     /// Verify a challenge token
@@ -633,7 +722,14 @@ impl TokenManager {
         )
         .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
 
-        Ok(token_data.claims)
+        let claims = token_data.claims;
+
+        // Consume the one-time `jti`. This both proves the challenge was issued
+        // by this instance and guarantees it cannot be verified more than once,
+        // providing replay protection.
+        self.consume_challenge_jti(&claims.jti).await?;
+
+        Ok(claims)
     }
 
     /// Get the key manager
@@ -645,6 +741,123 @@ impl TokenManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::MemoryStorage;
+
+    /// Build a `TokenManager` backed by in-memory storage with initialized
+    /// secrets. Returns the manager alongside its storage handle so tests can
+    /// inspect/manipulate persisted challenge records.
+    async fn make_manager() -> (TokenManager, Arc<dyn Storage>) {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secret_manager
+            .initialize()
+            .await
+            .expect("secret manager initialization");
+
+        let config = JwtConfig {
+            issuer: "test-issuer".to_string(),
+            access_token_expiry: 3600,
+            refresh_token_expiry: 86_400,
+        };
+
+        let manager = TokenManager::new(config, Arc::clone(&storage), secret_manager);
+        (manager, storage)
+    }
+
+    #[tokio::test]
+    async fn challenge_verification_succeeds_once_then_replays_are_rejected() {
+        let (manager, _storage) = make_manager().await;
+
+        let response = manager
+            .generate_challenge()
+            .await
+            .expect("generate challenge");
+
+        // First verification succeeds and returns the original claims.
+        let claims = manager
+            .verify_challenge(&response.challenge)
+            .await
+            .expect("first verification succeeds");
+        assert_eq!(claims.nonce, response.nonce);
+
+        // Replaying the same challenge must be rejected.
+        let err = manager
+            .verify_challenge(&response.challenge)
+            .await
+            .expect_err("replay must be rejected");
+        assert!(
+            matches!(err, AuthError::ChallengeReplay(_)),
+            "expected ChallengeReplay, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn challenge_never_issued_is_rejected() {
+        let (manager, storage) = make_manager().await;
+
+        let response = manager
+            .generate_challenge()
+            .await
+            .expect("generate challenge");
+
+        // Drop the persisted record to simulate a validly signed, non-expired
+        // challenge whose `jti` was never issued by this instance.
+        for key in storage
+            .list_keys(prefixes::CHALLENGE_JTI)
+            .await
+            .expect("list challenge records")
+        {
+            storage.delete(&key).await.expect("delete challenge record");
+        }
+
+        let err = manager
+            .verify_challenge(&response.challenge)
+            .await
+            .expect_err("unissued challenge must be rejected");
+        assert!(
+            matches!(err, AuthError::ChallengeReplay(_)),
+            "expected ChallengeReplay, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generating_a_challenge_persists_its_jti() {
+        let (manager, storage) = make_manager().await;
+
+        manager
+            .generate_challenge()
+            .await
+            .expect("generate challenge");
+
+        let records = storage
+            .list_keys(prefixes::CHALLENGE_JTI)
+            .await
+            .expect("list challenge records");
+        assert_eq!(records.len(), 1, "exactly one challenge record expected");
+    }
+
+    #[tokio::test]
+    async fn expired_challenge_records_are_swept() {
+        let (manager, storage) = make_manager().await;
+
+        let stale_key = TokenManager::challenge_jti_key("stale-jti");
+        let past = (Utc::now().timestamp() as u64).saturating_sub(10);
+        storage
+            .set(&stale_key, &serialize(&past).expect("serialize exp"))
+            .await
+            .expect("persist stale record");
+
+        manager.cleanup_expired_challenges().await;
+
+        assert!(
+            storage
+                .get(&stale_key)
+                .await
+                .expect("read stale record")
+                .is_none(),
+            "expired challenge record should have been pruned"
+        );
+    }
 
     #[test]
     fn test_is_internal_auth_service_valid_cases() {

@@ -708,6 +708,64 @@ pub async fn challenge_handler(state: Extension<Arc<AppState>>) -> impl IntoResp
     }
 }
 
+/// Challenge verification request
+#[derive(Debug, Deserialize, Validate)]
+pub struct ChallengeVerifyRequest {
+    /// The challenge token previously issued by `/auth/challenge`
+    #[validate(length(min = 1, message = "Challenge token is required"))]
+    pub challenge: String,
+}
+
+/// Challenge verification handler
+///
+/// This endpoint verifies a challenge token that was previously issued by
+/// `/auth/challenge` and consumes its one-time `jti`. It provides replay
+/// protection: a given challenge can be verified at most once, and only before
+/// it expires. A second attempt to verify the same challenge — or any challenge
+/// that was not issued by this service — is rejected.
+///
+/// # Arguments
+///
+/// * `state` - The application state
+/// * `request` - The challenge verification request
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - The verified challenge claims, or an error
+pub async fn verify_challenge_handler(
+    state: Extension<Arc<AppState>>,
+    ValidatedJson(request): ValidatedJson<ChallengeVerifyRequest>,
+) -> impl IntoResponse {
+    match state
+        .0
+        .token_generator
+        .verify_challenge(&request.challenge)
+        .await
+    {
+        Ok(claims) => success_response(
+            serde_json::json!({
+                "jti": claims.jti,
+                "nonce": claims.nonce,
+                "iat": claims.iat,
+                "exp": claims.exp,
+            }),
+            None,
+        ),
+        Err(err @ AuthError::ChallengeReplay(_)) => {
+            warn!("Rejected challenge verification: {}", err);
+            error_response(StatusCode::CONFLICT, format!("Challenge rejected: {err}"), None)
+        }
+        Err(err) => {
+            warn!("Invalid challenge verification: {}", err);
+            error_response(
+                StatusCode::UNAUTHORIZED,
+                format!("Invalid challenge: {err}"),
+                None,
+            )
+        }
+    }
+}
+
 /// Revoke token request
 #[derive(Debug, Deserialize, Validate)]
 pub struct RevokeTokenRequest {

@@ -24,4 +24,10 @@ pub mod prefixes {
 
     /// Prefix for key permissions
     pub const KEY_PERMISSIONS: &str = "key_permissions:";
+
+    /// Prefix for one-time challenge records (keyed by challenge `jti`).
+    ///
+    /// Each record tracks an issued, not-yet-consumed challenge so that a
+    /// given challenge can be verified at most once (replay protection).
+    pub const CHALLENGE_JTI: &str = "challenge_jti:";
 }
