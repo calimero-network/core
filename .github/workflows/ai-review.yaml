@@ -6,13 +6,12 @@ on:
     # cost — a review fires on PR open / reopen / draft→ready, not on each
     # push. Re-trigger a review by toggling draft or via workflow_dispatch.
     types: [opened, reopened, ready_for_review]
-    # Skipped only when ALL changed files are under docs/architecture/docs-static —
+    # Skipped only when ALL changed files are under docs/docs-static —
     # mixed PRs still trigger a review (standard GitHub Actions paths-ignore semantics).
     # Pure-doc PRs are owned by the `Doc Auto-Update` workflow; this avoids paying
     # twice for the same diff.
     paths-ignore:
       - 'docs/**'
-      - 'architecture/**'
       - 'docs-static/**'
   workflow_dispatch:
     inputs:

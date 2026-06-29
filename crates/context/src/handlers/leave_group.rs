@@ -1,6 +1,5 @@
 //! Self-leave from a single group.
 //!
-//! See `architecture/membership-and-leave.html` § 5 for the full design.
 //! This handler publishes `GroupOp::MemberLeft { member: signer }` via
 //! the existing local-governance pipeline. All apply-side validation
 //! (direct-row, owner, last-admin) lives in
@@ -23,8 +22,7 @@
 //! listener drops the subgroup's local rows (signing keys included).
 //! The listener deliberately does NOT unsubscribe from the namespace
 //! gossipsub topic for a subgroup-only leave — other memberships
-//! under the same namespace still need it. See ADR 0002
-//! (`docs/adr/0002-fleet-tee-leave-protocol.md`).
+//! under the same namespace still need it.
 
 use std::sync::Arc;
 

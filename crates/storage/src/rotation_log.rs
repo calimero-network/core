@@ -10,8 +10,7 @@
 //!
 //! # Design
 //!
-//! Per [ADR 0001](../../../docs/adr/0001-shared-storage-concurrent-rotation.md):
-//! every accepted rotation appends an entry; the node-side reader compares
+//! Every accepted rotation appends an entry; the node-side reader compares
 //! entries by **causal-first → HLC → signer-pubkey** ordering.
 //!
 //! The log is materialized as an `UnorderedMap<[u8; 32], RotationLogEntry>`

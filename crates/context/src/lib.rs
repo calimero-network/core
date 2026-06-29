@@ -795,7 +795,7 @@ impl Actor for ContextManager {
         // the recovered context is reliably replicated rather than dropped by
         // the best-effort broadcast. Do not reorder these two spawns.
         auto_follow::spawn(self.datastore.clone(), self.context_client.clone());
-        // Self-purge handler (see docs/adr/0002-fleet-tee-leave-protocol.md) — reacts
+        // Self-purge handler — reacts
         // to `OpEvent::TeeMemberRemoved` (paired follow-up emitted ONLY when the
         // removed member's prior role was `ReadOnlyTee`) for our own identity and
         // drops the local rows (signing keys, gov ops, namespace identity,
