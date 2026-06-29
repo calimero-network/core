@@ -60,6 +60,14 @@ pub const DEFAULT_DEDUP_TTL: Duration = Duration::from_secs(300);
 const MAX_TRACKED_PEERS: usize = 4096;
 const MAX_TRACKED_QUOTES: usize = 8192;
 
+/// Minimum spacing between time-based [`TeeAdmissionThrottle::prune`] sweeps.
+/// `prune`'s `retain` pass is O(tracked entries); running it on every announce
+/// would make the per-call cost grow with the map size under an adversarial
+/// flood — the exact case this throttle defends against. Instead we sweep at
+/// most once per this interval (a size-cap guard still forces an immediate
+/// sweep if either map exceeds its hard cap, so memory stays bounded).
+const PRUNE_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Outcome of consulting the throttle for one announce.
 #[derive(Debug)]
 pub enum Decision {
@@ -88,6 +96,9 @@ pub struct TeeAdmissionThrottle {
     per_peer_burst: f64,
     per_peer_refill: Duration,
     dedup_ttl: Duration,
+    /// `now` of the last time-based prune sweep, used to amortise `prune` to at
+    /// most once per [`PRUNE_INTERVAL`]. `None` until the first `check`.
+    last_prune: Option<Instant>,
 }
 
 impl std::fmt::Debug for TeeAdmissionThrottle {
@@ -112,6 +123,17 @@ impl Default for TeeAdmissionThrottle {
 }
 
 impl TeeAdmissionThrottle {
+    /// Construct a throttle with explicit gate parameters.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max_inflight == 0` or `per_peer_burst < 1.0`: with no inflight
+    /// permits no announce could ever proceed, and a sub-unit burst can never
+    /// satisfy the `tokens >= 1.0` gate, so both render the throttle a total
+    /// black hole. These are construction-time programmer errors — the only
+    /// in-tree callers are [`Default`] and tests, both of which pass valid
+    /// constants — so they are asserted rather than surfaced as a runtime
+    /// `Result` the caller would have to thread through node startup.
     pub fn new(
         max_inflight: usize,
         per_peer_burst: f64,
@@ -127,6 +149,7 @@ impl TeeAdmissionThrottle {
             per_peer_burst,
             per_peer_refill,
             dedup_ttl,
+            last_prune: None,
         }
     }
 
@@ -143,13 +166,26 @@ impl TeeAdmissionThrottle {
         group_id: [u8; 32],
         quote_hash: [u8; 32],
     ) -> Decision {
-        self.prune(now);
+        // Prune is O(tracked entries); amortise it to at most once per
+        // `PRUNE_INTERVAL` so an adversarial flood doesn't pay an O(N) sweep on
+        // every announce before the cheap gates below can reject it. A size-cap
+        // guard still forces an immediate sweep whenever either map is over its
+        // hard cap, so memory stays bounded regardless of call cadence.
+        let over_cap =
+            self.recent_quotes.len() > MAX_TRACKED_QUOTES || self.peers.len() > MAX_TRACKED_PEERS;
+        let due = self
+            .last_prune
+            .is_none_or(|last| now.saturating_duration_since(last) >= PRUNE_INTERVAL);
+        if over_cap || due {
+            self.prune(now);
+            self.last_prune = Some(now);
+        }
 
         // Gate 1: per-group quote dedup. Cheapest, and the most effective
         // guard against single-quote replay floods.
         let key = (group_id, quote_hash);
         if let Some(seen) = self.recent_quotes.get(&key) {
-            if now.duration_since(*seen) < self.dedup_ttl {
+            if now.saturating_duration_since(*seen) < self.dedup_ttl {
                 return Decision::Duplicate;
             }
         }
@@ -191,7 +227,7 @@ impl TeeAdmissionThrottle {
     fn prune(&mut self, now: Instant) {
         let dedup_ttl = self.dedup_ttl;
         self.recent_quotes
-            .retain(|_, seen| now.duration_since(*seen) < dedup_ttl);
+            .retain(|_, seen| now.saturating_duration_since(*seen) < dedup_ttl);
         if self.recent_quotes.len() > MAX_TRACKED_QUOTES {
             Self::evict_oldest(&mut self.recent_quotes, MAX_TRACKED_QUOTES);
         }
@@ -210,17 +246,31 @@ impl TeeAdmissionThrottle {
 
     fn evict_oldest<K: Clone + std::hash::Hash + Eq>(map: &mut HashMap<K, Instant>, keep: usize) {
         let mut entries: Vec<(K, Instant)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        entries.sort_by_key(|(_, t)| *t);
-        for (k, _) in entries.into_iter().take(map.len().saturating_sub(keep)) {
-            let _ = map.remove(&k);
-        }
+        Self::evict_oldest_entries(map, &mut entries, keep);
     }
 
     fn evict_oldest_peers(map: &mut HashMap<PeerId, PeerBucket>, keep: usize) {
         let mut entries: Vec<(PeerId, Instant)> = map.iter().map(|(k, v)| (*k, v.last)).collect();
-        entries.sort_by_key(|(_, t)| *t);
-        for (k, _) in entries.into_iter().take(map.len().saturating_sub(keep)) {
-            let _ = map.remove(&k);
+        Self::evict_oldest_entries(map, &mut entries, keep);
+    }
+
+    /// Remove the oldest `len - keep` entries (smallest `Instant`) from `map`,
+    /// given `entries` as its `(key, timestamp)` snapshot. Uses
+    /// `select_nth_unstable` (O(n) average) rather than a full O(n log n) sort,
+    /// since the cap is only ever crossed under adversarial churn and the
+    /// evicted entries are discarded, so their relative order is irrelevant.
+    fn evict_oldest_entries<K: std::hash::Hash + Eq, V>(
+        map: &mut HashMap<K, V>,
+        entries: &mut [(K, Instant)],
+        keep: usize,
+    ) {
+        let remove = entries.len().saturating_sub(keep);
+        if remove == 0 {
+            return;
+        }
+        let _ = entries.select_nth_unstable_by_key(remove - 1, |(_, t)| *t);
+        for (k, _) in &entries[..remove] {
+            let _ = map.remove(k);
         }
     }
 }
@@ -352,6 +402,33 @@ mod tests {
         // available again it can proceed (proving no dedup side effect).
         assert!(matches!(
             t.check(now + Duration::from_secs(1000), p, g, [2u8; 32]),
+            Decision::Proceed(_)
+        ));
+    }
+
+    #[test]
+    fn rejections_do_not_slow_token_recovery() {
+        // Regression guard: each `check` advances `bucket.last = now` *after*
+        // crediting the elapsed refill, so a rejection between two accepts must
+        // not steal recovery credit. Burst 1, refill 1 token/sec.
+        let mut t =
+            TeeAdmissionThrottle::new(1000, 1.0, Duration::from_secs(1), Duration::from_secs(300));
+        let t0 = Instant::now();
+        let g = [1u8; 32];
+        let p = peer(1);
+
+        // Spend the single token.
+        assert!(matches!(t.check(t0, p, g, [0u8; 32]), Decision::Proceed(_)));
+        // Half a second in: only 0.5 token refilled → rejected, and this call
+        // advances `last` to t0+0.5s.
+        assert!(matches!(
+            t.check(t0 + Duration::from_millis(500), p, g, [1u8; 32]),
+            Decision::RateLimited
+        ));
+        // At exactly t0+1s the bucket must be back to a full token despite the
+        // intervening rejection — recovery tracks wall-clock, not call count.
+        assert!(matches!(
+            t.check(t0 + Duration::from_secs(1), p, g, [2u8; 32]),
             Decision::Proceed(_)
         ));
     }

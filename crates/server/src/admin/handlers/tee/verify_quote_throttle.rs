@@ -58,6 +58,16 @@ pub struct VerifyQuoteThrottle {
 }
 
 impl VerifyQuoteThrottle {
+    /// Construct a throttle with explicit limits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max_inflight == 0` or `burst < 1.0`: with no inflight permits
+    /// no request could ever proceed, and a sub-unit burst can never satisfy
+    /// the `tokens >= 1.0` gate, so either renders the endpoint a black hole.
+    /// These are construction-time programmer errors — the only in-tree callers
+    /// are [`Default`] and tests, both passing valid constants — so they are
+    /// asserted rather than surfaced as a `Result`.
     pub fn new(max_inflight: usize, burst: f64, refill: Duration) -> Self {
         assert!(max_inflight > 0, "max_inflight must be positive");
         assert!(burst >= 1.0, "burst must be >= 1");
@@ -83,7 +93,17 @@ impl VerifyQuoteThrottle {
         };
 
         {
-            let mut bucket = self.bucket.lock().expect("verify-quote throttle poisoned");
+            // Recover from a poisoned mutex rather than propagating the panic:
+            // the only data behind the lock is the token bucket, and a stale
+            // bucket from a thread that panicked mid-update is harmless (the
+            // refill below reconciles it against `now`). Letting the poison
+            // propagate via `.expect()` would instead wedge the endpoint
+            // permanently — every later request would re-panic (AGENTS.md: avoid
+            // `.expect()`).
+            let mut bucket = self
+                .bucket
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let elapsed = now.saturating_duration_since(bucket.last).as_secs_f64();
             bucket.tokens = (bucket.tokens + elapsed * refill_per_sec).min(self.burst);
             bucket.last = now;
