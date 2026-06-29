@@ -164,6 +164,15 @@ pub async fn token_handler(
     // Extract node URL from client_name for node-specific token generation
     let node_url = Some(token_request.client_name.clone());
 
+    // Rate-limit key from the RAW identity, captured before sanitization so that
+    // two distinct identities cannot be collapsed into one bucket (which would
+    // let one identity lock out another). Keyed by (auth_method, public_key)
+    // only: `client_name` is fully attacker-controlled and adds no binding, and
+    // `public_key` is the field bound to the caller's identity. This value is
+    // used only as an opaque map key and is never logged. (See module docs for
+    // the identity-rotation / IP-keying follow-up.)
+    let rl_key = format!("{}|{}", token_request.auth_method, token_request.public_key);
+
     // Sanitize string inputs to prevent injection attacks
     token_request.auth_method = sanitize_identifier(&token_request.auth_method);
     token_request.public_key = sanitize_string(&token_request.public_key);
@@ -194,18 +203,15 @@ pub async fn token_handler(
         );
     }
 
-    // Brute-force throttle, keyed by the request identity. If this caller has
-    // exceeded the failed-attempt budget, reject with 429 + Retry-After before
-    // doing any credential work.
-    //
-    // Keyed by (auth_method, public_key) only. `client_name` is fully
-    // attacker-controlled and adds no binding — including it would let an
-    // attacker reset the bucket by rotating the name. `public_key` is the field
-    // bound to the caller's identity. (See module docs for the
-    // identity-rotation / IP-keying follow-up.)
-    let rl_key = format!("{}|{}", token_request.auth_method, token_request.public_key);
+    // Brute-force throttle: if this caller has exceeded the failed-attempt
+    // budget, reject with 429 + Retry-After before doing any credential work.
     if let Some(retry_after) = state.0.login_rate_limiter.check(&rl_key) {
-        warn!("Login rate limit exceeded for identity {rl_key}");
+        // Log only the sanitized, low-cardinality auth method — never the raw
+        // key (which holds the public key and could be a log-injection vector).
+        warn!(
+            auth_method = %token_request.auth_method,
+            "Login rate limit exceeded"
+        );
         let mut headers = HeaderMap::new();
         drop(
             headers.insert(
