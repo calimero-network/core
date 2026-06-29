@@ -211,6 +211,7 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
             Err(RpcError::InternalError(err)) => error!(%err, "Internal server error"),
         }
 
+        // All non-returning arms above log their error and fall through here.
         ResponseBody::Error(ResponseBodyError::ServerError(
             ServerResponseError::InternalError { err: None },
         ))
