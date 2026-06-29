@@ -119,7 +119,17 @@ impl BlobManager {
     }
 
     pub async fn delete(&self, id: BlobId) -> EyreResult<bool> {
-        self.blob_store.delete(id).await
+        let key = BlobMetaKey::new(id);
+
+        // Remove the metadata row alongside the chunk file. Without this, `has`
+        // keeps reporting the blob as present (it only checks metadata) while
+        // `get` fails because the underlying file is gone.
+        let had_meta = self.data_store.handle().has(&key)?;
+        self.data_store.handle().delete(&key)?;
+
+        let had_file = self.blob_store.delete(id).await?;
+
+        Ok(had_meta || had_file)
     }
 
     pub async fn put<T>(&self, stream: T) -> EyreResult<(BlobId, Hash, u64)>
@@ -486,4 +496,47 @@ impl BlobRepository for FileSystem {
 #[cfg(test)]
 mod integration_tests_package_usage {
     use tokio_util as _;
+}
+
+#[cfg(test)]
+mod delete_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store as DataStore;
+    use camino::Utf8PathBuf;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    async fn manager(root: &Path) -> BlobManager {
+        let data_store = DataStore::new(Arc::new(InMemoryDB::owned()));
+        let config =
+            BlobStoreConfig::new(Utf8PathBuf::from_path_buf(root.to_path_buf()).unwrap());
+        let blob_store = FileSystem::new(&config).await.unwrap();
+        BlobManager::new(data_store, blob_store)
+    }
+
+    #[tokio::test]
+    async fn delete_removes_metadata_so_has_stays_consistent() {
+        let dir = tempdir().unwrap();
+        let mgr = manager(dir.path()).await;
+
+        let data = b"hello blob world";
+        let (id, _hash, _size) = mgr.put(&data[..]).await.unwrap();
+
+        assert!(mgr.has(id).unwrap());
+        assert!(mgr.get(id).unwrap().is_some());
+
+        assert!(mgr.delete(id).await.unwrap());
+
+        // The metadata row must be gone too; otherwise `has` keeps reporting the
+        // blob as present while `get` can no longer read it.
+        assert!(!mgr.has(id).unwrap());
+        assert!(mgr.get(id).unwrap().is_none());
+
+        // A second delete has nothing left to remove.
+        assert!(!mgr.delete(id).await.unwrap());
+    }
 }
