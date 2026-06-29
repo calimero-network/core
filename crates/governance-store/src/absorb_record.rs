@@ -11,7 +11,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_node_primitives::delta_buffer::BufferedDelta;
-use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::logical_clock::HybridTimestamp;
 use eyre::{Result as EyreResult, WrapErr};
@@ -20,7 +19,7 @@ use eyre::{Result as EyreResult, WrapErr};
 ///
 /// Every field mirrors `BufferedDelta` 1:1 except `source_peer`, which is
 /// stored as the raw `PeerId::to_bytes()` byte vector (the `PeerId` type has no
-/// clean Borsh derive). `GovernanceParentEdge`, `HybridTimestamp`, `Hash`, and
+/// clean Borsh derive). `GovernanceParentEdge`, `HybridTimestamp`, and
 /// `PublicKey` all carry their own Borsh impls, so they are mirrored directly.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct AbsorbRecord {
@@ -37,10 +36,6 @@ pub struct AbsorbRecord {
     pub nonce: [u8; 12],
     /// Author public key.
     pub author_id: PublicKey,
-    /// Expected root hash after applying this delta.
-    pub root_hash: Hash,
-    /// Optional serialized events (for handler execution after replay).
-    pub events: Option<Vec<u8>>,
     /// Source peer ID as `PeerId::to_bytes()` (no clean Borsh derive on
     /// `PeerId`, so we round-trip the byte form).
     pub source_peer: Vec<u8>,
@@ -115,8 +110,6 @@ impl AbsorbRecord {
             payload: bd.payload.clone(),
             nonce: bd.nonce,
             author_id: bd.author_id,
-            root_hash: bd.root_hash,
-            events: bd.events.clone(),
             source_peer: bd.source_peer.to_bytes(),
             key_id: bd.key_id,
             governance_position: bd.governance_position.clone(),
@@ -143,8 +136,6 @@ impl AbsorbRecord {
             payload: Vec::new(),
             nonce: [0; 12],
             author_id: PublicKey::from([0; 32]),
-            root_hash: Hash::from([0; 32]),
-            events: None,
             source_peer: Vec::new(),
             key_id: [0; 32],
             governance_position: None,
@@ -179,8 +170,6 @@ impl AbsorbRecord {
             payload: Vec::new(),
             nonce: [0; 12],
             author_id: PublicKey::from([0; 32]),
-            root_hash: Hash::from([0; 32]),
-            events: None,
             source_peer: Vec::new(),
             key_id: [0; 32],
             governance_position: None,
@@ -223,8 +212,6 @@ impl AbsorbRecord {
             payload: self.payload,
             nonce: self.nonce,
             author_id: self.author_id,
-            root_hash: self.root_hash,
-            events: self.events,
             source_peer,
             key_id: self.key_id,
             governance_position: self.governance_position,
@@ -247,8 +234,6 @@ mod tests {
             payload: vec![1, 2, 3],
             nonce: [0; 12],
             author_id: PublicKey::from([0; 32]),
-            root_hash: Hash::from([0; 32]),
-            events: Some(vec![10, 20, 30]),
             source_peer: libp2p::PeerId::random(),
             key_id: [0; 32],
             // Populate the Some(GovernanceParentEdge) path so the mirror exercises
@@ -310,8 +295,6 @@ mod tests {
         assert_eq!(back.payload, bd.payload);
         assert_eq!(back.nonce, bd.nonce);
         assert_eq!(back.author_id, bd.author_id);
-        assert_eq!(back.root_hash, bd.root_hash);
-        assert_eq!(back.events, bd.events);
         assert_eq!(back.source_peer, bd.source_peer); // PeerId survived to_bytes/from_bytes
         assert_eq!(back.key_id, bd.key_id);
         assert_eq!(back.governance_position, bd.governance_position);

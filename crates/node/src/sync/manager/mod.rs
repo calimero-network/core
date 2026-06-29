@@ -2827,7 +2827,6 @@ impl SyncManager {
 
         for buffered in deltas {
             let delta_id = buffered.id;
-            let has_events = buffered.events.is_some();
             let is_covered_by_checkpoint = covered_delta_ids.contains(&delta_id);
 
             match replay_buffered_delta(ReplayBufferedDeltaInput {
@@ -2847,7 +2846,6 @@ impl SyncManager {
                         info!(
                             %context_id,
                             delta_id = ?delta_id,
-                            has_events,
                             "Replayed buffered delta successfully"
                         );
                     } else if is_covered_by_checkpoint {

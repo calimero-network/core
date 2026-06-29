@@ -1,6 +1,5 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -30,7 +29,7 @@ use crate::messages::{
     MigrationStatusReport, NodeMessage, RegisterPendingSpecializedNodeInvite,
     RemovePendingSpecializedNodeInvite,
 };
-use crate::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
+use crate::sync::{BroadcastMessage, SealedDeltaPayload, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use crate::TopicManager;
 
 pub use crate::join_bundle::JoinBundle;
@@ -554,9 +553,26 @@ impl NodeClient {
         let shared_key = SharedKey::from_sk(sender_key);
         let nonce = rand::thread_rng().gen();
 
+        // Seal the expected post-apply root hash and the execution events
+        // together with the storage delta so none of them ride the gossip
+        // topic in cleartext. The root hash is a state fingerprint and the
+        // events are application activity; encrypting them under the group key
+        // keeps them readable only by members, who get them back on decrypt.
+        //
+        // A serialization failure here returns via `?` before any publish, so
+        // the delta is NOT gossiped at all. Treat it as a hard failure rather
+        // than a recoverable drop — unlike the cold-start "no peers" case
+        // below, there is no sync-pull path that recovers a delta we never put
+        // on the wire.
+        let sealed = borsh::to_vec(&SealedDeltaPayload {
+            root_hash: context.root_hash,
+            artifact,
+            events,
+        })?;
+
         let encrypted = shared_key
-            .encrypt(artifact, nonce)
-            .ok_or_eyre("failed to encrypt artifact")?;
+            .encrypt(sealed, nonce)
+            .ok_or_eyre("failed to encrypt delta payload")?;
 
         let payload = BroadcastMessage::StateDelta {
             context_id: context.id,
@@ -564,10 +580,8 @@ impl NodeClient {
             delta_id,
             parent_ids,
             hlc,
-            root_hash: context.root_hash,
             artifact: encrypted.into(),
             nonce,
-            events: events.map(Cow::from),
             governance_position,
             key_id,
             delta_signature,

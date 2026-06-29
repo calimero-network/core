@@ -21,7 +21,6 @@ use std::collections::HashSet;
 
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::Nonce;
-use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::logical_clock::HybridTimestamp;
 
@@ -78,12 +77,17 @@ impl PushResult {
 /// A single buffered delta.
 ///
 /// Contains ALL fields needed for replay after snapshot sync completes.
-/// Previously missing fields (nonce, author_id, root_hash, events) caused
-/// data loss because deltas couldn't be decrypted or processed.
+/// Previously missing fields (nonce, author_id) caused data loss because
+/// deltas couldn't be decrypted or processed.
+///
+/// The expected root hash and the execution events are NOT fields here: both
+/// are sealed inside the encrypted `payload` and recovered on replay when the
+/// payload is decrypted, so neither needs to be carried (or persisted)
+/// separately.
 ///
 /// **POC Bug 7**: This struct MUST include all fields for replay - not just
-/// `id`, `parents`, `hlc`, `payload`, but also `nonce`, `author_id`, `root_hash`,
-/// `events`, and `source_peer`.
+/// `id`, `parents`, `hlc`, `payload`, but also `nonce`, `author_id`, and
+/// `source_peer`.
 #[derive(Debug, Clone)]
 pub struct BufferedDelta {
     /// Delta ID.
@@ -102,10 +106,6 @@ pub struct BufferedDelta {
     pub nonce: Nonce,
     /// Author public key (needed to get sender key for decryption).
     pub author_id: PublicKey,
-    /// Expected root hash after applying this delta.
-    pub root_hash: Hash,
-    /// Optional serialized events (for handler execution after replay).
-    pub events: Option<Vec<u8>>,
     /// Source peer ID (for requesting sender key if needed).
     pub source_peer: libp2p::PeerId,
     /// Group key identifier for decryption.
@@ -326,8 +326,6 @@ mod tests {
             payload: vec![1, 2, 3],
             nonce: [0; 12],
             author_id: PublicKey::from([0; 32]),
-            root_hash: Hash::from([0; 32]),
-            events: None,
             source_peer: libp2p::PeerId::random(),
             key_id: [0; 32],
             governance_position: None,

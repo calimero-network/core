@@ -839,7 +839,6 @@ impl crate::sync::state_access::SyncStateAccess for NodeState {
 #[cfg(test)]
 mod tests {
     use calimero_node_primitives::delta_buffer::BufferedDelta;
-    use calimero_primitives::hash::Hash;
     use calimero_storage::logical_clock::HybridTimestamp;
 
     use super::*;
@@ -886,8 +885,6 @@ mod tests {
             payload: vec![],
             nonce: [0u8; 12],
             author_id: PublicKey::from([0u8; 32]),
-            root_hash: Hash::from([0u8; 32]),
-            events: None,
             source_peer,
             key_id: [0u8; 32],
             governance_position: None,
