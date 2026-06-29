@@ -127,38 +127,28 @@ impl Message for AcquireContextLockRequest {
     type Result = Option<ContextAtomicKey>;
 }
 
-/// Diagnostic category attached to [`ExecuteError::InternalError`].
-///
-/// The execute path has roughly a dozen distinct internal failure sites
-/// (datastore lookups, config/identity reads, encryption-key resolution, actor
-/// plumbing, …). Collapsing them all into a single opaque `InternalError` makes
-/// failures indistinguishable to clients and to anyone reading a bug report.
-/// This category gives each site a stable, machine-readable label without
-/// leaking internal error detail to the wire. Every variant denotes a
-/// permanent, non-retryable failure (the retryable conditions have their own
-/// dedicated [`ExecuteError`] variants).
+/// Coarse, stable category attached to [`ExecuteError::InternalError`] so a
+/// caller can tell *which class* of internal failure occurred without parsing
+/// log text. The detailed cause is always logged server-side at the failure
+/// site; this only classifies it on the wire.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum InternalErrorKind {
-    /// Resolving the context from the local datastore failed.
-    ContextResolution,
-    /// Reading group / upgrade governance state failed.
-    GovernanceLookup,
-    /// Loading the context configuration failed (missing or unreadable).
-    ContextConfig,
-    /// Reading the executor identity failed.
-    IdentityLookup,
-    /// Deciding or loading the state-delta encryption key failed.
-    StateDeltaEncryption,
-    /// A failure occurred while performing post-execution external actions.
-    ExternalActions,
-    /// Resolving an identity alias during payload substitution failed.
-    AliasResolution,
-    /// The context-manager actor mailbox or response channel was unavailable.
-    ActorUnavailable,
-    /// Invoking the app's root-state CRDT merge entry point failed.
-    RootStateMerge,
+    /// Loading or resolving the context, its config, or its identity failed.
+    Context,
+    /// Loading or resolving group / cascade-upgrade metadata failed.
+    Group,
+    /// Resolving or loading a state-delta encryption key failed.
+    Encryption,
+    /// The WASM runtime / execution task failed.
+    Runtime,
+    /// A root-state CRDT merge round-trip (serialize/execute/deserialize) failed.
+    Merge,
+    /// An internal actor channel/mailbox was closed or dropped.
+    Ipc,
+    /// Any other internal failure.
+    Other,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
@@ -176,8 +166,8 @@ pub enum ExecuteError {
     Uninitialized,
     #[error("application not installed: '{application_id}'")]
     ApplicationNotInstalled { application_id: ApplicationId },
-    #[error("internal error: {0:?}")]
-    InternalError(InternalErrorKind),
+    #[error("internal error ({kind:?})")]
+    InternalError { kind: InternalErrorKind },
     #[error("error resolving identity alias '{alias}'")]
     AliasResolutionFailed { alias: Alias<PublicKey> },
     /// Group-context execute attempted before its `KeyDelivery` op

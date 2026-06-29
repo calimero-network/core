@@ -170,11 +170,11 @@ impl Handler<ExecuteRequest> for ContextManager {
             Ok(Some(context)) => context,
             Ok(None) => return ActorResponse::reply(Err(ExecuteError::ContextNotFound)),
             Err(err) => {
-                error!(%context_id, %err, "failed to resolve context");
+                error!(%err, "failed to fetch context");
 
-                return ActorResponse::reply(Err(ExecuteError::InternalError(
-                    InternalErrorKind::ContextResolution,
-                )));
+                return ActorResponse::reply(Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Context,
+                }));
             }
         };
 
@@ -251,9 +251,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                             %err,
                             "cascade gate: failed to load GroupUpgradeStatus"
                         );
-                        return ActorResponse::reply(Err(ExecuteError::InternalError(
-                            InternalErrorKind::GovernanceLookup,
-                        )));
+                        return ActorResponse::reply(Err(ExecuteError::InternalError {
+                            kind: InternalErrorKind::Group,
+                        }));
                     }
                 }
             }
@@ -266,9 +266,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                     %err,
                     "cascade gate: failed to resolve owning group"
                 );
-                return ActorResponse::reply(Err(ExecuteError::InternalError(
-                    InternalErrorKind::GovernanceLookup,
-                )));
+                return ActorResponse::reply(Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Group,
+                }));
             }
         }
 
@@ -294,16 +294,16 @@ impl Handler<ExecuteRequest> for ContextManager {
             Ok(None) => {
                 error!(%context_id, "missing context config for context");
 
-                return ActorResponse::reply(Err(ExecuteError::InternalError(
-                    InternalErrorKind::ContextConfig,
-                )));
+                return ActorResponse::reply(Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Context,
+                }));
             }
             Err(err) => {
-                error!(%context_id, %err, "failed to load context config");
+                error!(%err, "failed to load context config");
 
-                return ActorResponse::reply(Err(ExecuteError::InternalError(
-                    InternalErrorKind::ContextConfig,
-                )));
+                return ActorResponse::reply(Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Context,
+                }));
             }
         }
 
@@ -321,11 +321,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                 }))
             }
             Err(err) => {
-                error!(%context_id, %err, "failed to load executor identity");
+                error!(%err, "failed to load context identity");
 
-                return ActorResponse::reply(Err(ExecuteError::InternalError(
-                    InternalErrorKind::IdentityLookup,
-                )));
+                return ActorResponse::reply(Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Context,
+                }));
             }
         };
 
@@ -369,9 +369,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 %err,
                                 "state-delta encryption: resolve_namespace failed",
                             );
-                            return ActorResponse::reply(Err(ExecuteError::InternalError(
-                                InternalErrorKind::StateDeltaEncryption,
-                            )));
+                            return ActorResponse::reply(Err(ExecuteError::InternalError {
+                                kind: InternalErrorKind::Encryption,
+                            }));
                         }
                     };
                     let key_group_id = match CapabilitiesRepository::new(&self.datastore)
@@ -387,9 +387,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 %err,
                                 "state-delta encryption: is_open_chain_to_namespace failed",
                             );
-                            return ActorResponse::reply(Err(ExecuteError::InternalError(
-                                InternalErrorKind::StateDeltaEncryption,
-                            )));
+                            return ActorResponse::reply(Err(ExecuteError::InternalError {
+                                kind: InternalErrorKind::Encryption,
+                            }));
                         }
                     };
                     // Group-context branch: the group/namespace key is the
@@ -434,9 +434,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 %err,
                                 "state-delta encryption: load_current_group_key failed",
                             );
-                            return ActorResponse::reply(Err(ExecuteError::InternalError(
-                                InternalErrorKind::StateDeltaEncryption,
-                            )));
+                            return ActorResponse::reply(Err(ExecuteError::InternalError {
+                                kind: InternalErrorKind::Encryption,
+                            }));
                         }
                     }
                 }
@@ -446,9 +446,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                     if let Some(sk) = identity.sender_key {
                         (sk, [0u8; 32])
                     } else {
-                        return ActorResponse::reply(Err(ExecuteError::InternalError(
-                            InternalErrorKind::StateDeltaEncryption,
-                        )));
+                        return ActorResponse::reply(Err(ExecuteError::InternalError {
+                            kind: InternalErrorKind::Encryption,
+                        }));
                     }
                 }
                 Err(err) => {
@@ -457,9 +457,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                         %err,
                         "state-delta encryption: get_group_for_context failed",
                     );
-                    return ActorResponse::reply(Err(ExecuteError::InternalError(
-                        InternalErrorKind::StateDeltaEncryption,
-                    )));
+                    return ActorResponse::reply(Err(ExecuteError::InternalError {
+                        kind: InternalErrorKind::Encryption,
+                    }));
                 }
             };
 
@@ -1306,7 +1306,9 @@ impl Handler<ExecuteRequest> for ContextManager {
             .map_err(|err, _act, _ctx| {
                 err.downcast::<ExecuteError>().unwrap_or_else(|err| {
                     debug!(?err, "an error occurred while executing request");
-                    ExecuteError::InternalError(InternalErrorKind::ExternalActions)
+                    ExecuteError::InternalError {
+                        kind: InternalErrorKind::Runtime,
+                    }
                 })
             })
             .map_ok(
@@ -2429,8 +2431,10 @@ fn substitute_aliases_in_payload(
             let public_key = node_client
                 .resolve_alias(*alias, Some(context_id))
                 .map_err(|err| {
-                    error!(%context_id, %alias, %err, "failed to resolve identity alias");
-                    ExecuteError::InternalError(InternalErrorKind::AliasResolution)
+                    error!(%err, ?alias, "failed to resolve alias during substitution");
+                    ExecuteError::InternalError {
+                        kind: InternalErrorKind::Context,
+                    }
                 })?
                 .ok_or(ExecuteError::AliasResolutionFailed { alias: *alias })?;
 

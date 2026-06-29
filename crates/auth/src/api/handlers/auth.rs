@@ -451,7 +451,7 @@ pub async fn validate_handler(
             // Add error type header for better client handling
             if matches!(err, AuthError::TokenExpired) {
                 error_headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
-            } else if err.to_string().contains("revoked") {
+            } else if matches!(err, AuthError::TokenRevoked) {
                 error_headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
             } else {
                 error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());

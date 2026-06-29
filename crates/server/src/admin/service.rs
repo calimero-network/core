@@ -14,7 +14,7 @@ use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
-use tracing::{error, info};
+use tracing::info;
 
 use super::handlers::{alias, blob, groups, namespaces, tee};
 use super::storage::ssl::get_ssl;
@@ -507,8 +507,8 @@ fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
         .status(StatusCode::OK)
         .header("Content-Type", file.metadata.mimetype())
         .body(Body::from(content))
-        .map_err(|err| {
-            error!(error = %err, "failed to build static file response");
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to build file response");
             StatusCode::INTERNAL_SERVER_ERROR
         })
 }
@@ -619,7 +619,7 @@ async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> im
         Ok(Some(cert)) => Some(cert),
         Ok(None) => None,
         Err(err) => {
-            error!(error = %err, "failed to get the certificate");
+            tracing::error!(error = %err, "Failed to get the certificate");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to get the certificate",

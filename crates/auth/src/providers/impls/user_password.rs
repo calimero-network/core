@@ -173,11 +173,13 @@ impl UserPasswordProvider {
     ) -> eyre::Result<(String, Vec<String>)> {
         // Try to verify existing credentials
         if let Some((key_id, root_key)) = self.verify_credentials(username, password).await? {
-            // Existing user - return their key ID and permissions.
-            // The username is deliberately not logged: it is client-supplied
-            // (PII + a log-injection vector via embedded control characters).
+            // Existing user - return their key ID and permissions
             let permissions = root_key.permissions.clone();
-            debug!(permissions = ?permissions, "existing user authenticated");
+            debug!(
+                user = %crate::utils::sanitize_for_log(username),
+                ?permissions,
+                "Existing user authenticated"
+            );
             return Ok((key_id, permissions));
         }
 
@@ -190,8 +192,10 @@ impl UserPasswordProvider {
         if existing_keys.is_empty() {
             // Bootstrap case - create the first root key
             let (key_id, root_key) = self.create_root_key(username, password).await?;
-            // See above: the bootstrapping username is not logged.
-            debug!("bootstrap: created first root key");
+            debug!(
+                user = %crate::utils::sanitize_for_log(username),
+                "Bootstrap: created first root key"
+            );
             Ok((key_id, root_key.permissions))
         } else {
             // Root keys exist but credentials are invalid

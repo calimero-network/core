@@ -803,15 +803,12 @@ mod mocked {
             .unwrap_or_else(|| EXECUTOR_ID.with(|id| id.get()))
     }
 
-    /// Emits a guest log line.
-    ///
-    /// Routed through `tracing` (rather than raw `println!`) so native/mocked
-    /// runs share the host's structured logging pipeline — log level, targets,
-    /// and capture all apply uniformly. The guest-controlled text is carried as
-    /// a field under a dedicated target so it is clearly attributable and
-    /// filterable.
+    /// Routes the log line through `tracing` (this is the host/native build, so
+    /// a subscriber is present) rather than raw stdout, so guest/app logs carry
+    /// the process's structured formatting and can be filtered and redirected
+    /// like every other log instead of bypassing it onto stdout.
     pub(super) fn log(message: &str) {
-        tracing::info!(target: "calimero::guest", "{message}");
+        tracing::info!(target: "calimero_storage::guest", "{message}");
     }
 
     /// Sets the thread-local executor ID. Only callable from this crate

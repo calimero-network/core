@@ -12,8 +12,8 @@ use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm};
 use libp2p::{
-    dcutr, gossipsub, identify, kad, mdns, noise, ping, relay, rendezvous, tcp, tls, yamux,
-    StreamProtocol, SwarmBuilder,
+    connection_limits, dcutr, gossipsub, identify, kad, mdns, noise, ping, relay, rendezvous, tcp,
+    tls, yamux, StreamProtocol, SwarmBuilder,
 };
 use multiaddr::Protocol;
 use tracing::warn;
@@ -23,6 +23,29 @@ use crate::autonat;
 const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 const CALIMERO_KAD_PROTO_NAME: StreamProtocol = StreamProtocol::new("/calimero/kad/1.0.0");
 
+// Connection-count ceilings, enforced by `connection_limits::Behaviour`.
+//
+// These are a resource-exhaustion backstop, not a tuning knob: Calimero
+// clusters are small (2–20 collaborating peers) plus a handful of
+// bootstrap/rendezvous/relay links, so the ceilings sit far above any
+// healthy steady state and only bite under abuse — e.g. a poisoned peer
+// cache trying to dial thousands of stale addresses at startup, or an inbound
+// handshake flood. Without them a single bad input can exhaust file
+// descriptors and take the node down.
+//
+// `max_pending_outgoing` is the dial-storm cap: excess concurrent dials are
+// denied (not queued) rather than opening an unbounded number of sockets. The
+// startup cache redial also caps how many it issues at the source.
+const MAX_PENDING_INCOMING: u32 = 128;
+const MAX_PENDING_OUTGOING: u32 = 128;
+// A peer legitimately holds a few simultaneous connections (TCP + QUIC, plus a
+// relayed circuit upgrading to a direct one via DCUtR), so allow headroom
+// while still bounding a single misbehaving peer.
+const MAX_ESTABLISHED_PER_PEER: u32 = 8;
+// Total established ceiling — generous headroom over any real cluster while
+// still bounding total open sockets/FDs.
+const MAX_ESTABLISHED_TOTAL: u32 = 1024;
+
 #[expect(
     missing_debug_implementations,
     reason = "Swarm behaviours don't implement Debug"
@@ -30,6 +53,7 @@ const CALIMERO_KAD_PROTO_NAME: StreamProtocol = StreamProtocol::new("/calimero/k
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
     pub autonat: autonat::Behaviour,
+    pub connection_limits: connection_limits::Behaviour,
     pub dcutr: dcutr::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
     pub identify: identify::Behaviour,
@@ -78,6 +102,13 @@ impl Behaviour {
                                 .with_probe_interval(config.discovery.autonat.probe_interval),
                         )
                     },
+                    connection_limits: connection_limits::Behaviour::new(
+                        connection_limits::ConnectionLimits::default()
+                            .with_max_pending_incoming(Some(MAX_PENDING_INCOMING))
+                            .with_max_pending_outgoing(Some(MAX_PENDING_OUTGOING))
+                            .with_max_established_per_peer(Some(MAX_ESTABLISHED_PER_PEER))
+                            .with_max_established(Some(MAX_ESTABLISHED_TOTAL)),
+                    ),
                     dcutr: dcutr::Behaviour::new(peer_id),
                     identify: identify::Behaviour::new(
                         identify::Config::new(PROTOCOL_VERSION.to_owned(), key.public())

@@ -38,22 +38,13 @@ pub enum AuthError {
     #[error("Token has expired")]
     TokenExpired,
     /// The presented token's key has been revoked. Kept distinct from
-    /// [`AuthError::InvalidToken`] so the HTTP layer can map it to `403
-    /// Forbidden` by matching the variant rather than sniffing the message
-    /// text — renaming a message can no longer silently downgrade a revoked
-    /// token to a generic `401`.
+    /// [`InvalidToken`](AuthError::InvalidToken) so the HTTP layer maps it to
+    /// `403 Forbidden` via the type, not a substring match on the message
+    /// (renaming the message must never silently downgrade revoked → `401`).
     #[error("Token has been revoked")]
     TokenRevoked,
-    #[error("Storage error: {message}")]
-    StorageError {
-        message: String,
-        /// The underlying storage-layer error, preserved so the full cause
-        /// chain survives (e.g. for `tracing`'s `error = %err` rendering and
-        /// `std::error::Error::source` walking) instead of being flattened to
-        /// a string.
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
+    #[error("Storage error: {0}")]
+    StorageError(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("Provider error: {0}")]
     ProviderError(String),
     #[error("Signature verification failed: {0}")]
@@ -61,35 +52,9 @@ pub enum AuthError {
     #[error("Key ownership verification failed: {0}")]
     KeyOwnershipFailed(String),
     #[error("Token generation failed: {0}")]
-    TokenGenerationFailed(String),
+    TokenGenerationFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
-}
-
-impl AuthError {
-    /// Wrap a concrete error as a [`AuthError::StorageError`], keeping it as the
-    /// error `source` so the cause chain is not lost.
-    pub fn storage<E>(source: E) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        AuthError::StorageError {
-            message: source.to_string(),
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Like [`AuthError::storage`] but prefixes a human-readable context onto
-    /// the message while still preserving the original error as the `source`.
-    pub fn storage_context<E>(context: impl AsRef<str>, source: E) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        AuthError::StorageError {
-            message: format!("{}: {source}", context.as_ref()),
-            source: Some(Box::new(source)),
-        }
-    }
 }

@@ -1543,12 +1543,16 @@ impl ContextClient {
             .await
             .map_err(|err| {
                 tracing::error!(%err, "context manager mailbox closed during execute");
-                ExecuteError::InternalError(InternalErrorKind::ActorUnavailable)
+                ExecuteError::InternalError {
+                    kind: InternalErrorKind::Ipc,
+                }
             })?;
 
         receiver.await.map_err(|err| {
             tracing::error!(%err, "context manager dropped the execute response channel");
-            ExecuteError::InternalError(InternalErrorKind::ActorUnavailable)
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Ipc,
+            }
         })?
     }
 
@@ -1623,7 +1627,9 @@ impl ContextClient {
                 %err,
                 "merge_root_state: failed to serialize MergeRootStateRequest"
             );
-            ExecuteError::InternalError(InternalErrorKind::RootStateMerge)
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Merge,
+            }
         })?;
 
         let response = self
@@ -1644,9 +1650,9 @@ impl ContextClient {
                     %context_id,
                     "merge_root_state: WASM export returned no bytes"
                 );
-                return Err(ExecuteError::InternalError(
-                    InternalErrorKind::RootStateMerge,
-                ));
+                return Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                });
             }
             Err(err) => {
                 tracing::error!(
@@ -1654,9 +1660,9 @@ impl ContextClient {
                     ?err,
                     "merge_root_state: WASM export reported a function-call error"
                 );
-                return Err(ExecuteError::InternalError(
-                    InternalErrorKind::RootStateMerge,
-                ));
+                return Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                });
             }
         };
 
@@ -1667,7 +1673,9 @@ impl ContextClient {
                     %err,
                     "merge_root_state: failed to deserialize MergeRootStateResponse"
                 );
-                ExecuteError::InternalError(InternalErrorKind::RootStateMerge)
+                ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                }
             })?;
 
         match response {
@@ -1678,9 +1686,9 @@ impl ContextClient {
                     error = %msg,
                     "merge_root_state: WASM Mergeable::merge returned an error"
                 );
-                Err(ExecuteError::InternalError(
-                    InternalErrorKind::RootStateMerge,
-                ))
+                Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                })
             }
         }
     }

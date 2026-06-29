@@ -15,14 +15,14 @@ impl EventHandler<Event> for NetworkManager {
                 message,
                 ..
             } => {
-                // Log only non-sensitive metadata. The raw payload is never
-                // logged: it can carry private application data and
-                // attacker-controlled bytes (ANSI escapes / CRLF) that would
-                // corrupt or spoof log output on this hot path.
+                // Log only non-sensitive metadata. The previous `{:?}` of the
+                // whole event dumped the raw `message.data` payload on a hot
+                // path (data leak) and injected ANSI color codes into the logs.
                 debug!(
-                    message_id = %id,
+                    target: "network::gossipsub",
+                    message_id = ?id,
                     source = ?message.source,
-                    topic = %message.topic,
+                    topic = ?message.topic,
                     payload_len = message.data.len(),
                     "gossipsub message received"
                 );
@@ -34,6 +34,7 @@ impl EventHandler<Event> for NetworkManager {
                 }
             }
             Event::Subscribed { peer_id, topic } => {
+                debug!(target: "network::gossipsub", %peer_id, ?topic, "subscribed");
                 if !self
                     .event_dispatcher
                     .dispatch(NetworkEvent::Subscribed { peer_id, topic })
@@ -42,6 +43,7 @@ impl EventHandler<Event> for NetworkManager {
                 }
             }
             Event::Unsubscribed { peer_id, topic } => {
+                debug!(target: "network::gossipsub", %peer_id, ?topic, "unsubscribed");
                 if !self
                     .event_dispatcher
                     .dispatch(NetworkEvent::Unsubscribed { peer_id, topic })
