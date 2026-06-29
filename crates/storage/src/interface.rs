@@ -2647,10 +2647,47 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// Deletes the child entity and generates sync actions automatically.
     ///
+    /// Rejects deletion of `Frozen` children — frozen data is immutable and
+    /// every peer rejects an incoming `DeleteRef` for it (see the
+    /// `StorageType::Frozen` arm in [`apply_action`](Self::apply_action)), so
+    /// a local delete would diverge the deleter from the rest of the network.
+    /// The re-key migration that relocates entries under new deterministic ids
+    /// must use [`relocate_child_from`](Self::relocate_child_from) instead.
+    ///
+    /// # Errors
+    /// Returns error if parent or child doesn't exist, or if the child is
+    /// `Frozen`.
+    ///
+    pub fn remove_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
+        Self::remove_child_from_inner(parent_id, child_id, true)
+    }
+
+    /// Removes a child from a collection as part of a deterministic re-key
+    /// relocation (the entry is immediately re-inserted under a new id).
+    ///
+    /// Unlike [`remove_child_from`](Self::remove_child_from) this does **not**
+    /// reject `Frozen` children: a re-key is a local relocation, not a
+    /// semantic deletion, so the frozen data is preserved (re-inserted under
+    /// its new deterministic id by the caller). Used only by the collection
+    /// re-key paths (`reassign_deterministic_id_*`).
+    ///
     /// # Errors
     /// Returns error if parent or child doesn't exist.
     ///
-    pub fn remove_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
+    pub(crate) fn relocate_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
+        Self::remove_child_from_inner(parent_id, child_id, false)
+    }
+
+    /// Shared implementation behind [`remove_child_from`](Self::remove_child_from)
+    /// and [`relocate_child_from`](Self::relocate_child_from).
+    ///
+    /// `reject_frozen` gates the Frozen-deletion guard: `true` for genuine
+    /// deletes, `false` for re-key relocations.
+    fn remove_child_from_inner(
+        parent_id: Id,
+        child_id: Id,
+        reject_frozen: bool,
+    ) -> Result<bool, StorageError> {
         let child_exists = <Index<S>>::get_children_of(parent_id)?
             .iter()
             .any(|child| child.id() == child_id);
@@ -2664,6 +2701,24 @@ impl<S: StorageAdaptor> Interface<S> {
         // Get metadata before removing index
         let mut metadata =
             <Index<S>>::get_metadata(child_id)?.ok_or(StorageError::IndexNotFound(child_id))?;
+
+        // Reject deletion of Frozen data locally, before mutating any state.
+        //
+        // The receiving side rejects every `DeleteRef` for Frozen data (see
+        // the `StorageType::Frozen` arm in `apply_action`). If we let the
+        // local delete proceed it would tombstone the child and broadcast a
+        // `DeleteRef` that every peer rejects, leaving the deleter
+        // permanently diverged from the rest of the network (split-brain).
+        // Refusing here keeps the deleter consistent with its peers.
+        //
+        // The re-key relocation path (`relocate_child_from`) passes
+        // `reject_frozen == false`: it removes the entry only to re-insert it
+        // under a new deterministic id, so the frozen data is preserved.
+        if reject_frozen && matches!(metadata.storage_type, StorageType::Frozen) {
+            return Err(StorageError::ActionNotAllowed(
+                "Frozen data cannot be deleted".to_owned(),
+            ));
+        }
 
         // If this is a local user action, set the nonce
         if let StorageType::User { owner, .. } = metadata.storage_type {

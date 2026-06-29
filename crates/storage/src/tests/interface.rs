@@ -2130,6 +2130,70 @@ mod frozen_storage_verification {
         }
     }
 
+    /// A local delete of a Frozen child must be rejected at
+    /// `remove_child_from`, before any state mutation.
+    ///
+    /// Regression test for the split-brain: previously the local delete
+    /// tombstoned the child and broadcast a `DeleteRef` that every peer
+    /// rejects (see `frozen_delete_is_rejected`), leaving the deleter
+    /// permanently diverged from the rest of the network.
+    #[test]
+    fn remove_child_from_rejects_frozen_child() {
+        use crate::delta::{commit_causal_delta, reset_delta_context};
+
+        env::reset_for_testing();
+
+        // Parent under root.
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+
+        // Frozen child registered under the parent.
+        let mut child_element = Element::new(None);
+        child_element.set_frozen_domain();
+        let mut para = Paragraph::new_from_element("Frozen child", child_element);
+        assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+
+        // Discard the actions emitted by the setup above — the assertion
+        // below is only about what the rejected delete contributes.
+        reset_delta_context();
+
+        // Local delete must be refused.
+        let result = MainInterface::remove_child_from(page.id(), para.id());
+        match result {
+            Err(StorageError::ActionNotAllowed(msg)) => {
+                assert!(
+                    msg.contains("Frozen") && msg.contains("deleted"),
+                    "Error should mention Frozen and deleted: {msg}"
+                );
+            }
+            other => panic!("Expected ActionNotAllowed error, got {other:?}"),
+        }
+
+        // The child must still be present — no tombstone, no divergence.
+        assert!(
+            MainInterface::children_of::<Paragraph>(page.id())
+                .unwrap()
+                .iter()
+                .any(|child| child.id() == para.id()),
+            "Frozen child must remain after a rejected delete"
+        );
+
+        // The rejected delete must not have broadcast a `DeleteRef`: that is
+        // the split-brain this guards against — every peer rejects a Frozen
+        // `DeleteRef`, leaving only the deleter diverged. The guard fires
+        // before any state is mutated, so no action should reach the delta.
+        if let Some(delta) = commit_causal_delta(&[0; 32]).unwrap() {
+            assert!(
+                !delta
+                    .actions
+                    .iter()
+                    .any(|a| matches!(a, Action::DeleteRef { id, .. } if *id == para.id())),
+                "rejected Frozen delete must not emit a DeleteRef, got: {:?}",
+                delta.actions
+            );
+        }
+    }
+
     #[test]
     fn frozen_blob_too_small_fails() {
         env::reset_for_testing();

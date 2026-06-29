@@ -609,8 +609,9 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
         // Drop the old random-id children, move the collection to its
         // deterministic id, then re-insert each child under
-        // `compute_id(parent, index)`.
-        self.clear().expect("clear for reindex");
+        // `compute_id(parent, index)`. Uses the re-key clear so `Frozen`
+        // children are relocated (re-inserted below) rather than rejected.
+        self.clear_for_rekey().expect("clear for reindex");
         self.reassign_deterministic_id_under(parent_id, field_name, crdt_type);
 
         let parent = self.id();
@@ -749,6 +750,20 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut collection = CollectionMut::new(self);
 
         collection.clear()?;
+
+        Ok(())
+    }
+
+    /// Clears the collection as part of a deterministic re-key relocation.
+    ///
+    /// Identical to [`clear`](Self::clear) except it removes children via
+    /// [`Interface::relocate_child_from`], which does not reject `Frozen`
+    /// children — a re-key re-inserts every entry under a new id, so frozen
+    /// data is preserved rather than deleted.
+    fn clear_for_rekey(&mut self) -> StoreResult<()> {
+        let mut collection = CollectionMut::new(self);
+
+        collection.clear_for_rekey()?;
 
         Ok(())
     }
@@ -896,6 +911,19 @@ where
 
         for child in children.drain(..) {
             let _ = <Interface<S>>::remove_child_from(self.collection.id(), child)?;
+        }
+
+        Ok(())
+    }
+
+    /// Clears the collection for a deterministic re-key relocation, removing
+    /// children via [`Interface::relocate_child_from`] so `Frozen` entries are
+    /// relocated rather than rejected. See [`Collection::clear_for_rekey`].
+    fn clear_for_rekey(&mut self) -> StoreResult<()> {
+        let children = self.collection.children_cache()?;
+
+        for child in children.drain(..) {
+            let _ = <Interface<S>>::relocate_child_from(self.collection.id(), child)?;
         }
 
         Ok(())
