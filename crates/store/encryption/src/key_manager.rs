@@ -29,7 +29,10 @@ const MIN_CIPHERTEXT_SIZE: usize = 1 + NONCE_SIZE + TAG_SIZE;
 /// The AAD is `version || nonce`, matching the unencrypted header prepended to
 /// every ciphertext. Authenticating it ensures the header cannot be altered
 /// without failing decryption.
-fn aad_for(version: u8, nonce: &[u8]) -> [u8; 1 + NONCE_SIZE] {
+///
+/// The nonce is taken as a fixed-size array so the length is enforced at
+/// compile time rather than risking a runtime panic from `copy_from_slice`.
+fn aad_for(version: u8, nonce: &[u8; NONCE_SIZE]) -> [u8; 1 + NONCE_SIZE] {
     let mut aad = [0u8; 1 + NONCE_SIZE];
     aad[0] = version;
     aad[1..].copy_from_slice(nonce);
@@ -196,14 +199,21 @@ impl KeyManager {
         }
 
         let version = ciphertext[0];
-        let nonce_bytes = &ciphertext[1..1 + NONCE_SIZE];
-        let nonce = Nonce::from_slice(nonce_bytes);
+        // The length check above guarantees these slices are exactly sized.
+        let nonce_bytes: [u8; NONCE_SIZE] = ciphertext[1..1 + NONCE_SIZE]
+            .try_into()
+            .expect("slice is NONCE_SIZE bytes");
+        let nonce = Nonce::from_slice(&nonce_bytes);
         let encrypted_data = &ciphertext[1 + NONCE_SIZE..];
 
         // The version and nonce header is authenticated via AAD, so any
         // tampering with it (or with the DEK version selection) causes the
         // integrity check below to fail.
-        let aad = aad_for(version, nonce_bytes);
+        //
+        // AAD must use the same version byte that drives DEK selection below;
+        // both must agree for decryption to succeed, so do not separate these
+        // two uses in any future refactor.
+        let aad = aad_for(version, &nonce_bytes);
 
         let dek = self.get_dek(version)?;
         let cipher = dek.cipher();
