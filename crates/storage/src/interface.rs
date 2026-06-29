@@ -200,7 +200,6 @@ const fn nonce_check_disabled_for_testing() -> bool {
     false
 }
 
-/// The primary interface for the storage system.
 /// Why a child is being removed from its collection, selecting whether the
 /// Frozen-deletion guard applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +211,7 @@ enum RemoveMode {
     Relocate,
 }
 
+/// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
