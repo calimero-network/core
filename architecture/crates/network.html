@@ -218,6 +218,7 @@ NodeManager detects membership change<br>
       <li>JSON <span class="code">BlobRequest</span> / <span class="code">BlobResponse</span> handshake</li>
       <li>Borsh-encoded <span class="code">BlobChunk</span> stream</li>
       <li>Chunked transfer for large payloads</li>
+      <li>Inbound transfers capped at <span class="code">min(advertised_size, 500&nbsp;MiB)</span> to bound receiver memory</li>
       <li>Announce / query / request lifecycle</li>
     </ul>
   </div>
