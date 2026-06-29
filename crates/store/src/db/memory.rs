@@ -119,11 +119,16 @@ struct ArcSlice<'this> {
     inner: Arc<Slice<'this>>,
 }
 
-impl ArcSlice<'_> {
-    fn new<'a, T: CastsTo<Slice<'a>>>(value: Arc<T>) -> Self {
+impl<'this> ArcSlice<'this> {
+    fn new<T: CastsTo<Slice<'this>> + 'this>(value: Arc<T>) -> Self {
         Self {
-            // safety: T: CastsTo<Slice>
-            inner: unsafe { transmute::<Arc<T>, Arc<Slice<'_>>>(value) },
+            // safety: `T: CastsTo<Slice<'this>>` guarantees layout compatibility,
+            // and the `T: 'this` bound guarantees the borrowed data behind `T`
+            // outlives `'this`. Together they make this transmute sound: the
+            // output `Slice<'this>` cannot outlive the data it points at, so a
+            // borrowed slice can no longer be laundered into a longer-lived
+            // (e.g. 'static) one and smuggled across threads.
+            inner: unsafe { transmute::<Arc<T>, Arc<Slice<'this>>>(value) },
         }
     }
 }
@@ -137,6 +142,7 @@ impl AsRef<[u8]> for ArcSlice<'_> {
 impl<'a, T: InMemoryDBImpl<'a> + Debug + 'static> Database<'a> for InMemoryDB<T>
 where
     T::Key: Ord + Clone + Borrow<[u8]>,
+    T::Value: 'static,
 {
     fn open(_config: &StoreConfig) -> EyreResult<Self> {
         // `InMemoryDB` has no on-disk representation to open and is never
@@ -158,7 +164,13 @@ where
             return Ok(None);
         };
 
-        Ok(Some(Slice::from_owned(ArcSlice::new(value))))
+        // The impl requires `T::Value: 'static`, so the cloned `Arc` owns data
+        // valid for `'static`. Build a `'static`-backed slice and let it coerce
+        // to the (shorter) return lifetime — rather than laundering the stored
+        // value's lifetime into an unconstrained one.
+        let value: ArcSlice<'static> = ArcSlice::new(value);
+
+        Ok(Some(Slice::from_owned(value)))
     }
 
     fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> EyreResult<()> {
