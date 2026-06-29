@@ -30,7 +30,7 @@ use crate::messages::{
     MigrationStatusReport, NodeMessage, RegisterPendingSpecializedNodeInvite,
     RemovePendingSpecializedNodeInvite,
 };
-use crate::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
+use crate::sync::{BroadcastMessage, SealedDeltaPayload, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use crate::TopicManager;
 
 pub use crate::join_bundle::JoinBundle;
@@ -554,9 +554,18 @@ impl NodeClient {
         let shared_key = SharedKey::from_sk(sender_key);
         let nonce = rand::thread_rng().gen();
 
+        // Seal the expected post-apply root hash together with the storage
+        // delta so it never rides the gossip topic in cleartext. The root
+        // hash is a state fingerprint; encrypting it under the group key keeps
+        // it readable only by members, who get it back on decrypt.
+        let sealed = borsh::to_vec(&SealedDeltaPayload {
+            root_hash: context.root_hash,
+            artifact,
+        })?;
+
         let encrypted = shared_key
-            .encrypt(artifact, nonce)
-            .ok_or_eyre("failed to encrypt artifact")?;
+            .encrypt(sealed, nonce)
+            .ok_or_eyre("failed to encrypt delta payload")?;
 
         let payload = BroadcastMessage::StateDelta {
             context_id: context.id,
@@ -564,7 +573,6 @@ impl NodeClient {
             delta_id,
             parent_ids,
             hlc,
-            root_hash: context.root_hash,
             artifact: encrypted.into(),
             nonce,
             events: events.map(Cow::from),

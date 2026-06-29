@@ -6,6 +6,8 @@
 
 use calimero_context::group_store::{GroupKeyring, NamespaceRepository};
 use calimero_crypto::Nonce;
+use calimero_node_primitives::sync::SealedDeltaPayload;
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PrivateKey;
 use calimero_storage::action::Action;
 use eyre::{bail, OptionExt, Result};
@@ -105,21 +107,39 @@ pub(super) async fn lookup_group_key_with_wait(
     }
 }
 
+/// A decrypted state delta: the storage actions to apply plus the expected
+/// post-apply `root_hash` that was sealed alongside them.
+pub(super) struct DecryptedDelta {
+    /// Expected state root after applying `actions`. Sealed inside the
+    /// ciphertext (never on the wire in cleartext) and recovered here.
+    pub(super) root_hash: Hash,
+    /// The storage mutations carried by the delta.
+    pub(super) actions: Vec<Action>,
+}
+
+/// Decrypt a state delta's encrypted payload, returning the sealed
+/// `root_hash` and the storage actions. The plaintext is a borsh-encoded
+/// [`SealedDeltaPayload`] wrapping the root hash and the borsh-encoded
+/// `StorageDelta` bytes.
 pub(super) fn decrypt_delta_actions(
     artifact: Vec<u8>,
     nonce: Nonce,
     sender_key: PrivateKey,
-) -> Result<Vec<Action>> {
+) -> Result<DecryptedDelta> {
     let shared_key = calimero_crypto::SharedKey::from_sk(&sender_key);
-    let decrypted_artifact = shared_key
+    let decrypted = shared_key
         .decrypt(artifact, nonce)
-        .ok_or_eyre("failed to decrypt artifact")?;
+        .ok_or_eyre("failed to decrypt delta payload")?;
 
-    let storage_delta: calimero_storage::delta::StorageDelta =
-        borsh::from_slice(&decrypted_artifact)?;
+    let sealed: SealedDeltaPayload = borsh::from_slice(&decrypted)?;
+
+    let storage_delta: calimero_storage::delta::StorageDelta = borsh::from_slice(&sealed.artifact)?;
 
     match storage_delta {
-        calimero_storage::delta::StorageDelta::Actions(actions) => Ok(actions),
+        calimero_storage::delta::StorageDelta::Actions(actions) => Ok(DecryptedDelta {
+            root_hash: sealed.root_hash,
+            actions,
+        }),
         _ => bail!("Expected Actions variant in state delta"),
     }
 }
@@ -139,14 +159,21 @@ mod tests {
         let nonce = [7u8; NONCE_LEN];
 
         let storage_delta = StorageDelta::Actions(Vec::new());
-        let plaintext = borsh::to_vec(&storage_delta)?;
+        let sealed = SealedDeltaPayload {
+            root_hash: Hash::from([9u8; 32]),
+            artifact: borsh::to_vec(&storage_delta)?,
+        };
+        let plaintext = borsh::to_vec(&sealed)?;
         let cipher = shared_key
             .encrypt(plaintext, nonce)
             .ok_or_eyre("encryption failed")?;
 
-        // Encrypted storage delta should decrypt back to empty actions
+        // Encrypted payload should decrypt back to empty actions AND the
+        // sealed root hash — proving the root hash survives the round-trip
+        // inside the ciphertext rather than on the cleartext wire.
         let decrypted = decrypt_delta_actions(cipher, nonce, sender_key)?;
-        assert!(decrypted.is_empty());
+        assert!(decrypted.actions.is_empty());
+        assert_eq!(decrypted.root_hash, Hash::from([9u8; 32]));
 
         Ok(())
     }

@@ -643,6 +643,29 @@ pub fn check_snapshot_safety(has_local_state: bool) -> Result<(), SnapshotError>
 /// Maximum byte length for governance op payloads in [`BroadcastMessage::NamespaceGovernanceDelta`].
 pub const MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES: usize = 64 * 1024;
 
+/// Plaintext that gets encrypted into the `artifact` field of a
+/// [`BroadcastMessage::StateDelta`].
+///
+/// Bundling the expected post-apply `root_hash` together with the
+/// storage-delta bytes means the root hash is sealed under the group key
+/// instead of riding on the wire in cleartext. Only key holders (members)
+/// can read it, which is the point: the root hash is a state fingerprint,
+/// and broadcasting it openly would leak how a context's state evolves to
+/// non-members subscribed to the gossip topic.
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct SealedDeltaPayload {
+    /// Expected state root after the receiver applies `artifact`. Becomes the
+    /// `expected_root_hash` of the reconstructed causal delta and is verified
+    /// against the locally recomputed root once the delta is applied.
+    pub root_hash: Hash,
+
+    /// Borsh-encoded `calimero_storage::delta::StorageDelta` — the actual
+    /// state mutation. Kept as opaque bytes here so this type doesn't need a
+    /// dependency on the storage-delta layout; the receiver deserializes it
+    /// after decryption.
+    pub artifact: Vec<u8>,
+}
+
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
 #[expect(clippy::large_enum_variant, reason = "Of no consequence here")]
@@ -660,12 +683,16 @@ pub enum BroadcastMessage<'a> {
         /// Hybrid Logical Clock timestamp for causal ordering
         hlc: calimero_storage::logical_clock::HybridTimestamp,
 
-        root_hash: Hash, // todo! shouldn't be cleartext
+        /// Encrypted delta payload — a borsh-encoded [`SealedDeltaPayload`]
+        /// holding the storage-delta actions AND the expected post-apply
+        /// `root_hash`. The root hash travels inside the ciphertext (not as a
+        /// cleartext field) so it cannot be read off the gossip topic by
+        /// non-members: a cleartext root hash is a state fingerprint that
+        /// leaks how state evolves to peers who hold no group key.
         artifact: Cow<'a, [u8]>,
         nonce: Nonce,
 
         /// Execution events that were emitted during the state change.
-        /// This field is encrypted along with the artifact.
         events: Option<Cow<'a, [u8]>>,
 
         /// Cross-DAG reference: names the exact governance DAG cut the
