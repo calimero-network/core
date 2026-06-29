@@ -267,19 +267,15 @@ mod tests {
 
         let seek = [start; 48];
 
-        let mut id = match DBIter::seek(&mut iter, Slice::from(&seek[..])).expect("seek") {
-            Some(key) => Some(key[0]),
-            None => None,
-        };
+        let mut id = DBIter::seek(&mut iter, Slice::from(&seek[..]))
+            .expect("seek")
+            .map(|key| key[0]);
 
         while let Some(scope) = id {
             let value = DBIter::read(&iter).expect("read").as_ref().to_vec();
             out.push((scope, value));
 
-            id = match DBIter::next(&mut iter).expect("next") {
-                Some(key) => Some(key[0]),
-                None => None,
-            };
+            id = DBIter::next(&mut iter).expect("next").map(|key| key[0]);
         }
 
         out
@@ -329,11 +325,7 @@ mod tests {
 
         assert_eq!(
             collect(&temporal),
-            vec![
-                (1, b"a".to_vec()),
-                (2, b"b".to_vec()),
-                (3, b"c".to_vec()),
-            ],
+            vec![(1, b"a".to_vec()), (2, b"b".to_vec()), (3, b"c".to_vec()),],
         );
     }
 
