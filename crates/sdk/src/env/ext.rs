@@ -30,12 +30,18 @@ pub unsafe fn fetch(
     }
     .try_into()
     .unwrap_or_else(expected_boolean);
-    let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+
     if failed {
+        // On failure the host writes the error message into the register; read
+        // it only on this branch. If the host signalled failure without a
+        // payload, surface an empty message rather than aborting with the
+        // misleading "Expected a register" panic.
+        let data = read_register(DATA_REGISTER).unwrap_or_default();
         return Err(String::from_utf8(data).unwrap_or_else(|_| {
             panic_str("Fetch failed with an error but the error is an invalid UTF-8 string.")
         }));
     }
 
+    let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
     Ok(data)
 }

@@ -93,14 +93,19 @@ pub fn read_raw() -> Option<Vec<u8>> {
     // The storage layer stores entities as Entry<T> = borsh(T) ++ borsh(Element.id).
     // Element only serializes its `id: Id` field ([u8; 32]), all other fields are
     // #[borsh(skip)]. Strip this 32-byte suffix so migration code sees only the
-    // user's state struct bytes. Use >= so that when user state is 0 bytes (entry
-    // is exactly 32 bytes) we strip the suffix and return an empty Vec, not the id.
+    // user's state struct bytes.
     const ELEMENT_SUFFIX_LEN: usize = 32;
-    if bytes.len() >= ELEMENT_SUFFIX_LEN {
-        Some(bytes[..bytes.len() - ELEMENT_SUFFIX_LEN].to_vec())
-    } else {
-        Some(bytes)
+    if bytes.len() < ELEMENT_SUFFIX_LEN {
+        // A valid Entry<T> always carries the 32-byte Element.id suffix, so a
+        // shorter blob is corrupt storage — not user data. Returning these
+        // bytes would hand the truncated id back to migration code as if it
+        // were state; fail loudly instead. (Exactly 32 bytes is the legitimate
+        // "0-byte user state" case and falls through to an empty Vec below.)
+        crate::env::panic_str(
+            "root state entry is smaller than the 32-byte Element.id suffix; storage is corrupt",
+        );
     }
+    Some(bytes[..bytes.len() - ELEMENT_SUFFIX_LEN].to_vec())
 }
 
 #[cfg(test)]
@@ -127,5 +132,34 @@ mod tests {
             remaining: 2,
         };
         assert!(!pending.is_complete());
+    }
+
+    #[test]
+    fn read_raw_strips_element_id_suffix() {
+        // User data "hi" (2 bytes) followed by the 32-byte Element.id suffix.
+        let mut entry = b"hi".to_vec();
+        entry.extend_from_slice(&[0u8; 32]);
+        crate::env::__test_seed_root(entry);
+
+        assert_eq!(super::read_raw(), Some(b"hi".to_vec()));
+    }
+
+    #[test]
+    fn read_raw_returns_empty_for_zero_byte_user_state() {
+        // Exactly the suffix length: 0 bytes of user state, stripped to empty.
+        crate::env::__test_seed_root(vec![0u8; 32]);
+
+        assert_eq!(super::read_raw(), Some(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "storage is corrupt")]
+    fn read_raw_panics_on_truncated_entry() {
+        // Fewer than 32 bytes can't carry the Element.id suffix, so the entry
+        // is corrupt — `read_raw` must fail loudly rather than hand the id
+        // fragment back as if it were user state.
+        crate::env::__test_seed_root(vec![0u8; 10]);
+
+        let _ = super::read_raw();
     }
 }
