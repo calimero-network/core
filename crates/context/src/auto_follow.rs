@@ -216,8 +216,18 @@ pub fn spawn(store: Store, context_client: ContextClient) {
 /// Ordering: the semaphore is closed *before* the task is aborted, so
 /// any in-flight `RateLimiter::acquire().await` returns
 /// `Err(RateLimiterClosed)` through the handler's normal control flow
-/// rather than being cancelled mid-await. The abort is a belt-and-
-/// suspenders so the handler's `rx.recv()` also terminates.
+/// rather than being cancelled mid-await. The abort terminates the
+/// handler's `rx.recv()` and, by dropping the run task's `JoinSet`,
+/// aborts any per-event handler tasks still in flight (e.g. parked on
+/// `join_context`); the semaphore close additionally unblocks any that
+/// were parked on `acquire` first.
+///
+/// A handler already inside `join_context` when the abort lands is
+/// cancelled at an arbitrary await point rather than a clean boundary.
+/// This is accepted as best-effort shutdown: `join_context` is
+/// idempotent, so a partially-applied join left behind is reconciled by
+/// the re-join on the next `ContextRegistered`/`AutoFollowSet` event
+/// after restart (the DAG is authoritative).
 pub fn shutdown() {
     if let Some(state) = HANDLE.lock().expect("auto-follow HANDLE poisoned").take() {
         state.limiter.close();
@@ -237,7 +247,16 @@ async fn run(
     // ordering rationale (#2848 Part C). Do not move the subscribe back here.
     info!("auto-follow handler started");
 
+    // Per-event work runs in its own spawned task; this set owns their join
+    // handles so they are aborted when the handler task is cancelled (e.g. by
+    // [`shutdown`]) — see the spawn rationale below.
+    let mut tasks = tokio::task::JoinSet::new();
+
     loop {
+        // Reap finished handlers so the set doesn't accumulate completed
+        // handles across a long-lived run. Cheap, non-blocking.
+        while tasks.try_join_next().is_some() {}
+
         let event = match rx.recv().await {
             Ok(e) => e,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -254,13 +273,37 @@ async fn run(
             }
         };
 
+        // Dispatch each event onto its own task rather than awaiting the
+        // handler inline. The handlers `.await` on `RateLimiter::acquire`
+        // (token-bucket throttle, blocks until a token refills) and on
+        // `ContextClient::join_context` (network + replication setup), both of
+        // which can take a while. Awaiting them here would stall `rx.recv()`,
+        // so this subscriber would fall behind and start dropping its *own*
+        // ContextRegistered / AutoFollowSet events as `Lagged` — exactly the
+        // events it exists to act on. Spawning keeps the recv loop draining
+        // promptly; the shared `Arc<RateLimiter>` (cloned, not re-created) still
+        // bounds the aggregate emission rate across all in-flight handlers, and
+        // `join_context` is idempotent so concurrent/duplicate joins (e.g. a
+        // backfill racing a fresh ContextRegistered for the same context) are
+        // harmless. `store` and `context_client` are cheap Arc-backed clones.
         match event {
             OpEvent::ContextRegistered {
                 group_id,
                 context_id,
             } => {
-                handle_context_registered(&store, &context_client, &limiter, group_id, context_id)
+                let store = store.clone();
+                let context_client = context_client.clone();
+                let limiter = Arc::clone(&limiter);
+                let _ = tasks.spawn(async move {
+                    handle_context_registered(
+                        &store,
+                        &context_client,
+                        &limiter,
+                        group_id,
+                        context_id,
+                    )
                     .await;
+                });
             }
             OpEvent::AutoFollowSet {
                 group_id,
@@ -269,8 +312,19 @@ async fn run(
                 subgroups: _,
             } => {
                 if contexts {
-                    handle_auto_follow_enabled(&store, &context_client, &limiter, group_id, member)
+                    let store = store.clone();
+                    let context_client = context_client.clone();
+                    let limiter = Arc::clone(&limiter);
+                    let _ = tasks.spawn(async move {
+                        handle_auto_follow_enabled(
+                            &store,
+                            &context_client,
+                            &limiter,
+                            group_id,
+                            member,
+                        )
                         .await;
+                    });
                 }
             }
             // Subgroup auto-follow (SubgroupNested) and other variants
@@ -722,7 +776,7 @@ mod tests {
                 .save(&gid, &sample_meta(pk))
                 .expect("save_group_meta");
             NamespaceRepository::new(&store)
-                .store_identity(&gid, &pk, sk.as_bytes(), &[0u8; 32])
+                .store_identity(&gid, &pk, &sk, &[0u8; 32])
                 .expect("store_namespace_identity");
             MembershipRepository::new(&store)
                 .add_member(&gid, &pk, GroupMemberRole::Member)
