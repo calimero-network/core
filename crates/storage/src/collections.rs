@@ -1,6 +1,7 @@
 //! High-level data structures for storage.
 
 use core::cell::RefCell;
+use core::cmp::Ordering;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::{fmt, ptr};
@@ -980,38 +981,93 @@ where
     }
 }
 
+/// Total equality over two fallible collection reads.
+///
+/// `PartialEq`/`Ord`/`Debug` on these collections have to read from the
+/// store, which can fail. The impls used to `.unwrap()` that read and panic
+/// mid-comparison — e.g. inside a `BTreeMap` lookup or a `tracing` log — on a
+/// transient or corrupt store. Instead we degrade to a *total* result: two
+/// unreadable collections compare equal, and a readable one never equals an
+/// unreadable one. No comparison can panic.
+pub(crate) fn fallible_iter_eq<I, T, E>(l: Result<I, E>, r: Result<I, E>) -> bool
+where
+    I: Iterator<Item = T>,
+    T: PartialEq,
+{
+    match (l, r) {
+        (Ok(l), Ok(r)) => l.eq(r),
+        (Err(_), Err(_)) => true,
+        _ => false,
+    }
+}
+
+/// Total ordering over two fallible collection reads (see
+/// [`fallible_iter_eq`]). An unreadable collection sorts before a readable
+/// one; two unreadable collections compare equal. Keeps `Ord` total and
+/// consistent with [`fallible_iter_partial_cmp`] rather than panicking.
+pub(crate) fn fallible_iter_cmp<I, T, E>(l: Result<I, E>, r: Result<I, E>) -> Ordering
+where
+    I: Iterator<Item = T>,
+    T: Ord,
+{
+    match (l, r) {
+        (Ok(l), Ok(r)) => l.cmp(r),
+        (Err(_), Ok(_)) => Ordering::Less,
+        (Ok(_), Err(_)) => Ordering::Greater,
+        (Err(_), Err(_)) => Ordering::Equal,
+    }
+}
+
+/// Total partial-ordering over two fallible collection reads, matching the
+/// read-failure ordering of [`fallible_iter_cmp`] so `PartialOrd` stays
+/// consistent with `Ord`. Returns `None` only for genuinely incomparable
+/// elements, never for a store fault.
+pub(crate) fn fallible_iter_partial_cmp<I, T, E>(
+    l: Result<I, E>,
+    r: Result<I, E>,
+) -> Option<Ordering>
+where
+    I: Iterator<Item = T>,
+    T: PartialOrd,
+{
+    match (l, r) {
+        (Ok(l), Ok(r)) => l.partial_cmp(r),
+        (Err(_), Ok(_)) => Some(Ordering::Less),
+        (Ok(_), Err(_)) => Some(Ordering::Greater),
+        (Err(_), Err(_)) => Some(Ordering::Equal),
+    }
+}
+
 impl<T: Eq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Eq for Collection<T, S> {}
 
 impl<T: PartialEq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> PartialEq
     for Collection<T, S>
 {
-    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
-        let l = self.entries().unwrap().flatten();
-        let r = other.entries().unwrap().flatten();
-
-        l.eq(r)
+        fallible_iter_eq(
+            self.entries().map(Iterator::flatten),
+            other.entries().map(Iterator::flatten),
+        )
     }
 }
 
 impl<T: Ord + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Ord for Collection<T, S> {
-    #[expect(clippy::unwrap_used, reason = "'tis fine")]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let l = self.entries().unwrap().flatten();
-        let r = other.entries().unwrap().flatten();
-
-        l.cmp(r)
+    fn cmp(&self, other: &Self) -> Ordering {
+        fallible_iter_cmp(
+            self.entries().map(Iterator::flatten),
+            other.entries().map(Iterator::flatten),
+        )
     }
 }
 
 impl<T: PartialOrd + BorshSerialize + BorshDeserialize, S: StorageAdaptor> PartialOrd
     for Collection<T, S>
 {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        let l = self.entries().ok()?.flatten();
-        let r = other.entries().ok()?.flatten();
-
-        l.partial_cmp(r)
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        fallible_iter_partial_cmp(
+            self.entries().map(Iterator::flatten),
+            other.entries().map(Iterator::flatten),
+        )
     }
 }
 

@@ -2,6 +2,7 @@
 
 use core::cell::RefCell;
 use core::mem;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use calimero_primitives::context::ContextId;
@@ -27,8 +28,14 @@ pub struct ContextStorage {
     #[covariant]
     #[borrows(mut store)]
     inner: Temporal<'this, 'static, Store>,
-    // todo! unideal, will revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
-    keys: RefCell<Vec<Arc<key::ContextState>>>,
+    // Interned state keys, keyed by their padded 32-byte form. The temporal
+    // layer above borrows keys with a `'static` lifetime (see `state_key`), so
+    // their backing allocations must live as long as `Self` and cannot be
+    // cleared mid-life. Interning bounds this to one `Arc` per *distinct* key
+    // rather than one per storage operation (which previously grew unbounded
+    // for read-heavy contexts).
+    // todo! revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
+    keys: RefCell<HashMap<[u8; 32], Arc<key::ContextState>>>,
 }
 
 /// The exclusive upper bound for a byte prefix (smallest key not starting with
@@ -57,7 +64,9 @@ pub struct ContextPrivateStorage {
     #[covariant]
     #[borrows(mut store)]
     inner: Temporal<'this, 'static, Store>,
-    keys: RefCell<Vec<Arc<key::ContextPrivateState>>>,
+    // Interned like `ContextStorage::keys` — bounded by distinct keys, not by
+    // operation count.
+    keys: RefCell<HashMap<[u8; 32], Arc<key::ContextPrivateState>>>,
 }
 
 // safety: ContextStorage is constructed exclusively for the runtime
@@ -113,15 +122,21 @@ impl ContextStorage {
 
         let context_id = self.borrow_context_id();
 
-        keys.push(Arc::new(key::ContextState::new(*context_id, state_key)));
+        // Intern by the padded 32-byte key. The context id is fixed for a given
+        // storage instance, so the key bytes alone identify the entry; repeated
+        // accesses reuse the same `Arc` instead of leaking a new one each call.
+        let interned = keys
+            .entry(state_key)
+            .or_insert_with(|| Arc::new(key::ContextState::new(*context_id, state_key)));
 
-        // safety: TemporalStore lives as long as Self, so the reference will hold
-        //         plus, we never return a reference to the keys externally
-        unsafe {
-            mem::transmute::<Option<&key::ContextState>, Option<&'static key::ContextState>>(
-                keys.last().map(|x| &**x),
-            )
-        }
+        // safety: the interned `Arc` lives in `self`'s `keys` map for as long as
+        //         `Self` (the temporal layer that borrows it is also a field of
+        //         `Self`), and its heap payload keeps a stable address across
+        //         later map inserts/rehashes. We never hand a key reference out
+        //         past `Self`.
+        Some(unsafe {
+            mem::transmute::<&key::ContextState, &'static key::ContextState>(&**interned)
+        })
     }
 
     pub fn commit(mut self) -> eyre::Result<Store> {
@@ -296,19 +311,20 @@ impl ContextPrivateStorage {
 
         let context_id = self.borrow_context_id();
 
-        keys.push(Arc::new(key::ContextPrivateState::new(
-            *context_id,
-            state_key,
-        )));
+        // Intern by the padded 32-byte key — see `ContextStorage::state_key`.
+        let interned = keys
+            .entry(state_key)
+            .or_insert_with(|| Arc::new(key::ContextPrivateState::new(*context_id, state_key)));
 
-        // safety: TemporalStore lives as long as Self, so the reference will hold
-        //         plus, we never return a reference to the keys externally
-        unsafe {
-            mem::transmute::<
-                Option<&key::ContextPrivateState>,
-                Option<&'static key::ContextPrivateState>,
-            >(keys.last().map(|x| &**x))
-        }
+        // safety: the interned `Arc` lives in `self`'s `keys` map for as long as
+        //         `Self`, and its heap payload keeps a stable address across
+        //         later map inserts/rehashes. We never hand a key reference out
+        //         past `Self`.
+        Some(unsafe {
+            mem::transmute::<&key::ContextPrivateState, &'static key::ContextPrivateState>(
+                &**interned,
+            )
+        })
     }
 
     pub fn commit(mut self) -> eyre::Result<Store> {
