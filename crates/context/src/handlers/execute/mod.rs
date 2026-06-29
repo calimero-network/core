@@ -39,7 +39,7 @@ use std::sync::Arc;
 
 use calimero_store::{key, types, Store};
 use calimero_utils_actix::global_runtime;
-use calimero_wasm_abi::schema::MethodIntent;
+use calimero_wasm_abi::schema::{MethodIntent, XCallCallers};
 use either::Either;
 use eyre::{bail, WrapErr};
 use futures_util::future::TryFutureExt;
@@ -756,22 +756,44 @@ impl Handler<ExecuteRequest> for ContextManager {
             let context_client = act.context_client.clone();
 
             // For an xcall, deny any method the target app didn't mark
-            // `#[app::xcall]`. No declared set ⇒ not gated. Keyed by the
-            // executing blob, like the read-only lookup above. Applies to every
-            // xcall-dispatched run, including internal methods like
-            // `__calimero_sync_next` — a guest must not reach those via xcall
-            // (they are never `#[app::xcall]`); the sync path itself carries no
-            // origin, so legitimate state ops are unaffected.
+            // `#[app::xcall]`, and any caller the entry point's policy doesn't
+            // admit. No declared set ⇒ not gated. Keyed by the executing blob,
+            // like the read-only lookup above. Applies to every xcall-dispatched
+            // run, including internal methods like `__calimero_sync_next` — a
+            // guest must not reach those via xcall (they are never
+            // `#[app::xcall]`); the sync path itself carries no origin, so
+            // legitimate state ops are unaffected.
             let xcall_blob = act.executing_blob_for_context(&context.id).or_else(|| {
                 act.applications
                     .get(&context.application_id)
                     .map(|app| app.blob.bytecode)
             });
+            // The calling context's application id, resolved once (xcall path
+            // only), so a `from_same_app` entry point can compare it to ours. A
+            // caller that can't be resolved is treated as a mismatch — fail
+            // closed rather than admitting an unknown source.
+            let xcall_source_app = xcall_origin.and_then(|origin| {
+                context_client
+                    .get_context(&origin)
+                    .ok()
+                    .flatten()
+                    .map(|ctx| ctx.application_id)
+            });
             let xcall_denied = xcall_origin.is_some()
                 && xcall_blob.is_some_and(|blob| {
+                    // A module that declares no xcall entry points stays ungated
+                    // (back-compat). Otherwise the method must be a declared
+                    // entry point AND the caller must satisfy its policy.
                     act.xcall_methods
                         .get(&(blob, context.service_name.clone()))
-                        .is_some_and(|set| !set.contains(method.as_str()))
+                        .is_some_and(|policies| {
+                            xcall_caller_denied(
+                                policies,
+                                method.as_str(),
+                                xcall_source_app,
+                                context.application_id,
+                            )
+                        })
                 });
 
             // Cheap (Arc-backed) clone kept past internal_execute (which moves
@@ -784,7 +806,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     warn!(
                         %context_id,
                         function = %method,
-                        "xcall denied: not an #[app::xcall] entry point"
+                        "xcall denied: not an #[app::xcall] entry point, or caller not permitted by its policy"
                     );
                     bail!(ExecuteError::XCallNotPermitted { context_id });
                 }
@@ -1588,18 +1610,22 @@ impl ContextManager {
                     // manifest is fine: read-only defaults to the write lock,
                     // and an absent xcall set just leaves the method ungated.
                     let read_only_set = extract_read_only_set(&bytecode);
-                    let xcall_set = extract_xcall_set(&bytecode);
+                    let xcall_policies = extract_xcall_policies(&bytecode);
                     let module = calimero_utils_actix::global_runtime()
                         .spawn_blocking(move || {
                             calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
                         })
                         .await
                         .wrap_err("WASM compilation task failed")??;
-                    Ok((module, read_only_set, xcall_set))
+                    Ok((module, read_only_set, xcall_policies))
                 }
                 .into_actor(act)
                 .map_ok(
-                    move |(module, read_only_set, xcall_set): (calimero_runtime::Module, _, _),
+                    move |(module, read_only_set, xcall_policies): (
+                        calimero_runtime::Module,
+                        _,
+                        _,
+                    ),
                           act,
                           _ctx| {
                         let _ = act.modules.insert(cache_key.clone(), module.clone());
@@ -1607,8 +1633,8 @@ impl ContextManager {
                             let _ = act.read_only_methods.insert(cache_key.clone(), set);
                         }
                         // Cached like read_only_methods, keyed by the same blob.
-                        if let Some(set) = xcall_set {
-                            let _ = act.xcall_methods.insert(cache_key, set);
+                        if let Some(policies) = xcall_policies {
+                            let _ = act.xcall_methods.insert(cache_key, policies);
                         }
                         module
                     },
@@ -2347,21 +2373,43 @@ fn extract_read_only_set(bytecode: &[u8]) -> Option<Arc<HashSet<String>>> {
     Some(Arc::new(set))
 }
 
-/// The `#[app::xcall]` method names declared in a module's embedded ABI, or
-/// `None` if the manifest is absent/unparseable or declares none (the method is
-/// then left ungated). A returned set is always non-empty.
-fn extract_xcall_set(bytecode: &[u8]) -> Option<Arc<HashSet<String>>> {
+/// Decides whether an xcall to `method` is denied, given the target module's
+/// declared entry points (`policies`), the caller's application id
+/// (`source_app`, `None` if it couldn't be resolved), and the target's
+/// application id (`target_app`).
+///
+/// Denied when the method is not a declared `#[app::xcall]` entry point, or its
+/// policy excludes the caller. A `SameApp` entry point with an unresolved
+/// caller is denied — fail closed.
+fn xcall_caller_denied(
+    policies: &crate::XCallPolicyMap,
+    method: &str,
+    source_app: Option<ApplicationId>,
+    target_app: ApplicationId,
+) -> bool {
+    match policies.get(method) {
+        None => true,
+        Some(XCallCallers::AnyInNamespace) => false,
+        Some(XCallCallers::SameApp) => source_app != Some(target_app),
+    }
+}
+
+/// The `#[app::xcall]` entry points declared in a module's embedded ABI mapped
+/// to their caller policy, or `None` if the manifest is absent/unparseable or
+/// declares none (the method is then left ungated). A returned map is always
+/// non-empty.
+fn extract_xcall_policies(bytecode: &[u8]) -> Option<Arc<crate::XCallPolicyMap>> {
     let manifest = calimero_wasm_abi::embed::read_embedded_state_schema(bytecode)?;
-    let set: HashSet<String> = manifest
+    let map: crate::XCallPolicyMap = manifest
         .methods
         .into_iter()
         .filter(|m| m.xcall_callable)
-        .map(|m| m.name)
+        .map(|m| (m.name, m.xcall_callers))
         .collect();
-    if set.is_empty() {
+    if map.is_empty() {
         None
     } else {
-        Some(Arc::new(set))
+        Some(Arc::new(map))
     }
 }
 
@@ -2441,9 +2489,12 @@ mod tests {
     use calimero_store::key::GroupMetaValue;
     use calimero_store::Store;
 
+    use std::collections::HashMap;
+
     use super::{
-        extract_xcall_set, resolve_namespace_for_context, resolve_producing_app_key, should_block,
-        upgrade_blocks_write, upgrade_rejects_committed_write,
+        extract_xcall_policies, resolve_namespace_for_context, resolve_producing_app_key,
+        should_block, upgrade_blocks_write, upgrade_rejects_committed_write, xcall_caller_denied,
+        XCallCallers,
     };
     use calimero_store::key::GroupUpgradeStatus;
 
@@ -2493,10 +2544,47 @@ mod tests {
     }
 
     #[test]
-    fn extract_xcall_set_none_on_non_wasm() {
+    fn xcall_caller_policy_decision() {
+        let app_a = ApplicationId::from([0xA1; 32]);
+        let app_b = ApplicationId::from([0xB2; 32]);
+        let mut policies = HashMap::new();
+        policies.insert("open".to_owned(), XCallCallers::AnyInNamespace);
+        policies.insert("restricted".to_owned(), XCallCallers::SameApp);
+
+        // A method not declared as an entry point is always denied.
+        assert!(xcall_caller_denied(
+            &policies,
+            "unknown",
+            Some(app_a),
+            app_a
+        ));
+
+        // AnyInNamespace admits any caller (including an unresolved one).
+        assert!(!xcall_caller_denied(&policies, "open", Some(app_b), app_a));
+        assert!(!xcall_caller_denied(&policies, "open", None, app_a));
+
+        // SameApp admits only a caller running the same application id.
+        assert!(!xcall_caller_denied(
+            &policies,
+            "restricted",
+            Some(app_a),
+            app_a
+        ));
+        assert!(xcall_caller_denied(
+            &policies,
+            "restricted",
+            Some(app_b),
+            app_a
+        ));
+        // An unresolved caller is denied for SameApp — fail closed.
+        assert!(xcall_caller_denied(&policies, "restricted", None, app_a));
+    }
+
+    #[test]
+    fn extract_xcall_policies_none_on_non_wasm() {
         // No embedded ABI manifest ⇒ None (method left ungated).
-        assert!(extract_xcall_set(b"not a wasm module").is_none());
-        assert!(extract_xcall_set(&[]).is_none());
+        assert!(extract_xcall_policies(b"not a wasm module").is_none());
+        assert!(extract_xcall_policies(&[]).is_none());
     }
 
     #[test]
