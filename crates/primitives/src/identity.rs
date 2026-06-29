@@ -1,4 +1,5 @@
 use core::fmt;
+// Required by `PublicKey`'s `Deref` impl below; `PrivateKey` deliberately has none.
 use core::ops::Deref;
 use core::str::FromStr;
 
