@@ -123,8 +123,9 @@ async fn handle_request_inner(
     request: PrimitiveRequest<serde_json::Value>,
 ) -> Json<PrimitiveResponse> {
     // Deserialize by reference: `&Value` implements `Deserializer`, so this
-    // avoids cloning the whole payload, which is still needed intact for the
-    // parse-failure log below.
+    // avoids cloning the top-level `Value` tree (individual string/array fields
+    // are still copied into `RequestPayload` by serde). The payload stays intact
+    // for the parse-failure log below.
     let body = match RequestPayload::deserialize(&request.payload) {
         Ok(payload) => match payload {
             RequestPayload::Execute(exec_request) => {
